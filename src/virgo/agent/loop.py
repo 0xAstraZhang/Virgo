@@ -13,7 +13,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from ..ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
-from ..ai.validate import validate
+from ..ai.validate import INVALID_ARGUMENTS, validate
 from .types import AgentConfig, AgentEvent, ToolCallEvent, ToolContext, ToolResult
 
 Emit = Callable[[AgentEvent], None]
@@ -135,8 +135,8 @@ def _execute(
             results[i] = ToolResult.error(f"Unknown tool: {call.name}. Available: {', '.join(sorted(tools))}")
             continue
         args = dict(call.arguments)
-        if "__invalid_json__" in args:
-            results[i] = ToolResult.error("Tool arguments were not valid JSON. Re-issue the call.")
+        if INVALID_ARGUMENTS in args:
+            results[i] = ToolResult.error("Tool arguments were not a valid JSON object. Re-issue the call.")
             continue
         try:
             if tool.prepare_arguments:

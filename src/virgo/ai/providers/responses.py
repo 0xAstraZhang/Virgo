@@ -25,6 +25,7 @@ from ..types import (
     Usage,
     UserMessage,
 )
+from ..validate import parse_tool_arguments
 from ._http import ProviderError, cancelled, run_cancellable
 from .openai import _client, _reasoning_effort, classify_error
 
@@ -125,14 +126,6 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
 
 def _dict(value) -> dict:
     return value if isinstance(value, dict) else value.model_dump(mode="json", exclude_none=True)
-
-
-def _arguments(raw: str) -> dict:
-    try:
-        parsed = json.loads(raw) if raw.strip() else {}
-        return parsed if isinstance(parsed, dict) else {"__invalid_json__": raw}
-    except (ValueError, TypeError):
-        return {"__invalid_json__": raw}
 
 
 def _usage(value: dict) -> Usage:
@@ -261,7 +254,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             event_kind = None
         else:
             raw = item.get("arguments")
-            block.arguments = _arguments(raw if isinstance(raw, str) else buffers.get(index, ""))
+            block.arguments = parse_tool_arguments(raw if isinstance(raw, str) else buffers.get(index, ""))
             block.name = item.get("name") or block.name
             event_kind = "toolcall_end"
         finished.add(index)

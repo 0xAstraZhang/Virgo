@@ -26,6 +26,7 @@ from ..types import (
     Usage,
     UserMessage,
 )
+from ..validate import parse_tool_arguments
 
 _STOP = {"stop": "stop", "tool_calls": "tool_use", "function_call": "tool_use", "length": "length"}
 _OVERFLOW = re.compile(
@@ -218,10 +219,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             if ch.finish_reason:
                 finish = ch.finish_reason
         for ci, buf in calls.values():
-            try:
-                out.content[ci].arguments = json.loads(buf) if buf.strip() else {}
-            except json.JSONDecodeError:
-                out.content[ci].arguments = {"__invalid_json__": buf}
+            out.content[ci].arguments = parse_tool_arguments(buf)
             yield StreamEvent("toolcall_end", out, ci)
         if text_i is not None:
             yield StreamEvent("text_end", out, text_i)

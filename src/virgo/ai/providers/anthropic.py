@@ -9,7 +9,6 @@ Request shape follows current guidance for the Claude 4.6+/5.x families:
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
@@ -29,6 +28,7 @@ from ..types import (
     Usage,
     UserMessage,
 )
+from ..validate import parse_tool_arguments
 from ._http import ProviderError, run_cancellable
 
 BETA_FALLBACK = "server-side-fallback-2026-07-01"
@@ -390,11 +390,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                 blk = out.content[i]
                 if isinstance(blk, ToolCall):
                     raw = json_bufs.pop(ev.index, "")
-                    try:
-                        if raw.strip():
-                            blk.arguments = json.loads(raw)
-                    except json.JSONDecodeError:
-                        blk.arguments = {"__invalid_json__": raw}
+                    if raw.strip():
+                        blk.arguments = parse_tool_arguments(raw)
                     yield StreamEvent("toolcall_end", out, i)
                 elif isinstance(blk, TextContent):
                     yield StreamEvent("text_end", out, i)

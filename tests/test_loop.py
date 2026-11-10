@@ -10,6 +10,7 @@ from virgo import ai
 from virgo.agent import Agent, AgentConfig, AgentTool, Block, Continue, ToolResult
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, ToolResultMessage, UserMessage
+from virgo.ai.validate import INVALID_ARGUMENTS
 
 
 def make_agent(tools, *responses, **cfg) -> tuple[Agent, list]:
@@ -95,6 +96,17 @@ def test_errors_become_tool_results():
     assert not results[1].is_error and results[1].text() == "a:5"  # number coerced to string
     assert results[2].is_error and "ZeroDivisionError" in results[2].text()
     assert results[3].is_error and "Invalid arguments" in results[3].text()
+    assert agent.last_text == "recovered"
+
+
+def test_non_object_tool_arguments_become_an_error_result():
+    # A provider sent `null` as the arguments: the model is told, the run goes on.
+    agent, _ = make_agent(
+        [echo_tool("a")], faux.reply(tools=[("a", {INVALID_ARGUMENTS: "null"})]), faux.reply("recovered")
+    )
+    agent.prompt("go")
+    res = next(m for m in agent.messages if isinstance(m, ToolResultMessage))
+    assert res.is_error and "JSON object" in res.text()
     assert agent.last_text == "recovered"
 
 

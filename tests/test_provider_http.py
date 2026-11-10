@@ -21,6 +21,7 @@ from virgo.ai.types import (
     ToolSpec,
     UserMessage,
 )
+from virgo.ai.validate import INVALID_ARGUMENTS
 
 
 def sse(events: list[dict], named: bool) -> bytes:
@@ -197,6 +198,36 @@ def test_stream_dropped_mid_response_is_retryable(server, monkeypatch, provider)
     msg = ai.stream(model, Context("", [UserMessage("x")]), StreamOptions()).result()
     assert msg.stop_reason == "error" and msg.error_kind == "retryable" and msg.error_message
     assert msg.text()  # the partial output arrived before the drop
+
+
+@pytest.mark.parametrize("arguments", ["null", '"src"', "[1, 2]"])
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_non_object_tool_arguments_are_marked_invalid(server, monkeypatch, provider, arguments):
+    # They used to reach the agent loop as None / str / list and crash the run in dict(arguments).
+    monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
+    if provider == "anthropic":
+        events = [
+            ANTHROPIC_EVENTS[0],
+            {**ANTHROPIC_EVENTS[8], "index": 0},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": arguments}},
+            {"type": "content_block_stop", "index": 0},
+            *ANTHROPIC_EVENTS[-2:],
+        ]
+        server["body"] = sse(events, named=True)
+        model = ai.resolve_model("anthropic/claude-opus-5-5")
+    else:
+        call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": "read", "arguments": arguments}}
+        chunks = [
+            {**OPENAI_CHUNK, "choices": [{"index": 0, "delta": {"tool_calls": [call]}, "finish_reason": None}]},
+            {**OPENAI_CHUNK, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        server["body"] = sse(chunks, named=False)
+        model = ai.resolve_model("openai/gpt-5")
+    model.base_url = server["url"]
+    ctx = Context("", [UserMessage("hi")], [ToolSpec("read", "Read", {"type": "object"})])
+    msg = ai.stream(model, ctx, StreamOptions()).result()
+    assert msg.stop_reason == "tool_use"
+    assert msg.tool_calls()[0].arguments == {INVALID_ARGUMENTS: arguments}
 
 
 def test_openai_streaming_roundtrip(server, monkeypatch):

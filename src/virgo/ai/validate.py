@@ -121,6 +121,22 @@ def validate(value: Any, schema: dict, path: str = "$") -> tuple[Any, list[str]]
     return value, errors
 
 
+INVALID_ARGUMENTS = "__invalid_json__"
+
+
+def parse_tool_arguments(raw: str) -> dict:
+    """Decode the JSON arguments of a tool call, which must be an object.
+
+    Anything else (malformed JSON, ``null``, an array, a bare string) is returned under
+    ``INVALID_ARGUMENTS``, so the agent loop reports it to the model instead of running the tool.
+    """
+    try:
+        parsed = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        return {INVALID_ARGUMENTS: raw}
+    return parsed if isinstance(parsed, dict) else {INVALID_ARGUMENTS: raw}
+
+
 def parse_json_loose(text: str) -> Any:
     """Parse JSON from model output: strips code fences, falls back to the first {...} / [...]."""
     s = text.strip()

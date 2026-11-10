@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from virgo.agent.types import ToolContext
-from virgo.ai.validate import parse_json_loose, validate
+from virgo.ai.validate import INVALID_ARGUMENTS, parse_json_loose, parse_tool_arguments, validate
 from virgo.tools import BASH, EDIT, GLOB, GREP, READ, WRITE
 from virgo.tools.fs import _prepare_edit
 from virgo.tools.truncate import MAX_LINES
@@ -175,6 +175,13 @@ def test_validate_coercions():
     assert errs == [] and v == {"n": 4, "flag": True, "items": ["one"], "obj": {"k": "v"}}
     _, errs = validate({"obj": {}}, schema)
     assert any("n: required" in e for e in errs) and any("k: required" in e for e in errs)
+
+
+def test_tool_arguments_must_be_a_json_object():
+    assert parse_tool_arguments('{"path": "a"}') == {"path": "a"}
+    assert parse_tool_arguments("") == parse_tool_arguments("  ") == {}
+    for raw in ("null", '"src"', "[1, 2]", "3", '{"path": '):
+        assert parse_tool_arguments(raw) == {INVALID_ARGUMENTS: raw}
 
 
 def test_parse_json_loose():
