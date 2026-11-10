@@ -9,6 +9,7 @@ import time
 
 from textual.widgets import OptionList, Static
 
+from virgo.ai.catalog import CatalogCancelled, CatalogModel
 from virgo.ai.providers import faux
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
@@ -17,6 +18,31 @@ from virgo.harness.preferences import PreferenceChoice
 
 from .test_tui_app import wait_for
 from .test_tui_pty import PtyClient, plain
+
+
+def test_escape_cancels_live_catalog_loading_without_opening_stale_picker(make_session, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    entered = threading.Event()
+
+    def stalled(_model, signal):
+        entered.set()
+        assert signal.wait(2)
+        raise CatalogCancelled("Model discovery cancelled.")
+
+    monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", stalled)
+
+    async def scenario():
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.controller.submit("/model")
+            await wait_for(pilot, entered.is_set)
+            await pilot.press("escape")
+            await wait_for(pilot, lambda: not app.controller.busy)
+            assert not app.query_one(PreferencePicker).display
+            assert app.editor.display and app.active_input is None
+
+    asyncio.run(scenario())
 
 
 def test_effort_panel_previews_cancels_then_saves_default(make_session):
@@ -88,6 +114,10 @@ def test_model_panel_switches_custom_model_and_effort_for_session_only(make_sess
 
 def test_provider_group_combines_api_and_account_models_and_back_keeps_selection(make_session, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "virgo.harness.preferences.fetch_model_catalog",
+        lambda model, signal=None: [CatalogModel("configured-chat" if model.provider == "openai" else "gpt-6.1-terra")],
+    )
 
     async def scenario():
         ui = FullscreenUI()

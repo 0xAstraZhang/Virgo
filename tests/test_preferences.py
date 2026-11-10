@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from virgo.ai.catalog import CatalogError, CatalogModel
 from virgo.ai.providers import faux
 from virgo.harness.preferences import PreferenceChoice, configure_preference, model_choices
 from virgo.harness.settings import Settings
@@ -39,6 +40,18 @@ def clean_provider_environment(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def provider_catalogs(monkeypatch):
+    responses = {
+        "deepseek": [CatalogModel("deepseek-flash", {"context_window": 1000000})],
+        "openai-codex": [CatalogModel("gpt-6.1-terra", {"context_window": 500000})],
+        "openai": [CatalogModel("chat")],
+        "local": [CatalogModel("custom", {"context_window": 64000})],
+    }
+    monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", lambda model, signal=None: responses[model.provider])
+    return responses
+
+
 def test_catalog_only_offers_authenticated_or_explicit_local_models(make_session, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     session = make_session(
@@ -66,17 +79,19 @@ def test_catalog_only_offers_authenticated_or_explicit_local_models(make_session
     assert "local/broken" not in by_spec
 
 
-def test_configured_catalog_is_an_allowlist_even_for_current_model(make_session, monkeypatch):
+def test_catalog_uses_live_ids_instead_of_current_or_configured_models(make_session, monkeypatch, provider_catalogs):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    provider_catalogs["deepseek"] = [CatalogModel("brand-new-model")]
     session = make_session(settings={"providers": {"deepseek": {"models": {"allowed": {}}}}})
     session.set_model("deepseek/unlisted")
     choices = {model.spec for model in model_choices(session)}
-    assert "deepseek/allowed" in choices
+    assert "deepseek/brand-new-model" in choices
+    assert "deepseek/allowed" not in choices
     assert "deepseek/unlisted" not in choices
     assert "deepseek/deepseek-flash" not in choices
 
 
-def test_catalog_checks_saved_login_endpoint_expiry_and_metadata_without_refresh(make_session, monkeypatch):
+def test_catalog_prechecks_saved_login_endpoint_expiry_and_metadata(make_session):
     session = make_session()
     credential = {
         "type": "oauth", "access": "test-access", "refresh": "test-refresh",
@@ -84,7 +99,6 @@ def test_catalog_checks_saved_login_endpoint_expiry_and_metadata_without_refresh
         "connection": {"api": "openai-codex", "baseUrl": "https://chatgpt.com/backend-api/codex"},
     }
     session.auth.set("openai-codex", credential)
-    monkeypatch.setattr(session.auth, "credential", lambda *_: pytest.fail("picker must not refresh credentials"))
     assert "openai-codex/gpt-6.1-terra" in {model.spec for model in model_choices(session)}
     for patch in (
         {"refresh": ""},
@@ -95,6 +109,42 @@ def test_catalog_checks_saved_login_endpoint_expiry_and_metadata_without_refresh
         assert "openai-codex/gpt-6.1-terra" not in {model.spec for model in model_choices(session)}
     session.auth.set("openai-codex", {**credential, "refresh": "", "expires": time.time() + 3600})
     assert "openai-codex/gpt-6.1-terra" in {model.spec for model in model_choices(session)}
+
+
+def test_catalog_refreshes_on_each_open_and_does_not_fallback_after_failure(make_session, monkeypatch, provider_catalogs):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    session = make_session(settings={"providers": {"deepseek": {"models": {"new-model": {"contextWindow": "outdated-invalid"}}}}})
+    first = {item.spec for item in model_choices(session)}
+    assert "deepseek/deepseek-flash" in first
+    provider_catalogs["deepseek"] = [CatalogModel("new-model", {"context_window": 234567, "reasoning": True})]
+    second = {item.spec for item in model_choices(session)}
+    assert "deepseek/new-model" in second and "deepseek/deepseek-flash" not in second
+    resolved = session.resolve("deepseek/new-model")
+    assert resolved.context_window == 234567 and resolved.reasoning
+
+    def fail(*_):
+        raise CatalogError("Model directory returned HTTP 503.")
+
+    monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", fail)
+    assert not any(item.spec.startswith("deepseek/") for item in model_choices(session))
+    assert not session.discovered_models
+    assert "HTTP 503" in session.ui.text
+
+
+def test_one_provider_failure_does_not_hide_another_live_directory(make_session, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def fetch(model, signal=None):
+        if model.provider == "deepseek":
+            raise CatalogError("Model directory returned HTTP 401.")
+        return [CatalogModel("live-chat")]
+
+    monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", fetch)
+    session = make_session()
+    offered = {item.spec for item in model_choices(session)}
+    assert "openai/live-chat" in offered
+    assert not any(spec.startswith("deepseek/") for spec in offered)
 
 
 def test_invalid_saved_key_does_not_fall_back_to_environment(make_session, monkeypatch):

@@ -90,7 +90,7 @@ uv tool install .
 - 模型回复的思考折叠标题用动态星形图标显示思考、回复、工具执行和重试状态，并实时显示本次运行用时；思考时同时显示推理强度，点击三角可展开思考过程。结束后在当前对话中显示总耗时，中断和失败会单独标明。
 - 向上滚动时保持当前位置；返回末尾后继续跟随新消息。点击输入框上方的 `↓ Latest message` 可跳到底部，此功能没有快捷键。对话和命令列表隐藏滚动条，仍可用滚轮与键盘滚动；命令介绍换行时保持介绍列对齐。累计 token 和估算上下文用量位于输入框上方、靠右显示；权限模式、模型调用名和推理强度位于输入框下方、靠左显示，不显示 ready 等运行状态，不估算费用。
 - 快捷键提示中的按键名称加粗。鼠标拖选正文或输入框文字后，松开即自动复制，并短暂显示紫底白字 `Copied`。macOS 本地直接写入系统剪贴板；其他终端使用 OSC52，需终端支持。密码输入框不自动复制。
-- `/model` 先按厂商列出可用连接，Enter 进入该厂商的模型列表，Backspace 返回厂商列表；↑/↓ 选择，←/→ 调整思考强度。目录按现有登录凭据、环境变量和已配置模型筛选，不通过逐个生成请求探测模型。`/effort` 打开 low → max 档位面板，用 ←/→ 调整。选中模型或思考强度后，Enter 保存为用户默认值、`s` 仅用于当前会话、Esc 取消。保存只修改对应设置；项目、环境变量和启动参数仍按原有配置优先级生效。带参数的 `/model provider/id` 和 `/effort high` 继续直接修改当前会话。
+- `/model` 每次打开都会并行读取已连接厂商的实时模型列表，再按厂商分组。Enter 进入该厂商的模型列表，Backspace 返回；↑/↓ 选择，←/→ 调整思考强度。使用现有账号或 API key 查询目录，不发送生成请求；加载中可按 Esc 取消。接口失败的厂商会显示原因，本次不展示其模型，也不回退到预设或旧列表；其他厂商仍可正常选择。`/effort` 打开 low → max 档位面板，用 ←/→ 调整。选中模型或思考强度后，Enter 保存为用户默认值、`s` 仅用于当前会话、Esc 取消。保存只修改对应设置；项目、环境变量和启动参数仍按原有配置优先级生效。带参数的 `/model provider/id` 和 `/effort high` 继续直接修改当前会话。
 - Shift+Tab 循环切换 `auto review`（黄棕色）、`accept all`（红色）、`plan`（蓝色）。权限请求在弹层中选择允许一次、拒绝或本会话允许。`-r` 无参数时使用全屏会话选择器，恢复后可以查看压缩前的历史。
 
 | 按键 | 作用 |
@@ -195,6 +195,7 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 ```
 
 - **模型提供方**：Anthropic、OpenAI 兼容和 xAI Responses 使用官方 SDK；OpenAI 账号与 Google 账号使用对应的流式接口。也可以在 `providers` 里声明自定义端点。`smallModel` 用于权限审批、压缩摘要、goal 评审和记忆整理；切换到其他提供方时，未另配的小模型跟随当前模型。
+- **实时模型目录**：[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、[DeepSeek](https://api-docs.deepseek.com/api/list-models/) 及兼容连接查询其 API 根路径下的 `GET /models`；[Anthropic](https://platform.claude.com/docs/en/api/models/list) 查询 `GET /v1/models` 并处理分页；Codex 账号沿用[官方客户端的目录接口](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/models.rs)。服务端明确隐藏、不可用或不适用于文本对话的模型会被过滤。`providers.<厂商>.models` 仅补充模型参数，不再决定菜单中有哪些模型；服务端返回的上下文和输出限制优先用于当前会话。Google Code Assist 账号目前没有适配的实时目录，需使用 `/model provider/id` 指定模型；离线 `faux` 演示继续使用本地目录。
 - **权限规则**：写法是 `tool(pattern)`，pattern 为 fnmatch 风格，匹配命令或路径。例如 `bash(npm test*)`、`edit(src/**)`、`read(~/.ssh/*)`、`mcp__github__*`。
 - **权限模式**：`auto-review` 自动放行可确认在工作目录内的操作；外部路径、联网及无法静态确认边界的操作由 `smallModel` 审批，判定有风险或审批失败时再请求用户确认。`accept-all` 跳过权限审批和 allow/deny 规则。`plan` 仅提供只读工具和命令，要求调查后给出方案。旧配置 `default`、`accept-edits` 自动映射到 `auto-review`，`yolo` 映射到 `accept-all`。
 - **命令钩子**：支持 `PreToolUse` / `PostToolUse` / `UserPromptSubmit` / `Stop` 四种。钩子从 stdin 收到 JSON；退出码 2 表示拦截（或要求继续），stderr 的内容作为反馈。

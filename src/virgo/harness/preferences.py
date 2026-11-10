@@ -6,11 +6,14 @@ import ipaddress
 import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from ..ai.auth_presets import API_PRESETS, AUTH_PRESETS
+from ..ai.catalog import CatalogCancelled, CatalogError, fetch_model_catalog
+from ..ai.models import BUILTIN_PROVIDERS
 from ..ai.types import Model
 
 if TYPE_CHECKING:
@@ -42,37 +45,60 @@ class PreferenceChoice:
 
 
 def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
-    """List known models with configured authentication, without making API calls."""
-    candidates = [session.model.spec, session.settings.get("model"), session.small_model.spec]
+    """Refresh connected providers; only their returned IDs enter the real-model picker."""
     configured = session.settings.get("providers", {})
     credentials = session.auth.all()
-    for provider, config in sorted(configured.items()):
-        if isinstance(config, dict) and isinstance(config.get("models"), dict):
-            candidates.extend(f"{provider}/{model_id}" for model_id in sorted(config["models"]))
-    for provider, preset in {**AUTH_PRESETS, **API_PRESETS}.items():
-        candidates.append(f"{provider}/{preset['model']}")
-        candidates.extend(f"{provider}/{model_id}" for model_id in preset["config"].get("models", {}))
+    signal = session.main.agent.signal
     choices: dict[str, ModelChoice] = {}
-    for spec in candidates:
-        if not isinstance(spec, str) or not spec.strip():
-            continue
+    connections = []
+    for provider in sorted(set(BUILTIN_PROVIDERS) | set(configured) | set(credentials)):
         try:
-            model = session.resolve(spec)
+            model = session.resolve(f"{provider}/_catalog")
         except (TypeError, ValueError):
             continue
-        config = configured.get(model.provider, {})
-        catalog = config.get("models") if isinstance(config, dict) else None
-        if isinstance(catalog, dict) and model.id not in catalog:
+        config = configured.get(provider, {})
+        if model.api == "faux":
+            # The offline test/demo provider has no remote service.
+            ids = dict(config.get("models") or {})
+            for selected in (session.model, session.small_model):
+                if selected.provider == provider:
+                    ids.setdefault(selected.id, {})
+            for model_id in ids:
+                try:
+                    local = session.resolve(f"{provider}/{model_id}")
+                except (TypeError, ValueError):
+                    continue
+                choices[local.spec] = ModelChoice(local.spec, local.id, f"{provider} · {local.context_window:,} context")
             continue
-        if not _model_available(model, credentials, catalog):
+        if not _model_available(model, credentials):
             continue
-        if model.spec not in choices:
-            choices[model.spec] = ModelChoice(
-                model.spec,
-                model.id,
-                f"{model.provider} · {model.context_window:,} context",
-            )
-    return tuple(choices.values())
+        connections.append(model)
+    if connections:
+        session.ui.print("Fetching live model lists…", "dim")
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="virgo-discovery") as pool:
+        pending = {pool.submit(fetch_model_catalog, model, signal): model for model in connections}
+        for future in as_completed(pending):
+            provider = pending[future].provider
+            # Never retain a failed provider's previous directory or stale metadata.
+            session.discovered_models = {
+                spec: meta for spec, meta in session.discovered_models.items() if not spec.startswith(provider + "/")
+            }
+            try:
+                models = future.result()
+            except CatalogCancelled:
+                return ()
+            except CatalogError as error:
+                session.ui.print(f"{provider_name(provider)}: {error}", "warn")
+                continue
+            if signal.is_set():
+                return ()
+            for item in models:
+                spec = f"{provider}/{item.id}"
+                session.discovered_models[spec] = item.metadata
+                context = item.metadata.get("context_window")
+                description = f"{provider} · {context:,} context" if context else provider
+                choices[spec] = ModelChoice(spec, item.id, description)
+    return tuple(sorted(choices.values(), key=lambda choice: (choice.spec != session.model.spec, choice.spec)))
 
 
 def provider_name(provider: str) -> str:
@@ -84,7 +110,7 @@ def _nonempty(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _model_available(model: Model, credentials: dict, catalog) -> bool:
+def _model_available(model: Model, credentials: dict) -> bool:
     if not model.id or any(character.isspace() for character in model.id):
         return False
     if model.api == "faux":
@@ -140,7 +166,7 @@ def _model_available(model: Model, credentials: dict, catalog) -> bool:
         if not _nonempty(key):
             # The OpenAI-compatible transport supports explicitly configured,
             # unauthenticated local servers; a remote URL alone is insufficient.
-            if model.api != "openai" or not isinstance(catalog, dict):
+            if model.api != "openai":
                 return False
             try:
                 parsed = urlparse(base)
@@ -170,8 +196,10 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     models = model_choices(session) if kind == "model" else (
         ModelChoice(session.model.spec, session.model.id, session.model.provider),
     )
+    if session.main.agent.signal.is_set():
+        return
     if kind == "model" and not models:
-        session.ui.print("No available models. Use /login to connect a provider.", "warn")
+        session.ui.print("No live models available. Check /login, retry /model, or use /model provider/model-id.", "warn")
         return
     request = PreferenceRequest(kind, models, session.model.spec, effort)
     choice = session.ui.choose_preferences(request)

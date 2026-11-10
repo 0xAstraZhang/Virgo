@@ -217,6 +217,7 @@ class AgentSession:
         self._shutdown_started = False
         self.busy = False
         self.wakeups: deque = deque()
+        self.discovered_models: dict[str, dict] = {}
         self.model = self.resolve(model or self.settings.get("model"))
         self.small_model = self._small_model(model)
 
@@ -242,7 +243,15 @@ class AgentSession:
         self._permission_mode = normalize_permission_mode(mode)
 
     def resolve(self, spec: str) -> ai.Model:
-        m = ai.resolve_model(spec, self.settings.get("providers", {}))
+        providers = self.settings.get("providers", {})
+        if metadata := self.discovered_models.get(spec):
+            provider, model_id = spec.split("/", 1)
+            config = providers.get(provider, {})
+            models = config.get("models") or {}
+            names = {"context_window": "contextWindow", "max_tokens": "maxTokens", "reasoning": "reasoning", "vision": "vision"}
+            live = {names[key]: value for key, value in metadata.items() if key in names}
+            providers = {**providers, provider: {**config, "models": {**models, model_id: {**models.get(model_id, {}), **live}}}}
+        m = ai.resolve_model(spec, providers)
         m.auth_path = str(self.auth.path)
         if m.api == "anthropic":
             for k in ("fallbacks", "thinkingDisplay", "thinkingBinding"):
