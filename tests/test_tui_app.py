@@ -331,7 +331,7 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui, cwd=directory, mode=mode)
-        session.main.model.id = "a-very-long-model-name-" * 6
+        session.main.model.id = "a-very-long-模型-name-" * 6
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
@@ -343,8 +343,9 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
                 status = app.query_one("#status", Static)
                 model_line = str(status.content)
                 assert "\n" not in model_line
-                assert cell_len(model_line) <= width - 2
-                assert model_line.startswith(label + " · ")
+                assert cell_len(model_line) == width - 2
+                assert model_line.startswith(label + "  ")
+                assert status.render_line(0).text == model_line
                 assert "ready" not in model_line
                 assert str(metrics.content).startswith("↑0 ↓0")
                 assert cell_len(str(metrics.content)) <= width - 2
@@ -382,7 +383,10 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             assert metrics.render_line(0).text.endswith(str(metrics.content))
             assert metrics.render_line(0).text.startswith(" ")
             assert status.styles.text_align == "left"
-            assert str(status.content) == f"auto review · deepseek-flash · {session.effort}"
+            status_line = status.render_line(0).text
+            assert status_line.startswith("auto review  ")
+            assert status_line.endswith(f"deepseek-flash · {session.effort}")
+            assert cell_len(status_line) == app.editor.region.width
             assert metrics.region.bottom == app.editor.region.y
             assert app.editor.region.bottom == status.region.y
             hint = app.query_one("#hints", Static).content
@@ -411,7 +415,7 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
                 await pilot.press("shift+tab")
                 assert session.permission_mode == mode
                 text = app.query_one("#status", Static).content
-                assert text.plain.startswith(label + " · ")
+                assert text.plain.startswith(label + "  ")
                 assert text.get_style_at_offset(app.console, 0).color.get_truecolor() == Color.parse(color).rgb
                 assert app.editor.text == "unfinished task"
                 assert app.focused is app.editor
