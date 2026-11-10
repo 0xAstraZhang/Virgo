@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .. import __version__
 from ..ai.types import UserMessage
+from ..features.permission import permission_mode_label
 from ..harness.session import AgentSession
 from .console import ConsoleBroker, TerminalUI
 
@@ -47,7 +48,8 @@ def run_repl(
 ) -> None:
     _setup_readline(session.paths.user / "history", session)
     ui.print(
-        f"Virgo {__version__} · {session.model.spec} · effort {session.effort} · permissions {session.permission_mode}\n"
+        f"Virgo {__version__} · {session.model.spec} · effort {session.effort} · "
+        f"permissions {permission_mode_label(session.permission_mode)}\n"
         f"{session.cwd}  —  /help for commands, Ctrl-C to interrupt, /exit to quit",
         "dim",
     )

@@ -75,7 +75,7 @@ uv tool install .
 | `--ui auto\|fullscreen\|plain` | 默认 `auto`；可用交互终端进入全屏，否则使用 plain；不影响 `-p` |
 | `-m, --model provider/id` | 初始默认 `anthropic/claude-opus-5-5`；登录后保存所选模型，也可以是 `openai/gpt-5`、`deepseek/deepseek-flash` 等 |
 | `--effort low…max` | 推理强度，默认 `medium` |
-| `--permission-mode` | `default`（改动前询问）/ `accept-edits` / `plan`（只读）/ `yolo` |
+| `--permission-mode` | `default`（界面显示 `ask before changes`，修改前询问）/ `accept-edits` / `plan`（只读）/ `yolo` |
 | `-c` / `-r [FILE]` | 继续最近的会话 / 选择一个会话恢复 |
 | `--no-session` | 不保存会话 |
 | `--no-extensions` | 不加载用户和项目扩展 |

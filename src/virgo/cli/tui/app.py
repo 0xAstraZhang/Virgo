@@ -18,6 +18,7 @@ from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ... import __version__
+from ...features.permission import permission_mode_label
 from ...harness.preferences import PreferenceChoice
 from ...harness.store import SessionStore
 from .activity import RunActivity
@@ -446,11 +447,15 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if cache:
             used += f" cache {short_number(cache)}"
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
-        state = Text(f"{self.session.permission_mode} · {status}", no_wrap=True, overflow="ellipsis")
+        effort = f" · {self.session.effort}"
+        state_width = width if self.size.width >= 64 else max(1, width - cell_len(effort) - 5)
+        state = Text(permission_mode_label(self.session.permission_mode), no_wrap=True, overflow="ellipsis")
+        # Shorten the permission label first so the run state remains visible.
+        state.truncate(max(1, state_width - cell_len(status) - 3), overflow="ellipsis")
+        state.append(f" · {status}")
         # Keep the model at the right edge. Narrow terminals put it beside the
         # run state on the second line, leaving the first line for token usage.
         left = metrics if self.size.width >= 64 else state
-        effort = f" · {self.session.effort}"
         left.truncate(max(1, width - cell_len(effort) - 5), overflow="ellipsis")
         available = max(1, width - left.cell_len - 2)
         model = Text(self.session.main.model.id, no_wrap=True, overflow="ellipsis")

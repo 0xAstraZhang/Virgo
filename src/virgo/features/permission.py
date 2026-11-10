@@ -20,6 +20,11 @@ from ..harness.extensions import ExtensionAPI
 
 MODES = ("default", "accept-edits", "plan", "yolo")
 
+
+def permission_mode_label(mode: str) -> str:
+    return "ask before changes" if mode == "default" else mode
+
+
 HARD_DENY = [
     re.compile(
         r"\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rRfF][a-zA-Z]*\s+(-[a-zA-Z]+\s+)*(/|~|\$HOME)/?(\*)?(\s|$)"
@@ -311,7 +316,10 @@ def setup(api: ExtensionAPI) -> None:
                 return
             session.permission_mode = a
         s = session.settings
-        lines = [f"permission mode: {session.permission_mode}"]
+        label = permission_mode_label(session.permission_mode)
+        if label != session.permission_mode:
+            label += f" ({session.permission_mode})"
+        lines = [f"permission mode: {label}"]
         for key in ("allow", "deny"):
             rules = s.get(f"permissions.{key}", []) or []
             if rules:
@@ -321,5 +329,5 @@ def setup(api: ExtensionAPI) -> None:
         api.ui.print("\n".join(lines))
 
     api.register_command(
-        "permissions", cmd, "show or set the permission mode (default|accept-edits|plan|yolo)"
+        "permissions", cmd, "show or set permissions (default = ask before changes; accept-edits|plan|yolo)"
     )

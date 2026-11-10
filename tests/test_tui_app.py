@@ -314,25 +314,26 @@ def test_slow_shutdown_keeps_ui_responsive(make_session):
     asyncio.run(scenario())
 
 
-def test_status_preserves_fields_with_wide_path_and_long_model(make_session, project):
+@pytest.mark.parametrize(("mode", "label"), [("default", "ask before"), ("yolo", "yolo")])
+def test_status_preserves_fields_with_wide_path_and_long_model(make_session, project, mode, label):
     directory = project / ("中文项目" * 15)
     directory.mkdir()
 
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, cwd=directory)
+        session = make_session(ui=ui, cwd=directory, mode=mode)
         session.main.model.id = "a-very-long-model-name-" * 6
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            for width in (80, 52, 120):
+            for width in (80, 40, 52, 120):
                 await pilot.resize_terminal(width, 24)
                 await pilot.pause()
                 app.update_status()
                 lines = str(app.query_one("#status", Static).content).splitlines()
                 assert len(lines) == 2
                 assert all(cell_len(line) <= width - 2 for line in lines)
-                assert "ready" in lines[-1] and "yolo" in lines[-1]
+                assert "ready" in lines[-1] and label in lines[-1]
                 assert lines[0].startswith("↑0 ↓0")
                 model_line = lines[0 if width >= 64 else 1]
                 assert cell_len(model_line) == width - 2
