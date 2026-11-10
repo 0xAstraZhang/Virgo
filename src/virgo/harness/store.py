@@ -17,6 +17,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from send2trash import send2trash
+
 from ..ai.transform import strip_thinking
 from ..ai.types import Message, UserMessage, message_from_dict, message_to_dict, text_of
 
@@ -116,7 +118,7 @@ class SessionStore:
     def __init__(
         self, path: Path | None, cwd: Path, session_id: str | None = None, entries: list | None = None
     ):
-        self.path = path  # None -> in memory only
+        self.path = Path(path).absolute() if path is not None else None  # None -> in memory only
         self.cwd = Path(cwd)
         self.id = session_id or uuid.uuid4().hex[:12]
         self.entries: list[dict] = entries or []
@@ -125,7 +127,7 @@ class SessionStore:
         self.created_at = time.time()
         self.updated_at = self.created_at
         self._header_written = bool(path and path.exists())
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     # -- construction ---------------------------------------------------------
     @classmethod
@@ -215,6 +217,20 @@ class SessionStore:
                 return True
             except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
                 return False
+
+    def trash(self) -> None:
+        """Move the saved file to the system trash and stop writing to its path."""
+        with self._lock:
+            if self.path is None:
+                return
+            try:
+                self.path.stat()
+            except FileNotFoundError:
+                pass  # A new, empty session may not have been written yet.
+            else:
+                _register_workspace(self.path.parent, self.cwd)
+                send2trash(str(self.path))
+            self.path = None
 
     # -- writing --------------------------------------------------------------
     def _write(self, obj: dict) -> None:

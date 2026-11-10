@@ -251,6 +251,22 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         except (OSError, ValueError) as error:
             self.notify(f"Cannot save session view: {error}", severity="error")
 
+    @on(SessionPicker.DeleteRequested)
+    def session_delete_requested(self, event: SessionPicker.DeleteRequested) -> None:
+        picker = self._session_picker
+        if picker is None or not self.controller.can_browse:
+            return
+        current = event.path == self.session.store.path
+        try:
+            self.session.trash_session(event.path)
+        except (OSError, ValueError) as error:
+            self.notify(f"Cannot move session to Trash: {error}", severity="error")
+            return
+        picker.current_path = self.session.store.path
+        picker.remove_session(event.path)
+        if current:
+            self.history.reset()
+
     def session_picked(self, path) -> None:
         if self._session_picker is not None:
             self.session_grouped = self._session_picker.grouped

@@ -17,6 +17,7 @@ import random
 import threading
 import time
 from collections import deque
+from contextlib import ExitStack
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -312,23 +313,50 @@ class AgentSession:
         messages, ids = self.store.build_context()
         return Runtime(self, "main", "main", store=self.store, messages=messages, ids=ids)
 
+    def _prepare_main(self, store: SessionStore) -> Runtime:
+        previous = self.store
+        self.store = store
+        try:
+            return self._new_main()
+        finally:
+            self.store = previous
+
     def open_session(self, path: str | Path) -> None:
         self._activate_store(SessionStore.load(Path(path)))
 
     def new_session(self) -> None:
         self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd))
 
-    def _activate_store(self, store: SessionStore) -> None:
+    def trash_session(self, path: str | Path) -> None:
+        """Trash a conversation, replacing the active one with a new saved session."""
+        path = Path(path).absolute()
         with self._lock:
             if self._shutdown_started:
                 return
-            previous = self.store
+            stores = [store for store in self._visited_stores if store.path == path]
+            if not stores:
+                stores = [SessionStore.load(path)]
+            current = self.store in stores
+            if current:
+                replacement = SessionStore.new(self.paths.sessions, self.cwd)
+                runtime = self._prepare_main(replacement)
+            # A conversation may have been reopened more than once. Stop all
+            # retained stores from recreating it, including late extension writes.
+            with ExitStack() as locks:
+                for store in stores:
+                    locks.enter_context(store._lock)
+                stores[0].trash()
+                for store in stores[1:]:
+                    store.path = None
+            if current:
+                self._activate_store(replacement, runtime=runtime)
+
+    def _activate_store(self, store: SessionStore, *, runtime: Runtime | None = None) -> None:
+        with self._lock:
+            if self._shutdown_started:
+                return
+            runtime = runtime if runtime is not None else self._prepare_main(store)
             self.store = store
-            try:
-                runtime = self._new_main()
-            except Exception:
-                self.store = previous
-                raise
             self.main = runtime
             self._visited_stores.append(store)
             self.bus.emit("session_start", self)

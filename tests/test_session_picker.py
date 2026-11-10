@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from textual import on
 from textual.app import App
 from textual.widgets import OptionList, Static
 
@@ -21,6 +22,7 @@ class PickerApp(App):
         super().__init__(ansi_color=True)
         self.picker = picker
         self.result = "pending"
+        self.deletions = []
         self.register_theme(terminal_theme())
         self.theme = "virgo-terminal"
 
@@ -29,6 +31,10 @@ class PickerApp(App):
 
     def picked(self, result):
         self.result = result
+
+    @on(SessionPicker.DeleteRequested)
+    def delete_requested(self, event):
+        self.deletions.append(event.path)
 
 
 def saved(path, cwd, updated, created):
@@ -88,6 +94,69 @@ def test_cancel_and_new_work_with_or_without_saved_sessions(key, result, empty):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("grouped", [False, True])
+def test_delete_requests_selected_path_and_success_selects_adjacent_session(grouped):
+    async def scenario():
+        picker = SessionPicker([
+            saved("/old/first", "/old", 400, 10),
+            saved("/new/first", "/new", 100, 20),
+            saved("/new/second", "/new", 300, 20),
+        ], grouped=grouped)
+        app = PickerApp(picker)
+        async with app.run_test(size=(80, 24)) as pilot:
+            original = row_ids(picker)
+            await pilot.press("down", "ctrl+x")
+            deleted = Path(original[1])
+            assert app.deletions == [deleted]
+            assert picker.selected_path == deleted
+            assert row_ids(picker) == original
+            assert app.result == "pending"
+
+            picker.remove_session(deleted)
+            await pilot.pause()
+            assert row_ids(picker) == [original[0], original[2]]
+            assert picker.selected_path == Path(original[2])
+            assert str(picker.query_one("#session-summary", Static).content) == "All 2"
+            assert picker.grouped == grouped
+            assert picker.query_one(OptionList).get_option(original[2]).prompt.selected
+
+            picker.remove_session(picker.selected_path)
+            await pilot.pause()
+            assert picker.selected_path == Path(original[0])
+            assert str(picker.query_one("#session-summary", Static).content) == "All 1"
+            assert len(picker.query_one(OptionList).options) == (2 if grouped else 1)
+
+            picker.remove_session(picker.selected_path)
+            await pilot.pause()
+            assert picker.selected_path is None
+            assert row_ids(picker) == []
+            assert str(picker.query_one("#session-summary", Static).content) == "All 0"
+            assert picker.query_one("#session-empty").display
+            assert not picker.query_one("#session-list").display
+            assert not picker.query_one("#session-columns").display
+            await pilot.press("ctrl+x")
+            assert app.deletions == [deleted]
+            await pilot.press("g", "n")
+            assert app.result == "new"
+
+    asyncio.run(scenario())
+
+
+def test_removing_another_session_preserves_selection():
+    async def scenario():
+        picker = SessionPicker([
+            saved("/first", "/workspace", 200, 10),
+            saved("/second", "/workspace", 100, 10),
+        ])
+        app = PickerApp(picker)
+        async with app.run_test(size=(80, 24)) as pilot:
+            picker.remove_session(Path("/second"))
+            await pilot.pause()
+            assert picker.selected_path == Path("/first")
+
+    asyncio.run(scenario())
+
+
 def test_paging_resize_and_chinese_title_stay_within_browser():
     async def scenario():
         rows = [saved(f"/workspace/{i}", "/workspace", i, 10) for i in range(60)]
@@ -112,6 +181,9 @@ def test_paging_resize_and_chinese_title_stay_within_browser():
             footer = picker.query_one("#session-footer", Static)
             assert footer.region.bottom <= 14
             assert choices.region.bottom <= footer.region.y
+            assert "Ctrl+X trash" in str(footer.content)
+            console = Console(width=footer.content_region.width)
+            assert len(console.render_lines(footer.content, console.options)) <= footer.content_region.height
             await pilot.press("home")
             assert picker.selected_path == Path("/workspace/59")
             await pilot.press("pageup")

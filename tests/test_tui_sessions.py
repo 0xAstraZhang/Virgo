@@ -119,6 +119,127 @@ def test_browser_waits_for_running_turn(make_session):
     asyncio.run(scenario())
 
 
+@pytest.fixture
+def trashed_sessions(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    moved = []
+
+    def move(path):
+        source = Path(path)
+        destination = trash / source.name
+        source.rename(destination)
+        moved.append(destination)
+
+    monkeypatch.setattr("virgo.harness.store.send2trash", move)
+    return moved
+
+
+@pytest.mark.parametrize("saved", [False, True])
+def test_ctrl_x_deletes_current_session_and_continues_in_new_session(make_session, trashed_sessions, saved):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("old answer"), faux.reply("new answer"), ui=ui, persist=True)
+        if saved:
+            session.prompt("old question")
+        original = session.store
+        path = original.path
+        contents = path.read_bytes() if saved else None
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.editor.load_text("draft stays here")
+            await pilot.press("ctrl+r", "ctrl+x")
+            await wait_for(pilot, lambda: session.store is not original)
+            picker = app.screen
+            assert isinstance(picker, SessionPicker)
+            assert picker.sessions == []
+            assert picker.query_one("#session-empty").display
+            assert app.controller.browsing
+            assert not session.main.messages
+            assert session.store.path is not None and session.store.path != path
+            assert original.path is None and not path.exists()
+            assert len(trashed_sessions) == int(saved)
+            if saved:
+                assert trashed_sessions[0].read_bytes() == contents
+            await pilot.press("ctrl+x", "escape")
+            assert app.editor.text == "draft stays here"
+            app.editor.load_text("new question")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: not app.controller.busy and len(session.main.messages) == 2)
+            assert not path.exists()
+            assert SessionStore.load(session.store.path).build_context()[0][0].text() == "new question"
+            await pilot.press("ctrl+r")
+            assert all(row["path"] != path for row in app.screen.sessions)
+            await pilot.press("escape")
+        assert not path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_ctrl_x_failure_preserves_current_session_and_selection(make_session, monkeypatch):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("saved answer"), ui=ui, persist=True)
+        session.prompt("saved question")
+        original = session.store
+        contents = original.path.read_bytes()
+        app = VirgoApp(session, ui)
+        notices = []
+
+        def fail(path):
+            raise PermissionError("Trash unavailable")
+
+        monkeypatch.setattr("virgo.harness.store.send2trash", fail)
+        monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press("ctrl+r", "ctrl+x")
+            assert session.store is original
+            assert app.screen.selected_path == original.path
+            assert len(app.screen.sessions) == 1
+            assert original.path.read_bytes() == contents
+            assert notices and "Cannot move session to Trash" in notices[0]
+            await pilot.press("escape")
+            assert has_reply(app, "saved answer")
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("startup", [False, True])
+def test_ctrl_x_deletes_other_workspace_without_switching(make_session, tmp_path, trashed_sessions, startup):
+    other = tmp_path / "other-workspace"
+    other.mkdir()
+    saved = make_session(faux.reply("other answer"), persist=True, cwd=other)
+    saved.prompt("other question")
+    path = saved.store.path
+    saved.shutdown()
+
+    async def scenario():
+        from textual.widgets import OptionList
+
+        ui = FullscreenUI()
+        session = make_session(ui=ui, persist=True)
+        original = session.store
+        app = VirgoApp(session, ui, pick_session=startup)
+        async with app.run_test(size=(80, 24)) as pilot:
+            if not startup:
+                await pilot.press("ctrl+r")
+            await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
+            picker = app.screen
+            choices = picker.query_one(OptionList)
+            choices.highlighted = choices.get_option_index(str(path))
+            await pilot.press("ctrl+x")
+            assert app.screen is picker
+            assert session.store is original and session.cwd != other
+            assert not path.exists() and len(trashed_sessions) == 1
+            assert all(row["path"] != path for row in picker.sessions)
+            assert picker.query_one("#session-empty").display == startup
+            await pilot.press("escape")
+
+    asyncio.run(scenario())
+
+
 def test_browser_opens_other_workspace_and_updates_directory(make_session, tmp_path):
     other = tmp_path / "other-workspace"
     other.mkdir()

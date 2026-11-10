@@ -97,6 +97,11 @@ class SessionPicker(ModalScreen[Path | str | None]):
             self.grouped = grouped
             super().__init__()
 
+    class DeleteRequested(Message):
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            super().__init__()
+
     CSS = """
     SessionPicker { align: left top; background: $background; color: $foreground; }
     SessionPicker #session-browser { width: 100%; height: 100%; padding: 1 2; }
@@ -119,6 +124,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
         Binding("escape", "cancel", show=False),
         Binding("g", "toggle_group", show=False),
         Binding("n", "new", show=False),
+        Binding("ctrl+x", "delete", show=False),
     ]
 
     def __init__(
@@ -147,7 +153,8 @@ class SessionPicker(ModalScreen[Path | str | None]):
             yield Static(
                 Text.assemble(
                     ("Esc", "bold"), " back  ", ("↑/↓", "bold"), " move  ",
-                    ("Enter", "bold"), " open  ", ("g", "bold"), " group  ", ("n", "bold"), " new",
+                    ("Enter", "bold"), " open  ", ("g", "bold"), " group  ", ("n", "bold"), " new  ",
+                    ("Ctrl+X", "bold"), " trash",
                 ),
                 id="session-footer",
             )
@@ -195,6 +202,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
         choices.display = bool(rows)
         self.query_one("#session-empty").display = not rows
         self.query_one("#session-columns").display = bool(rows)
+        self.query_one("#session-summary", Static).update(Text.assemble((f"All {len(rows)}", "bold")))
         self.query_one("#session-heading", Static).update(
             Text.assemble(("Sessions", "bold"), (f"    Group: {'Workspace' if self.grouped else 'None'}  ", "dim"), ("g", "bold"))
         )
@@ -203,6 +211,22 @@ class SessionPicker(ModalScreen[Path | str | None]):
         else:
             choices.action_first()
         self._update_selection()
+
+    def remove_session(self, path: Path) -> None:
+        """Remove a trashed session, keeping selection next to the removed row."""
+        key = str(path)
+        if key not in self._rows:
+            return
+        selected_path = self.selected_path
+        if selected_path == path:
+            keys = list(self._rows)
+            index = keys.index(key)
+            keys.remove(key)
+            selected_path = Path(keys[min(index, len(keys) - 1)]) if keys else None
+        self.sessions = [item for item in self.sessions if str(item["path"]) != key]
+        if self.current_path == path:
+            self.current_path = None
+        self._rebuild(selected_path)
 
     @property
     def selected_path(self) -> Path | None:
@@ -241,6 +265,11 @@ class SessionPicker(ModalScreen[Path | str | None]):
 
     def action_new(self) -> None:
         self.dismiss("new")
+
+    def action_delete(self) -> None:
+        path = self.selected_path
+        if path is not None:
+            self.post_message(self.DeleteRequested(path))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
