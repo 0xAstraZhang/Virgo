@@ -295,12 +295,16 @@ def compact(
 
 def classify_error(e: Exception) -> tuple[str, str]:
     import anthropic
+    import httpx2  # the SDK's HTTP library
 
     status = getattr(e, "status_code", None)
-    text = getattr(e, "message", None) or str(e)
+    text = getattr(e, "message", None) or str(e) or type(e).__name__
     if status == 413 or (status == 400 and _OVERFLOW.search(text)):
         return "overflow", text
-    if isinstance(e, anthropic.APIConnectionError) or status in (408, 409, 429) or (status and status >= 500):
+    # The SDK wraps connection failures of the request itself, but a connection that drops or
+    # times out while the response is streamed surfaces as the HTTP library's own exception.
+    dropped = isinstance(e, (anthropic.APIConnectionError, httpx2.TransportError))
+    if dropped or status in (408, 409, 429) or (status and status >= 500):
         return "retryable", text
     return "fatal", text
 

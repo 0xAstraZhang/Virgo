@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -39,7 +40,7 @@ def server(monkeypatch):
     for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
-    state = {"requests": [], "body": b"", "status": 200}
+    state = {"requests": [], "body": b"", "status": 200, "drop": False}
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
@@ -47,6 +48,17 @@ def server(monkeypatch):
             state["requests"].append(
                 {"path": self.path, "headers": dict(self.headers), "json": json.loads(self.rfile.read(n))}
             )
+            if state["drop"]:  # the connection dies mid-body: a chunked response without its terminator
+                self.protocol_version = "HTTP/1.1"
+                self.send_response(200)
+                self.send_header("content-type", "text/event-stream")
+                self.send_header("transfer-encoding", "chunked")
+                self.end_headers()
+                self.wfile.write(f"{len(state['body']):x}\r\n".encode() + state["body"] + b"\r\n")
+                self.wfile.flush()
+                self.connection.shutdown(socket.SHUT_RDWR)
+                self.close_connection = True
+                return
             self.send_response(state["status"])
             self.send_header(
                 "content-type", "text/event-stream" if state["status"] == 200 else "application/json"
@@ -163,6 +175,28 @@ def test_anthropic_http_errors_are_classified(server, monkeypatch):
     model.base_url = server["url"]
     msg = ai.stream(model, Context("", [UserMessage("x")]), StreamOptions()).result()
     assert msg.stop_reason == "error" and msg.error_kind == "overflow"
+
+
+OPENAI_CHUNK = {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "gpt-5"}
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_stream_dropped_mid_response_is_retryable(server, monkeypatch, provider):
+    # The Anthropic SDK does not wrap transport errors raised while a response is streamed, so the
+    # drop was classified as fatal and never retried. (The OpenAI SDK wraps them itself.)
+    monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
+    server["drop"] = True
+    if provider == "anthropic":
+        server["body"] = sse(ANTHROPIC_EVENTS[:7], named=True)
+        model = ai.resolve_model("anthropic/claude-opus-5-5")
+    else:
+        delta = {"index": 0, "delta": {"role": "assistant", "content": "Hel"}, "finish_reason": None}
+        server["body"] = f"data: {json.dumps({**OPENAI_CHUNK, 'choices': [delta]})}\n\n".encode()
+        model = ai.resolve_model("openai/gpt-5")
+    model.base_url = server["url"]
+    msg = ai.stream(model, Context("", [UserMessage("x")]), StreamOptions()).result()
+    assert msg.stop_reason == "error" and msg.error_kind == "retryable" and msg.error_message
+    assert msg.text()  # the partial output arrived before the drop
 
 
 def test_openai_streaming_roundtrip(server, monkeypatch):
