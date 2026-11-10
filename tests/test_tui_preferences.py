@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 
 from textual.widgets import OptionList, Static
 
@@ -65,10 +66,12 @@ def test_model_panel_switches_custom_model_and_effort_for_session_only(make_sess
             panel = app.query_one(PreferencePicker)
             await wait_for(pilot, lambda: panel.display)
             models = panel.query_one("#preference-models", OptionList)
-            assert panel.request.models[models.highlighted].spec == "faux/test"
-            custom = next(i for i, model in enumerate(panel.request.models) if model.spec == "local/custom")
+            assert panel.providers[models.highlighted] == "Faux"
+            custom = panel.providers.index("local")
             for _ in range(custom):
                 await pilot.press("down")
+            await pilot.press("enter")
+            assert panel.provider == "local" and panel.visible_models[0].spec == "local/custom"
             await pilot.press("right")
             assert session.model.spec == "faux/test" and session.effort == "medium"
             await pilot.press("s")
@@ -83,15 +86,49 @@ def test_model_panel_switches_custom_model_and_effort_for_session_only(make_sess
     asyncio.run(scenario())
 
 
-def test_model_panel_saves_default_and_cancel_keeps_it(make_session):
+def test_provider_group_combines_api_and_account_models_and_back_keeps_selection(make_session, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui)
+        session = make_session(ui=ui, settings={"providers": {"openai": {"models": {"configured-chat": {}}}}})
+        session.auth.set("openai-codex", {
+            "type": "oauth", "access": "test-access", "expires": time.time() + 3600,
+            "accountId": "test-account",
+        })
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             app.controller.submit("/model")
             panel = app.query_one(PreferencePicker)
             await wait_for(pilot, lambda: panel.display)
+            assert panel.providers.count("OpenAI") == 1
+            options = panel.query_one("#preference-models", OptionList)
+            options.highlighted = panel.providers.index("OpenAI")
+            await pilot.press("enter")
+            assert panel.provider == "OpenAI"
+            assert {model.spec for model in panel.visible_models} == {
+                "openai/configured-chat", "openai-codex/gpt-6.1-terra",
+            }
+            await pilot.press("backspace")
+            assert panel.provider is None and panel.providers[options.highlighted] == "OpenAI"
+            assert session.model.spec == "faux/test" and not (session.paths.user / "settings.json").exists()
+            await pilot.press("escape")
+            await wait_for(pilot, lambda: not app.controller.busy)
+
+    asyncio.run(scenario())
+
+
+def test_model_panel_saves_default_and_cancel_keeps_it(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui, settings={"providers": {"faux": {"models": {"test": {}, "other": {}}}}})
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.controller.submit("/model")
+            panel = app.query_one(PreferencePicker)
+            await wait_for(pilot, lambda: panel.display)
+            assert panel.provider is None
+            await pilot.press("enter")
             await pilot.pause()
             models = panel.query_one("#preference-models", OptionList)
             await pilot.click(models, offset=(4, 1))
@@ -99,14 +136,17 @@ def test_model_panel_saves_default_and_cancel_keeps_it(make_session):
             assert panel.display and session.model.spec == "faux/test"
             assert not (session.paths.user / "settings.json").exists()
             await pilot.press("right")
-            selected = panel.request.models[panel.query_one(OptionList).highlighted].spec
+            selected = panel.visible_models[panel.query_one(OptionList).highlighted].spec
             await pilot.press("enter")
             await wait_for(pilot, lambda: not app.controller.busy)
             saved = json.loads((session.paths.user / "settings.json").read_text())
             assert saved["model"] == selected and saved["effort"] == "high"
             app.controller.submit("/model")
             await wait_for(pilot, lambda: panel.display)
-            await pilot.press("down", "left", "escape")
+            await pilot.press("enter", "down", "left", "backspace")
+            assert panel.provider is None
+            assert "Select provider" in str(panel.query_one("#preference-title", Static).content)
+            await pilot.press("escape")
             await wait_for(pilot, lambda: not app.controller.busy)
             assert session.model.spec == selected and session.effort == "high"
             assert json.loads((session.paths.user / "settings.json").read_text()) == saved
@@ -169,7 +209,8 @@ def test_closing_with_picker_open_releases_worker(make_session):
 def test_picker_keeps_status_visible_with_scrolled_history_and_queued_commands(make_session):
     async def scenario():
         ui = FullscreenUI()
-        app = VirgoApp(make_session(ui=ui), ui)
+        session = make_session(ui=ui, settings={"providers": {"faux": {"models": {"test": {}, "other": {}}}}})
+        app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await app.transcript.add_notice("\n".join(f"old line {i}" for i in range(80)))
@@ -179,10 +220,10 @@ def test_picker_keeps_status_visible_with_scrolled_history_and_queued_commands(m
             app.controller.submit("/model")
             panel = app.query_one(PreferencePicker)
             await wait_for(pilot, lambda: panel.display)
-            await pilot.press("down")
+            await pilot.press("enter", "down")
             models = panel.query_one("#preference-models", OptionList)
             selected = models.highlighted
-            selected_name = panel.request.models[selected].label
+            selected_name = panel.visible_models[selected].label
             for _ in range(3):
                 app.controller.submit("/effort")
             for width, height in ((80, 24), (40, 16), (80, 24)):
@@ -237,15 +278,17 @@ def test_repeated_confirmation_and_stale_answer_cannot_commit_next_picker(make_s
 
 def test_pty_fast_arrow_and_confirm_selects_new_model_and_effort(project, tmp_path):
     home = tmp_path / "picker-home"
+    home.mkdir()
+    (home / "settings.json").write_text(json.dumps({"providers": {"faux": {"models": {"demo": {}, "other": {}}}}}))
     with PtyClient(project, home) as terminal:
-        terminal.wait_for(lambda data: b"ready" in data)
+        terminal.wait_for(lambda data: "demo" in plain(data))
         terminal.send(b"/model\r")
-        terminal.wait_for(lambda data: "Select model" in plain(data))
-        # All bytes arrive together; navigation must precede confirmation.
-        terminal.send(b"\x1b[B\x1b[C\r")
-        terminal.wait_for(lambda _: (home / "settings.json").exists())
+        terminal.wait_for(lambda data: "Select provider" in plain(data))
+        # Enter the provider, navigate and confirm in one terminal read.
+        terminal.send(b"\r\x1b[B\x1b[C\r")
+        terminal.wait_for(lambda _: json.loads((home / "settings.json").read_text()).get("model") == "faux/other")
         saved = json.loads((home / "settings.json").read_text())
-        assert saved["model"] == "anthropic/claude-opus-5-5"
+        assert saved["model"] == "faux/other"
         assert saved["effort"] == "high"
         terminal.send(b"\x04")
         assert terminal.finish() == 0

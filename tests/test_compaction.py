@@ -68,7 +68,7 @@ def test_manual_compaction_keeps_recent_and_strips_thinking(make_session, projec
     )
     # reloading the session file rebuilds the same compacted context
     s2 = AgentSession(
-        project, ui=RecordingUI(), model="faux/test", session=s.store.path, permission_mode="yolo"
+        project, ui=RecordingUI(), model="faux/test", session=s.store.path, permission_mode="accept-all"
     )
     assert [m.text() if hasattr(m, "text") else None for m in s2.main.messages] == [
         m.text() if hasattr(m, "text") else None for m in msgs

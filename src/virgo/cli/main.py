@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .. import __version__
 from ..ai.types import AssistantMessage
+from ..features.permission import MODES, normalize_permission_mode
 from ..harness.session import AgentSession
 from ..harness.store import SessionStore
 from .console import ConsoleBroker, PrintUI, TerminalUI
@@ -35,8 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], help="reasoning effort")
     p.add_argument(
         "--permission-mode",
-        choices=["default", "accept-edits", "plan", "yolo"],
-        help="permission mode (default = ask before changes)",
+        type=normalize_permission_mode,
+        choices=MODES,
+        help="permission mode (auto-review: review external/network operations; accept-all: no approval; plan: read-only)",
     )
     p.add_argument(
         "-c", "--continue", dest="cont", action="store_true", help="continue the most recent session"

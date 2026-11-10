@@ -198,12 +198,9 @@ def test_task_graph(project):
 
 def test_task_tools(make_session):
     s = make_session(
-        faux.reply(
-            tools=[
-                ("task_create", {"subject": "one"}),
-                ("task_create", {"subject": "two", "blocked_by": ["1"]}),
-            ]
-        ),
+        # Tool calls in one response run in parallel; create the prerequisite first.
+        faux.reply(tools=[("task_create", {"subject": "one"})]),
+        faux.reply(tools=[("task_create", {"subject": "two", "blocked_by": ["1"]})]),
         faux.reply(tools=[("task_update", {"id": "1", "status": "in_progress"})]),
         faux.reply(tools=[("task_update", {"id": "1", "status": "completed"}), ("task_list", {})]),
         faux.reply("ok"),

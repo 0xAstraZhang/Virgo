@@ -10,6 +10,7 @@ import time
 import pytest
 from rich.cells import cell_len
 from textual import events
+from textual.color import Color
 from textual.widgets import Static
 
 from virgo.ai.providers import faux
@@ -18,6 +19,7 @@ from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalScreen, SessionPicker
 from virgo.cli.tui.transcript import AssistantView
+from virgo.features import permission as permission_module
 
 
 async def wait_for(pilot, predicate, *, timeout=4):
@@ -220,6 +222,8 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
                 await pilot.pause()
                 assert 3 <= app.editor.region.height <= height // 3
                 assert app.transcript.region.bottom <= app.editor.region.y
+                assert app.query_one("#metrics").region.bottom == app.editor.region.y
+                assert app.editor.region.bottom == app.query_one("#status").region.y
                 assert app.query_one("#status").region.bottom <= height
                 assert app.query_one("#hints").region.bottom <= height
                 assert app.editor.region.width <= width
@@ -231,25 +235,29 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
 
 
 @pytest.mark.parametrize(("key", "allowed"), [("y", True), ("n", False), ("escape", False), ("a", True)])
-def test_permission_answers_control_real_file_writes(make_session, project, key, allowed):
+def test_permission_answers_control_real_file_writes(make_session, project, monkeypatch, key, allowed):
+    monkeypatch.setattr(permission_module, "review_tool_call", lambda *_: (False, "writes outside the workspace"))
+    outside = project.parent / "outside"
+    outside.mkdir()
+
     async def scenario():
         ui = FullscreenUI()
-        calls = [("write", {"path": "approved.txt", "content": "first"})]
+        calls = [("write", {"path": str(outside / "approved.txt"), "content": "first"})]
         if key == "a":
-            calls.append(("write", {"path": "second.txt", "content": "second"}))
-        session = make_session(faux.reply(tools=calls), faux.reply("finished"), ui=ui, mode="default")
+            calls.append(("write", {"path": str(outside / "approved.txt"), "content": "first"}))
+        session = make_session(faux.reply(tools=calls), faux.reply("finished"), ui=ui, mode="auto-review")
         app = VirgoApp(session, ui, initial="write files")
         async with app.run_test(size=(80, 24)) as pilot:
             await wait_for(pilot, lambda: isinstance(app.screen, ApprovalScreen) and app.focused is not None)
             assert app.focused.id == "deny"
             assert "approved.txt" in app.screen.confirmation.question
-            assert not (project / "approved.txt").exists()
+            assert not (outside / "approved.txt").exists()
             await pilot.press(key)
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
-            assert (project / "approved.txt").exists() is allowed
+            assert (outside / "approved.txt").exists() is allowed
             assert not app.has_modal
             if key == "a":
-                assert (project / "second.txt").read_text() == "second"
+                assert (outside / "approved.txt").read_text() == "first"
                 assert session.services["permissions"].session_rules
 
     asyncio.run(scenario())
@@ -305,7 +313,8 @@ def test_slow_shutdown_keeps_ui_responsive(make_session):
                 assert app.controller.closing and not app.controller.closed
                 await pilot.resize_terminal(120, 40)
                 await wait_for(pilot, lambda: app.size.width == 120)
-                await wait_for(pilot, lambda: "closing" in str(app.query_one("#status", Static).content))
+                await wait_for(pilot, lambda: "Closing services" in str(app.query_one("#hints", Static).content))
+                assert "closing" not in str(app.query_one("#status", Static).content)
                 release.set()
                 await wait_for(pilot, lambda: app.controller.closed)
         finally:
@@ -314,7 +323,7 @@ def test_slow_shutdown_keeps_ui_responsive(make_session):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize(("mode", "label"), [("default", "ask before"), ("yolo", "yolo")])
+@pytest.mark.parametrize(("mode", "label"), [("auto-review", "auto review"), ("accept-all", "accept all"), ("plan", "plan")])
 def test_status_preserves_fields_with_wide_path_and_long_model(make_session, project, mode, label):
     directory = project / ("中文项目" * 15)
     directory.mkdir()
@@ -330,45 +339,83 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
                 await pilot.resize_terminal(width, 24)
                 await pilot.pause()
                 app.update_status()
-                lines = str(app.query_one("#status", Static).content).splitlines()
-                assert len(lines) == 2
-                assert all(cell_len(line) <= width - 2 for line in lines)
-                assert "ready" in lines[-1] and label in lines[-1]
-                assert lines[0].startswith("↑0 ↓0")
-                model_line = lines[0 if width >= 64 else 1]
-                assert cell_len(model_line) == width - 2
+                metrics = app.query_one("#metrics", Static)
+                status = app.query_one("#status", Static)
+                model_line = str(status.content)
+                assert "\n" not in model_line
+                assert cell_len(model_line) <= width - 2
+                assert model_line.startswith(label + " · ")
+                assert "ready" not in model_line
+                assert str(metrics.content).startswith("↑0 ↓0")
+                assert cell_len(str(metrics.content)) <= width - 2
                 assert model_line.endswith(f" · {session.effort}")
                 assert "faux/" not in model_line
+                assert metrics.region.bottom == app.editor.region.y
+                assert app.editor.region.bottom == status.region.y
                 cwd = app.query_one("#cwd", Static)
                 assert cell_len(str(cwd.content)) <= width - 2
                 assert str(cwd.content).endswith(directory.name[-8:])
                 assert cwd.region.y == app.query_one("#brand").region.bottom
                 assert cwd.region.bottom == app.query_one("#hints").region.y
                 assert app.query_one("#hints").region.bottom <= app.transcript.region.y
-                assert str(directory) not in "\n".join(lines)
+                assert str(directory) not in model_line
 
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("terminal,newline", [("Apple_Terminal", "Ctrl+J"), ("xterm", "Shift+Enter")])
-def test_status_aligns_usage_left_and_model_name_right(make_session, monkeypatch, terminal, newline):
+def test_status_places_usage_above_editor_and_permission_model_below(make_session, monkeypatch, terminal, newline):
     monkeypatch.setenv("TERM_PROGRAM", terminal)
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui)
+        session = make_session(ui=ui, mode="auto-review")
         session.main.model.provider = "deepseek"
         session.main.model.id = "deepseek-flash"
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             app.update_status()
-            lines = str(app.query_one("#status", Static).content).splitlines()
-            assert lines[0].startswith("↑0 ↓0  ~0.0%/")
-            assert lines[0].endswith(f"deepseek-flash · {session.effort}")
-            assert cell_len(lines[0]) == 78
-            assert "deepseek/" not in "\n".join(lines)
-            assert f"{newline} newline" in str(app.query_one("#hints", Static).content)
+            metrics = app.query_one("#metrics", Static)
+            status = app.query_one("#status", Static)
+            assert str(metrics.content).startswith("↑0 ↓0  ~0.0%/")
+            assert metrics.styles.text_align == "right"
+            assert metrics.render_line(0).text.endswith(str(metrics.content))
+            assert metrics.render_line(0).text.startswith(" ")
+            assert status.styles.text_align == "left"
+            assert str(status.content) == f"auto review · deepseek-flash · {session.effort}"
+            assert metrics.region.bottom == app.editor.region.y
+            assert app.editor.region.bottom == status.region.y
+            hint = app.query_one("#hints", Static).content
+            assert f"{newline} newline" in str(hint)
+            for key in ("Enter", newline, "Esc", "/", "Shift+Tab"):
+                assert hint.get_style_at_offset(app.console, hint.plain.index(key)).bold
+            for word in ("send", "newline", "interrupt", "commands", "mode"):
+                assert not hint.get_style_at_offset(app.console, hint.plain.index(word)).bold
             assert not app.query_one("#jump").display
+
+    asyncio.run(scenario())
+
+
+def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui, mode="auto-review")
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.editor.load_text("unfinished task")
+            for mode, label, color in (
+                ("accept-all", "accept all", "#DC2626"),
+                ("plan", "plan", "#2563EB"),
+                ("auto-review", "auto review", "#B8860B"),
+            ):
+                await pilot.press("shift+tab")
+                assert session.permission_mode == mode
+                text = app.query_one("#status", Static).content
+                assert text.plain.startswith(label + " · ")
+                assert text.get_style_at_offset(app.console, 0).color.get_truecolor() == Color.parse(color).rgb
+                assert app.editor.text == "unfinished task"
+                assert app.focused is app.editor
+            assert not faux.CALLS["test"]
 
     asyncio.run(scenario())
 

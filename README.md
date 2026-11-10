@@ -75,7 +75,7 @@ uv tool install .
 | `--ui auto\|fullscreen\|plain` | 默认 `auto`；可用交互终端进入全屏，否则使用 plain；不影响 `-p` |
 | `-m, --model provider/id` | 初始默认 `anthropic/claude-opus-5-5`；登录后保存所选模型，也可以是 `openai/gpt-5`、`deepseek/deepseek-flash` 等 |
 | `--effort low…max` | 推理强度，默认 `medium` |
-| `--permission-mode` | `default`（界面显示 `ask before changes`，修改前询问）/ `accept-edits` / `plan`（只读）/ `yolo` |
+| `--permission-mode` | `auto-review`（默认，目录外和联网操作由小模型审批）/ `accept-all`（全部放行）/ `plan`（只读规划） |
 | `-c` / `-r [FILE]` | 继续最近的会话 / 选择一个会话恢复 |
 | `--no-session` | 不保存会话 |
 | `--no-extensions` | 不加载用户和项目扩展 |
@@ -88,16 +88,17 @@ uv tool install .
 - 后台任务完成、定时任务到点、队友发来消息时，空闲的 agent 会被自动唤醒。
 - 工具结果默认显示三行预览，思考默认收起。可以展开单个工具，或用快捷键统一切换详情。
 - 模型回复的思考折叠标题用动态星形图标显示思考、回复、工具执行和重试状态，并实时显示本次运行用时；思考时同时显示推理强度，点击三角可展开思考过程。结束后在当前对话中显示总耗时，中断和失败会单独标明。
-- 向上滚动时保持当前位置；返回末尾后继续跟随新消息。点击输入框上方的 `↓ Latest message` 可跳到底部，此功能没有快捷键。对话和命令列表隐藏滚动条，仍可用滚轮与键盘滚动；命令介绍换行时保持介绍列对齐。状态栏左侧显示累计 token、估算上下文用量、权限和运行状态，右侧显示模型调用名和推理强度，不显示厂商前缀，不估算费用。
-- 鼠标拖选正文或输入框文字后，松开即自动复制，并短暂显示 `Copied`。macOS 本地直接写入系统剪贴板；其他终端使用 OSC52，需终端支持。密码输入框不自动复制。
-- `/model` 打开模型选择面板，↑/↓ 选择模型，←/→ 调整思考强度；`/effort` 打开 low → max 档位面板，用 ←/→ 调整。两者均支持 Enter 保存为用户默认值、`s` 仅用于当前会话、Esc 取消。保存只修改对应设置；项目、环境变量和启动参数仍按原有配置优先级生效。带参数的 `/model provider/id` 和 `/effort high` 继续直接修改当前会话。
-- 权限请求在弹层中选择允许一次、拒绝或本会话允许。`-r` 无参数时使用全屏会话选择器，恢复后可以查看压缩前的历史。
+- 向上滚动时保持当前位置；返回末尾后继续跟随新消息。点击输入框上方的 `↓ Latest message` 可跳到底部，此功能没有快捷键。对话和命令列表隐藏滚动条，仍可用滚轮与键盘滚动；命令介绍换行时保持介绍列对齐。累计 token 和估算上下文用量位于输入框上方、靠右显示；权限模式、模型调用名和推理强度位于输入框下方、靠左显示，不显示 ready 等运行状态，不估算费用。
+- 快捷键提示中的按键名称加粗。鼠标拖选正文或输入框文字后，松开即自动复制，并短暂显示紫底白字 `Copied`。macOS 本地直接写入系统剪贴板；其他终端使用 OSC52，需终端支持。密码输入框不自动复制。
+- `/model` 先按厂商列出可用连接，Enter 进入该厂商的模型列表，Backspace 返回厂商列表；↑/↓ 选择，←/→ 调整思考强度。目录按现有登录凭据、环境变量和已配置模型筛选，不通过逐个生成请求探测模型。`/effort` 打开 low → max 档位面板，用 ←/→ 调整。选中模型或思考强度后，Enter 保存为用户默认值、`s` 仅用于当前会话、Esc 取消。保存只修改对应设置；项目、环境变量和启动参数仍按原有配置优先级生效。带参数的 `/model provider/id` 和 `/effort high` 继续直接修改当前会话。
+- Shift+Tab 循环切换 `auto review`（黄棕色）、`accept all`（红色）、`plan`（蓝色）。权限请求在弹层中选择允许一次、拒绝或本会话允许。`-r` 无参数时使用全屏会话选择器，恢复后可以查看压缩前的历史。
 
 | 按键 | 作用 |
 |---|---|
 | Enter | 发送输入；运行中发送 steering 消息 |
 | Shift+Enter | 换行；macOS 自带 Terminal 保留 Ctrl+J，见下方说明 |
 | Tab | 补全 `/` 命令和 prompt 模板 |
+| Shift+Tab | 循环切换三种权限模式，仅影响当前会话 |
 | ↑ / ↓ | 命令列表打开时切换高亮项（默认选中第一项）；否则在输入中移动，到首尾时切换输入历史；Ctrl+P / Ctrl+N 可直接切换历史 |
 | Ctrl+O / Ctrl+T | 展开或收起工具详情 / 思考 |
 | PageUp / PageDown | 滚动对话 |
@@ -181,7 +182,7 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
   "model": "anthropic/claude-opus-5-5",
   "smallModel": "anthropic/claude-haiku-5-5",
   "effort": "medium",
-  "permissions": {"mode": "default", "allow": ["bash(uv run pytest*)", "edit(src/**)"], "deny": ["bash(git push*)"]},
+  "permissions": {"mode": "auto-review", "allow": ["bash(uv run pytest*)", "edit(src/**)"], "deny": ["bash(git push*)"]},
   "providers": {
     "deepseek": {"api": "openai", "baseUrl": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY",
                  "models": {"deepseek-flash": {"contextWindow": 1000000}}}
@@ -193,8 +194,9 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 }
 ```
 
-- **模型提供方**：Anthropic、OpenAI 兼容和 xAI Responses 使用官方 SDK；OpenAI 账号与 Google 账号使用对应的流式接口。也可以在 `providers` 里声明自定义端点。`smallModel` 用于压缩摘要、goal 评审和记忆整理；切换到其他提供方时，未另配的小模型跟随当前模型。
+- **模型提供方**：Anthropic、OpenAI 兼容和 xAI Responses 使用官方 SDK；OpenAI 账号与 Google 账号使用对应的流式接口。也可以在 `providers` 里声明自定义端点。`smallModel` 用于权限审批、压缩摘要、goal 评审和记忆整理；切换到其他提供方时，未另配的小模型跟随当前模型。
 - **权限规则**：写法是 `tool(pattern)`，pattern 为 fnmatch 风格，匹配命令或路径。例如 `bash(npm test*)`、`edit(src/**)`、`read(~/.ssh/*)`、`mcp__github__*`。
+- **权限模式**：`auto-review` 自动放行可确认在工作目录内的操作；外部路径、联网及无法静态确认边界的操作由 `smallModel` 审批，判定有风险或审批失败时再请求用户确认。`accept-all` 跳过权限审批和 allow/deny 规则。`plan` 仅提供只读工具和命令，要求调查后给出方案。旧配置 `default`、`accept-edits` 自动映射到 `auto-review`，`yolo` 映射到 `accept-all`。
 - **命令钩子**：支持 `PreToolUse` / `PostToolUse` / `UserPromptSubmit` / `Stop` 四种。钩子从 stdin 收到 JSON；退出码 2 表示拦截（或要求继续），stderr 的内容作为反馈。
 - **功能开关**：每个内置功能都可以用 `features.<name>: false` 关闭（例如 `team`、`mcp`、`memory`）。
 - **上下文文件**：`~/.virgo/AGENTS.md`，加上从根目录到 cwd 每一层的 `AGENTS.md` 或 `CLAUDE.md`。`SYSTEM.md` 替换身份段落，`APPEND_SYSTEM.md` 追加到末尾。
@@ -231,7 +233,7 @@ def setup(api):
 |---|---|---|
 | Agent 循环 | `agent/loop.py` | 双层循环：工具调用 / steering 驱动内层，follow-up 和停止钩子驱动外层；事件化，无 I/O |
 | 工具 | `tools/`、`AgentTool` | 工具注册即分发；`content` 给模型，`details` 给 UI 和状态；默认并行执行，同一文件的写操作串行；输出统一截断并落盘 |
-| 权限 | `features/permission.py` | 四种模式；判定顺序：硬拒绝 → deny 规则 → plan 模式 → allow 规则 → 默认策略；bash 先按 `&& ; \|` 拆段再判断是否只读；无人值守时"询问"视为拒绝 |
+| 权限 | `features/permission.py` | 三种模式；auto-review 识别工作区边界并对外部/联网操作调用小模型审批；accept-all 全部放行；plan 只读；无人值守时需要人工审批的操作视为拒绝 |
 | 钩子 | `harness/extensions.py` | 带优先级的事件总线：`tool_call` 可拦截或改参，`tool_result` 可改结果，`agent_stop` 可要求继续；另有 shell 命令钩子 |
 | TodoWrite | `features/todo.py` | 整表替换、校验失败不改状态；状态存在工具结果 `details` 里，可从会话重建；只在 agent 准备结束但仍有未完成项时提醒一次 |
 | 子 Agent | `features/subagent.py` | 全新上下文，只返回最终答案；不能递归；`general` / `explore` 两种类型，可在 `agents/*.md` 自定义；可并行、可后台 |
@@ -250,7 +252,7 @@ def setup(api):
 ## 设计取舍
 
 - **发送给 API 的历史只追加。** 
-  - system prompt 和工具集合在会话开始时冻结，只在压缩后重建；
+  - system prompt 和工具集合在同一权限模式内保持稳定；切换到或离开 plan 时更新规划提示和可用工具，压缩后重建基础上下文；
   - 通知、提醒、队友消息都以追加消息的形式进入；
   - 不改写、不删除旧轮次，所以**不做 micro-compaction**，也不做中段 snip；
   - 完整历史始终保存在会话文件中。

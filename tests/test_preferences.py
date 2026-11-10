@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 
 import pytest
 
@@ -29,13 +30,24 @@ class PickerUI(UI):
         self.lines.append(text)
 
 
-def test_catalog_includes_current_configured_and_builtin_models_without_duplicates(make_session):
+@pytest.fixture(autouse=True)
+def clean_provider_environment(monkeypatch):
+    for name in (
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
+        "XAI_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "ZAI_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_catalog_only_offers_authenticated_or_explicit_local_models(make_session, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     session = make_session(
         settings={
             "model": "deepseek/deepseek-flash",
             "providers": {
                 "local": {
                     "api": "openai",
+                    "baseUrl": "http://localhost:8000/v1",
                     "models": {"custom": {"contextWindow": 64000}, "broken": {"contextWindow": "invalid"}},
                 },
                 "deepseek": {"models": {"deepseek-flash": {"contextWindow": 1000000}}},
@@ -47,11 +59,91 @@ def test_catalog_includes_current_configured_and_builtin_models_without_duplicat
     assert choices[0].spec == "faux/test"
     assert len(by_spec) == len(choices)
     assert "deepseek/deepseek-flash" in by_spec
-    assert "anthropic/claude-opus-5-5" in by_spec
-    assert "openai-codex/gpt-6.1-terra" in by_spec
+    assert "anthropic/claude-opus-5-5" not in by_spec
+    assert "openai-codex/gpt-6.1-terra" not in by_spec
     assert by_spec["local/custom"].label == "custom"
     assert by_spec["local/custom"].description == "local · 64,000 context"
     assert "local/broken" not in by_spec
+
+
+def test_configured_catalog_is_an_allowlist_even_for_current_model(make_session, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    session = make_session(settings={"providers": {"deepseek": {"models": {"allowed": {}}}}})
+    session.set_model("deepseek/unlisted")
+    choices = {model.spec for model in model_choices(session)}
+    assert "deepseek/allowed" in choices
+    assert "deepseek/unlisted" not in choices
+    assert "deepseek/deepseek-flash" not in choices
+
+
+def test_catalog_checks_saved_login_endpoint_expiry_and_metadata_without_refresh(make_session, monkeypatch):
+    session = make_session()
+    credential = {
+        "type": "oauth", "access": "test-access", "refresh": "test-refresh",
+        "expires": 0, "accountId": "test-account",
+        "connection": {"api": "openai-codex", "baseUrl": "https://chatgpt.com/backend-api/codex"},
+    }
+    session.auth.set("openai-codex", credential)
+    monkeypatch.setattr(session.auth, "credential", lambda *_: pytest.fail("picker must not refresh credentials"))
+    assert "openai-codex/gpt-6.1-terra" in {model.spec for model in model_choices(session)}
+    for patch in (
+        {"refresh": ""},
+        {"accountId": ""},
+        {"connection": {"api": "openai-codex", "baseUrl": "https://other.example"}},
+    ):
+        session.auth.set("openai-codex", {**credential, **patch})
+        assert "openai-codex/gpt-6.1-terra" not in {model.spec for model in model_choices(session)}
+    session.auth.set("openai-codex", {**credential, "refresh": "", "expires": time.time() + 3600})
+    assert "openai-codex/gpt-6.1-terra" in {model.spec for model in model_choices(session)}
+
+
+def test_invalid_saved_key_does_not_fall_back_to_environment(make_session, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    session = make_session()
+    session.auth.set("deepseek", {"type": "api_key", "key": ""})
+    assert not any(model.spec.startswith("deepseek/") for model in model_choices(session))
+
+
+def test_remote_custom_provider_cannot_borrow_openai_credentials(make_session, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    session = make_session(settings={"providers": {"custom": {
+        "api": "openai", "baseUrl": "https://custom.example/v1", "models": {"chat": {}},
+    }}})
+    assert not any(model.spec.startswith("custom/") for model in model_choices(session))
+
+
+def test_catalog_rejects_unsupported_api_and_missing_custom_endpoint(make_session):
+    session = make_session(settings={"providers": {
+        "unsupported": {"api": "unknown", "apiKey": "test-key", "baseUrl": "https://custom.example", "models": {"chat": {}}},
+        "missing-endpoint": {"api": "openai", "apiKey": "test-key", "models": {"chat": {}}},
+        "openai-codex": {"api": "openai"},
+    }})
+    session.auth.set("openai-codex", {
+        "type": "oauth", "access": "test-access", "expires": time.time() + 3600, "accountId": "test-account",
+    })
+    assert {model.spec for model in model_choices(session)} == {"faux/test"}
+
+
+@pytest.mark.parametrize("config", [
+    {"apiKeyEnv": "TEST_CODEX_KEY", "authMetadata": {"accountId": "test-account"}},
+    {"apiKey": "test-key", "authMetadata": "invalid"},
+])
+def test_account_catalog_requires_credentials_the_transport_can_use(make_session, monkeypatch, config):
+    monkeypatch.setenv("TEST_CODEX_KEY", "test-key")
+    session = make_session(settings={"providers": {"openai-codex": config}})
+    assert not any(model.spec.startswith("openai-codex/") for model in model_choices(session))
+
+
+def test_unavailable_current_model_offers_login_and_effort_remains_editable(make_session):
+    ui = PickerUI()
+    session = make_session(ui=ui)
+    session.set_model("anthropic/claude-opus-5-5")
+    session.small_model = session.model
+    session.prompt("/model")
+    assert not ui.requests and "/login" in ui.lines[-1]
+    ui.answer = PreferenceChoice(session.model.spec, "high", False)
+    session.prompt("/effort")
+    assert session.effort == "high"
 
 
 @pytest.mark.parametrize("kind", ["model", "effort"])
@@ -76,7 +168,7 @@ def test_model_session_choice_keeps_defaults_and_custom_provider(make_session):
     ui = PickerUI(PreferenceChoice("local/custom", "high", False))
     session = make_session(
         ui=ui,
-        settings={"providers": {"local": {"api": "openai", "models": {"custom": {"contextWindow": 64000}}}}},
+        settings={"providers": {"local": {"api": "openai", "baseUrl": "http://localhost:8000/v1", "models": {"custom": {"contextWindow": 64000}}}}},
     )
     settings_before = copy.deepcopy(session.settings.data)
     session.prompt("/model")
@@ -89,7 +181,8 @@ def test_model_session_choice_keeps_defaults_and_custom_provider(make_session):
     assert "this session only" in ui.lines[-1]
 
 
-def test_saved_model_choice_preserves_other_settings_and_applies_to_future_sessions(make_session):
+def test_saved_model_choice_preserves_other_settings_and_applies_to_future_sessions(make_session, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     ui = PickerUI(PreferenceChoice("deepseek/deepseek-flash", "max", True))
     session = make_session(ui=ui)
     session.settings.save_user({"permissions": {"mode": "plan"}, "custom": {"keep": True}})
@@ -143,6 +236,7 @@ def test_invalid_picker_choice_cannot_change_settings(make_session, kind, choice
 
 
 def test_failed_default_write_leaves_runtime_unchanged(make_session, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     session = make_session(ui=PickerUI(PreferenceChoice("deepseek/deepseek-flash", "high", True)))
 
     def fail(_patch):
@@ -177,5 +271,5 @@ def test_picker_normalizes_unknown_effort_without_changing_cancelled_session(mak
     session = make_session(ui=ui, settings={"effort": "future-level"})
     session.prompt("/effort")
     assert ui.requests[0].effort == "medium"
-    assert any(model.spec == "faux/test" for model in ui.requests[0].models)
+    assert ui.requests[0].model == "faux/test"
     assert session.effort == "future-level"

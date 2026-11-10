@@ -19,6 +19,25 @@ COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" 
 ENTRY_POINTS = [[str(COMMAND)], [sys.executable, "-m", "virgo"], [sys.executable, str(ROOT / "main.py")]]
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("auto-review", "auto-review"),
+        ("accept-all", "accept-all"),
+        ("plan", "plan"),
+        ("default", "auto-review"),
+        ("accept-edits", "auto-review"),
+        ("yolo", "accept-all"),
+    ],
+)
+def test_permission_mode_arguments_and_legacy_aliases(value, expected):
+    cli = import_module("virgo.cli.main")
+    parser = cli.build_parser()
+    assert parser.parse_args(["--permission-mode", value]).permission_mode == expected
+    assert "{auto-review,accept-all,plan}" in parser.format_help()
+    assert "{default" not in parser.format_help()
+
+
 @pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])
 def test_cli_identity(entry, project):
     result = subprocess.run(

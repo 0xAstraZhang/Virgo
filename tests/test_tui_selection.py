@@ -184,6 +184,8 @@ def test_successful_copy_shows_brief_copied_notice_but_failure_does_not(monkeypa
             assert str(notices[0].render()) == "Copied"
             assert notices[0].region.y == app.query_one("#brand").region.y
             assert notices[0].region.height == 1
+            assert notices[0].styles.background.hex == "#7C3AED"
+            assert notices[0].styles.color.hex == "#FFFFFF"
             assert copied == ["selected words"]
             await pilot.pause(1.3)
             assert not app.query(Toast)
@@ -218,7 +220,7 @@ faux.handler('keys', answer)
 raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', '--model', 'faux/keys']))
 """.replace("CAPTURE", f"Path({str(captured)!r})")
     with PtyClient(project, tmp_path / "shift-enter-home", [sys.executable, "-c", script]) as terminal:
-        terminal.wait_for(lambda data: b"ready" in data)
+        terminal.wait_for(lambda data: b"auto review" in data)
         start = len(terminal.output)
         terminal.send(b"first" + sequence + b"second")
         terminal.wait_for(lambda data: "first" in plain(data) and "second" in plain(data), start=start)
@@ -227,7 +229,7 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', 
         terminal.send(b"\r")
         terminal.wait_for(lambda data: "Received input 1" in plain(data), start=start)
         assert [json.loads(line) for line in captured.read_text().splitlines()] == ["first\nsecond"]
-        terminal.wait_for(lambda data: b"ready" in data, start=start)
+        terminal.wait_for(lambda data: "Worked for" in plain(data), start=start)
         start = len(terminal.output)
         terminal.send(b"plain enter\r")
         terminal.wait_for(lambda data: "Received input 2" in plain(data), start=start)

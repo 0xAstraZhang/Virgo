@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections import deque
 
@@ -18,7 +19,7 @@ from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ... import __version__
-from ...features.permission import permission_mode_label
+from ...features.permission import MODES, normalize_permission_mode, permission_mode_label
 from ...harness.preferences import PreferenceChoice
 from ...harness.store import SessionStore
 from .activity import RunActivity
@@ -32,6 +33,7 @@ from .selection import SelectionCopyMixin
 from .transcript import Transcript
 
 PURPLE = "#7C3AED"
+PERMISSION_COLORS = {"auto-review": "#B8860B", "accept-all": "#DC2626", "plan": "#2563EB"}
 
 
 def terminal_theme() -> Theme:
@@ -83,9 +85,16 @@ def short_number(value: int) -> str:
     return str(value)
 
 
-def input_hints() -> str:
+def shortcut_hints(text: str) -> Text:
+    hint = Text(text)
+    for key in re.finditer(r"(?<!\S)(?:Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter|Esc|Backspace|↑↓|←→|/exit|/|s)(?=\s|$)", text):
+        hint.stylize("bold", key.start(), key.end())
+    return hint
+
+
+def input_hints() -> Text:
     newline = "Ctrl+J" if os.environ.get("TERM_PROGRAM") == "Apple_Terminal" else "Shift+Enter"
-    return f"Enter send · {newline} newline · Esc interrupt · / commands"
+    return shortcut_hints(f"Enter send · {newline} newline · Esc interrupt · / commands · Shift+Tab mode")
 
 
 class VirgoApp(SelectionCopyMixin, App[int]):
@@ -116,11 +125,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #editor:focus { border: none; border-top: solid #7C3AED; border-bottom: solid #7C3AED; }
     TextArea > .text-area--cursor { text-style: reverse; background: $background; color: $foreground; }
     TextArea > .text-area--selection { text-style: reverse; background: $background; color: $foreground; }
-    #status { height: auto; max-height: 2; text-style: dim; }
-    #hints { height: 1; margin: 0 1; text-style: dim; }
+    #metrics { height: 1; text-align: right; text-style: dim; }
+    #status { height: 1; text-align: left; }
+    #hints { height: auto; max-height: 2; margin: 0 1; text-style: dim; }
     ToastRack { dock: top; margin: 0 1; }
     Toast { width: auto; max-width: 50%; padding: 0 1; margin: 0;
-        border: none; color: $foreground; background: $background; }
+        border: none; color: #FFFFFF; background: #7C3AED; }
     OptionList, Button { background: $background; color: $foreground; }
     OptionList > .option-list--option-highlighted { background: $background;
         color: $foreground; text-style: reverse; }
@@ -144,6 +154,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         Binding("pageup", "page(-1)", priority=True, show=False),
         Binding("pagedown", "page(1)", priority=True, show=False),
         Binding("ctrl+home", "top", priority=True, show=False),
+        Binding("shift+tab", "cycle_permissions", priority=True, show=False),
     ]
 
     def __init__(self, session, ui: FullscreenUI, initial: str | None = None, pick_session=False):
@@ -183,6 +194,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             yield Static("", id="auth-question", markup=False)
             yield ChoiceList(id="completions")
             yield Input(id="auth-value")
+            yield Static("", id="metrics", markup=False)
             yield ChatEditor(self.history)
             yield Static("", id="status", markup=False)
 
@@ -397,32 +409,31 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def update_status(self) -> None:
         self.last_status = time.monotonic()
-        status = "closing…" if self.controller.closing else "working…" if self.controller.busy else "ready"
-        if self.active_confirmation is not None:
-            status = "approval needed"
-        elif self.active_input is not None:
-            status = "input needed"
         if self.controller.closing:
             self.screen_stack[0].query_one("#hints", Static).update(
-                "Closing services… Ctrl+C to return to the terminal immediately"
+                shortcut_hints("Closing services… Ctrl+C to return to the terminal immediately")
             )
         elif self.input_request is not None:
             if self.input_request.preferences is not None:
-                hint = (
-                    "↑↓ model · ←→ effort · Enter default · s session · Esc cancel"
-                    if self.input_request.preferences.kind == "model"
-                    else "←→ adjust · Enter default · s session · Esc cancel"
-                )
+                if self.input_request.preferences.kind == "model":
+                    picker = self.screen_stack[0].query_one(PreferencePicker)
+                    hint = (
+                        "↑↓ provider · Enter open · Esc cancel"
+                        if picker.provider is None
+                        else "↑↓ model · ←→ effort · Enter default · s session · Backspace providers · Esc cancel"
+                    )
+                else:
+                    hint = "←→ adjust · Enter default · s session · Esc cancel"
             else:
                 hint = (
                     "↑↓ select · Enter confirm · Esc cancel"
                     if self.input_request.options is not None
                     else "Enter confirm · Esc cancel"
                 )
-            self.screen_stack[0].query_one("#hints", Static).update(hint)
+            self.screen_stack[0].query_one("#hints", Static).update(shortcut_hints(hint))
         elif not self.controller.busy and 0 < time.monotonic() - self.last_interrupt < 2:
             self.screen_stack[0].query_one("#hints", Static).update(
-                "Ctrl+C again to exit · /exit also closes Virgo"
+                shortcut_hints("Ctrl+C again to exit · /exit also closes Virgo")
             )
         else:
             self.screen_stack[0].query_one("#hints", Static).update(input_hints())
@@ -447,29 +458,20 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if cache:
             used += f" cache {short_number(cache)}"
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
+        metrics.truncate(width, overflow="ellipsis")
+        self.screen_stack[0].query_one("#metrics", Static).update(metrics)
+        mode = normalize_permission_mode(self.session.permission_mode)
+        footer = Text(no_wrap=True, overflow="ellipsis")
+        footer.append(permission_mode_label(mode), style=PERMISSION_COLORS[mode])
+        footer.append(" · ", style="dim")
         effort = f" · {self.session.effort}"
-        state_width = width if self.size.width >= 64 else max(1, width - cell_len(effort) - 5)
-        state = Text(permission_mode_label(self.session.permission_mode), no_wrap=True, overflow="ellipsis")
-        # Shorten the permission label first so the run state remains visible.
-        state.truncate(max(1, state_width - cell_len(status) - 3), overflow="ellipsis")
-        state.append(f" · {status}")
-        # Keep the model at the right edge. Narrow terminals put it beside the
-        # run state on the second line, leaving the first line for token usage.
-        left = metrics if self.size.width >= 64 else state
-        left.truncate(max(1, width - cell_len(effort) - 5), overflow="ellipsis")
-        available = max(1, width - left.cell_len - 2)
-        model = Text(self.session.main.model.id, no_wrap=True, overflow="ellipsis")
+        available = max(1, width - footer.cell_len)
+        model = Text(self.session.main.model.id, style="dim", no_wrap=True, overflow="ellipsis")
         model.truncate(max(1, available - cell_len(effort)), overflow="ellipsis")
         model.append(effort)
         model.truncate(available, overflow="ellipsis")
-        aligned = left.copy()
-        aligned.append(" " * max(1, width - left.cell_len - model.cell_len))
-        aligned.append(model)
-        metrics.truncate(width, overflow="ellipsis")
-        state.truncate(width, overflow="ellipsis")
-        footer = aligned if self.size.width >= 64 else metrics
-        footer.append("\n")
-        footer.append(state if self.size.width >= 64 else aligned)
+        footer.append(model)
+        footer.truncate(width, overflow="ellipsis")
         self.screen_stack[0].query_one("#status", Static).update(footer)
 
     @on(ChatEditor.Submitted)
@@ -571,7 +573,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.controller.abort()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if (self.has_modal or self.active_input is not None) and action in {"page", "top", "tools", "thinking"}:
+        if (self.has_modal or self.active_input is not None) and action in {"page", "top", "tools", "thinking", "cycle_permissions"}:
             return False
         return True
 
@@ -592,8 +594,15 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         else:
             self.last_interrupt = time.monotonic()
             self.screen_stack[0].query_one("#hints", Static).update(
-                "Ctrl+C again to exit · /exit also closes Virgo"
+                shortcut_hints("Ctrl+C again to exit · /exit also closes Virgo")
             )
+
+    def action_cycle_permissions(self) -> None:
+        if self.controller.closing:
+            return
+        mode = normalize_permission_mode(self.session.permission_mode)
+        self.session.permission_mode = MODES[(MODES.index(mode) + 1) % len(MODES)]
+        self.update_status()
 
     def action_eof(self) -> None:
         if not self.editor.text:

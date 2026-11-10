@@ -69,7 +69,7 @@ while True:
 工具执行分三步：
 
 1. **preflight**，按源顺序逐个进行：`prepare_arguments` → JSON-Schema 校验与宽松强转 → `before_tool_call`（可以 Block，也可以就地改参）。
-2. **执行**：用线程池并行；只要批次里有任一工具声明了 `sequential`，整批改为串行。
+2. **执行**：每项执行前调用 `before_tool_execute`，复核预检后改变的权限模式、参数和路径边界；用线程池并行，只要批次里有任一工具声明了 `sequential`，整批改为串行。
 3. **收尾**：对每个结果调用 `after_tool_call`，再按源顺序追加 `ToolResultMessage`。
 
 未知工具、参数非法、被拦截、执行抛异常，都会变成 `is_error=True` 的结果。
@@ -80,7 +80,7 @@ while True:
 
 1. 自动压缩检查（这时一定处在轮次边界）。
 2. `context` 钩子生成本次请求的消息视图。
-3. 用冻结的 system prompt 和 tools 发起流式请求。
+3. 按当前权限模式发起流式请求：plan 附加只读规划提示、过滤有副作用的工具，并限制 bash 只读；同一模式内保持 system prompt 和 tools 稳定。
 4. 处理失败：
    - `retryable`：指数退避加抖动后重试；连续 2 次过载且配置了 `fallbackModel` 时改用回退模型；
    - `overflow`：压缩一次后重试；
@@ -89,7 +89,7 @@ while True:
 每次工具调用依次经过：
 
 1. `tool_call` 钩子，按优先级：权限（100）→ 命令钩子（50）→ 用户扩展；
-2. 执行工具；
+2. 执行前复核权限快照，再执行工具；审批使用当前 Runtime 的取消信号；
 3. `tool_result` 钩子；
 4. 输出预算：超过 50KB 的文本截断并落盘。
 

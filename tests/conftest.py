@@ -64,7 +64,7 @@ def project(tmp_path) -> Path:
 def make_session(project):
     made = []
 
-    def factory(*responses, ui=None, mode="yolo", persist=False, settings=None, **kw) -> AgentSession:
+    def factory(*responses, ui=None, mode="accept-all", persist=False, settings=None, **kw) -> AgentSession:
         faux.script("test", *responses)
         s = AgentSession(
             kw.pop("cwd", project),

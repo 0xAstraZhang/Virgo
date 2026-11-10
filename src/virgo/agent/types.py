@@ -64,6 +64,7 @@ class ToolCallEvent:
     tool: AgentTool | None
     agent: str
     cwd: Path
+    signal: threading.Event | None = None
 
 
 @dataclass
@@ -103,6 +104,7 @@ class AgentConfig:
     should_stop: Callable[[list], Continue | None] | None = None
     max_turns: int | None = None
     max_parallel: int = 8
+    before_tool_execute: Callable[[ToolCallEvent], Block | None] | None = None
 
 
 def image_result(data: str, mime: str, note: str = "") -> ToolResult:

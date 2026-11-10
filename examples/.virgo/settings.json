@@ -3,7 +3,7 @@
   "smallModel": "anthropic/claude-haiku-5-5",
   "effort": "medium",
   "permissions": {
-    "mode": "default",
+    "mode": "auto-review",
     "allow": ["bash(uv run pytest*)", "bash(npm test*)", "edit(src/**)"],
     "deny": ["read(~/.ssh/*)", "bash(git push*)"]
   },

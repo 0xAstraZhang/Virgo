@@ -27,7 +27,7 @@ def test_session_persists_and_resumes(make_session, project):
         e["parent_id"] == lines[i]["id"] for i, e in enumerate(lines[2:], 1)
     )
     faux.script("test", faux.reply("second answer"))
-    s2 = AgentSession(project, ui=RecordingUI(), model="faux/test", session=path, permission_mode="yolo")
+    s2 = AgentSession(project, ui=RecordingUI(), model="faux/test", session=path, permission_mode="accept-all")
     assert [type(m).__name__ for m in s2.main.messages] == [type(m).__name__ for m in s.main.messages]
     s2.prompt("again")
     assert s2.main.agent.last_text == "second answer"
@@ -77,6 +77,44 @@ def test_requests_are_append_only(make_session):
     for a, b in zip(reqs, reqs[1:], strict=False):
         assert a["system"] == b["system"] and a["tools"] == b["tools"]
         assert b["messages"][: len(a["messages"])] == a["messages"]
+
+
+def test_plan_mode_exposes_read_only_tools_and_changes_back_on_switch(make_session):
+    s = make_session(faux.reply("The plan."), faux.reply("Implementation."), mode="plan")
+    s.prompt("Plan the change")
+    planned = calls()[0]
+    assert "Plan mode is active" in planned["system"]
+    assert {"read", "grep", "glob", "bash"}.issubset(planned["tools"])
+    assert not {"write", "edit", "workflow", "schedule", "team_review"}.intersection(planned["tools"])
+    s.permission_mode = "accept-all"
+    s.prompt("Implement it")
+    implementation = calls()[1]
+    assert "Plan mode is active" not in implementation["system"]
+    assert {"write", "edit"}.issubset(implementation["tools"])
+    assert implementation["messages"][: len(planned["messages"])] == planned["messages"]
+
+
+def test_plan_switch_blocks_writes_that_already_passed_batch_preflight(make_session, project):
+    s = make_session(
+        faux.reply(tools=[
+            ("write", {"path": "first.txt", "content": "one"}),
+            ("write", {"path": "second.txt", "content": "two"}),
+        ]),
+        faux.reply("Plan only."),
+        mode="accept-all",
+    )
+
+    def switch_after_preflight(event, session):
+        if event.args.get("path") == "second.txt":
+            session.permission_mode = "plan"
+
+    s.bus.on("tool_call", switch_after_preflight)
+    s.prompt("write two files")
+    assert not (project / "first.txt").exists()
+    assert not (project / "second.txt").exists()
+    results = [message for message in s.main.messages if isinstance(message, ToolResultMessage)]
+    assert len(results) == 2
+    assert all(result.is_error and "Plan mode" in result.text() for result in results)
 
 
 def test_commands_and_templates(make_session, project):

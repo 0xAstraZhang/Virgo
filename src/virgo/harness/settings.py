@@ -15,7 +15,7 @@ DEFAULTS: dict[str, Any] = {
     "effort": "medium",
     "maxTokens": None,
     "providers": {},
-    "permissions": {"mode": "default", "allow": [], "deny": [], "readOnlyCommands": []},
+    "permissions": {"mode": "auto-review", "allow": [], "deny": [], "readOnlyCommands": []},
     "hooks": {},
     "features": {},
     "compaction": {"enabled": True, "reserveTokens": 16384, "keepRecentTokens": 20000, "triggerTokens": None},

@@ -4,7 +4,7 @@ This is the "integrated harness": every feature plugs into one loop through exte
 Per model call, in order:
   1. steering messages (notifications, teammate messages) are appended by the loop
   2. auto-compaction check (at a turn boundary)
-  3. `context` handlers build the request view; system prompt and tools stay frozen
+  3. `context` handlers build the request view; plan mode restricts instructions and tools
   4. stream with retries (backoff, optional fallback model) and one reactive compaction on overflow
 Per tool call: `tool_call` handlers (permission first) -> execute -> `tool_result` handlers -> budget.
 When the agent would stop: follow-ups (schedules), then `agent_stop` handlers (todo, goal, hooks).
@@ -23,6 +23,7 @@ from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, To
 from ..ai.auth import AuthStore
 from ..ai.stream import EventStream, StreamEvent
 from ..ai.types import AssistantMessage, Context, StreamOptions, TextContent, UserMessage
+from ..features.permission import normalize_permission_mode, plan_tool_allowed
 from ..tools import BASE_TOOLS
 from ..tools.truncate import MAX_BYTES, budget
 from . import compaction
@@ -80,6 +81,7 @@ class Runtime:
             name=name,
             cwd=self.cwd,
             before_tool_call=session._before_tool,
+            before_tool_execute=session._before_tool_execute,
             after_tool_call=session._after_tool,
             should_stop=lambda _msgs: session.bus.first("agent_stop", self),
             max_turns=max_turns,
@@ -132,7 +134,22 @@ class Runtime:
         model = self.model
         while True:
             view = s.bus.chain("context", list(messages), self)
-            ctx = Context(self.system, view, [t.spec() for t in self.tools])
+            permissions = s.services.get("permissions")
+            mode = permissions.mode_for(self.name) if permissions else s.permission_mode
+            system = self.system
+            tools = [t.spec() for t in self.tools if mode != "plan" or plan_tool_allowed(t)]
+            if mode == "plan":
+                system += (
+                    "\n\n<permission_mode>\n"
+                    "Plan mode is active. Investigate with read-only tools, then provide a concrete plan "
+                    "for the user. Do not implement changes, modify project files, install dependencies, "
+                    "or execute commands with side effects. Planning task records are allowed. "
+                    "Only tools offered in this request are available.\n</permission_mode>"
+                )
+                for tool in tools:
+                    if tool.name == "bash":
+                        tool.description = "Run a read-only shell command to inspect the project. Do not modify files or system state."
+            ctx = Context(system, view, tools)
             opts = StreamOptions(signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort)
             failed: AssistantMessage | None = None
             for ev in ai.stream(model, ctx, opts):
@@ -194,7 +211,7 @@ class AgentSession:
         self.sections: list = []
         self._tools: list[tuple[AgentTool, tuple]] = []
         self.templates: dict = {}
-        self.permission_mode = permission_mode or self.settings.get("permissions.mode", "default")
+        self.permission_mode = permission_mode or self.settings.get("permissions.mode", "auto-review")
         self.effort = self.settings.get("effort", "medium")
         self._lock = threading.RLock()
         self._shutdown_started = False
@@ -216,6 +233,14 @@ class AgentSession:
         self.bus.emit("session_start", self)
 
     # -- setup helpers ---------------------------------------------------------
+    @property
+    def permission_mode(self) -> str:
+        return self._permission_mode
+
+    @permission_mode.setter
+    def permission_mode(self, mode: str) -> None:
+        self._permission_mode = normalize_permission_mode(mode)
+
     def resolve(self, spec: str) -> ai.Model:
         m = ai.resolve_model(spec, self.settings.get("providers", {}))
         m.auth_path = str(self.auth.path)
@@ -284,6 +309,10 @@ class AgentSession:
 
     def _before_tool(self, ev: ToolCallEvent):
         return self.bus.first("tool_call", ev, self)
+
+    def _before_tool_execute(self, ev: ToolCallEvent):
+        permissions = self.services.get("permissions")
+        return permissions.before_execute(ev) if permissions is not None else None
 
     def _after_tool(self, ev: ToolCallEvent, res: ToolResult) -> ToolResult:
         res = self.bus.chain("tool_result", res, ev, self)

@@ -147,7 +147,7 @@ def _execute(
         if errs:
             results[i] = ToolResult.error("Invalid arguments:\n" + "\n".join(f"- {e}" for e in errs))
             continue
-        ev = ToolCallEvent(call.id, call.name, args, tool, cfg.name, cfg.cwd)
+        ev = ToolCallEvent(call.id, call.name, args, tool, cfg.name, cfg.cwd, signal=signal)
         if cfg.before_tool_call:
             try:
                 block = cfg.before_tool_call(ev)
@@ -166,6 +166,18 @@ def _execute(
         if signal.is_set():
             results[i] = ToolResult.error("Operation aborted.")
             return
+        if cfg.before_tool_execute:
+            try:
+                block = cfg.before_tool_execute(ev)
+            except Exception as e:  # noqa: BLE001
+                results[i] = ToolResult.error(f"Execution permission check failed: {e}")
+                return
+            if block is not None:
+                results[i] = ToolResult.error(block.reason)
+                return
+            if signal.is_set():
+                results[i] = ToolResult.error("Operation aborted.")
+                return
         ctx = ToolContext(ev.call_id, ev.cwd, signal, cfg.name)
         start = time.time()
         try:

@@ -242,17 +242,22 @@ def test_background_notification_wakes_idle_session(make_session):
     assert any(u.kind == "event" and u.payload.type == "message_end" for u in updates)
 
 
-def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, project):
+def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, project, monkeypatch):
+    monkeypatch.setattr(
+        "virgo.features.permission.review_tool_call",
+        lambda *_: (False, "external file write needs approval"),
+    )
+    first, second = project.parent / "one.txt", project.parent / "two.txt"
     ui = FullscreenUI()
     session = make_session(
         faux.reply(
             tools=[
-                ("write", {"path": "one.txt", "content": "one"}),
-                ("write", {"path": "two.txt", "content": "two"}),
+                ("write", {"path": str(first), "content": "one"}),
+                ("write", {"path": str(second), "content": "two"}),
             ]
         ),
         ui=ui,
-        mode="default",
+        mode="auto-review",
     )
     controller = RunController(session, ui)
     controller.start("write two files")
@@ -261,8 +266,8 @@ def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, 
     after = pump(controller)
     confirmations = [u for u in [*before, *after] if u.kind == "confirmation"]
     assert len(confirmations) == 1
-    assert not (project / "one.txt").exists()
-    assert not (project / "two.txt").exists()
+    assert not first.exists()
+    assert not second.exists()
     results = [m for m in session.main.messages if isinstance(m, ToolResultMessage)]
     assert len(results) == 2 and all(m.is_error for m in results)
     assert "aborted" in results[1].text().lower()
