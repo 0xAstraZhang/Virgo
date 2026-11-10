@@ -53,8 +53,8 @@ def test_grouping_sorts_by_workspace_creation_then_update_and_keeps_selection():
         async with app.run_test(size=(80, 24)) as pilot:
             assert row_ids(picker) == ["/new/second", "/new/first", "/old/first"]
             highlight = picker.query_one(OptionList).get_component_rich_style("option-list--option-highlighted")
-            assert highlight.color.triplet == (0, 0, 0)
-            assert highlight.bgcolor.triplet == (175, 215, 255)
+            assert highlight.color.triplet == (255, 255, 255)
+            assert highlight.bgcolor.triplet == (124, 58, 237)
             assert highlight.bold and not highlight.reverse
             assert picker.selected_path == Path("/new/second")
             await pilot.press("down")

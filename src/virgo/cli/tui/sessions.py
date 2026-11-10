@@ -104,7 +104,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
     SessionPicker #session-list > .option-list--option-disabled { color: $foreground; text-style: dim; }
     SessionPicker #session-list > .option-list--option-highlighted,
     SessionPicker #session-list:focus > .option-list--option-highlighted {
-        background: #AFD7FF; color: #000000; text-style: bold not dim;
+        background: #7C3AED; color: #FFFFFF; text-style: bold not dim;
     }
     SessionPicker #session-empty { height: 1fr; padding-top: 1; text-style: dim; }
     SessionPicker #session-footer { height: auto; max-height: 2; margin-top: 1; }
