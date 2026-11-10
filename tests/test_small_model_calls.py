@@ -73,3 +73,27 @@ def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consu
 
     assert requests == [("faux/small", expected, [])]
     assert session.effort == "max"
+
+
+@pytest.mark.parametrize("limit,model_max,expected", [
+    pytest.param(512, 32_768, 512 + ai.REASONING_HEADROOM, id="headroom-for-hidden-reasoning"),
+    pytest.param(8000, 10_000, 10_000, id="capped-by-model-maximum"),
+    pytest.param(8000, 4096, 8000, id="never-below-the-request"),
+    pytest.param(None, 32_768, None, id="no-limit-requested"),
+])
+def test_one_shot_completions_reserve_reasoning_headroom(monkeypatch, limit, model_max, expected):
+    # Providers count reasoning against the output limit: a 512-token verdict budget was spent
+    # entirely on thinking, so the permission reviewer never produced a decision.
+    faux.script("small", faux.reply("ok"))
+    model = ai.resolve_model("faux/small")
+    model.max_tokens = model_max
+    limits = []
+    stream = ai.stream
+
+    def record_stream(model, context, options):
+        limits.append(options.max_tokens)
+        return stream(model, context, options)
+
+    monkeypatch.setattr(ai, "stream", record_stream)
+    assert ai.complete(model, "", "hi", max_tokens=limit).text() == "ok"
+    assert limits == [expected]

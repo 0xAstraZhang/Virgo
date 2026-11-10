@@ -56,6 +56,9 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
     return impl.stream(model, context, options)
 
 
+REASONING_HEADROOM = 4096
+
+
 def complete(
     model: Model,
     system: str,
@@ -65,7 +68,14 @@ def complete(
     effort: str | None = "low",
     signal=None,
 ) -> AssistantMessage:
-    """One-shot, tool-free completion (used for summaries, evaluators, workflows)."""
+    """One-shot, tool-free completion (used for summaries, evaluators, workflows).
+
+    ``max_tokens`` budgets the visible answer. Providers count hidden reasoning against the same
+    limit, so the request allows ``REASONING_HEADROOM`` more (within the model's own maximum);
+    otherwise a small budget can be spent entirely on thinking and return no answer.
+    """
+    if max_tokens is not None:
+        max_tokens = max(max_tokens, min(max_tokens + REASONING_HEADROOM, model.max_tokens))
     ctx = Context(system=system, messages=[UserMessage(prompt)], tools=[])
     return stream(model, ctx, StreamOptions(signal=signal, max_tokens=max_tokens, effort=effort)).result()
 
