@@ -52,6 +52,20 @@ def test_compatible_directory_uses_actual_returned_ids_and_filters_non_chat(tran
     assert requests[0].content == b""
 
 
+def test_catalog_reads_provider_dates_and_ignores_invalid_timestamps(transport):
+    transport(lambda _: httpx.Response(200, json={"data": [
+        {"id": "unix", "created": 1735689600},
+        {"id": "iso", "created_at": "2025-01-01T08:00:00+08:00"},
+        {"id": "release", "release_date": "2025-01-01", "created": 100},
+        {"id": "invalid", "created_at": "not-a-date", "created": True},
+        {"id": "undated"},
+        {"id": "fallback", "released_at": "invalid", "created": 100},
+    ]}))
+    models = catalog.fetch_model_catalog(resolve_model("openai/current"))
+    assert [model.released_at for model in models] == [1735689600, 1735689600, 1735689600, None, None, 100]
+    assert [model.id for model in models] == ["unix", "iso", "release", "invalid", "undated", "fallback"]
+
+
 def test_anthropic_pagination_saved_key_and_metadata(transport):
     AuthStore().set("anthropic", {"type": "api_key", "key": "saved-key"})
 

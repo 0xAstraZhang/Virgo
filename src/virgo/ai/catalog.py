@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import httpx
 
@@ -33,6 +35,7 @@ class CatalogCancelled(CatalogError):
 class CatalogModel:
     id: str
     metadata: dict = field(default_factory=dict)
+    released_at: float | None = None
 
 
 def _anthropic_api_version() -> str:
@@ -113,6 +116,24 @@ def _metadata(row: dict) -> dict:
     return out
 
 
+def _release_time(row: dict) -> float | None:
+    for key in ("released_at", "release_date", "created_at", "created"):
+        value = row.get(key)
+        try:
+            if isinstance(value, str):
+                date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                timestamp = (date if date.tzinfo else date.replace(tzinfo=UTC)).timestamp()
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                timestamp = float(value)
+            else:
+                continue
+            if math.isfinite(timestamp) and timestamp >= 0:
+                return timestamp
+        except (ValueError, OverflowError, OSError):
+            continue
+    return None
+
+
 def _model(row: dict, api: str) -> CatalogModel | None:
     model_id = row.get("slug" if api == "openai-codex" else "id")
     if not isinstance(model_id, str) or not model_id or any(c.isspace() or ord(c) < 32 for c in model_id):
@@ -132,7 +153,7 @@ def _model(row: dict, api: str) -> CatalogModel | None:
         part in model_id.lower() for part in ("embedding", "whisper", "tts", "dall-e", "image", "realtime", "audio", "transcrib", "moderation", "sora", "babbage", "davinci")
     ):
         return None
-    return CatalogModel(model_id, _metadata(row))
+    return CatalogModel(model_id, _metadata(row), _release_time(row))
 
 
 def _read_catalog(model: Model, signal, stopped: threading.Event, version=None) -> list[CatalogModel]:

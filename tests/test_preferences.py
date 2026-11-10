@@ -69,7 +69,7 @@ def test_catalog_only_offers_authenticated_or_explicit_local_models(make_session
     )
     choices = model_choices(session)
     by_spec = {choice.spec: choice for choice in choices}
-    assert choices[0].spec == "faux/test"
+    assert "faux/test" in by_spec
     assert len(by_spec) == len(choices)
     assert "deepseek/deepseek-flash" in by_spec
     assert "anthropic/claude-opus-5-5" not in by_spec
@@ -77,6 +77,25 @@ def test_catalog_only_offers_authenticated_or_explicit_local_models(make_session
     assert by_spec["local/custom"].label == "custom"
     assert by_spec["local/custom"].description == "local · 64,000 context"
     assert "local/broken" not in by_spec
+
+
+def test_release_order_is_newest_first_and_preserves_server_order_without_dates(make_session, monkeypatch, provider_catalogs):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    provider_catalogs["deepseek"] = [
+        CatalogModel("a-old", released_at=100),
+        CatalogModel("z-new", released_at=300),
+        CatalogModel("x-same-release", released_at=300),
+        CatalogModel("current", released_at=200),
+        CatalogModel("z-undated"),
+        CatalogModel("b-undated"),
+    ]
+    session = make_session()
+    session.set_model("deepseek/current")
+    choices = [item for item in model_choices(session) if item.spec.startswith("deepseek/")]
+    assert [item.label for item in choices] == [
+        "z-new", "x-same-release", "current", "a-old", "z-undated", "b-undated",
+    ]
+    assert session.model.spec == "deepseek/current"
 
 
 def test_catalog_uses_live_ids_instead_of_current_or_configured_models(make_session, monkeypatch, provider_catalogs):

@@ -27,6 +27,7 @@ class ModelChoice:
     spec: str
     label: str
     description: str
+    released_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -99,8 +100,11 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
                 session.discovered_models[spec] = item.metadata
                 context = item.metadata.get("context_window")
                 description = f"{provider} · {context:,} context" if context else provider
-                choices[spec] = ModelChoice(spec, item.id, description)
-    return tuple(sorted(choices.values(), key=lambda choice: (choice.spec != session.model.spec, choice.spec)))
+                choices[spec] = ModelChoice(spec, item.id, description, item.released_at)
+    # Keep each connection's server order independent of parallel fetch completion.
+    ordered = sorted(choices.values(), key=lambda choice: choice.spec.split("/", 1)[0])
+    # Stable ties preserve server order; undated models follow dated models.
+    return tuple(sorted(ordered, key=lambda choice: (choice.released_at is None, -(choice.released_at or 0))))
 
 
 def provider_name(provider: str) -> str:
