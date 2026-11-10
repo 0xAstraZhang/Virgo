@@ -220,3 +220,34 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session',
         terminal.send(b"\x04")
         assert terminal.finish() == 0
         terminal.assert_restored()
+
+
+def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_path):
+    home = tmp_path / "pty-session-home"
+    argv = [sys.executable, "-m", "virgo", "--ui", "fullscreen", "--no-extensions", "--model", "faux/demo"]
+    with PtyClient(project, home, argv) as terminal:
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
+        before_browser = len(terminal.output)
+        terminal.send(b"/sessions\r")
+        terminal.wait_for(
+            lambda data: "Group: Workspace" in plain(data) and "Untitled session" in plain(data),
+            start=before_browser,
+        )
+        before_group = len(terminal.output)
+        terminal.send(b"g")
+        terminal.wait_for(lambda data: "Group: None" in plain(data), start=before_group)
+
+        before_new = len(terminal.output)
+        terminal.send(b"n")
+        terminal.wait_for(lambda data: "auto review" in plain(data), start=before_new)
+        before_model = len(terminal.output)
+        terminal.send(b"/model faux/demo\r")
+        terminal.wait_for(lambda data: "model: faux/demo" in plain(data), start=before_model)
+        terminal.wait_for(lambda _: bool(list(home.glob("sessions/**/*.jsonl"))))
+        paths = list(home.glob("sessions/**/*.jsonl"))
+        assert any('"type": "model_change"' in path.read_text() for path in paths)
+
+        terminal.send(b"/exit\r")
+        assert terminal.finish() == 0
+        terminal.assert_restored()
+        assert not list(home.glob("sessions/**/*.jsonl"))

@@ -7,9 +7,12 @@ import itertools
 import threading
 from collections import deque
 from collections.abc import Callable
+from pathlib import Path
 
 from ...ai.types import UserMessage
 from ...harness.session import AgentSession
+from ...harness.store import SessionStore
+from ...harness.ui import UI
 from ..repl import EXIT
 from .bridge import FullscreenUI, RunFinished, Update
 
@@ -28,6 +31,9 @@ class RunController:
         self.busy = False
         self.closing = False
         self.closed = False
+        self.browsing = False
+        self._lifecycle_lock = threading.RLock()
+        self._switch_candidate: AgentSession | None = None
         self._started = False
         self._interrupted = False
         self._worker: threading.Thread | None = None
@@ -44,6 +50,83 @@ class RunController:
         ui.bind_signal("main", session.main.agent.signal)
 
     @property
+    def can_browse(self) -> bool:
+        return not self.busy and not self.closing and not self._helpers and not self._deferred
+
+    def open_session(self, path: Path | str, *, initial: str | None = None) -> bool:
+        """Open a saved conversation without retaining another workspace's services."""
+        if not self.can_browse:
+            return False
+
+        def open_saved() -> None:
+            previous = self.session
+            target = SessionStore.load(Path(path))
+            target.build_context()  # Validate history before starting another workspace's services.
+            if target.cwd.resolve() == previous.cwd:
+                if self.closing:
+                    return
+                previous.open_session(path)
+            else:
+                if not target.cwd.is_dir():
+                    raise FileNotFoundError(f"Workspace no longer exists: {target.cwd}")
+                candidate = AgentSession(
+                    target.cwd, ui=self.ui, session=path, **previous.session_options
+                )
+                with self._lifecycle_lock:
+                    closing = self.closing
+                    if not closing:
+                        self._switch_candidate = candidate
+                if closing:
+                    candidate.shutdown()
+                    return
+                try:
+                    previous.shutdown()
+                    # Teammates can finish emitting after their abort signal.
+                    # Persist their final messages without painting the next conversation.
+                    previous.ui = UI()
+                    with self._lifecycle_lock:
+                        if self.closing:
+                            closing = True
+                        else:
+                            for unsubscribe in self._unsubscribers:
+                                unsubscribe()
+                            self.session = candidate
+                            self._unsubscribers = [
+                                candidate.bus.on("session_start", self._session_reset, priority=-100),
+                                candidate.bus.on("agent_event", self._agent_event, priority=100),
+                            ]
+                            self.ui.push("session_changed", candidate)
+                            self._session_reset(candidate)
+                    if closing:
+                        candidate.shutdown()
+                        return
+                except BaseException:
+                    candidate.shutdown()
+                    raise
+                finally:
+                    with self._lifecycle_lock:
+                        self._switch_candidate = None
+            if initial and not self.closing:
+                self.session.prompt(initial)
+
+        self._launch(open_saved)
+        return True
+
+    def new_session(self, *, initial: str | None = None) -> bool:
+        if not self.can_browse:
+            return False
+
+        def start_new() -> None:
+            if self.closing:
+                return
+            self.session.new_session()
+            if initial and not self.closing:
+                self.session.prompt(initial)
+
+        self._launch(start_new)
+        return True
+
+    @property
     def pending(self) -> list[str]:
         return [*[f"steering: {text}" for text in self._steering], *self._deferred]
 
@@ -52,6 +135,8 @@ class RunController:
         self.ui.push("reset", copy.deepcopy(session.store.branch()))
 
     def _agent_event(self, event, runtime) -> None:
+        if runtime.session is not self.session:
+            return
         self.ui.bind_signal(event.agent, runtime.agent.signal)
         if event.agent == "main" and event.type == "agent_start" and (self.closing or self._interrupted):
             # Agent.prompt resets its own signal. An interrupt may have arrived
@@ -160,7 +245,7 @@ class RunController:
                     self.closed = True
                     self.busy = False
                 out.append(update)
-        if not self.closing and not self.busy:
+        if not self.closing and not self.busy and not self.browsing:
             if self._deferred:
                 text = self._deferred.popleft()
                 self._launch(lambda: self.session.prompt(text))
@@ -178,9 +263,13 @@ class RunController:
         self.ui.print("Interrupted.", "warn")
 
     def request_close(self) -> None:
-        if self.closing:
-            return
-        self.closing = True
+        with self._lifecycle_lock:
+            if self.closing:
+                return
+            self.closing = True
+            sessions = [self.session]
+            if self._switch_candidate is not None:
+                sessions.append(self._switch_candidate)
         self._deferred.clear()
         self._steering.clear()
         self.ui.close()
@@ -191,18 +280,25 @@ class RunController:
             try:
                 # Services must be stopped before waiting on workers: jobs or
                 # MCP requests may be precisely what those workers await.
-                self.session.shutdown()
+                for session in sessions:
+                    session.shutdown()
                 for worker in threads:
                     if worker is not None and worker is not threading.current_thread():
                         worker.join(timeout=5)
                         if worker.is_alive():
                             self.ui.print("A worker is still stopping; its cancellation signal is set.", "warn")
+                # A command may finish its final write after shutdown hooks.
+                # Recheck only the stores owned by the sessions we closed.
+                for session in sessions:
+                    session.cleanup_empty_stores()
             except Exception as error:  # noqa: BLE001
                 self.ui.print(f"Shutdown failed: {error}", "error")
             finally:
-                for unsubscribe in self._unsubscribers:
+                with self._lifecycle_lock:
+                    unsubscribers = self._unsubscribers
+                    self._unsubscribers = []
+                for unsubscribe in unsubscribers:
                     unsubscribe()
-                self._unsubscribers.clear()
                 self.ui.push("closed")
 
         self._shutdown_worker = threading.Thread(target=shutdown, daemon=True, name="virgo-shutdown")

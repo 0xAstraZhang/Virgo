@@ -9,10 +9,12 @@ The active branch is the path from the leaf back to the root; nothing is ever re
 from __future__ import annotations
 
 import json
+import math
 import secrets
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from ..ai.transform import strip_thinking
@@ -32,6 +34,82 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
 
 
+def _created_at(header: dict, fallback: float) -> float:
+    try:
+        timestamp = datetime.fromisoformat(header["timestamp"]).timestamp()
+        return timestamp if math.isfinite(timestamp) else fallback
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return fallback
+
+
+def _session_info(path: Path) -> dict | None:
+    """Read one catalog row, tolerating a corrupt or concurrently removed file."""
+    try:
+        stat = path.stat()
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if not records or not isinstance(records[0], dict) or records[0].get("type") != "session":
+            return None
+        header = records[0]
+        cwd = header.get("cwd", ".")
+        if not isinstance(cwd, str):
+            return None
+        title, count = "", 0
+        for entry in records[1:]:
+            if not isinstance(entry, dict):
+                return None
+            if entry.get("type") == "message":
+                message = entry["message"]
+                if not isinstance(message, dict):
+                    return None
+                count += 1
+                if not title and message.get("role") == "user" and not message.get("kind"):
+                    title = " ".join(text_of_dict(message).split())[:80]
+        return {
+            "path": path,
+            "id": header.get("id"),
+            "cwd": Path(cwd),
+            "mtime": stat.st_mtime,
+            "created_at": _created_at(header, getattr(stat, "st_birthtime", stat.st_mtime)),
+            "title": title or "(empty)",
+            "messages": count,
+        }
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _workspace_created_at(directory: Path, items: list[dict] | None = None) -> float:
+    try:
+        metadata = json.loads((directory / ".workspace.json").read_text(encoding="utf-8"))
+        created = float(metadata["created_at"])
+        if math.isfinite(created):
+            return created
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+        pass
+    if items is None:
+        items = [item for path in directory.glob("*.jsonl") if (item := _session_info(path)) is not None]
+    if items:
+        return min(item["created_at"] for item in items)
+    try:
+        stat = directory.stat()
+        return getattr(stat, "st_birthtime", stat.st_mtime)
+    except OSError:
+        return time.time()
+
+
+def _register_workspace(directory: Path, cwd: Path) -> None:
+    """Keep creation order independent of later session writes and removal."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        metadata = {"version": 1, "cwd": str(cwd), "created_at": _workspace_created_at(directory)}
+        with (directory / ".workspace.json").open("x", encoding="utf-8") as handle:
+            json.dump(metadata, handle, ensure_ascii=False)
+            handle.write("\n")
+    except OSError:
+        # Another process may have registered this directory, or it may be
+        # read-only. The catalog can still infer an older workspace's order.
+        pass
+
+
 class SessionStore:
     VERSION = 1
 
@@ -44,6 +122,8 @@ class SessionStore:
         self.entries: list[dict] = entries or []
         self.by_id = {e["id"]: e for e in self.entries}
         self.leaf: str | None = self.entries[-1]["id"] if self.entries else None
+        self.created_at = time.time()
+        self.updated_at = self.created_at
         self._header_written = bool(path and path.exists())
         self._lock = threading.Lock()
 
@@ -53,6 +133,7 @@ class SessionStore:
         sid = uuid.uuid4().hex[:12]
         path = None
         if sessions_dir is not None:
+            _register_workspace(Path(sessions_dir), Path(cwd))
             path = Path(sessions_dir) / f"{time.strftime('%Y%m%d-%H%M%S')}_{sid}.jsonl"
         return cls(path, cwd, sid)
 
@@ -65,6 +146,9 @@ class SessionStore:
             raise ValueError(f"{path} is not a Virgo session file")
         header = lines[0]
         store = cls(Path(path), Path(header.get("cwd", ".")), header.get("id"), lines[1:])
+        stat = Path(path).stat()
+        store.created_at = _created_at(header, getattr(stat, "st_birthtime", stat.st_mtime))
+        store.updated_at = stat.st_mtime
         for e in lines[1:]:
             if e.get("type") == "leaf":  # explicit leaf moves (branching)
                 store.leaf = e["target"]
@@ -72,29 +156,72 @@ class SessionStore:
 
     @staticmethod
     def list(sessions_dir: Path) -> list[dict]:
-        out = []
-        for p in sorted(Path(sessions_dir).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+        """List one workspace's saved sessions, newest update first."""
+        directory = Path(sessions_dir)
+        items = [item for path in directory.glob("*.jsonl") if (item := _session_info(path)) is not None]
+        created = _workspace_created_at(directory, items)
+        for item in items:
+            item["workspace_created_at"] = created
+        return sorted(items, key=lambda item: (-item["mtime"], str(item["path"])))
+
+    @classmethod
+    def list_all(cls, sessions_root: Path) -> list[dict]:
+        """List all workspaces' sessions without modifying the catalog on disk."""
+        items = [item for directory in Path(sessions_root).glob("*/") for item in cls.list(directory)]
+        return sorted(items, key=lambda item: (-item["mtime"], str(item["path"])))
+
+    def describe(self) -> dict:
+        """Catalog row for the active store, including an unsaved new session."""
+        item = _session_info(self.path) if self.path is not None else None
+        if item is None:
             title, count = "", 0
+            for entry in self.entries:
+                if entry.get("type") == "message":
+                    count += 1
+                    message = entry["message"]
+                    if not title and message.get("role") == "user" and not message.get("kind"):
+                        title = " ".join(text_of_dict(message).split())[:80]
+            item = {
+                "path": self.path,
+                "id": self.id,
+                "cwd": self.cwd,
+                "mtime": self.updated_at,
+                "created_at": self.created_at,
+                "title": title or "(empty)",
+                "messages": count,
+            }
+        item["workspace_created_at"] = (
+            _workspace_created_at(self.path.parent) if self.path is not None else self.created_at
+        )
+        return item
+
+    def discard_if_empty(self) -> bool:
+        """Remove a saved session that has no resumable conversation or state.
+
+        Model choices and leaf moves alone do not change a resumed session.
+        Keep every other entry, including unknown extension state, and re-read
+        the file so another instance's already-written messages are retained.
+        """
+        with self._lock:
+            if self.path is None or any(entry.get("type") not in {"model_change", "leaf"} for entry in self.entries):
+                return False
             try:
-                for line in p.read_text(encoding="utf-8").splitlines()[1:]:
-                    e = json.loads(line)
-                    if e.get("type") == "message":
-                        count += 1
-                        m = e["message"]
-                        if not title and m.get("role") == "user" and not m.get("kind"):
-                            title = text_of_dict(m)[:80]
-            except (OSError, json.JSONDecodeError):
-                continue
-            out.append(
-                {"path": p, "mtime": p.stat().st_mtime, "title": title or "(empty)", "messages": count}
-            )
-        return out
+                saved = self.load(self.path)
+                if saved.id != self.id or any(entry.get("type") not in {"model_change", "leaf"} for entry in saved.entries):
+                    return False
+                _register_workspace(self.path.parent, self.cwd)
+                self.path.unlink()
+                self._header_written = False
+                return True
+            except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
+                return False
 
     # -- writing --------------------------------------------------------------
     def _write(self, obj: dict) -> None:
         if self.path is None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        _register_workspace(self.path.parent, self.cwd)
         with open(self.path, "a", encoding="utf-8") as f:
             if not self._header_written:
                 header = {
@@ -122,6 +249,7 @@ class SessionStore:
             self.entries.append(entry)
             self.by_id[entry["id"]] = entry
             self.leaf = entry["id"]
+            self.updated_at = time.time()
             self._write(entry)
             return entry
 

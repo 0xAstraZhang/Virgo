@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, OptionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets import Button, Static
+
+from .sessions import SessionPicker as SessionPicker
 
 
 class ApprovalScreen(ModalScreen[str | None]):
@@ -42,38 +41,3 @@ class ApprovalScreen(ModalScreen[str | None]):
 
     def action_answer(self, answer: str) -> None:
         self.dismiss(answer)
-
-
-class SessionPicker(ModalScreen[Path | None]):
-    BINDINGS = [Binding("escape", "cancel", show=False)]
-
-    def __init__(self, sessions: list[dict]):
-        super().__init__()
-        self.sessions = sessions
-
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog"):
-            yield Static(Text("Resume a session", style="bold"))
-            if self.sessions:
-                yield OptionList(
-                    *(
-                        Option(Text(f"{item['title']}  ·  {item['messages']} messages"), id=str(i))
-                        for i, item in enumerate(self.sessions)
-                    ),
-                    id="sessions",
-                )
-            else:
-                yield Static("No saved sessions for this directory.", markup=False)
-            yield Button("Cancel · Esc", id="cancel")
-
-    def on_mount(self) -> None:
-        if self.sessions:
-            self.query_one(OptionList).focus()
-
-    @on(OptionList.OptionSelected)
-    def selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(Path(self.sessions[event.option_index]["path"]))
-
-    @on(Button.Pressed, "#cancel")
-    def action_cancel(self) -> None:
-        self.dismiss(None)

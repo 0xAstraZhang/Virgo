@@ -200,6 +200,13 @@ class AgentSession:
         extensions: bool = True,
         home: str | Path | None = None,
     ):
+        self.session_options = {
+            "model": model,
+            "permission_mode": permission_mode,
+            "settings": settings,
+            "extensions": extensions,
+            "home": home,
+        }
         self.paths = Paths(Path(cwd), Path(home) if home else None)
         self.cwd = self.paths.cwd
         self.settings = Settings.load(self.paths, settings)
@@ -225,6 +232,7 @@ class AgentSession:
             self.register_tool(t, ROLES_ALL)
         register_builtins(self)
         self.store = self._open_store(session)
+        self._visited_stores = [self.store]
         load_builtin_features(self)
         if extensions:
             load_user_extensions(self)
@@ -285,14 +293,25 @@ class AgentSession:
         return Runtime(self, "main", "main", store=self.store, messages=messages, ids=ids)
 
     def open_session(self, path: str | Path) -> None:
-        self.store = SessionStore.load(Path(path))
-        self.main = self._new_main()
-        self.bus.emit("session_start", self)
+        self._activate_store(SessionStore.load(Path(path)))
 
     def new_session(self) -> None:
-        self.store = SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd)
-        self.main = self._new_main()
-        self.bus.emit("session_start", self)
+        self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd))
+
+    def _activate_store(self, store: SessionStore) -> None:
+        with self._lock:
+            if self._shutdown_started:
+                return
+            previous = self.store
+            self.store = store
+            try:
+                runtime = self._new_main()
+            except Exception:
+                self.store = previous
+                raise
+            self.main = runtime
+            self._visited_stores.append(store)
+            self.bus.emit("session_start", self)
 
     def set_model(self, spec: str) -> None:
         self.model = self.resolve(spec)
@@ -439,4 +458,15 @@ class AgentSession:
             self._shutdown_started = True
             self.wakeups.clear()
         self.abort()
-        self.bus.emit("session_shutdown", self)
+        try:
+            self.bus.emit("session_shutdown", self)
+        finally:
+            self.cleanup_empty_stores()
+
+    def cleanup_empty_stores(self) -> None:
+        """Remove only empty stores visited by this process, including abandoned /new sessions."""
+        for store in self._visited_stores:
+            try:
+                store.discard_if_empty()
+            except OSError as error:
+                self.ui.print(f"Cannot remove empty session: {error}", "error")

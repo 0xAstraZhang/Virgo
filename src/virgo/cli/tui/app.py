@@ -94,7 +94,7 @@ def shortcut_hints(text: str) -> Text:
 
 def input_hints() -> Text:
     newline = "Ctrl+J" if os.environ.get("TERM_PROGRAM") == "Apple_Terminal" else "Shift+Enter"
-    return shortcut_hints(f"Enter send · {newline} newline · Esc interrupt · / commands · Shift+Tab mode")
+    return shortcut_hints(f"Enter send · {newline} newline · Esc interrupt · / commands · Ctrl+R sessions · Shift+Tab mode")
 
 
 class VirgoApp(SelectionCopyMixin, App[int]):
@@ -143,7 +143,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     .dialog-buttons { height: auto; }
     .dialog-buttons Button { width: 1fr; min-width: 8; padding: 0; }
     Button:focus { text-style: reverse; }
-    #sessions { height: auto; max-height: 16; margin-bottom: 1; }
     """
     BINDINGS = [
         Binding("ctrl+c", "interrupt", priority=True, show=False),
@@ -155,6 +154,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         Binding("pagedown", "page(1)", priority=True, show=False),
         Binding("ctrl+home", "top", priority=True, show=False),
         Binding("shift+tab", "cycle_permissions", priority=True, show=False),
+        Binding("ctrl+r", "sessions", priority=True, show=False),
     ]
 
     def __init__(self, session, ui: FullscreenUI, initial: str | None = None, pick_session=False):
@@ -165,6 +165,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.activity = RunActivity()
         self.initial = initial
         self.pick_session = pick_session
+        self.session_grouped = True
+        self._browse_requested = False
+        self._session_picker: SessionPicker | None = None
         self.exit_code = 0
         self.history = InputHistory(session.paths.user)
         self.register_theme(terminal_theme())
@@ -216,23 +219,55 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.editor.focus()
         self._poll_timer = self.set_interval(1 / 30, self.poll)
         self.update_status()
+        self.controller.start(None if self.pick_session else self.initial)
         if self.pick_session:
-            items = SessionStore.list(self.session.paths.sessions)
-            self.push_screen(SessionPicker(items), self.session_picked)
-        else:
-            self.controller.start(self.initial)
+            self.action_sessions()
+
+    def action_sessions(self) -> None:
+        if self.controller.closing or self.has_modal or self.active_input is not None:
+            return
+        self.hide_completions()
+        self._browse_requested = True
+        self.show_session_picker()
+
+    def show_session_picker(self) -> None:
+        if not self._browse_requested or not self.controller.can_browse or self.has_modal or self.active_input is not None:
+            return
+        self._browse_requested = False
+        self.controller.browsing = True
+        items = SessionStore.list_all(self.session.paths.user / "sessions")
+        current_path = self.session.store.path
+        if not self.pick_session and current_path is not None and not any(item["path"] == current_path for item in items):
+            items.append(self.session.store.describe())
+        picker = SessionPicker(items, current_path=current_path, grouped=self.session_grouped)
+        self._session_picker = picker
+        self.push_screen(picker, self.session_picked)
 
     def session_picked(self, path) -> None:
+        if self._session_picker is not None:
+            self.session_grouped = self._session_picker.grouped
+            self._session_picker = None
+        startup = self.pick_session
+        self.pick_session = False
+        self.controller.browsing = False
         if path is None:
-            self.exit_code = 1
-            self.controller.request_close()
+            if startup:
+                self.exit_code = 1
+                self.controller.request_close()
+            else:
+                self.editor.focus()
             return
-        try:
-            self.session.open_session(path)
-        except (OSError, ValueError) as error:
-            self.ui.print(f"Cannot resume session: {error}", "error")
-            self.initial = None
-        self.controller.start(self.initial)
+        initial = self.initial if startup else None
+        self.initial = None
+        if path == "new":
+            self.controller.new_session(initial=initial)
+        elif not startup and path == self.session.store.path:
+            self.editor.focus()
+            return
+        else:
+            self.controller.open_session(path, initial=initial)
+        self.editor.clear()
+        self.history.reset()
         self.editor.focus()
 
     async def poll(self) -> None:
@@ -243,7 +278,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             for update in self.controller.poll():
                 if not self.is_running:
                     return
-                if update.kind == "reset":
+                if update.kind == "session_changed":
+                    self.session = update.payload
+                    self.update_status()
+                elif update.kind == "reset":
                     self.activity.reset()
                     await self.transcript.load_history(update.payload)
                 elif update.kind == "run_start":
@@ -277,6 +315,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 return
             self.show_next_confirmation()
             self.show_next_input()
+            self.show_session_picker()
             self.activity.waiting = (
                 "Closing"
                 if self.controller.closing
@@ -477,7 +516,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     @on(ChatEditor.Submitted)
     def submitted(self, event: ChatEditor.Submitted) -> None:
         self.hide_completions()
-        self.controller.submit(event.text)
+        if event.text.strip() in {"/sessions", "/resume"}:
+            self.action_sessions()
+        else:
+            self.controller.submit(event.text)
         self.update_status()
 
     @on(TextArea.Changed, "#editor")

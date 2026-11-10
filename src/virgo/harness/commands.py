@@ -192,3 +192,4 @@ def register_builtins(session: AgentSession) -> None:
     c.register("new", new, "start a fresh session")
     c.register("session", session_, "show session info", concurrent=True)
     c.register("resume", resume, "list or resume saved sessions")
+    c.register("sessions", resume, "browse saved sessions (g toggles workspace grouping in fullscreen)")
