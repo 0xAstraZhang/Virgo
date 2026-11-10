@@ -1,0 +1,40 @@
+[project]
+name = "virgo"
+version = "0.1.0"
+description = "A lightweight, extensible coding agent harness inspired by Pi."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=2.7.0",
+    "pyyaml>=6.0.3",
+]
+
+[project.optional-dependencies]
+openai = [
+    "openai>=3.48.0",
+]
+
+[project.scripts]
+virgo = "virgo.cli.main:main"
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008"]

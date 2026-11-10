@@ -1,0 +1,28 @@
+{
+  "model": "anthropic/claude-opus-5-5",
+  "smallModel": "anthropic/claude-haiku-5-5",
+  "effort": "medium",
+  "permissions": {
+    "mode": "default",
+    "allow": ["bash(uv run pytest*)", "bash(npm test*)", "edit(src/**)"],
+    "deny": ["read(~/.ssh/*)", "bash(git push*)"]
+  },
+  "providers": {
+    "deepseek": {
+      "api": "openai",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "models": {"deepseek-chat": {"contextWindow": 128000}}
+    },
+    "ollama": {
+      "api": "openai",
+      "baseUrl": "http://localhost:11434/v1",
+      "models": {"qwen3": {"contextWindow": 32768}}
+    }
+  },
+  "hooks": {
+    "PostToolUse": [{"matcher": "edit|write", "command": "ruff format --quiet . || true"}]
+  },
+  "compaction": {"keepRecentTokens": 20000},
+  "features": {"schedule": true, "team": true}
+}

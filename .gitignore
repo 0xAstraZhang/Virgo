@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local configuration and caches
+.env
+.env.*
+!.env.example
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+/work/
+
+# Generated agent state; shared configuration and examples stay versioned
+**/.virgo/outputs/
+**/.virgo/runs/
+**/.virgo/worktrees/
+**/.virgo/tasks/
+**/.virgo/schedules.json

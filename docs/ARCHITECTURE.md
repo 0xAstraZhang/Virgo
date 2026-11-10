@@ -1,0 +1,172 @@
+# Virgo 架构
+
+## 分层
+
+```
+                ┌──────────────────────────── cli ────────────────────────────┐
+                │  REPL (ConsoleBroker + TerminalUI)   -p print   --mode json │
+                └──────────────────────────────┬──────────────────────────────┘
+                                               │ prompt / notify / abort
+┌───────────────────────────────────── harness ───────────────────────────────────────┐
+│ AgentSession ── Runtime(main) ── Runtime(teammate…) ── Runtime(subagent…)            │
+│   settings · SessionStore(JSONL 树) · system prompt · EventBus/ExtensionAPI          │
+│   commands/templates · compaction · retry/fallback · notify/wakeups                  │
+│   features/*（内置扩展）  +  ~/.virgo/extensions  +  .virgo/extensions               │
+└──────────────────────────────┬───────────────────────────────────────────────────────┘
+                               │ AgentConfig(tools, call_model, hooks)
+┌──────────────────────── agent ─────────────────────────┐
+│ Agent: messages · steer/follow_up 队列 · abort · 订阅   │
+│ run_loop: 模型调用 → 工具（preflight → 并行执行）→ 循环   │
+└──────────────────────────────┬─────────────────────────┘
+                               │ stream(model, Context, StreamOptions) -> EventStream
+┌───────────────────────── ai ───────────────────────────┐
+│ types（消息/内容块）· transform（回放规范化）· validate   │
+│ providers: anthropic（官方 SDK）· openai · faux          │
+└────────────────────────────────────────────────────────┘
+```
+
+依赖方向自上而下：`ai` 不知道 agent 的存在，`agent` 不做任何 I/O，所有应用逻辑都在 `harness` 和 `features` 里。
+
+## 消息模型（`virgo.ai.types`）
+
+- 内容块：`TextContent`、`ThinkingContent(signature, redacted)`、`ImageContent`、`ToolCall`、`RawContent`（provider 专有的块，原样回传，例如 Anthropic 的 `fallback`）。
+- 消息：
+  - `UserMessage(content, kind)`：`kind` 是内部标签，不发给模型，取值有 `summary`、`notification`、`continue`；
+  - `AssistantMessage(content, api, provider, model, usage, stop_reason, error_message, error_kind)`；
+  - `ToolResultMessage(tool_call_id, tool_name, content, details, is_error)`。
+- `stop_reason` 取值：`stop | length | tool_use | refusal | error | aborted`。
+- `error_kind` 取值：`retryable | overflow | fatal`，由适配器分类，harness 据此决定是重试、压缩还是放弃。
+- 流事件：`start`、`text_*`、`thinking_*`、`toolcall_*`、`retry`、`done`、`error`。`EventStream` 的约定是迭代过程永不抛出异常。
+
+## Agent 循环（`virgo.agent.loop`）
+
+```
+pending = prompts
+while True:
+    while need_call or pending:
+        追加 pending；msg = call_model(messages)            # 由 harness 实现
+        if msg.stop_reason in (error, aborted, refusal): return
+        results = execute(msg.tool_calls)                  # stop_reason=length 时全部报错，不执行
+        need_call = bool(tool_calls); pending = steering()
+    pending = follow_ups();  if pending: continue
+    if should_stop() -> Continue(text): pending = [text]; continue
+    return
+```
+
+工具执行分三步：
+
+1. **preflight**，按源顺序逐个进行：`prepare_arguments` → JSON-Schema 校验与宽松强转 → `before_tool_call`（可以 Block，也可以就地改参）。
+2. **执行**：用线程池并行；只要批次里有任一工具声明了 `sequential`，整批改为串行。
+3. **收尾**：对每个结果调用 `after_tool_call`，再按源顺序追加 `ToolResultMessage`。
+
+未知工具、参数非法、被拦截、执行抛异常，都会变成 `is_error=True` 的结果。
+
+## 集成运行时（`virgo.harness.session`）
+
+每个对话（主 agent、队友、子 agent）都是一个 `Runtime`：它持有消息、会话存储、system prompt、工具集和模型。`Runtime.call_model` 的处理顺序如下：
+
+1. 自动压缩检查（这时一定处在轮次边界）。
+2. `context` 钩子生成本次请求的消息视图。
+3. 用冻结的 system prompt 和 tools 发起流式请求。
+4. 处理失败：
+   - `retryable`：指数退避加抖动后重试；连续 2 次过载且配置了 `fallbackModel` 时改用回退模型；
+   - `overflow`：压缩一次后重试；
+   - 其他错误：交还给循环。
+
+每次工具调用依次经过：
+
+1. `tool_call` 钩子，按优先级：权限（100）→ 命令钩子（50）→ 用户扩展；
+2. 执行工具；
+3. `tool_result` 钩子；
+4. 输出预算：超过 50KB 的文本截断并落盘。
+
+agent 准备停止时，依次检查：
+
+1. follow-up 队列（定时任务送达的 prompt）；
+2. `agent_stop` 钩子：todo 提醒（优先级 10）、命令 Stop 钩子（20）、goal 评审（0）。
+
+**唤醒机制**：后台任务、定时任务、队友都调用 `session.notify(text, mode)`。
+
+- 主 agent 正在运行：按 mode 进入 steer 队列（工具批次后插入）或 follow-up 队列（即将停止时插入）。
+- 主 agent 空闲：放入 `wakeups` 并调用 `ui.wake()`，REPL 随即开始新的一轮。
+
+运行结束时，队列里剩下的消息会被转进 `wakeups`，不会丢失。
+
+## 只追加的请求
+
+在同一个会话内（两次压缩之间）：
+
+- `system` 和 `tools` 逐字节不变；
+- 每次请求的 `messages` 都是上一次请求的前缀加上新增内容。
+
+适配器合并相邻同角色消息的方式是确定性的，所以合并结果每次相同。这样提示缓存可以命中，Claude 的 thinking 块也能保持有效。
+
+`tests/test_session.py::test_requests_are_append_only` 会验证这一点。
+
+压缩时会：
+
+- 生成一条摘要；
+- 保留最近一段消息，并剥离其中的 thinking 块；
+- 如果当前用户请求落在被摘要的部分，就把它原样保留下来；
+- 重建 system prompt；
+- 向会话文件追加一条 `compaction` 条目。
+
+## 会话文件
+
+文件位置：`~/.virgo/sessions/<cwd-slug>/<时间>_<id>.jsonl`
+
+```
+{"type":"session","version":1,"id":"…","cwd":"…","timestamp":"…"}
+{"type":"message","id":"a1b2c3d4","parent_id":null,"timestamp":"…","message":{…}}
+{"type":"compaction","id":"…","parent_id":"…","summary":"…","kept_ids":["…"],"tokens_before":123456,
+ "details":{"read_files":[…],"modified_files":[…]}}
+{"type":"custom","id":"…","parent_id":"…","kind":"goal","data":{…}}
+{"type":"model_change","id":"…","parent_id":"…","model":"openai/gpt-5"}
+```
+
+`build_context()` 从叶子节点回溯到根，得到当前分支：
+
+- 分支上没有 compaction 条目时，就是原始的消息列表；
+- 有 compaction 条目时，依次输出：摘要消息、`kept_ids` 指向的消息（剥离 thinking）、compaction 之后的所有消息。
+
+队友的会话存放在 `<会话 id>-team/<name>.jsonl`。
+
+## 项目状态目录 `.virgo/`
+
+| 路径 | 内容 |
+|---|---|
+| `settings.json`、`mcp.json` | 项目配置 |
+| `skills/`、`agents/`、`prompts/`、`workflows/`、`extensions/` | 项目资源 |
+| `memory/*.md`、`memory/MEMORY.md` | 项目级记忆 |
+| `tasks/<id>.json`、`tasks/.lock` | 任务图 |
+| `schedules.json` | 持久化的定时任务 |
+| `worktrees/<name>` | 队友的 git worktree |
+| `runs/<run_id>.jsonl` | workflow journal |
+| `outputs/` | 被截断的工具输出全文、后台任务日志 |
+
+## 扩展 API 速查
+
+```python
+api.on(event, fn, priority=0)
+api.register_tool(AgentTool(...), roles=("main",))   # 可用角色: main / subagent / teammate
+api.register_command(name, fn, description, concurrent=False)
+api.add_system_section(name, fn(role) -> str | None, order=50)
+api.notify(text, mode="steer" | "follow_up")
+api.append_entry(kind, data); api.entries(kind)
+api.services        # 功能之间共享的服务: permissions, jobs, tasks, team, subagents, memory, skills, mcp, schedule, goal
+api.session / api.settings / api.paths / api.ui
+```
+
+| 事件 | 处理函数签名 | 返回值的作用 |
+|---|---|---|
+| `session_start` / `session_shutdown` | `(session)` | — |
+| `input` | `(text, session)` | 返回 `str` 替换输入；返回 `Handled(msg)` 表示已处理 |
+| `before_agent_start` / `agent_end` | `(runtime, prompts)` / `(runtime)` | — |
+| `agent_event` | `(AgentEvent, runtime)` | — |
+| `context` | `(messages, runtime)` | 返回请求视图（必须保持只追加） |
+| `tool_call` | `(ToolCallEvent, session)` | 返回 `Block(reason)` 拦截；可以就地修改 `ev.args` |
+| `tool_result` | `(ToolResult, ToolCallEvent, session)` | 返回新的 `ToolResult` |
+| `turn_end` | `(AgentEvent, runtime)` | — |
+| `agent_stop` | `(runtime)` | 返回 `Continue(text)` 让 agent 继续 |
+| `before_compact` / `compact` | `(runtime)` / `(runtime, summary)` | — |
+| `pending_work` | `(session)` | 返回真值表示还有未完成的工作（print 模式会等待） |
