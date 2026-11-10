@@ -251,3 +251,11 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
         assert terminal.finish() == 0
         terminal.assert_restored()
         assert not list(home.glob("sessions/**/*.jsonl"))
+
+    with PtyClient(project, home, argv) as terminal:
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
+        terminal.send(b"/sessions\r")
+        terminal.wait_for(lambda data: "Group: None" in plain(data))
+        terminal.send(b"\x04")
+        assert terminal.finish() == 0
+        terminal.assert_restored()

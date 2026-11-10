@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -42,6 +43,60 @@ def test_browser_entry_cancel_preserves_session_and_remembers_grouping(make_sess
             await wait_for(pilot, lambda: session.store is not original and not app.controller.busy)
             assert session.cwd == original.cwd
             assert not session.main.messages
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("previous", ["workspace", "none"])
+@pytest.mark.parametrize("exit_key", ["escape", "ctrl+d"])
+def test_browser_view_survives_restart_and_preserves_other_settings(make_session, previous, exit_key):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui, persist=True)
+        session.settings.save_user({"effort": "high", "tui": {"sessionGrouping": previous, "other": "keep"}})
+        app = VirgoApp(session, ui)
+        expected = "none" if previous == "workspace" else "workspace"
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press("ctrl+r")
+            await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
+            assert app.screen.grouped == (previous == "workspace")
+            await pilot.press("g")
+            saved = json.loads((session.paths.user / "settings.json").read_text())
+            assert saved["tui"] == {"sessionGrouping": expected, "other": "keep"}
+            assert saved["effort"] == "high"
+            await pilot.press(exit_key)
+        assert app.controller.wait_closed()
+
+        restarted_ui = FullscreenUI()
+        restarted = make_session(ui=restarted_ui)
+        reopened = VirgoApp(restarted, restarted_ui, pick_session=True)
+        async with reopened.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: isinstance(reopened.screen, SessionPicker))
+            assert reopened.screen.grouped == (expected == "workspace")
+            await pilot.press("escape")
+
+    asyncio.run(scenario())
+
+
+def test_browser_remains_usable_when_view_preference_cannot_be_saved(make_session, monkeypatch):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui, persist=True)
+        app = VirgoApp(session, ui)
+        notices = []
+
+        def fail(_patch):
+            raise OSError("read-only settings")
+
+        monkeypatch.setattr(session.settings, "save_user", fail)
+        monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press("ctrl+r", "g")
+            assert not app.screen.grouped
+            assert notices and "Cannot save session view" in notices[0]
+            await pilot.press("escape", "ctrl+r")
+            assert isinstance(app.screen, SessionPicker) and not app.screen.grouped
+            await pilot.press("escape")
 
     asyncio.run(scenario())
 

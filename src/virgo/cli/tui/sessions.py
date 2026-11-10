@@ -13,6 +13,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
@@ -90,6 +91,11 @@ class SessionList(OptionList):
 
 class SessionPicker(ModalScreen[Path | str | None]):
     """`g` changes grouping; dismisses a path, ``"new"``, or None."""
+
+    class GroupingChanged(Message):
+        def __init__(self, grouped: bool) -> None:
+            self.grouped = grouped
+            super().__init__()
 
     CSS = """
     SessionPicker { align: left top; background: $background; color: $foreground; }
@@ -231,6 +237,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
         path = self.selected_path
         self.grouped = not self.grouped
         self._rebuild(path)
+        self.post_message(self.GroupingChanged(self.grouped))
 
     def action_new(self) -> None:
         self.dismiss("new")

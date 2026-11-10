@@ -165,7 +165,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.activity = RunActivity()
         self.initial = initial
         self.pick_session = pick_session
-        self.session_grouped = True
+        self.session_grouped = session.settings.get("tui.sessionGrouping", "workspace") != "none"
         self._browse_requested = False
         self._session_picker: SessionPicker | None = None
         self.exit_code = 0
@@ -242,6 +242,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         picker = SessionPicker(items, current_path=current_path, grouped=self.session_grouped)
         self._session_picker = picker
         self.push_screen(picker, self.session_picked)
+
+    @on(SessionPicker.GroupingChanged)
+    def session_grouping_changed(self, event: SessionPicker.GroupingChanged) -> None:
+        self.session_grouped = event.grouped
+        try:
+            self.session.settings.save_user({"tui": {"sessionGrouping": "workspace" if event.grouped else "none"}})
+        except (OSError, ValueError) as error:
+            self.notify(f"Cannot save session view: {error}", severity="error")
 
     def session_picked(self, path) -> None:
         if self._session_picker is not None:
