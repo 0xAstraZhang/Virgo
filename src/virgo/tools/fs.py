@@ -206,7 +206,8 @@ def _locate(content: str, old: str) -> tuple[list[tuple[int, int]], str]:
     # line-based match ignoring trailing whitespace
     c_lines = content.split("\n")
     o_lines = old.translate(_CHAR_MAP).split("\n")
-    if o_lines and o_lines[-1] == "":
+    ends_with_newline = bool(o_lines) and o_lines[-1] == ""
+    if ends_with_newline:
         o_lines = o_lines[:-1]
     key = [line.rstrip() for line in o_lines]
     if not key:
@@ -217,7 +218,9 @@ def _locate(content: str, old: str) -> tuple[list[tuple[int, int]], str]:
     norm = [line.translate(_CHAR_MAP).rstrip() for line in c_lines]
     for i in range(len(c_lines) - len(key) + 1):
         if norm[i : i + len(key)] == key:
-            end = starts[i + len(key)] - 1
+            end = starts[i + len(key)] - 1  # the newline ending the last matched line, or end of file
+            if ends_with_newline and end < len(content):
+                end += 1  # old_text covered that newline too; new_text supplies its own
             spans.append((starts[i], end))
     return spans, "whitespace" if spans else ""
 

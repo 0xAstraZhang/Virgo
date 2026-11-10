@@ -56,6 +56,21 @@ def test_edit_tolerates_quotes_whitespace_and_keeps_crlf(project):
     assert f.read_bytes() == b"say hi\r\nnext\r\n"
 
 
+def test_edit_whitespace_match_consumes_the_newline_old_text_ends_with(project):
+    f = project / "geo.py"
+    f.write_text("import os\n\ndef area(w, h):   \n    return w * h\n\ndef main():\n    pass\n")
+    # The model dropped the trailing spaces, so only the whitespace-tolerant match applies.
+    r = edit(project, "geo.py", ("def area(w, h):\n    return w * h\n", "def rect_area(w, h):\n    return w * h\n"))
+    assert not r.is_error, r.as_text()
+    assert f.read_text() == "import os\n\ndef rect_area(w, h):\n    return w * h\n\ndef main():\n    pass\n"
+    # Without a trailing newline in old_text the line ending is left alone, also at the end of a file.
+    assert not edit(project, "geo.py", ("def main():\n    pass  ", "def main():\n    return 0")).is_error
+    assert f.read_text().endswith("\ndef main():\n    return 0\n")
+    f.write_text("a = 1  \nb = 2")
+    assert not edit(project, "geo.py", ("a = 1\nb = 2\n", "a = 3\n")).is_error
+    assert f.read_text() == "a = 3\n"
+
+
 def test_edit_accepts_legacy_argument_shape(project):
     (project / "x.txt").write_text("foo\n")
     args = _prepare_edit({"path": "x.txt", "oldText": "foo", "newText": "bar"})
