@@ -423,6 +423,9 @@ class VirgoApp(App[int]):
             max(3, self.editor.wrapped_document.height + 2), max(3, self.size.height // 3)
         )
         self.screen_stack[0].query_one("#hints").display = self.size.height >= 20
+        self.screen_stack[0].query_one("#completions").styles.max_height = max(
+            3, min(6, self.size.height // 4)
+        )
 
     def hide_completions(self) -> None:
         self.completion_names = []

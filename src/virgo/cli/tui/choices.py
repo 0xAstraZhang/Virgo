@@ -11,10 +11,10 @@ from textual.widgets.option_list import Option
 
 
 class ChoiceList(OptionList):
-    """Keep each choice on one row, with selection driving immediate scrolling."""
+    """Wrap choices to the available width, with selection driving immediate scrolling."""
 
     DEFAULT_CSS = """
-    ChoiceList { text-wrap: nowrap; text-overflow: ellipsis; }
+    ChoiceList { text-wrap: wrap; text-overflow: fold; }
     ChoiceList > .option-list--option-highlighted,
     ChoiceList:focus > .option-list--option-highlighted {
         background: #7C3AED;
@@ -37,13 +37,16 @@ class ChoiceList(OptionList):
                     text = Text(text.plain.replace("\n", " "), style=text.style)
             else:
                 text = Text(str(prompt).replace("\n", " "))
-            text.no_wrap = True
-            text.overflow = "ellipsis"
+            text.no_wrap = False
+            text.overflow = "fold"
             choices.append(Option(text, id=option.id, disabled=option.disabled))
         super().add_options(choices)
         if self.is_mounted and self.highlighted is None and self.option_count:
             self.action_first()
         return self
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self.scroll_to_highlight)
 
     def move_selection(self, direction: int) -> bool:
         if not self.display or not self.option_count:

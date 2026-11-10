@@ -58,9 +58,10 @@ def test_repeated_arrows_select_rows_without_changing_editor_or_lagging_scroll(m
                 app.post_message(events.Key("down", None))
             await wait_for(pilot, lambda: choices.highlighted == count - 1)
             assert choices.scroll_y == choices.scroll_target_y
-            assert choices.scroll_offset.y <= count - 1 < (
-                choices.scroll_offset.y + choices.scrollable_content_region.height
-            )
+            selected_top = choices._index_to_line[count - 1]
+            selected_bottom = selected_top + choices._heights[count - 1]
+            assert choices.scroll_offset.y <= selected_top
+            assert selected_bottom <= choices.scroll_offset.y + choices.scrollable_content_region.height
             assert app.editor.text == "/" and app.history.index == len(app.history.entries)
             for _ in range(count - 1):
                 app.post_message(events.Key("up", None))
@@ -74,7 +75,7 @@ def test_repeated_arrows_select_rows_without_changing_editor_or_lagging_scroll(m
     asyncio.run(scenario())
 
 
-def test_filter_resets_selection_and_long_command_descriptions_stay_on_one_row(make_session):
+def test_filter_resets_selection_after_a_long_wrapped_command(make_session):
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui)
@@ -87,7 +88,8 @@ def test_filter_resets_selection_and_long_command_descriptions_stay_on_one_row(m
             for _ in range(len(app.completion_names) - 1):
                 app.post_message(events.Key("down", None))
             await wait_for(pilot, lambda: app.completion_names[choices.highlighted] == "/zlong")
-            assert choices.virtual_size.height == choices.option_count
+            assert choices.virtual_size.height > choices.option_count
+            assert choices._heights[choices.highlighted] > 1
             app.editor.load_text("/mo")
             app.editor.move_cursor(app.editor.document.end)
             await wait_for(pilot, lambda: app.completion_names == ["/model"])
@@ -95,6 +97,39 @@ def test_filter_resets_selection_and_long_command_descriptions_stay_on_one_row(m
             await pilot.press("tab")
             assert app.editor.text == "/model "
             assert not choices.display
+
+    asyncio.run(scenario())
+
+
+def test_login_description_wraps_fully_and_reflows_when_window_resizes(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui)
+        app = VirgoApp(session, ui)
+        expected = "/login " + session.commands.get("login").description
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.editor.load_text("/login")
+            await wait_for(pilot, lambda: app.completion_names == ["/login"])
+            choices = app.query_one("#completions", OptionList)
+            heights = {}
+            layouts = {}
+            for width in (80, 52, 120, 80):
+                await pilot.resize_terminal(width, 24)
+                await pilot.pause()
+                assert choices.highlighted == 0 and app.focused is app.editor
+                lines = [choices.render_line(y).text for y in range(choices.scrollable_content_region.height)]
+                rendered = " ".join(" ".join(lines).split())
+                assert rendered == " ".join(expected.split())
+                assert "…" not in rendered
+                heights[width] = choices.virtual_size.height
+                layouts[width] = [line.rstrip() for line in lines if line.strip()]
+                assert choices.region.right <= width
+                assert choices.region.bottom <= app.editor.region.y
+                assert app.editor.region.bottom <= app.query_one("#status").region.y
+                assert app.query_one("#status").region.bottom <= 24
+            assert layouts[52] != layouts[80]
+            assert heights[52] >= heights[80] > heights[120]
+            assert heights[120] == 1
 
     asyncio.run(scenario())
 
