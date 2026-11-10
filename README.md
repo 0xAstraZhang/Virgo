@@ -127,6 +127,7 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | `/model [p/id]` `/effort [lvl]` | 查看或切换模型、推理强度 |
 | `/permissions [mode]` | 查看规则 / 切换权限模式 |
 | `/compact [focus]` | 立即压缩上下文 |
+| `/context` | 查看当前上下文各类 token 占用、剩余空间、压缩预留和自动压缩阈值 |
 | `/new` `/sessions [n]` `/session` | 新建、浏览、恢复会话和查看当前会话信息 |
 | `/todos` `/tasks` `/jobs` `/schedules` `/team` | 查看各功能状态 |
 | `/skills` `/skill:name args` | 列出技能 / 强制使用某个技能 |
@@ -135,6 +136,10 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | `/workflow [resume id]` | 列出 workflow / 续跑 |
 | `/goal <条件>` `/goal` `/goal clear` | 目标循环 |
 | `/exit` | 退出 |
+
+`/context` 按 System prompt、System tools、MCP tools、MCP server instruction、Memory files、Skills、Messages、Free space、Autocompact buffer 展示当前窗口构成，不累计历史请求的用量，也不会调用模型。Memory files 包含已装入系统提示词的 AGENTS.md / CLAUDE.md 与记忆索引，Skills 为技能目录；通过消息或工具结果加载的记忆、技能正文，以及压缩摘要均计入 Messages。未注入的类别显示 0（当前内置 MCP 客户端不注入服务器 instructions）。
+
+分类 token 数按字符数估算；已有有效 API 用量时，总占用使用最近一次用量（含缓存）加后续消息估算，分类按比例校准。首轮和压缩后没有有效用量时，估算也包含系统提示词与工具定义。Free space 是到压缩阈值前的可用空间，Autocompact buffer 是剩余的压缩预留空间。默认阈值为模型窗口减 `compaction.reserveTokens`（默认 16,384）；`compaction.triggerTokens` 可覆盖。占用**超过**阈值时，在下一次模型调用前自动压缩；关闭自动压缩后，全部剩余空间计入 Free space。
 
 ### 登录模型服务
 

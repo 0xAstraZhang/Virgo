@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,12 @@ GUIDELINES = """<guidelines>
 CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
+@dataclass(frozen=True)
+class SystemPart:
+    category: str
+    text: str
+
+
 def context_files(cwd: Path, user_dir: Path) -> list[tuple[Path, str]]:
     found: list[tuple[Path, str]] = []
     user_file = user_dir / "AGENTS.md"
@@ -65,17 +72,24 @@ def _first_file(paths: list[Path]) -> str | None:
 def build_system(
     session: AgentSession, role: str = "main", extra: str | None = None, cwd: Path | None = None
 ) -> str:
+    return "\n\n".join(part.text for part in build_system_parts(session, role, extra, cwd))
+
+
+def build_system_parts(
+    session: AgentSession, role: str = "main", extra: str | None = None, cwd: Path | None = None
+) -> list[SystemPart]:
+    """Build the prompt once, retaining the source categories of its frozen text."""
     cwd = Path(cwd or session.cwd)
-    parts: list[str] = []
+    parts: list[SystemPart] = []
     custom = _first_file(session.paths.both("SYSTEM.md")) if role == "main" else None
-    parts.append(custom or IDENTITY.get(role, IDENTITY["main"]))
+    parts.append(SystemPart("System prompt", custom or IDENTITY.get(role, IDENTITY["main"])))
     tools = session.tools_for(role)
     if tools:
         lines = [f"- {t.name}: {t.snippet or t.description.split('.')[0]}" for t in tools]
-        parts.append("<tools>\n" + "\n".join(lines) + "\n</tools>")
-    parts.append(GUIDELINES)
+        parts.append(SystemPart("System prompt", "<tools>\n" + "\n".join(lines) + "\n</tools>"))
+    parts.append(SystemPart("System prompt", GUIDELINES))
     if extra:
-        parts.append(extra.strip())
+        parts.append(SystemPart("System prompt", extra.strip()))
     for _order, _name, fn in sorted(session.sections, key=lambda s: s[0]):
         try:
             text = fn(role)
@@ -83,21 +97,31 @@ def build_system(
             text = None
             session.ui.print(f"[system section {_name} failed: {e}]", "error")
         if text:
-            parts.append(text.strip())
+            category = {
+                "skills": "Skills",
+                "memory": "Memory files",
+                "mcp": "MCP server instruction",
+                "mcp-instructions": "MCP server instruction",
+                "mcp_instructions": "MCP server instruction",
+            }.get(_name, "System prompt")
+            parts.append(SystemPart(category, text.strip()))
     files = context_files(cwd, session.paths.user)
     if files:
         body = "\n".join(
             f'<project_instructions path="{p}">\n{t.strip()}\n</project_instructions>' for p, t in files
         )
-        parts.append(f"<project_context>\n{body}\n</project_context>")
+        parts.append(SystemPart("Memory files", f"<project_context>\n{body}\n</project_context>"))
     append = _first_file(session.paths.both("APPEND_SYSTEM.md"))
     if append:
-        parts.append(append)
+        parts.append(SystemPart("System prompt", append))
     parts.append(
-        "<environment>\n"
-        f"Working directory: {cwd}\n"
-        f"Platform: {platform.system()} {platform.release()}\n"
-        f"Date: {time.strftime('%Y-%m-%d')}\n"
-        "</environment>"
+        SystemPart(
+            "System prompt",
+            "<environment>\n"
+            f"Working directory: {cwd}\n"
+            f"Platform: {platform.system()} {platform.release()}\n"
+            f"Date: {time.strftime('%Y-%m-%d')}\n"
+            "</environment>",
+        )
     )
-    return "\n\n".join(parts)
+    return parts

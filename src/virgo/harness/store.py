@@ -18,7 +18,15 @@ from datetime import datetime
 from pathlib import Path
 
 from ..ai.transform import strip_thinking
-from ..ai.types import Message, UserMessage, message_from_dict, message_to_dict, text_of
+from ..ai.types import (
+    AssistantMessage,
+    Message,
+    Usage,
+    UserMessage,
+    message_from_dict,
+    message_to_dict,
+    text_of,
+)
 
 SUMMARY_PREFIX = (
     "<conversation_summary>\nThe earlier part of this conversation was compacted into the summary below. "
@@ -284,6 +292,11 @@ class SessionStore:
             if not e or e["type"] != "message":
                 continue
             for m in strip_thinking([message_from_dict(e["message"])]):
+                if isinstance(m, AssistantMessage):
+                    # This request included the history replaced by the summary.
+                    # Invalidate its usage only in the reconstructed view; the
+                    # append-only log still records the original billed tokens.
+                    m.usage = Usage()
                 messages.append(m)
                 ids.append(i)
         for e in path[comp_i + 1 :]:

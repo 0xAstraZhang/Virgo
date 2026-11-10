@@ -22,11 +22,11 @@ from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, ToolResult
 from ..ai.auth import AuthStore
 from ..ai.stream import EventStream, StreamEvent
-from ..ai.types import AssistantMessage, Context, StreamOptions, TextContent, UserMessage
+from ..ai.types import AssistantMessage, Context, StreamOptions, TextContent, ToolSpec, UserMessage
 from ..features.permission import normalize_permission_mode, plan_tool_allowed
 from ..tools import BASE_TOOLS
 from ..tools.truncate import MAX_BYTES, budget
-from . import compaction
+from . import compaction, context
 from .commands import Commands, expand_template, load_templates, register_builtins
 from .extensions import (
     ROLES_ALL,
@@ -36,7 +36,7 @@ from .extensions import (
     load_builtin_features,
     load_user_extensions,
 )
-from .prompt import build_system
+from .prompt import build_system_parts
 from .settings import Paths, Settings
 from .store import SessionStore
 from .ui import UI
@@ -88,13 +88,40 @@ class Runtime:
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
         self.agent.subscribe(self._on_event)
+        self.usage_context_signature = context.context_signature(self.model, *self.request_system_and_tools())
+        self.usage_valid_from = self.compacted_at
 
     @property
     def messages(self) -> list:
         return self.agent.messages
 
     def rebuild_system(self) -> None:
-        self.system = build_system(self.session, self.role, self.system_extra, self.cwd)
+        self.system_parts = build_system_parts(self.session, self.role, self.system_extra, self.cwd)
+        self.system = "\n\n".join(part.text for part in self.system_parts)
+        if hasattr(self, "agent"):
+            # Rebuilds follow compaction/reconnect; old usage describes another
+            # prompt, and message indices may have changed after compaction.
+            self.usage_valid_from = len(self.messages)
+            self.usage_context_signature = context.context_signature(self.model, *self.request_system_and_tools())
+
+    def request_system_and_tools(self) -> tuple[str, list[ToolSpec]]:
+        """The same permission-filtered prompt for requests and context inspection."""
+        permissions = self.session.services.get("permissions")
+        mode = permissions.mode_for(self.name) if permissions else self.session.permission_mode
+        system = self.system
+        tools = [t.spec() for t in self.tools if mode != "plan" or plan_tool_allowed(t)]
+        if mode == "plan":
+            system += (
+                "\n\n<permission_mode>\n"
+                "Plan mode is active. Investigate with read-only tools, then provide a concrete plan "
+                "for the user. Do not implement changes, modify project files, install dependencies, "
+                "or execute commands with side effects. Planning task records are allowed. "
+                "Only tools offered in this request are available.\n</permission_mode>"
+            )
+            for tool in tools:
+                if tool.name == "bash":
+                    tool.description = "Run a read-only shell command to inspect the project. Do not modify files or system state."
+        return system, tools
 
     def _on_event(self, ev: AgentEvent) -> None:
         if ev.type == "message_end":
@@ -108,16 +135,11 @@ class Runtime:
         return compaction.compact(self, focus=focus, reason=reason)
 
     def context_tokens(self) -> int:
-        return compaction.estimate_tokens(self.messages, self.compacted_at)
+        return context.estimate_context_tokens(self)
 
     def _compaction_due(self) -> bool:
-        s = self.session.settings
-        if not self.compaction or not s.get("compaction.enabled", True):
-            return False
-        trigger = s.get("compaction.triggerTokens") or (
-            self.model.context_window - int(s.get("compaction.reserveTokens", 16384))
-        )
-        return self.context_tokens() > trigger
+        enabled, trigger = context.compaction_threshold(self)
+        return enabled and self.context_tokens() > trigger
 
     # -- model calls ---------------------------------------------------------
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
@@ -134,21 +156,11 @@ class Runtime:
         model = self.model
         while True:
             view = s.bus.chain("context", list(messages), self)
-            permissions = s.services.get("permissions")
-            mode = permissions.mode_for(self.name) if permissions else s.permission_mode
-            system = self.system
-            tools = [t.spec() for t in self.tools if mode != "plan" or plan_tool_allowed(t)]
-            if mode == "plan":
-                system += (
-                    "\n\n<permission_mode>\n"
-                    "Plan mode is active. Investigate with read-only tools, then provide a concrete plan "
-                    "for the user. Do not implement changes, modify project files, install dependencies, "
-                    "or execute commands with side effects. Planning task records are allowed. "
-                    "Only tools offered in this request are available.\n</permission_mode>"
-                )
-                for tool in tools:
-                    if tool.name == "bash":
-                        tool.description = "Run a read-only shell command to inspect the project. Do not modify files or system state."
+            system, tools = self.request_system_and_tools()
+            signature = context.context_signature(model, system, tools)
+            if signature != self.usage_context_signature:
+                self.usage_valid_from = len(messages)
+                self.usage_context_signature = signature
             ctx = Context(system, view, tools)
             opts = StreamOptions(signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort)
             failed: AssistantMessage | None = None
