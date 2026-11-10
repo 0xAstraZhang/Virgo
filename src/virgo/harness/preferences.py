@@ -92,6 +92,8 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
                 continue
             if signal.is_set():
                 return ()
+            if not models:
+                session.ui.print(f"{provider_name(provider)}: the live directory returned no selectable models.", "warn")
             for item in models:
                 spec = f"{provider}/{item.id}"
                 session.discovered_models[spec] = item.metadata

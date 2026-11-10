@@ -147,6 +147,14 @@ def test_one_provider_failure_does_not_hide_another_live_directory(make_session,
     assert not any(spec.startswith("deepseek/") for spec in offered)
 
 
+def test_empty_live_directory_explains_missing_provider(make_session, monkeypatch, provider_catalogs):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    provider_catalogs["deepseek"] = []
+    session = make_session()
+    assert not any(item.spec.startswith("deepseek/") for item in model_choices(session))
+    assert "DeepSeek: the live directory returned no selectable models." in session.ui.text
+
+
 def test_invalid_saved_key_does_not_fall_back_to_environment(make_session, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     session = make_session()

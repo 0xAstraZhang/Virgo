@@ -69,10 +69,17 @@ def test_codex_refreshes_oauth_and_uses_account_directory(transport, monkeypatch
         "accountId": "account", "connection": {"api": "openai-codex", "baseUrl": "https://chatgpt.com/backend-api/codex"},
     })
     monkeypatch.setattr("virgo.ai.oauth.refresh", lambda *a, **kw: {"access": "new-token", "expires": time.time() + 3600})
-    requests = transport(lambda _: httpx.Response(200, json={"models": [
-        {"slug": "fresh-codex", "visibility": "list", "context_window": 700000, "supported_reasoning_levels": [{"effort": "high"}]},
-        {"slug": "internal", "visibility": "hide"},
-    ]}))
+    def directory(request):
+        # The real account directory returns an empty list for Virgo's 0.1.0 version.
+        if request.url.params.get("client_version") == "0.1.0":
+            return httpx.Response(200, json={"models": []})
+        assert request.url.params["client_version"] == "0.167.0"
+        return httpx.Response(200, json={"models": [
+            {"slug": "fresh-codex", "visibility": "list", "context_window": 700000, "supported_reasoning_levels": [{"effort": "high"}]},
+            {"slug": "internal", "visibility": "hide"},
+        ]})
+
+    requests = transport(directory)
     models = catalog.fetch_model_catalog(resolve_model("openai-codex/old"))
     assert [m.id for m in models] == ["fresh-codex"]
     assert models[0].metadata == {"context_window": 700000, "reasoning": True}
@@ -80,6 +87,15 @@ def test_codex_refreshes_oauth_and_uses_account_directory(transport, monkeypatch
     assert "client_version" in requests[0].url.params
     assert requests[0].headers["authorization"] == "Bearer new-token"
     assert requests[0].headers["chatgpt-account-id"] == "account"
+
+
+def test_codex_catalog_version_can_be_overridden_per_connection(transport):
+    model = resolve_model("openai-codex/old", {"openai-codex": {
+        "apiKey": "token", "authMetadata": {"accountId": "account"}, "clientVersion": "1.2.3",
+    }})
+    requests = transport(lambda _: httpx.Response(200, json={"models": []}))
+    assert catalog.fetch_model_catalog(model) == []
+    assert requests[0].url.params["client_version"] == "1.2.3"
 
 
 def test_custom_endpoint_and_headers_do_not_use_other_providers_key(transport, monkeypatch):

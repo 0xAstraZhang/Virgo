@@ -11,12 +11,14 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from .. import __version__
 from .auth import authenticated_model
 from .types import Model
 
 CATALOG_TIMEOUT = 12.0
 MAX_BODY_BYTES = 8 * 1024 * 1024
+# The account catalog gates models by the Codex protocol revision, not Virgo's release number.
+# This revision is verified against the live catalog; clientVersion may override it per connection.
+CODEX_CATALOG_VERSION = "0.167.0"
 
 
 class CatalogError(Exception):
@@ -51,7 +53,7 @@ def _request(model: Model) -> tuple[str, dict, dict]:
         if not base.endswith("/codex"):
             base += "/codex"
         headers.update({"Authorization": f"Bearer {token}", "chatgpt-account-id": account, "originator": "virgo"})
-        params["client_version"] = str(model.options.get("clientVersion", __version__))
+        params["client_version"] = str(model.options.get("clientVersion") or CODEX_CATALOG_VERSION)
     elif model.api == "anthropic":
         base = (base or "https://api.anthropic.com").rstrip("/")
         if not base.endswith("/v1"):
