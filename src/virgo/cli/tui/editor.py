@@ -9,6 +9,8 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import TextArea
 
+from .choices import ChoiceList
+
 
 class InputHistory:
     def __init__(self, directory: Path):
@@ -61,6 +63,8 @@ class ChatEditor(TextArea):
         Binding("enter", "submit", show=False, priority=True),
         Binding("ctrl+j,shift+enter", "newline", show=False, priority=True),
         Binding("tab", "complete", show=False, priority=True),
+        Binding("up", "cursor_up", show=False, priority=True),
+        Binding("down", "cursor_down", show=False, priority=True),
         Binding("ctrl+p", "history(-1)", show=False),
         Binding("ctrl+n", "history(1)", show=False),
     ]
@@ -81,8 +85,13 @@ class ChatEditor(TextArea):
         self.input_history = history
 
     def action_submit(self) -> None:
-        if self.text not in self.app.completion_names and self.app.accept_completion():
-            return
+        self.app.sync_completions()
+        names = self.app.completion_names
+        if names:
+            choices = self.app.screen_stack[0].query_one("#completions", ChoiceList)
+            selected = names[choices.highlighted or 0]
+            if self.text != selected and self.app.accept_completion():
+                return
         text = self.text.strip()
         if text:
             self.input_history.add(text)

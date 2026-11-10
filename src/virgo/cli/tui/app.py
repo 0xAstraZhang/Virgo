@@ -12,14 +12,15 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.theme import Theme
-from textual.widgets import Button, OptionList, Static, TextArea
+from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ... import __version__
 from ...harness.store import SessionStore
 from .bridge import FullscreenUI
+from .choices import ChoiceList
 from .controller import RunController
-from .dialogs import ApprovalScreen, InputScreen, SessionPicker
+from .dialogs import ApprovalScreen, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .transcript import Transcript
 
@@ -89,6 +90,13 @@ class VirgoApp(App[int]):
         color: #7C3AED; background: $background; }
     #completions { height: auto; max-height: 6; border: solid #7C3AED;
         padding: 0; background: $background; }
+    #completions > .option-list--option-highlighted,
+    #completions:focus > .option-list--option-highlighted {
+        background: #7C3AED; color: #FFFFFF; text-style: bold; }
+    #auth-question { height: auto; max-height: 3; color: #7C3AED; text-style: bold; }
+    #auth-value { height: 3; border: solid #7C3AED; padding: 0;
+        background: $background; color: $foreground; }
+    #auth-value:focus { border: solid #7C3AED; }
     #editor { height: 3; min-height: 3; border: none; border-top: solid #7C3AED;
         border-bottom: solid #7C3AED; padding: 0; background: $background; color: $foreground; }
     #editor:focus { border: none; border-top: solid #7C3AED; border-bottom: solid #7C3AED; }
@@ -108,8 +116,7 @@ class VirgoApp(App[int]):
     .dialog-buttons { height: auto; }
     .dialog-buttons Button { width: 1fr; min-width: 8; padding: 0; }
     Button:focus { text-style: reverse; }
-    #sessions, #input-options { height: auto; max-height: 16; margin-bottom: 1; }
-    #input-value { margin-bottom: 1; background: $background; color: $foreground; }
+    #sessions { height: auto; max-height: 16; margin-bottom: 1; }
     """
     BINDINGS = [
         Binding("ctrl+c", "interrupt", priority=True, show=False),
@@ -138,7 +145,9 @@ class VirgoApp(App[int]):
         self.active_confirmation = None
         self.input_requests = deque()
         self.active_input = None
+        self.input_request = None
         self.completion_names: list[str] = []
+        self.completion_query: str | None = None
         self.completion_suppressed: str | None = None
         self.last_interrupt = 0.0
         self.last_status = 0.0
@@ -151,7 +160,9 @@ class VirgoApp(App[int]):
         with Vertical(id="dock"):
             yield Button("↓ Latest message · Ctrl+End", id="jump")
             yield Static("", id="pending", markup=False)
-            yield OptionList(id="completions")
+            yield Static("", id="auth-question", markup=False)
+            yield ChoiceList(id="completions")
+            yield Input(id="auth-value")
             yield ChatEditor(self.history)
             yield Static("", id="status", markup=False)
             yield Static("Enter send · Ctrl+J newline · Esc interrupt · / commands", id="hints", markup=False)
@@ -169,7 +180,7 @@ class VirgoApp(App[int]):
         return len(self.screen_stack) > 1
 
     def on_mount(self) -> None:
-        for selector in ("#jump", "#pending", "#completions"):
+        for selector in ("#jump", "#pending", "#completions", "#auth-question", "#auth-value"):
             self.screen_stack[0].query_one(selector).display = False
         self.editor.focus()
         self._poll_timer = self.set_interval(1 / 30, self.poll)
@@ -217,8 +228,8 @@ class VirgoApp(App[int]):
                     self.input_requests.append(update.payload)
                 elif update.kind == "input_cancelled":
                     self.input_requests = deque(c for c in self.input_requests if c.id != update.payload)
-                    if self.active_input == update.payload and isinstance(self.screen, InputScreen):
-                        self.screen.action_cancel()
+                    if self.active_input == update.payload:
+                        self.finish_input(None)
                 elif update.kind == "closed":
                     self.exit(self.exit_code)
                     return
@@ -251,24 +262,79 @@ class VirgoApp(App[int]):
         def answered(answer: str | None) -> None:
             self.ui.resolve_confirmation(confirmation.id, answer)
             self.active_confirmation = None
-            self.editor.focus()
+            self.focus_composer()
 
         self.push_screen(ApprovalScreen(confirmation), answered)
 
     def show_next_input(self) -> None:
-        if self.controller.closing or self.has_modal or not self.input_requests:
+        if self.controller.closing or self.has_modal or self.active_input is not None:
             return
-        request = self.input_requests.popleft()
-        if not self.ui.is_input_pending(request.id):
+        while self.input_requests:
+            request = self.input_requests.popleft()
+            if self.ui.is_input_pending(request.id):
+                break
+        else:
             return
+        self.hide_completions()
         self.active_input = request.id
+        self.input_request = request
+        root = self.screen_stack[0]
+        question = root.query_one("#auth-question", Static)
+        question.update(request.question)
+        question.display = True
+        self.editor.display = False
+        options = root.query_one("#completions", ChoiceList)
+        field = root.query_one("#auth-value", Input)
+        if request.options is not None:
+            options.clear_options()
+            options.add_options(Option(Text(label), id=str(i)) for i, label in enumerate(request.options))
+            options.highlighted = 0
+            options.display = True
+            options.styles.max_height = max(3, min(6, self.size.height // 4))
+        else:
+            field.password = request.password
+            field.value = request.default
+            field.display = True
+        self.focus_composer()
+        self.update_status()
 
-        def answered(answer: str | None) -> None:
-            self.ui.resolve_input(request.id, answer)
-            self.active_input = None
+    def focus_composer(self) -> None:
+        if self.has_modal:
+            return
+        if self.input_request is None:
             self.editor.focus()
+        elif self.input_request.options is not None:
+            self.screen_stack[0].query_one("#completions").focus()
+        else:
+            self.screen_stack[0].query_one("#auth-value").focus()
 
-        self.push_screen(InputScreen(request), answered)
+    def finish_input(self, answer: str | None) -> None:
+        request_id = self.active_input
+        if request_id is None:
+            return
+        self.active_input = None
+        self.input_request = None
+        root = self.screen_stack[0]
+        field = root.query_one("#auth-value", Input)
+        field.value = ""
+        field.password = False
+        field.display = False
+        question = root.query_one("#auth-question", Static)
+        question.update("")
+        question.display = False
+        root.query_one("#completions", ChoiceList).clear_options()
+        self.editor.display = True
+        self.hide_completions()
+        self.update_completions()
+        self.focus_composer()
+        self.ui.resolve_input(request_id, answer)
+        self.update_status()
+
+    @on(Input.Submitted, "#auth-value")
+    def input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        if self.input_request is not None and self.input_request.options is None:
+            self.finish_input(event.value)
 
     def update_status(self) -> None:
         self.last_status = time.monotonic()
@@ -280,6 +346,21 @@ class VirgoApp(App[int]):
         if self.controller.closing:
             self.screen_stack[0].query_one("#hints", Static).update(
                 "Closing services… Ctrl+C to return to the terminal immediately"
+            )
+        elif self.input_request is not None:
+            hint = (
+                "↑↓ select · Enter confirm · Esc cancel"
+                if self.input_request.options is not None
+                else "Enter confirm · Esc cancel"
+            )
+            self.screen_stack[0].query_one("#hints", Static).update(hint)
+        elif not self.controller.busy and 0 < time.monotonic() - self.last_interrupt < 2:
+            self.screen_stack[0].query_one("#hints", Static).update(
+                "Ctrl+C again to exit · /exit also closes Virgo"
+            )
+        else:
+            self.screen_stack[0].query_one("#hints", Static).update(
+                "Enter send · Ctrl+J newline · Esc interrupt · / commands"
             )
         width = max(1, self.size.width - 2)
         model = self.session.main.model.spec
@@ -328,7 +409,7 @@ class VirgoApp(App[int]):
     @on(TextArea.Changed, "#editor")
     def editor_changed(self) -> None:
         self.resize_editor()
-        self.update_completions()
+        self.sync_completions()
 
     def on_resize(self) -> None:
         if self.is_mounted:
@@ -347,8 +428,18 @@ class VirgoApp(App[int]):
         self.completion_names = []
         self.screen_stack[0].query_one("#completions").display = False
 
+    def sync_completions(self) -> None:
+        # TextArea.Changed is queued; a quick Enter/Tab/arrow can arrive first.
+        if self.completion_query != self.editor.text:
+            self.update_completions()
+
     def update_completions(self) -> None:
+        if self.active_input is not None:
+            return
         text = self.editor.text
+        self.completion_query = text
+        if text != self.completion_suppressed:
+            self.completion_suppressed = None
         if not text.startswith("/") or any(c.isspace() for c in text) or text == self.completion_suppressed:
             self.hide_completions()
             return
@@ -359,7 +450,7 @@ class VirgoApp(App[int]):
         commands["/exit"] = "exit Virgo"
         names = sorted(name for name in commands if name.startswith(text))
         self.completion_names = names
-        options = self.screen_stack[0].query_one("#completions", OptionList)
+        options = self.screen_stack[0].query_one("#completions", ChoiceList)
         options.clear_options()
         options.add_options(Option(Text(f"{name:<18} {commands[name]}"), id=name) for name in names)
         options.display = bool(names)
@@ -367,6 +458,7 @@ class VirgoApp(App[int]):
         options.highlighted = 0 if names else None
 
     def accept_completion(self) -> bool:
+        self.sync_completions()
         if not self.completion_names or not self.screen_stack[0].query_one("#completions").display:
             return False
         options = self.screen_stack[0].query_one("#completions", OptionList)
@@ -378,23 +470,26 @@ class VirgoApp(App[int]):
         return True
 
     def move_completion(self, direction: int) -> bool:
-        if not self.completion_names:
+        self.sync_completions()
+        if not self.completion_names or self.active_input is not None:
             return False
-        options = self.screen_stack[0].query_one("#completions", OptionList)
-        options.highlighted = ((options.highlighted or 0) + direction) % len(self.completion_names)
-        return True
+        options = self.screen_stack[0].query_one("#completions", ChoiceList)
+        return options.move_selection(direction)
 
     @on(OptionList.OptionSelected, "#completions")
-    def completion_selected(self) -> None:
-        self.accept_completion()
+    def completion_selected(self, event: OptionList.OptionSelected) -> None:
+        if self.input_request is not None and self.input_request.options is not None:
+            self.finish_input(self.input_request.options[event.option_index])
+        else:
+            self.accept_completion()
 
     def action_escape(self) -> None:
         if isinstance(self.screen, ApprovalScreen):
             self.screen.dismiss("n")
-        elif isinstance(self.screen, InputScreen):
-            self.screen.action_cancel()
         elif isinstance(self.screen, SessionPicker):
             self.screen.dismiss(None)
+        elif self.active_input is not None:
+            self.finish_input(None)
         elif self.completion_names:
             self.completion_suppressed = self.editor.text
             self.hide_completions()
@@ -402,7 +497,7 @@ class VirgoApp(App[int]):
             self.controller.abort()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if self.has_modal and action in {"page", "top", "latest", "tools", "thinking"}:
+        if (self.has_modal or self.active_input is not None) and action in {"page", "top", "latest", "tools", "thinking"}:
             return False
         return True
 

@@ -10,7 +10,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Static
+from textual.widgets import Button, OptionList, Static
 from textual.widgets.option_list import Option
 
 
@@ -76,50 +76,4 @@ class SessionPicker(ModalScreen[Path | None]):
 
     @on(Button.Pressed, "#cancel")
     def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class InputScreen(ModalScreen[str | None]):
-    """Local form values never pass through the chat editor or transcript."""
-
-    BINDINGS = [Binding("escape", "cancel", show=False)]
-
-    def __init__(self, request):
-        super().__init__()
-        self.request = request
-
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog"):
-            yield Static(Text(self.request.question, style="bold"))
-            if self.request.options is not None:
-                yield OptionList(
-                    *(Option(Text(label), id=str(i)) for i, label in enumerate(self.request.options)),
-                    id="input-options",
-                )
-            else:
-                yield Input(value=self.request.default, password=self.request.password, id="input-value")
-            with Horizontal(classes="dialog-buttons"):
-                if self.request.options is None:
-                    yield Button("Continue · Enter", id="input-submit")
-                yield Button("Cancel · Esc", id="input-cancel")
-
-    def on_mount(self) -> None:
-        self.query_one(OptionList if self.request.options is not None else Input).focus()
-
-    @on(OptionList.OptionSelected, "#input-options")
-    def option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(self.request.options[event.option_index])
-
-    @on(Input.Submitted, "#input-value")
-    @on(Button.Pressed, "#input-submit")
-    def submit_value(self) -> None:
-        widget = self.query_one(Input)
-        value = widget.value
-        widget.value = ""
-        self.dismiss(value)
-
-    @on(Button.Pressed, "#input-cancel")
-    def action_cancel(self) -> None:
-        for widget in self.query(Input):
-            widget.value = ""
         self.dismiss(None)
