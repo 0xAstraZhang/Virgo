@@ -259,6 +259,20 @@ def test_search_review_matches_actual_ignored_and_filtered_files(make_session, t
     assert str(tmp_path / "outside") in reviews[0][2]
 
 
+def test_search_review_selects_the_same_files_as_the_glob_tools(make_session, tmp_path, monkeypatch):
+    monkeypatch.setattr(permission, "review_tool_call", lambda *args: (False, "external link"))
+    s = make_session(mode="auto-review")
+    (s.cwd / "src" / "pkg").mkdir(parents=True)
+    (s.cwd / "src" / "link.py").symlink_to(tmp_path / "outside")
+    perms = s.services["permissions"]
+    # `src/**/*.py` reaches files directly under src/, so the escaping link there must be reviewed.
+    assert perms.decide(event(s, "glob", {"pattern": "src/**/*.py"}))[0] == "ask"
+    assert perms.decide(event(s, "grep", {"pattern": "value", "glob": "src/**/*.py"}))[0] == "ask"
+    # `src/pkg/*.py` and `src/*/*.py` never touch it.
+    assert perms.decide(event(s, "glob", {"pattern": "src/pkg/*.py"}))[0] == "allow"
+    assert perms.decide(event(s, "grep", {"pattern": "value", "glob": "src/*/*.py"}))[0] == "allow"
+
+
 def test_review_uses_call_signal_instead_of_interrupted_main(make_session, tmp_path):
     s = make_session(mode="auto-review")
     s.small_model = s.resolve("faux/reviewer")

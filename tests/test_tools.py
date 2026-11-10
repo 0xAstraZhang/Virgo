@@ -79,6 +79,35 @@ def test_glob_and_grep(project):
     )
 
 
+def test_glob_patterns_respect_path_segments(project):
+    for name in ("main.py", "src/top.py", "src/pkg/a.py", "src/pkg/sub/c.py", "src/pkg/notes.md", "docs/a.py"):
+        (project / name).parent.mkdir(parents=True, exist_ok=True)
+        (project / name).write_text("value = 1\n")
+
+    def found(pattern, **kw):
+        out = GLOB.execute({"pattern": pattern, **kw}, ctx(project)).as_text()
+        return set() if out == "(no matches)" else set(out.splitlines())
+
+    nested = {"src/top.py", "src/pkg/a.py", "src/pkg/sub/c.py"}
+    assert found("src/**/*.py") == nested  # `**/` also matches no directory at all
+    assert found("src/*.py") == {"src/top.py"}  # `*` does not cross a directory boundary
+    assert found("src/*/*.py") == {"src/pkg/a.py"}
+    assert found("**/*.py") == found("*.py") == nested | {"main.py", "docs/a.py"}
+    assert found("**/pkg/*.py") == {"src/pkg/a.py"}
+    assert found("src/**") == nested | {"src/pkg/notes.md"}
+    assert found("**/*.py", path="src/pkg") == {"src/pkg/a.py", "src/pkg/sub/c.py"}
+    assert found("src/*.md") == set()
+
+    def searched(glob):
+        out = GREP.execute({"pattern": "value", "glob": glob}, ctx(project)).as_text()
+        return {line.split(":", 1)[0] for line in out.splitlines()}
+
+    assert searched("**/*.py") == nested | {"main.py", "docs/a.py"}  # root-level files were skipped
+    assert searched("src/**/*.py") == nested
+    assert searched("src/*.py") == {"src/top.py"}
+    assert searched("*.md") == {"src/pkg/notes.md"}
+
+
 def test_bash_exit_codes_timeout_and_truncation(project):
     r = BASH.execute({"command": "echo hi; exit 3"}, ctx(project))
     assert r.is_error and "hi" in r.as_text() and "Exit code 3" in r.as_text()

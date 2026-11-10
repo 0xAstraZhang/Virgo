@@ -343,19 +343,37 @@ def _walk(root: Path):
             yield Path(dirpath) / f
 
 
+def glob_match(path: str, pattern: str) -> bool:
+    """Match a ``/``-separated path against a glob.
+
+    ``*``, ``?`` and ``[...]`` stay within one path segment; a ``**`` segment spans any number of
+    directories, including none. A pattern without ``/`` matches the file name at any depth.
+    """
+    segments = pattern.split("/")
+    if len(segments) == 1:
+        segments = ["**", pattern]
+    return _match_segments(path.split("/"), segments)
+
+
+def _match_segments(parts: list[str], segments: list[str]) -> bool:
+    if not segments:
+        return not parts
+    head, rest = segments[0], segments[1:]
+    if head == "**":
+        if not rest:
+            return bool(parts)
+        return any(_match_segments(parts[i:], rest) for i in range(len(parts) + 1))
+    return bool(parts) and fnmatch.fnmatchcase(parts[0], head) and _match_segments(parts[1:], rest)
+
+
 def _glob(args: dict, ctx: ToolContext) -> ToolResult:
     base = resolve(args.get("path") or ".", ctx.cwd)
     if not base.is_dir():
         return ToolResult.error(f"Not a directory: {args.get('path')}")
     pattern = args["pattern"]
-    pat = pattern[3:] if pattern.startswith("**/") else pattern
-    deep = pattern.startswith("**/") or "/" not in pattern
     hits = []
     for f in _walk(base):
-        rel = f.relative_to(base).as_posix()
-        if fnmatch.fnmatchcase(rel, pattern) or (
-            deep and fnmatch.fnmatchcase(f.name if "/" not in pat else rel, pat)
-        ):
+        if glob_match(f.relative_to(base).as_posix(), pattern):
             hits.append(f)
     hits.sort(key=lambda f: f.stat().st_mtime if f.exists() else 0, reverse=True)
     limit = 200
@@ -400,7 +418,7 @@ def _grep(args: dict, ctx: ToolContext) -> ToolResult:
     out: list[str] = []
     matches = 0
     for f in files:
-        if gl and not (fnmatch.fnmatchcase(f.name, gl) or fnmatch.fnmatchcase(_display(f, ctx.cwd), gl)):
+        if gl and not glob_match(Path(_display(f, ctx.cwd)).as_posix(), gl):
             continue
         try:
             if f.stat().st_size > 5 * 1024 * 1024:

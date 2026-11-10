@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from ..agent.types import AgentTool, Block, ToolCallEvent
 from ..ai import complete
 from ..ai.types import UserMessage
-from ..tools.fs import IGNORE_DIRS
+from ..tools.fs import IGNORE_DIRS, glob_match
 from .permission_scope import command_path_targets, command_review_reason, inside, is_read_only_command
 
 if TYPE_CHECKING:
@@ -164,21 +164,17 @@ class Permissions:
                         names[:] = [name for name in names if name not in IGNORE_DIRS]
                         for name in files:
                             candidate = Path(directory) / name
+                            # Mirror the tools' own file selection (same matcher, same base path).
                             if ev.tool_name == "glob":
-                                pattern = ev.args.get("pattern", "*")
                                 rel = candidate.relative_to(root).as_posix()
-                                pat = pattern[3:] if pattern.startswith("**/") else pattern
-                                deep = pattern.startswith("**/") or "/" not in pattern
-                                if not (fnmatch.fnmatchcase(rel, pattern) or (
-                                    deep and fnmatch.fnmatchcase(name if "/" not in pat else rel, pat)
-                                )):
+                                if not glob_match(rel, ev.args.get("pattern", "*")):
                                     continue
                             elif pattern := ev.args.get("glob"):
                                 try:
-                                    displayed = str(candidate.relative_to(ev.cwd.resolve()))
+                                    displayed = candidate.relative_to(ev.cwd.resolve())
                                 except ValueError:
-                                    displayed = str(candidate)
-                                if not (fnmatch.fnmatchcase(name, pattern) or fnmatch.fnmatchcase(displayed, pattern)):
+                                    displayed = candidate
+                                if not glob_match(displayed.as_posix(), pattern):
                                     continue
                             if candidate.is_symlink() and not inside(str(candidate), ev.cwd, self.session.cwd):
                                 return f"search can follow a link outside the workspace: {candidate} -> {candidate.resolve()}"
