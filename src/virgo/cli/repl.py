@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 from .. import __version__
-from ..ai.types import UserMessage
 from ..features.permission import permission_mode_label
 from ..harness.session import AgentSession
 from .console import ConsoleBroker, TerminalUI
@@ -130,9 +129,13 @@ def run_repl(
                 if line.startswith("/"):
                     deferred.append(line)
                     ui.print("(will run when the agent finishes)", "dim")
-                else:
-                    session.main.agent.steer(UserMessage(line))
+                elif session.steer(line):
                     ui.print("[steering message queued]", "dim")
+                else:
+                    # The worker is running a command, or the agent is already past its last queue
+                    # check: nothing would drain a steering message, so send it as the next prompt.
+                    deferred.append(line)
+                    ui.print("(will be sent when the current command finishes)", "dim")
                 broker.resume_reading()
                 continue
             start(lambda line=line: session.prompt(line))
