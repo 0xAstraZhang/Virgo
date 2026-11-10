@@ -516,7 +516,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     @on(ChatEditor.Submitted)
     def submitted(self, event: ChatEditor.Submitted) -> None:
         self.hide_completions()
-        if event.text.strip() in {"/sessions", "/resume"}:
+        if event.text.strip() == "/sessions":
             self.action_sessions()
         else:
             self.controller.submit(event.text)

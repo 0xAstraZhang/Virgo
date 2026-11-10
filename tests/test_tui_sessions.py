@@ -15,7 +15,7 @@ from virgo.harness.store import SessionStore
 from .test_tui_app import has_reply, wait_for
 
 
-@pytest.mark.parametrize("entry", ["/sessions", "/resume", "ctrl+r"])
+@pytest.mark.parametrize("entry", ["/sessions", "ctrl+r"])
 def test_browser_entry_cancel_preserves_session_and_remembers_grouping(make_session, entry):
     async def scenario():
         ui = FullscreenUI()

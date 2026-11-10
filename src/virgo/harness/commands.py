@@ -165,7 +165,7 @@ def register_builtins(session: AgentSession) -> None:
             f"\nestimated context tokens: {s.context_tokens()}"
         )
 
-    def resume(s, args):
+    def sessions(s, args):
         items = type(s.store).list(s.paths.sessions)
         if not items:
             ui.print("No saved sessions for this directory.")
@@ -173,7 +173,7 @@ def register_builtins(session: AgentSession) -> None:
         if not args.strip():
             for i, it in enumerate(items[:20], 1):
                 ui.print(f"  {i:>2}. {it['title']}  ({it['messages']} msgs)  {it['path'].name}")
-            ui.print("Use /resume <number> to open one.")
+            ui.print("Use /sessions <number> to open one.")
             return
         try:
             it = items[int(args.strip()) - 1]
@@ -191,5 +191,4 @@ def register_builtins(session: AgentSession) -> None:
     c.register("compact", compact, "summarize older context now (/compact [focus])")
     c.register("new", new, "start a fresh session")
     c.register("session", session_, "show session info", concurrent=True)
-    c.register("resume", resume, "list or resume saved sessions")
-    c.register("sessions", resume, "browse saved sessions (g toggles workspace grouping in fullscreen)")
+    c.register("sessions", sessions, "browse saved sessions (g toggles workspace grouping in fullscreen)")
