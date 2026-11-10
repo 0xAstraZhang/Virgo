@@ -1,14 +1,13 @@
-"""Context compaction: summarize older turns, keep recent ones verbatim.
+"""Native OpenAI/Anthropic compaction, with portable summaries for other providers.
 
-- Automatic: before a model call, when estimated context tokens exceed the trigger
-  (``context_window - reserveTokens`` unless ``compaction.triggerTokens`` is set).
+- Automatic: before a model call, at 80% of the model's context window by default.
 - Reactive: when the provider reports a context overflow, compact once and retry.
 - Manual: ``/compact [focus]``.
 
-Compaction runs only at a turn boundary (never between a tool call and its result), keeps about
-``keepRecentTokens`` of the newest messages, pins the current user request if it would otherwise be
-summarized, strips thinking blocks from retained turns, and appends a ``compaction`` entry to the
-session file (the full history stays on disk). Per-result output budgets live in tools/truncate.py.
+Compaction runs at model-call boundaries. OpenAI returns a complete replacement window;
+Anthropic and portable summaries retain about ``keepRecentTokens`` of recent messages.
+Native provider blocks are persisted verbatim; the complete original history stays on disk.
+Per-result output budgets live in tools/truncate.py.
 """
 
 from __future__ import annotations
@@ -16,9 +15,18 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from ..ai import complete
-from ..ai.transform import strip_thinking
-from ..ai.types import AssistantMessage, ToolResultMessage, UserMessage
+from ..ai import complete, native_compact
+from ..ai.compaction import context_binding, is_native_context, native_api
+from ..ai.transform import is_user_like, strip_thinking
+from ..ai.types import (
+    AssistantMessage,
+    RawContent,
+    StreamOptions,
+    ToolResultMessage,
+    Usage,
+    UserMessage,
+    message_to_dict,
+)
 from .store import summary_message
 
 if TYPE_CHECKING:
@@ -60,6 +68,8 @@ def _chars(m) -> int:
             n += len(getattr(b, "text", "") or getattr(b, "thinking", "") or "")
             if hasattr(b, "arguments"):
                 n += len(json.dumps(b.arguments, default=str))
+            elif isinstance(b, RawContent):
+                n += len(json.dumps(b.data, ensure_ascii=False, default=str))
         return n
     if isinstance(m.content, str):
         return len(m.content)
@@ -75,7 +85,7 @@ def estimate_tokens(messages: list, valid_from: int = 0) -> int:
         if (
             isinstance(m, AssistantMessage)
             and m.usage.total > 0
-            and m.stop_reason not in ("error", "aborted")
+            and m.stop_reason not in ("error", "aborted", "compaction")
         ):
             return m.usage.total + sum(_chars(x) for x in messages[i + 1 :]) // 4
     return sum(_chars(m) for m in messages) // 4
@@ -89,10 +99,13 @@ def find_cut(messages: list, keep_tokens: int) -> int:
         cut = i
         if acc >= keep_tokens:
             break
+    start = 1 if messages and (
+        getattr(messages[0], "kind", None) == "summary" or is_native_context(messages[0])
+    ) else 0
+    cut = max(cut, start + 1) if len(messages) > start else len(messages)
     while cut < len(messages) and isinstance(messages[cut], ToolResultMessage):
         cut += 1
-    start = 1 if messages and getattr(messages[0], "kind", None) == "summary" else 0
-    return max(cut, start + 1) if len(messages) > start else len(messages)
+    return cut
 
 
 def serialize(messages: list) -> str:
@@ -136,7 +149,11 @@ def _files(messages: list) -> tuple[set, set]:
     return read, modified
 
 
-def compact(rt: Runtime, focus: str | None = None, reason: str = "manual") -> dict | None:
+def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
+    model = model or rt.model
+    rt.restore_native_context(model)
+    if api := native_api(model):
+        return _native_compact(rt, model, api, focus, reason)
     session = rt.session
     messages = rt.messages
     keep = int(session.settings.get("compaction.keepRecentTokens", 20000))
@@ -205,3 +222,74 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual") -> di
     rt.rebuild_system()
     session.bus.emit("compact", rt, summary)
     return {"tokens_before": tokens_before, "summary": summary, "kept": len(kept_msgs)}
+
+
+def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str) -> dict | None:
+    messages = rt.messages
+    if not messages or (len(messages) == 1 and is_native_context(messages[0])):
+        return None
+    session = rt.session
+    if reason == "manual" and not rt.agent.running:
+        rt.agent.signal.clear()
+    keep = int(session.settings.get("compaction.keepRecentTokens", 20000))
+    if reason == "overflow":
+        keep //= 2
+    # OpenAI returns the canonical complete next window; never split or prune it.
+    cut = find_cut(messages, keep) if api == "anthropic" else len(messages)
+    if not cut or (cut == 1 and is_native_context(messages[0])):
+        return None
+    session.bus.emit("before_compact", rt)
+    tokens_before = estimate_tokens(messages, rt.compacted_at)
+    if focus and api != "anthropic":
+        session.ui.print("[OpenAI native compaction uses the provider's summary instructions; focus is not applied.]", "warn")
+    context = rt.request_context(messages[:cut], model)
+    binding = context_binding(model, context)
+    result = native_compact(
+        model,
+        context,
+        StreamOptions(signal=rt.agent.signal, max_tokens=min(8000, model.max_tokens), effort=session.effort),
+        focus=focus,
+    )
+    if rt.agent.signal.is_set() or not is_native_context(result):
+        session.ui.print(f"[compaction failed: {result.error_message or result.stop_reason}]", "error")
+        return None
+    kept = list(range(cut, len(messages)))
+    preserve_thinking = bool(kept) and is_user_like(messages[cut - 1]) != is_user_like(messages[cut])
+    if any(is_native_context(message) for message in messages) and rt.native_binding != binding:
+        preserve_thinking = False
+    if api == "anthropic" and not any(
+        isinstance(messages[i], UserMessage) and messages[i].kind is None for i in kept
+    ):
+        for i in range(cut - 1, -1, -1):
+            if isinstance(messages[i], UserMessage) and messages[i].kind is None:
+                kept.insert(0, i)
+                preserve_thinking = False  # pinning a duplicate request changes the kept prefix
+                break
+    kept_msgs, kept_ids = [], []
+    for i in kept:
+        for message in [messages[i]] if preserve_thinking else strip_thinking([messages[i]]):
+            kept_msgs.append(message)
+            kept_ids.append(rt.ids[i] if i < len(rt.ids) else None)
+    # Summary-call usage measures the old window, not the size of the new context.
+    result.usage = Usage()
+    summary = next((
+        b.data["content"] for b in result.content
+        if isinstance(b, RawContent) and b.data.get("type") == "compaction" and isinstance(b.data.get("content"), str)
+    ), "OpenAI native context compaction")
+    entry_id = None
+    if rt.store is not None:
+        entry = rt.store.append(
+            "compaction", summary=summary, context=[message_to_dict(result)],
+            kept_ids=[i for i in kept_ids if i], preserve_thinking=preserve_thinking,
+            tokens_before=tokens_before, reason=reason, strategy=api, context_binding=binding,
+        )
+        entry_id = entry["id"]
+    elif rt._native_source is None:
+        rt._native_source = list(messages)
+    messages[:] = [result, *kept_msgs]
+    rt.ids[:] = [entry_id, *kept_ids]
+    rt.compacted_at = len(messages)
+    rt.native_binding = binding
+    # Keep system/tools frozen so native compaction can preserve recent thinking.
+    session.bus.emit("compact", rt, summary)
+    return {"tokens_before": tokens_before, "summary": summary, "kept": len(kept_msgs), "strategy": api}

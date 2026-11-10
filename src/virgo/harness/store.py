@@ -14,13 +14,22 @@ import secrets
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from send2trash import send2trash
 
 from ..ai.transform import strip_thinking
-from ..ai.types import Message, UserMessage, message_from_dict, message_to_dict, text_of
+from ..ai.types import (
+    AssistantMessage,
+    Message,
+    Usage,
+    UserMessage,
+    message_from_dict,
+    message_to_dict,
+    text_of,
+)
 
 SUMMARY_PREFIX = (
     "<conversation_summary>\nThe earlier part of this conversation was compacted into the summary below. "
@@ -30,6 +39,11 @@ SUMMARY_PREFIX = (
 
 def summary_message(text: str) -> UserMessage:
     return UserMessage(f"{SUMMARY_PREFIX}{text.strip()}\n</conversation_summary>", kind="summary")
+
+
+def _without_usage(message: Message) -> Message:
+    """Old request usage describes the pre-compaction context, not its replacement."""
+    return replace(message, usage=Usage()) if isinstance(message, AssistantMessage) else message
 
 
 def _now() -> str:
@@ -289,24 +303,37 @@ class SessionStore:
         path = self.branch()
         comp_i = max((i for i, e in enumerate(path) if e["type"] == "compaction"), default=None)
         if comp_i is None:
-            pairs = [(message_from_dict(e["message"]), e["id"]) for e in path if e["type"] == "message"]
-            return [m for m, _ in pairs], [i for _, i in pairs]
+            return self.build_full_context()
         comp = path[comp_i]
-        messages, ids = [summary_message(comp["summary"])], [comp["id"]]
-        for i in comp.get(
-            "kept_ids", []
-        ):  # retained turns lose their thinking blocks (they predate the summary)
+        if "context" in comp:
+            messages = [_without_usage(message_from_dict(m)) for m in comp["context"]]
+        else:
+            messages = [summary_message(comp["summary"])]
+        ids = [comp["id"]] * len(messages)
+        for i in comp.get("kept_ids", []):
             e = self.by_id.get(i)
             if not e or e["type"] != "message":
                 continue
-            for m in strip_thinking([message_from_dict(e["message"])]):
-                messages.append(m)
+            kept = [message_from_dict(e["message"])]
+            if not comp.get("preserve_thinking", False):
+                kept = strip_thinking(kept)
+            for m in kept:
+                messages.append(_without_usage(m))
                 ids.append(i)
         for e in path[comp_i + 1 :]:
             if e["type"] == "message":
                 messages.append(message_from_dict(e["message"]))
                 ids.append(e["id"])
         return messages, ids
+
+    def build_full_context(self) -> tuple[list, list]:
+        """Original messages on this branch, for switching away from native compaction."""
+        pairs = [
+            (message_from_dict(e["message"]), e["id"])
+            for e in self.branch()
+            if e["type"] == "message"
+        ]
+        return [m for m, _ in pairs], [i for _, i in pairs]
 
     def custom(self, kind: str) -> list:
         return [e["data"] for e in self.branch() if e["type"] == "custom" and e.get("kind") == kind]

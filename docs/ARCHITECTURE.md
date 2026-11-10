@@ -116,13 +116,15 @@ agent 准备停止时，依次检查：
 
 `tests/test_session.py::test_requests_are_append_only` 会验证这一点。
 
-压缩时会：
+每次模型调用前检查压缩条件，所有 Provider 默认阈值为模型上下文窗口的 80%（`compaction.triggerRatio=0.8`）；显式 `triggerTokens` 优先，旧 `reserveTokens` 不再使用。`/compact` 可手动触发，overflow 时另尝试一次压缩。
 
-- 生成一条摘要；
-- 保留最近一段消息，并剥离其中的 thinking 块；
-- 如果当前用户请求落在被摘要的部分，就把它原样保留下来；
-- 重建 system prompt；
-- 向会话文件追加一条 `compaction` 条目。
+- OpenAI API 使用 `/responses/compact`，把完整返回窗口保存为 `RawContent`，后续经 Responses API 原样回传；原 Chat Completions 连接在压缩后自动改用 Responses。Codex 账号使用普通 Responses 请求附加 `compaction_trigger`，保留用户输入和返回的唯一压缩项。
+- Anthropic 使用当前模型的按需压缩（`compact-2026-09-04`、`compaction.type=summarize`），仅提交较早消息，保存完整明文摘要和签名；后续请求继续携带 beta header。
+- 其他 Provider 使用原有小模型结构化摘要，支持旧摘要增量更新、文件列表和重点提示。第三方仅兼容 OpenAI/Anthropic 协议不会自动启用原生压缩。
+- Anthropic 和通用摘要按 `keepRecentTokens` 选择切点，工具调用与结果保持在同侧；必要时补回最新用户请求。OpenAI 的完整返回窗口不再自行裁剪。
+- 通用摘要剥离近期 thinking 并重建 system；原生压缩不重建 system。Anthropic 在连续保留、角色边界合适且模型/system/tools 配置不变时保留近期 thinking；补回请求或前缀配置改变时剥离。配置指纹随压缩记录保存，恢复后也会核对。
+- 向会话文件追加 `compaction` 条目，原始消息不删除；原生压缩失败、取消或返回不完整结果时不替换历史。
+- 原生状态不跨 Provider 发送；切换到不兼容 Provider 时恢复当前分支完整消息，并重新估算上下文。摘要调用和被保留消息的旧 usage 不用于压缩后的计数。
 
 ## 会话文件
 
@@ -140,7 +142,7 @@ agent 准备停止时，依次检查：
 `build_context()` 从叶子节点回溯到根，得到当前分支：
 
 - 分支上没有 compaction 条目时，就是原始的消息列表；
-- 有 compaction 条目时，依次输出：摘要消息、`kept_ids` 指向的消息（剥离 thinking）、compaction 之后的所有消息。
+- 有 compaction 条目时，依次输出：原生 `context`（没有此字段的旧记录使用 `summary`）、`kept_ids` 指向的消息、compaction 之后的所有消息。`preserve_thinking` 控制保留消息是否剥离 thinking，`context_binding` 记录原生压缩时的模型/system/tools 指纹。恢复时清除压缩前 usage，压缩后的新消息 usage 保留。
 
 队友的会话存放在 `<会话 id>-team/<name>.jsonl`。
 

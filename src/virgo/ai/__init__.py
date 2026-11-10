@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .compaction import compact as native_compact
+from .compaction import context_model
 from .models import resolve_model
 from .stream import EventStream, StreamEvent, error_message
 from .transform import normalize
@@ -29,6 +31,7 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
         from .auth import authenticated_model
 
         model = authenticated_model(model, options.signal)
+        model = context_model(model, context.messages)
         context = Context(system=context.system, messages=normalize(context.messages, model), tools=context.tools)
         if model.api == "anthropic":
             from .providers import anthropic as impl
@@ -84,6 +87,7 @@ __all__ = [
     "Usage",
     "UserMessage",
     "complete",
+    "native_compact",
     "resolve_model",
     "stream",
 ]

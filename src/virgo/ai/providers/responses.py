@@ -6,6 +6,7 @@ Codex reuses it with its own request transport and parameters.
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Iterable
 
@@ -15,6 +16,7 @@ from ..types import (
     Context,
     ImageContent,
     Model,
+    RawContent,
     StreamOptions,
     TextContent,
     ThinkingContent,
@@ -23,6 +25,7 @@ from ..types import (
     Usage,
     UserMessage,
 )
+from ._http import ProviderError, cancelled, run_cancellable
 from .openai import _client, _reasoning_effort, classify_error
 
 
@@ -69,6 +72,8 @@ def convert_messages(messages: list, *, api: str = "openai-responses") -> list[d
                     if item_id and message.api == api:
                         item["id"] = item_id
                     result.append(item)
+                elif isinstance(block, RawContent) and block.api == api:
+                    result.append(copy.deepcopy(block.data))
         elif isinstance(message, ToolResultMessage):
             output = message.text() or "(no output)"
             if any(isinstance(block, ImageContent) for block in message.content):
@@ -130,6 +135,68 @@ def _arguments(raw: str) -> dict:
         return {"__invalid_json__": raw}
 
 
+def _usage(value: dict) -> Usage:
+    details = value.get("input_tokens_details") or {}
+    cached = details.get("cached_tokens", 0) or 0
+    written = details.get("cache_write_tokens", 0) or 0
+    return Usage(
+        input=max(0, (value.get("input_tokens", 0) or 0) - cached - written),
+        output=value.get("output_tokens", 0) or 0,
+        cache_read=cached,
+        cache_write=written,
+    )
+
+
+def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | None = None) -> AssistantMessage:
+    """Return the standalone endpoint's entire replacement window verbatim.
+
+    OpenAI's compaction contract omits instructions. Neither the system prompt
+    nor a custom focus is injected into input, which would change its prefix.
+    """
+    out = AssistantMessage(api=model.api, provider=model.provider, model=model.id)
+    token = model.options.get("apiKey", "")
+    try:
+        if cancelled(opts.signal):
+            raise ProviderError("Aborted by user.", "aborted")
+        client = _client(model)
+        token = token or getattr(client, "api_key", "")
+        result = run_cancellable(
+            lambda: client.responses.with_raw_response.compact(
+                model=model.id,
+                input=convert_messages(ctx.messages, api=model.api),
+                timeout=600.0,
+            ),
+            opts.signal,
+        )
+        # The compacted window can contain input messages and newer item types
+        # outside the SDK's output union. Read JSON to preserve their wire shape.
+        data = json.loads(result.content)
+        if not isinstance(data, dict):
+            raise ProviderError("The provider returned an invalid compacted context.")
+        items = data.get("output")
+        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+            raise ProviderError("The provider returned an invalid compacted context.")
+        if not any(
+            item.get("type") == "compaction"
+            and isinstance(item.get("encrypted_content"), str)
+            and item["encrypted_content"]
+            for item in items
+        ):
+            raise ProviderError("The provider returned no encrypted compaction item.")
+        out.content = [RawContent(model.api, copy.deepcopy(item)) for item in items]
+        out.usage = _usage(data.get("usage") or {})
+        out.stop_reason = "compaction"
+    except Exception as error:  # provider contract: failures are data
+        if isinstance(error, ProviderError):
+            out.error_kind, out.error_message = error.kind, str(error)
+        else:
+            out.error_kind, out.error_message = classify_error(error)
+        if token:
+            out.error_message = out.error_message.replace(token, "[redacted]")
+        out.stop_reason = "aborted" if cancelled(opts.signal) or out.error_kind == "aborted" else "error"
+    return out
+
+
 def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: StreamOptions):
     """Convert SDK objects or decoded SSE dictionaries into Virgo stream events."""
     yield StreamEvent("start", out)
@@ -153,11 +220,14 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             block = ToolCall(f"{call_id}|{item_id}" if item_id else call_id, item.get("name", ""), {})
             buffers[index] = item.get("arguments") or ""
             event_kind = "toolcall_start"
+        elif kind == "compaction":
+            block, event_kind = RawContent(model.api, copy.deepcopy(item)), None
         else:
             return
         slots[index] = len(out.content)
         out.content.append(block)
-        yield StreamEvent(event_kind, out, slots[index])
+        if event_kind:
+            yield StreamEvent(event_kind, out, slots[index])
 
     def finish(index: int, item: dict):
         nonlocal refusal
@@ -168,6 +238,8 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
                 block = reasoning_by_id.get(item.get("id", ""))
                 if block is not None:
                     block.signature = json.dumps(item)
+            elif index in slots and isinstance(out.content[slots[index]], RawContent):
+                out.content[slots[index]].data = copy.deepcopy(item)
             return
         ci = slots[index]
         block = out.content[ci]
@@ -184,13 +256,17 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             if item.get("id"):
                 reasoning_by_id[item["id"]] = block
             event_kind = "thinking_end"
+        elif isinstance(block, RawContent):
+            block.data = copy.deepcopy(item)
+            event_kind = None
         else:
             raw = item.get("arguments")
             block.arguments = _arguments(raw if isinstance(raw, str) else buffers.get(index, ""))
             block.name = item.get("name") or block.name
             event_kind = "toolcall_end"
         finished.add(index)
-        yield StreamEvent(event_kind, out, ci)
+        if event_kind:
+            yield StreamEvent(event_kind, out, ci)
 
     for raw in events:
         if opts.signal is not None and opts.signal.is_set():
@@ -227,15 +303,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             response = event.get("response") or {}
             for i, item in enumerate(response.get("output") or []):
                 yield from finish(i, item)
-            usage = response.get("usage") or {}
-            details = usage.get("input_tokens_details") or {}
-            cached, written = details.get("cached_tokens", 0) or 0, details.get("cache_write_tokens", 0) or 0
-            out.usage = Usage(
-                input=max(0, (usage.get("input_tokens", 0) or 0) - cached - written),
-                output=usage.get("output_tokens", 0) or 0,
-                cache_read=cached,
-                cache_write=written,
-            )
+            out.usage = _usage(response.get("usage") or {})
             status = response.get("status") or kind.removeprefix("response.")
             reason = (response.get("incomplete_details") or {}).get("reason")
             if status == "failed":

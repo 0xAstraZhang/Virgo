@@ -17,7 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "permissions": {"mode": "auto-review", "allow": [], "deny": [], "readOnlyCommands": []},
     "hooks": {},
     "features": {},
-    "compaction": {"enabled": True, "reserveTokens": 16384, "keepRecentTokens": 20000, "triggerTokens": None},
+    "compaction": {"enabled": True, "triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": None},
     "retry": {"maxRetries": 3, "fallbackModel": None},
     "anthropic": {"fallbacks": True, "thinkingDisplay": "summarized", "thinkingBinding": True},
     "mcpServers": {},

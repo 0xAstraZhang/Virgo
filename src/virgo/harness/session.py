@@ -24,7 +24,9 @@ from urllib.parse import urlsplit
 from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, ToolResult
 from ..ai.auth import AuthStore
+from ..ai.compaction import compatible_context, context_binding, is_native_context
 from ..ai.stream import EventStream, StreamEvent
+from ..ai.transform import strip_thinking
 from ..ai.types import AssistantMessage, Context, StreamOptions, TextContent, UserMessage
 from ..features.permission import normalize_permission_mode, plan_tool_allowed
 from ..tools import BASE_TOOLS
@@ -75,7 +77,11 @@ class Runtime:
         self.system_extra = system_extra
         self.tools = tools if tools is not None else session.tools_for(role)
         self.compaction = compaction
-        self.compacted_at = 1 if messages and getattr(messages[0], "kind", None) == "summary" else 0
+        self.compacted_at = 1 if messages and (
+            getattr(messages[0], "kind", None) == "summary" or is_native_context(messages[0])
+        ) else 0
+        self._native_source: list | None = None
+        self.native_binding = (store.last_compaction() or {}).get("context_binding") if store else None
         self.system = ""
         self.rebuild_system()
         cfg = AgentConfig(
@@ -102,25 +108,68 @@ class Runtime:
     def _on_event(self, ev: AgentEvent) -> None:
         if ev.type == "message_end":
             self.ids.append(self.store.append_message(ev.message) if self.store else None)
+            if self._native_source is not None:
+                self._native_source.append(ev.message)
         self.session.bus.emit("agent_event", ev, self)
         if ev.type == "turn_end":
             self.session.bus.emit("turn_end", ev, self)
         self.session.ui.on_event(ev)
 
-    def compact(self, focus: str | None = None, reason: str = "manual") -> dict | None:
-        return compaction.compact(self, focus=focus, reason=reason)
+    def compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
+        return compaction.compact(self, focus=focus, reason=reason, model=model)
+
+    def restore_native_context(self, model=None) -> bool:
+        """Provider-owned state cannot replace portable history after a provider switch."""
+        if compatible_context(model or self.model, self.messages):
+            return False
+        if self.store is not None:
+            messages, ids = self.store.build_full_context()
+        elif self._native_source is not None:
+            messages, ids = list(self._native_source), [None] * len(self._native_source)
+        else:
+            raise ValueError("Cannot restore original history for this native compacted context.")
+        self.messages[:] = messages
+        self.ids[:] = ids
+        self.compacted_at = len(messages)
+        self._native_source = None
+        self.native_binding = None
+        return True
 
     def context_tokens(self) -> int:
         return compaction.estimate_tokens(self.messages, self.compacted_at)
 
-    def _compaction_due(self) -> bool:
+    def _compaction_due(self, model=None) -> bool:
         s = self.session.settings
         if not self.compaction or not s.get("compaction.enabled", True):
             return False
-        trigger = s.get("compaction.triggerTokens") or (
-            self.model.context_window - int(s.get("compaction.reserveTokens", 16384))
-        )
-        return self.context_tokens() > trigger
+        trigger = s.get("compaction.triggerTokens")
+        if trigger is None:
+            trigger = int((model or self.model).context_window * float(s.get("compaction.triggerRatio", 0.8)))
+        return self.context_tokens() >= trigger
+
+    def request_context(self, messages: list, model=None) -> Context:
+        """Use the same instructions, tools and extension view for generation and compaction."""
+        s = self.session
+        view = s.bus.chain("context", list(messages), self)
+        permissions = s.services.get("permissions")
+        mode = permissions.mode_for(self.name) if permissions else s.permission_mode
+        system = self.system
+        tools = [t.spec() for t in self.tools if mode != "plan" or plan_tool_allowed(t)]
+        if mode == "plan":
+            system += (
+                "\n\n<permission_mode>\n"
+                "Plan mode is active. Investigate with read-only tools, then provide a concrete plan "
+                "for the user. Do not implement changes, modify project files, install dependencies, "
+                "or execute commands with side effects. Planning task records are allowed. "
+                "Only tools offered in this request are available.\n</permission_mode>"
+            )
+            for tool in tools:
+                if tool.name == "bash":
+                    tool.description = "Run a read-only shell command to inspect the project. Do not modify files or system state."
+        context = Context(system, view, tools)
+        if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):
+            context.messages = strip_thinking(view)
+        return context
 
     # -- model calls ---------------------------------------------------------
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
@@ -129,6 +178,7 @@ class Runtime:
 
     def _attempts(self, messages: list, signal: threading.Event):
         s = self.session
+        self.restore_native_context()
         if self._compaction_due():
             self.compact(reason="auto")
         max_retries = int(s.settings.get("retry.maxRetries", 3))
@@ -136,23 +186,9 @@ class Runtime:
         overflow_done = False
         model = self.model
         while True:
-            view = s.bus.chain("context", list(messages), self)
-            permissions = s.services.get("permissions")
-            mode = permissions.mode_for(self.name) if permissions else s.permission_mode
-            system = self.system
-            tools = [t.spec() for t in self.tools if mode != "plan" or plan_tool_allowed(t)]
-            if mode == "plan":
-                system += (
-                    "\n\n<permission_mode>\n"
-                    "Plan mode is active. Investigate with read-only tools, then provide a concrete plan "
-                    "for the user. Do not implement changes, modify project files, install dependencies, "
-                    "or execute commands with side effects. Planning task records are allowed. "
-                    "Only tools offered in this request are available.\n</permission_mode>"
-                )
-                for tool in tools:
-                    if tool.name == "bash":
-                        tool.description = "Run a read-only shell command to inspect the project. Do not modify files or system state."
-            ctx = Context(system, view, tools)
+            if self.restore_native_context(model) and self._compaction_due(model):
+                self.compact(reason="auto", model=model)
+            ctx = self.request_context(messages, model)
             opts = StreamOptions(signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort)
             failed: AssistantMessage | None = None
             for ev in ai.stream(model, ctx, opts):
@@ -165,7 +201,7 @@ class Runtime:
             if failed.error_kind == "overflow" and not overflow_done and self.compaction:
                 overflow_done = True
                 yield StreamEvent("retry", failed)
-                if self.compact(reason="overflow") is not None:
+                if self.compact(reason="overflow", model=model) is not None:
                     continue
             elif failed.error_kind == "retryable" and retries < max_retries and not signal.is_set():
                 retries += 1

@@ -192,14 +192,15 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
                  "models": {"deepseek-flash": {"contextWindow": 1000000}}}
   },
   "hooks": {"PreToolUse": [{"matcher": "bash", "command": "./scripts/guard.sh"}]},
-  "compaction": {"reserveTokens": 16384, "keepRecentTokens": 20000, "triggerTokens": null},
+  "compaction": {"triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": null},
   "retry": {"maxRetries": 3, "fallbackModel": null},
   "features": {"team": true, "schedule": true}
 }
 ```
 
 - **模型提供方**：Anthropic、OpenAI 兼容和 xAI Responses 使用官方 SDK；OpenAI 账号与 Google 账号使用对应的流式接口。也可以在 `providers` 里声明自定义端点。
-- **小模型**：权限审批、压缩摘要、goal 评审和记忆整理共用自动选择的小模型。OpenAI API、Codex 账号及指向 OpenAI 官方 API 的自定义连接使用同一连接下的 `gpt-6-luna`；Anthropic 及指向其官方 API 的自定义连接使用同一连接下的 `claude-haiku-5-5`；其他厂商使用主模型。切换模型或登录后同步更新，旧 `smallModel` 配置不再参与选择。小模型支持 `low` 时使用 `low`，否则使用其默认强度；默认强度未知时省略参数，采用服务端默认。此规则不受主对话 `/effort` 影响。实时目录提供强度信息时优先使用，也可在 `providers.<厂商>.models.<模型>` 中补充 `supportedReasoningLevels` 和 `defaultReasoningLevel`。
+- **小模型**：权限审批、其他 Provider 的压缩摘要、goal 评审和记忆整理共用自动选择的小模型。OpenAI API、Codex 账号及指向 OpenAI 官方 API 的自定义连接使用同一连接下的 `gpt-6-luna`；Anthropic 及指向其官方 API 的自定义连接使用同一连接下的 `claude-haiku-5-5`；其他厂商使用主模型。切换模型或登录后同步更新，旧 `smallModel` 配置不再参与选择。小模型支持 `low` 时使用 `low`，否则使用其默认强度；默认强度未知时省略参数，采用服务端默认。此规则不受主对话 `/effort` 影响。实时目录提供强度信息时优先使用，也可在 `providers.<厂商>.models.<模型>` 中补充 `supportedReasoningLevels` 和 `defaultReasoningLevel`。
+- **上下文压缩**：所有 Provider 默认在上下文估算达到模型窗口的 80% 时压缩；`triggerRatio` 可调整比例，非空 `triggerTokens` 优先指定绝对阈值，旧 `reserveTokens` 不再参与计算。OpenAI API 默认调用 [Responses 原生压缩](https://developers.openai.com/api/docs/guides/compaction)，压缩后使用 Responses 回传完整加密上下文；Codex 账号使用 Responses 的原生 `compaction_trigger`。Anthropic 默认调用 [按需压缩](https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand)，使用当前模型并原样保留签名块。其他 Provider（包括第三方兼容 API）继续使用小模型结构化摘要。`keepRecentTokens` 控制 Anthropic 和通用摘要保留的近期消息；OpenAI 使用服务端返回的完整窗口。`/compact [focus]` 的重点提示适用于 Anthropic 和通用摘要，OpenAI 使用服务端摘要指令。原生请求失败时保留原上下文并报告错误；切换到不兼容 Provider 时从完整历史重建。
 - **实时模型目录**：[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、[DeepSeek](https://api-docs.deepseek.com/api/list-models/) 及兼容连接查询其 API 根路径下的 `GET /models`；[Anthropic](https://platform.claude.com/docs/en/api/models/list) 查询 `GET /v1/models` 并处理分页；Codex 账号沿用[官方客户端的目录接口](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/models.rs)。服务端明确隐藏、不可用或不适用于文本对话的模型会被过滤。`providers.<厂商>.models` 仅补充模型参数，不再决定菜单中有哪些模型；服务端返回的上下文和输出限制优先用于当前会话。Google Code Assist 账号目前没有适配的实时目录，需使用 `/model provider/id` 指定模型；离线 `faux` 演示继续使用本地目录。
 - **目录版本更新**：Codex 从本机 `codex --version`、官方 `@openai/codex` 稳定发布元数据和上次成功的版本中选择最新候选，不使用 Virgo 的应用版本。发布元数据每 24 小时更新一次；目录为空或返回 HTTP 400/426 时强制刷新，至多再尝试一个候选版本。版本源无法连接时可使用本机或缓存版本继续查询；没有任何候选或重试仍失败时显示原因。版本信息保存在 `~/.virgo/cache/codex-catalog-version.json`（跟随 `VIRGO_HOME`），模型列表仍然每次实时获取。该流程只查询版本信息；固定 `providers.openai-codex.clientVersion` 会关闭自动选择与重试，删除该设置可恢复自动模式。
 - **其他厂商的版本**：OpenAI API、DeepSeek 等兼容目录不需要 Codex 客户端版本参数；Anthropic 目录的 `anthropic-version` 跟随已安装 SDK 的默认值，升级 SDK 后同步更新，也可用 `providers.<厂商>.apiVersion` 固定。API 日期代表[接口协议版本](https://platform.claude.com/docs/en/api/versioning)，与模型列表更新分开管理。
@@ -246,7 +247,7 @@ def setup(api):
 | TodoWrite | `features/todo.py` | 整表替换、校验失败不改状态；状态存在工具结果 `details` 里，可从会话重建；只在 agent 准备结束但仍有未完成项时提醒一次 |
 | 子 Agent | `features/subagent.py` | 全新上下文，只返回最终答案；不能递归；`general` / `explore` 两种类型，可在 `agents/*.md` 自定义；可并行、可后台 |
 | 技能 | `features/skills.py` | 渐进披露：prompt 只列目录，模型用 `read` 加载正文；`/skill:` 强制使用 |
-| 上下文压缩 | `harness/compaction.py`、`tools/truncate.py` | 单条输出预算 + 自动结构化摘要（增量更新）+ 超限时反应式压缩 + `/compact`；切点不拆开 tool 调用与结果，保留轮次剥离 thinking |
+| 上下文压缩 | `harness/compaction.py`、`ai/compaction.py`、`tools/truncate.py` | 默认 80% 窗口触发；OpenAI / Anthropic 原生压缩，其他 Provider 用增量摘要；完整历史保留，支持 `/compact` 和超限补救 |
 | 记忆 | `features/memory.py` | 用户级和项目级两层，每条记忆一个 Markdown 文件，各配一个 `MEMORY.md` 索引；会话开始时把索引放进 prompt；`memory` 工具主动保存并去重；`/memory tidy` 整理，失败回滚 |
 | 任务系统 | `features/tasks.py` | 持久化依赖图 + 文件锁；认领时校验依赖；做环检测；完成时报告新解锁的任务；与队友共享 |
 | 后台任务 | `features/background.py` | bash 和子 agent 共用一个 JobManager；完成后通知（agent 运行中则插入，空闲则唤醒） |
@@ -260,7 +261,7 @@ def setup(api):
 ## 设计取舍
 
 - **发送给 API 的历史只追加。** 
-  - system prompt 和工具集合在同一权限模式内保持稳定；切换到或离开 plan 时更新规划提示和可用工具，压缩后重建基础上下文；
+  - system prompt 和工具集合在同一权限模式内保持稳定；切换到或离开 plan 时更新规划提示和可用工具；通用摘要压缩后重建基础上下文，原生压缩保持前缀配置稳定；
   - 通知、提醒、队友消息都以追加消息的形式进入；
   - 不改写、不删除旧轮次，所以**不做 micro-compaction**，也不做中段 snip；
   - 完整历史始终保存在会话文件中。
