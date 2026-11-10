@@ -415,6 +415,10 @@ class AgentSession:
                 kept.append((t, r))
         self._tools = [*kept, (tool, tuple(roles))]
 
+    def unregister_tool(self, name: str) -> None:
+        """Remove a tool from every role, e.g. when the service behind it is replaced."""
+        self._tools = [(t, r) for t, r in self._tools if t.name != name]
+
     def tools_for(self, role: str) -> list[AgentTool]:
         return [t for t, roles in self._tools if role in roles]
 

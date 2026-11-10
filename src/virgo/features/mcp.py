@@ -197,6 +197,7 @@ def load_config(api: ExtensionAPI) -> dict:
 def setup(api: ExtensionAPI) -> None:
     clients: dict[str, MCPClient] = {}
     api.services["mcp"] = clients
+    registered: set[str] = set()  # tool names owned by the current connections
 
     def register(client: MCPClient) -> None:
         seen = {t.name for t in api.session.tools_for("main")}
@@ -225,6 +226,7 @@ def setup(api: ExtensionAPI) -> None:
                 roles=ROLES_ALL,
             )
             seen.add(name)
+            registered.add(name)
 
     def connect_all(config: dict) -> None:
         def one(item):
@@ -254,6 +256,11 @@ def setup(api: ExtensionAPI) -> None:
             for c in clients.values():
                 c.close()
             clients.clear()
+            # The old tools are bound to the clients just closed; keeping them would both shadow
+            # the new connection's tools as duplicates and fail on every call.
+            for name in registered:
+                session.unregister_tool(name)
+            registered.clear()
             connect_all(load_config(api))
             session.main.tools[:] = session.tools_for("main")
             session.main.rebuild_system()

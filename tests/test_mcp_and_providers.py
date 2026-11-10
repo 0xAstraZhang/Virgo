@@ -72,6 +72,35 @@ def test_mcp_tools_are_namespaced_and_permission_checked(make_session, project, 
     assert s.main.agent.last_text == "ok"
 
 
+def test_mcp_reconnect_rebinds_tools_to_the_new_connection(make_session, project):
+    (project / ".virgo").mkdir()
+    config = {"mcpServers": {"echo": {"command": sys.executable, "args": [str(SERVER)]}}}
+    (project / ".virgo" / "mcp.json").write_text(json.dumps(config))
+    ui = RecordingUI()
+    s = make_session(
+        faux.reply(tools=[("mcp__echo__add", {"a": 1, "b": 2})]),
+        faux.reply("first"),
+        faux.reply(tools=[("mcp__echo__add", {"a": 20, "b": 30})]),
+        faux.reply("second"),
+        ui=ui,
+    )
+    s.prompt("add")
+    first = s.services["mcp"]["echo"]
+    s.prompt("/mcp reconnect")
+    assert s.services["mcp"]["echo"] is not first and "duplicate" not in ui.text
+    s.prompt("add again")
+    # The tools used to stay bound to the closed client: "ValueError: write to closed file".
+    results = [(m.text(), m.is_error) for m in s.main.messages if isinstance(m, ToolResultMessage)]
+    assert results == [("3", False), ("50", False)]
+    assert [t.name for t in s.main.tools].count("mcp__echo__add") == 1
+
+    # A server removed from the configuration takes its tools with it.
+    (project / ".virgo" / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+    s.prompt("/mcp reconnect")
+    assert not any(t.name.startswith("mcp__") for t in s.main.tools)
+    assert s.tool("mcp__echo__add", "subagent") is None
+
+
 def test_anthropic_request_shape():
     model = resolve_model("anthropic/claude-opus-5-5")
     msgs = [
