@@ -25,18 +25,30 @@ from .types import (
 def stream(model: Model, context: Context, options: StreamOptions | None = None) -> EventStream:
     """Stream one assistant message. Never raises: failures arrive as an `error` event."""
     options = options or StreamOptions()
-    context = Context(system=context.system, messages=normalize(context.messages, model), tools=context.tools)
     try:
+        from .auth import authenticated_model
+
+        model = authenticated_model(model, options.signal)
+        context = Context(system=context.system, messages=normalize(context.messages, model), tools=context.tools)
         if model.api == "anthropic":
             from .providers import anthropic as impl
         elif model.api == "openai":
             from .providers import openai as impl
+        elif model.api == "openai-codex":
+            from .providers import codex as impl
+        elif model.api == "openai-responses":
+            from .providers import responses as impl
+        elif model.api == "google-gemini-cli":
+            from .providers import google as impl
         elif model.api == "faux":
             from .providers import faux as impl
         else:
             raise ValueError(f"unsupported api {model.api!r}")
     except Exception as e:  # noqa: BLE001 - e.g. optional dependency missing
         msg = error_message(model.api, model.provider, model.id, f"{type(e).__name__}: {e}")
+        if options.signal is not None and options.signal.is_set():
+            msg.stop_reason = "aborted"
+            msg.error_message = "aborted by user"
         return EventStream(iter([StreamEvent("error", msg)]), msg)
     return impl.stream(model, context, options)
 

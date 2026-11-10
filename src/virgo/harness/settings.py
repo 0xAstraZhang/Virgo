@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,7 @@ class Settings:
     def __init__(self, data: dict, paths: Paths):
         self.data = data
         self.paths = paths
+        self.overrides: dict = {}
 
     @classmethod
     def load(cls, paths: Paths, overrides: dict | None = None) -> Settings:
@@ -78,7 +80,9 @@ class Settings:
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         data = deep_merge(data, overrides or {})
-        return cls(data, paths)
+        settings = cls(data, paths)
+        settings.overrides = copy.deepcopy(overrides or {})
+        return settings
 
     def get(self, dotted: str, default: Any = None) -> Any:
         cur: Any = self.data
@@ -97,3 +101,30 @@ class Settings:
 
     def feature_enabled(self, name: str) -> bool:
         return bool(self.get(f"features.{name}", True))
+
+    def save_user(self, patch: dict) -> None:
+        """Persist only explicit changes, preserving unrelated user configuration."""
+        path = self.paths.user / "settings.json"
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        data = deep_merge(_read_json(path), patch)
+        fd, name = tempfile.mkstemp(prefix=".settings-", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            os.replace(name, path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+        self.data = deep_merge(self.data, patch)
+
+    def check_provider_update(self, provider: str, config: dict) -> None:
+        """Reject a login that would use a different endpoint on the next startup."""
+        project = _read_json(self.paths.project / "settings.json")
+        effective = deep_merge(config, project.get("providers", {}).get(provider, {}))
+        effective = deep_merge(effective, self.overrides.get("providers", {}).get(provider, {}))
+        for key in ("api", "baseUrl", "apiKeyEnv"):
+            if effective.get(key) != config.get(key):
+                raise ValueError(
+                    f"Project or runtime settings override {provider}.{key}. "
+                    "Use that configured value, update the override, or choose a custom Provider ID."
+                )

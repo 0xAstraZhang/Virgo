@@ -4,9 +4,12 @@ version = "0.1.0"
 description = "A lightweight, extensible coding agent harness inspired by Pi."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=2.7.0",
+    "httpx>=0.28.1",
+    "openai>=3.48.0",
     "pyyaml>=6.0.3",
     "textual>=8.2.8,<9",
 ]

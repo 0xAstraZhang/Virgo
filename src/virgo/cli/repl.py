@@ -20,6 +20,7 @@ def _setup_readline(history: Path, session: AgentSession) -> None:
         import readline
     except ImportError:
         return
+    readline.set_auto_history(False)
     try:
         history.parent.mkdir(parents=True, exist_ok=True)
         if history.exists():
@@ -59,6 +60,8 @@ def run_repl(
         return worker[0] is not None and worker[0].is_alive()
 
     def start(fn) -> None:
+        session.main.agent.signal.clear()
+
         def wrap():
             try:
                 fn()
@@ -73,6 +76,8 @@ def run_repl(
     broker.start_reader()
     if initial:
         start(lambda: session.prompt(initial))
+        if not initial.startswith("/"):
+            broker.resume_reading()
     else:
         ui.prompt()
     last_interrupt = 0.0
@@ -84,6 +89,7 @@ def run_repl(
         except KeyboardInterrupt:
             if busy():
                 session.abort()
+                broker.cancel_pending()
                 ui.print("[interrupting…]", "warn")
                 continue
             if time.time() - last_interrupt < 2:
@@ -103,6 +109,8 @@ def run_repl(
             if not line:
                 if not busy():
                     ui.prompt()
+                else:
+                    broker.resume_reading()
                 continue
             if line in EXIT:
                 if busy():
@@ -113,6 +121,8 @@ def run_repl(
                 cmd.fn(session, line.partition(" ")[2])  # read-only: run inline, even while busy
                 if not busy():
                     ui.prompt()
+                else:
+                    broker.resume_reading()
                 continue
             if busy():
                 if line.startswith("/"):
@@ -121,8 +131,11 @@ def run_repl(
                 else:
                     session.main.agent.steer(UserMessage(line))
                     ui.print("[steering message queued]", "dim")
+                broker.resume_reading()
                 continue
             start(lambda line=line: session.prompt(line))
+            if cmd is None:
+                broker.resume_reading()
         elif kind == "wake":
             if not busy() and session.wakeups:
                 start(session.run_pending)
@@ -134,4 +147,5 @@ def run_repl(
             else:
                 ui.prompt()
     ui.print("bye", "dim")
+    broker.close()
     session.shutdown()

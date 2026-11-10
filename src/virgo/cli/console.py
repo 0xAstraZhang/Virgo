@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import select
 import shutil
 import sys
 import threading
@@ -39,6 +40,15 @@ class ConsoleBroker:
         self._ask_lock = threading.Lock()
         self._waiting: threading.Event | None = None
         self._answer = ""
+        self._password = False
+        self._read_ready = threading.Event()
+        self._reading = False
+        self._state_lock = threading.Lock()
+        self._cancelled = False
+        self._prompt_ready: threading.Event | None = None
+        self._read_complete: threading.Event | None = None
+        self._reader: threading.Thread | None = None
+        self._terminal_state = None
         self.closed = False
         self.on_line = lambda: None  # the user's Enter moved the cursor to a fresh line
 
@@ -46,10 +56,29 @@ class ConsoleBroker:
         self.events.put(item)
 
     def start_reader(self) -> None:
+        if sys.stdin.isatty():
+            import termios
+
+            self._terminal_state = (sys.stdin.fileno(), termios.tcgetattr(sys.stdin.fileno()))
+
         def read():
             while True:
+                self._read_ready.wait()
+                self._read_ready.clear()
+                with self._state_lock:
+                    if self.closed:
+                        return
+                    waiting = self._waiting
+                    password = self._password
+                    complete = self._read_complete if waiting is not None else None
+                    self._reading = True
                 try:
-                    line = input()
+                    if waiting is not None and sys.stdin.isatty():
+                        line = self._read_terminal_answer(waiting, password)
+                    else:
+                        if self._prompt_ready is not None:
+                            self._prompt_ready.set()
+                        line = input()
                 except EOFError:
                     self.closed = True
                     if self._waiting:
@@ -57,30 +86,127 @@ class ConsoleBroker:
                     self.push("eof")
                     return
                 except Exception:  # noqa: BLE001
+                    self.cancel_pending()
+                    self.resume_reading()
+                    continue
+                finally:
+                    with self._state_lock:
+                        self._reading = False
+                    if complete is not None:
+                        complete.set()
+                if line is None or (waiting is not None and waiting.is_set()):
                     continue
                 self.on_line()
                 if self._waiting is not None:
                     self._answer = line
                     self._waiting.set()
                 else:
+                    try:
+                        import readline
+
+                        if line.strip():
+                            readline.add_history(line)
+                    except ImportError:
+                        pass
                     self.push("line", line)
 
-        threading.Thread(target=read, daemon=True, name="virgo-stdin").start()
+        self._reader = threading.Thread(target=read, daemon=True, name="virgo-stdin")
+        self._reader.start()
+
+    def resume_reading(self) -> None:
+        self._read_ready.set()
+
+    def cancel_pending(self) -> None:
+        self._cancelled = True
+        if self._waiting is not None:
+            self._waiting.set()
+        if self._prompt_ready is not None:
+            self._prompt_ready.set()
+
+    def close(self) -> None:
+        self.closed = True
+        self.cancel_pending()
+        self.resume_reading()
+        if self._reader is not None:
+            self._reader.join(timeout=0.2)
+        if self._terminal_state is not None:
+            import termios
+
+            fd, original = self._terminal_state
+            termios.tcsetattr(fd, termios.TCSANOW, original)
+
+    def _read_terminal_answer(self, waiting: threading.Event, password: bool) -> str | None:
+        """Read forms on the single reader thread, with cancellable hidden input."""
+        import termios
+
+        fd = sys.stdin.fileno()
+        original = termios.tcgetattr(fd)
+        if password:
+            hidden = list(original)
+            hidden[3] &= ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSANOW, hidden)
+        if self._prompt_ready is not None:
+            self._prompt_ready.set()
+        value = bytearray()
+        try:
+            while not waiting.is_set() and not self.closed:
+                if not select.select([fd], [], [], 0.05)[0]:
+                    continue
+                char = os.read(fd, 1)
+                if not char:
+                    raise EOFError
+                if char in (b"\n", b"\r"):
+                    return value.decode(sys.stdin.encoding or "utf-8")
+                value.extend(char)
+            termios.tcflush(fd, termios.TCIFLUSH)
+            return None
+        finally:
+            termios.tcsetattr(fd, termios.TCSANOW, original)
+            if password:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
+    def read_value(self, question: str, write, *, password: bool = False) -> str | None:
+        with self._ask_lock:
+            with self._state_lock:
+                if self.closed:
+                    return None
+                if password and self._reading:
+                    raise RuntimeError("A password prompt requires the current terminal read to finish")
+                ev = threading.Event()
+                self._answer = ""
+                self._cancelled = False
+                self._password = password
+                self._waiting = ev
+                ready = self._prompt_ready = threading.Event()
+                complete = self._read_complete = threading.Event()
+                already_reading = self._reading
+                if already_reading:
+                    ready.set()
+            try:
+                self.resume_reading()
+                ready.wait()
+                write(question + "\n> ")
+                ev.wait()
+                return None if self.closed or self._cancelled else self._answer
+            finally:
+                # A cancelled form must finish flushing partial input and
+                # restoring echo before the next command can be submitted.
+                if not already_reading and not self.closed:
+                    complete.wait()
+                self._waiting = None
+                self._answer = ""
+                self._password = False
+                self._prompt_ready = None
+                self._read_complete = None
 
     def ask(self, question: str, write) -> str | None:
-        with self._ask_lock:  # one question at a time, from any thread
-            if self.closed:
-                return None
-            ev = threading.Event()
-            self._answer = ""
-            self._waiting = ev
-            write(question + "\n> ")
-            ev.wait()
-            self._waiting = None
-            if self.closed:
-                return None
-            a = self._answer.strip().lower()
-            return "a" if a in ("a", "always") else "y" if a in ("y", "yes") else "n"
+        answer = self.read_value(question, write)
+        self.resume_reading()
+        if answer is None:
+            return None
+        a = answer.strip().lower()
+        return "a" if a in ("a", "always") else "y" if a in ("y", "yes") else "n"
 
 
 def _brief(name: str, args: dict | None) -> str:
@@ -135,6 +261,28 @@ class TerminalUI(UI):
             self._newline()
         return self.broker.ask(self._style("? ", "warn") + question, self.write)
 
+    def input(self, question: str, *, password: bool = False, default: str = "") -> str | None:
+        with self._lock:
+            self._newline()
+        prompt = question + (f" [{default}]" if default and not password else "")
+        value = self.broker.read_value(prompt, self.write, password=password)
+        return default if value == "" else value
+
+    def select(self, question: str, options: list[str]) -> str | None:
+        if not options:
+            return None
+        prompt = "\n".join([question, *(f"  {i}. {label}" for i, label in enumerate(options, 1))])
+        while True:
+            value = self.input(prompt + "\nChoose a number (empty to cancel)")
+            if value is None or not value.strip():
+                return None
+            value = value.strip()
+            if value in options:
+                return value
+            if value.isdecimal() and 1 <= int(value) <= len(options):
+                return options[int(value) - 1]
+            self.print("Choose one of the listed options.", "warn")
+
     def wake(self) -> None:
         self.broker.push("wake")
 
@@ -142,6 +290,7 @@ class TerminalUI(UI):
         with self._lock:
             self._newline()
             self.write(self._style(PROMPT, "bold"))
+        self.broker.resume_reading()
 
     # -- events -------------------------------------------------------------------
     def on_event(self, ev: AgentEvent) -> None:

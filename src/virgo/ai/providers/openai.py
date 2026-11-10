@@ -40,12 +40,16 @@ _clients_lock = threading.Lock()
 def _client(model: Model):
     import openai
 
-    key = os.environ.get(model.api_key_env or "OPENAI_API_KEY") or "not-set"
+    env = model.api_key_env or ("OPENAI_API_KEY" if model.provider == "openai" else None)
+    key = model.options.get("apiKey") or (os.environ.get(env) if env else None) or "not-set"
     base = model.base_url or (os.environ.get("OPENAI_BASE_URL") if model.provider == "openai" else None)
-    ck = (key, base)
+    headers = dict(model.options.get("headers") or {})
+    ck = (key, base, tuple(sorted(headers.items())))
     with _clients_lock:
         if ck not in _clients:
             kwargs = {"api_key": key, "max_retries": 0}
+            if headers:
+                kwargs["default_headers"] = headers
             if base:
                 kwargs["base_url"] = base
             _clients[ck] = openai.OpenAI(**kwargs)
@@ -114,7 +118,10 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
             for t in ctx.tools
         ]
     if model.reasoning and opts.effort:
-        params["reasoning_effort"] = _EFFORT.get(opts.effort, "medium")
+        effort_map = o.get("reasoningEffortMap", _EFFORT)
+        effort = effort_map.get(opts.effort)
+        if effort is not None:
+            params["reasoning_effort"] = effort
     return params
 
 
@@ -143,6 +150,11 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
     finish = None
     resp = None
     try:
+        if opts.signal is not None and opts.signal.is_set():
+            out.stop_reason = "aborted"
+            out.error_message = "aborted by user"
+            yield StreamEvent("error", out)
+            return
         resp = _client(model).chat.completions.create(**build_params(model, ctx, opts))
         for chunk in resp:
             if opts.signal is not None and opts.signal.is_set():

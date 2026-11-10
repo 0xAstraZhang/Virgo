@@ -6,7 +6,7 @@ Virgo 是一个轻量、可扩展的 Coding Agent。
 - **功能**：支持权限、钩子、TodoWrite、子 Agent、技能、上下文压缩、记忆、任务图、后台任务、定时任务、Agent 团队、MCP、Workflow、Goal loop 等。
 
 ```
-virgo.ai                          统一的流式消息模型 + Anthropic / OpenAI 兼容 / faux 适配器
+virgo.ai                          统一流式模型、账号认证 + Anthropic / OpenAI / Google / faux 适配器
 virgo.agent                       事件驱动的工具调用循环（steer / follow-up 队列、并行工具、abort）
 virgo.harness                     会话树、system prompt、扩展总线、命令、压缩、集成运行时
 virgo.tools                       read / write / edit / bash / glob / grep
@@ -18,13 +18,13 @@ virgo.cli                         全屏 TUI / plain REPL、-p 打印模式、--
 
 项目用 [uv](https://docs.astral.sh/uv/) 管理，需要 Python ≥ 3.11。
 
-先安装依赖（含 OpenAI 兼容支持）：
+先安装依赖（已包含 OpenAI 兼容支持）：
 
 ```bash
-uv sync --all-extras
+uv sync
 ```
 
-配置 Claude 的 API 密钥：
+启动后输入 `/login`，选择账号登录或 API 接入。也可以继续使用环境变量，例如 Claude 的 API 密钥：
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -73,7 +73,7 @@ uv tool install .
 | 参数 | 说明 |
 |---|---|
 | `--ui auto\|fullscreen\|plain` | 默认 `auto`；可用交互终端进入全屏，否则使用 plain；不影响 `-p` |
-| `-m, --model provider/id` | 默认 `anthropic/claude-opus-5-5`；也可以是 `openai/gpt-5`、`deepseek/deepseek-chat` 等 |
+| `-m, --model provider/id` | 初始默认 `anthropic/claude-opus-5-5`；登录后保存所选模型，也可以是 `openai/gpt-5`、`deepseek/deepseek-flash` 等 |
 | `--effort low…max` | 推理强度，默认 `medium` |
 | `--permission-mode` | `default`（改动前询问）/ `accept-edits` / `plan`（只读）/ `yolo` |
 | `-c` / `-r [FILE]` | 继续最近的会话 / 选择一个会话恢复 |
@@ -112,6 +112,8 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | 命令 | 作用 |
 |---|---|
 | `/help` | 列出命令与 prompt 模板 |
+| `/login [auth\|api] [provider]` | 账号登录或配置 API；无参数进入选择器 |
+| `/logout [provider\|all]` | 选择并删除已保存的登录，或退出全部账号 |
 | `/model [p/id]` `/effort [lvl]` | 查看或切换模型、推理强度 |
 | `/permissions [mode]` | 查看规则 / 切换权限模式 |
 | `/compact [focus]` | 立即压缩上下文 |
@@ -123,6 +125,45 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | `/workflow [resume id]` | 列出 workflow / 续跑 |
 | `/goal <条件>` `/goal` `/goal clear` | 目标循环 |
 | `/exit` | 退出 |
+
+### 登录模型服务
+
+`/login` 在全屏界面显示选择器，在 plain 界面显示编号菜单。先选择 **Auth — 登录账号** 或 **API — API 接入**：
+
+| 方式 | 预设 | 接入方式 |
+|---|---|---|
+| Auth | OpenAI | ChatGPT 账号，浏览器回调、粘贴回调地址或设备码；使用 Codex 接口 |
+| Auth | Anthropic | Claude 账号，浏览器回调或复制授权码 |
+| Auth | xAI | 设备码登录 |
+| Auth | Google | Google 账号，浏览器回调或复制授权码；使用 Code Assist |
+| Auth | Kimi | Kimi Code 账号，设备码登录 |
+| API | DeepSeek、GLM、Kimi | 预填服务地址和模型，输入自己的 API key |
+| API | 自定义 | 输入服务商 ID、接口协议、Base URL、模型 ID 和 API key；支持 OpenAI 兼容和 Anthropic Messages |
+
+也可以直接指定入口：
+
+```text
+/login auth openai
+/login auth anthropic
+/login auth xai
+/login auth google
+/login auth kimi
+/login api deepseek
+/login api glm
+/login api kimi
+/login api custom
+/logout
+/logout deepseek
+/logout all
+```
+
+API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API 地址，Coding Plan 用户可改为 `https://open.bigmodel.cn/api/coding/paas/v4`；Kimi API 默认使用 `https://api.moonshot.cn/v1`，国际站可改为 `.ai` 地址。Kimi 账号登录保存在 `kimi-coding` 下，API 接入保存在 `kimi` 下，两者可分别退出。
+
+登录成功后立即切换模型，并把模型及接口配置写入用户级 `settings.json`；项目配置、`VIRGO_MODEL` 和启动参数仍按原有优先级覆盖。Google 登录如需用户项目，会提示输入 Google Cloud project ID，也会读取 `GOOGLE_CLOUD_PROJECT` 或 `GOOGLE_CLOUD_PROJECT_ID`。
+
+密钥和 OAuth token 单独保存到 `~/.virgo/auth.json`（受 `VIRGO_HOME` 控制），文件权限为 `0600`。密钥输入不会显示或进入聊天、会话文件和输入历史。每次模型请求读取当前凭据，OAuth 临近过期时刷新；已保存凭据优先于环境变量。凭据绑定登录时选定的接口，修改协议或地址后需重新登录。`/logout` 删除所选本地凭据，环境变量中的密钥仍然有效；自定义接入使用独立的 `VIRGO_<PROVIDER_ID>_API_KEY`（ID 转为大写，连字符改为下划线）。全屏可按 Esc 取消当前步骤；两种界面都可用 Ctrl+C 中止登录。
+
+实现参考 [Pi 1.5.0](https://github.com/earendil-works/pi) 的 AuthStorage、OAuth 和模型适配器；Google 账号协议参考 [Pi v0.56.1](https://github.com/badlogic/pi-mono/blob/v0.56.1/packages/ai/src/utils/oauth/google-gemini-cli.ts) 及 [Gemini CLI](https://github.com/google-gemini/gemini-cli)。第三方许可见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)。
 
 ## 配置
 
@@ -138,7 +179,7 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
   "permissions": {"mode": "default", "allow": ["bash(uv run pytest*)", "edit(src/**)"], "deny": ["bash(git push*)"]},
   "providers": {
     "deepseek": {"api": "openai", "baseUrl": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY",
-                 "models": {"deepseek-chat": {"contextWindow": 128000}}}
+                 "models": {"deepseek-flash": {"contextWindow": 1000000}}}
   },
   "hooks": {"PreToolUse": [{"matcher": "bash", "command": "./scripts/guard.sh"}]},
   "compaction": {"reserveTokens": 16384, "keepRecentTokens": 20000, "triggerTokens": null},
@@ -147,7 +188,7 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 }
 ```
 
-- **模型提供方**：Anthropic 走官方 SDK；任何 OpenAI 兼容端点（DeepSeek、Qwen、Ollama、vLLM 等）都可以在 `providers` 里声明。`smallModel` 用于压缩摘要、goal 评审和记忆整理。
+- **模型提供方**：Anthropic、OpenAI 兼容和 xAI Responses 使用官方 SDK；OpenAI 账号与 Google 账号使用对应的流式接口。也可以在 `providers` 里声明自定义端点。`smallModel` 用于压缩摘要、goal 评审和记忆整理；切换到其他提供方时，未另配的小模型跟随当前模型。
 - **权限规则**：写法是 `tool(pattern)`，pattern 为 fnmatch 风格，匹配命令或路径。例如 `bash(npm test*)`、`edit(src/**)`、`read(~/.ssh/*)`、`mcp__github__*`。
 - **命令钩子**：支持 `PreToolUse` / `PostToolUse` / `UserPromptSubmit` / `Stop` 四种。钩子从 stdin 收到 JSON；退出码 2 表示拦截（或要求继续），stderr 的内容作为反馈。
 - **功能开关**：每个内置功能都可以用 `features.<name>: false` 关闭（例如 `team`、`mcp`、`memory`）。
@@ -220,7 +261,7 @@ def setup(api):
 
 ## 开发
 
-运行全部测试（全部基于 faux provider 和本地假 HTTP 服务器，不需要网络或密钥）：
+运行全部测试（基于 faux provider、本地假 HTTP 服务器、OAuth 模拟响应和 PTY，不需要真实账号或密钥）：
 
 ```bash
 uv run pytest -q

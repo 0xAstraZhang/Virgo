@@ -19,7 +19,7 @@ from ... import __version__
 from ...harness.store import SessionStore
 from .bridge import FullscreenUI
 from .controller import RunController
-from .dialogs import ApprovalScreen, SessionPicker
+from .dialogs import ApprovalScreen, InputScreen, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .transcript import Transcript
 
@@ -108,7 +108,8 @@ class VirgoApp(App[int]):
     .dialog-buttons { height: auto; }
     .dialog-buttons Button { width: 1fr; min-width: 8; padding: 0; }
     Button:focus { text-style: reverse; }
-    #sessions { height: auto; max-height: 16; margin-bottom: 1; }
+    #sessions, #input-options { height: auto; max-height: 16; margin-bottom: 1; }
+    #input-value { margin-bottom: 1; background: $background; color: $foreground; }
     """
     BINDINGS = [
         Binding("ctrl+c", "interrupt", priority=True, show=False),
@@ -135,6 +136,8 @@ class VirgoApp(App[int]):
         self.theme = "virgo-terminal"
         self.confirmations = deque()
         self.active_confirmation = None
+        self.input_requests = deque()
+        self.active_input = None
         self.completion_names: list[str] = []
         self.completion_suppressed: str | None = None
         self.last_interrupt = 0.0
@@ -210,12 +213,19 @@ class VirgoApp(App[int]):
                     self.confirmations = deque(c for c in self.confirmations if c.id != update.payload)
                     if self.active_confirmation == update.payload and isinstance(self.screen, ApprovalScreen):
                         self.screen.dismiss(None)
+                elif update.kind == "input":
+                    self.input_requests.append(update.payload)
+                elif update.kind == "input_cancelled":
+                    self.input_requests = deque(c for c in self.input_requests if c.id != update.payload)
+                    if self.active_input == update.payload and isinstance(self.screen, InputScreen):
+                        self.screen.action_cancel()
                 elif update.kind == "closed":
                     self.exit(self.exit_code)
                     return
             if not self.is_running:
                 return
             self.show_next_confirmation()
+            self.show_next_input()
             if not self.screen_stack[0].query(Transcript):
                 return
             self.screen_stack[0].query_one("#jump").display = (
@@ -245,11 +255,28 @@ class VirgoApp(App[int]):
 
         self.push_screen(ApprovalScreen(confirmation), answered)
 
+    def show_next_input(self) -> None:
+        if self.controller.closing or self.has_modal or not self.input_requests:
+            return
+        request = self.input_requests.popleft()
+        if not self.ui.is_input_pending(request.id):
+            return
+        self.active_input = request.id
+
+        def answered(answer: str | None) -> None:
+            self.ui.resolve_input(request.id, answer)
+            self.active_input = None
+            self.editor.focus()
+
+        self.push_screen(InputScreen(request), answered)
+
     def update_status(self) -> None:
         self.last_status = time.monotonic()
         status = "closing…" if self.controller.closing else "working…" if self.controller.busy else "ready"
         if self.active_confirmation is not None:
             status = "approval needed"
+        elif self.active_input is not None:
+            status = "input needed"
         if self.controller.closing:
             self.screen_stack[0].query_one("#hints", Static).update(
                 "Closing services… Ctrl+C to return to the terminal immediately"
@@ -364,6 +391,8 @@ class VirgoApp(App[int]):
     def action_escape(self) -> None:
         if isinstance(self.screen, ApprovalScreen):
             self.screen.dismiss("n")
+        elif isinstance(self.screen, InputScreen):
+            self.screen.action_cancel()
         elif isinstance(self.screen, SessionPicker):
             self.screen.dismiss(None)
         elif self.completion_names:

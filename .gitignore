@@ -24,3 +24,6 @@ wheels/
 **/.virgo/worktrees/
 **/.virgo/tasks/
 **/.virgo/schedules.json
+**/.virgo/auth.json
+**/.virgo/auth.lock
+**/.virgo/.auth-*.tmp

@@ -20,6 +20,14 @@ class UI:
         """Ask the user. Return 'y', 'n' or 'a' (always), or None when nobody can answer."""
         return None
 
+    def select(self, question: str, options: list[str]) -> str | None:
+        """Choose one label, or return None when cancelled or noninteractive."""
+        return None
+
+    def input(self, question: str, *, password: bool = False, default: str = "") -> str | None:
+        """Read a value without adding it to chat history. Passwords stay hidden."""
+        return None
+
     def wake(self) -> None:
         """Called when a notification arrives while the session is idle."""
         pass

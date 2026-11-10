@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import re
 
+from .auth_presets import API_PRESETS, AUTH_PRESETS
 from .types import Model
 
 BUILTIN_PROVIDERS = {
+    **{k: v["config"] for k, v in {**AUTH_PRESETS, **API_PRESETS}.items()},
     "anthropic": {"api": "anthropic", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrlEnv": "ANTHROPIC_BASE_URL"},
     "openai": {"api": "openai", "apiKeyEnv": "OPENAI_API_KEY", "baseUrlEnv": "OPENAI_BASE_URL"},
     "faux": {"api": "faux"},
@@ -66,7 +68,7 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
             "maxTokens": 64_000,
             "reasoning": bool(_ADAPTIVE_CLAUDE.search(model_id)),
         }
-    elif api == "openai":
+    elif api in ("openai", "openai-codex", "openai-responses"):
         meta = {
             "contextWindow": 128_000,
             "maxTokens": 16_384,

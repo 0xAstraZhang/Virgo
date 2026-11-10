@@ -113,6 +113,8 @@ def expand_template(body: str, args: str) -> str:
 
 
 def register_builtins(session: AgentSession) -> None:
+    from .auth_commands import login, logout
+
     c = session.commands
     ui = session.ui
 
@@ -175,6 +177,8 @@ def register_builtins(session: AgentSession) -> None:
         ui.print(f"Resumed {it['path'].name} ({len(s.main.messages)} messages).")
 
     c.register("help", help_, "show commands", concurrent=True)
+    c.register("login", login, "sign in to an account or configure an API (/login [auth|api] [provider])")
+    c.register("logout", logout, "remove saved credentials (/logout [provider|all])")
     c.register("model", model, "show or switch the model (/model provider/id)")
     c.register("effort", effort, "show or set reasoning effort")
     c.register("compact", compact, "summarize older context now (/compact [focus])")

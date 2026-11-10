@@ -178,6 +178,7 @@ class Model:
     reasoning: bool = False
     vision: bool = True
     options: dict = field(default_factory=dict)  # provider-specific knobs
+    auth_path: str | None = field(default=None, repr=False)
 
     @property
     def spec(self) -> str:

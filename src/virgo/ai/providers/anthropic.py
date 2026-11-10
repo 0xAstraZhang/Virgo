@@ -32,6 +32,16 @@ from ..types import (
 
 BETA_FALLBACK = "server-side-fallback-2026-07-01"
 BETA_BINDING = "thinking-binding-controls-2026-08-01"
+BETA_OAUTH = ("claude-code-20250219", "oauth-2025-04-20")
+# Pi's subscription compatibility mapping. Keep local tool names unchanged.
+_CLAUDE_CODE_TOOLS = {
+    name.lower(): name
+    for name in (
+        "Read", "Write", "Edit", "Bash", "Grep", "Glob", "AskUserQuestion", "EnterPlanMode",
+        "ExitPlanMode", "KillShell", "NotebookEdit", "Skill", "Task", "TaskOutput", "TodoWrite",
+        "WebFetch", "WebSearch",
+    )
+}
 # models that accept server-side refusal fallbacks
 FALLBACK_MODELS = {
     "claude-opus-5-5",
@@ -57,17 +67,39 @@ _clients: dict = {}
 _clients_lock = threading.Lock()
 
 
+def _api_key(model: Model) -> str | None:
+    env = model.api_key_env or ("ANTHROPIC_API_KEY" if model.provider == "anthropic" else None)
+    return model.options.get("apiKey") or (os.environ.get(env) if env else None) or None
+
+
+def _is_oauth(model: Model) -> bool:
+    return model.options.get("authType") == "oauth" or "sk-ant-oat" in (_api_key(model) or "")
+
+
 def _client(model: Model):
     import anthropic
 
-    key = os.environ.get(model.api_key_env or "ANTHROPIC_API_KEY") or None
+    key = _api_key(model)
+    if not key and model.provider != "anthropic":
+        # The SDK discovers Anthropic environment/profile credentials when no
+        # explicit key is supplied. Those must never authenticate another host.
+        raise ValueError(f"No API credential for provider {model.provider!r}; use /login api.")
     base = model.base_url or os.environ.get("ANTHROPIC_BASE_URL") or None
-    cache_key = (key, base)
+    oauth = _is_oauth(model)
+    headers = {}
+    if oauth:
+        headers.update({"accept": "application/json", "user-agent": "claude-cli/2.1.280", "x-app": "cli"})
+    headers.update(model.options.get("headers") or {})
+    cache_key = (key, base, oauth, tuple(sorted(headers.items())))
     with _clients_lock:
         if cache_key not in _clients:
             kwargs = {"max_retries": 0}  # the harness owns retries
-            if key:
+            if oauth:
+                kwargs["auth_token"] = key
+            elif key:
                 kwargs["api_key"] = key
+            if headers:
+                kwargs["default_headers"] = headers
             if base:
                 kwargs["base_url"] = base
             _clients[cache_key] = anthropic.Anthropic(**kwargs)
@@ -94,7 +126,7 @@ def _user_blocks(content) -> list:
     return out
 
 
-def convert_messages(messages: list) -> list[dict]:
+def convert_messages(messages: list, oauth: bool = False) -> list[dict]:
     out: list[dict] = []
 
     def add(role: str, blocks: list):
@@ -133,7 +165,8 @@ def convert_messages(messages: list) -> list[dict]:
                     elif b.signature:
                         blocks.append({"type": "thinking", "thinking": b.thinking, "signature": b.signature})
                 elif isinstance(b, ToolCall):
-                    blocks.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.arguments})
+                    name = _CLAUDE_CODE_TOOLS.get(b.name.lower(), b.name) if oauth else b.name
+                    blocks.append({"type": "tool_use", "id": b.id, "name": name, "input": b.arguments})
                 elif isinstance(b, RawContent):
                     blocks.append(b.data)
             add("assistant", blocks)
@@ -142,25 +175,31 @@ def convert_messages(messages: list) -> list[dict]:
 
 def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
     o = model.options
+    oauth = _is_oauth(model)
     params: dict = {
         "model": model.id,
         "max_tokens": opts.max_tokens or min(model.max_tokens, 64_000),
-        "messages": convert_messages(ctx.messages),
+        "messages": convert_messages(ctx.messages, oauth),
         "cache_control": {"type": "ephemeral"},
     }
     if ctx.system:
         params["system"] = [{"type": "text", "text": ctx.system}]
+    if oauth:
+        params["system"] = [
+            {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+            *params.get("system", []),
+        ]
     if ctx.tools:
         params["tools"] = [
             {
-                "name": t.name,
+                "name": _CLAUDE_CODE_TOOLS.get(t.name.lower(), t.name) if oauth else t.name,
                 "description": t.description,
                 "input_schema": t.parameters,
                 "eager_input_streaming": True,
             }
             for t in ctx.tools
         ]
-    betas: list[str] = []
+    betas: list[str] = list(BETA_OAUTH) if oauth else []
     if model.reasoning:
         thinking: dict = {"type": "adaptive", "display": o.get("thinkingDisplay", "summarized")}
         if o.get("thinkingBinding", True):
@@ -206,6 +245,11 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
     index_map: dict[int, int] = {}  # api block index -> out.content index
     resp = None
     try:
+        if opts.signal is not None and opts.signal.is_set():
+            out.stop_reason = "aborted"
+            out.error_message = "aborted by user"
+            yield StreamEvent("error", out)
+            return
         resp = _client(model).beta.messages.create(**params, stream=True)
         for ev in resp:
             if opts.signal is not None and opts.signal.is_set():
@@ -234,7 +278,10 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     out.content.append(ThinkingContent("", signature=b.data, redacted=True))
                     kind = "thinking_start"
                 elif b.type == "tool_use":
-                    out.content.append(ToolCall(b.id, b.name, {}))
+                    name = b.name
+                    if _is_oauth(model):
+                        name = next((t.name for t in ctx.tools if t.name.lower() == name.lower()), name)
+                    out.content.append(ToolCall(b.id, name, b.input or {}))
                     json_bufs[ev.index] = ""
                     kind = "toolcall_start"
                 else:  # fallback / server blocks: echo back verbatim
@@ -268,7 +315,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                 if isinstance(blk, ToolCall):
                     raw = json_bufs.pop(ev.index, "")
                     try:
-                        blk.arguments = json.loads(raw) if raw.strip() else {}
+                        if raw.strip():
+                            blk.arguments = json.loads(raw)
                     except json.JSONDecodeError:
                         blk.arguments = {"__invalid_json__": raw}
                     yield StreamEvent("toolcall_end", out, i)

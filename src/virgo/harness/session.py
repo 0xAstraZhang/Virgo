@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, ToolResult
+from ..ai.auth import AuthStore
 from ..ai.stream import EventStream, StreamEvent
 from ..ai.types import AssistantMessage, Context, StreamOptions, TextContent, UserMessage
 from ..tools import BASE_TOOLS
@@ -185,6 +186,7 @@ class AgentSession:
         self.paths = Paths(Path(cwd), Path(home) if home else None)
         self.cwd = self.paths.cwd
         self.settings = Settings.load(self.paths, settings)
+        self.auth = AuthStore(self.paths.user / "auth.json")
         self.ui = ui or UI()
         self.bus = EventBus(on_error=lambda m: self.ui.print(m, "error"))
         self.commands = Commands()
@@ -216,6 +218,7 @@ class AgentSession:
     # -- setup helpers ---------------------------------------------------------
     def resolve(self, spec: str) -> ai.Model:
         m = ai.resolve_model(spec, self.settings.get("providers", {}))
+        m.auth_path = str(self.auth.path)
         if m.api == "anthropic":
             for k in ("fallbacks", "thinkingDisplay", "thinkingBinding"):
                 m.options.setdefault(k, self.settings.get(f"anthropic.{k}"))
@@ -225,7 +228,7 @@ class AgentSession:
         configured = self.settings.get("smallModel")
         if override and override.startswith("faux/"):
             return self.model
-        if self.model.api != "anthropic" and configured == "anthropic/claude-haiku-5-5":
+        if self.model.provider != "anthropic" and configured == "anthropic/claude-haiku-5-5":
             return self.model  # don't silently require a second provider
         return self.resolve(configured) if configured else self.model
 

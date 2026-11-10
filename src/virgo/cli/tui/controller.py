@@ -73,6 +73,7 @@ class RunController:
         if not concurrent:
             self.busy = True
             self._interrupted = False
+            self.session.main.agent.signal.clear()
 
         def run() -> None:
             try:
@@ -135,6 +136,9 @@ class RunController:
             elif update.kind == "confirmation":
                 if self.ui.is_confirmation_pending(update.payload.id):
                     out.append(update)
+            elif update.kind == "input":
+                if self.ui.is_input_pending(update.payload.id):
+                    out.append(update)
             else:
                 if update.kind == "reset":
                     self._steering.clear()
@@ -156,6 +160,7 @@ class RunController:
         self._interrupted = True
         self.session.abort()
         self.ui.cancel_confirmations("main")
+        self.ui.cancel_inputs()
         self.ui.print("Interrupted.", "warn")
 
     def request_close(self) -> None:
