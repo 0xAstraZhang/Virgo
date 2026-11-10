@@ -1,8 +1,9 @@
-"""Command-line entry point: interactive REPL, ``-p`` print mode, ``--mode json`` event stream."""
+"""Command-line entry point: fullscreen/plain UI, print mode and JSON events."""
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--mode", choices=["text", "json"], default="text", help="print-mode output (json = event stream)"
+    )
+    p.add_argument(
+        "--ui",
+        choices=["auto", "fullscreen", "plain"],
+        default="auto",
+        help="interactive UI (auto = fullscreen on a supported terminal, otherwise plain)",
     )
     p.add_argument(
         "-m", "--model", help="model as provider/id, e.g. anthropic/claude-opus-5-5 or openai/gpt-5"
@@ -56,8 +63,26 @@ def _pick_session(sessions_dir: Path) -> Path | None:
         return None
 
 
+def _fullscreen_available() -> bool:
+    return (
+        sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and os.environ.get("TERM", "").lower() not in {"", "dumb", "unknown"}
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    fullscreen = False
+    if not args.print and args.ui != "plain":
+        fullscreen = _fullscreen_available()
+        if args.ui == "fullscreen" and not fullscreen:
+            print(
+                "virgo: fullscreen needs an interactive stdin/stdout and a supported TERM; "
+                "use --ui plain or -p.",
+                file=sys.stderr,
+            )
+            return 2
     prompt = " ".join(args.prompt).strip()
     if args.print and not sys.stdin.isatty():
         piped = sys.stdin.read()
@@ -65,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt = f"{prompt}\n\n{piped}" if prompt else piped
 
     session_arg: str | Path | None = "new"
+    pick_session = False
     if args.no_session:
         session_arg = None
     elif args.cont:
@@ -72,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.resume is not None:
         if args.resume:
             session_arg = Path(args.resume)
+        elif fullscreen:
+            pick_session = True
         else:
             from ..harness.settings import Paths
 
@@ -83,6 +111,10 @@ def main(argv: list[str] | None = None) -> int:
     overrides = {"effort": args.effort} if args.effort else None
     if args.print:
         ui = PrintUI(json_mode=args.mode == "json")
+    elif fullscreen:
+        from .tui.bridge import FullscreenUI
+
+        ui = FullscreenUI()
     else:
         broker = ConsoleBroker()
         ui = TerminalUI(broker)
@@ -101,6 +133,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if not args.print:
+        if fullscreen:
+            from .tui import run_fullscreen
+
+            return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session)
+
         from .repl import run_repl
 
         run_repl(session, ui, broker, prompt or None)

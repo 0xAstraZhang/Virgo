@@ -121,6 +121,9 @@ def _execute(
                 args=call.arguments,
             )
         )
+        if signal.is_set():
+            results[i] = ToolResult.error("Operation aborted.")
+            continue
         if msg.stop_reason == "length":
             results[i] = ToolResult.error(
                 "The response hit the output token limit, so these tool arguments may be truncated. "

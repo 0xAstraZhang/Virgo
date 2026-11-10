@@ -11,7 +11,7 @@ virgo.agent                       事件驱动的工具调用循环（steer / fo
 virgo.harness                     会话树、system prompt、扩展总线、命令、压缩、集成运行时
 virgo.tools                       read / write / edit / bash / glob / grep
 virgo.features                    内置扩展：权限、todo、子 agent、技能、记忆、任务、后台、定时、团队、MCP、workflow、goal
-virgo.cli                         REPL、-p 打印模式、--mode json 事件流
+virgo.cli                         全屏 TUI / plain REPL、-p 打印模式、--mode json 事件流
 ```
 
 ## 快速开始
@@ -30,13 +30,17 @@ uv sync --all-extras
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-在当前目录启动交互式 REPL：
+在当前目录启动全屏 TUI：
 
 ```bash
 uv run virgo
 ```
 
 也可以通过 `uv run python -m virgo` 启动。版本查询使用 `uv run virgo --version`。
+
+交互终端默认使用全屏界面：上方滚动对话，底部固定输入框和状态栏。紫色字符 `V_` 是启动 Logo，正文和背景跟随终端配色。退出后恢复原来的终端画面。
+
+需要原来的逐行界面时使用 `uv run virgo --ui plain`。输入或输出不是 TTY、`TERM` 为空或不受支持时，默认自动使用 plain；`--ui fullscreen` 则要求可用的交互终端。
 
 单次执行，只输出最终答案：
 
@@ -56,6 +60,8 @@ uv run virgo -p --mode json "列出所有 TODO 注释"
 uv run virgo -p "find python files" --model faux/demo
 ```
 
+去掉 `-p` 即可在全屏界面体验离线演示：`uv run virgo --model faux/demo`。
+
 全局安装为 `virgo` 命令：
 
 ```bash
@@ -66,6 +72,7 @@ uv tool install .
 
 | 参数 | 说明 |
 |---|---|
+| `--ui auto\|fullscreen\|plain` | 默认 `auto`；可用交互终端进入全屏，否则使用 plain；不影响 `-p` |
 | `-m, --model provider/id` | 默认 `anthropic/claude-opus-5-5`；也可以是 `openai/gpt-5`、`deepseek/deepseek-chat` 等 |
 | `--effort low…max` | 推理强度，默认 `medium` |
 | `--permission-mode` | `default`（改动前询问）/ `accept-edits` / `plan`（只读）/ `yolo` |
@@ -74,11 +81,33 @@ uv tool install .
 | `--no-extensions` | 不加载用户和项目扩展 |
 | `-C DIR` | 工作目录 |
 
-### REPL 交互
+### 全屏交互
 
 - agent 工作时输入的文字会作为 **steering 消息**，在当前这批工具调用结束后、下一次模型调用前插入。
-- `Ctrl-C` 中止当前运行；空闲时连按两次退出。
+- 只读命令可以在运行中使用；其他命令等待当前运行结束，排队内容显示在输入框上方。
 - 后台任务完成、定时任务到点、队友发来消息时，空闲的 agent 会被自动唤醒。
+- 工具结果默认显示三行预览，思考默认收起。可以展开单个工具，或用快捷键统一切换详情。
+- 向上滚动时保持当前位置；返回末尾后继续跟随新消息。状态栏显示模型、推理强度、权限、运行状态、累计 token 和估算上下文用量，不估算费用。
+- 权限请求在弹层中选择允许一次、拒绝或本会话允许。`-r` 无参数时使用全屏会话选择器，恢复后可以查看压缩前的历史。
+
+| 按键 | 作用 |
+|---|---|
+| Enter | 发送输入；运行中发送 steering 消息 |
+| Ctrl+J | 换行；支持的终端也可用 Shift+Enter |
+| Tab | 补全 `/` 命令和 prompt 模板 |
+| ↑ / ↓ | 在输入中移动，到首尾时切换输入历史；Ctrl+P / Ctrl+N 可直接切换历史 |
+| Ctrl+O / Ctrl+T | 展开或收起工具详情 / 思考 |
+| PageUp / PageDown | 滚动对话 |
+| Ctrl+Home / Ctrl+End | 跳到对话开头 / 最新消息 |
+| Esc | 先关闭补全或弹层，否则中止运行；审批弹层中表示拒绝 |
+| Ctrl+C | 运行时中止；空闲时清空输入；空输入下两秒内连按两次退出 |
+| Ctrl+D | 输入为空时退出 |
+
+plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲时两秒内连按两次退出。
+
+退出时会先停止后台任务并清理会话。如果关闭钩子仍在等待，可以按 `Ctrl+C` 返回终端。
+
+### 命令
 
 | 命令 | 作用 |
 |---|---|

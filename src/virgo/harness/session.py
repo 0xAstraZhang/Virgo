@@ -195,6 +195,7 @@ class AgentSession:
         self.permission_mode = permission_mode or self.settings.get("permissions.mode", "default")
         self.effort = self.settings.get("effort", "medium")
         self._lock = threading.RLock()
+        self._shutdown_started = False
         self.busy = False
         self.wakeups: deque = deque()
         self.model = self.resolve(model or self.settings.get("model"))
@@ -316,6 +317,8 @@ class AgentSession:
     def run(self, prompts: list) -> None:
         rt = self.main
         with self._lock:
+            if self._shutdown_started:
+                return
             self.busy = True
         wake = False
         try:
@@ -325,7 +328,7 @@ class AgentSession:
             with self._lock:
                 self.busy = False
                 left = rt.agent.drain_queues()
-                if left:
+                if left and not self._shutdown_started:
                     self.wakeups.extend(left)
                     wake = True
             self.bus.emit("agent_end", rt)
@@ -335,18 +338,33 @@ class AgentSession:
     def run_pending(self) -> bool:
         """Run queued notifications, if any. Returns True if a run happened."""
         with self._lock:
-            if self.busy or not self.wakeups:
+            if self._shutdown_started or self.busy or not self.wakeups:
                 return False
             msgs = list(self.wakeups)
             self.wakeups.clear()
         self.run(msgs)
         return True
 
+    def steer(self, text: str) -> bool:
+        """Queue user input in an active run, or let the caller schedule it later.
+
+        The busy check and enqueue share the same lock as run's final queue
+        drain. Checking a UI worker's lifetime is insufficient: the agent may
+        already have drained its queues, or the worker may be running a command.
+        """
+        with self._lock:
+            if self._shutdown_started or not self.busy:
+                return False
+            self.main.agent.steer(UserMessage(text))
+            return True
+
     def notify(self, text: str, mode: str = "steer", source: str | None = None) -> None:
         """Deliver harness information to the lead agent; wakes it if idle."""
         tag = f' source="{source}"' if source else ""
         msg = UserMessage([TextContent(f"<notification{tag}>\n{text}\n</notification>")], kind="notification")
         with self._lock:
+            if self._shutdown_started:
+                return
             if self.busy:
                 (self.main.agent.steer if mode == "steer" else self.main.agent.follow_up)(msg)
                 return
@@ -374,4 +392,10 @@ class AgentSession:
             time.sleep(0.1)
 
     def shutdown(self) -> None:
+        with self._lock:
+            if self._shutdown_started:
+                return
+            self._shutdown_started = True
+            self.wakeups.clear()
+        self.abort()
         self.bus.emit("session_shutdown", self)

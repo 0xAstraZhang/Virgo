@@ -4,7 +4,7 @@
 
 ```
                 ┌──────────────────────────── cli ────────────────────────────┐
-                │  REPL (ConsoleBroker + TerminalUI)   -p print   --mode json │
+                │  Textual TUI / plain REPL           -p print   --mode json │
                 └──────────────────────────────┬──────────────────────────────┘
                                                │ prompt / notify / abort
 ┌───────────────────────────────────── harness ───────────────────────────────────────┐
@@ -26,6 +26,19 @@
 ```
 
 依赖方向自上而下：`ai` 不知道 agent 的存在，`agent` 不做任何 I/O，所有应用逻辑都在 `harness` 和 `features` 里。
+
+## 终端界面（`virgo.cli.tui`）
+
+`--ui auto` 在 stdin/stdout 均为 TTY 且 `TERM` 可用时选择 Textual 全屏界面，否则继续使用 `ConsoleBroker + TerminalUI`。`--ui plain` 显式选择逐行 REPL；`--ui fullscreen` 在不支持的环境中返回错误。`-p` 和 JSON 事件流使用独立的 `PrintUI`。
+
+- **`VirgoApp`**：管理布局、输入、补全、滚动、权限弹层和会话选择器。对话占剩余高度，底部固定输入和状态栏；正文和背景使用终端默认色。Textual 管理 alternate screen 和终端恢复。
+- **`FullscreenUI`**：实现现有 `UI.on_event / print / confirm / wake` 接口。工作线程送来的事件先复制为快照，再放入线程安全队列；`confirm` 在工作线程等待，每个请求独立记录答案与完成信号。
+- **`RunController`**：调度同步 `AgentSession` 的工作线程。忙时普通输入走 steering，非并发命令排队，通知触发 `run_pending`。UI 定时消费队列，所有组件更新都发生在界面线程。
+- **`Transcript`**：维护消息和工具组件，工具用 agent 与调用 ID 关联。流式更新合并刷新同一条消息，重试清除失败尝试，结束事件校准最终内容；工具和思考可折叠。用户上滚后暂停跟随，回到末尾恢复跟随。
+
+会话恢复读取 `SessionStore.branch()` 的完整当前分支，而不是只读取压缩后的模型上下文。`session_start` 触发视图重建；累计 token 从存储中的助手消息汇总，上下文占用单独估算。
+
+权限请求按顺序显示。中止时释放对应的待决确认，工具预检在权限检查前检测取消信号。退出时禁止新任务调度并释放全部确认，关闭钩子在后台执行且只执行一次；后台任务、调度器、队友和 MCP 先停止，可选的自动记忆提取最后执行。界面线程不等待工作线程或关闭钩子。
 
 ## 消息模型（`virgo.ai.types`）
 

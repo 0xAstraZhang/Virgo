@@ -268,4 +268,5 @@ def setup(api: ExtensionAPI) -> None:
             ):
                 store.save(r["name"], r["type"], r["description"], r["body"])
 
-    api.on("session_shutdown", extract)
+    # Stop tasks, schedulers and transports before optional model-backed work.
+    api.on("session_shutdown", extract, priority=-100)
