@@ -235,13 +235,16 @@ class ToolView(Vertical):
         self.set_expanded(not self.expanded)
 
 
-class Transcript(VerticalScroll):
+class Transcript(VerticalScroll, inherit_bindings=False):
     """Conversation widgets with native Textual bottom anchoring.
 
     ``follow_latest`` is released by wheel, scrollbar or keyboard navigation and
     automatically resumes when the user reaches the bottom. ``go_latest`` also
     restores it explicitly. The application can use it to show a jump button.
     """
+
+    # Jumping to the latest message is a click-only action.
+    BINDINGS = [binding for binding in VerticalScroll.BINDINGS if binding.action != "scroll_end"]
 
     DEFAULT_CSS = """
     Transcript {
@@ -288,9 +291,6 @@ class Transcript(VerticalScroll):
     def action_scroll_home(self) -> None:
         self.release_anchor()
         self.scroll_home(animate=False, x_axis=False)
-
-    def action_scroll_end(self) -> None:
-        self.go_latest()
 
     async def _assistant(self, agent: str) -> AssistantView:
         card = self.active.get(agent)

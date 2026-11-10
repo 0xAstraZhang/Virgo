@@ -11,8 +11,9 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.events import Click
 from textual.theme import Theme
-from textual.widgets import Button, Input, OptionList, Static, TextArea
+from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ... import __version__
@@ -87,7 +88,7 @@ class VirgoApp(App[int]):
     #dock { height: auto; padding: 0 1; background: $background; }
     #pending { height: auto; max-height: 3; text-style: dim; }
     #jump { height: 1; min-height: 1; border: none; width: auto; padding: 0 1;
-        color: #7C3AED; background: $background; }
+        color: #7C3AED; background: $background; text-style: bold; }
     #completions { height: auto; max-height: 6; border: solid #7C3AED;
         padding: 0; background: $background; }
     #completions > .option-list--option-highlighted,
@@ -127,7 +128,6 @@ class VirgoApp(App[int]):
         Binding("pageup", "page(-1)", priority=True, show=False),
         Binding("pagedown", "page(1)", priority=True, show=False),
         Binding("ctrl+home", "top", priority=True, show=False),
-        Binding("ctrl+end", "latest", priority=True, show=False),
     ]
 
     def __init__(self, session, ui: FullscreenUI, initial: str | None = None, pick_session=False):
@@ -158,7 +158,7 @@ class VirgoApp(App[int]):
         with Vertical(id="body"):
             yield Transcript(id="transcript")
         with Vertical(id="dock"):
-            yield Button("↓ Latest message · Ctrl+End", id="jump")
+            yield Static("↓ Latest message", id="jump")
             yield Static("", id="pending", markup=False)
             yield Static("", id="auth-question", markup=False)
             yield ChoiceList(id="completions")
@@ -500,7 +500,7 @@ class VirgoApp(App[int]):
             self.controller.abort()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if (self.has_modal or self.active_input is not None) and action in {"page", "top", "latest", "tools", "thinking"}:
+        if (self.has_modal or self.active_input is not None) and action in {"page", "top", "tools", "thinking"}:
             return False
         return True
 
@@ -550,14 +550,11 @@ class VirgoApp(App[int]):
         if not self.has_modal:
             self.transcript.action_scroll_home()
 
-    def action_latest(self) -> None:
+    @on(Click, "#jump")
+    def jump_clicked(self) -> None:
         if not self.has_modal:
             self.transcript.go_latest()
-
-    @on(Button.Pressed, "#jump")
-    def jump_pressed(self) -> None:
-        self.action_latest()
-        self.editor.focus()
+            self.editor.focus()
 
     def on_unmount(self) -> None:
         if hasattr(self, "_poll_timer"):

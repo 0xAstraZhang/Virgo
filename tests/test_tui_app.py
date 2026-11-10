@@ -190,9 +190,19 @@ def test_tool_and_thinking_shortcuts_and_scroll_navigation(make_session, project
             await wait_for(pilot, lambda: app.query_one("#jump").display)
             await pilot.press("pagedown")
             assert app.transcript.scroll_y > 0
+            scroll_y = app.transcript.scroll_y
             await pilot.press("ctrl+end")
+            assert app.transcript.scroll_y == scroll_y
+            assert not app.transcript.follow_latest
+            app.transcript.focus()
+            await pilot.press("end", "ctrl+end")
+            assert app.transcript.scroll_y == scroll_y
+            assert not app.transcript.follow_latest
+            assert await pilot.click("#jump")
             await wait_for(pilot, lambda: app.transcript.scroll_y == app.transcript.max_scroll_y)
             assert app.transcript.follow_latest
+            await wait_for(pilot, lambda: not app.query_one("#jump").display)
+            assert app.focused is app.editor
 
     asyncio.run(scenario())
 
