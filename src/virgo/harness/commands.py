@@ -114,7 +114,6 @@ def expand_template(body: str, args: str) -> str:
 
 def register_builtins(session: AgentSession) -> None:
     from .auth_commands import login, logout
-    from .context import build_context_report, render_context_report
     from .preferences import configure_preference
 
     c = session.commands
@@ -155,9 +154,6 @@ def register_builtins(session: AgentSession) -> None:
             "Nothing to compact." if r is None else f"Compacted: ~{r['tokens_before']} tokens summarized."
         )
 
-    def context(s, args):
-        ui.print(render_context_report(build_context_report(s.main)))
-
     def new(s, args):
         s.new_session()
         ui.print("Started a new session.")
@@ -193,7 +189,6 @@ def register_builtins(session: AgentSession) -> None:
     c.register("model", model, "show or switch the model (/model provider/id)")
     c.register("effort", effort, "show or set reasoning effort")
     c.register("compact", compact, "summarize older context now (/compact [focus])")
-    c.register("context", context, "show context composition and auto-compact threshold", concurrent=True)
     c.register("new", new, "start a fresh session")
     c.register("session", session_, "show session info", concurrent=True)
     c.register("sessions", sessions, "browse saved sessions (g toggles workspace grouping in fullscreen)")

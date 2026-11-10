@@ -68,7 +68,8 @@ def _chars(m) -> int:
     )
 
 
-def last_usage_index(messages: list, valid_from: int = 0) -> int | None:
+def estimate_tokens(messages: list, valid_from: int = 0) -> int:
+    """Last reported usage (if after `valid_from`) + chars/4 for everything after it."""
     for i in range(len(messages) - 1, valid_from - 1, -1):
         m = messages[i]
         if (
@@ -76,20 +77,8 @@ def last_usage_index(messages: list, valid_from: int = 0) -> int | None:
             and m.usage.total > 0
             and m.stop_reason not in ("error", "aborted")
         ):
-            return i
-    return None
-
-
-def estimate_tokens(messages: list, valid_from: int = 0, fixed_tokens: int = 0) -> int:
-    """Use reported full-request usage, or estimate messages plus system/tools.
-
-    Provider usage already includes the fixed prompt, including cached input.
-    After compaction, older usage is invalid and the fixed prompt is needed again.
-    """
-    i = last_usage_index(messages, valid_from)
-    if i is not None:
-        return messages[i].usage.total + sum(_chars(x) for x in messages[i + 1 :]) // 4
-    return fixed_tokens + sum(_chars(m) for m in messages) // 4
+            return m.usage.total + sum(_chars(x) for x in messages[i + 1 :]) // 4
+    return sum(_chars(m) for m in messages) // 4
 
 
 def find_cut(messages: list, keep_tokens: int) -> int:
@@ -160,7 +149,7 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual") -> di
     if not to_summarize:
         return None
     session.bus.emit("before_compact", rt)
-    tokens_before = rt.context_tokens()
+    tokens_before = estimate_tokens(messages, rt.compacted_at)
 
     prev_entry = rt.store.last_compaction() if rt.store else None
     prev_details = (prev_entry or {}).get("details", {})

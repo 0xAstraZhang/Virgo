@@ -378,9 +378,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             app.update_status()
             metrics = app.query_one("#metrics", Static)
             status = app.query_one("#status", Static)
-            context_percent = session.context_tokens() / session.main.model.context_window
-            assert context_percent > 0  # the frozen system prompt and tools already occupy context
-            assert str(metrics.content).startswith(f"↑0 ↓0  ~{context_percent:.1%}/")
+            assert str(metrics.content).startswith("↑0 ↓0  ~0.0%/")
             assert metrics.styles.text_align == "right"
             assert metrics.render_line(0).text.endswith(str(metrics.content))
             assert metrics.render_line(0).text.startswith(" ")
