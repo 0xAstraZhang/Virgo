@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -10,7 +11,14 @@ import pytest
 
 from virgo.ai import catalog
 from virgo.ai.auth import AuthStore
+from virgo.ai.catalog_versions import CodexCatalogVersion
 from virgo.ai.models import resolve_model
+
+
+@pytest.fixture(autouse=True)
+def codex_version_sources(monkeypatch):
+    monkeypatch.setattr("virgo.ai.catalog_versions.installed_codex_version", lambda: "0.167.0")
+    monkeypatch.setattr(CodexCatalogVersion, "_published_version", lambda _: "0.167.0")
 
 
 @pytest.fixture
@@ -96,6 +104,90 @@ def test_codex_catalog_version_can_be_overridden_per_connection(transport):
     requests = transport(lambda _: httpx.Response(200, json={"models": []}))
     assert catalog.fetch_model_catalog(model) == []
     assert requests[0].url.params["client_version"] == "1.2.3"
+
+
+@pytest.mark.parametrize("status", [200, 400, 426])
+def test_codex_refreshes_stale_version_once_and_remembers_success(transport, monkeypatch, status):
+    monkeypatch.setattr("virgo.ai.catalog_versions.installed_codex_version", lambda: None)
+    updates = []
+    monkeypatch.setattr(CodexCatalogVersion, "_published_version", lambda _: updates.append(True) or "0.200.0")
+    model = resolve_model("openai-codex/old", {"openai-codex": {"apiKey": "token", "authMetadata": {"accountId": "account"}}})
+    state = CodexCatalogVersion(model)
+    state.path.parent.mkdir(parents=True)
+    state.path.write_text(json.dumps({"published": "0.100.0", "checked_at": time.time()}))
+
+    def directory(request):
+        if request.url.params["client_version"] == "0.100.0":
+            return httpx.Response(status, json={"models": []})
+        assert request.url.params["client_version"] == "0.200.0"
+        return httpx.Response(200, json={"models": [{"slug": "live-model", "visibility": "list"}]})
+
+    requests = transport(directory)
+    assert [m.id for m in catalog.fetch_model_catalog(model)] == ["live-model"]
+    assert len(requests) == 2 and len(updates) == 1
+    assert json.loads(state.path.read_text())["verified"] == "0.200.0"
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 500])
+def test_codex_does_not_retry_auth_or_service_failures_with_other_versions(transport, monkeypatch, status):
+    checks = []
+    monkeypatch.setattr(CodexCatalogVersion, "_published_version", lambda _: checks.append(True) or "0.200.0")
+    model = resolve_model("openai-codex/old", {"openai-codex": {"apiKey": "token", "authMetadata": {"accountId": "account"}}})
+    requests = transport(lambda _: httpx.Response(status))
+    with pytest.raises(catalog.CatalogError, match=f"HTTP {status}"):
+        catalog.fetch_model_catalog(model)
+    assert len(requests) == 1 and len(checks) == 1
+
+
+def test_codex_empty_latest_directory_has_bounded_retry_and_actionable_error(transport):
+    model = resolve_model("openai-codex/old", {"openai-codex": {"apiKey": "token", "authMetadata": {"accountId": "account"}}})
+    requests = transport(lambda _: httpx.Response(200, json={"models": []}))
+    with pytest.raises(catalog.CatalogError, match="Automatic version refresh found no alternative"):
+        catalog.fetch_model_catalog(model)
+    assert len(requests) == 1
+    assert "verified" not in CodexCatalogVersion(model).cache
+
+
+def test_codex_keeps_last_verified_version_when_new_release_is_rejected(transport, monkeypatch):
+    monkeypatch.setattr("virgo.ai.catalog_versions.installed_codex_version", lambda: None)
+    monkeypatch.setattr(CodexCatalogVersion, "_published_version", lambda _: "0.300.0")
+    model = resolve_model("openai-codex/old", {"openai-codex": {"apiKey": "token", "authMetadata": {"accountId": "account"}}})
+    state = CodexCatalogVersion(model)
+    state.path.parent.mkdir(parents=True)
+    state.path.write_text(json.dumps({"verified": "0.200.0"}))
+
+    def directory(request):
+        if request.url.params["client_version"] == "0.300.0":
+            return httpx.Response(400)
+        return httpx.Response(200, json={"models": [{"slug": "working-model"}]})
+
+    requests = transport(directory)
+    assert catalog.fetch_model_catalog(model)[0].id == "working-model"
+    assert len(requests) == 2
+    assert json.loads(state.path.read_text())["verified"] == "0.200.0"
+
+
+def test_anthropic_catalog_tracks_sdk_version_and_allows_explicit_override(transport, monkeypatch):
+    class SDK:
+        def __init__(self, **kwargs):
+            assert kwargs == {"api_key": "catalog-version-only"}
+            self.default_headers = {"anthropic-version": "2026-10-21"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+    monkeypatch.setattr("anthropic.Anthropic", SDK)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    requests = transport(lambda _: httpx.Response(200, json={"data": []}))
+    model = resolve_model("anthropic/current")
+    catalog.fetch_model_catalog(model)
+    assert requests[-1].headers["anthropic-version"] == "2026-10-21"
+    model.options["apiVersion"] = "2023-06-01"
+    catalog.fetch_model_catalog(model)
+    assert requests[-1].headers["anthropic-version"] == "2023-06-01"
 
 
 def test_custom_endpoint_and_headers_do_not_use_other_providers_key(transport, monkeypatch):

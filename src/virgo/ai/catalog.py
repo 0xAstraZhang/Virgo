@@ -12,17 +12,17 @@ from dataclasses import dataclass, field
 import httpx
 
 from .auth import authenticated_model
+from .catalog_versions import CodexCatalogVersion, VersionCancelled, VersionError
 from .types import Model
 
 CATALOG_TIMEOUT = 12.0
 MAX_BODY_BYTES = 8 * 1024 * 1024
-# The account catalog gates models by the Codex protocol revision, not Virgo's release number.
-# This revision is verified against the live catalog; clientVersion may override it per connection.
-CODEX_CATALOG_VERSION = "0.167.0"
 
 
 class CatalogError(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class CatalogCancelled(CatalogError):
@@ -35,7 +35,15 @@ class CatalogModel:
     metadata: dict = field(default_factory=dict)
 
 
-def _request(model: Model) -> tuple[str, dict, dict]:
+def _anthropic_api_version() -> str:
+    from anthropic import Anthropic
+
+    # Read SDK metadata only; no inference, credentials lookup, or API request.
+    with Anthropic(api_key="catalog-version-only") as client:
+        return str(client.default_headers["anthropic-version"])
+
+
+def _request(model: Model, codex_version: str | None = None) -> tuple[str, dict, dict]:
     """Use the same endpoint and credentials as inference, without forwarding redirects."""
     base = model.base_url or os.environ.get(model.options.get("baseUrlEnv", ""), "")
     token = model.options.get("apiKey") or os.environ.get(model.api_key_env or "", "")
@@ -53,7 +61,9 @@ def _request(model: Model) -> tuple[str, dict, dict]:
         if not base.endswith("/codex"):
             base += "/codex"
         headers.update({"Authorization": f"Bearer {token}", "chatgpt-account-id": account, "originator": "virgo"})
-        params["client_version"] = str(model.options.get("clientVersion") or CODEX_CATALOG_VERSION)
+        if codex_version is None:
+            raise CatalogError("The Codex catalog client version has not been resolved.")
+        params["client_version"] = codex_version
     elif model.api == "anthropic":
         base = (base or "https://api.anthropic.com").rstrip("/")
         if not base.endswith("/v1"):
@@ -70,7 +80,7 @@ def _request(model: Model) -> tuple[str, dict, dict]:
             headers.update({"Authorization": f"Bearer {token}", "anthropic-beta": ",".join(BETA_OAUTH), "x-app": "cli"})
         else:
             headers["x-api-key"] = token
-        headers["anthropic-version"] = "2023-06-01"
+        headers["anthropic-version"] = str(model.options.get("apiVersion") or _anthropic_api_version())
         params["limit"] = 100
     elif model.api in {"openai", "openai-responses"}:
         if not base and model.provider != "openai":
@@ -125,9 +135,8 @@ def _model(row: dict, api: str) -> CatalogModel | None:
     return CatalogModel(model_id, _metadata(row))
 
 
-def _fetch(model: Model, signal, stopped: threading.Event) -> list[CatalogModel]:
-    model = authenticated_model(model, signal)
-    url, headers, params = _request(model)
+def _read_catalog(model: Model, signal, stopped: threading.Event, version=None) -> list[CatalogModel]:
+    url, headers, params = _request(model, version)
     results = {}
     cursors = set()
     with httpx.Client(timeout=httpx.Timeout(5.0), follow_redirects=False) as client:
@@ -137,7 +146,7 @@ def _fetch(model: Model, signal, stopped: threading.Event) -> list[CatalogModel]
             with client.stream("GET", url, headers=headers, params=params) as response:
                 if response.status_code != 200:
                     # Never echo response bodies, URLs, or transport exceptions containing secrets.
-                    raise CatalogError(f"Model directory returned HTTP {response.status_code}.")
+                    raise CatalogError(f"Model directory returned HTTP {response.status_code}.", response.status_code)
                 payload = bytearray()
                 for chunk in response.iter_bytes():
                     if stopped.is_set() or (signal is not None and signal.is_set()):
@@ -163,6 +172,44 @@ def _fetch(model: Model, signal, stopped: threading.Event) -> list[CatalogModel]
             cursors.add(cursor)
             params["after_id" if model.api == "anthropic" else "after"] = cursor
     raise CatalogError("Model directory has too many pages.")
+
+
+def _fetch(model: Model, signal, stopped: threading.Event) -> list[CatalogModel]:
+    model = authenticated_model(model, signal)
+    if model.api != "openai-codex":
+        return _read_catalog(model, signal, stopped)
+    resolver = CodexCatalogVersion(model, signal, stopped)
+    try:
+        version = resolver.choose()
+        try:
+            models = _read_catalog(model, signal, stopped, version)
+        except CatalogError as error:
+            if resolver.override or error.status not in (400, 426):
+                raise
+            failure = str(error)
+        else:
+            if models:
+                resolver.remember(version)
+                return models
+            if resolver.override:
+                return []
+            failure = "Codex returned no selectable models."
+        # One forced release check and one alternate-version attempt, never an unbounded retry.
+        try:
+            version = resolver.choose(force=True, exclude={version})
+        except VersionCancelled:
+            raise
+        except VersionError as error:
+            raise CatalogError(f"{failure} Automatic version refresh found no alternative; check the connection or clientVersion setting.") from error
+        models = _read_catalog(model, signal, stopped, version)
+        if not models:
+            raise CatalogError("Codex returned no selectable models after automatic version refresh; check the account and connection.")
+        resolver.remember(version)
+        return models
+    except VersionCancelled as error:
+        raise CatalogCancelled(str(error)) from error
+    except VersionError as error:
+        raise CatalogError(str(error)) from error
 
 
 def fetch_model_catalog(model: Model, signal=None) -> list[CatalogModel]:

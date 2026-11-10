@@ -20,6 +20,7 @@ wheels/
 
 # Generated agent state; shared configuration and examples stay versioned
 **/.virgo/outputs/
+**/.virgo/cache/
 **/.virgo/runs/
 **/.virgo/worktrees/
 **/.virgo/tasks/
