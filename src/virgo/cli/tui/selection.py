@@ -6,11 +6,30 @@ import os
 import subprocess
 import sys
 
-from textual.events import TextSelected
+from textual.events import Click, TextSelected
+from textual.widgets import Input, TextArea
 
 
 class SelectionCopyMixin:
     """Add to a Textual App before App in the inheritance list."""
+
+    def on_click(self, event: Click) -> None:
+        # Double/triple clicks select text after MouseUp's TextSelected event,
+        # without creating a drag-selection state. The selection is ready once
+        # Click bubbles here from the widget's default handler.
+        widget = event.widget
+        if (
+            event.button != 1
+            or event.chain not in (2, 3)
+            or widget is None
+            or isinstance(widget, (Input, TextArea))
+            or not widget.allow_select
+            or not self.screen.allow_select
+            or not self.ALLOW_SELECT
+        ):
+            return
+        if text := self.screen.get_selected_text():
+            self.copy_to_clipboard(text)
 
     def on_text_selected(self, event: TextSelected) -> None:
         # Input (including password fields) and TextArea own their selections;

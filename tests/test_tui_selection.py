@@ -52,7 +52,8 @@ def mock_mac_clipboard(monkeypatch):
     return copied
 
 
-def test_completed_selections_copy_user_answer_thinking_and_tool_text(monkeypatch, tmp_path):
+@pytest.mark.parametrize("gesture", ["drag", "double_click"])
+def test_completed_selections_copy_user_answer_thinking_and_tool_text(monkeypatch, tmp_path, gesture):
     copied = mock_mac_clipboard(monkeypatch)
 
     async def scenario():
@@ -87,9 +88,12 @@ def test_completed_selections_copy_user_answer_thinking_and_tool_text(monkeypatc
             ]
             for widget, expected in cases:
                 before = len(copied)
-                await pilot.mouse_down(widget, offset=(0, 0))
-                assert len(copied) == before
-                await pilot.mouse_up(widget, offset=(min(widget.size.width - 1, 30), 0))
+                if gesture == "drag":
+                    await pilot.mouse_down(widget, offset=(0, 0))
+                    assert len(copied) == before
+                    await pilot.mouse_up(widget, offset=(min(widget.size.width - 1, 30), 0))
+                else:
+                    await pilot.double_click(widget, offset=(3, 0))
                 await pilot.pause()
                 assert len(copied) == before + 1
                 assert expected in copied[-1]
@@ -100,6 +104,8 @@ def test_completed_selections_copy_user_answer_thinking_and_tool_text(monkeypatc
             secret = app.query_one("#secret", Input)
             await pilot.mouse_down(secret, offset=(1, 1))
             await pilot.mouse_up(secret, offset=(8, 1))
+            await pilot.double_click(secret, offset=(3, 1))
+            await pilot.triple_click(secret, offset=(3, 1))
             assert len(copied) == before
             assert not any("secret-value" in text for text in copied)
 
@@ -112,6 +118,7 @@ def test_editor_selection_copies_only_nonempty_mouse_selection(monkeypatch, tmp_
     async def scenario():
         app = CopyApp(tmp_path)
         async with app.run_test(size=(80, 24)) as pilot:
+            await app.query_one(Transcript).add_notice("unrelated transcript text")
             editor = app.query_one(ChatEditor)
             editor.load_text("editor words")
             await pilot.pause()
@@ -119,12 +126,15 @@ def test_editor_selection_copies_only_nonempty_mouse_selection(monkeypatch, tmp_
             await pilot.mouse_up(editor, offset=(8, 0))
             assert copied == ["editor"]
             await pilot.click(editor, offset=(3, 0))
+            await pilot.double_click(editor, offset=(3, 0))
+            await pilot.triple_click(editor, offset=(3, 0))
             assert copied == ["editor"]
 
     asyncio.run(scenario())
 
 
-def test_scrollbar_does_not_recopy_old_selection_but_new_drag_copies_again(monkeypatch, tmp_path):
+@pytest.mark.parametrize("gesture", ["drag", "double_click"])
+def test_scrollbar_does_not_recopy_old_selection_but_new_selection_copies_again(monkeypatch, tmp_path, gesture):
     copied = mock_mac_clipboard(monkeypatch)
 
     async def scenario():
@@ -135,21 +145,48 @@ def test_scrollbar_does_not_recopy_old_selection_but_new_drag_copies_again(monke
             transcript.action_scroll_home()
             await pilot.pause()
             row = transcript.query_one(".notice")
-            await pilot.mouse_down(row, offset=(0, 0))
-            await pilot.mouse_up(row, offset=(5, 0))
-            assert copied == ["line 0"]
+
+            async def select():
+                if gesture == "drag":
+                    await pilot.mouse_down(row, offset=(0, 0))
+                    await pilot.mouse_up(row, offset=(5, 0))
+                else:
+                    await pilot.double_click(row, offset=(3, 0))
+
+            await select()
+            selected_text = app.screen.get_selected_text()
+            assert selected_text and selected_text.startswith("line 0")
+            assert copied == [selected_text]
             scrollbar = transcript.vertical_scrollbar
             await pilot.mouse_down(scrollbar, offset=(0, 1))
             await pilot.mouse_up(scrollbar, offset=(0, 4))
             await pilot.pause()
-            assert copied == ["line 0"]
+            assert copied == [selected_text]
             await pilot.click(scrollbar, offset=(0, 6))
-            assert copied == ["line 0"]
+            assert copied == [selected_text]
             transcript.action_scroll_home()
             await pilot.pause()
-            await pilot.mouse_down(row, offset=(0, 0))
-            await pilot.mouse_up(row, offset=(5, 0))
-            assert copied == ["line 0", "line 0"]
+            await select()
+            assert copied == [selected_text, selected_text]
+
+    asyncio.run(scenario())
+
+
+def test_triple_click_copies_the_expanded_selection(monkeypatch, tmp_path):
+    copied = mock_mac_clipboard(monkeypatch)
+
+    async def scenario():
+        app = CopyApp(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            transcript = app.query_one(Transcript)
+            await transcript.add_notice("first line")
+            await transcript.add_notice("second line")
+            await pilot.pause()
+            await pilot.triple_click(transcript.query(".notice").first(), offset=(3, 0))
+            assert copied[0] == "first line"
+            assert len(copied) == 2
+            assert "first line" in copied[-1] and "second line" in copied[-1]
+            assert app.clipboard == app.screen.get_selected_text() == copied[-1]
 
     asyncio.run(scenario())
 
@@ -177,7 +214,10 @@ def test_successful_copy_shows_brief_copied_notice_but_failure_does_not(monkeypa
         ui = FullscreenUI()
         app = VirgoApp(make_session(ui=ui), ui)
         async with app.run_test(notifications=True) as pilot:
-            app.copy_to_clipboard("selected words")
+            await pilot.pause()
+            await app.transcript.add_notice("selected words")
+            await pilot.pause()
+            await pilot.double_click(app.transcript.query_one(".notice"), offset=(3, 0))
             await pilot.pause()
             notices = list(app.query(Toast))
             assert len(notices) == 1
@@ -187,6 +227,7 @@ def test_successful_copy_shows_brief_copied_notice_but_failure_does_not(monkeypa
             assert notices[0].styles.background.hex == "#7C3AED"
             assert notices[0].styles.color.hex == "#FFFFFF"
             assert copied == ["selected words"]
+            assert any("Copied" in strip.text for strip in app.screen._compositor.render_strips())
             await pilot.pause(1.3)
             assert not app.query(Toast)
 
