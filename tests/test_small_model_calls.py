@@ -15,8 +15,8 @@ from virgo.features.permission import review_tool_call
 
 
 @pytest.mark.parametrize("levels,default,expected", [
-    pytest.param(("low", "high"), "high", "low", id="supports-low"),
-    pytest.param(("medium", "high"), "high", "high", id="model-default"),
+    pytest.param(("low", "medium", "high"), "high", "medium", id="supports-medium"),
+    pytest.param(("low", "high"), "high", "high", id="model-default"),
     pytest.param(None, None, None, id="server-default"),
 ])
 @pytest.mark.parametrize("consumer", ["permission", "goal", "compaction", "memory-tidy", "memory-extract"])

@@ -23,7 +23,7 @@ def test_auxiliary_model_uses_the_same_connection(project, main, small):
         assert session.small_model.api == session.model.api
         assert session.small_model.auth_path == session.model.auth_path
         assert session.small_model.base_url == session.model.base_url
-        assert session.small_model_effort == "low"
+        assert session.small_model_effort == "medium"
     finally:
         session.shutdown()
 
@@ -67,10 +67,10 @@ def test_direct_model_command_updates_small_model_and_keeps_main_effort(make_ses
     session.prompt("/effort max")
     session.prompt("/model openai-codex/gpt-6.1-terra")
     assert session.small_model.spec == "openai-codex/gpt-6-luna"
-    assert session.small_model_effort == "low"
+    assert session.small_model_effort == "medium"
     session.prompt("/model anthropic/claude-opus-5-5")
     assert session.small_model.spec == "anthropic/claude-haiku-5-5"
-    assert session.small_model_effort == "low"
+    assert session.small_model_effort == "medium"
     session.prompt("/model deepseek/deepseek-flash")
     assert session.small_model is session.model
     assert session.effort == "max"

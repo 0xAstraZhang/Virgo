@@ -327,8 +327,8 @@ class AgentSession:
         model = self.small_model
         if not model.reasoning:
             return None
-        if "low" in (model.supported_reasoning_levels or ()):
-            return "low"
+        if "medium" in (model.supported_reasoning_levels or ()):
+            return "medium"
         return model.default_reasoning_level
 
     def _open_store(self, session) -> SessionStore:
