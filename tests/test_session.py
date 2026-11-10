@@ -9,6 +9,7 @@ import textwrap
 
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, ToolResultMessage
+from virgo.cli import main as cli
 from virgo.harness.session import AgentSession
 from virgo.harness.settings import Paths
 from virgo.harness.store import SessionStore
@@ -33,6 +34,24 @@ def test_session_persists_and_resumes(make_session, project):
     assert s2.main.agent.last_text == "second answer"
     assert SessionStore.list(path.parent)[0]["title"] == "hello"
     s2.shutdown()
+
+
+def test_session_numbers_outside_the_list_are_rejected(make_session, project, monkeypatch, capsys):
+    s = make_session(faux.reply("one"), persist=True)
+    s.prompt("first conversation")
+    saved = s.store.path
+    s.new_session()
+    for choice in ("0", "-1", "2", "x"):  # 0 and -1 used to open the last listed session
+        s.prompt(f"/sessions {choice}")
+        assert s.store.path != saved
+    assert s.ui.text.count("Invalid session number.") == 4
+    s.prompt("/sessions 1")
+    assert s.store.path == saved
+
+    for choice, expected in (("0", None), ("-1", None), ("2", None), ("1", saved)):
+        monkeypatch.setattr("builtins.input", lambda _prompt, choice=choice: choice)
+        assert cli._pick_session(saved.parent) == expected
+    capsys.readouterr()
 
 
 def test_moved_version_one_session_resumes(make_session, project, tmp_path):

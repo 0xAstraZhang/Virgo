@@ -58,13 +58,17 @@ def _pick_session(sessions_dir: Path) -> Path | None:
     if not items:
         print("No saved sessions for this directory.", file=sys.stderr)
         return None
-    for i, it in enumerate(items[:20], 1):
+    listed = items[:20]
+    for i, it in enumerate(listed, 1):
         print(f"{i:>3}. {it['title']}  ({it['messages']} msgs)")
     try:
         choice = input("session number: ").strip()
-        return items[int(choice) - 1]["path"]
-    except (ValueError, IndexError, EOFError):
+    except EOFError:
         return None
+    # Only listed numbers are valid: 0 or a negative value must not index from the end.
+    if not choice.isdecimal() or not 1 <= int(choice) <= len(listed):
+        return None
+    return listed[int(choice) - 1]["path"]
 
 
 def _fullscreen_available() -> bool:

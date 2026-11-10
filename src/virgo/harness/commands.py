@@ -170,16 +170,18 @@ def register_builtins(session: AgentSession) -> None:
         if not items:
             ui.print("No saved sessions for this directory.")
             return
-        if not args.strip():
-            for i, it in enumerate(items[:20], 1):
+        listed = items[:20]
+        choice = args.strip()
+        if not choice:
+            for i, it in enumerate(listed, 1):
                 ui.print(f"  {i:>2}. {it['title']}  ({it['messages']} msgs)  {it['path'].name}")
             ui.print("Use /sessions <number> to open one.")
             return
-        try:
-            it = items[int(args.strip()) - 1]
-        except (ValueError, IndexError):
+        # Only listed numbers are valid: 0 or a negative value must not index from the end.
+        if not choice.isdecimal() or not 1 <= int(choice) <= len(listed):
             ui.print("Invalid session number.", "error")
             return
+        it = listed[int(choice) - 1]
         s.open_session(it["path"])
         ui.print(f"Resumed {it['path'].name} ({len(s.main.messages)} messages).")
 
