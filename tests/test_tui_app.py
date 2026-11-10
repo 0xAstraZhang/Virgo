@@ -75,11 +75,10 @@ def test_completion_tab_accepts_escape_closes_and_command_stays_local(make_sessi
             assert not app.query_one("#completions").display
             assert not session.main.messages
             await pilot.press("enter")
-            await wait_for(
-                pilot,
-                lambda: any("model:" in str(row.content) for row in app.transcript.query(".notice")),
-            )
+            await wait_for(pilot, lambda: app.query_one("#preferences").display)
             assert not faux.CALLS["test"]
+            await pilot.press("escape")
+            await wait_for(pilot, lambda: app.active_input is None and not app.controller.busy)
             await pilot.press("/", "e")
             await wait_for(pilot, lambda: bool(app.completion_names))
             await pilot.press("escape")
@@ -343,7 +342,8 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
                 assert cell_len(str(cwd.content)) <= width - 2
                 assert str(cwd.content).endswith(directory.name[-8:])
                 assert cwd.region.y == app.query_one("#brand").region.bottom
-                assert cwd.region.bottom <= app.transcript.region.y
+                assert cwd.region.bottom == app.query_one("#hints").region.y
+                assert app.query_one("#hints").region.bottom <= app.transcript.region.y
                 assert str(directory) not in "\n".join(lines)
 
     asyncio.run(scenario())

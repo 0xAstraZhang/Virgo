@@ -11,10 +11,13 @@ from types import SimpleNamespace
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Input
+from textual.widgets._toast import Toast
 
 from virgo.agent.types import AgentEvent, ToolResult
 from virgo.ai.types import AssistantMessage, TextContent, ThinkingContent, UserMessage
 from virgo.cli.tui import selection as selection_module
+from virgo.cli.tui.app import VirgoApp
+from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.editor import ChatEditor, InputHistory
 from virgo.cli.tui.selection import SelectionCopyMixin
 from virgo.cli.tui.transcript import AssistantView, Transcript
@@ -165,6 +168,36 @@ def test_macos_clipboard_failure_and_ssh_use_textual_fallback(monkeypatch, tmp_p
     app.copy_to_clipboard("remote words")
     assert app.clipboard == "remote words"
     assert not copied
+
+
+def test_successful_copy_shows_brief_copied_notice_but_failure_does_not(monkeypatch, make_session):
+    copied = mock_mac_clipboard(monkeypatch)
+
+    async def scenario():
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        async with app.run_test(notifications=True) as pilot:
+            app.copy_to_clipboard("selected words")
+            await pilot.pause()
+            notices = list(app.query(Toast))
+            assert len(notices) == 1
+            assert str(notices[0].render()) == "Copied"
+            assert notices[0].region.y == app.query_one("#brand").region.y
+            assert notices[0].region.height == 1
+            assert copied == ["selected words"]
+            await pilot.pause(1.3)
+            assert not app.query(Toast)
+
+            def failed(*_args, **_kwargs):
+                raise OSError("clipboard unavailable")
+
+            monkeypatch.setattr(selection_module.subprocess, "run", failed)
+            app.copy_to_clipboard("not copied to system clipboard")
+            app.copy_to_clipboard("")
+            await pilot.pause()
+            assert not app.query(Toast)
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("sequence", [b"\x1b[13;2u", b"\n"], ids=["shift-enter", "ctrl-j"])

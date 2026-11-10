@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...agent.types import AgentEvent
+from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest
 from ...harness.ui import UI
 
 
@@ -46,17 +47,19 @@ class InputRequest:
     options: tuple[str, ...] | None = None
     password: bool = False
     default: str = ""
+    preferences: PreferenceRequest | None = None
 
 
 @dataclass
 class _Waiting:
     request: Confirmation | InputRequest
     ready: threading.Event = field(default_factory=threading.Event)
-    answer: str | None = None
+    answer: str | PreferenceChoice | None = None
 
 
 class FullscreenUI(UI):
     interactive = True
+    supports_preferences = True
 
     def __init__(self) -> None:
         self._queue: queue.SimpleQueue[Update] = queue.SimpleQueue()
@@ -158,7 +161,10 @@ class FullscreenUI(UI):
     def input(self, question: str, *, password: bool = False, default: str = "") -> str | None:
         return self._ask_input(question, password=password, default=default)
 
-    def _ask_input(self, question: str, **kwargs) -> str | None:
+    def choose_preferences(self, request: PreferenceRequest) -> PreferenceChoice | None:
+        return self._ask_input("Select model" if request.kind == "model" else "Effort", preferences=request)
+
+    def _ask_input(self, question: str, **kwargs) -> str | PreferenceChoice | None:
         with self._lock:
             signal = self._signals.get("main")
             if self._closed or (signal is not None and signal.is_set()):
@@ -176,7 +182,7 @@ class FullscreenUI(UI):
         with self._lock:
             return request_id in self._inputs
 
-    def resolve_input(self, request_id: int, answer: str | None) -> bool:
+    def resolve_input(self, request_id: int, answer: str | PreferenceChoice | None) -> bool:
         with self._lock:
             waiting = self._inputs.get(request_id)
             if waiting is None:
@@ -184,6 +190,14 @@ class FullscreenUI(UI):
             options = waiting.request.options
             if answer is not None and options is not None and answer not in options:
                 raise ValueError("answer must be one of the offered options")
+            preferences = waiting.request.preferences
+            if answer is not None and preferences is not None:
+                if (
+                    not isinstance(answer, PreferenceChoice)
+                    or answer.model not in {model.spec for model in preferences.models}
+                    or answer.effort not in EFFORT_LEVELS
+                ):
+                    raise ValueError("answer must be an offered model and effort")
             self._inputs.pop(request_id)
             signal = self._signals.get("main")
             if self._closed or (signal is not None and signal.is_set()):

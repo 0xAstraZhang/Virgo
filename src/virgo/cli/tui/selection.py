@@ -30,6 +30,8 @@ class SelectionCopyMixin:
             self.copy_to_clipboard(text)
 
     def copy_to_clipboard(self, text: str) -> None:
+        if not text:
+            return
         if sys.platform == "darwin" and not (os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")):
             self._clipboard = text
             try:
@@ -41,8 +43,14 @@ class SelectionCopyMixin:
                     timeout=1,
                     check=True,
                 )
+                self.notify("Copied", timeout=1.2, markup=False)
                 return
             except (OSError, subprocess.SubprocessError):
-                pass
+                # Keep the existing fallback, but don't report a successful
+                # system copy after pbcopy failed (Terminal.app ignores OSC52).
+                super().copy_to_clipboard(text)
+                return
         # Keep Textual's internal clipboard and OSC52 support on other hosts.
         super().copy_to_clipboard(text)
+        if self._driver is not None:
+            self.notify("Copied", timeout=1.2, markup=False)

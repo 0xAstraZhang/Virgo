@@ -114,6 +114,7 @@ def expand_template(body: str, args: str) -> str:
 
 def register_builtins(session: AgentSession) -> None:
     from .auth_commands import login, logout
+    from .preferences import configure_preference
 
     c = session.commands
     ui = session.ui
@@ -128,12 +129,18 @@ def register_builtins(session: AgentSession) -> None:
         ui.print("\n".join(lines))
 
     def model(s, args):
+        if not args.strip() and ui.supports_preferences:
+            configure_preference(s, "model")
+            return
         if args.strip():
             s.set_model(args.strip())
         ui.print(f"model: {s.model.spec}  (small: {s.small_model.spec}, effort: {s.effort})")
 
     def effort(s, args):
         a = args.strip()
+        if not a and ui.supports_preferences:
+            configure_preference(s, "effort")
+            return
         if a:
             if a not in ("low", "medium", "high", "xhigh", "max"):
                 ui.print("effort must be one of: low, medium, high, xhigh, max", "error")

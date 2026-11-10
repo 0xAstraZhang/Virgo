@@ -185,6 +185,8 @@ def test_queued_runs_and_automatic_wake_get_separate_summaries_but_local_command
             await wait_for(pilot, lambda: len(summaries(app)) == 3 and not app.controller.busy)
             assert all(summary.startswith("✻ Worked for ") for summary in summaries(app))
             app.controller.submit("/model")
+            await wait_for(pilot, lambda: app.query_one("#preferences").display)
+            await pilot.press("escape")
             # poll marks the worker idle before async transcript updates finish.
             await wait_for(
                 pilot, lambda: not app.controller.busy and not app._polling and not app.activity.display

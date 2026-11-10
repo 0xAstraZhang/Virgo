@@ -3,18 +3,41 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Self
 
+from rich.console import Console, ConsoleOptions, RenderResult
+from rich.table import Table
 from rich.text import Text
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
+
+
+@dataclass(frozen=True)
+class CommandChoice:
+    """Two independent columns, so description continuations retain their indent."""
+
+    command: str
+    description: str
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        width = max(1, options.max_width)
+        command_width = min(18, max(1, (width - 1) // 3))
+        columns = Table.grid(padding=(0, 1), expand=True)
+        columns.add_column(width=command_width, overflow="fold")
+        columns.add_column(ratio=1, overflow="fold")
+        columns.add_row(
+            Text(self.command, overflow="fold"),
+            Text(self.description.replace("\n", " "), overflow="fold"),
+        )
+        yield columns
 
 
 class ChoiceList(OptionList):
     """Wrap choices to the available width, with selection driving immediate scrolling."""
 
     DEFAULT_CSS = """
-    ChoiceList { text-wrap: wrap; text-overflow: fold; }
+    ChoiceList { text-wrap: wrap; text-overflow: fold; scrollbar-size: 0 0; }
     ChoiceList > .option-list--option-highlighted,
     ChoiceList:focus > .option-list--option-highlighted {
         background: #7C3AED;
@@ -31,6 +54,9 @@ class ChoiceList(OptionList):
                 continue
             option = item if isinstance(item, Option) else Option(item)
             prompt = option.prompt
+            if isinstance(prompt, CommandChoice):
+                choices.append(option)
+                continue
             if isinstance(prompt, Text):
                 text = prompt.copy()
                 if "\n" in text.plain:

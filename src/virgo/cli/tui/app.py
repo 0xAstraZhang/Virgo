@@ -18,13 +18,15 @@ from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ... import __version__
+from ...harness.preferences import PreferenceChoice
 from ...harness.store import SessionStore
 from .activity import RunActivity
 from .bridge import FullscreenUI
-from .choices import ChoiceList
+from .choices import ChoiceList, CommandChoice
 from .controller import RunController
 from .dialogs import ApprovalScreen, SessionPicker
 from .editor import ChatEditor, InputHistory
+from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
 from .transcript import Transcript
 
@@ -89,6 +91,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     ENABLE_COMMAND_PALETTE = False
     TITLE = "Virgo"
     CSS = """
+    * { scrollbar-size-vertical: 0; }
     Screen { background: $background; color: $foreground; }
     #brand { height: 1; margin: 0 1; }
     #cwd { height: 1; margin: 0 1; text-style: dim; }
@@ -113,7 +116,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     TextArea > .text-area--cursor { text-style: reverse; background: $background; color: $foreground; }
     TextArea > .text-area--selection { text-style: reverse; background: $background; color: $foreground; }
     #status { height: auto; max-height: 2; text-style: dim; }
-    #hints { height: 1; text-style: dim; }
+    #hints { height: 1; margin: 0 1; text-style: dim; }
+    ToastRack { dock: top; margin: 0 1; }
+    Toast { width: auto; max-width: 50%; padding: 0 1; margin: 0;
+        border: none; color: $foreground; background: $background; }
     OptionList, Button { background: $background; color: $foreground; }
     OptionList > .option-list--option-highlighted { background: $background;
         color: $foreground; text-style: reverse; }
@@ -166,17 +172,18 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def compose(self) -> ComposeResult:
         yield Static(Text.assemble(("V_", f"bold {PURPLE}"), (f" Virgo {__version__}", "dim")), id="brand")
         yield Static("", id="cwd", markup=False)
+        yield Static(input_hints(), id="hints", markup=False)
         with Vertical(id="body"):
             yield Transcript(id="transcript")
         with Vertical(id="dock"):
             yield Static("↓ Latest message", id="jump")
             yield Static("", id="pending", markup=False)
+            yield PreferencePicker(id="preferences")
             yield Static("", id="auth-question", markup=False)
             yield ChoiceList(id="completions")
             yield Input(id="auth-value")
             yield ChatEditor(self.history)
             yield Static("", id="status", markup=False)
-            yield Static(input_hints(), id="hints", markup=False)
 
     @property
     def editor(self) -> ChatEditor:
@@ -274,6 +281,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 self.transcript.max_scroll_y > 0
                 and not self.transcript.follow_latest
                 and self.transcript.display
+                and not (self.input_request and self.input_request.preferences)
             )
             pending = self.controller.pending
             pending_widget = self.screen_stack[0].query_one("#pending", Static)
@@ -281,6 +289,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             pending_widget.update(
                 Text("\n".join(f"Queued · {text.splitlines()[0]}" for text in pending[-3:]))
             )
+            if self.input_request is not None and self.input_request.preferences is not None:
+                self.screen_stack[0].query_one(PreferencePicker).resize_panel()
             if time.monotonic() - self.last_status >= 0.5:
                 self.update_status()
         finally:
@@ -312,6 +322,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.active_input = request.id
         self.input_request = request
         root = self.screen_stack[0]
+        if request.preferences is not None:
+            self.editor.display = False
+            root.query_one(PreferencePicker).open(request.preferences)
+            self.focus_composer()
+            self.update_status()
+            return
         question = root.query_one("#auth-question", Static)
         question.update(request.question)
         question.display = True
@@ -336,18 +352,21 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             return
         if self.input_request is None:
             self.editor.focus()
+        elif self.input_request.preferences is not None:
+            self.screen_stack[0].query_one(PreferencePicker).focus_control()
         elif self.input_request.options is not None:
             self.screen_stack[0].query_one("#completions").focus()
         else:
             self.screen_stack[0].query_one("#auth-value").focus()
 
-    def finish_input(self, answer: str | None) -> None:
+    def finish_input(self, answer: str | PreferenceChoice | None) -> None:
         request_id = self.active_input
         if request_id is None:
             return
         self.active_input = None
         self.input_request = None
         root = self.screen_stack[0]
+        root.query_one(PreferencePicker).close()
         field = root.query_one("#auth-value", Input)
         field.value = ""
         field.password = False
@@ -369,6 +388,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if self.input_request is not None and self.input_request.options is None:
             self.finish_input(event.value)
 
+    @on(PreferencePicker.Answered)
+    def preference_answered(self, event: PreferencePicker.Answered) -> None:
+        event.stop()
+        if self.input_request is not None and self.input_request.preferences is event.request:
+            self.finish_input(event.choice)
+
     def update_status(self) -> None:
         self.last_status = time.monotonic()
         status = "closing…" if self.controller.closing else "working…" if self.controller.busy else "ready"
@@ -381,11 +406,18 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 "Closing services… Ctrl+C to return to the terminal immediately"
             )
         elif self.input_request is not None:
-            hint = (
-                "↑↓ select · Enter confirm · Esc cancel"
-                if self.input_request.options is not None
-                else "Enter confirm · Esc cancel"
-            )
+            if self.input_request.preferences is not None:
+                hint = (
+                    "↑↓ model · ←→ effort · Enter default · s session · Esc cancel"
+                    if self.input_request.preferences.kind == "model"
+                    else "←→ adjust · Enter default · s session · Esc cancel"
+                )
+            else:
+                hint = (
+                    "↑↓ select · Enter confirm · Esc cancel"
+                    if self.input_request.options is not None
+                    else "Enter confirm · Esc cancel"
+                )
             self.screen_stack[0].query_one("#hints", Static).update(hint)
         elif not self.controller.busy and 0 < time.monotonic() - self.last_interrupt < 2:
             self.screen_stack[0].query_one("#hints", Static).update(
@@ -457,7 +489,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.editor.styles.height = min(
             max(3, self.editor.wrapped_document.height + 2), max(3, self.size.height // 3)
         )
-        self.screen_stack[0].query_one("#hints").display = self.size.height >= 20
         self.screen_stack[0].query_one("#completions").styles.max_height = max(
             3, min(6, self.size.height // 4)
         )
@@ -490,7 +521,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.completion_names = names
         options = self.screen_stack[0].query_one("#completions", ChoiceList)
         options.clear_options()
-        options.add_options(Option(Text(f"{name:<18} {commands[name]}"), id=name) for name in names)
+        options.add_options(Option(CommandChoice(name, commands[name]), id=name) for name in names)
         options.display = bool(names)
         options.styles.max_height = max(3, min(6, self.size.height // 4))
         options.highlighted = 0 if names else None

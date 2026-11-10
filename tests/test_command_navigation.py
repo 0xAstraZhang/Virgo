@@ -123,6 +123,8 @@ def test_login_description_wraps_fully_and_reflows_when_window_resizes(make_sess
                 assert "…" not in rendered
                 heights[width] = choices.virtual_size.height
                 layouts[width] = [line.rstrip() for line in lines if line.strip()]
+                description_column = layouts[width][0].index("sign in")
+                assert all(not line[:description_column].strip() for line in layouts[width][1:])
                 assert choices.region.right <= width
                 assert choices.region.bottom <= app.editor.region.y
                 assert app.editor.region.bottom <= app.query_one("#status").region.y
@@ -130,6 +132,38 @@ def test_login_description_wraps_fully_and_reflows_when_window_resizes(make_sess
             assert layouts[52] != layouts[80]
             assert heights[52] >= heights[80] > heights[120]
             assert heights[120] == 1
+
+    asyncio.run(scenario())
+
+
+def test_long_command_and_chinese_description_keep_separate_columns(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui)
+        command = "a-very-long-custom-command-name"
+        description = "说明文字会按介绍栏的宽度换行，不会跑到命令名称下面。"
+        session.commands.register(command, lambda s, a: None, description)
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 30)) as pilot:
+            app.editor.load_text("/a-very")
+            await wait_for(pilot, lambda: app.completion_names == [f"/{command}"])
+            choices = app.query_one("#completions", OptionList)
+            for width in (80, 40, 120):
+                await pilot.resize_terminal(width, 30)
+                await pilot.pause()
+                option = choices.get_option_at_index(0)
+                strips = choices._get_option_render(
+                    option, choices.get_visual_style("option-list--option-highlighted")
+                )
+                lines = [strip.text for strip in strips]
+                column = lines[0].index("说明")
+                assert "".join(line[:column].strip() for line in lines) == f"/{command}"
+                assert "".join(line[column:].strip() for line in lines) == description
+                assert all(strip.cell_length <= choices.scrollable_content_region.width for strip in strips)
+                assert choices.styles.scrollbar_size_vertical == 0
+                assert choices.styles.scrollbar_size_horizontal == 0
+            await pilot.press("tab")
+            assert app.editor.text == f"/{command} "
 
     asyncio.run(scenario())
 
