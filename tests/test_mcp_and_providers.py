@@ -115,6 +115,39 @@ def test_cross_provider_normalization_drops_foreign_thinking_and_orphans():
     assert conv[2]["tool_calls"][0]["function"]["name"] == "read"
 
 
+def test_chat_completions_skips_assistant_turns_without_content_or_tool_calls():
+    # The output budget ran out while the model was still reasoning: nothing in the turn can be
+    # replayed, and sending it as `content: null` makes every later request fail with HTTP 400.
+    model = resolve_model("deepseek/deepseek-flash")
+    msgs = [
+        UserMessage("prove it"),
+        AssistantMessage([ThinkingContent("let me think")], api="openai", provider="deepseek", stop_reason="length"),
+        UserMessage("never mind"),
+    ]
+    conv = oai.convert_messages("", normalize(msgs, model), send_reasoning=True)
+    assert conv == [{"role": "user", "content": "prove it"}, {"role": "user", "content": "never mind"}]
+
+
+def test_chat_completions_reasoning_field_accompanies_every_tool_call_turn():
+    model = resolve_model("deepseek/deepseek-flash")
+    msgs = [
+        UserMessage("read it"),
+        # Thinking from another provider is dropped, but thinking-mode endpoints still require the field.
+        AssistantMessage([ThinkingContent("x", signature="s"), ToolCall("c1", "read", {})], api="anthropic"),
+        ToolResultMessage("c1", "read", [TextContent("data")]),
+        AssistantMessage(
+            [ThinkingContent("check"), ToolCall("c2", "read", {})], api="openai", provider="deepseek"
+        ),
+        ToolResultMessage("c2", "read", [TextContent("more")]),
+        AssistantMessage([TextContent("done")], api="openai", provider="deepseek"),
+    ]
+    normalized = normalize(msgs, model)
+    conv = oai.convert_messages("", normalized, send_reasoning=True)
+    assert [m.get("reasoning_content") for m in conv] == [None, "", None, "check", None, None]
+    assert "reasoning_content" not in conv[5]
+    assert all("reasoning_content" not in m for m in oai.convert_messages("", normalized))
+
+
 def test_model_resolution_and_custom_providers():
     m = resolve_model("claude-sonnet-5-5")
     assert m.provider == "anthropic" and m.reasoning and m.context_window == 1_000_000

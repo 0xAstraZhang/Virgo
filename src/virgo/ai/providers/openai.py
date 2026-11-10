@@ -73,8 +73,12 @@ def convert_messages(system: str, messages: list, send_reasoning: bool = False) 
                         )
                 out.append({"role": "user", "content": parts})
         elif isinstance(m, AssistantMessage):
-            msg: dict = {"role": "assistant", "content": m.text() or None}
-            calls = m.tool_calls()
+            text, calls = m.text(), m.tool_calls()
+            if not text and not calls:
+                # Chat Completions rejects an assistant message with neither content nor tool calls,
+                # e.g. a turn whose output budget ran out while the model was still reasoning.
+                continue
+            msg: dict = {"role": "assistant", "content": text or None}
             if calls:
                 msg["tool_calls"] = [
                     {
@@ -86,7 +90,9 @@ def convert_messages(system: str, messages: list, send_reasoning: bool = False) 
                 ]
             if send_reasoning:
                 reasoning = "".join(b.thinking for b in m.content if isinstance(b, ThinkingContent))
-                if reasoning:
+                # Thinking-mode endpoints require the field on every tool-call turn, including turns
+                # whose reasoning is unavailable (taken over from another provider, or never produced).
+                if reasoning or calls:
                     msg["reasoning_content"] = reasoning
             out.append(msg)
         elif isinstance(m, ToolResultMessage):
