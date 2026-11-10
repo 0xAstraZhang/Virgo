@@ -2,7 +2,8 @@
 
 Cron uses 5 fields (minute hour day-of-month month day-of-week; ``*``, ``*/n``, ``a-b``, ``a-b/n``,
 lists; day-of-week 0-7 with 0/7 = Sunday; when both day fields are restricted either may match).
-``at`` takes an ISO time or a relative offset like ``+10m``, ``+2h``, ``+1d``.
+``at`` takes an ISO time or a relative offset like ``+10m``, ``+2h``, ``+1d``. Times are local;
+one with a zone or UTC offset (``...Z``, ``+08:00``) is converted to local time.
 Schedules fire only while Virgo runs; missed times are not replayed. ``persist`` keeps a schedule
 across sessions in ``.virgo/schedules.json``.
 """
@@ -81,15 +82,18 @@ class Cron:
 
 
 def parse_at(text: str, now: datetime | None = None) -> datetime:
+    """Return a naive local time, the form the scheduler stores and compares."""
     now = now or datetime.now()
     m = re.fullmatch(r"\+?\s*(\d+)\s*([smhd])", text.strip())
     if m:
         n, unit = int(m.group(1)), m.group(2)
         return now + timedelta(**{{"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[unit]: n})
     try:
-        return datetime.fromisoformat(text.strip())
+        when = datetime.fromisoformat(text.strip())
     except ValueError as e:
         raise ValueError(f"invalid time {text!r}: use ISO (2026-01-31T09:00) or +10m / +2h / +1d") from e
+    # A zone or offset ("...Z", "+08:00") names an instant: convert it rather than read it as local time.
+    return when.astimezone().replace(tzinfo=None) if when.tzinfo else when
 
 
 @dataclass
@@ -130,6 +134,8 @@ class Scheduler:
                 s = Schedule(**d)
                 if s.cron:
                     Cron(s.cron)
+                if s.at:  # also repairs zone-qualified times saved by earlier versions
+                    s.at = parse_at(str(s.at)).isoformat(timespec="seconds")
                 self.items[s.id] = s
             except (TypeError, ValueError) as e:
                 self.api.ui.print(f"[schedules: skipping invalid entry {d}: {e}]", "error")
