@@ -142,6 +142,26 @@ def test_responses_preserves_reasoning_tool_history_without_mutating():
     assert "id" not in foreign[2]
 
 
+def test_responses_drops_reasoning_left_without_its_output_item():
+    reasoning = ThinkingContent("Thinking", signature=json.dumps(REASONING))
+    history = [
+        UserMessage("Prove it"),
+        # The output budget ran out while reasoning: no message or tool call followed.
+        AssistantMessage(api="openai-responses", content=[reasoning], stop_reason="length"),
+        UserMessage("Never mind"),
+        AssistantMessage(api="openai-responses", content=[reasoning, TextContent("OK")]),
+        UserMessage("Thanks"),
+    ]
+    converted = responses.convert_messages(history)
+    assert converted == [
+        {"role": "user", "content": "Prove it"},
+        {"role": "user", "content": "Never mind"},
+        REASONING,
+        {"role": "assistant", "content": "OK"},
+        {"role": "user", "content": "Thanks"},
+    ]
+
+
 @pytest.mark.parametrize(
     "event,reason",
     [

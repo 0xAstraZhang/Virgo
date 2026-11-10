@@ -52,6 +52,7 @@ def convert_messages(messages: list, *, api: str = "openai-responses") -> list[d
                 if content:
                     result.append({"role": "user", "content": content})
         elif isinstance(message, AssistantMessage):
+            items = []
             for block in message.content:
                 if isinstance(block, ThinkingContent) and message.api == api and block.signature:
                     try:
@@ -59,9 +60,9 @@ def convert_messages(messages: list, *, api: str = "openai-responses") -> list[d
                     except (ValueError, TypeError):
                         continue
                     if isinstance(item, dict) and item.get("type") == "reasoning":
-                        result.append(item)
+                        items.append(item)
                 elif isinstance(block, TextContent) and block.text:
-                    result.append({"role": "assistant", "content": block.text})
+                    items.append({"role": "assistant", "content": block.text})
                 elif isinstance(block, ToolCall):
                     call_id, _, item_id = block.id.partition("|")
                     item = {
@@ -72,9 +73,14 @@ def convert_messages(messages: list, *, api: str = "openai-responses") -> list[d
                     }
                     if item_id and message.api == api:
                         item["id"] = item_id
-                    result.append(item)
+                    items.append(item)
                 elif isinstance(block, RawContent) and block.api == api:
-                    result.append(copy.deepcopy(block.data))
+                    items.append(copy.deepcopy(block.data))
+            # A reasoning item is only accepted together with the output item that follows it. A turn
+            # cut off while reasoning, or whose tool calls were dropped after an abort, leaves it dangling.
+            while items and items[-1].get("type") == "reasoning":
+                items.pop()
+            result.extend(items)
         elif isinstance(message, ToolResultMessage):
             output = message.text() or "(no output)"
             if any(isinstance(block, ImageContent) for block in message.content):
