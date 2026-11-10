@@ -24,17 +24,6 @@ from .editor import ChatEditor, InputHistory
 from .transcript import Transcript
 
 PURPLE = "#7C3AED"
-LOGO = "\n".join(
-    [
-        "███             ███",
-        " ███           ███",
-        "  ███         ███",
-        "   ███       ███",
-        "    ███     ███",
-        "     █████████   ███████",
-        "      ███████    ███████",
-    ]
-)
 
 
 def terminal_theme() -> Theme:
@@ -93,10 +82,6 @@ class VirgoApp(App[int]):
     Screen { background: $background; color: $foreground; }
     #brand { height: 1; margin: 0 1; }
     #body { height: 1fr; }
-    #welcome { height: 1fr; align: center middle; }
-    #logo { width: 25; height: 7; color: #7C3AED; text-style: bold; }
-    #welcome-title, #welcome-help { height: auto; width: auto; margin-top: 1; }
-    #welcome-help { text-style: dim; }
     Transcript { height: 1fr; }
     #dock { height: auto; padding: 0 1; background: $background; }
     #pending { height: auto; max-height: 3; text-style: dim; }
@@ -159,10 +144,6 @@ class VirgoApp(App[int]):
     def compose(self) -> ComposeResult:
         yield Static(Text.assemble(("V_", f"bold {PURPLE}"), (f" Virgo {__version__}", "dim")), id="brand")
         with Vertical(id="body"):
-            with Vertical(id="welcome"):
-                yield Static(Text(LOGO, style=PURPLE), id="logo")
-                yield Static(Text("Virgo · your coding workspace", style="bold"), id="welcome-title")
-                yield Static("Type a message to begin · /help for commands", id="welcome-help", markup=False)
             yield Transcript(id="transcript")
         with Vertical(id="dock"):
             yield Button("↓ Latest message · Ctrl+End", id="jump")
@@ -185,7 +166,7 @@ class VirgoApp(App[int]):
         return len(self.screen_stack) > 1
 
     def on_mount(self) -> None:
-        for selector in ("#jump", "#pending", "#completions", "#transcript"):
+        for selector in ("#jump", "#pending", "#completions"):
             self.screen_stack[0].query_one(selector).display = False
         self.editor.focus()
         self._poll_timer = self.set_interval(1 / 30, self.poll)
@@ -209,10 +190,6 @@ class VirgoApp(App[int]):
         self.controller.start(self.initial)
         self.editor.focus()
 
-    def show_transcript(self) -> None:
-        self.screen_stack[0].query_one("#welcome").display = False
-        self.transcript.display = True
-
     async def poll(self) -> None:
         if self._polling or not self.is_running:
             return
@@ -223,20 +200,9 @@ class VirgoApp(App[int]):
                     return
                 if update.kind == "reset":
                     await self.transcript.load_history(update.payload)
-                    has_history = bool(update.payload)
-                    self.screen_stack[0].query_one("#welcome").display = not has_history
-                    self.transcript.display = has_history
                 elif update.kind == "event":
-                    if update.payload.type in {
-                        "message_start",
-                        "message_update",
-                        "message_end",
-                        "tool_execution_start",
-                    }:
-                        self.show_transcript()
                     await self.transcript.consume(update.payload)
                 elif update.kind == "print":
-                    self.show_transcript()
                     await self.transcript.add_notice(*update.payload)
                 elif update.kind == "confirmation":
                     self.confirmations.append(update.payload)

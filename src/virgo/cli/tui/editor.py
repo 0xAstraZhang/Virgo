@@ -77,7 +77,6 @@ class ChatEditor(TextArea):
             show_line_numbers=False,
             highlight_cursor_line=False,
             theme="css",
-            placeholder="Message Virgo…  / for commands",
         )
         self.input_history = history
 

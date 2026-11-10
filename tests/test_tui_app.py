@@ -40,7 +40,7 @@ def test_initial_prompt_and_chinese_multiline_paste_submit_once(make_session):
         app = VirgoApp(session, ui, initial="初始问题")
         async with app.run_test(size=(80, 24)) as pilot:
             await wait_for(pilot, lambda: has_reply(app, "初始回答") and not app.controller.busy)
-            assert not app.query_one("#welcome").display
+            assert app.transcript.display
             assert len(app.transcript.query(".user-message")) == 1
             app.post_message(events.Paste("你好，世界\n第二行"))
             await wait_for(pilot, lambda: app.editor.text == "你好，世界\n第二行")
