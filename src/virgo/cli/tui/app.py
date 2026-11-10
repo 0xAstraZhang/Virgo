@@ -18,6 +18,7 @@ from textual.widgets.option_list import Option
 
 from ... import __version__
 from ...harness.store import SessionStore
+from .activity import RunActivity
 from .bridge import FullscreenUI
 from .choices import ChoiceList
 from .controller import RunController
@@ -159,6 +160,7 @@ class VirgoApp(App[int]):
             yield Transcript(id="transcript")
         with Vertical(id="dock"):
             yield Static("↓ Latest message", id="jump")
+            yield RunActivity(id="activity")
             yield Static("", id="pending", markup=False)
             yield Static("", id="auth-question", markup=False)
             yield ChoiceList(id="completions")
@@ -174,6 +176,10 @@ class VirgoApp(App[int]):
     @property
     def transcript(self) -> Transcript:
         return self.screen_stack[0].query_one(Transcript)
+
+    @property
+    def activity(self) -> RunActivity:
+        return self.screen_stack[0].query_one(RunActivity)
 
     @property
     def has_modal(self) -> bool:
@@ -213,8 +219,16 @@ class VirgoApp(App[int]):
                 if not self.is_running:
                     return
                 if update.kind == "reset":
+                    self.activity.reset()
                     await self.transcript.load_history(update.payload)
+                elif update.kind == "run_start":
+                    self.activity.begin(update.created_at, self.session.effort)
+                elif update.kind == "done":
+                    summary = self.activity.finish(update.payload, update.created_at)
+                    if summary is not None:
+                        await self.transcript.add_notice(summary, "dim")
                 elif update.kind == "event":
+                    self.activity.consume(update.payload)
                     await self.transcript.consume(update.payload)
                 elif update.kind == "print":
                     await self.transcript.add_notice(*update.payload)
@@ -237,6 +251,15 @@ class VirgoApp(App[int]):
                 return
             self.show_next_confirmation()
             self.show_next_input()
+            self.activity.waiting = (
+                "Closing"
+                if self.controller.closing
+                else "Waiting for approval"
+                if self.active_confirmation is not None
+                else "Waiting for input"
+                if self.active_input is not None
+                else None
+            )
             if not self.screen_stack[0].query(Transcript):
                 return
             self.screen_stack[0].query_one("#jump").display = (

@@ -191,3 +191,26 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', 
         assert terminal.finish() != 0
         assert "intentional-pty-render-failure" in plain(bytes(terminal.output))
         terminal.assert_restored()
+
+
+def test_fullscreen_pty_animates_while_waiting_and_keeps_elapsed_summary(project, tmp_path):
+    script = """
+from virgo.ai.providers import faux
+from virgo.cli.main import main
+
+faux.script('activity', faux.reply('Finished waiting.', delay=1.6))
+raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session',
+                      '--model', 'faux/activity', '--effort', 'high', 'hello']))
+"""
+    with PtyClient(project, tmp_path / "pty-activity-home", [sys.executable, "-c", script]) as terminal:
+        terminal.wait_for(lambda data: "Thinking…" in plain(data))
+        output = terminal.wait_for(lambda data: "Worked for" in plain(data))
+        text = plain(output)
+        assert "thinking with high effort" in text
+        assert "(1s" in text
+        assert len(set(text) & set("✢✳✶✻✽")) >= 2
+        assert "Finished waiting." in text
+        assert re.search(r"Worked for \d+s · done \d\d:\d\d", text)
+        terminal.send(b"\x04")
+        assert terminal.finish() == 0
+        terminal.assert_restored()

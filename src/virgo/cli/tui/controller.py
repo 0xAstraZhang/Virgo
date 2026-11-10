@@ -11,7 +11,7 @@ from collections.abc import Callable
 from ...ai.types import UserMessage
 from ...harness.session import AgentSession
 from ..repl import EXIT
-from .bridge import FullscreenUI, Update
+from .bridge import FullscreenUI, RunFinished, Update
 
 
 class RunController:
@@ -74,14 +74,27 @@ class RunController:
             self.busy = True
             self._interrupted = False
             self.session.main.agent.signal.clear()
+            self.ui.push("run_start", ticket)
 
         def run() -> None:
+            failed = False
             try:
                 fn()
             except Exception as error:  # noqa: BLE001 - errors become transcript entries
+                failed = True
                 self.ui.print(f"{type(error).__name__}: {error}", "error")
             finally:
-                self.ui.push("helper_done" if concurrent else "done", ticket)
+                if concurrent:
+                    self.ui.push("helper_done", ticket)
+                else:
+                    self.ui.push(
+                        "done",
+                        RunFinished(
+                            ticket,
+                            interrupted=self._interrupted or self.session.main.agent.signal.is_set(),
+                            failed=failed,
+                        ),
+                    )
 
         worker = threading.Thread(target=run, daemon=True, name=f"virgo-{'command' if concurrent else 'run'}")
         if concurrent:
@@ -122,6 +135,7 @@ class RunController:
         for update in self.ui.drain():
             if update.kind == "done":
                 self.busy = False
+                out.append(update)
             elif update.kind == "helper_done":
                 self._helpers.pop(update.payload, None)
             elif update.kind == "wake":

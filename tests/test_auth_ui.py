@@ -21,7 +21,13 @@ from .test_tui_controller import until
 
 def form_is_ready(app, question=None):
     request = app.input_request
-    return request is not None and (question is None or request.question == question)
+    return (
+        request is not None
+        and (question is None or request.question == question)
+        # State changes precede Textual's layout pass; geometry assertions need
+        # the newly displayed form to have reached the screen as well.
+        and app.query_one("#auth-question").region.height > 0
+    )
 
 
 def assert_inline_form(app, choices):

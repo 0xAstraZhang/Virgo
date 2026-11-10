@@ -10,6 +10,7 @@ import copy
 import itertools
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +22,14 @@ from ...harness.ui import UI
 class Update:
     kind: str
     payload: Any = None
+    created_at: float = field(default_factory=time.monotonic, compare=False)
+
+
+@dataclass(frozen=True)
+class RunFinished:
+    ticket: int
+    interrupted: bool = False
+    failed: bool = False
 
 
 @dataclass(frozen=True)
