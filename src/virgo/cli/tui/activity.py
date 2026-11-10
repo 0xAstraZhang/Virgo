@@ -1,11 +1,10 @@
-"""Live run feedback, kept outside the scrollable conversation."""
+"""Run feedback rendered by the current assistant message's fold header."""
 
 from __future__ import annotations
 
 import time
 
 from rich.text import Text
-from textual.widgets import Static
 
 from ...agent.types import AgentEvent
 from ...ai.types import AssistantMessage
@@ -26,13 +25,8 @@ def elapsed_text(seconds: float) -> str:
     return f"{seconds}s"
 
 
-class RunActivity(Static):
-    DEFAULT_CSS = """
-    RunActivity { height: 1; color: $accent; background: $background; }
-    """
-
-    def __init__(self, **kwargs) -> None:
-        super().__init__("", markup=False, **kwargs)
+class RunActivity:
+    def __init__(self) -> None:
         self.started_at: float | None = None
         self.phase = "Working"
         self.waiting: str | None = None
@@ -40,19 +34,14 @@ class RunActivity(Static):
         self.saw_agent = False
         self.stop_reason = "stop"
         self.running_tools: dict[str, str] = {}
+        self.content = Text()
         self.display = False
-        self._timer = None
-
-    def on_mount(self) -> None:
-        self._timer = self.set_interval(FRAME_SECONDS, self.tick, pause=True)
 
     def reset(self) -> None:
         self.started_at = None
         self.waiting = None
         self.running_tools.clear()
         self.display = False
-        if self._timer is not None:
-            self._timer.pause()
 
     def begin(self, started_at: float, effort: str) -> None:
         self.reset()
@@ -62,8 +51,6 @@ class RunActivity(Static):
         self.saw_agent = False
         self.stop_reason = "stop"
         self.display = True
-        if self._timer is not None:
-            self._timer.resume()
         self.tick()
 
     def consume(self, event: AgentEvent) -> None:
@@ -111,7 +98,7 @@ class RunActivity(Static):
         if phase == "Thinking" and self.effort:
             detail += f" · thinking with {self.effort} effort"
         label.append(f" ({detail})", style="dim")
-        self.update(label)
+        self.content = label
 
     def finish(self, result: RunFinished, finished_at: float) -> str | None:
         if self.started_at is None:

@@ -50,7 +50,11 @@ class AssistantView(Vertical):
     DEFAULT_CSS = """
     AssistantView { height: auto; margin-bottom: 1; background: $background; }
     AssistantView > .speaker { height: 1; text-style: bold; color: $foreground; }
-    AssistantView > .thought-header { color: $foreground; text-style: dim; }
+    AssistantView > .thought-header {
+        height: 1; color: $foreground; text-style: dim;
+        text-wrap: nowrap; text-overflow: ellipsis;
+    }
+    AssistantView > .thought-header.active { color: $accent; text-style: none; }
     AssistantView > .thought-body { height: auto; text-style: dim; padding-left: 2; }
     AssistantView > Markdown { margin: 0; padding: 0; background: $background; }
     AssistantView MarkdownFence, AssistantView MarkdownFence > Label {
@@ -67,15 +71,17 @@ class AssistantView(Vertical):
         self.text = ""
         self.thinking = ""
         self.message: AssistantMessage | None = None
+        self.activity: Text | None = None
         self._stream = None
-        self.speaker = Static("Virgo" if agent == "main" else f"Virgo · {agent}", classes="speaker")
+        self.speaker = Static(agent, classes="speaker", markup=False)
         self.thought_header = FoldHeader("", classes="thought-header", markup=False)
         self.thought_body = Static("", classes="thought-body", markup=False)
         self.body = Markdown(open_links=False)
         self.error = Static("", classes="error", markup=False)
 
     def compose(self) -> ComposeResult:
-        yield self.speaker
+        if self.agent != "main":
+            yield self.speaker
         yield self.thought_header
         yield self.thought_body
         yield self.body
@@ -84,6 +90,7 @@ class AssistantView(Vertical):
     def on_mount(self) -> None:
         self.thought_header.display = False
         self.thought_body.display = False
+        self.body.display = False
         self.error.display = False
 
     async def _stop_stream(self) -> None:
@@ -134,7 +141,7 @@ class AssistantView(Vertical):
         self.error.display = bool(error)
         self.error.set_class(message.stop_reason == "aborted", "aborted")
         # Tool-only assistant messages are represented by their tool cards.
-        self.display = bool(text or self.thinking or error or not final)
+        self.display = bool(text or self.thinking or error or self.activity or not final)
 
     async def reset_attempt(self) -> None:
         await self._stop_stream()
@@ -147,11 +154,21 @@ class AssistantView(Vertical):
         self._render_thinking()
 
     def _render_thinking(self) -> None:
-        self.thought_header.display = bool(self.thinking)
-        self.thought_header.update(f"{'▾' if self.show_thinking else '▸'} Thinking")
+        self.thought_header.display = bool(self.thinking or self.activity)
+        title = Text(f"{'▾' if self.show_thinking else '▸'} ", no_wrap=True, overflow="ellipsis")
+        title.append(self.activity if self.activity is not None else "Thought")
+        self.thought_header.update(title)
+        self.thought_header.set_class(self.activity is not None, "active")
         self.thought_body.display = bool(self.thinking and self.show_thinking)
         if self.thought_body.display:
             self.thought_body.update(self.thinking)
+
+    def set_activity(self, label: Text | None) -> None:
+        if label == self.activity:
+            return
+        self.activity = label.copy() if label is not None else None
+        self._render_thinking()
+        self.display = bool(self.text or self.thinking or self.error.display or self.activity)
 
     def set_thinking(self, expanded: bool) -> None:
         self.show_thinking = expanded
@@ -252,7 +269,10 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         background: $background; color: $foreground;
         scrollbar-background: $background; scrollbar-corner-color: $background;
     }
-    Transcript > .user-message { height: auto; margin-bottom: 1; }
+    Transcript > .user-message {
+        height: auto; margin-bottom: 1; padding: 0 1;
+        background: #EEEEEE; color: #000000;
+    }
     Transcript > .notice { height: auto; margin-bottom: 1; }
     """
 
@@ -261,6 +281,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self.show_tools = False
         self.show_thinking = False
         self.active: dict[str, AssistantView] = {}
+        self.activity_card: AssistantView | None = None
         self.tools: dict[tuple[str, str], ToolView] = {}
 
     @property
@@ -298,7 +319,20 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             card = AssistantView(agent, show_thinking=self.show_thinking)
             self.active[agent] = card
             await self.mount(card)
+        if agent == "main" and self.activity_card is not card:
+            if self.activity_card is not None:
+                self.activity_card.set_activity(None)
+            self.activity_card = card
         return card
+
+    def show_activity(self, label: Text | None) -> None:
+        if self.activity_card is not None:
+            self.activity_card.set_activity(label)
+
+    def finish_activity(self) -> None:
+        self.show_activity(None)
+        self.activity_card = None
+        self.active.pop("main", None)
 
     async def _tool(self, agent: str, call_id: str, name: str, args: dict | None = None) -> ToolView:
         key = (agent, call_id)
@@ -315,7 +349,11 @@ class Transcript(VerticalScroll, inherit_bindings=False):
 
     async def consume(self, ev: AgentEvent) -> None:
         message = ev.message
-        if ev.type == "message_start" and isinstance(message, AssistantMessage):
+        if ev.type == "turn_start" and ev.agent == "main":
+            # This card also carries feedback while waiting for the first token.
+            # Prompts emitted immediately afterwards are inserted before it.
+            await self._assistant(ev.agent)
+        elif ev.type == "message_start" and isinstance(message, AssistantMessage):
             card = await self._assistant(ev.agent)
             await card.set_message(message)
         elif ev.type == "message_update" and ev.stream_event is not None:
@@ -331,11 +369,13 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     "summary": "Context summary",
                     "continue": "Continuation",
                 }
-                speaker = labels.get(message.kind, "You")
+                speaker = labels.get(message.kind, "")
                 if ev.agent != "main":
-                    speaker += f" · {ev.agent}"
-                text = Text(speaker + "\n", style="bold")
-                text.append(message.text(), style="not bold")
+                    speaker = f"{speaker} · {ev.agent}" if speaker else ev.agent
+                text = Text("> ")
+                if speaker:
+                    text.append(speaker + "\n")
+                text.append(message.text())
                 images = (
                     []
                     if isinstance(message.content, str)
@@ -343,7 +383,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 )
                 for image in images:
                     text.append(f"\n[image: {image.mime_type}]", style="dim")
-                await self.mount(Static(text, classes="user-message"))
+                pending = self.active.get(ev.agent)
+                before = pending if pending is not None and pending.message is None else None
+                await self.mount(Static(text, classes="user-message"), before=before)
             elif isinstance(message, AssistantMessage):
                 card = await self._assistant(ev.agent)
                 await card.set_message(message, final=True)
@@ -373,6 +415,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         for card in self.query(AssistantView):
             await card._stop_stream()
         self.active.clear()
+        self.activity_card = None
         self.tools.clear()
         await self.remove_children()
         for entry in entries:
@@ -385,6 +428,8 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 await self.consume(AgentEvent("message_end", message=message))
             elif entry.get("type") == "compaction":
                 await self.add_notice("Earlier context compacted · full conversation retained", "dim")
+        # Restored answers are never activity targets for subsequent local commands.
+        self.activity_card = None
         self.go_latest()
 
     async def add_notice(self, text: str, style: str | None = None) -> None:

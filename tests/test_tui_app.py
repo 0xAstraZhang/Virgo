@@ -44,7 +44,7 @@ def test_initial_prompt_and_chinese_multiline_paste_submit_once(make_session):
             assert len(app.transcript.query(".user-message")) == 1
             app.post_message(events.Paste("你好，世界\n第二行"))
             await wait_for(pilot, lambda: app.editor.text == "你好，世界\n第二行")
-            await pilot.press("ctrl+j", "Z")
+            await pilot.press("shift+enter", "Z")
             assert app.editor.text == "你好，世界\n第二行\nZ"
             await pilot.press("enter")
             await wait_for(pilot, lambda: has_reply(app, "收到多行输入") and not app.controller.busy)
@@ -331,9 +331,43 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
                 await pilot.pause()
                 app.update_status()
                 lines = str(app.query_one("#status", Static).content).splitlines()
-                assert len(lines) == (1 if width < 64 else 2)
+                assert len(lines) == 2
                 assert all(cell_len(line) <= width - 2 for line in lines)
                 assert "ready" in lines[-1] and "yolo" in lines[-1]
+                assert lines[0].startswith("↑0 ↓0")
+                model_line = lines[0 if width >= 64 else 1]
+                assert cell_len(model_line) == width - 2
+                assert model_line.endswith(f" · {session.effort}")
+                assert "faux/" not in model_line
+                cwd = app.query_one("#cwd", Static)
+                assert cell_len(str(cwd.content)) <= width - 2
+                assert str(cwd.content).endswith(directory.name[-8:])
+                assert cwd.region.y == app.query_one("#brand").region.bottom
+                assert cwd.region.bottom <= app.transcript.region.y
+                assert str(directory) not in "\n".join(lines)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("terminal,newline", [("Apple_Terminal", "Ctrl+J"), ("xterm", "Shift+Enter")])
+def test_status_aligns_usage_left_and_model_name_right(make_session, monkeypatch, terminal, newline):
+    monkeypatch.setenv("TERM_PROGRAM", terminal)
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui)
+        session.main.model.provider = "deepseek"
+        session.main.model.id = "deepseek-flash"
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.update_status()
+            lines = str(app.query_one("#status", Static).content).splitlines()
+            assert lines[0].startswith("↑0 ↓0  ~0.0%/")
+            assert lines[0].endswith(f"deepseek-flash · {session.effort}")
+            assert cell_len(lines[0]) == 78
+            assert "deepseek/" not in "\n".join(lines)
+            assert f"{newline} newline" in str(app.query_one("#hints", Static).content)
+            assert not app.query_one("#jump").display
 
     asyncio.run(scenario())
 

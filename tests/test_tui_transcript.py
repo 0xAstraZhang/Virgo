@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
@@ -209,7 +210,66 @@ def test_user_start_and_end_do_not_duplicate_text():
             await pilot.pause()
             rows = list(view.query(".user-message"))
             assert len(rows) == 1
-            assert "你好\nsecond line" in str(rows[0].content)
+            assert str(rows[0].content) == "> 你好\nsecond line"
+            assert rows[0].styles.background.hex == "#EEEEEE"
+            assert rows[0].styles.color.hex == "#000000"
+
+    asyncio.run(scenario())
+
+
+def test_inline_activity_reuses_thought_header_and_keeps_prompt_before_reply():
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test() as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("turn_start"))
+            await view.consume(AgentEvent("message_end", message=UserMessage("question")))
+            card = view.activity_card
+            view.show_activity(Text("✻ Thinking… (3s · thinking with high effort)"))
+            assert view.children[0].has_class("user-message")
+            assert view.children[1] is card
+            assert len(view.query(AssistantView)) == 1
+            assert not view.query(".speaker")
+            assert str(card.thought_header.content).startswith("▸ ✻ Thinking…")
+            assert card.thought_header.has_class("active")
+
+            message = AssistantMessage([ThinkingContent("Consider this carefully.")])
+            await view.consume(AgentEvent("message_start", message=message))
+            assert view.activity_card is card
+            assert len(view.query(".thought-header")) == 1
+            card.thought_header.focus()
+            await pilot.press("enter")
+            assert card.thought_body.display
+            assert str(card.thought_header.content).startswith("▾ ✻ Thinking…")
+            view.show_activity(Text("✽ Thinking… (4s · thinking with high effort)"))
+            assert str(card.thought_header.content).startswith("▾ ✽ Thinking…")
+
+            await view.consume(AgentEvent("message_end", message=message))
+            await view.consume(AgentEvent("turn_start"))
+            view.show_activity(Text("✳ Thinking… (5s · thinking with high effort)"))
+            assert str(card.thought_header.content) == "▾ Thought"
+            assert not card.thought_header.has_class("active")
+            assert view.activity_card is not card
+            assert len(view.query(".thought-header.active")) == 1
+            view.finish_activity()
+            assert not view.query(".thought-header.active")
+
+    asyncio.run(scenario())
+
+
+def test_history_does_not_receive_activity_from_later_local_commands():
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test():
+            view = app.query_one(Transcript)
+            await view.load_history(
+                [{"type": "message", "message": message_to_dict(AssistantMessage([TextContent("saved")]))}]
+            )
+            card = view.query_one(AssistantView)
+            assert view.activity_card is None
+            view.show_activity(Text("✻ Working… (1s)"))
+            assert not card.thought_header.display
+            assert card.activity is None
 
     asyncio.run(scenario())
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 
@@ -24,6 +25,7 @@ from .choices import ChoiceList
 from .controller import RunController
 from .dialogs import ApprovalScreen, SessionPicker
 from .editor import ChatEditor, InputHistory
+from .selection import SelectionCopyMixin
 from .transcript import Transcript
 
 PURPLE = "#7C3AED"
@@ -78,12 +80,18 @@ def short_number(value: int) -> str:
     return str(value)
 
 
-class VirgoApp(App[int]):
+def input_hints() -> str:
+    newline = "Ctrl+J" if os.environ.get("TERM_PROGRAM") == "Apple_Terminal" else "Shift+Enter"
+    return f"Enter send · {newline} newline · Esc interrupt · / commands"
+
+
+class VirgoApp(SelectionCopyMixin, App[int]):
     ENABLE_COMMAND_PALETTE = False
     TITLE = "Virgo"
     CSS = """
     Screen { background: $background; color: $foreground; }
     #brand { height: 1; margin: 0 1; }
+    #cwd { height: 1; margin: 0 1; text-style: dim; }
     #body { height: 1fr; }
     Transcript { height: 1fr; }
     #dock { height: auto; padding: 0 1; background: $background; }
@@ -136,6 +144,7 @@ class VirgoApp(App[int]):
         self.session = session
         self.ui = ui
         self.controller = RunController(session, ui)
+        self.activity = RunActivity()
         self.initial = initial
         self.pick_session = pick_session
         self.exit_code = 0
@@ -156,18 +165,18 @@ class VirgoApp(App[int]):
 
     def compose(self) -> ComposeResult:
         yield Static(Text.assemble(("V_", f"bold {PURPLE}"), (f" Virgo {__version__}", "dim")), id="brand")
+        yield Static("", id="cwd", markup=False)
         with Vertical(id="body"):
             yield Transcript(id="transcript")
         with Vertical(id="dock"):
             yield Static("↓ Latest message", id="jump")
-            yield RunActivity(id="activity")
             yield Static("", id="pending", markup=False)
             yield Static("", id="auth-question", markup=False)
             yield ChoiceList(id="completions")
             yield Input(id="auth-value")
             yield ChatEditor(self.history)
             yield Static("", id="status", markup=False)
-            yield Static("Enter send · Ctrl+J newline · Esc interrupt · / commands", id="hints", markup=False)
+            yield Static(input_hints(), id="hints", markup=False)
 
     @property
     def editor(self) -> ChatEditor:
@@ -176,10 +185,6 @@ class VirgoApp(App[int]):
     @property
     def transcript(self) -> Transcript:
         return self.screen_stack[0].query_one(Transcript)
-
-    @property
-    def activity(self) -> RunActivity:
-        return self.screen_stack[0].query_one(RunActivity)
 
     @property
     def has_modal(self) -> bool:
@@ -225,6 +230,7 @@ class VirgoApp(App[int]):
                     self.activity.begin(update.created_at, self.session.effort)
                 elif update.kind == "done":
                     summary = self.activity.finish(update.payload, update.created_at)
+                    self.transcript.finish_activity()
                     if summary is not None:
                         await self.transcript.add_notice(summary, "dim")
                 elif update.kind == "event":
@@ -260,10 +266,14 @@ class VirgoApp(App[int]):
                 if self.active_input is not None
                 else None
             )
+            self.activity.tick()
+            self.transcript.show_activity(self.activity.content if self.activity.display else None)
             if not self.screen_stack[0].query(Transcript):
                 return
             self.screen_stack[0].query_one("#jump").display = (
-                not self.transcript.follow_latest and self.transcript.display
+                self.transcript.max_scroll_y > 0
+                and not self.transcript.follow_latest
+                and self.transcript.display
             )
             pending = self.controller.pending
             pending_widget = self.screen_stack[0].query_one("#pending", Static)
@@ -382,45 +392,47 @@ class VirgoApp(App[int]):
                 "Ctrl+C again to exit · /exit also closes Virgo"
             )
         else:
-            self.screen_stack[0].query_one("#hints", Static).update(
-                "Enter send · Ctrl+J newline · Esc interrupt · / commands"
-            )
+            self.screen_stack[0].query_one("#hints", Static).update(input_hints())
         width = max(1, self.size.width - 2)
-        model = self.session.main.model.spec
-        tail = f" · {self.session.effort} · {self.session.permission_mode} · {status}"
-        if self.size.width < 64:
-            model = self.session.main.model.id
-            tail = f" · {status} · {self.session.permission_mode}"
-        primary = Text(model, no_wrap=True, overflow="ellipsis")
-        primary.truncate(max(1, width - cell_len(tail)), overflow="ellipsis")
-        primary.append(tail)
-        primary.truncate(width, overflow="ellipsis")
-        if self.size.width < 64:
-            footer = primary
-        else:
-            usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-            for entry in self.session.store.branch():
-                msg = entry.get("message", {})
-                if msg.get("role") == "assistant":
-                    for key in usage:
-                        usage[key] += msg.get("usage", {}).get(key, 0)
-            tokens = self.session.context_tokens()
-            window = self.session.main.model.context_window
-            context = f"~{tokens / max(window, 1):.1%}/{short_number(window)}"
-            used = f"↑{short_number(usage['input'])} ↓{short_number(usage['output'])}"
-            cache = usage["cache_read"] + usage["cache_write"]
-            if cache:
-                used += f" cache {short_number(cache)}"
-            cwd = str(self.session.cwd)
-            space = max(1, width - cell_len(used) - cell_len(context) - 4)
-            if cell_len(cwd) > space:
-                while cwd and cell_len(cwd) > space - 1:
-                    cwd = cwd[1:]
-                cwd = "…" + cwd
-            footer = Text(f"{cwd}  {used}  {context}", no_wrap=True, overflow="ellipsis")
-            footer.truncate(width, overflow="ellipsis")
-            footer.append("\n")
-            footer.append(primary)
+        cwd = str(self.session.cwd)
+        if cell_len(cwd) > width:
+            while cwd and cell_len(cwd) > width - 1:
+                cwd = cwd[1:]
+            cwd = "…" + cwd
+        self.screen_stack[0].query_one("#cwd", Static).update(Text(cwd, no_wrap=True))
+        usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+        for entry in self.session.store.branch():
+            msg = entry.get("message", {})
+            if msg.get("role") == "assistant":
+                for key in usage:
+                    usage[key] += msg.get("usage", {}).get(key, 0)
+        tokens = self.session.context_tokens()
+        window = self.session.main.model.context_window
+        context = f"~{tokens / max(window, 1):.1%}/{short_number(window)}"
+        used = f"↑{short_number(usage['input'])} ↓{short_number(usage['output'])}"
+        cache = usage["cache_read"] + usage["cache_write"]
+        if cache:
+            used += f" cache {short_number(cache)}"
+        metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
+        state = Text(f"{self.session.permission_mode} · {status}", no_wrap=True, overflow="ellipsis")
+        # Keep the model at the right edge. Narrow terminals put it beside the
+        # run state on the second line, leaving the first line for token usage.
+        left = metrics if self.size.width >= 64 else state
+        effort = f" · {self.session.effort}"
+        left.truncate(max(1, width - cell_len(effort) - 5), overflow="ellipsis")
+        available = max(1, width - left.cell_len - 2)
+        model = Text(self.session.main.model.id, no_wrap=True, overflow="ellipsis")
+        model.truncate(max(1, available - cell_len(effort)), overflow="ellipsis")
+        model.append(effort)
+        model.truncate(available, overflow="ellipsis")
+        aligned = left.copy()
+        aligned.append(" " * max(1, width - left.cell_len - model.cell_len))
+        aligned.append(model)
+        metrics.truncate(width, overflow="ellipsis")
+        state.truncate(width, overflow="ellipsis")
+        footer = aligned if self.size.width >= 64 else metrics
+        footer.append("\n")
+        footer.append(state if self.size.width >= 64 else aligned)
         self.screen_stack[0].query_one("#status", Static).update(footer)
 
     @on(ChatEditor.Submitted)

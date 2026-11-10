@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from textual.binding import Binding
+from textual.events import Key, MouseUp
 from textual.message import Message
 from textual.widgets import TextArea
 
@@ -60,8 +61,10 @@ class InputHistory:
 
 class ChatEditor(TextArea):
     BINDINGS = [
-        Binding("enter", "submit", show=False, priority=True),
-        Binding("ctrl+j,shift+enter", "newline", show=False, priority=True),
+        Binding("enter", "submit", show=False),
+        Binding("shift+enter", "newline", show=False),
+        # LF remains compatible with terminal key mappings and pasted key input.
+        Binding("ctrl+j", "newline", show=False),
         Binding("tab", "complete", show=False, priority=True),
         Binding("up", "cursor_up", show=False, priority=True),
         Binding("down", "cursor_down", show=False, priority=True),
@@ -84,6 +87,17 @@ class ChatEditor(TextArea):
         )
         self.input_history = history
 
+    def on_key(self, event: Key) -> None:
+        # Handle these in the editor queue, after preceding typed characters.
+        # Priority bindings run in the app queue and can overtake text inserts.
+        if event.key in {"enter", "shift+enter", "ctrl+j"}:
+            event.stop()
+            event.prevent_default()
+            if event.key == "enter":
+                self.action_submit()
+            else:
+                self.action_newline()
+
     def action_submit(self) -> None:
         self.app.sync_completions()
         names = self.app.completion_names
@@ -100,6 +114,10 @@ class ChatEditor(TextArea):
 
     def action_newline(self) -> None:
         self.insert("\n")
+
+    def on_mouse_up(self, event: MouseUp) -> None:
+        if event.button == 1 and self.selected_text:
+            self.app.copy_to_clipboard(self.selected_text)
 
     def action_complete(self) -> None:
         if not self.app.accept_completion():

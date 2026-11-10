@@ -8,7 +8,6 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from textual.app import App, ComposeResult
 
 from virgo.agent.types import AgentEvent
 from virgo.ai.providers import faux
@@ -19,11 +18,6 @@ from virgo.cli.tui.activity import RunActivity
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI, RunFinished
 from virgo.cli.tui.transcript import AssistantView
-
-
-class ActivityApp(App):
-    def compose(self) -> ComposeResult:
-        yield RunActivity()
 
 
 async def wait_for(pilot, predicate, *, timeout=4):
@@ -45,62 +39,55 @@ def test_activity_tracks_main_phases_and_elapsed_time_across_retries(monkeypatch
         SimpleNamespace(monotonic=lambda: clock[0], strftime=lambda _: "16:44"),
     )
 
-    async def scenario():
-        app = ActivityApp()
-        async with app.run_test():
-            activity = app.query_one(RunActivity)
-            activity.begin(clock[0], "high")
-            activity.consume(AgentEvent("agent_start"))
-            assert "Thinking… (0s · thinking with high effort)" in str(activity.content)
-            initial_frame = str(activity.content)[0]
-            clock[0] += 0.2
-            activity.tick()
-            assert str(activity.content)[0] != initial_frame
+    activity = RunActivity()
+    activity.begin(clock[0], "high")
+    activity.consume(AgentEvent("agent_start"))
+    assert "Thinking… (0s · thinking with high effort)" in str(activity.content)
+    initial_frame = str(activity.content)[0]
+    clock[0] += 0.2
+    activity.tick()
+    assert str(activity.content)[0] != initial_frame
 
-            def stream(kind, *, agent="main"):
-                activity.consume(
-                    AgentEvent(
-                        "message_update", agent=agent, stream_event=StreamEvent(kind, AssistantMessage())
-                    )
-                )
+    def stream(kind, *, agent="main"):
+        activity.consume(
+            AgentEvent("message_update", agent=agent, stream_event=StreamEvent(kind, AssistantMessage()))
+        )
 
-            clock[0] = 165.0
-            stream("thinking_delta")
-            assert "Thinking… (1m 5s" in str(activity.content)
-            stream("text_delta", agent="explorer")
-            activity.consume(
-                AgentEvent("tool_execution_start", agent="explorer", tool_call_id="child", tool_name="bash")
-            )
-            assert "Thinking…" in str(activity.content)
-            assert not activity.running_tools
-            stream("text_start")  # OpenAI streams can move here without thinking_end.
-            assert "Responding… (1m 5s)" in str(activity.content)
-            stream("toolcall_start")
-            assert "Preparing tools…" in str(activity.content)
-            for call_id, name in (("one", "read"), ("two", "glob")):
-                activity.consume(AgentEvent("tool_execution_start", tool_call_id=call_id, tool_name=name))
-            assert "Running 2 tools…" in str(activity.content)
-            activity.consume(AgentEvent("tool_execution_end", tool_call_id="one"))
-            assert "Running glob…" in str(activity.content)
-            activity.consume(AgentEvent("tool_execution_end", tool_call_id="two"))
-            stream("retry")
-            assert "Retrying… (1m 5s)" in str(activity.content)
-            stream("thinking_delta")
-            assert "Thinking… (1m 5s" in str(activity.content)
+    clock[0] = 165.0
+    stream("thinking_delta")
+    assert "Thinking… (1m 5s" in str(activity.content)
+    stream("text_delta", agent="explorer")
+    activity.consume(
+        AgentEvent("tool_execution_start", agent="explorer", tool_call_id="child", tool_name="bash")
+    )
+    assert "Thinking…" in str(activity.content)
+    assert not activity.running_tools
+    stream("text_start")  # OpenAI streams can move here without thinking_end.
+    assert "Responding… (1m 5s)" in str(activity.content)
+    stream("toolcall_start")
+    assert "Preparing tools…" in str(activity.content)
+    for call_id, name in (("one", "read"), ("two", "glob")):
+        activity.consume(AgentEvent("tool_execution_start", tool_call_id=call_id, tool_name=name))
+    assert "Running 2 tools…" in str(activity.content)
+    activity.consume(AgentEvent("tool_execution_end", tool_call_id="one"))
+    assert "Running glob…" in str(activity.content)
+    activity.consume(AgentEvent("tool_execution_end", tool_call_id="two"))
+    stream("retry")
+    assert "Retrying… (1m 5s)" in str(activity.content)
+    stream("thinking_delta")
+    assert "Thinking… (1m 5s" in str(activity.content)
 
-            activity.waiting = "Waiting for approval"
-            activity.tick()
-            assert "Waiting for approval… (1m 5s)" in str(activity.content)
-            assert activity.finish(RunFinished(1), 172.0) == "✻ Worked for 1m 12s · done 16:44"
-            frozen = str(activity.content)
-            clock[0] = 900.0
-            activity.tick()
-            assert str(activity.content) == frozen
-            assert not activity.display
-            assert activity.started_at is None
-            assert activity.finish(RunFinished(1), 900.0) is None
-
-    asyncio.run(scenario())
+    activity.waiting = "Waiting for approval"
+    activity.tick()
+    assert "Waiting for approval… (1m 5s)" in str(activity.content)
+    assert activity.finish(RunFinished(1), 172.0) == "✻ Worked for 1m 12s · done 16:44"
+    frozen = str(activity.content)
+    clock[0] = 900.0
+    activity.tick()
+    assert str(activity.content) == frozen
+    assert not activity.display
+    assert activity.started_at is None
+    assert activity.finish(RunFinished(1), 900.0) is None
 
 
 @pytest.mark.parametrize(
@@ -115,17 +102,12 @@ def test_activity_tracks_main_phases_and_elapsed_time_across_retries(monkeypatch
     ],
 )
 def test_activity_freezes_terminal_outcomes(reason, result, expected):
-    async def scenario():
-        app = ActivityApp()
-        async with app.run_test():
-            activity = app.query_one(RunActivity)
-            activity.begin(100, "medium")
-            activity.consume(AgentEvent("agent_start"))
-            activity.consume(AgentEvent("message_end", message=AssistantMessage(stop_reason=reason)))
-            assert activity.finish(result, 103) == f"✻ {expected} after 3s"
-            assert not activity.display and activity.started_at is None
-
-    asyncio.run(scenario())
+    activity = RunActivity()
+    activity.begin(100, "medium")
+    activity.consume(AgentEvent("agent_start"))
+    activity.consume(AgentEvent("message_end", message=AssistantMessage(stop_reason=reason)))
+    assert activity.finish(result, 103) == f"✻ {expected} after 3s"
+    assert not activity.display and activity.started_at is None
 
 
 def test_waiting_for_first_token_animates_and_concurrent_command_does_not_restart_it(make_session):
@@ -144,7 +126,13 @@ def test_waiting_for_first_token_animates_and_concurrent_command_does_not_restar
             async with app.run_test(size=(80, 24)) as pilot:
                 await wait_for(pilot, lambda: entered.is_set() and app.activity.display)
                 assert "Thinking…" in str(app.activity.content)
-                assert not app.transcript.query(AssistantView)
+                assert len(app.transcript.query(AssistantView)) == 1
+                card = app.transcript.activity_card
+                await wait_for(pilot, lambda: card.activity is not None)
+                assert card.thought_header.display
+                assert str(card.thought_header.content).startswith("▸ ")
+                assert not app.transcript.query(".speaker")
+                assert not app.query("#activity")
                 started_at = app.activity.started_at
                 frames = set()
                 for _ in range(3):
@@ -233,7 +221,7 @@ def test_failure_and_interruption_end_animation_and_next_run_starts_cleanly(make
     asyncio.run(scenario())
 
 
-def test_activity_stays_above_editor_on_narrow_screen_and_preserves_scroll_position(make_session):
+def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_position(make_session):
     entered, release = threading.Event(), threading.Event()
 
     def response(_context):
@@ -257,10 +245,12 @@ def test_activity_stays_above_editor_on_narrow_screen_and_preserves_scroll_posit
                 for width, height in ((40, 16), (80, 24)):
                     await pilot.resize_terminal(width, height)
                     await pilot.pause(0.15)
-                    assert app.activity.region.height == 1
-                    assert app.activity.region.bottom <= app.editor.region.y
+                    header = app.transcript.activity_card.thought_header
+                    assert header.region.height == 1
+                    assert header.parent is app.transcript.activity_card
+                    assert header.region.width <= width
                     assert app.query_one("#status").region.bottom <= height
-                    assert app.activity.region.right <= width
+                    assert not app.query("#activity")
                     assert app.transcript.scroll_y == 0
                     assert not app.transcript.follow_latest
                 release.set()
