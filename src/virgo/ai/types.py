@@ -179,6 +179,8 @@ class Model:
     vision: bool = True
     options: dict = field(default_factory=dict)  # provider-specific knobs
     auth_path: str | None = field(default=None, repr=False)
+    supported_reasoning_levels: tuple[str, ...] | None = None  # None: unknown; (): unsupported
+    default_reasoning_level: str | None = None
 
     @property
     def spec(self) -> str:

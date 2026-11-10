@@ -97,6 +97,12 @@ def convert_messages(system: str, messages: list, send_reasoning: bool = False) 
     return out
 
 
+def _reasoning_effort(model: Model, effort: str, fallback: str | None) -> str | None:
+    if effort in (model.supported_reasoning_levels or ()) or effort == model.default_reasoning_level:
+        return effort
+    return fallback
+
+
 def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
     o = model.options
     params: dict = {
@@ -118,8 +124,10 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
             for t in ctx.tools
         ]
     if model.reasoning and opts.effort:
-        effort_map = o.get("reasoningEffortMap", _EFFORT)
-        effort = effort_map.get(opts.effort)
+        if "reasoningEffortMap" in o:
+            effort = o["reasoningEffortMap"].get(opts.effort)
+        else:
+            effort = _reasoning_effort(model, opts.effort, _EFFORT.get(opts.effort))
         if effort is not None:
             params["reasoning_effort"] = effort
     return params

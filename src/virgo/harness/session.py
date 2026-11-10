@@ -12,11 +12,13 @@ When the agent would stop: follow-ups (schedules), then `agent_stop` handlers (t
 
 from __future__ import annotations
 
+import os
 import random
 import threading
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, ToolResult
@@ -226,7 +228,7 @@ class AgentSession:
         self.wakeups: deque = deque()
         self.discovered_models: dict[str, dict] = {}
         self.model = self.resolve(model or self.settings.get("model"))
-        self.small_model = self._small_model(model)
+        self.small_model = self._small_model(self.model)
 
         for t in BASE_TOOLS:
             self.register_tool(t, ROLES_ALL)
@@ -256,7 +258,11 @@ class AgentSession:
             provider, model_id = spec.split("/", 1)
             config = providers.get(provider, {})
             models = config.get("models") or {}
-            names = {"context_window": "contextWindow", "max_tokens": "maxTokens", "reasoning": "reasoning", "vision": "vision"}
+            names = {
+                "context_window": "contextWindow", "max_tokens": "maxTokens", "reasoning": "reasoning", "vision": "vision",
+                "supported_reasoning_levels": "supportedReasoningLevels",
+                "default_reasoning_level": "defaultReasoningLevel",
+            }
             live = {names[key]: value for key, value in metadata.items() if key in names}
             providers = {**providers, provider: {**config, "models": {**models, model_id: {**models.get(model_id, {}), **live}}}}
         m = ai.resolve_model(spec, providers)
@@ -266,13 +272,23 @@ class AgentSession:
                 m.options.setdefault(k, self.settings.get(f"anthropic.{k}"))
         return m
 
-    def _small_model(self, override: str | None) -> ai.Model:
-        configured = self.settings.get("smallModel")
-        if override and override.startswith("faux/"):
-            return self.model
-        if self.model.provider != "anthropic" and configured == "anthropic/claude-haiku-5-5":
-            return self.model  # don't silently require a second provider
-        return self.resolve(configured) if configured else self.model
+    def _small_model(self, model: ai.Model) -> ai.Model:
+        endpoint = model.base_url or os.environ.get(model.options.get("baseUrlEnv", ""), "")
+        is_openai = model.provider in {"openai", "openai-codex"} or model.api == "openai-codex"
+        if model.api in {"openai", "openai-responses", "openai-codex"} and (
+            is_openai or urlsplit(endpoint).hostname == "api.openai.com"
+        ):
+            return self.resolve(f"{model.provider}/gpt-6-luna")
+        return model
+
+    @property
+    def small_model_effort(self) -> str | None:
+        model = self.small_model
+        if not model.reasoning:
+            return None
+        if "low" in (model.supported_reasoning_levels or ()):
+            return "low"
+        return model.default_reasoning_level
 
     def _open_store(self, session) -> SessionStore:
         if session is None:
@@ -314,8 +330,10 @@ class AgentSession:
             self.bus.emit("session_start", self)
 
     def set_model(self, spec: str) -> None:
-        self.model = self.resolve(spec)
-        self.main.model = self.model
+        model = self.resolve(spec)
+        small_model = self._small_model(model)
+        self.model = self.main.model = model
+        self.small_model = small_model
         self.store.append("model_change", model=self.model.spec)
 
     # -- tools -------------------------------------------------------------------

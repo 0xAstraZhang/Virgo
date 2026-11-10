@@ -227,9 +227,8 @@ def configure_preference(session: AgentSession, kind: str) -> None:
         patch["model"] = choice.model
     if choice.persist:
         session.settings.save_user(patch)
-    if kind == "model" and choice.model != session.model.spec:
+    if kind == "model":
         session.set_model(choice.model)
-        session.small_model = session._small_model(None)
     session.effort = choice.effort
     scope = "saved as default" if choice.persist else "this session only"
     if kind == "model":

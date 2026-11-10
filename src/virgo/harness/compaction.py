@@ -165,7 +165,7 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual") -> di
     if focus:
         prompt += f"Pay special attention to: {focus}\n\n"
     prompt += SUMMARY_FORMAT
-    msg = complete(session.small_model, SUMMARY_SYSTEM, prompt, max_tokens=8000, effort="low")
+    msg = complete(session.small_model, SUMMARY_SYSTEM, prompt, max_tokens=8000, effort=session.small_model_effort)
     if msg.stop_reason in ("error", "refusal") or not msg.text().strip():
         session.ui.print(f"[compaction failed: {msg.error_message or 'empty summary'}]", "error")
         return None

@@ -58,7 +58,7 @@ def evaluate(session, condition: str, messages: list) -> dict:
         '{"met": boolean, "reason": "what is satisfied or still missing", "impossible": boolean} '
         "(impossible=true only if the condition cannot be achieved at all).",
         max_tokens=1024,
-        effort="low",
+        effort=session.small_model_effort,
     )
     if msg.stop_reason in ("error", "refusal"):
         raise RuntimeError(msg.error_message or "evaluator failed")

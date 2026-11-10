@@ -98,6 +98,19 @@ def test_codex_account_stream_and_request(account_server):
     assert request["json"]["tools"][0]["name"] == "read"
 
 
+@pytest.mark.parametrize("effort", ["xhigh", "max"])
+@pytest.mark.parametrize("declared_by", ["supported", "default", "unknown"])
+def test_codex_request_preserves_declared_effort_without_low(effort, declared_by):
+    model = Model("openai-codex", "test", "openai-codex", reasoning=True)
+    if declared_by == "supported":
+        model.supported_reasoning_levels = ("high", effort)
+    elif declared_by == "default":
+        model.default_reasoning_level = effort
+    params = codex.build_params(model, Context("", [UserMessage("hi")]), StreamOptions(effort=effort))
+    expected = "xhigh" if declared_by == "unknown" and effort == "max" else effort
+    assert params["reasoning"]["effort"] == expected
+
+
 def test_codex_http_failure_redacts_access_token(account_server):
     account_server["status"] = 429
     account_server["body"] = json.dumps({"error": {"message": "Invalid private-test-token"}}).encode()

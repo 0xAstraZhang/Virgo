@@ -200,6 +200,7 @@ def setup(api: ExtensionAPI) -> None:
             'keep specific user preferences. Return only a JSON array of {"name","type","description","body"} '
             f"objects (type one of {list(TYPES)}).",
             max_tokens=8000,
+            effort=session.small_model_effort,
         )
         try:
             records = parse_json_loose(msg.text())
@@ -255,6 +256,7 @@ def setup(api: ExtensionAPI) -> None:
             "\n".join(convo) + f"\n\n{GUIDANCE}\n\nExisting memories:\n{store.index_text() or '(none)'}\n\n"
             'Return only a JSON array of new {"name","type","description","body"} records worth keeping ([] if none).',
             max_tokens=2000,
+            effort=session.small_model_effort,
         )
         try:
             records = parse_json_loose(msg.text())

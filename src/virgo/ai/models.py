@@ -26,6 +26,13 @@ BUILTIN_PROVIDERS = {
 
 # Known model metadata (context window, max output). Unknown ids get provider defaults.
 KNOWN_MODELS = {
+    "gpt-6-luna": {
+        "contextWindow": 1_050_000,
+        "maxTokens": 128_000,
+        "reasoning": True,
+        "supportedReasoningLevels": ("none", "low", "medium", "high", "xhigh", "max"),
+        "defaultReasoningLevel": "medium",
+    },
     "claude-fable-5-2": {"contextWindow": 1_000_000, "maxTokens": 128_000},
     "claude-fable-5-1": {"contextWindow": 1_000_000, "maxTokens": 128_000},
     "claude-opus-5-5": {"contextWindow": 1_000_000, "maxTokens": 128_000},
@@ -39,7 +46,7 @@ KNOWN_MODELS = {
 }
 
 _ADAPTIVE_CLAUDE = re.compile(r"claude-(opus|sonnet|haiku|fable|mythos)-(4-[6-9]|5)")
-_OPENAI_REASONING = re.compile(r"^(o\d|gpt-5)")
+_OPENAI_REASONING = re.compile(r"^(o\d|gpt-[56])")
 
 
 def _guess_provider(model_id: str) -> str:
@@ -68,6 +75,8 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
             "maxTokens": 64_000,
             "reasoning": bool(_ADAPTIVE_CLAUDE.search(model_id)),
         }
+        if meta["reasoning"]:
+            meta["supportedReasoningLevels"] = ("low", "medium", "high")
     elif api in ("openai", "openai-codex", "openai-responses"):
         meta = {
             "contextWindow": 128_000,
@@ -77,7 +86,28 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
     else:
         meta = {"contextWindow": 200_000, "maxTokens": 8_192}
     meta.update(KNOWN_MODELS.get(model_id, {}))
-    meta.update((conf.get("models") or {}).get(model_id, {}))
+    model_config = (conf.get("models") or {}).get(model_id, {})
+    meta.update(model_config)
+    levels = meta.get("supportedReasoningLevels")
+    if levels is not None:
+        if not isinstance(levels, (list, tuple)) or any(not isinstance(level, str) or not level for level in levels):
+            raise ValueError(f"invalid supportedReasoningLevels for {spec!r}")
+        levels = tuple(dict.fromkeys(levels))
+    default_level = meta.get("defaultReasoningLevel")
+    if default_level is not None and (not isinstance(default_level, str) or not default_level):
+        raise ValueError(f"invalid defaultReasoningLevel for {spec!r}")
+    reasoning = bool(meta.get("reasoning", False)) or bool(levels) or default_level is not None
+    if model_config.get("reasoning") is False:
+        reasoning = False
+    if not reasoning:
+        levels, default_level = (), None
+    elif api == "openai" and isinstance(effort_map := conf.get("reasoningEffortMap"), dict):
+        supported = tuple(key for key, value in effort_map.items() if isinstance(key, str) and key == value)
+        levels = supported if levels is None else tuple(level for level in levels if level in supported)
+    elif levels is None and api == "google-gemini-cli" and model_id.startswith("gemini-"):
+        levels = ("low", "medium", "high")
+    if levels is not None and default_level not in levels:
+        default_level = None
     return Model(
         provider=provider,
         id=model_id,
@@ -86,7 +116,9 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
         api_key_env=conf.get("apiKeyEnv"),
         context_window=int(meta.get("contextWindow", 200_000)),
         max_tokens=int(meta.get("maxTokens", 32_000)),
-        reasoning=bool(meta.get("reasoning", False)),
+        reasoning=reasoning,
         vision=bool(meta.get("vision", True)),
         options={k: v for k, v in conf.items() if k not in ("api", "models", "baseUrl", "apiKeyEnv")},
+        supported_reasoning_levels=levels,
+        default_reasoning_level=default_level,
     )

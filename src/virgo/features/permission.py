@@ -69,7 +69,7 @@ def review_tool_call(session, ev: ToolCallEvent, boundary_reason: str) -> tuple[
     if len(payload) > 40_000:
         return False, "action is too large for an automatic review"
     msg = complete(
-        session.small_model, REVIEW_SYSTEM, payload, max_tokens=512, effort="low",
+        session.small_model, REVIEW_SYSTEM, payload, max_tokens=512, effort=session.small_model_effort,
         signal=getattr(ev, "signal", None) or session.main.agent.signal,
     )
     if msg.stop_reason != "stop":

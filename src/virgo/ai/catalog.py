@@ -105,14 +105,29 @@ def _metadata(row: dict) -> dict:
         value = next((row[key] for key in sources if row.get(key) is not None), None)
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             out[dest] = value
-    levels = row.get("supported_reasoning_levels") or row.get("reasoning")
-    if isinstance(levels, (list, bool)):
-        out["reasoning"] = bool(levels)
+    levels = row.get("supported_reasoning_levels", row.get("reasoning"))
+    if isinstance(levels, list):
+        values = [level.get("effort") if isinstance(level, dict) else level for level in levels]
+        supported = tuple(dict.fromkeys(value for value in values if isinstance(value, str) and value))
+        if not levels or supported:
+            out["supported_reasoning_levels"] = supported
+            out["reasoning"] = bool(supported)
+    elif isinstance(levels, bool):
+        out["reasoning"] = levels
+        if not levels:
+            out["supported_reasoning_levels"] = ()
+    default_level = row.get("default_reasoning_level")
+    if isinstance(default_level, str) and default_level:
+        out["default_reasoning_level"] = default_level
+        out.setdefault("reasoning", True)
     capabilities = row.get("capabilities")
     if isinstance(capabilities, dict):
         thinking = capabilities.get("thinking")
         if isinstance(thinking, dict) and isinstance(thinking.get("supported"), bool):
             out["reasoning"] = thinking["supported"]
+            if not thinking["supported"]:
+                out["supported_reasoning_levels"] = ()
+                out.pop("default_reasoning_level", None)
     return out
 
 

@@ -6,6 +6,7 @@ from ..stream import EventStream, StreamEvent
 from ..types import AssistantMessage, Context, Model, StreamOptions
 from . import responses
 from ._http import ProviderError, cancelled, classify_error, json_events
+from .openai import _reasoning_effort
 
 
 def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
@@ -24,7 +25,7 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
         params["tools"] = responses.convert_tools(ctx.tools)
     if model.reasoning and opts.effort:
         params["reasoning"] = {
-            "effort": "xhigh" if opts.effort == "max" else opts.effort,
+            "effort": _reasoning_effort(model, opts.effort, "xhigh" if opts.effort == "max" else opts.effort),
             "summary": "auto",
         }
     return params

@@ -169,9 +169,12 @@ def test_account_login_dispatches_provider_and_uses_request_only_token(project, 
         s.prompt(f"/login auth {provider}")
         assert seen == [provider]
         assert s.model.spec == f"{provider}/{AUTH_PRESETS[provider]['model']}"
+        expected_small = f"{provider}/gpt-6-luna" if provider == "openai-codex" else s.model.spec
+        assert s.small_model.spec == expected_small
         request = authenticated_model(s.model)
         assert request.options["apiKey"] == "account-secret"
         assert request.options["authType"] == "oauth"
+        assert authenticated_model(s.small_model).options["apiKey"] == "account-secret"
         assert "account-secret" not in repr(s.model)
         assert "refresh-secret" not in repr(request)
     finally:
@@ -192,7 +195,7 @@ def test_custom_api_wizard_preserves_other_settings(project):
         s.shutdown()
 
 
-def test_custom_anthropic_uses_its_own_credential_for_implicit_small_model(project):
+def test_custom_anthropic_uses_main_model_and_ignores_legacy_small_model_setting(project):
     ui = LoginUI("local", "Anthropic Messages", "http://localhost:1234", "claude-test", "secret")
     s = AgentSession(project, ui=ui, session=None, extensions=False)
     try:
@@ -200,8 +203,9 @@ def test_custom_anthropic_uses_its_own_credential_for_implicit_small_model(proje
         assert s.model.spec == "local/claude-test"
         assert s.small_model.spec == s.model.spec
         s.settings.set("smallModel", "other/summary")
-        s.settings.set("providers.other", {"api": "openai"})
-        assert s._small_model(None).spec == "other/summary"
+        s.set_model(s.model.spec)
+        assert s.small_model is s.model
+        assert authenticated_model(s.small_model).options["apiKey"] == "secret"
     finally:
         s.shutdown()
 

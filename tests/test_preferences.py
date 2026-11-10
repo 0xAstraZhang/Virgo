@@ -250,6 +250,7 @@ def test_model_session_choice_keeps_defaults_and_custom_provider(make_session):
     settings_before = copy.deepcopy(session.settings.data)
     session.prompt("/model")
     assert session.model.spec == session.main.model.spec == "local/custom"
+    assert session.small_model is session.model
     assert session.model.context_window == 64000
     assert session.effort == "high"
     assert session.settings.data == settings_before
@@ -273,6 +274,7 @@ def test_saved_model_choice_preserves_other_settings_and_applies_to_future_sessi
     }
     loaded = Settings.load(session.paths)
     assert loaded.get("model") == session.model.spec == "deepseek/deepseek-flash"
+    assert session.small_model is session.model
     assert loaded.get("effort") == session.effort == "max"
     assert "saved as default" in ui.lines[-1]
     assert not session.main.messages

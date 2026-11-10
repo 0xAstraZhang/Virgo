@@ -119,6 +119,30 @@ def test_provider_effort_mapping_omits_unsupported_levels():
     assert oai.build_params(model, context, StreamOptions(effort="max"))["reasoning_effort"] == "max"
 
 
+@pytest.mark.parametrize("effort", ["xhigh", "max"])
+@pytest.mark.parametrize("declared_by", ["supported", "default", "unknown"])
+def test_openai_request_preserves_declared_effort_without_low(effort, declared_by):
+    model = Model("openai", "test", "openai", reasoning=True)
+    if declared_by == "supported":
+        model.supported_reasoning_levels = ("high", effort)
+    elif declared_by == "default":
+        model.default_reasoning_level = effort
+    params = oai.build_params(model, Context("", [UserMessage("hi")]), StreamOptions(effort=effort))
+    assert params["reasoning_effort"] == ("high" if declared_by == "unknown" else effort)
+
+
+def test_explicit_effort_map_overrides_model_metadata():
+    model = Model(
+        "custom", "test", "openai", reasoning=True,
+        supported_reasoning_levels=("low", "xhigh", "max"), default_reasoning_level="max",
+        options={"reasoningEffortMap": {"low": None, "xhigh": "high", "max": None}},
+    )
+    context = Context("", [UserMessage("hi")])
+    assert "reasoning_effort" not in oai.build_params(model, context, StreamOptions(effort="low"))
+    assert oai.build_params(model, context, StreamOptions(effort="xhigh"))["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in oai.build_params(model, context, StreamOptions(effort="max"))
+
+
 @pytest.mark.parametrize("env", [None, "VIRGO_LOCAL_API_KEY"])
 def test_custom_openai_after_logout_never_uses_openai_environment_key(server, monkeypatch, env):
     pytest.importorskip("openai")

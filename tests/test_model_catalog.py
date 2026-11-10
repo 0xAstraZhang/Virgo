@@ -97,18 +97,47 @@ def test_codex_refreshes_oauth_and_uses_account_directory(transport, monkeypatch
             return httpx.Response(200, json={"models": []})
         assert request.url.params["client_version"] == "0.167.0"
         return httpx.Response(200, json={"models": [
-            {"slug": "fresh-codex", "visibility": "list", "context_window": 700000, "supported_reasoning_levels": [{"effort": "high"}]},
+            {"slug": "fresh-codex", "visibility": "list", "context_window": 700000,
+             "supported_reasoning_levels": [{"effort": "high"}], "default_reasoning_level": "high"},
             {"slug": "internal", "visibility": "hide"},
         ]})
 
     requests = transport(directory)
     models = catalog.fetch_model_catalog(resolve_model("openai-codex/old"))
     assert [m.id for m in models] == ["fresh-codex"]
-    assert models[0].metadata == {"context_window": 700000, "reasoning": True}
+    assert models[0].metadata == {
+        "context_window": 700000,
+        "reasoning": True,
+        "supported_reasoning_levels": ("high",),
+        "default_reasoning_level": "high",
+    }
     assert requests[0].url.path == "/backend-api/codex/models"
     assert "client_version" in requests[0].url.params
     assert requests[0].headers["authorization"] == "Bearer new-token"
     assert requests[0].headers["chatgpt-account-id"] == "account"
+
+
+def test_directory_preserves_reasoning_capabilities_and_unknown_defaults(transport):
+    transport(lambda _: httpx.Response(200, json={"data": [
+        {"id": "unknown", "reasoning": True},
+        {"id": "listed", "reasoning": ["low", "high"], "default_reasoning_level": "high"},
+        {"id": "empty", "supported_reasoning_levels": [], "reasoning": True},
+        {"id": "default-only", "default_reasoning_level": "medium"},
+        {"id": "disabled", "supported_reasoning_levels": [{"effort": "low"}],
+         "default_reasoning_level": "low", "capabilities": {"thinking": {"supported": False}}},
+        {"id": "invalid", "supported_reasoning_levels": [None, {"effort": False}, 3],
+         "default_reasoning_level": False},
+    ]}))
+    metadata = {model.id: model.metadata for model in catalog.fetch_model_catalog(resolve_model("openai/current"))}
+    assert metadata == {
+        "unknown": {"reasoning": True},
+        "listed": {"reasoning": True, "supported_reasoning_levels": ("low", "high"),
+                   "default_reasoning_level": "high"},
+        "empty": {"reasoning": False, "supported_reasoning_levels": ()},
+        "default-only": {"reasoning": True, "default_reasoning_level": "medium"},
+        "disabled": {"reasoning": False, "supported_reasoning_levels": ()},
+        "invalid": {},
+    }
 
 
 def test_codex_catalog_version_can_be_overridden_per_connection(transport):

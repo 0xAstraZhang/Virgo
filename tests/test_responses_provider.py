@@ -108,6 +108,19 @@ def test_responses_account_http_roundtrip(server):
     assert request["json"]["reasoning"]["effort"] == "high"
 
 
+@pytest.mark.parametrize("effort", ["xhigh", "max"])
+@pytest.mark.parametrize("declared_by", ["supported", "default", "unknown"])
+def test_responses_request_preserves_declared_effort_without_low(effort, declared_by):
+    selected = model()
+    if declared_by == "supported":
+        selected.supported_reasoning_levels = ("high", effort)
+    elif declared_by == "default":
+        selected.default_reasoning_level = effort
+    params = responses.build_params(selected, Context("", [UserMessage("hi")]), StreamOptions(effort=effort))
+    expected = "xhigh" if declared_by == "unknown" and effort == "max" else effort
+    assert params["reasoning"]["effort"] == expected
+
+
 def test_responses_preserves_reasoning_tool_history_without_mutating():
     msg = AssistantMessage(
         api="openai-responses",

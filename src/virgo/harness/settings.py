@@ -11,7 +11,6 @@ from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "model": "anthropic/claude-opus-5-5",
-    "smallModel": "anthropic/claude-haiku-5-5",
     "effort": "medium",
     "maxTokens": None,
     "providers": {},

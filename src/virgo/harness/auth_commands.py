@@ -115,7 +115,6 @@ def login(session, args):
             lambda: session.settings.save_user({"providers": {provider: config}, "model": spec}),
         )
         session.set_model(spec)
-        session.small_model = session._small_model(None)
         ui.print(f"Logged in to {provider}. Model: {spec}", "ok")
     except _Cancelled:
         ui.print("Login cancelled.", "dim")
