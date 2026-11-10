@@ -10,11 +10,16 @@ from virgo.harness.session import AgentSession
 from .test_preferences import PickerUI
 
 
-@pytest.mark.parametrize("main", ["openai/gpt-6-sol", "openai-codex/gpt-6.1-terra"])
-def test_openai_uses_luna_on_the_same_connection(project, main):
+@pytest.mark.parametrize(("main", "small"), [
+    ("openai/gpt-6-sol", "gpt-6-luna"),
+    ("openai-codex/gpt-6.1-terra", "gpt-6-luna"),
+    ("anthropic/claude-opus-5-5", "claude-haiku-5-5"),
+    ("anthropic/claude-haiku-5-5", "claude-haiku-5-5"),
+])
+def test_auxiliary_model_uses_the_same_connection(project, main, small):
     session = AgentSession(project, model=main, session=None, extensions=False)
     try:
-        assert session.small_model.spec == f"{session.model.provider}/gpt-6-luna"
+        assert session.small_model.spec == f"{session.model.provider}/{small}"
         assert session.small_model.api == session.model.api
         assert session.small_model.auth_path == session.model.auth_path
         assert session.small_model.base_url == session.model.base_url
@@ -24,7 +29,7 @@ def test_openai_uses_luna_on_the_same_connection(project, main):
 
 
 @pytest.mark.parametrize("main", [
-    "anthropic/claude-opus-5-5", "deepseek/deepseek-flash", "kimi/kimi-k3.1-pro",
+    "deepseek/deepseek-flash", "kimi/kimi-k3.1-pro",
     "xai/grok-4.3", "google-gemini-cli/gemini-2.5-pro", "faux/test",
 ])
 def test_other_providers_reuse_main_model(project, main):
@@ -38,14 +43,17 @@ def test_other_providers_reuse_main_model(project, main):
         session.shutdown()
 
 
-@pytest.mark.parametrize(("endpoint", "expected"), [
-    ("https://api.openai.com/v1", "gpt-6-luna"),
-    ("https://api.example.com/v1", "vendor-chat"),
-    ("https://api.openai.com.example.com/v1", "vendor-chat"),
+@pytest.mark.parametrize(("api", "endpoint", "expected"), [
+    ("openai", "https://api.openai.com/v1", "gpt-6-luna"),
+    ("openai", "https://api.example.com/v1", "vendor-chat"),
+    ("openai", "https://api.openai.com.example.com/v1", "vendor-chat"),
+    ("anthropic", "https://api.anthropic.com", "claude-haiku-5-5"),
+    ("anthropic", "https://api.example.com", "vendor-chat"),
+    ("anthropic", "https://api.anthropic.com.example.com", "vendor-chat"),
 ])
-def test_custom_connection_identity_not_openai_compatible_protocol(make_session, endpoint, expected):
+def test_custom_connection_identity_not_compatible_protocol(make_session, api, endpoint, expected):
     session = make_session(settings={"providers": {"custom": {
-        "api": "openai", "baseUrl": endpoint, "apiKeyEnv": "CUSTOM_KEY", "headers": {"X-Project": "test"},
+        "api": api, "baseUrl": endpoint, "apiKeyEnv": "CUSTOM_KEY", "headers": {"X-Project": "test"},
     }}})
     session.set_model("custom/vendor-chat")
     assert session.small_model.spec == f"custom/{expected}"
@@ -61,8 +69,10 @@ def test_direct_model_command_updates_small_model_and_keeps_main_effort(make_ses
     assert session.small_model.spec == "openai-codex/gpt-6-luna"
     assert session.small_model_effort == "low"
     session.prompt("/model anthropic/claude-opus-5-5")
-    assert session.small_model is session.model
+    assert session.small_model.spec == "anthropic/claude-haiku-5-5"
     assert session.small_model_effort == "low"
+    session.prompt("/model deepseek/deepseek-flash")
+    assert session.small_model is session.model
     assert session.effort == "max"
 
 

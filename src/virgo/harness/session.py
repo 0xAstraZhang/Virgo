@@ -274,6 +274,10 @@ class AgentSession:
 
     def _small_model(self, model: ai.Model) -> ai.Model:
         endpoint = model.base_url or os.environ.get(model.options.get("baseUrlEnv", ""), "")
+        if model.api == "anthropic" and (
+            model.provider == "anthropic" or urlsplit(endpoint).hostname == "api.anthropic.com"
+        ):
+            return self.resolve(f"{model.provider}/claude-haiku-5-5")
         is_openai = model.provider in {"openai", "openai-codex"} or model.api == "openai-codex"
         if model.api in {"openai", "openai-responses", "openai-codex"} and (
             is_openai or urlsplit(endpoint).hostname == "api.openai.com"

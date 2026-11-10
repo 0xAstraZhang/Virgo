@@ -169,7 +169,8 @@ def test_account_login_dispatches_provider_and_uses_request_only_token(project, 
         s.prompt(f"/login auth {provider}")
         assert seen == [provider]
         assert s.model.spec == f"{provider}/{AUTH_PRESETS[provider]['model']}"
-        expected_small = f"{provider}/gpt-6-luna" if provider == "openai-codex" else s.model.spec
+        small_id = {"openai-codex": "gpt-6-luna", "anthropic": "claude-haiku-5-5"}.get(provider)
+        expected_small = f"{provider}/{small_id}" if small_id else s.model.spec
         assert s.small_model.spec == expected_small
         request = authenticated_model(s.model)
         assert request.options["apiKey"] == "account-secret"
