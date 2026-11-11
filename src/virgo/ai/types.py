@@ -15,6 +15,8 @@ from typing import Any, Literal
 class TextContent:
     text: str
     type: Literal["text"] = "text"
+    citations: list[dict] = field(default_factory=list)
+    native: dict | None = None  # original annotated message for same-provider replay
 
 
 @dataclass
@@ -82,7 +84,7 @@ class Usage:
         return self.input + self.output + self.cache_read + self.cache_write
 
 
-StopReason = Literal["stop", "length", "tool_use", "refusal", "error", "aborted"]
+StopReason = Literal["stop", "length", "tool_use", "pause_turn", "refusal", "error", "aborted"]
 
 
 @dataclass
@@ -107,9 +109,10 @@ class AssistantMessage:
     usage: Usage = field(default_factory=Usage)
     stop_reason: str = "stop"
     error_message: str | None = None
-    error_kind: str | None = None  # "retryable" | "overflow" | "fatal"
+    error_kind: str | None = None  # "retryable" | "overflow" | "search_unsupported" | "fatal"
     timestamp: float = field(default_factory=time.time)
     role: Literal["assistant"] = "assistant"
+    search_started: bool = False  # server-side work may have incurred costs; do not blindly replay
 
     def text(self) -> str:
         return "".join(b.text for b in self.content if isinstance(b, TextContent))
@@ -199,6 +202,7 @@ class Context:
     system: str
     messages: list
     tools: list[ToolSpec] = field(default_factory=list)
+    web_search: dict | None = None  # provider-native declaration, separate from client functions
 
 
 @dataclass

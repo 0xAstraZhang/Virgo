@@ -10,6 +10,7 @@ import copy
 import json
 from collections.abc import Iterable
 
+from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import (
     AssistantMessage,
@@ -62,7 +63,12 @@ def convert_messages(messages: list, *, api: str = "openai-responses") -> list[d
                     if isinstance(item, dict) and item.get("type") == "reasoning":
                         items.append(item)
                 elif isinstance(block, TextContent) and block.text:
-                    items.append({"role": "assistant", "content": block.text})
+                    if block.native and message.api == api and message.stop_reason not in ("error", "aborted"):
+                        # Annotated output messages carry IDs/status and sometimes new provider fields.
+                        # Replaying the actual item avoids inventing an incomplete output-message shape.
+                        items.append(copy.deepcopy(block.native))
+                    else:
+                        items.append({"role": "assistant", "content": block.text})
                 elif isinstance(block, ToolCall):
                     call_id, _, item_id = block.id.partition("|")
                     item = {
@@ -120,6 +126,8 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
         params["instructions"] = ctx.system
     if ctx.tools:
         params["tools"] = convert_tools(ctx.tools)
+    if ctx.web_search:
+        params.setdefault("tools", []).append(copy.deepcopy(ctx.web_search))
     if model.reasoning:
         params["include"] = ["reasoning.encrypted_content"]
         if opts.effort:
@@ -196,14 +204,45 @@ def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | Non
     return out
 
 
-def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: StreamOptions):
+def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: StreamOptions, *, web_search: bool = False):
     """Convert SDK objects or decoded SSE dictionaries into Virgo stream events."""
     yield StreamEvent("start", out)
     slots: dict[int, int] = {}
     buffers: dict[int, str] = {}
     finished: set[int] = set()
     reasoning_by_id: dict[str, ThinkingContent] = {}
+    text_offsets: dict[tuple[int, int], int] = {}
     refusal = False
+
+    def update_message(block: TextContent, item: dict):
+        nonlocal refusal
+        parts = item.get("content")
+        if not parts:
+            return
+        text, citations = "", []
+        for part in parts:
+            for annotation in part.get("annotations") or []:
+                citation = copy.deepcopy(annotation)
+                for key in ("start_index", "end_index"):
+                    if isinstance(citation.get(key), int):
+                        citation[key] += len(text)
+                citations.append(citation)
+            text += part.get("text") or part.get("refusal") or ""
+        block.text = text
+        if any("annotations" in part for part in parts):
+            block.citations = citations
+        block.native = copy.deepcopy(item) if block.citations else None
+        refusal = refusal or any(part.get("type") == "refusal" for part in parts)
+
+    def fail(error: dict, default: str):
+        out.stop_reason = "error"
+        out.error_message = error.get("message") or default
+        code = error.get("code")
+        out.error_kind = "retryable" if code in ("server_error", "rate_limit_exceeded") else "fatal"
+        if web_search and code in ("invalid_request_error", "unsupported_tool", "unsupported_value", "unknown_tool"):
+            exception = ProviderError(out.error_message, body=error)
+            if is_search_unsupported(exception):
+                out.error_kind = "search_unsupported"
 
     def start(index: int, item: dict):
         if index in slots:
@@ -219,8 +258,10 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             block = ToolCall(f"{call_id}|{item_id}" if item_id else call_id, item.get("name", ""), {})
             buffers[index] = item.get("arguments") or ""
             event_kind = "toolcall_start"
-        elif kind == "compaction":
+        elif kind in ("compaction", "web_search_call"):
             block, event_kind = RawContent(model.api, copy.deepcopy(item)), None
+            if kind == "web_search_call":
+                out.search_started = True
         else:
             return
         slots[index] = len(out.content)
@@ -239,14 +280,13 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
                     block.signature = json.dumps(item)
             elif index in slots and isinstance(out.content[slots[index]], RawContent):
                 out.content[slots[index]].data = copy.deepcopy(item)
+            elif index in slots and isinstance(out.content[slots[index]], TextContent):
+                update_message(out.content[slots[index]], item)
             return
         ci = slots[index]
         block = out.content[ci]
         if isinstance(block, TextContent):
-            parts = item.get("content")
-            if parts:
-                block.text = "".join(p.get("text") or p.get("refusal") or "" for p in parts)
-                refusal = refusal or any(p.get("type") == "refusal" for p in parts)
+            update_message(block, item)
             event_kind = "text_end"
         elif isinstance(block, ThinkingContent):
             parts = item.get("summary") or item.get("content") or []
@@ -277,13 +317,27 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
         index = event.get("output_index", 0)
         if kind == "response.output_item.added":
             yield from start(index, event["item"])
+        elif kind.startswith("response.web_search_call."):
+            # A disconnect from this point must not silently repeat a potentially billed search.
+            out.search_started = True
         elif kind in ("response.output_text.delta", "response.refusal.delta"):
             yield from start(index, {"type": "message"})
             ci = slots[index]
             delta = event.get("delta", "")
+            text_offsets.setdefault((index, event.get("content_index", 0)), len(out.content[ci].text))
             out.content[ci].text += delta
             refusal = refusal or kind == "response.refusal.delta"
             yield StreamEvent("text_delta", out, ci, delta)
+        elif kind == "response.output_text.annotation.added":
+            yield from start(index, {"type": "message"})
+            annotation = event.get("annotation")
+            if isinstance(annotation, dict):
+                citation = copy.deepcopy(annotation)
+                offset = text_offsets.get((index, event.get("content_index", 0)), 0)
+                for key in ("start_index", "end_index"):
+                    if isinstance(citation.get(key), int):
+                        citation[key] += offset
+                out.content[slots[index]].citations.append(citation)
         elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
             yield from start(index, {"type": "reasoning"})
             ci = slots[index]
@@ -306,12 +360,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             status = response.get("status") or kind.removeprefix("response.")
             reason = (response.get("incomplete_details") or {}).get("reason")
             if status == "failed":
-                out.stop_reason = "error"
-                error = response.get("error") or {}
-                out.error_message = error.get("message") or "The provider failed to complete the response."
-                out.error_kind = (
-                    "retryable" if error.get("code") in ("server_error", "rate_limit_exceeded") else "fatal"
-                )
+                fail(response.get("error") or {}, "The provider failed to complete the response.")
             elif refusal or reason == "content_filter":
                 out.stop_reason = "refusal"
                 out.error_message = "The provider declined this request."
@@ -332,11 +381,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             yield StreamEvent("error" if out.stop_reason in ("error", "refusal") else "done", out)
             return
         elif kind == "error":
-            out.stop_reason = "error"
-            out.error_kind = (
-                "retryable" if event.get("code") in ("server_error", "rate_limit_exceeded") else "fatal"
-            )
-            out.error_message = event.get("message") or "The provider returned a stream error."
+            fail(event, "The provider returned a stream error.")
             yield StreamEvent("error", out)
             return
     if opts.signal is not None and opts.signal.is_set():
@@ -360,12 +405,14 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             yield StreamEvent("error", out)
             return
         response = _client(model).responses.create(**build_params(model, ctx, opts))
-        for event in parse_events(response, model, out, opts):
+        for event in parse_events(response, model, out, opts, web_search=bool(ctx.web_search)):
             if out.error_message and model.options.get("apiKey"):
                 out.error_message = out.error_message.replace(model.options["apiKey"], "[redacted]")
             yield event
     except Exception as exc:  # noqa: BLE001 - provider failures are data
         out.error_kind, out.error_message = classify_error(exc)
+        if ctx.web_search and is_search_unsupported(exc):
+            out.error_kind = "search_unsupported"
         if model.options.get("apiKey"):
             out.error_message = out.error_message.replace(model.options["apiKey"], "[redacted]")
         out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .compaction import compact as native_compact
 from .compaction import context_model
 from .models import resolve_model
@@ -32,7 +34,10 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
 
         model = authenticated_model(model, options.signal)
         model = context_model(model, context.messages)
-        context = Context(system=context.system, messages=normalize(context.messages, model), tools=context.tools)
+        if context.web_search and model.api == "openai":
+            model = replace(model, api="openai-responses")
+        context = Context(system=context.system, messages=normalize(context.messages, model),
+                          tools=context.tools, web_search=context.web_search)
         if model.api == "anthropic":
             from .providers import anthropic as impl
         elif model.api == "openai":
@@ -53,7 +58,23 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
             msg.stop_reason = "aborted"
             msg.error_message = "aborted by user"
         return EventStream(iter([StreamEvent("error", msg)]), msg)
-    return impl.stream(model, context, options)
+    result = impl.stream(model, context, options)
+
+    def events():
+        from .search import add_source_links
+
+        for event in result:
+            if event.type in ("done", "error"):
+                count = len(event.partial.content)
+                add_source_links(event.partial)
+                for i in range(count, len(event.partial.content)):
+                    block = event.partial.content[i]
+                    yield StreamEvent("text_start", event.partial, i)
+                    yield StreamEvent("text_delta", event.partial, i, block.text)
+                    yield StreamEvent("text_end", event.partial, i)
+            yield event
+
+    return EventStream(events(), AssistantMessage(api=model.api, provider=model.provider, model=model.id))
 
 
 REASONING_HEADROOM = 4096

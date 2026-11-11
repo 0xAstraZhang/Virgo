@@ -9,10 +9,14 @@ Request shape follows current guidance for the Claude 4.6+/5.x families:
 
 from __future__ import annotations
 
+import copy
+import json
 import os
 import re
 import threading
+from dataclasses import replace
 
+from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import (
     AssistantMessage,
@@ -56,7 +60,7 @@ FALLBACK_MODELS = {
 _STOP = {
     "end_turn": "stop",
     "stop_sequence": "stop",
-    "pause_turn": "stop",
+    "pause_turn": "pause_turn",
     "compaction": "compaction",
     "tool_use": "tool_use",
     "max_tokens": "length",
@@ -160,7 +164,10 @@ def convert_messages(messages: list, oauth: bool = False) -> list[dict]:
             for b in m.content:
                 if isinstance(b, TextContent):
                     if b.text:
-                        blocks.append({"type": "text", "text": b.text})
+                        block = {"type": "text", "text": b.text}
+                        if m.api == "anthropic" and b.citations:
+                            block["citations"] = copy.deepcopy(b.citations)
+                        blocks.append(block)
                 elif isinstance(b, ThinkingContent):
                     if b.redacted:
                         blocks.append({"type": "redacted_thinking", "data": b.signature})
@@ -201,6 +208,8 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
             }
             for t in ctx.tools
         ]
+    if ctx.web_search:
+        params.setdefault("tools", []).append(copy.deepcopy(ctx.web_search))
     betas: list[str] = list(BETA_OAUTH) if oauth else []
     if any(
         isinstance(b, RawContent) and b.api == "anthropic" and b.data.get("type") == "compaction"
@@ -230,7 +239,7 @@ def compact(
     """Summarize the submitted history into an unmodified, signed API block."""
     out = AssistantMessage(api="anthropic", provider=model.provider, model=model.id)
     try:
-        params = build_params(model, ctx, opts)
+        params = build_params(model, replace(ctx, web_search=None), opts)
         params["max_tokens"] = opts.max_tokens or min(model.max_tokens, 8000)
         betas = params.setdefault("betas", [])
         if BETA_COMPACTION not in betas:
@@ -297,6 +306,8 @@ def classify_error(e: Exception) -> tuple[str, str]:
     import anthropic
     import httpx2  # the SDK's HTTP library
 
+    if isinstance(e, ProviderError):
+        return e.kind, str(e)
     status = getattr(e, "status_code", None)
     text = getattr(e, "message", None) or str(e) or type(e).__name__
     if status == 413 or (status == 400 and _OVERFLOW.search(text)):
@@ -320,6 +331,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
     json_bufs: dict[int, str] = {}
     index_map: dict[int, int] = {}  # api block index -> out.content index
     resp = None
+    completed = False
     try:
         if opts.signal is not None and opts.signal.is_set():
             out.stop_reason = "aborted"
@@ -345,7 +357,9 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             elif t == "content_block_start":
                 b = ev.content_block
                 if b.type == "text":
-                    out.content.append(TextContent(b.text or ""))
+                    citations = [c.model_dump(mode="json", exclude_none=True) if hasattr(c, "model_dump") else copy.deepcopy(c)
+                                 for c in getattr(b, "citations", None) or []]
+                    out.content.append(TextContent(b.text or "", citations=citations))
                     kind = "text_start"
                 elif b.type == "thinking":
                     out.content.append(ThinkingContent(b.thinking or "", signature=b.signature or None))
@@ -362,6 +376,12 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     kind = "toolcall_start"
                 else:  # fallback / server blocks: echo back verbatim
                     out.content.append(RawContent("anthropic", b.model_dump(mode="json", exclude_none=True)))
+                    if b.type == "server_tool_use":
+                        json_bufs[ev.index] = ""
+                        if b.name == "web_search":
+                            out.search_started = True
+                    elif b.type == "web_search_tool_result":
+                        out.search_started = True
                     kind = None
                 index_map[ev.index] = len(out.content) - 1
                 if kind:
@@ -382,7 +402,12 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     blk.signature = (blk.signature or "") + d.signature
                 elif d.type == "input_json_delta":
                     json_bufs[ev.index] = json_bufs.get(ev.index, "") + d.partial_json
-                    yield StreamEvent("toolcall_delta", out, i, d.partial_json)
+                    if isinstance(blk, ToolCall):
+                        yield StreamEvent("toolcall_delta", out, i, d.partial_json)
+                elif d.type == "citations_delta" and isinstance(blk, TextContent):
+                    citation = d.citation
+                    blk.citations.append(citation.model_dump(mode="json", exclude_none=True)
+                                         if hasattr(citation, "model_dump") else copy.deepcopy(citation))
             elif t == "content_block_stop":
                 i = index_map.get(ev.index)
                 if i is None:
@@ -393,6 +418,11 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     if raw.strip():
                         blk.arguments = parse_tool_arguments(raw)
                     yield StreamEvent("toolcall_end", out, i)
+                elif isinstance(blk, RawContent) and blk.data.get("type") == "server_tool_use":
+                    raw = json_bufs.pop(ev.index, "")
+                    if raw.strip():
+                        # Server calls belong to the API history; never turn them into client calls.
+                        blk.data["input"] = json.loads(raw)
                 elif isinstance(blk, TextContent):
                     yield StreamEvent("text_end", out, i)
                 elif isinstance(blk, ThinkingContent):
@@ -413,12 +443,18 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     out.usage.output = ev.usage.output_tokens or out.usage.output
                     if getattr(ev.usage, "input_tokens", None):
                         out.usage.input = ev.usage.input_tokens
+            elif t == "message_stop":
+                completed = True
+        if ctx.web_search and not completed:
+            raise ProviderError("Anthropic search stream ended before message_stop.", "retryable")
         if out.stop_reason == "refusal":
             yield StreamEvent("error", out)
         else:
             yield StreamEvent("done", out)
     except Exception as e:  # noqa: BLE001
         kind, text = classify_error(e)
+        if ctx.web_search and is_search_unsupported(e):
+            kind = "search_unsupported"
         out.stop_reason = "error"
         out.error_kind = kind
         out.error_message = text

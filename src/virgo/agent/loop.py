@@ -41,6 +41,7 @@ def run_loop(
     pending = list(prompts)
     need_call = True
     turns = 0
+    native_continues = 0
     try:
         while True:
             while need_call or pending:
@@ -73,7 +74,18 @@ def run_loop(
                 emit(AgentEvent("turn_end", cfg.name, message=msg, tool_results=results))
                 if terminate:
                     return
-                need_call = bool(calls)
+                if msg.stop_reason == "pause_turn":
+                    native_continues += 1
+                    if native_continues > 3:
+                        push(AssistantMessage(
+                            content=[TextContent("[Search paused after three continuations. Send another message to resume.]")],
+                            stop_reason="stop",
+                        ))
+                        emit(AgentEvent("turn_end", cfg.name))
+                        return
+                else:
+                    native_continues = 0
+                need_call = bool(calls) or msg.stop_reason == "pause_turn"
                 pending = steering()
             pending = follow_ups()
             if pending:

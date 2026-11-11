@@ -64,6 +64,9 @@ class EventBus:
         self._handlers[event].sort(key=lambda e: (e[0], e[1]))
         return lambda: self._handlers[event].remove(entry)
 
+    def has_handlers(self, event: str, *, exclude=None) -> bool:
+        return any(fn != exclude for _, _, fn in self._handlers.get(event, []))
+
     def _call(self, event: str, fn: Callable, args: tuple) -> Any:
         try:
             return fn(*args)
@@ -149,6 +152,7 @@ class ExtensionAPI:
 
 BUILTIN_FEATURES = [
     "permission",
+    "search",
     "todo",
     "subagent",
     "skills",

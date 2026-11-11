@@ -63,17 +63,37 @@ def normalize(messages: list, model: Model) -> list:
     for m in messages:
         if isinstance(m, AssistantMessage):
             close_open()
+            if m.search_started and m.stop_reason in {"error", "aborted"}:
+                from .search import add_source_links
+
+                m = copy.deepcopy(m)
+                add_source_links(m)
             if m.stop_reason in ("error", "aborted") and not m.tool_calls():
                 if not m.text().strip():
                     continue
             same_api = m.api == model.api
+            same_provider = same_api and m.provider == model.provider
             blocks = []
             source_calls: dict[str, ToolCall] = {}
+            result_ids = {b.data.get("tool_use_id") for b in m.content if isinstance(b, RawContent)
+                          and b.data.get("type") == "web_search_tool_result"}
             for b in m.content:
+                if isinstance(b, TextContent) and (b.citations or b.native) and not same_provider:
+                    b = copy.copy(b)
+                    b.citations = []
+                    b.native = None
                 if isinstance(b, (ThinkingContent, RawContent)):
                     if isinstance(b, RawContent) and b.api != model.api:
                         continue
-                    if isinstance(b, ThinkingContent) and not same_api:
+                    if (isinstance(b, RawContent) and not same_provider
+                            and b.data.get("type") in {"web_search_call", "server_tool_use", "web_search_tool_result"}):
+                        continue
+                    if isinstance(b, RawContent) and m.stop_reason in {"error", "aborted"}:
+                        if b.data.get("type") == "web_search_call" and b.data.get("status") != "completed":
+                            continue
+                        if b.data.get("type") == "server_tool_use" and b.data.get("id") not in result_ids:
+                            continue
+                    if isinstance(b, ThinkingContent) and (not same_api or m.provider and not same_provider):
                         continue
                 if isinstance(b, TextContent) and not b.text:
                     continue

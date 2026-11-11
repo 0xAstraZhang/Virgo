@@ -52,6 +52,8 @@ def context_model(model: Model, messages: list) -> Model:
 
 def context_binding(model: Model, context: Context) -> str:
     data = {"model": model.spec, "system": context.system, "tools": [asdict(tool) for tool in context.tools]}
+    if context.web_search:
+        data["web_search"] = context.web_search
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 

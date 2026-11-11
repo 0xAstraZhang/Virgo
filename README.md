@@ -9,7 +9,7 @@ Virgo 是一个轻量、可扩展的 Coding Agent。
 virgo.ai                          统一流式模型、账号认证 + Anthropic / OpenAI / Google / faux 适配器
 virgo.agent                       事件驱动的工具调用循环（steer / follow-up 队列、并行工具、abort）
 virgo.harness                     会话树、system prompt、扩展总线、命令、压缩、集成运行时
-virgo.tools                       read / write / edit / bash / glob / grep
+virgo.tools                       read / write / edit / bash / glob / grep / web_search
 virgo.features                    内置扩展：权限、todo、子 agent、技能、记忆、任务、后台、定时、团队、MCP、workflow、goal
 virgo.cli                         全屏 TUI / plain REPL、-p 打印模式、--mode json 事件流
 ```
@@ -209,6 +209,34 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 - **命令钩子**：支持 `PreToolUse` / `PostToolUse` / `UserPromptSubmit` / `Stop` 四种。钩子从 stdin 收到 JSON；退出码 2 表示拦截（或要求继续），stderr 的内容作为反馈。
 - **功能开关**：每个内置功能都可以用 `features.<name>: false` 关闭（例如 `team`、`mcp`、`memory`）。
 - **上下文文件**：`~/.virgo/AGENTS.md`，加上从根目录到 cwd 每一层的 `AGENTS.md` 或 `CLAUDE.md`。`SYSTEM.md` 替换身份段落，`APPEND_SYSTEM.md` 追加到末尾。
+
+## 联网搜索
+
+默认 `search.mode: "auto"`：优先使用已适配的官方原生搜索，不支持或未知的接口提供内置 `web_search`。首版支持 Anthropic Messages、OpenAI Responses（官方 Chat Completions 连接仅在原生搜索请求时改用 Responses）、OpenAI Codex 账号及 xAI Responses；Google Code Assist、其他兼容服务及未知模型默认使用内置工具。按实际端点和模型判断能力，不会因为 Provider 名称叫 `openai` 就给代理地址发送原生工具。辅助审批、摘要和压缩请求不启用搜索。
+
+```json
+{
+  "search": {
+    "mode": "auto",
+    "backend": "duckduckgo",
+    "timeout": 15,
+    "maxUses": 3
+  }
+}
+```
+
+- `mode`：`auto` 原生优先并允许回退；`native` 只用原生，不可用时报错；`builtin` 只用内置；`off` 关闭。`features.search: false` 也可完全停用该功能。
+- `backend`：默认免密钥 DuckDuckGo HTML 搜索；也可设为 `brave` 并配置环境变量 `BRAVE_SEARCH_API_KEY`，变量名可通过 `search.apiKeyEnv` 修改。密钥不要写入仓库。两种后端都复用 `httpx`，无需浏览器或常驻进程。
+- `timeout`：内置搜索的超时秒数，默认 15，最高 30。工具参数为 `query` 和可选 `limit`（默认 5，最多 10）；结果包含查询、检索时间、标题、网址和摘要，响应最大 1 MiB。
+- `maxUses`：Anthropic 每轮原生搜索次数上限，1–10，默认 3；其他厂商保留其原生限制。Anthropic 暂停的搜索最多自动续接三次，随后由用户继续。
+
+每次请求只启用一种搜索路径。只有明确的“原生搜索工具不支持”错误才触发一次回退，并按端点、模型和账号在当前会话缓存；认证失败、限流、超时、空结果或模型未搜索不会被误判为不支持。已经开始的服务端搜索遇到请求错误时会保留部分证据并停止，不自动重跑收费操作。原生来源链接会显示在终端，历史中保留原始引用；切换 Provider 后保留可读来源，不传递另一厂商的内部搜索对象。
+
+联网权限沿用现有规则：内置工具按实际查询审批；原生搜索由厂商内部决定查询，`auto-review` 会对当前用户请求的搜索范围审批一次并缓存。范围无法获批时，`auto` 改用内置工具逐条审批。带查询条件的权限规则或自定义工具钩子也使用内置路径，以保留拦截能力。例如 `web_search(*private*)` 匹配查询内容，`web_search` 匹配所有搜索。`accept-all` 跳过权限审批；`plan` 允许只读搜索，但仍遵循 deny 规则。
+
+可用 `providers.<名称>.nativeSearch: false` 关闭该连接的原生搜索。对已确认兼容的 Anthropic 或 Responses 端点，可设为 `true` 显式启用；普通自定义 Chat Completions 连接需先配置为 `api: "openai-responses"`，不会自动探测新协议。原生服务和 Brave 可能另行计费；DuckDuckGo 网页搜索可能限流或要求浏览器验证，工具会明确报错，不把验证页当作搜索结果。
+
+接口依据：[OpenAI web search](https://developers.openai.com/api/docs/guides/tools-web-search)、[Codex web search](https://developers.openai.com/codex/web-search)、[Anthropic web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)、[xAI web search](https://docs.x.ai/developers/tools/web-search)、[DuckDuckGo HTML 搜索](https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript)。
 
 ## 扩展
 

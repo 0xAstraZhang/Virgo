@@ -174,6 +174,8 @@ class Runtime:
                 if tool.name == "bash":
                     tool.description = "Run a read-only shell command to inspect the project. Do not modify files or system state."
         context = Context(system, view, tools)
+        if search := s.services.get("search"):
+            search.prepare(self, context, model or self.model)
         if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):
             context.messages = strip_thinking(view)
         return context
@@ -192,6 +194,7 @@ class Runtime:
         max_retries = int(s.settings.get("retry.maxRetries", 3))
         retries = overloaded = 0
         overflow_done = False
+        search_fallback_done = False
         model = self.model
         while True:
             if self.restore_native_context(model) and self._compaction_due(model):
@@ -209,6 +212,19 @@ class Runtime:
             if failed is None:
                 return
             duration = time.monotonic() - self._call_started
+            search = s.services.get("search")
+            if (not search_fallback_done and not signal.is_set() and search
+                    and search.fallback(request_model, ctx, failed)):
+                search_fallback_done = True
+                record_call(self.accounting_store, request_model, failed, purpose="search-fallback",
+                            started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
+                yield StreamEvent("retry", failed)
+                continue
+            if failed.search_started:
+                # Hosted work may already have been billed. Preserve its evidence
+                # and let the user resume rather than silently replaying the turn.
+                yield StreamEvent("error", failed)
+                return
             if failed.error_kind == "overflow" and not overflow_done and self.compaction:
                 overflow_done = True
                 yield StreamEvent("retry", failed)

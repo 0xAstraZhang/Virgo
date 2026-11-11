@@ -102,6 +102,8 @@ def _subjects(ev: ToolCallEvent) -> list[str]:
     a = ev.args
     if ev.tool_name == "bash":
         return [a.get("command", "")]
+    if ev.tool_name == "web_search" and isinstance(a.get("query"), str):
+        return [a["query"]]
     if isinstance(a.get("path"), str):
         p = Path(os.path.expanduser(a["path"]))
         absolute = (p if p.is_absolute() else ev.cwd / p).resolve()
@@ -185,6 +187,8 @@ class Permissions:
             return ""
         if ev.tool_name.startswith("mcp__"):
             return "external service access needs review"
+        if ev.tool_name == "web_search":
+            return "web search sends queries to an external search service"
         if ev.tool_name in {"workflow", "memory"}:
             return "action can execute code or modify data outside the workspace"
         if ev.tool and ev.tool.read_only:

@@ -12,9 +12,11 @@ import httpx
 
 
 class ProviderError(Exception):
-    def __init__(self, message: str, kind: str = "fatal"):
+    def __init__(self, message: str, kind: str = "fatal", *, status_code=None, body=None):
         super().__init__(message)
         self.kind = kind
+        self.status_code = status_code
+        self.body = body
 
 
 def cancelled(signal) -> bool:
@@ -67,6 +69,7 @@ def classify_error(error: Exception, token: str = "") -> tuple[str, str]:
 
 def _response_error(response: httpx.Response) -> ProviderError:
     status = response.status_code
+    body = None
     try:
         body = response.json()
         error = body.get("error", body)
@@ -78,7 +81,8 @@ def _response_error(response: httpx.Response) -> ProviderError:
         r"context.length|context window|too many tokens|prompt is too long|input token.*exceed", message, re.I
     ):
         kind = "overflow"
-    return ProviderError(f"Provider HTTP {status}" + (f": {message}" if message else ""), kind)
+    return ProviderError(f"Provider HTTP {status}" + (f": {message}" if message else ""), kind,
+                         status_code=status, body=body)
 
 
 def _parse_events(lines) -> Iterator[dict]:

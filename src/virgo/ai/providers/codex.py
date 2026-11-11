@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 
+from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import AssistantMessage, Context, Model, RawContent, StreamOptions
 from . import responses
@@ -25,6 +27,8 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
     }
     if ctx.tools:
         params["tools"] = responses.convert_tools(ctx.tools)
+    if ctx.web_search:
+        params.setdefault("tools", []).append(copy.deepcopy(ctx.web_search))
     if model.reasoning and opts.effort:
         params["reasoning"] = {
             "effort": _reasoning_effort(model, opts.effort, "xhigh" if opts.effort == "max" else opts.effort),
@@ -65,7 +69,8 @@ def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | Non
     try:
         if cancelled(opts.signal):
             raise ProviderError("Aborted by user.", "aborted")
-        params = build_params(model, ctx, opts)
+        # Compaction is maintenance, never a request to run hosted search.
+        params = build_params(model, replace(ctx, web_search=None), opts)
         retained = [copy.deepcopy(item) for item in params["input"] if item.get("role") == "user"]
         params["input"].append({"type": "compaction_trigger"})
         out = EventStream(_events(model, ctx, opts, out, params=params), out).result()
@@ -111,7 +116,10 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         events = json_events(
             _endpoint(model), headers, params if params is not None else build_params(model, ctx, opts), opts.signal
         )
-        for event in responses.parse_events(_normalize_events(events), model, out, opts):
+        for event in responses.parse_events(
+            _normalize_events(events), model, out, opts,
+            web_search=bool(ctx.web_search) and params is None,
+        ):
             if out.error_message:
                 out.error_message = out.error_message.replace(token, "[redacted]")
             if event.type in ("done", "error"):
@@ -121,6 +129,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         if events is not None:
             events.close()
         kind, message = classify_error(error, token)
+        if ctx.web_search and params is None and is_search_unsupported(error):
+            kind = "search_unsupported"
         out.stop_reason = "aborted" if kind == "aborted" or cancelled(opts.signal) else "error"
         out.error_kind = kind
         out.error_message = message

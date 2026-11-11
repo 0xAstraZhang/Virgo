@@ -21,6 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "retry": {"maxRetries": 3, "fallbackModel": None},
     "anthropic": {"fallbacks": True, "thinkingDisplay": "summarized", "thinkingBinding": True},
     "mcpServers": {},
+    "search": {"mode": "auto", "backend": "duckduckgo", "timeout": 15, "maxUses": 3},
     "memory": {"autoExtract": False},
     "subagents": {"maxTurns": 50},
     "goal": {"maxContinues": 8},
