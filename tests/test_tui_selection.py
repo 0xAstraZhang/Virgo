@@ -80,11 +80,16 @@ def test_completed_selections_copy_user_answer_thinking_and_tool_text(monkeypatc
             )
             await pilot.pause()
             card = transcript.query_one(AssistantView)
+            thought = next(event for event in card.events if event.kind == "thinking")
+            thought.set_expanded(True)
+            result = transcript.results[("main", "tool")]
+            result.set_expanded(True)
+            await pilot.pause()
             cases = [
                 (transcript.query_one(".user-message"), "中文 user words"),
                 (card.body.query_one("MarkdownParagraph"), "answer words"),
-                (card.thought_body, "private reasoning"),
-                (transcript.tools[("main", "tool")].output, "tool words"),
+                (thought.output, "private reasoning"),
+                (result.output, "tool words"),
             ]
             for widget, expected in cases:
                 before = len(copied)

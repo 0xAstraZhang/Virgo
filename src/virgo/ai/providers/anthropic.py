@@ -376,13 +376,15 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     kind = "toolcall_start"
                 else:  # fallback / server blocks: echo back verbatim
                     out.content.append(RawContent("anthropic", b.model_dump(mode="json", exclude_none=True)))
+                    kind = None
                     if b.type == "server_tool_use":
                         json_bufs[ev.index] = ""
+                        kind = "native_tool_start"
                         if b.name == "web_search":
                             out.search_started = True
                     elif b.type == "web_search_tool_result":
                         out.search_started = True
-                    kind = None
+                        kind = "native_tool_start"
                 index_map[ev.index] = len(out.content) - 1
                 if kind:
                     yield StreamEvent(kind, out, index_map[ev.index])
@@ -404,6 +406,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     json_bufs[ev.index] = json_bufs.get(ev.index, "") + d.partial_json
                     if isinstance(blk, ToolCall):
                         yield StreamEvent("toolcall_delta", out, i, d.partial_json)
+                    elif isinstance(blk, RawContent) and blk.data.get("type") == "server_tool_use":
+                        yield StreamEvent("native_tool_delta", out, i, d.partial_json)
                 elif d.type == "citations_delta" and isinstance(blk, TextContent):
                     citation = d.citation
                     blk.citations.append(citation.model_dump(mode="json", exclude_none=True)
@@ -423,6 +427,9 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     if raw.strip():
                         # Server calls belong to the API history; never turn them into client calls.
                         blk.data["input"] = json.loads(raw)
+                    yield StreamEvent("native_tool_end", out, i)
+                elif isinstance(blk, RawContent) and blk.data.get("type") == "web_search_tool_result":
+                    yield StreamEvent("native_tool_end", out, i)
                 elif isinstance(blk, TextContent):
                     yield StreamEvent("text_end", out, i)
                 elif isinstance(blk, ThinkingContent):

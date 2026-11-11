@@ -84,6 +84,51 @@ def test_parallel_by_default_and_sequential_flag():
     assert starts[1][2] >= ends[0][2]  # second started after first ended
 
 
+def test_parallel_results_are_emitted_as_completed_but_history_keeps_call_order():
+    release_slow = threading.Event()
+
+    def slow(args, ctx):
+        assert release_slow.wait(2), "fast result was held behind the slow tool"
+        return "slow result"
+
+    agent, events = make_agent(
+        [AgentTool("slow", "slow", {"type": "object"}, slow), echo_tool("fast")],
+        faux.reply(tools=[("slow", {}, "slow-id"), ("fast", {}, "fast-id")]),
+        faux.reply("done"),
+    )
+
+    def release_on_fast_result(event):
+        if event.type == "tool_execution_end" and event.tool_call_id == "fast-id":
+            release_slow.set()
+
+    agent.subscribe(release_on_fast_result)
+    agent.prompt("go")
+    assert [event.tool_call_id for event in events if event.type == "tool_execution_end"] == [
+        "fast-id", "slow-id",
+    ]
+    results = [message for message in agent.messages if isinstance(message, ToolResultMessage)]
+    assert [message.tool_call_id for message in results] == ["slow-id", "fast-id"]
+    assert results[0].text() == "slow result" and not results[0].is_error
+
+
+def test_preflight_failures_are_emitted_before_preparing_the_next_call():
+    agent, events = make_agent(
+        [echo_tool("valid")],
+        faux.reply(tools=[("missing", {}, "bad-id"), ("valid", {}, "valid-id")]),
+        faux.reply("done"),
+    )
+    agent.prompt("go")
+    assert [(event.type, event.tool_call_id) for event in events if event.type.startswith("tool_execution_")] == [
+        ("tool_execution_start", "bad-id"),
+        ("tool_execution_end", "bad-id"),
+        ("tool_execution_start", "valid-id"),
+        ("tool_execution_end", "valid-id"),
+    ]
+    results = [message for message in agent.messages if isinstance(message, ToolResultMessage)]
+    assert [message.tool_call_id for message in results] == ["bad-id", "valid-id"]
+    assert results[0].is_error and not results[1].is_error
+
+
 def test_errors_become_tool_results():
     agent, _ = make_agent(
         [echo_tool("a"), AgentTool("boom", "x", {"type": "object"}, lambda a, c: 1 / 0)],

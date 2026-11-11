@@ -136,7 +136,9 @@ def test_browser_opens_immediately_while_work_continues(make_session, entry, wor
                 release.set()
                 await wait_for(pilot, lambda: app.controller.can_switch)
                 if work == "agent":
-                    assert has_reply(app, "finished")
+                    # Controller.poll marks the worker idle before the App has
+                    # awaited all transcript mounts and Markdown updates.
+                    await wait_for(pilot, lambda: has_reply(app, "finished"))
                 if work == "queued":
                     assert session.effort == "high"
                 await pilot.pause()

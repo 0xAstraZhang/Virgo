@@ -112,6 +112,40 @@ def test_terminal_response_can_supply_search_and_late_citations():
     assert only_final.search_started and only_final.content == out.content
 
 
+@pytest.mark.parametrize("include_added", [False, True])
+def test_search_status_streams_before_answer_and_item_done_supplies_action(include_added):
+    wire = []
+    if include_added:
+        wire.append({"type": "response.output_item.added", "output_index": 0,
+                     "item": {"type": "web_search_call", "id": "ws_1", "status": "in_progress"}})
+    wire.extend([
+        {"type": "response.web_search_call.searching", "output_index": 0, "item_id": "ws_1"},
+        {"type": "response.output_item.done", "output_index": 0, "item": SEARCH},
+        {"type": "response.output_text.delta", "output_index": 1, "delta": "Release"},
+        _completed([SEARCH, MESSAGE]),
+    ])
+    events = [copy.deepcopy(event) for event in responses.parse_events(
+        wire, _model(responses), AssistantMessage(api="openai-responses"), StreamOptions(),
+    )]
+    native = [event for event in events if event.type.startswith("native_tool_")]
+    assert [(event.type, event.index) for event in native] == [
+        ("native_tool_start", 0), ("native_tool_delta", 0), ("native_tool_end", 0),
+    ]
+    assert native[1].partial.content[0].data["status"] == "searching"
+    assert native[-1].partial.content[0] == RawContent("openai-responses", SEARCH)
+    assert all(not event.partial.text() and not event.partial.tool_calls() for event in native)
+    assert events[-1].partial.text() == "Release"
+
+
+def test_terminal_only_search_emits_native_events_before_its_text():
+    events = list(responses.parse_events(
+        [_completed([SEARCH, MESSAGE])], _model(responses), AssistantMessage(), StreamOptions(),
+    ))
+    assert [event.type for event in events] == [
+        "start", "native_tool_start", "native_tool_end", "text_start", "text_end", "done",
+    ]
+
+
 def test_multiple_text_parts_adjust_citation_offsets_without_changing_wire_data():
     message = copy.deepcopy(MESSAGE)
     message["content"].insert(0, {"type": "output_text", "text": "See: ", "annotations": []})
@@ -132,7 +166,10 @@ def test_streaming_annotations_survive_truncation():
         {"type": "response.output_text.annotation.added", "output_index": 1, "annotation": CITATION},
     ], _model(responses), out, StreamOptions()))
     assert out.search_started and out.error_kind == "retryable"
-    assert out.content[0].citations == [CITATION]
+    assert out.content[0] == RawContent("openai-responses", {
+        "type": "web_search_call", "id": "ws_1", "status": "in_progress",
+    })
+    assert out.content[1].citations == [CITATION]
 
 
 @pytest.mark.parametrize("provider", [responses, codex])

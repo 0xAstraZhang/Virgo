@@ -18,6 +18,7 @@ import threading
 import time
 from collections import deque
 from contextlib import ExitStack
+from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,7 +28,15 @@ from ..ai.auth import AuthStore
 from ..ai.compaction import compatible_context, context_binding, is_native_context
 from ..ai.stream import EventStream, StreamEvent
 from ..ai.transform import strip_thinking
-from ..ai.types import AssistantMessage, Context, StreamOptions, TextContent, UserMessage
+from ..ai.types import (
+    AssistantMessage,
+    Context,
+    StreamOptions,
+    TextContent,
+    ToolResultMessage,
+    UserMessage,
+    message_to_dict,
+)
 from ..features.permission import normalize_permission_mode, plan_tool_allowed
 from ..features.permission_context import ReviewSource
 from ..tools import BASE_TOOLS
@@ -49,6 +58,10 @@ from .telemetry import record_call
 from .ui import UI
 
 _DEFAULT_EFFORT = object()
+_TRANSCRIPT_STREAM_TYPES = {
+    "text_start", "thinking_start", "toolcall_start",
+    "native_tool_start", "native_tool_delta", "native_tool_end", "retry",
+}
 
 
 class Runtime:
@@ -124,7 +137,50 @@ class Runtime:
         return self.session._before_tool(ev)
 
     def _on_event(self, ev: AgentEvent) -> None:
-        if ev.type == "message_end":
+        if ev.type in ("agent_start", "agent_end") and self.role == "main" and self.store is not None:
+            self.store.append(
+                "custom",
+                kind="transcript_run_start" if ev.type == "agent_start" else "transcript_run_end",
+                data={"agent": ev.agent},
+            )
+        elif (
+            ev.type == "message_update" and self.role == "main" and self.store is not None
+            and ev.stream_event is not None and ev.stream_event.type in _TRANSCRIPT_STREAM_TYPES
+        ):
+            stream = ev.stream_event
+            block = (
+                asdict(stream.partial.content[stream.index])
+                if stream.type != "retry" and 0 <= stream.index < len(stream.partial.content)
+                else None
+            )
+            self.store.append(
+                "custom",
+                kind="transcript_stream",
+                data={"agent": ev.agent, "stream_type": stream.type, "index": stream.index, "block": block},
+            )
+        elif ev.type == "tool_execution_end" and self.store is not None:
+            # Results enter model history in call order, after the whole batch.
+            # Retain their arrival order separately for replaying the transcript.
+            result = ev.result
+            message = ToolResultMessage(
+                ev.tool_call_id or "",
+                ev.tool_name or "tool",
+                result.content if result is not None else [],
+                details=result.details if result is not None else None,
+                is_error=ev.is_error,
+            )
+            self.store.append(
+                "custom",
+                kind="transcript_tool_result",
+                data={
+                    "agent": ev.agent,
+                    "tool_call_id": message.tool_call_id,
+                    "tool_name": message.tool_name,
+                    "args": ev.args,
+                    "message": message_to_dict(message),
+                },
+            )
+        elif ev.type == "message_end":
             self.ids.append(self.store.append_message(ev.message) if self.store else None)
             self.review_source.remember(ev.message, self.ids[-1])
             if self.role != "main" and isinstance(ev.message, AssistantMessage):

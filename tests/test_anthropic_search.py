@@ -112,6 +112,28 @@ def test_compaction_never_enables_hosted_search(native_server):
     assert [tool["name"] for tool in native_server["requests"][0]["json"]["tools"]] == ["read"]
 
 
+def test_hosted_search_events_arrive_before_answer_and_keep_native_blocks(server):
+    server["body"] = http_test.sse(search_events(), named=True)
+    # Keep the state visible at each yield rather than the mutable final message.
+    events = [copy.deepcopy(event) for event in anth.stream(model(server["url"]), context(), StreamOptions())]
+    native = [event for event in events if event.type.startswith("native_tool_")]
+    assert [(event.type, event.index) for event in native] == [
+        ("native_tool_start", 0),
+        ("native_tool_delta", 0),
+        ("native_tool_delta", 0),
+        ("native_tool_end", 0),
+        ("native_tool_start", 1),
+        ("native_tool_end", 1),
+    ]
+    assert len(native[0].partial.content) == 1
+    assert native[0].partial.search_started
+    assert native[1].delta == '{"query":"today'
+    assert native[3].partial.content[0].data["input"] == {"query": "today release"}
+    assert native[4].partial.content[1] == RawContent("anthropic", SEARCH_RESULT)
+    assert all(not event.partial.text() for event in native)
+    assert all(not event.partial.tool_calls() for event in native)
+
+
 @pytest.mark.parametrize(("status", "description", "native", "expected"), [
     (400, "web_search_20250305 is not supported by this model", True, "search_unsupported"),
     (400, "web_search_20250305 is not supported by this model", False, "fatal"),
