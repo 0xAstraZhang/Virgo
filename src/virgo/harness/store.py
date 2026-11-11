@@ -31,6 +31,8 @@ from ..ai.types import (
     text_of,
 )
 
+_USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
+
 SUMMARY_PREFIX = (
     "<conversation_summary>\nThe earlier part of this conversation was compacted into the summary below. "
     "It is reference material about prior work, not a new request.\n\n"
@@ -142,6 +144,7 @@ class SessionStore:
         self.updated_at = self.created_at
         self._header_written = bool(path and path.exists())
         self._lock = threading.RLock()
+        self._usage: tuple[str | None, dict[str, int]] = (None, dict.fromkeys(_USAGE_KEYS, 0))
 
     # -- construction ---------------------------------------------------------
     @classmethod
@@ -303,9 +306,24 @@ class SessionStore:
         return path
 
     def total_usage(self) -> dict[str, int]:
-        """Main messages plus auxiliary calls on this branch, including pre-compaction history."""
-        totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-        for entry in self.branch():
+        """Main messages plus auxiliary calls on this branch, including pre-compaction history.
+
+        The status bar asks for this twice a second. Entries are append-only, so
+        when the branch has grown from the last counted leaf only the new entries
+        are added; after a branch switch the whole branch is counted again.
+        """
+        counted_leaf, counted = self._usage
+        leaf = self.leaf
+        new, cur = [], leaf
+        while cur is not None and cur != counted_leaf:
+            entry = self.by_id.get(cur)
+            if entry is None:
+                break
+            new.append(entry)
+            cur = entry.get("parent_id")
+        # Without the counted leaf among the ancestors, `new` already holds the whole branch.
+        totals = dict(counted) if cur == counted_leaf else dict.fromkeys(_USAGE_KEYS, 0)
+        for entry in new:
             message = entry.get("message", {})
             if message.get("role") == "assistant":
                 usage = message.get("usage", {})
@@ -315,7 +333,8 @@ class SessionStore:
                 continue
             for key in totals:
                 totals[key] += usage.get(key, 0)
-        return totals
+        self._usage = (leaf, totals)  # one assignment: concurrent readers see a consistent pair
+        return dict(totals)
 
     def build_context(self) -> tuple[list, list]:
         """Messages to send for the active branch, with their entry ids."""

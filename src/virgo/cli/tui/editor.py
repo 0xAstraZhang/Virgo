@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from textual.binding import Binding
@@ -12,6 +13,43 @@ from textual.widgets import TextArea
 
 from .choices import ChoiceList
 
+LIBEDIT_HEADER = b"_HiStOrY_V2_"
+# vis(3) escapes written by libedit (macOS, many standalone Python builds): \ooo octal,
+# \M-x / \M^x meta, \^x control, and C-style escapes; \$ is an empty marker.
+_VIS = re.compile(rb"\\(?:([0-7]{3})|M\^(.)|M-(.)|\^(.)|([\\nrtbafvs0E$]))")
+_VIS_C = {b"\\": b"\\", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b", b"a": b"\a", b"f": b"\f",
+          b"v": b"\v", b"s": b" ", b"0": b"\0", b"E": b"\x1b", b"$": b""}
+
+
+def _control(char: bytes) -> int:
+    return 0x7F if char == b"?" else char[0] & 0x1F
+
+
+def _unvis(match: re.Match) -> bytes:
+    octal, meta_control, meta, control, c_style = match.groups()
+    if octal is not None:
+        return bytes([int(octal, 8) & 0xFF])
+    if meta_control is not None:
+        return bytes([_control(meta_control) | 0x80])
+    if meta is not None:
+        return bytes([meta[0] | 0x80])
+    if control is not None:
+        return bytes([_control(control)])
+    return _VIS_C[c_style]
+
+
+def legacy_history(path: Path) -> list[str]:
+    """Entries of the plain REPL's readline history file.
+
+    GNU readline writes one entry per line. libedit writes a header line and
+    escapes whitespace and backslashes, e.g. ``hello\\040world``.
+    """
+    lines = path.read_bytes().split(b"\n")
+    if lines and lines[0].rstrip(b"\r") == LIBEDIT_HEADER:
+        lines = [_VIS.sub(_unvis, line) for line in lines[1:]]
+    # The terminal's own encoding is unknown: never let one bad byte stop the UI from starting.
+    return [text for line in lines if (text := line.decode("utf-8", errors="replace")).strip()]
+
 
 class InputHistory:
     def __init__(self, directory: Path):
@@ -19,7 +57,7 @@ class InputHistory:
         self.entries: list[str] = []
         try:
             if self.path.exists():
-                for line in self.path.read_text(encoding="utf-8").splitlines():
+                for line in self.path.read_text(encoding="utf-8", errors="replace").splitlines():
                     try:
                         value = json.loads(line)
                     except ValueError:
@@ -27,7 +65,7 @@ class InputHistory:
                     if isinstance(value, str) and value.strip():
                         self.entries.append(value)
             else:
-                self.entries = (directory / "history").read_text(encoding="utf-8").splitlines()
+                self.entries = legacy_history(directory / "history")
         except OSError:
             pass
         self.entries = self.entries[-1000:]
