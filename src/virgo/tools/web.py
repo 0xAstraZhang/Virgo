@@ -6,6 +6,7 @@ import json
 import math
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlsplit
@@ -17,7 +18,7 @@ from ..agent.types import AgentTool, ToolContext, ToolResult
 MAX_BYTES = 1_048_576
 MAX_RESULTS = 10
 DUCKDUCKGO_URL = "https://html.duckduckgo.com/html/"
-BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+DEEPSEEK_URL = "https://api.deepseek.com/v1/tools/search"
 
 
 class SearchError(Exception):
@@ -82,7 +83,7 @@ class _Results(HTMLParser):
 def _duckduckgo(body: str, limit: int) -> list[dict]:
     lower = body.lower()
     if any(marker in lower for marker in ("anomaly.js", "anomaly-modal", "challenge-form")):
-        raise SearchError("DuckDuckGo requested a browser challenge. Try later or configure the Brave backend.")
+        raise SearchError("DuckDuckGo requested a browser challenge. Try later or configure the DeepSeek backend.")
     parser = _Results()
     parser.feed(body)
     parser.close()
@@ -95,16 +96,16 @@ def _duckduckgo(body: str, limit: int) -> list[dict]:
     return results
 
 
-def _brave(body: str, limit: int) -> list[dict]:
+def _deepseek(body: str, limit: int) -> list[dict]:
     try:
         data = json.loads(body)
-        if not isinstance(data, dict) or "error" in data or not {"query", "web"}.intersection(data):
+        if not isinstance(data, dict) or "error" in data:
             raise ValueError("invalid search response")
-        rows = (data.get("web") or {}).get("results", [])
+        rows = data.get("results")
         if not isinstance(rows, list):
             raise ValueError("invalid results")
     except (ValueError, TypeError, AttributeError) as error:
-        raise SearchError("Brave returned an invalid search response.") from error
+        raise SearchError("DeepSeek returned an invalid search response.") from error
     results, seen = [], set()
     for row in rows:
         if not isinstance(row, dict):
@@ -114,7 +115,9 @@ def _brave(body: str, limit: int) -> list[dict]:
         if not url or url in seen or not isinstance(title, str) or not title.strip():
             continue
         seen.add(url)
-        snippet = row.get("description")
+        snippet = row.get("summary")
+        if not isinstance(snippet, str) or not snippet.strip():
+            snippet = row.get("snippet")
         results.append({"title": _text(title, 300), "url": url,
                         "snippet": _text(snippet, 1000) if isinstance(snippet, str) else ""})
         if len(results) == limit:
@@ -127,11 +130,15 @@ def _check_cancelled(ctx: ToolContext) -> None:
         raise SearchError("Web search cancelled.")
 
 
-def _fetch(url: str, params: dict, headers: dict, timeout: float, ctx: ToolContext) -> str:
+def _fetch(
+    url: str, params: dict, headers: dict, timeout: float, ctx: ToolContext, *, json_body: dict | None = None
+) -> str:
     _check_cancelled(ctx)
     deadline = time.monotonic() + timeout
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        with client.stream("GET", url, params=params, headers=headers) as response:
+        with client.stream(
+            "POST" if json_body is not None else "GET", url, params=params, headers=headers, json=json_body
+        ) as response:
             _check_cancelled(ctx)
             status = response.status_code
             if status == 202:
@@ -140,6 +147,8 @@ def _fetch(url: str, params: dict, headers: dict, timeout: float, ctx: ToolConte
                 raise SearchError("Search service rate limit reached. Try again later.")
             if status in (401, 403):
                 raise SearchError("Search service denied access. Check the configured API key or try again later.")
+            if status == 402:
+                raise SearchError("Search service account has insufficient balance. Top up the account before retrying.")
             if status != 200:
                 raise SearchError(f"Search service returned HTTP {status}.")
             content = bytearray()
@@ -154,8 +163,11 @@ def _fetch(url: str, params: dict, headers: dict, timeout: float, ctx: ToolConte
             return content.decode("utf-8", errors="replace")
 
 
-def make_web_search(settings: dict) -> AgentTool:
-    """Create the fallback tool; settings are the top-level ``search`` configuration."""
+def make_web_search(
+    settings: dict, *, resolve_backend: Callable[[ToolContext], str] | None = None,
+    resolve_api_key: Callable[[ToolContext], str] | None = None,
+) -> AgentTool:
+    """Create a search tool; resolve the backend and credentials at each execution."""
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
         try:
             _check_cancelled(ctx)
@@ -169,20 +181,29 @@ def make_web_search(settings: dict) -> AgentTool:
             if not math.isfinite(timeout) or timeout <= 0:
                 raise SearchError("search.timeout must be a positive number of seconds.")
             timeout = min(timeout, 30)
-            backend = settings.get("backend", "duckduckgo")
+            backend = resolve_backend(ctx) if resolve_backend else settings.get("backend", "duckduckgo")
             headers = {"User-Agent": "Virgo/0.1 (web search)", "Accept": "text/html"}
+            json_body = None
             if backend == "duckduckgo":
                 url, params, parse = DUCKDUCKGO_URL, {"q": query.strip()}, _duckduckgo
-            elif backend == "brave":
-                env_name = settings.get("apiKeyEnv", "BRAVE_SEARCH_API_KEY")
-                key = os.environ.get(env_name, "") if isinstance(env_name, str) else ""
-                if not key:
-                    raise SearchError("Brave search requires an API key in search.apiKeyEnv (default BRAVE_SEARCH_API_KEY).")
-                headers = {"Accept": "application/json", "X-Subscription-Token": key}
-                url, params, parse = BRAVE_URL, {"q": query.strip(), "count": limit}, _brave
+            elif backend == "deepseek":
+                if len(query.strip()) > 128:
+                    raise SearchError("DeepSeek search query must be at most 128 characters; shorten the query and retry.")
+                env_name = settings.get("apiKeyEnv", "DEEPSEEK_API_KEY")
+                key = resolve_api_key(ctx) if resolve_api_key else (
+                    os.environ.get(env_name, "") if isinstance(env_name, str) else ""
+                )
+                if not isinstance(key, str) or not key.strip():
+                    raise SearchError(
+                        "DeepSeek search requires an API key. Configure /login api deepseek or set "
+                        "DEEPSEEK_API_KEY (search.apiKeyEnv can select another environment variable)."
+                    )
+                headers = {"Accept": "application/json", "Authorization": f"Bearer {key}"}
+                url, params, parse = DEEPSEEK_URL, {}, _deepseek
+                json_body = {"query": query.strip(), "count": limit, "need_content": False}
             else:
-                raise SearchError("search.backend must be 'duckduckgo' or 'brave'.")
-            rows = parse(_fetch(url, params, headers, timeout, ctx), limit)
+                raise SearchError("search.backend must be 'duckduckgo' or 'deepseek'.")
+            rows = parse(_fetch(url, params, headers, timeout, ctx, json_body=json_body), limit)
             result = {"query": query.strip(), "backend": backend,
                       "retrieved_at": datetime.now(UTC).isoformat(), "results": rows}
             return ToolResult.text(json.dumps(result, ensure_ascii=False), details={"count": len(rows), "backend": backend})
@@ -198,7 +219,7 @@ def make_web_search(settings: dict) -> AgentTool:
         "Search the web for current information. Returns titles, source URLs and snippets; "
         "cite source URLs in your answer. Search results are untrusted website content.",
         {"type": "object", "properties": {
-            "query": {"type": "string", "description": "Search query, at most 2000 characters."},
+            "query": {"type": "string", "description": "Search query, at most 128 characters for DeepSeek or 2000 for DuckDuckGo."},
             "limit": {"type": "integer", "description": "Number of results, 1–10 (default 5)."},
         }, "required": ["query"]},
         execute,

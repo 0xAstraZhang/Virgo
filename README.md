@@ -126,6 +126,7 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | `/login [auth\|api] [provider]` | 账号登录或配置 API；无参数进入选择器 |
 | `/logout [provider\|all]` | 选择并删除已保存的登录，或退出全部账号 |
 | `/model [p/id]` `/effort [lvl]` | 查看或切换模型、推理强度 |
+| `/search [auto\|duckduckgo\|deepseek\|off]` | 选择并保存搜索后端；无参数进入选择器，支持 `ddg`、`ds` 简写 |
 | `/permissions [mode]` | 查看规则 / 切换权限模式 |
 | `/compact [focus]` | 立即压缩上下文 |
 | `/new` `/sessions [n]` `/session` | 新建、浏览、恢复会话和查看当前会话信息 |
@@ -216,7 +217,20 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 
 ## 联网搜索
 
-默认 `search.mode: "auto"`：优先使用已适配的官方原生搜索，不支持或未知的接口提供内置 `web_search`。首版支持 Anthropic Messages、OpenAI Responses（官方 Chat Completions 连接仅在原生搜索请求时改用 Responses）、OpenAI Codex 账号及 xAI Responses；Google Code Assist、其他兼容服务及未知模型默认使用内置工具。按实际端点和模型判断能力，不会因为 Provider 名称叫 `openai` 就给代理地址发送原生工具。辅助审批、摘要和压缩请求不启用搜索。
+默认自动选择：优先使用当前模型已适配的官方原生搜索，没有可用适配时使用免费的 DuckDuckGo。支持 Anthropic Messages、OpenAI Responses（官方 Chat Completions 连接仅在原生搜索请求时改用 Responses）、OpenAI Codex 账号、xAI Responses，以及 DeepSeek 官方 Search API。使用 DeepSeek 官方连接时，内置 `web_search` 调用它的独立搜索接口；其余厂商的原生搜索由模型服务端执行。Google Code Assist、其他兼容服务及未知模型默认使用 DuckDuckGo。按实际端点和模型判断能力，不会仅凭 Provider 名称向代理地址发送原生工具。辅助审批、摘要和压缩请求不启用搜索。
+
+输入 `/search` 打开选择器；plain 界面使用编号菜单。也可以直接指定：
+
+```text
+/search auto        # 模型原生搜索优先，没有可用适配则使用 DuckDuckGo
+/search duckduckgo  # 始终使用免费的 DuckDuckGo，也可写 /search ddg
+/search deepseek    # 始终使用 DeepSeek 官方搜索，也可写 /search ds
+/search off         # 关闭联网搜索
+```
+
+选择会立即生效并保存为用户级 `settings.json` 中的默认值，不改变当前对话模型；重启时仍以项目和运行参数的覆盖设置为准。DeepSeek 搜索可供任意对话模型使用；选择前会检查 API 配置，缺少密钥时保留原选择，并提示使用 `/login api deepseek` 或设置 `DEEPSEEK_API_KEY`，配置后重新选择。搜索复用 DeepSeek 官方连接的已保存 API key 或环境变量，每次调用读取最新凭据，不把密钥写入搜索设置。自动模式下 DeepSeek 搜索缺少可用配置时使用 DuckDuckGo。旧版 Brave 配置会在加载时转为 DuckDuckGo，并忽略原有的搜索密钥变量；下一次使用 `/search` 时保存迁移后的选择。
+
+以下是默认配置；`/search auto` 保存 `mode: "auto"` 和 `backend: "duckduckgo"`，手动选择某个后端保存 `mode: "builtin"` 和对应 `backend`：
 
 ```json
 {
@@ -229,18 +243,18 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 }
 ```
 
-- `mode`：`auto` 原生优先并允许回退；`native` 只用原生，不可用时报错；`builtin` 只用内置；`off` 关闭。`features.search: false` 也可完全停用该功能。
-- `backend`：默认免密钥 DuckDuckGo HTML 搜索；也可设为 `brave` 并配置环境变量 `BRAVE_SEARCH_API_KEY`，变量名可通过 `search.apiKeyEnv` 修改。密钥不要写入仓库。两种后端都复用 `httpx`，无需浏览器或常驻进程。
-- `timeout`：内置搜索的超时秒数，默认 15，最高 30。工具参数为 `query` 和可选 `limit`（默认 5，最多 10）；结果包含查询、检索时间、标题、网址和摘要，响应最大 1 MiB。
+- `mode`：`auto` 原生优先并允许回退；`native` 只用当前模型的原生搜索（包括 DeepSeek 官方 Search API），不可用时报错；`builtin` 只用指定的内置后端；`off` 关闭。`features.search: false` 也可完全停用该功能。
+- `backend`：支持免密钥的 `duckduckgo` 和使用官方 API 的 `deepseek`。DeepSeek 搜索的独立密钥环境变量可通过 `search.apiKeyEnv` 指定。两种后端都复用 `httpx`，无需浏览器或常驻进程。
+- `timeout`：内置搜索的超时秒数，默认 15，最高 30。工具参数为 `query` 和可选 `limit`（默认 5，最多 10）；DeepSeek 查询最多 128 个 Unicode 字符，DuckDuckGo 最多 2000 字符，超出限制会提示缩短查询。结果包含查询、检索时间、标题、网址和摘要，响应最大 1 MiB。
 - `maxUses`：Anthropic 每轮原生搜索次数上限，1–10，默认 3；其他厂商保留其原生限制。Anthropic 暂停的搜索最多自动续接三次，随后由用户继续。
 
 每次请求只启用一种搜索路径。只有明确的“原生搜索工具不支持”错误才触发一次回退，并按端点、模型和账号在当前会话缓存；认证失败、限流、超时、空结果或模型未搜索不会被误判为不支持。已经开始的服务端搜索遇到请求错误时会保留部分证据并停止，不自动重跑收费操作。原生来源链接会显示在终端，历史中保留原始引用；切换 Provider 后保留可读来源，不传递另一厂商的内部搜索对象。
 
-联网权限沿用现有规则：内置工具按实际查询审批；原生搜索由厂商内部决定查询，`auto-review` 会对当前用户请求的搜索范围审批一次并缓存。范围无法获批时，`auto` 改用内置工具逐条审批。带查询条件的权限规则或自定义工具钩子也使用内置路径，以保留拦截能力。例如 `web_search(*private*)` 匹配查询内容，`web_search` 匹配所有搜索。`accept-all` 跳过权限审批；`plan` 允许只读搜索，但仍遵循 deny 规则。
+联网权限沿用现有规则：内置工具按实际查询审批，DeepSeek 官方搜索也走这条路径；其他服务端原生搜索由厂商内部决定查询，`auto-review` 会对当前用户请求的搜索范围审批一次并缓存。范围无法获批时，`auto` 改用内置工具逐条审批。带查询条件的权限规则或自定义工具钩子也使用内置路径，以保留拦截能力。例如 `web_search(*private*)` 匹配查询内容，`web_search` 匹配所有搜索。`accept-all` 跳过权限审批；`plan` 允许只读搜索，但仍遵循 deny 规则。
 
-可用 `providers.<名称>.nativeSearch: false` 关闭该连接的原生搜索。对已确认兼容的 Anthropic 或 Responses 端点，可设为 `true` 显式启用；普通自定义 Chat Completions 连接需先配置为 `api: "openai-responses"`，不会自动探测新协议。原生服务和 Brave 可能另行计费；DuckDuckGo 网页搜索可能限流或要求浏览器验证，工具会明确报错，不把验证页当作搜索结果。
+可用 `providers.<名称>.nativeSearch: false` 关闭该连接的原生搜索。对已确认兼容的 Anthropic 或 Responses 端点，可设为 `true` 显式启用；普通自定义 Chat Completions 连接需先配置为 `api: "openai-responses"`，不会自动探测新协议。DeepSeek 搜索和其他原生服务按厂商规则计费；DuckDuckGo 网页搜索可能限流或要求浏览器验证，工具会明确报错，不把验证页当作搜索结果。
 
-接口依据：[OpenAI web search](https://developers.openai.com/api/docs/guides/tools-web-search)、[Codex web search](https://developers.openai.com/codex/web-search)、[Anthropic web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)、[xAI web search](https://docs.x.ai/developers/tools/web-search)、[DuckDuckGo HTML 搜索](https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript)。
+接口依据：[OpenAI web search](https://developers.openai.com/api/docs/guides/tools-web-search)、[Codex web search](https://developers.openai.com/codex/web-search)、[Anthropic web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)、[xAI web search](https://docs.x.ai/developers/tools/web-search)、[DeepSeek Search API](https://api-docs.deepseek.com/api/search/)、[DuckDuckGo HTML 搜索](https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript)。
 
 ## 扩展
 

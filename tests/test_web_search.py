@@ -158,38 +158,125 @@ def test_cancel_during_stream_closes_response(context, transport):
     assert stream.closed
 
 
-def test_brave_credentials_and_source_results(context, transport, monkeypatch):
+def test_deepseek_post_credentials_and_source_results(context, transport, monkeypatch):
     monkeypatch.setenv("SEARCH_TEST_TOKEN", "private-token")
-    transport["body"] = json.dumps({"web": {"results": [
-        {"title": "Source", "url": "https://example.com/article", "description": "Summary"},
+    transport["body"] = json.dumps({"results": [
+        {"title": "Source", "url": "https://example.com/article", "summary": "Full summary", "snippet": "Short"},
         {"title": "Same", "url": "https://example.com/article"},
         {"title": "Invalid", "url": "javascript:alert(1)"},
-    ]}})
-    result = search(context, {"backend": "brave", "apiKeyEnv": "SEARCH_TEST_TOKEN"}, limit=2)
+        {"title": "Second", "url": "https://example.org/", "summary": "", "snippet": "Fallback summary"},
+        {"title": "Third", "url": "https://example.net/", "summary": "Omitted by limit"},
+    ]})
+    result = search(context, {"backend": "deepseek", "apiKeyEnv": "SEARCH_TEST_TOKEN"}, query="  Python 中文 docs  ", limit=2)
     assert not result.is_error
     assert json.loads(result.as_text())["results"] == [
-        {"title": "Source", "url": "https://example.com/article", "snippet": "Summary"},
+        {"title": "Source", "url": "https://example.com/article", "snippet": "Full summary"},
+        {"title": "Second", "url": "https://example.org/", "snippet": "Fallback summary"},
     ]
     request = transport["requests"][0]
-    assert request.url.host == "api.search.brave.com"
-    assert request.headers["X-Subscription-Token"] == "private-token"
-    assert request.url.params["count"] == "2"
+    assert request.method == "POST" and str(request.url) == "https://api.deepseek.com/v1/tools/search"
+    assert request.headers["Authorization"] == "Bearer private-token"
+    assert request.headers["Content-Type"] == "application/json"
+    assert json.loads(request.content) == {"query": "Python 中文 docs", "count": 2, "need_content": False}
+    assert result.details == {"count": 2, "backend": "deepseek"}
     assert "private-token" not in result.as_text()
 
 
-def test_brave_missing_key_does_not_send_request(context, transport, monkeypatch):
-    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
-    result = search(context, {"backend": "brave"})
-    assert result.is_error and "BRAVE_SEARCH_API_KEY" in result.as_text()
+@pytest.mark.parametrize("key", ["", "  "])
+def test_deepseek_missing_key_does_not_send_request(context, transport, monkeypatch, key):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", key)
+    result = search(context, {"backend": "deepseek"})
+    assert result.is_error and "DEEPSEEK_API_KEY" in result.as_text() and "/login api deepseek" in result.as_text()
     assert not transport["requests"]
 
 
-@pytest.mark.parametrize("body", ["not json", "[]", "{}", '{"web":{"results":"invalid"}}', '{"error":{"message":"no"}}'])
-def test_brave_malformed_response(context, transport, monkeypatch, body):
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "token")
+@pytest.mark.parametrize("body", ["not json", "[]", "{}", '{"results":"invalid"}', '{"error":{"message":"private details"}}'])
+def test_deepseek_malformed_response(context, transport, monkeypatch, body):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "token")
     transport["body"] = body
-    result = search(context, {"backend": "brave"})
+    result = search(context, {"backend": "deepseek"})
     assert result.is_error and "invalid search response" in result.as_text()
+    assert "private details" not in result.as_text()
+
+
+def test_deepseek_empty_results_are_success(context, transport, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "token")
+    transport["body"] = '{"results": []}'
+    result = search(context, {"backend": "deepseek"})
+    assert not result.is_error and json.loads(result.as_text())["results"] == []
+
+
+def test_deepseek_unicode_query_length_is_checked_without_truncation(context, transport, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "token")
+    transport["body"] = '{"results": []}'
+    query = "中" * 128
+    result = search(context, {"backend": "deepseek"}, query=query)
+    assert not result.is_error
+    assert json.loads(transport["requests"][0].content)["query"] == query
+    result = search(context, {"backend": "deepseek"}, query=query + "文")
+    assert result.is_error and "128 characters" in result.as_text()
+    assert len(transport["requests"]) == 1
+
+
+@pytest.mark.parametrize("status,message", [(401, "denied"), (402, "insufficient balance"), (429, "rate limit"), (500, "HTTP 500"), (307, "HTTP 307")])
+def test_deepseek_errors_do_not_retry_or_reveal_response(context, transport, monkeypatch, status, message):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "private-token")
+    transport.update(status=status, body="private-token private details")
+    result = search(context, {"backend": "deepseek"})
+    assert result.is_error and message in result.as_text()
+    assert "private" not in result.as_text()
+    assert len(transport["requests"]) == 1
+
+
+def test_deepseek_result_bounds_and_invalid_rows(context, transport, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "token")
+    transport["body"] = json.dumps({"results": [
+        None, [], {"title": "Invalid", "url": 123}, {"title": 123, "url": "https://example.com/"},
+        {"title": "Credentials", "url": "https://user:password@example.com/"},
+        {"title": "x" * 500, "url": "https://example.org/", "summary": "y" * 2000},
+        {"title": "No summary", "url": "https://example.net/", "summary": [], "snippet": {}},
+    ]})
+    result = search(context, {"backend": "deepseek"})
+    rows = json.loads(result.as_text())["results"]
+    assert rows == [
+        {"title": "x" * 300, "url": "https://example.org/", "snippet": "y" * 1000},
+        {"title": "No summary", "url": "https://example.net/", "snippet": ""},
+    ]
+    transport["body"] = "x" * (MAX_BYTES + 1)
+    result = search(context, {"backend": "deepseek"})
+    assert result.is_error and "1 MiB" in result.as_text()
+
+
+def test_execution_resolves_backend_and_credentials_again_each_time(context, transport, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "unused-environment-key")
+    current = {"backend": "duckduckgo", "key": "first-key"}
+    key_contexts = []
+
+    def api_key(ctx):
+        key_contexts.append(ctx)
+        return current["key"]
+
+    tool = make_web_search({}, resolve_backend=lambda ctx: current["backend"], resolve_api_key=api_key)
+    assert not tool.execute({"query": "Python"}, context).is_error
+    assert key_contexts == []
+    current["backend"] = "deepseek"
+    transport["body"] = '{"results": []}'
+    assert not tool.execute({"query": "Python"}, context).is_error
+    current["key"] = "second-key"
+    assert not tool.execute({"query": "Python"}, context).is_error
+    assert [request.headers.get("authorization") for request in transport["requests"]] == [
+        None, "Bearer first-key", "Bearer second-key",
+    ]
+    assert key_contexts == [context, context]
+    current["key"] = ""
+    assert tool.execute({"query": "Python"}, context).is_error
+    assert len(transport["requests"]) == 3
+
+
+def test_removed_backend_never_sends_request(context, transport):
+    result = search(context, {"backend": "brave"})
+    assert result.is_error and "'duckduckgo' or 'deepseek'" in result.as_text()
+    assert not transport["requests"]
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("nan"), "wrong"])
