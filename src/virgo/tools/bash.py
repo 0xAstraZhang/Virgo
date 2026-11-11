@@ -20,7 +20,10 @@ SHELL = os.environ.get("VIRGO_SHELL") or ("bash" if os.name != "nt" else None)
 def spawn(command: str, cwd: Path, stdout=subprocess.PIPE) -> subprocess.Popen:
     env = dict(os.environ, VIRGO="1")
     if SHELL:
-        argv: list[str] | str = [SHELL, "-c", command]
+        # Do not let a later ls/head/cat hide a failed download or pipeline.
+        # Only add flags for known shells; VIRGO_SHELL may be another interpreter.
+        options = ["-e", "-o", "pipefail"] if Path(SHELL).name in {"bash", "zsh"} else []
+        argv: list[str] | str = [SHELL, *options, "-c", command]
         shell = False
     else:
         argv, shell = command, True
@@ -127,6 +130,7 @@ BASH = AgentTool(
     label="Bash",
     description=(
         "Run a shell command in the working directory (non-interactive; stdin is closed). "
+        "Bash/Zsh stop on unhandled command or pipeline failures; handle expected nonzero statuses explicitly. "
         f"Output is limited to the last {MAX_LINES} lines / {MAX_BYTES // 1024}KB; longer output is saved to a file."
     ),
     parameters=BASH_PARAMS,

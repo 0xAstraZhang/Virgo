@@ -183,6 +183,8 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 
 `VIRGO_HOME` 可指定用户配置目录，`VIRGO_MODEL` 可覆盖配置中的模型，`VIRGO_SHELL` 可指定工具使用的 shell。设置 `VIRGO_DEBUG` 会显示扩展事件异常；工具启动的子进程带有 `VIRGO=1` 标记。
 
+默认 Bash 和通过 `VIRGO_SHELL` 选择的 Bash/Zsh 均启用 `errexit`、`pipefail`，前台与后台命令一致：未处理的命令或管道失败会立即停止，后续 `ls`、`head` 等不能掩盖下载失败。预期的非零退出状态需要用 `if` 等显式处理；其他自定义解释器保持原有行为。下载指引要求使用 `curl -fS`、超时限制和独立临时文件，确认传输成功并校验内容后再替换目标；已有文件不能作为本次下载成功的依据。
+
 ```json
 {
   "model": "anthropic/claude-opus-5-5",
