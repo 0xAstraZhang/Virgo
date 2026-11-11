@@ -80,11 +80,16 @@ class FullscreenUI(UI):
                 update = self._queue.get_nowait()
             except queue.Empty:
                 return updates
-            # Each partial is a complete detached snapshot. Within a frame,
-            # render only the latest adjacent update for the same agent. Retry
-            # and lifecycle boundaries stay ordered and are never discarded.
+            # Collapse token deltas within one content block only. Native tool
+            # status and block boundaries can create timeline events, so their
+            # positions must survive even when an entire run fits in one frame.
             if updates and self._stream_update(update) and self._stream_update(updates[-1]):
-                if updates[-1].payload.agent == update.payload.agent:
+                previous, current = updates[-1].payload, update.payload
+                if (
+                    previous.agent == current.agent
+                    and previous.stream_event.type == current.stream_event.type
+                    and previous.stream_event.index == current.stream_event.index
+                ):
                     updates[-1] = update
                     continue
             updates.append(update)
@@ -95,7 +100,7 @@ class FullscreenUI(UI):
             update.kind == "event"
             and update.payload.type == "message_update"
             and update.payload.stream_event is not None
-            and update.payload.stream_event.type != "retry"
+            and update.payload.stream_event.type in ("text_delta", "thinking_delta", "toolcall_delta")
         )
 
     def on_event(self, ev: AgentEvent) -> None:

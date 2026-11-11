@@ -173,7 +173,7 @@ def test_tool_and_thinking_shortcuts_and_scroll_navigation(make_session, project
         app = VirgoApp(session, ui, initial="read sample.txt")
         async with app.run_test(size=(80, 24)) as pilot:
             await wait_for(
-                pilot, lambda: len(app.transcript.query(AssistantView)) == 2 and not app.controller.busy
+                pilot, lambda: len(app.transcript.query(AssistantView)) == 1 and not app.controller.busy
             )
             await pilot.pause()
             tools = list(app.transcript.tools.values())

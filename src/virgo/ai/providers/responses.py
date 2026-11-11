@@ -262,6 +262,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             block, event_kind = RawContent(model.api, copy.deepcopy(item)), None
             if kind == "web_search_call":
                 out.search_started = True
+                event_kind = "native_tool_start"
         else:
             return
         slots[index] = len(out.content)
@@ -297,7 +298,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             event_kind = "thinking_end"
         elif isinstance(block, RawContent):
             block.data = copy.deepcopy(item)
-            event_kind = None
+            event_kind = "native_tool_end" if item.get("type") == "web_search_call" else None
         else:
             raw = item.get("arguments")
             block.arguments = parse_tool_arguments(raw if isinstance(raw, str) else buffers.get(index, ""))
@@ -320,6 +321,12 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
         elif kind.startswith("response.web_search_call."):
             # A disconnect from this point must not silently repeat a potentially billed search.
             out.search_started = True
+            status = kind.removeprefix("response.web_search_call.")
+            yield from start(index, {"type": "web_search_call", "id": event.get("item_id"), "status": status})
+            ci = slots.get(index)
+            if ci is not None and isinstance(out.content[ci], RawContent):
+                out.content[ci].data["status"] = status
+                yield StreamEvent("native_tool_delta", out, ci)
         elif kind in ("response.output_text.delta", "response.refusal.delta"):
             yield from start(index, {"type": "message"})
             ci = slots[index]

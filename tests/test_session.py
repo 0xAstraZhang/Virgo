@@ -6,11 +6,23 @@ import json
 import shutil
 import sys
 import textwrap
+import threading
 
+from virgo.agent import AgentEvent, AgentTool, ToolResult
 from virgo.ai.providers import faux
-from virgo.ai.types import AssistantMessage, ToolResultMessage
+from virgo.ai.stream import StreamEvent
+from virgo.ai.types import (
+    AssistantMessage,
+    ImageContent,
+    RawContent,
+    TextContent,
+    ThinkingContent,
+    ToolCall,
+    ToolResultMessage,
+    message_from_dict,
+)
 from virgo.cli import main as cli
-from virgo.harness.session import AgentSession
+from virgo.harness.session import AgentSession, Runtime
 from virgo.harness.settings import Paths
 from virgo.harness.store import SessionStore
 
@@ -34,6 +46,124 @@ def test_session_persists_and_resumes(make_session, project):
     assert s2.main.agent.last_text == "second answer"
     assert SessionStore.list(path.parent)[0]["title"] == "hello"
     s2.shutdown()
+
+
+def test_tool_completion_order_survives_reload_without_changing_model_history(make_session):
+    release_slow = threading.Event()
+
+    def slow(args, ctx):
+        assert release_slow.wait(2), "fast completion must reach the transcript before the slow one"
+        return ToolResult([TextContent("slow result"), ImageContent("aGVsbG8=", "image/png")])
+
+    session = make_session(
+        faux.reply(tools=[("slow", {}, "slow-id"), ("fast", {}, "fast-id")]),
+        faux.reply("done"),
+        persist=True,
+    )
+    runtime = Runtime(
+        session, "main", "main", store=session.store,
+        tools=[
+            AgentTool("slow", "slow", {"type": "object"}, slow),
+            AgentTool("fast", "fast", {"type": "object"}, lambda args, ctx: "fast result"),
+        ],
+    )
+
+    def release_on_fast_result(event):
+        if event.type == "tool_execution_end" and event.tool_call_id == "fast-id":
+            release_slow.set()
+
+    runtime.agent.subscribe(release_on_fast_result)
+    runtime.agent.prompt("go")
+    restored = SessionStore.load(session.store.path)
+    records = restored.custom("transcript_tool_result")
+    assert [record["tool_call_id"] for record in records] == ["fast-id", "slow-id"]
+    assert all(record["agent"] == "main" and record["args"] == {} for record in records)
+    result = message_from_dict(records[1]["message"])
+    assert result.tool_name == "slow" and result.text() == "slow result"
+    assert isinstance(result.content[1], ImageContent)
+    assert result.details["duration"] >= 0 and not result.is_error
+    context, ids = restored.build_context()
+    assert context == runtime.messages
+    assert ids == runtime.ids
+    assert [message.tool_call_id for message in context if isinstance(message, ToolResultMessage)] == [
+        "slow-id", "fast-id",
+    ]
+
+
+def test_run_boundaries_preserve_notification_runs_without_entering_context(make_session):
+    session = make_session(faux.reply("First answer"), faux.reply("Notification answer"), persist=True)
+    session.prompt("First request")
+    session.notify("Background task finished", source="jobs")
+    assert session.run_pending()
+    restored = SessionStore.load(session.store.path)
+    assert [entry.get("kind", entry["type"]) for entry in restored.branch()] == [
+        "transcript_run_start", "message", "transcript_stream", "message", "transcript_run_end",
+        "transcript_run_start", "message", "transcript_stream", "message", "transcript_run_end",
+    ]
+    assert restored.custom("transcript_run_start") == [{"agent": "main"}, {"agent": "main"}]
+    assert restored.custom("transcript_run_end") == [{"agent": "main"}, {"agent": "main"}]
+    messages, ids = restored.build_context()
+    assert messages == session.main.messages
+    assert ids == session.main.ids
+    assert len(messages) == 4 and messages[2].kind == "notification"
+
+
+def test_stream_history_records_block_arrival_and_native_completion_without_token_snapshots(make_session):
+    session = make_session(persist=True)
+    message = AssistantMessage()
+
+    def emit(kind, index):
+        session.main._on_event(AgentEvent(
+            "message_update", stream_event=StreamEvent(kind, message, index),
+        ))
+
+    message.content.append(ThinkingContent("Plan"))
+    emit("thinking_start", 0)
+    emit("thinking_delta", 0)
+    message.content.append(TextContent("Checking"))
+    emit("text_start", 1)
+    message.content.append(ToolCall("local", "read", {"path": "file.txt"}))
+    emit("toolcall_start", 2)
+    native = RawContent("openai-responses", {
+        "type": "web_search_call", "id": "search", "status": "in_progress", "action": {"query": "news"},
+    })
+    message.content.append(native)
+    emit("native_tool_start", 3)
+    message.content.append(TextContent("While the search runs"))
+    emit("text_start", 4)
+    native.data["status"] = "searching"
+    emit("native_tool_delta", 3)
+    native.data["status"] = "completed"
+    emit("native_tool_end", 3)
+    for kind, index in (("text_delta", 4), ("text_end", 4), ("toolcall_delta", 2), ("thinking_end", 0)):
+        emit(kind, index)
+    emit("retry", -1)
+    session.main._on_event(AgentEvent("message_end", message=message))
+
+    restored = SessionStore.load(session.store.path)
+    records = restored.custom("transcript_stream")
+    assert [(record["stream_type"], record["index"]) for record in records] == [
+        ("thinking_start", 0), ("text_start", 1), ("toolcall_start", 2),
+        ("native_tool_start", 3), ("text_start", 4), ("native_tool_delta", 3),
+        ("native_tool_end", 3), ("retry", -1),
+    ]
+    assert all(set(record) == {"agent", "stream_type", "index", "block"} for record in records)
+    assert [records[index]["block"]["data"]["status"] for index in (3, 5, 6)] == [
+        "in_progress", "searching", "completed",
+    ]
+    assert records[-1]["block"] is None
+    assert restored.build_context()[0] == [message]
+
+
+def test_child_stream_events_do_not_enter_main_transcript_history(make_session, project):
+    session = make_session()
+    child_store = SessionStore.new(None, project)
+    child = Runtime(session, "worker", "subagent", store=child_store, tools=[])
+    child._on_event(AgentEvent("message_update", agent="worker", stream_event=StreamEvent(
+        "text_start", AssistantMessage([TextContent("Child reply")]), 0,
+    )))
+    assert not child_store.custom("transcript_stream")
+    assert not session.store.custom("transcript_stream")
 
 
 def test_session_numbers_outside_the_list_are_rejected(make_session, project, monkeypatch, capsys):

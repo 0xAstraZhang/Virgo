@@ -82,6 +82,27 @@ def test_retry_discards_partial_and_final_error_remains_visible():
     asyncio.run(scenario())
 
 
+def test_failed_stream_with_partial_tool_call_keeps_failure_visible():
+    async def scenario():
+        for reason in ("error", "aborted", "refusal"):
+            app = TranscriptApp()
+            async with app.run_test() as pilot:
+                view = app.query_one(Transcript)
+                message = AssistantMessage(
+                    [TextContent("Preparing a search"), ToolCall("partial", "web_search", {})],
+                    stop_reason=reason, error_message="Stream disconnected during tool arguments",
+                )
+                await view.consume(AgentEvent("message_end", message=message))
+                await pilot.pause()
+                run = view.query_one(AssistantView)
+                assert run.error.display
+                assert "Stream disconnected" in str(run.error.content)
+                assert not run.thought_body.display
+                assert [event.kind for event in run.events] == ["text", "tool_call"]
+
+    asyncio.run(scenario())
+
+
 def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
     async def scenario():
         app = TranscriptApp()
@@ -118,12 +139,11 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
                 )
             )
             await pilot.pause()
-            assert len(view.query(ToolView)) == 2
-            main = view.tools[("main", "shared-id")]
+            assert len(view.query(ToolView)) == 3
+            main = view.results[("main", "shared-id")]
             assert main.status == "error"
-            assert "three" in str(main.output.content)
-            assert "four" not in str(main.output.content)
-            assert "2 more lines" in str(main.output.content)
+            assert not main.output.display
+            view.toggle_thinking()
             main.header.focus()
             await pilot.press("enter")
             assert main.expanded
@@ -247,12 +267,13 @@ def test_inline_activity_reuses_thought_header_and_keeps_prompt_before_reply():
             await view.consume(AgentEvent("message_end", message=message))
             await view.consume(AgentEvent("turn_start"))
             view.show_activity(Text("✳ Thinking… (5s · thinking with high effort)"))
-            assert str(card.thought_header.content) == "▾ Thought"
-            assert not card.thought_header.has_class("active")
-            assert view.activity_card is not card
+            assert str(card.thought_header.content).startswith("▾ ✳ Thinking…")
+            assert card.thought_header.has_class("active")
+            assert view.activity_card is card
             assert len(view.query(".thought-header.active")) == 1
             view.finish_activity()
             assert not view.query(".thought-header.active")
+            assert str(card.thought_header.content) == "▾ Thinking · 1 events"
 
     asyncio.run(scenario())
 

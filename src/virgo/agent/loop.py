@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from ..ai.validate import INVALID_ARGUMENTS, validate
@@ -122,6 +122,10 @@ def _execute(
     results: list[ToolResult | None] = [None] * len(calls)
     events: list[ToolCallEvent | None] = [None] * len(calls)
 
+    def reject(i: int, reason: str) -> None:
+        results[i] = ToolResult.error(reason)
+        _end(cfg, emit, calls[i], results[i])
+
     # 1. preflight, in source order
     for i, call in enumerate(calls):
         emit(
@@ -134,21 +138,22 @@ def _execute(
             )
         )
         if signal.is_set():
-            results[i] = ToolResult.error("Operation aborted.")
+            reject(i, "Operation aborted.")
             continue
         if msg.stop_reason == "length":
-            results[i] = ToolResult.error(
+            reject(
+                i,
                 "The response hit the output token limit, so these tool arguments may be truncated. "
-                "Re-issue the call (split large content into smaller steps)."
+                "Re-issue the call (split large content into smaller steps).",
             )
             continue
         tool = tools.get(call.name)
         if tool is None:
-            results[i] = ToolResult.error(f"Unknown tool: {call.name}. Available: {', '.join(sorted(tools))}")
+            reject(i, f"Unknown tool: {call.name}. Available: {', '.join(sorted(tools))}")
             continue
         args = dict(call.arguments)
         if INVALID_ARGUMENTS in args:
-            results[i] = ToolResult.error("Tool arguments were not a valid JSON object. Re-issue the call.")
+            reject(i, "Tool arguments were not a valid JSON object. Re-issue the call.")
             continue
         try:
             if tool.prepare_arguments:
@@ -157,18 +162,17 @@ def _execute(
         except Exception as e:  # noqa: BLE001
             errs = [str(e)]
         if errs:
-            results[i] = ToolResult.error("Invalid arguments:\n" + "\n".join(f"- {e}" for e in errs))
+            reject(i, "Invalid arguments:\n" + "\n".join(f"- {e}" for e in errs))
             continue
         ev = ToolCallEvent(call.id, call.name, args, tool, cfg.name, cfg.cwd, signal=signal)
         if cfg.before_tool_call:
             try:
                 block = cfg.before_tool_call(ev)
             except Exception as e:  # noqa: BLE001
-                block = None
-                results[i] = ToolResult.error(f"Tool call hook failed: {e}")
+                reject(i, f"Tool call hook failed: {e}")
                 continue
             if block is not None:
-                results[i] = ToolResult.error(block.reason)
+                reject(i, block.reason)
                 continue
         events[i] = ev
 
@@ -216,14 +220,11 @@ def _execute(
     else:
         with ThreadPoolExecutor(max_workers=min(cfg.max_parallel, len(todo))) as pool:
             futures = {pool.submit(run, i): i for i in todo}
-            for f in futures:
+            for f in as_completed(futures):
                 f.result()
                 i = futures[f]
                 _end(cfg, emit, calls[i], results[i])
-    for i, call in enumerate(calls):
-        if events[i] is None:
-            _end(cfg, emit, call, results[i])
-
+    # Model history still pairs results in call order; UI events above follow completion order.
     out = [
         ToolResultMessage(call.id, call.name, res.content, details=res.details, is_error=res.is_error)
         for call, res in zip(calls, results, strict=True)
