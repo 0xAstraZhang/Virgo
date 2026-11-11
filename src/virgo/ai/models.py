@@ -12,6 +12,7 @@ settings, e.g.::
 
 from __future__ import annotations
 
+import os
 import re
 
 from .auth_presets import API_PRESETS, AUTH_PRESETS
@@ -47,6 +48,11 @@ KNOWN_MODELS = {
 
 _ADAPTIVE_CLAUDE = re.compile(r"claude-(opus|sonnet|haiku|fable|mythos)-(4-[6-9]|5)")
 _OPENAI_REASONING = re.compile(r"^(o\d|gpt-[56])")
+
+
+def base_url(model: Model) -> str:
+    """The configured endpoint: an explicit base URL, else the provider's base-URL variable."""
+    return model.base_url or os.environ.get(model.options.get("baseUrlEnv", ""), "")
 
 
 def _guess_provider(model_id: str) -> str:

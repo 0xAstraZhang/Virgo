@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from ..ai.auth_presets import API_PRESETS, AUTH_PRESETS
 from ..ai.catalog import CatalogCancelled, CatalogError, fetch_model_catalog
-from ..ai.models import BUILTIN_PROVIDERS
+from ..ai.models import BUILTIN_PROVIDERS, base_url
 from ..ai.types import Model
 
 if TYPE_CHECKING:
@@ -125,7 +125,7 @@ def _model_available(model: Model, credentials: dict) -> bool:
         return False
     if not model.base_url and model.provider not in ("anthropic", "openai", "openai-codex"):
         return False
-    base = model.base_url or os.environ.get(model.options.get("baseUrlEnv", ""), "")
+    base = base_url(model)
     if base:
         try:
             endpoint = urlparse(base)

@@ -28,7 +28,6 @@ from ..ai.types import (
     UserMessage,
     message_from_dict,
     message_to_dict,
-    text_of,
 )
 
 SUMMARY_PREFIX = (
@@ -58,6 +57,25 @@ def _created_at(header: dict, fallback: float) -> float:
         return fallback
 
 
+def _title_and_count(entries: list) -> tuple[str, int]:
+    """The first genuine user request and the number of saved messages.
+
+    Raises TypeError for malformed entries; catalog readers treat that file as unreadable.
+    """
+    title, count = "", 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise TypeError("session entry is not an object")
+        if entry.get("type") == "message":
+            message = entry["message"]
+            if not isinstance(message, dict):
+                raise TypeError("saved message is not an object")
+            count += 1
+            if not title and message.get("role") == "user" and not message.get("kind"):
+                title = " ".join(text_of_dict(message).split())[:80]
+    return title, count
+
+
 def _session_info(path: Path) -> dict | None:
     """Read one catalog row, tolerating a corrupt or concurrently removed file."""
     try:
@@ -69,17 +87,7 @@ def _session_info(path: Path) -> dict | None:
         cwd = header.get("cwd", ".")
         if not isinstance(cwd, str):
             return None
-        title, count = "", 0
-        for entry in records[1:]:
-            if not isinstance(entry, dict):
-                return None
-            if entry.get("type") == "message":
-                message = entry["message"]
-                if not isinstance(message, dict):
-                    return None
-                count += 1
-                if not title and message.get("role") == "user" and not message.get("kind"):
-                    title = " ".join(text_of_dict(message).split())[:80]
+        title, count = _title_and_count(records[1:])
         return {
             "path": path,
             "id": header.get("id"),
@@ -115,6 +123,8 @@ def _workspace_created_at(directory: Path, items: list[dict] | None = None) -> f
 def _register_workspace(directory: Path, cwd: Path) -> None:
     """Keep creation order independent of later session writes and removal."""
     try:
+        if (directory / ".workspace.json").exists():
+            return  # Already registered; this runs on every session write.
         directory.mkdir(parents=True, exist_ok=True)
         metadata = {"version": 1, "cwd": str(cwd), "created_at": _workspace_created_at(directory)}
         with (directory / ".workspace.json").open("x", encoding="utf-8") as handle:
@@ -140,7 +150,7 @@ class SessionStore:
         self.leaf: str | None = self.entries[-1]["id"] if self.entries else None
         self.created_at = time.time()
         self.updated_at = self.created_at
-        self._header_written = bool(path and path.exists())
+        self._header_written = self.path is not None and self.path.exists()
         self._lock = threading.RLock()
 
     # -- construction ---------------------------------------------------------
@@ -194,13 +204,7 @@ class SessionStore:
         """Catalog row for the active store, including an unsaved new session."""
         item = _session_info(self.path) if self.path is not None else None
         if item is None:
-            title, count = "", 0
-            for entry in self.entries:
-                if entry.get("type") == "message":
-                    count += 1
-                    message = entry["message"]
-                    if not title and message.get("role") == "user" and not message.get("kind"):
-                        title = " ".join(text_of_dict(message).split())[:80]
+            title, count = _title_and_count(self.entries)
             item = {
                 "path": self.path,
                 "id": self.id,
@@ -371,4 +375,4 @@ def text_of_dict(m: dict) -> str:
     return " ".join(b.get("text", "") for b in c or [] if b.get("type") == "text")
 
 
-__all__ = ["SessionStore", "summary_message", "text_of"]
+__all__ = ["SessionStore", "summary_message"]

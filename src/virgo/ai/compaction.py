@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from dataclasses import asdict, replace
 from urllib.parse import urlsplit
 
+from .models import base_url
 from .stream import error_message
 from .transform import normalize
 from .types import AssistantMessage, Context, Model, RawContent, StreamOptions
 
 
 def native_api(model: Model) -> str | None:
-    endpoint = model.base_url or os.environ.get(model.options.get("baseUrlEnv", ""), "")
-    host = urlsplit(endpoint).hostname
+    host = urlsplit(base_url(model)).hostname
     if model.api == "anthropic" and (model.provider == "anthropic" or host == "api.anthropic.com"):
         return "anthropic"
     if model.api == "openai-codex":

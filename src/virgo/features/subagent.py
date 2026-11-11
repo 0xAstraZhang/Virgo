@@ -84,13 +84,16 @@ class Subagents:
         self.api = api
         self.types = load_types(api)
 
-    def run(self, prompt: str, type_name: str, description: str, signal, cwd=None, review_parent=None) -> ToolResult:
+    def run(
+        self, prompt: str, agent_type: str | AgentType, description: str, signal, cwd=None, review_parent=None
+    ) -> ToolResult:
+        """Run ``agent_type``: a registered type name, or an ad-hoc AgentType (e.g. a workflow step)."""
         from ..harness.session import Runtime
 
         session = self.api.session
-        at = self.types.get(type_name)
+        at = agent_type if isinstance(agent_type, AgentType) else self.types.get(agent_type)
         if at is None:
-            return ToolResult.error(f"Unknown agent type {type_name!r}. Available: {', '.join(self.types)}")
+            return ToolResult.error(f"Unknown agent type {agent_type!r}. Available: {', '.join(self.types)}")
         pool = session.tools_for("subagent")
         tools = [t for t in pool if at.tools is None or t.name in at.tools]
         name = f"{at.name}#{next(_counter)}"

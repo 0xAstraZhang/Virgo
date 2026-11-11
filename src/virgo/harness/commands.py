@@ -117,7 +117,6 @@ def register_builtins(session: AgentSession) -> None:
     from .preferences import configure_preference
 
     c = session.commands
-    ui = session.ui
 
     def help_(s, args):
         lines = ["Commands:"]
@@ -126,41 +125,41 @@ def register_builtins(session: AgentSession) -> None:
         for name, (desc, _) in sorted(s.templates.items()):
             lines.append(f"  /{name:<14} {desc or '(prompt template)'}")
         lines.append("Type text to chat. While the agent works, typed lines are sent as steering messages.")
-        ui.print("\n".join(lines))
+        s.ui.print("\n".join(lines))
 
     def model(s, args):
-        if not args.strip() and ui.supports_preferences:
+        if not args.strip() and s.ui.supports_preferences:
             configure_preference(s, "model")
             return
         if args.strip():
             s.set_model(args.strip())
-        ui.print(f"model: {s.model.spec}  (small: {s.small_model.spec}, effort: {s.effort})")
+        s.ui.print(f"model: {s.model.spec}  (small: {s.small_model.spec}, effort: {s.effort})")
 
     def effort(s, args):
         a = args.strip()
-        if not a and ui.supports_preferences:
+        if not a and s.ui.supports_preferences:
             configure_preference(s, "effort")
             return
         if a:
             if a not in ("low", "medium", "high", "xhigh", "max"):
-                ui.print("effort must be one of: low, medium, high, xhigh, max", "error")
+                s.ui.print("effort must be one of: low, medium, high, xhigh, max", "error")
                 return
             s.effort = a
-        ui.print(f"effort: {s.effort}")
+        s.ui.print(f"effort: {s.effort}")
 
     def compact(s, args):
         r = s.compact(focus=args.strip() or None)
-        ui.print(
+        s.ui.print(
             "Nothing to compact." if r is None else f"Compacted: ~{r['tokens_before']} tokens summarized."
         )
 
     def new(s, args):
         s.new_session()
-        ui.print("Started a new session.")
+        s.ui.print("Started a new session.")
 
     def session_(s, args):
         st = s.store
-        ui.print(
+        s.ui.print(
             f"session {st.id}\nfile: {st.path or '(not persisted)'}\nmessages: {len(s.main.messages)}"
             f"\nestimated context tokens: {s.context_tokens()}"
         )
@@ -168,22 +167,22 @@ def register_builtins(session: AgentSession) -> None:
     def sessions(s, args):
         items = type(s.store).list(s.paths.sessions)
         if not items:
-            ui.print("No saved sessions for this directory.")
+            s.ui.print("No saved sessions for this directory.")
             return
         listed = items[:20]
         choice = args.strip()
         if not choice:
             for i, it in enumerate(listed, 1):
-                ui.print(f"  {i:>2}. {it['title']}  ({it['messages']} msgs)  {it['path'].name}")
-            ui.print("Use /sessions <number> to open one.")
+                s.ui.print(f"  {i:>2}. {it['title']}  ({it['messages']} msgs)  {it['path'].name}")
+            s.ui.print("Use /sessions <number> to open one.")
             return
         # Only listed numbers are valid: 0 or a negative value must not index from the end.
         if not choice.isdecimal() or not 1 <= int(choice) <= len(listed):
-            ui.print("Invalid session number.", "error")
+            s.ui.print("Invalid session number.", "error")
             return
         it = listed[int(choice) - 1]
         s.open_session(it["path"])
-        ui.print(f"Resumed {it['path'].name} ({len(s.main.messages)} messages).")
+        s.ui.print(f"Resumed {it['path'].name} ({len(s.main.messages)} messages).")
 
     c.register("help", help_, "show commands", concurrent=True)
     c.register("login", login, "sign in to an account or configure an API (/login [auth|api] [provider])")

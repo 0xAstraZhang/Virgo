@@ -12,7 +12,6 @@ When the agent would stop: follow-ups (schedules), then `agent_stop` handlers (t
 
 from __future__ import annotations
 
-import os
 import random
 import threading
 import time
@@ -26,6 +25,7 @@ from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, ToolResult
 from ..ai.auth import AuthStore
 from ..ai.compaction import compatible_context, context_binding, is_native_context
+from ..ai.models import base_url
 from ..ai.stream import EventStream, StreamEvent
 from ..ai.transform import strip_thinking
 from ..ai.types import (
@@ -105,6 +105,7 @@ class Runtime:
             getattr(messages[0], "kind", None) == "summary" or is_native_context(messages[0])
         ) else 0
         self._native_source: list | None = None
+        self._call_started: float | None = None  # set per model call; None for loop-made messages
         self.native_binding = (store.last_compaction() or {}).get("context_binding") if store else None
         self.system = ""
         self.rebuild_system()
@@ -130,7 +131,7 @@ class Runtime:
         return self.agent.messages
 
     def rebuild_system(self) -> None:
-        self.system = build_system(self.session, self.role, self.system_extra, self.cwd)
+        self.system = build_system(self.session, self.role, self.system_extra, self.cwd, tools=self.tools)
 
     def _before_tool(self, ev: ToolCallEvent):
         ev.review_source = self.review_source
@@ -183,11 +184,13 @@ class Runtime:
         elif ev.type == "message_end":
             self.ids.append(self.store.append_message(ev.message) if self.store else None)
             self.review_source.remember(ev.message, self.ids[-1])
-            if self.role != "main" and isinstance(ev.message, AssistantMessage):
+            if self.role != "main" and isinstance(ev.message, AssistantMessage) and self._call_started is not None:
+                # Loop notices (turn limit, paused search) are not model calls.
                 record_call(
                     self.accounting_store, self.model, ev.message, purpose="agent",
                     started=self._call_started, effort=self.session.effort, agent=self.name,
                 )
+                self._call_started = None
             if self._native_source is not None:
                 self._native_source.append(ev.message)
         self.session.bus.emit("agent_event", ev, self)
@@ -423,14 +426,14 @@ class AgentSession:
         return m
 
     def _small_model(self, model: ai.Model) -> ai.Model:
-        endpoint = model.base_url or os.environ.get(model.options.get("baseUrlEnv", ""), "")
+        host = urlsplit(base_url(model)).hostname
         if model.api == "anthropic" and (
-            model.provider == "anthropic" or urlsplit(endpoint).hostname == "api.anthropic.com"
+            model.provider == "anthropic" or host == "api.anthropic.com"
         ):
             return self.resolve(f"{model.provider}/claude-haiku-5-5")
         is_openai = model.provider in {"openai", "openai-codex"} or model.api == "openai-codex"
         if model.api in {"openai", "openai-responses", "openai-codex"} and (
-            is_openai or urlsplit(endpoint).hostname == "api.openai.com"
+            is_openai or host == "api.openai.com"
         ):
             return self.resolve(f"{model.provider}/gpt-6-luna")
         return model

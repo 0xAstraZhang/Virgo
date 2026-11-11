@@ -119,7 +119,10 @@ def run_repl(
                 break
             cmd = session.commands.get(line[1:].split(" ", 1)[0]) if line.startswith("/") else None
             if cmd is not None and cmd.concurrent:
-                cmd.fn(session, line.partition(" ")[2])  # read-only: run inline, even while busy
+                try:
+                    cmd.fn(session, line.partition(" ")[2])  # read-only: run inline, even while busy
+                except Exception as e:  # noqa: BLE001 - a failing command must not end the REPL
+                    ui.print(f"✗ {type(e).__name__}: {e}", "error")
                 if not busy():
                     ui.prompt()
                 else:

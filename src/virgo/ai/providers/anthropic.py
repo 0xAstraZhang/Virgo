@@ -286,10 +286,7 @@ def compact(
             out.stop_reason, out.error_kind = "error", "fatal"
             out.error_message = "The provider did not return a complete signed compaction block."
     except Exception as error:  # noqa: BLE001 - leave the caller's history intact on failure
-        if isinstance(error, ProviderError):
-            out.error_kind, out.error_message = error.kind, str(error)
-        else:
-            out.error_kind, out.error_message = classify_error(error)
+        out.error_kind, out.error_message = classify_error(error)
         out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
         key = _api_key(model)
         if key and out.error_message:

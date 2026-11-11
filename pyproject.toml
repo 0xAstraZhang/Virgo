@@ -15,11 +15,6 @@ dependencies = [
     "textual>=8.2.8,<9",
 ]
 
-[project.optional-dependencies]
-openai = [
-    "openai>=3.48.0",
-]
-
 [project.scripts]
 virgo = "virgo.cli.main:main"
 

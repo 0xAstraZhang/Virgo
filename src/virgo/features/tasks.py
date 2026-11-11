@@ -58,12 +58,15 @@ class TaskStore:
                         fcntl.flock(fh, fcntl.LOCK_UN)
 
     def _path(self, tid: str) -> Path:
+        # Ids come from tool arguments: never let one name a file outside the task directory.
+        if not tid or Path(tid).name != tid or tid.startswith("."):
+            raise ValueError(f"invalid task id {tid!r}")
         return self.root / f"{tid}.json"
 
     def get(self, tid: str) -> Task | None:
         try:
             return Task(**json.loads(self._path(str(tid)).read_text(encoding="utf-8")))
-        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        except (ValueError, OSError, TypeError):  # includes invalid ids and JSONDecodeError
             return None
 
     def all(self) -> list[Task]:

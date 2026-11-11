@@ -83,7 +83,3 @@ def error_message(api: str, provider: str, model: str, text: str, kind: str = "f
     return AssistantMessage(
         api=api, provider=provider, model=model, stop_reason="error", error_message=text, error_kind=kind
     )
-
-
-def single(events: list[StreamEvent], fallback: AssistantMessage) -> EventStream:
-    return EventStream(iter(events), fallback)

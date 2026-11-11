@@ -730,11 +730,6 @@ dependencies = [
     { name = "textual" },
 ]
 
-[package.optional-dependencies]
-openai = [
-    { name = "openai" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -746,12 +741,10 @@ requires-dist = [
     { name = "anthropic", specifier = ">=2.7.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "openai", specifier = ">=3.48.0" },
-    { name = "openai", marker = "extra == 'openai'", specifier = ">=3.48.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "send2trash", specifier = ">=1.8.3" },
     { name = "textual", specifier = ">=8.2.8,<9" },
 ]
-provides-extras = ["openai"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -94,7 +94,6 @@ class ReviewFailure(RuntimeError):
 def review_tool_call(session, ev: ToolCallEvent, boundary_reason: str) -> ReviewDecision:
     review = build_review_input(session, ev, boundary_reason)
     ev._review_audit = dict(review.audit)
-    ev._review_store = review.store
     ev._review_model = session.small_model.spec
     if review.error:
         return ReviewDecision("ask", review.error)
