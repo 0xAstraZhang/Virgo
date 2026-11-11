@@ -16,7 +16,7 @@ from textual.widgets import Static
 from virgo.ai.providers import faux
 from virgo.ai.types import UserMessage
 from virgo.cli.tui.app import VirgoApp
-from virgo.cli.tui.bridge import FullscreenUI
+from virgo.cli.tui.bridge import Confirmation, FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalScreen, SessionPicker
 from virgo.cli.tui.transcript import AssistantView
 from virgo.features import permission as permission_module
@@ -235,8 +235,21 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize(("key", "allowed"), [("y", True), ("n", False), ("escape", False), ("a", True)])
-def test_permission_answers_control_real_file_writes(make_session, project, monkeypatch, key, allowed):
+@pytest.mark.parametrize(
+    ("keys", "answer"),
+    [
+        (("y",), "y"),
+        (("n",), "n"),
+        (("escape",), "n"),
+        (("a",), "a"),
+        (("enter",), "n"),
+        (("left", "enter"), "y"),
+        (("right", "enter"), "a"),
+        (("left", "left", "left", "enter"), "n"),
+        (("right", "right", "right", "enter"), "n"),
+    ],
+)
+def test_permission_answers_control_real_file_writes(make_session, project, monkeypatch, keys, answer):
     monkeypatch.setattr(permission_module, "review_tool_call", lambda *_: ReviewDecision("ask", "writes outside the workspace"))
     outside = project.parent / "outside"
     outside.mkdir()
@@ -244,7 +257,7 @@ def test_permission_answers_control_real_file_writes(make_session, project, monk
     async def scenario():
         ui = FullscreenUI()
         calls = [("write", {"path": str(outside / "approved.txt"), "content": "first"})]
-        if key == "a":
+        if answer == "a":
             calls.append(("write", {"path": str(outside / "approved.txt"), "content": "first"}))
         session = make_session(faux.reply(tools=calls), faux.reply("finished"), ui=ui, mode="auto-review")
         app = VirgoApp(session, ui, initial="write files")
@@ -253,13 +266,53 @@ def test_permission_answers_control_real_file_writes(make_session, project, monk
             assert app.focused.id == "deny"
             assert "approved.txt" in app.screen.confirmation.question
             assert not (outside / "approved.txt").exists()
-            await pilot.press(key)
+            await pilot.press(*keys)
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
-            assert (outside / "approved.txt").exists() is allowed
+            assert (outside / "approved.txt").exists() is (answer != "n")
             assert not app.has_modal
-            if key == "a":
+            if answer == "a":
                 assert (outside / "approved.txt").read_text() == "first"
                 assert session.services["permissions"].session_rules
+
+    asyncio.run(scenario())
+
+
+def test_permission_arrows_cycle_buttons_without_answering_or_focusing_question(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ApprovalScreen(Confirmation(1, "Long permission question\n" * 30, "main"))
+            answers = []
+            await app.push_screen(screen, answers.append)
+            await pilot.pause()
+            assert app.focused.id == "deny"
+            question = screen.query_one(".question")
+            assert question.max_scroll_y > 0
+            for key, focused in (
+                ("left", "allow"),
+                ("left", "always"),
+                ("left", "deny"),
+                ("right", "always"),
+                ("right", "allow"),
+                ("right", "deny"),
+            ):
+                await pilot.press(key)
+                assert app.focused.id == focused
+                assert app.screen is screen and not answers
+            question.focus()
+            await pilot.press("down")
+            await pilot.pause()
+            assert question.scroll_y > 0
+            await pilot.press("right")
+            assert app.focused.id == "allow"
+            await pilot.press("tab")
+            assert app.focused.id == "deny"
+            await pilot.press("shift+tab")
+            assert app.focused.id == "allow"
+            assert not answers
+            await pilot.press("escape")
+            assert answers == ["n"]
 
     asyncio.run(scenario())
 

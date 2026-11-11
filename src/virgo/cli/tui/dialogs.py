@@ -16,6 +16,8 @@ from .sessions import SessionPicker as SessionPicker
 class ApprovalScreen(ModalScreen[str | None]):
     AUTO_FOCUS = "#deny"
     BINDINGS = [
+        Binding("left", "previous_answer", priority=True, show=False),
+        Binding("right", "next_answer", priority=True, show=False),
         Binding("y", "answer('y')", show=False),
         Binding("n,escape", "answer('n')", show=False),
         Binding("a", "answer('a')", show=False),
@@ -34,6 +36,12 @@ class ApprovalScreen(ModalScreen[str | None]):
                 yield Button(Text("Allow [y]"), id="allow")
                 yield Button(Text("Deny [n]"), id="deny")
                 yield Button(Text("Session [a]"), id="always")
+
+    def action_previous_answer(self) -> None:
+        self.focus_previous(Button)
+
+    def action_next_answer(self) -> None:
+        self.focus_next(Button)
 
     @on(Button.Pressed)
     def answer_button(self, event: Button.Pressed) -> None:
