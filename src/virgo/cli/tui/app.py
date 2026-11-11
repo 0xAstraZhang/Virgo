@@ -31,7 +31,7 @@ from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
-from .transcript import Transcript
+from .transcript import Transcript, update_static
 
 PURPLE = "#7C3AED"
 PERMISSION_COLORS = {"auto-review": "#B8860B", "accept-all": "#DC2626", "plan": "#2563EB"}
@@ -365,7 +365,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             )
             self.activity.tick()
             self.transcript.show_activity(self.activity.content if self.activity.display else None)
-            if not self.screen_stack[0].query(Transcript):
+            # Not query(...): its truthiness matches every widget in the conversation,
+            # which made this 30 fps poll cost grow with the transcript length.
+            if self.screen_stack[0].query_one_optional(Transcript) is None:
                 return
             self.screen_stack[0].query_one("#jump").display = (
                 self.transcript.max_scroll_y > 0
@@ -377,9 +379,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             pending = self.controller.pending
             pending_widget = self.screen_stack[0].query_one("#pending", Static)
             pending_widget.display = bool(pending)
-            pending_widget.update(
-                Text("\n".join(f"Queued · {text.splitlines()[0]}" for text in pending[-3:]))
-            )
+            queued = "\n".join(f"Queued · {text.splitlines()[0]}" for text in pending[-3:])
+            update_static(pending_widget, Text(queued))  # runs every frame: skip no-op relayouts
             if self.input_request is not None and self.input_request.preferences is not None:
                 self.screen_stack[0].query_one(PreferencePicker).resize_panel()
             if time.monotonic() - self.last_status >= 0.5:
@@ -511,11 +512,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.finish_input(event.choice)
 
     def update_status(self) -> None:
+        """Refresh the dock labels; unchanged labels are left alone (see ``update_static``)."""
         self.last_status = time.monotonic()
+        root = self.screen_stack[0]
         if self.controller.closing:
-            self.screen_stack[0].query_one("#hints", Static).update(
-                shortcut_hints("Closing services… Ctrl+C to return to the terminal immediately")
-            )
+            hints = shortcut_hints("Closing services… Ctrl+C to return to the terminal immediately")
         elif self.input_request is not None:
             if self.input_request.preferences is not None:
                 if self.input_request.preferences.kind == "model":
@@ -533,20 +534,19 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     if self.input_request.options is not None
                     else "Enter confirm · Esc cancel"
                 )
-            self.screen_stack[0].query_one("#hints", Static).update(shortcut_hints(hint))
+            hints = shortcut_hints(hint)
         elif not self.controller.busy and 0 < time.monotonic() - self.last_interrupt < 2:
-            self.screen_stack[0].query_one("#hints", Static).update(
-                shortcut_hints("Ctrl+C again to exit · /exit also closes Virgo")
-            )
+            hints = shortcut_hints("Ctrl+C again to exit · /exit also closes Virgo")
         else:
-            self.screen_stack[0].query_one("#hints", Static).update(input_hints())
+            hints = input_hints()
+        update_static(root.query_one("#hints", Static), hints)
         width = max(1, self.size.width - 2)
         cwd = str(self.session.cwd)
         if cell_len(cwd) > width:
             while cwd and cell_len(cwd) > width - 1:
                 cwd = cwd[1:]
             cwd = "…" + cwd
-        self.screen_stack[0].query_one("#cwd", Static).update(Text(cwd, no_wrap=True))
+        update_static(root.query_one("#cwd", Static), Text(cwd, no_wrap=True))
         usage = Usage(**self.session.store.total_usage())
         tokens = self.session.context_tokens()
         window = self.session.main.model.context_window
@@ -557,7 +557,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         )
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
         metrics.truncate(width, overflow="ellipsis")
-        self.screen_stack[0].query_one("#metrics", Static).update(metrics)
+        update_static(root.query_one("#metrics", Static), metrics)
         mode = normalize_permission_mode(self.session.permission_mode)
         footer = Text(no_wrap=True, overflow="ellipsis")
         footer.append(permission_mode_label(mode), style=PERMISSION_COLORS[mode])
@@ -570,7 +570,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         footer.append(" " * max(2, width - footer.cell_len - model.cell_len))
         footer.append(model)
         footer.truncate(width, overflow="ellipsis")
-        self.screen_stack[0].query_one("#status", Static).update(footer)
+        update_static(root.query_one("#status", Static), footer)
 
     @on(ChatEditor.Submitted)
     def submitted(self, event: ChatEditor.Submitted) -> None:
@@ -694,8 +694,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.controller.request_close()
         else:
             self.last_interrupt = time.monotonic()
-            self.screen_stack[0].query_one("#hints", Static).update(
-                shortcut_hints("Ctrl+C again to exit · /exit also closes Virgo")
+            update_static(
+                self.screen_stack[0].query_one("#hints", Static),
+                shortcut_hints("Ctrl+C again to exit · /exit also closes Virgo"),
             )
 
     def action_cycle_permissions(self) -> None:

@@ -30,6 +30,21 @@ def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
+def _same_content(a, b) -> bool:
+    if type(a) is not type(b) or a != b:
+        return False
+    if isinstance(a, Text):  # Text equality compares only plain text and spans
+        return (a.style, a.justify, a.overflow, a.no_wrap) == (b.style, b.justify, b.overflow, b.no_wrap)
+    return True
+
+
+def update_static(widget: Static, content, *, layout: bool = True) -> None:
+    """Skip no-op updates: ``Static.update`` always refreshes, and a layout refresh
+    re-arranges every widget on screen, so its cost grows with the transcript."""
+    if not _same_content(widget.content, content):
+        widget.update(content, layout=layout)
+
+
 class EventView(Foldable):
     """One logical event: a single summary line and opt-in full content."""
 
@@ -209,7 +224,9 @@ class AssistantView(Foldable):
             title.append(self.activity)
         else:
             title.append(f"Thinking · {count} events")
-        self.thought_header.update(title)
+        # The header is one row at full width, so its live activity label (redrawn
+        # every frame during a run) never needs a layout pass.
+        update_static(self.thought_header, title, layout=False)
         self.thought_header.set_class(self.activity is not None, "active")
         self.thought_body.display = bool(self.show_thinking and count)
 
