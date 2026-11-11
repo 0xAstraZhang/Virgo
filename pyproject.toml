@@ -1,6 +1,6 @@
 [project]
 name = "virgo"
-version = "0.1.0"
+version = "0.2.0"
 description = "A lightweight, extensible coding agent harness inspired by Pi."
 readme = "README.md"
 license = "MIT"
