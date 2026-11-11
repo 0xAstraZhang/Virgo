@@ -209,7 +209,7 @@ class ConsoleBroker:
         return "a" if a in ("a", "always") else "y" if a in ("y", "yes") else "n"
 
 
-def _brief(name: str, args: dict | None) -> str:
+def _brief(args: dict | None) -> str:
     args = args or {}
     for key in ("command", "path", "pattern", "description", "name", "to", "action"):
         if key in args and isinstance(args[key], str):
@@ -325,7 +325,7 @@ class TerminalUI(UI):
                 self._block = None
                 self._newline()
                 self.write(f"● {ev.tool_name}", "tool")
-                self.write(f"({_brief(ev.tool_name, ev.args)})\n", "dim")
+                self.write(f"({_brief(ev.args)})\n", "dim")
             elif t == "tool_execution_end":
                 text = ev.result.as_text() if ev.result else ""
                 lines = text.strip().splitlines() or ["(no output)"]
@@ -337,7 +337,7 @@ class TerminalUI(UI):
     def _sub(self, ev: AgentEvent) -> None:
         if ev.type == "tool_execution_start":
             self._newline()
-            self.write(f"  ↳ [{ev.agent}] {ev.tool_name}({_brief(ev.tool_name, ev.args)})\n", "dim")
+            self.write(f"  ↳ [{ev.agent}] {ev.tool_name}({_brief(ev.args)})\n", "dim")
         elif ev.type == "message_end" and getattr(ev.message, "role", "") == "assistant":
             if ev.message.stop_reason in ("error", "refusal"):
                 self.print(f"  ↳ [{ev.agent}] ✗ {ev.message.error_message}", "error")
@@ -348,14 +348,19 @@ class PrintUI(UI):
 
     def __init__(self, json_mode: bool = False):
         self.json_mode = json_mode
+        self._lock = threading.Lock()  # sub-agents and teammates emit from other threads
 
     def print(self, text: str, style: str | None = None) -> None:
         if style in ("error", "warn"):
-            print(text, file=sys.stderr)
+            with self._lock:
+                print(text, file=sys.stderr)
 
     def on_event(self, ev: AgentEvent) -> None:
         if self.json_mode:
-            print(json.dumps(event_json(ev), ensure_ascii=False, default=str), flush=True)
+            line = json.dumps(event_json(ev), ensure_ascii=False, default=str)
+            with self._lock:  # one complete JSONL record per write
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
 
 
 def event_json(ev: AgentEvent) -> dict:

@@ -130,19 +130,26 @@ class Team:
             + (f"- You work in your own git worktree at {cwd} (branch team/{name}).\n" if wt else "")
             + "</team>"
         )
-        m.runtime = Runtime(
-            self.session,
-            name,
-            "teammate",
-            cwd=cwd,
-            store=SessionStore(store_path, cwd),
-            system_extra=extra,
-            review_parent=review_parent,
-        )
-        m.thread = threading.Thread(
-            target=self._loop, args=(m, prompt), daemon=True, name=f"virgo-team-{name}"
-        )
-        m.thread.start()
+        try:
+            m.runtime = Runtime(
+                self.session,
+                name,
+                "teammate",
+                cwd=cwd,
+                store=SessionStore(store_path, cwd),
+                system_extra=extra,
+                review_parent=review_parent,
+            )
+            m.thread = threading.Thread(
+                target=self._loop, args=(m, prompt), daemon=True, name=f"virgo-team-{name}"
+            )
+            m.thread.start()
+        except BaseException:
+            # A teammate that never started must not look busy or keep plan mode.
+            m.state = "stopped"
+            if plan_first and perms:
+                perms.set_agent_mode(name, None)
+            raise
         return m
 
     def _drain(self, m: Teammate) -> list:
@@ -209,7 +216,9 @@ class Team:
                     continue
                 m.state = "working"
                 m.runtime.agent.prompt(pending)
-                pending = []
+                # Messages steered in after the agent's last queue check would
+                # otherwise wait for an unrelated future turn.
+                pending = m.runtime.agent.drain_queues()
                 text = m.runtime.agent.last_text.strip()
                 if text:
                     self.to_lead(m.name, f"(turn finished)\n{text[:3000]}")
@@ -236,7 +245,8 @@ class Team:
         m.inbox.put({"type": "shutdown_request", "request_id": rid})
         if force:
             m.stop = True
-            m.runtime.agent.abort()
+            if m.runtime is not None:
+                m.runtime.agent.abort()
         return f"Shutdown requested ({rid}); {name} will stop after its current turn."
 
     def submit_plan(self, name: str, plan: str) -> str:

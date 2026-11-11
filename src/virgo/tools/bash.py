@@ -91,9 +91,8 @@ def format_output(output: str, code: int | None, status: str, cwd: Path, timeout
     text, cut = truncate_tail(output)
     if cut:
         path = save_output(output, cwd, "bash")
-        total = output.count("\n") + 1
         text = (
-            f"[Output truncated: showing the last {text.count(chr(10)) + 1} of {total} lines "
+            f"[Output truncated: showing the last {len(text.splitlines())} of {len(output.splitlines())} lines "
             f"(limit {MAX_LINES} lines / {MAX_BYTES // 1024}KB). Full output: {path}]\n{text}"
         )
     text = text.rstrip() or "(no output)"

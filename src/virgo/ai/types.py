@@ -93,7 +93,7 @@ class Usage:
         return self.input_total + self.output
 
 
-StopReason = Literal["stop", "length", "tool_use", "pause_turn", "refusal", "error", "aborted"]
+StopReason = Literal["stop", "length", "tool_use", "pause_turn", "compaction", "refusal", "error", "aborted"]
 
 
 @dataclass

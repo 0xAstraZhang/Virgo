@@ -26,17 +26,19 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
 import traceback
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..agent.types import AgentTool, Block, Continue, ToolResult
+from ..ai.types import TextContent
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -72,7 +74,7 @@ class EventBus:
             return fn(*args)
         except Exception as e:  # noqa: BLE001 - one broken extension must not break the session
             self.on_error(f"[extension error in {event} handler {getattr(fn, '__qualname__', fn)}] {e}")
-            if "VIRGO_DEBUG" in __import__("os").environ:
+            if "VIRGO_DEBUG" in os.environ:
                 traceback.print_exc()
             return None
 
@@ -225,6 +227,17 @@ def _run_hook(hook: dict, payload: dict, cwd: Path) -> tuple[int, str, str]:
         return 1, "", "hook timed out"
 
 
+def _with_feedback(res: ToolResult, note: str) -> ToolResult:
+    """Append a note to the result text, keeping images, details and flags."""
+    content = list(res.content)
+    last = next((i for i in range(len(content) - 1, -1, -1) if isinstance(content[i], TextContent)), None)
+    if last is None:
+        content.append(TextContent(note))
+    else:
+        content[last] = TextContent(f"{content[last].text}\n\n{note}")
+    return replace(res, content=content)
+
+
 def install_command_hooks(session: AgentSession) -> None:
     hooks: dict = session.settings.get("hooks", {}) or {}
     cwd = session.cwd
@@ -260,11 +273,7 @@ def install_command_hooks(session: AgentSession) -> None:
             }
             code, out, err = _run_hook(hook, payload, cwd)
             if code == 2 and (err or out):
-                return ToolResult.text(
-                    f"{res.as_text()}\n\n[hook feedback] {err or out}",
-                    details=res.details,
-                    is_error=res.is_error,
-                )
+                return _with_feedback(res, f"[hook feedback] {err or out}")
             return None
 
         session.bus.on("tool_result", post)

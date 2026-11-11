@@ -10,6 +10,7 @@ across sessions in ``.virgo/schedules.json``.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import json
 import os
@@ -79,6 +80,12 @@ class Cron:
                 return cur
             cur += timedelta(minutes=1)
         return None
+
+
+@functools.lru_cache(maxsize=128)
+def _cron(expr: str) -> Cron:
+    """Parsed expressions are immutable; the scheduler checks them every second."""
+    return Cron(expr)
 
 
 def parse_at(text: str, now: datetime | None = None) -> datetime:
@@ -176,7 +183,7 @@ class Scheduler:
         due = []
         with self._lock:
             for s in list(self.items.values()):
-                if s.cron and s.last_fired != key and Cron(s.cron).matches(now):
+                if s.cron and s.last_fired != key and _cron(s.cron).matches(now):
                     s.last_fired = key
                     due.append(s)
                 elif s.at and datetime.fromisoformat(s.at) <= now:
@@ -222,7 +229,7 @@ def setup(api: ExtensionAPI) -> None:
             s = sched.add(args["prompt"], args.get("cron"), args.get("at"), bool(args.get("persist")))
         except ValueError as e:
             return ToolResult.error(str(e))
-        nxt = Cron(s.cron).next_after(datetime.now()) if s.cron else None
+        nxt = _cron(s.cron).next_after(datetime.now()) if s.cron else None
         extra = f" Next run: {nxt.isoformat(timespec='minutes')}." if nxt else ""
         return ToolResult.text(
             f"Scheduled {s.describe()}.{extra} It runs as a new prompt while Virgo is open."

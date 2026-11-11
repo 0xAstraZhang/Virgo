@@ -125,6 +125,20 @@ class MemoryStore:
         return f"Saved memory '{name}' → {path}"
 
 
+def _tidy_problem(records) -> str | None:
+    """Why a consolidated memory list cannot replace the current one, or None."""
+    if not isinstance(records, list) or not records:
+        return "expected a nonempty JSON array"
+    for r in records:
+        if not isinstance(r, dict) or any(not isinstance(r.get(k), str) for k in ("name", "type", "description", "body")):
+            return "every record needs string name, type, description and body"
+        if r["type"] not in TYPES:
+            return f"unknown type {r['type']!r}"
+    if len({slug(r["name"]) for r in records}) != len(records):
+        return "duplicate names"
+    return None
+
+
 def setup(api: ExtensionAPI) -> None:
     store = MemoryStore(api.paths.user / "memory", api.paths.project / "memory")
     api.services["memory"] = store
@@ -142,7 +156,9 @@ def setup(api: ExtensionAPI) -> None:
             if not m:
                 return ToolResult.error(f"No memory named '{name}'. Use action=save.")
             mtype = args.get("type") or m.type
-            if TYPES[mtype] != TYPES[m.type]:
+            if mtype not in TYPES:
+                return ToolResult.error(f"Memory '{m.name}' has unknown type {mtype!r}; pass one of {list(TYPES)}.")
+            if TYPES[mtype] != TYPES.get(m.type):
                 m.path.unlink(missing_ok=True)
             path = store.write(
                 m.name, mtype, args.get("description") or m.description, args.get("body") or m.body
@@ -203,13 +219,11 @@ def setup(api: ExtensionAPI) -> None:
         )
         try:
             records = parse_json_loose(msg.text())
-            assert isinstance(records, list) and records
-            assert all(
-                {"name", "type", "description", "body"} <= set(r) and r["type"] in TYPES for r in records
-            )
-            assert len({slug(r["name"]) for r in records}) == len(records)
-        except Exception as e:  # noqa: BLE001
-            api.ui.print(f"Tidy skipped: the model returned an invalid result ({e}).", "error")
+            problem = _tidy_problem(records)
+        except ValueError as e:
+            problem = str(e)
+        if problem:
+            api.ui.print(f"Tidy skipped: the model returned an invalid result ({problem}).", "error")
             return
         backup = Path(tempfile.mkdtemp(prefix="virgo-memory-"))
         for scope, d in store.dirs.items():

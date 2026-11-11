@@ -708,7 +708,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_eof(self) -> None:
         if self.active_confirmation is not None or not self.editor.text:
             self.controller.request_close()
-        elif not self.has_modal and self.active_confirmation is None:
+        elif not self.has_modal:
             self.editor.action_delete_right()
 
     def action_tools(self) -> None:
