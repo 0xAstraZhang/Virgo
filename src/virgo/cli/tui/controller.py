@@ -50,12 +50,12 @@ class RunController:
         ui.bind_signal("main", session.main.agent.signal)
 
     @property
-    def can_browse(self) -> bool:
+    def can_switch(self) -> bool:
         return not self.busy and not self.closing and not self._helpers and not self._deferred
 
     def open_session(self, path: Path | str, *, initial: str | None = None) -> bool:
         """Open a saved conversation without retaining another workspace's services."""
-        if not self.can_browse:
+        if not self.can_switch:
             return False
 
         def open_saved() -> None:
@@ -113,7 +113,7 @@ class RunController:
         return True
 
     def new_session(self, *, initial: str | None = None) -> bool:
-        if not self.can_browse:
+        if not self.can_switch:
             return False
 
         def start_new() -> None:
@@ -245,11 +245,12 @@ class RunController:
                     self.closed = True
                     self.busy = False
                 out.append(update)
-        if not self.closing and not self.busy and not self.browsing:
+        if not self.closing and not self.busy:
             if self._deferred:
+                # Browsing must not strand work that was queued before it opened.
                 text = self._deferred.popleft()
                 self._launch(lambda: self.session.prompt(text))
-            elif self.session.wakeups:
+            elif self.session.wakeups and not self.browsing:
                 self._launch(self.session.run_pending)
         return out
 

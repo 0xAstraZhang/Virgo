@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -134,12 +135,14 @@ class SessionPicker(ModalScreen[Path | str | None]):
         current_path: Path | None = None,
         grouped: bool = True,
         current_status: str = "Ready",
+        can_manage: Callable[[], bool] | None = None,
     ):
         super().__init__()
         self.sessions = sessions
         self.current_path = Path(current_path) if current_path is not None else None
         self.grouped = grouped
         self.current_status = current_status
+        self.can_manage = can_manage
         self._rows: dict[str, dict] = {}
         self._selected_id: str | None = None
 
@@ -212,6 +215,12 @@ class SessionPicker(ModalScreen[Path | str | None]):
             choices.action_first()
         self._update_selection()
 
+    def refresh_sessions(self, sessions: list[dict], current_path: Path | None) -> None:
+        selected = self.selected_path
+        self.sessions = sessions
+        self.current_path = current_path
+        self._rebuild(selected)
+
     def remove_session(self, path: Path) -> None:
         """Remove a trashed session, keeping selection next to the removed row."""
         key = str(path)
@@ -248,6 +257,22 @@ class SessionPicker(ModalScreen[Path | str | None]):
             choices.replace_option_prompt(selected_id, self._row(self._rows[selected_id], selected=True))
         self._selected_id = selected_id
 
+    def set_current_status(self, status: str) -> None:
+        if self.current_status == status:
+            return
+        self.current_status = status
+        key = str(self.current_path)
+        if key in self._rows:
+            self.query_one("#session-list", OptionList).replace_option_prompt(
+                key, self._row(self._rows[key], selected=key == self._selected_id),
+            )
+
+    def _allow_change(self) -> bool:
+        if self.can_manage is None or self.can_manage():
+            return True
+        self.notify("Current work is still active. Press Esc to return and finish or interrupt it.")
+        return False
+
     @on(OptionList.OptionHighlighted, "#session-list")
     def highlighted(self, event: OptionList.OptionHighlighted) -> None:
         self._update_selection()
@@ -255,7 +280,9 @@ class SessionPicker(ModalScreen[Path | str | None]):
     @on(OptionList.OptionSelected, "#session-list")
     def selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_id in self._rows:
-            self.dismiss(Path(event.option_id))
+            path = Path(event.option_id)
+            if path == self.current_path or self._allow_change():
+                self.dismiss(path)
 
     def action_toggle_group(self) -> None:
         path = self.selected_path
@@ -264,11 +291,12 @@ class SessionPicker(ModalScreen[Path | str | None]):
         self.post_message(self.GroupingChanged(self.grouped))
 
     def action_new(self) -> None:
-        self.dismiss("new")
+        if self._allow_change():
+            self.dismiss("new")
 
     def action_delete(self) -> None:
         path = self.selected_path
-        if path is not None:
+        if path is not None and self._allow_change():
             self.post_message(self.DeleteRequested(path))
 
     def action_cancel(self) -> None:

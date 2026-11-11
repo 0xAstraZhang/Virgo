@@ -139,7 +139,7 @@ def test_close_during_workspace_switch_stops_the_candidate(make_session, tmp_pat
             candidate.shutdown()
 
 
-def test_browsing_pauses_wakeups_and_deferred_commands(make_session):
+def test_browsing_pauses_wakeups_but_drains_deferred_commands(make_session):
     ui = FullscreenUI()
     session = make_session(faux.reply("notification handled"), ui=ui)
     controller = RunController(session, ui)
@@ -147,8 +147,9 @@ def test_browsing_pauses_wakeups_and_deferred_commands(make_session):
     controller.browsing = True
     session.notify("pending notification")
     controller._deferred.append("/effort high")
-    controller.poll()
-    assert not controller.busy and session.wakeups and session.effort == "medium"
+    pump(controller, lambda c: not c.busy and not c.pending)
+    assert controller.can_switch and session.wakeups and session.effort == "high"
+    assert not faux.CALLS["test"]
     controller.browsing = False
     pump(controller, lambda c: not c.busy and not session.wakeups and not c.pending)
     assert session.effort == "high"
@@ -166,12 +167,12 @@ def test_open_and_new_are_rejected_while_helper_is_running(make_session, project
     try:
         controller.submit("/waiting")
         assert entered.wait(3)
-        assert not controller.can_browse
+        assert not controller.can_switch
         assert not controller.open_session(path)
         assert not controller.new_session()
     finally:
         release.set()
-    pump(controller, lambda c: c.can_browse)
+    pump(controller, lambda c: c.can_switch)
     assert controller.new_session()
     pump(controller)
     assert not session.main.messages
@@ -188,10 +189,10 @@ def test_queued_commands_finish_before_session_can_be_opened(make_session, proje
     controller = RunController(session, ui)
     controller.start()
     controller._deferred.append("/effort high")
-    assert not controller.can_browse
+    assert not controller.can_switch
     assert not controller.open_session(path)
     assert not controller.new_session()
-    pump(controller, lambda c: c.can_browse)
+    pump(controller, lambda c: c.can_switch)
     assert session.effort == "high"
     assert controller.open_session(path)
     pump(controller)

@@ -326,7 +326,11 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 await pilot.pause()
                 assert question.scroll_y > 0
                 await pilot.press("ctrl+r", "shift+tab")
-                assert not app.has_modal and session.permission_mode == original_mode
+                assert isinstance(app.screen, SessionPicker) and session.permission_mode == original_mode
+                assert not answers and app.screen.current_status == "Waiting"
+                await pilot.press("escape")
+                assert not app.has_modal and picker.display and not answers
+                assert app.focused is choices
                 for width, height in ((40, 16), (120, 40), (80, 24)):
                     await pilot.resize_terminal(width, height)
                     await pilot.pause()

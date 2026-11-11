@@ -161,7 +161,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.initial = initial
         self.pick_session = pick_session
         self.session_grouped = session.settings.get("tui.sessionGrouping", "workspace") != "none"
-        self._browse_requested = False
         self._session_picker: SessionPicker | None = None
         self.exit_code = 0
         self.history = InputHistory(session.paths.user)
@@ -220,24 +219,36 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.action_sessions()
 
     def action_sessions(self) -> None:
-        if self.controller.closing or self.has_modal or self.active_input is not None or self.active_confirmation is not None:
+        if self.controller.closing or self.has_modal:
             return
-        self.hide_completions()
-        self._browse_requested = True
-        self.show_session_picker()
-
-    def show_session_picker(self) -> None:
-        if not self._browse_requested or not self.controller.can_browse or self.has_modal or self.active_input is not None or self.active_confirmation is not None:
-            return
-        self._browse_requested = False
+        if self.active_input is None:
+            self.hide_completions()
         self.controller.browsing = True
+        picker = SessionPicker(
+            self.session_browser_items(), current_path=self.session.store.path, grouped=self.session_grouped,
+            current_status=self.session_browser_status(), can_manage=self.can_change_session,
+        )
+        self._session_picker = picker
+        self.push_screen(picker, self.session_picked)
+
+    def session_browser_items(self) -> list[dict]:
         items = SessionStore.list_all(self.session.paths.user / "sessions")
         current_path = self.session.store.path
         if not self.pick_session and current_path is not None and not any(item["path"] == current_path for item in items):
             items.append(self.session.store.describe())
-        picker = SessionPicker(items, current_path=current_path, grouped=self.session_grouped)
-        self._session_picker = picker
-        self.push_screen(picker, self.session_picked)
+        return items
+
+    def can_change_session(self) -> bool:
+        return (
+            self.controller.can_switch
+            and self.active_input is None and self.active_confirmation is None
+            and not self.input_requests and not self.confirmations
+        )
+
+    def session_browser_status(self) -> str:
+        if self.active_input is not None or self.active_confirmation is not None or self.input_requests or self.confirmations:
+            return "Waiting"
+        return "Ready" if self.controller.can_switch else "Running"
 
     @on(SessionPicker.GroupingChanged)
     def session_grouping_changed(self, event: SessionPicker.GroupingChanged) -> None:
@@ -250,7 +261,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     @on(SessionPicker.DeleteRequested)
     def session_delete_requested(self, event: SessionPicker.DeleteRequested) -> None:
         picker = self._session_picker
-        if picker is None or not self.controller.can_browse:
+        if picker is None or not self.can_change_session():
             return
         current = event.path == self.session.store.path
         try:
@@ -275,20 +286,24 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 self.exit_code = 1
                 self.controller.request_close()
             else:
-                self.editor.focus()
+                self.focus_composer()
             return
         initial = self.initial if startup else None
         self.initial = None
-        if path == "new":
-            self.controller.new_session(initial=initial)
-        elif not startup and path == self.session.store.path:
-            self.editor.focus()
+        if not startup and path == self.session.store.path:
+            self.focus_composer()
             return
+        if not self.can_change_session():
+            self.focus_composer()
+            return
+        if path == "new":
+            changed = self.controller.new_session(initial=initial)
         else:
-            self.controller.open_session(path, initial=initial)
-        self.editor.clear()
-        self.history.reset()
-        self.editor.focus()
+            changed = self.controller.open_session(path, initial=initial)
+        if changed:
+            self.editor.clear()
+            self.history.reset()
+        self.focus_composer()
 
     async def poll(self) -> None:
         if self._polling or not self.is_running:
@@ -334,7 +349,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 return
             self.show_next_confirmation()
             self.show_next_input()
-            self.show_session_picker()
+            if self._session_picker is not None and self._session_picker.is_mounted:
+                if self._session_picker.current_path != self.session.store.path:
+                    self._session_picker.refresh_sessions(self.session_browser_items(), self.session.store.path)
+                self._session_picker.set_current_status(self.session_browser_status())
             self.activity.waiting = (
                 "Closing"
                 if self.controller.closing
@@ -642,10 +660,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.accept_completion()
 
     def action_escape(self) -> None:
-        if self.active_confirmation is not None:
-            self.finish_confirmation("n")
-        elif isinstance(self.screen, SessionPicker):
+        if isinstance(self.screen, SessionPicker):
             self.screen.dismiss(None)
+        elif self.active_confirmation is not None:
+            self.finish_confirmation("n")
         elif self.active_input is not None:
             self.finish_input(None)
         elif self.completion_names:

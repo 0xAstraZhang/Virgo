@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 
 import pytest
+from textual.widgets import Input, OptionList
 
 from virgo.ai.providers import faux
 from virgo.cli.tui.app import VirgoApp
@@ -101,20 +103,153 @@ def test_browser_remains_usable_when_view_preference_cannot_be_saved(make_sessio
     asyncio.run(scenario())
 
 
-def test_browser_waits_for_running_turn(make_session):
+@pytest.mark.parametrize("entry", ["/sessions", "ctrl+r"])
+@pytest.mark.parametrize("work", ["agent", "command", "helper", "queued"])
+def test_browser_opens_immediately_while_work_continues(make_session, entry, work):
+    async def scenario():
+        entered, release = threading.Event(), threading.Event()
+
+        def wait(*_args):
+            entered.set()
+            assert release.wait(15)
+            return faux.reply("finished")
+
+        ui = FullscreenUI()
+        session = make_session(wait, ui=ui, persist=True)
+        session.commands.register("waiting", wait, concurrent=work == "helper")
+        app = VirgoApp(session, ui, initial="running" if work == "agent" else "/waiting")
+        async with app.run_test(size=(80, 24)) as pilot:
+            try:
+                await wait_for(pilot, entered.is_set)
+                if work == "queued":
+                    app.controller.submit("/effort high")
+                app.editor.load_text("draft stays here" if entry == "ctrl+r" else entry)
+                await pilot.press("ctrl+r" if entry == "ctrl+r" else "enter")
+                await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
+                assert not release.is_set()
+                assert not app.controller.can_switch
+                assert app.controller.browsing
+                await pilot.press("ctrl+r", "g", "escape")
+                assert not app.has_modal and not app.controller.browsing
+                assert app.editor.text == ("draft stays here" if entry == "ctrl+r" else "")
+                assert not session.main.agent.signal.is_set()
+                release.set()
+                await wait_for(pilot, lambda: app.controller.can_switch)
+                if work == "agent":
+                    assert has_reply(app, "finished")
+                if work == "queued":
+                    assert session.effort == "high"
+                await pilot.pause()
+                assert not app.has_modal
+            finally:
+                release.set()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("work", ["agent", "command", "helper", "queued", "new"])
+def test_browser_keeps_running_work_safe_and_unlocks_after_completion(make_session, work):
+    async def scenario():
+        entered, release = threading.Event(), threading.Event()
+
+        def wait(*_args):
+            entered.set()
+            assert release.wait(15)
+            return faux.reply("finished")
+
+        ui = FullscreenUI()
+        session = make_session(faux.reply("saved answer"), wait, ui=ui, persist=True)
+        session.prompt("saved question")
+        saved = session.store.path
+        session.new_session()
+        current = session.store.path
+        session.commands.register("waiting", wait, concurrent=work == "helper")
+        app = VirgoApp(session, ui, initial="running" if work == "agent" else "/waiting")
+        async with app.run_test(size=(80, 24)) as pilot:
+            try:
+                await wait_for(pilot, entered.is_set)
+                if work in {"queued", "new"}:
+                    app.controller.submit("/new" if work == "new" else "/effort high")
+                app.editor.load_text("draft stays here")
+                await pilot.press("ctrl+r")
+                picker = app.screen
+                assert isinstance(picker, SessionPicker)
+                choices = picker.query_one(OptionList)
+                choices.highlighted = choices.get_option_index(str(current))
+                await pilot.press("n", "ctrl+x")
+                assert app.screen is picker and session.store.path == current
+                await pilot.press("enter")
+                assert not app.has_modal and app.editor.text == "draft stays here"
+                assert not session.main.agent.signal.is_set()
+                await pilot.press("ctrl+r")
+                picker = app.screen
+                choices = picker.query_one(OptionList)
+                choices.highlighted = choices.get_option_index(str(saved))
+                await pilot.press("enter")
+                assert app.screen is picker and session.store.path == current
+                assert picker.selected_path == saved
+                assert app.editor.text == "draft stays here"
+                assert choices.get_option(str(current)).prompt.status == "Running"
+                release.set()
+                await wait_for(pilot, lambda: picker.current_status == "Ready")
+                assert app.controller.can_switch and app.controller.browsing
+                if work == "queued":
+                    assert session.effort == "high" and not app.controller.pending
+                if work == "new":
+                    assert picker.current_path == session.store.path != current
+                    assert all(item["path"] != current for item in picker.sessions)
+                if work == "agent":
+                    assert has_reply(app, "finished")
+                assert picker.selected_path == saved
+                assert choices.get_option(str(session.store.path)).prompt.status == "Ready"
+                await pilot.press("enter")
+                await wait_for(pilot, lambda: session.store.path == saved and not app.controller.busy)
+                assert has_reply(app, "saved answer")
+                assert not app.has_modal and app.editor.text == ""
+            finally:
+                release.set()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["text", "choice", "preferences"])
+def test_browser_preserves_pending_input_and_focus(make_session, kind):
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(faux.reply("finished", delay=0.3), ui=ui, persist=True)
-        app = VirgoApp(session, ui, initial="running")
+        session = make_session(ui=ui, persist=True)
+        answers = []
+
+        def ask(*_args):
+            answers.append(ui.select("Pick one", ["first", "second"]) if kind == "choice" else ui.input("Name"))
+
+        session.commands.register("ask", ask)
+        app = VirgoApp(session, ui, initial="/model" if kind == "preferences" else "/ask")
         async with app.run_test(size=(80, 24)) as pilot:
-            await wait_for(pilot, lambda: session.main.agent.running)
+            await wait_for(pilot, lambda: app.active_input is not None)
+            request_id = app.active_input
+            if kind == "text":
+                app.screen_stack[0].query_one("#auth-value", Input).value = "unfinished answer"
+            elif kind == "choice":
+                await pilot.press("down")
+            focused = app.screen_stack[0].query_one({
+                "text": "#auth-value", "choice": "#completions", "preferences": "#preference-models",
+            }[kind])
+            await wait_for(pilot, lambda: app.focused is focused)
             await pilot.press("ctrl+r")
-            await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
-            assert not app.controller.busy
-            assert has_reply(app, "finished")
-            assert app.screen.sessions[0]["title"] == "running"
-            await pilot.press("escape")
-            assert not app.controller.browsing
+            assert isinstance(app.screen, SessionPicker)
+            assert app.screen.current_status == "Waiting"
+            await pilot.press("n", "ctrl+x", "escape")
+            assert not app.has_modal and not answers
+            assert app.active_input == request_id and ui.is_input_pending(request_id)
+            assert app.focused is focused and focused.display
+            if kind == "text":
+                assert focused.value == "unfinished answer"
+            elif kind == "choice":
+                assert focused.highlighted == 1
+            await pilot.press("escape" if kind == "preferences" else "enter")
+            await wait_for(pilot, lambda: app.active_input is None and not app.controller.busy)
+            if kind != "preferences":
+                assert answers == ["second" if kind == "choice" else "unfinished answer"]
 
     asyncio.run(scenario())
 
