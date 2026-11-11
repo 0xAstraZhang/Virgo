@@ -1,6 +1,5 @@
 """OpenAI Chat Completions adapter (works with any OpenAI-compatible endpoint).
 
-Requires the optional dependency: ``uv sync --extra openai``.
 Provider options (settings.providers.<name>): ``sendReasoning`` (echo reasoning_content back),
 ``maxTokensField`` ("max_tokens" | "max_completion_tokens").
 """
@@ -222,6 +221,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     yield StreamEvent("toolcall_delta", out, ci, piece)
             if ch.finish_reason:
                 finish = ch.finish_reason
+        if think_i is not None:
+            yield StreamEvent("thinking_end", out, think_i)
         for ci, buf in calls.values():
             out.content[ci].arguments = parse_tool_arguments(buf)
             yield StreamEvent("toolcall_end", out, ci)

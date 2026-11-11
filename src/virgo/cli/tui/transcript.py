@@ -41,6 +41,21 @@ def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
+def _same_content(a, b) -> bool:
+    if type(a) is not type(b) or a != b:
+        return False
+    if isinstance(a, Text):  # Text equality compares only plain text and spans
+        return (a.style, a.justify, a.overflow, a.no_wrap) == (b.style, b.justify, b.overflow, b.no_wrap)
+    return True
+
+
+def update_static(widget: Static, content, *, layout: bool = True) -> None:
+    """Skip no-op updates: ``Static.update`` always refreshes, and a layout refresh
+    re-arranges every widget on screen, so its cost grows with the transcript."""
+    if not _same_content(widget.content, content):
+        widget.update(content, layout=layout)
+
+
 def _is_run_start(entry: dict) -> bool:
     return entry.get("type") == "custom" and entry.get("kind") == "transcript_run_start"
 
@@ -73,7 +88,6 @@ class EventView(Foldable):
         self.expanded = False
         self.header = FoldHeader("", markup=False)
         self.output = Static("", classes="output", markup=False)
-        self._output_text: str | None = None
         self.set_class(kind in ("tool_call", "tool_result"), "tool")
 
     def compose(self) -> ComposeResult:
@@ -107,11 +121,8 @@ class EventView(Foldable):
             title.truncate(max(0, width - 3), overflow="crop")
             title.append("." * min(3, width))
         # Headers are one fixed line, so new text never needs a layout pass.
-        self.header.update(title, layout=False)
-        output = self.text or "(no output)"
-        if output != self._output_text:
-            self._output_text = output
-            self.output.update(output)
+        update_static(self.header, title, layout=False)
+        update_static(self.output, self.text or "(no output)")
         self.output.display = self.expanded
 
     def set_text(self, text: str) -> None:
@@ -252,7 +263,9 @@ class AssistantView(Foldable):
             title.append(self.activity)
         else:
             title.append(f"Thinking · {count} events")
-        self.thought_header.update(title, layout=False)
+        # The header is one row at full width, so its live activity label (redrawn
+        # every frame during a run) never needs a layout pass.
+        update_static(self.thought_header, title, layout=False)
         self.thought_header.set_class(self.activity is not None, "active")
         self.thought_body.display = bool(self.show_thinking and count)
 

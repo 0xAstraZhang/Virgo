@@ -28,8 +28,9 @@ from ..ai.types import (
     UserMessage,
     message_from_dict,
     message_to_dict,
-    text_of,
 )
+
+_USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
 
 SUMMARY_PREFIX = (
     "<conversation_summary>\nThe earlier part of this conversation was compacted into the summary below. "
@@ -58,6 +59,25 @@ def _created_at(header: dict, fallback: float) -> float:
         return fallback
 
 
+def _title_and_count(entries: list) -> tuple[str, int]:
+    """The first genuine user request and the number of saved messages.
+
+    Raises TypeError for malformed entries; catalog readers treat that file as unreadable.
+    """
+    title, count = "", 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise TypeError("session entry is not an object")
+        if entry.get("type") == "message":
+            message = entry["message"]
+            if not isinstance(message, dict):
+                raise TypeError("saved message is not an object")
+            count += 1
+            if not title and message.get("role") == "user" and not message.get("kind"):
+                title = " ".join(text_of_dict(message).split())[:80]
+    return title, count
+
+
 def _session_info(path: Path) -> dict | None:
     """Read one catalog row, tolerating a corrupt or concurrently removed file."""
     try:
@@ -69,17 +89,7 @@ def _session_info(path: Path) -> dict | None:
         cwd = header.get("cwd", ".")
         if not isinstance(cwd, str):
             return None
-        title, count = "", 0
-        for entry in records[1:]:
-            if not isinstance(entry, dict):
-                return None
-            if entry.get("type") == "message":
-                message = entry["message"]
-                if not isinstance(message, dict):
-                    return None
-                count += 1
-                if not title and message.get("role") == "user" and not message.get("kind"):
-                    title = " ".join(text_of_dict(message).split())[:80]
+        title, count = _title_and_count(records[1:])
         return {
             "path": path,
             "id": header.get("id"),
@@ -115,6 +125,8 @@ def _workspace_created_at(directory: Path, items: list[dict] | None = None) -> f
 def _register_workspace(directory: Path, cwd: Path) -> None:
     """Keep creation order independent of later session writes and removal."""
     try:
+        if (directory / ".workspace.json").exists():
+            return  # Already registered; this runs on every session write.
         directory.mkdir(parents=True, exist_ok=True)
         metadata = {"version": 1, "cwd": str(cwd), "created_at": _workspace_created_at(directory)}
         with (directory / ".workspace.json").open("x", encoding="utf-8") as handle:
@@ -140,8 +152,9 @@ class SessionStore:
         self.leaf: str | None = self.entries[-1]["id"] if self.entries else None
         self.created_at = time.time()
         self.updated_at = self.created_at
-        self._header_written = bool(path and path.exists())
+        self._header_written = self.path is not None and self.path.exists()
         self._lock = threading.RLock()
+        self._usage: tuple[str | None, dict[str, int]] = (None, dict.fromkeys(_USAGE_KEYS, 0))
 
     # -- construction ---------------------------------------------------------
     @classmethod
@@ -194,13 +207,7 @@ class SessionStore:
         """Catalog row for the active store, including an unsaved new session."""
         item = _session_info(self.path) if self.path is not None else None
         if item is None:
-            title, count = "", 0
-            for entry in self.entries:
-                if entry.get("type") == "message":
-                    count += 1
-                    message = entry["message"]
-                    if not title and message.get("role") == "user" and not message.get("kind"):
-                        title = " ".join(text_of_dict(message).split())[:80]
+            title, count = _title_and_count(self.entries)
             item = {
                 "path": self.path,
                 "id": self.id,
@@ -303,9 +310,24 @@ class SessionStore:
         return path
 
     def total_usage(self) -> dict[str, int]:
-        """Main messages plus auxiliary calls on this branch, including pre-compaction history."""
-        totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-        for entry in self.branch():
+        """Main messages plus auxiliary calls on this branch, including pre-compaction history.
+
+        The status bar asks for this twice a second. Entries are append-only, so
+        when the branch has grown from the last counted leaf only the new entries
+        are added; after a branch switch the whole branch is counted again.
+        """
+        counted_leaf, counted = self._usage
+        leaf = self.leaf
+        new, cur = [], leaf
+        while cur is not None and cur != counted_leaf:
+            entry = self.by_id.get(cur)
+            if entry is None:
+                break
+            new.append(entry)
+            cur = entry.get("parent_id")
+        # Without the counted leaf among the ancestors, `new` already holds the whole branch.
+        totals = dict(counted) if cur == counted_leaf else dict.fromkeys(_USAGE_KEYS, 0)
+        for entry in new:
             message = entry.get("message", {})
             if message.get("role") == "assistant":
                 usage = message.get("usage", {})
@@ -315,7 +337,8 @@ class SessionStore:
                 continue
             for key in totals:
                 totals[key] += usage.get(key, 0)
-        return totals
+        self._usage = (leaf, totals)  # one assignment: concurrent readers see a consistent pair
+        return dict(totals)
 
     def build_context(self) -> tuple[list, list]:
         """Messages to send for the active branch, with their entry ids."""
@@ -371,4 +394,4 @@ def text_of_dict(m: dict) -> str:
     return " ".join(b.get("text", "") for b in c or [] if b.get("type") == "text")
 
 
-__all__ = ["SessionStore", "summary_message", "text_of"]
+__all__ = ["SessionStore", "summary_message"]

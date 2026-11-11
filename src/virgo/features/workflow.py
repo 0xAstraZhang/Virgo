@@ -184,15 +184,13 @@ class Context:
         subs = self.session.services.get("subagents")
         if subs is None:
             raise WorkflowError("tools in workflows need the subagent feature")
-        type_name = "explore" if tools == "read-only" else "general"
+        agent_type = "explore" if tools == "read-only" else "general"
         if isinstance(tools, list):
             from .subagent import AgentType
 
-            subs.types.setdefault(
-                f"wf:{','.join(tools)}", AgentType(f"wf:{','.join(tools)}", "workflow step", tools=tools)
-            )
-            type_name = f"wf:{','.join(tools)}"
-        res = subs.run(prompt, type_name, f"workflow {self.run_id}", self.signal)
+            # Ad-hoc step types stay out of the registry the lead's system prompt lists.
+            agent_type = AgentType(f"wf:{','.join(tools)}", "workflow step", tools=tools)
+        res = subs.run(prompt, agent_type, f"workflow {self.run_id}", self.signal)
         if res.is_error:
             raise WorkflowError(res.as_text())
         return res.as_text()
@@ -221,24 +219,29 @@ def run_workflow(
     api: ExtensionAPI, name: str | None, args: dict | None, resume: str | None, signal: threading.Event
 ) -> dict:
     runs = api.paths.project / "runs"
+    flows = discover(api)
+
+    def check(workflow) -> None:
+        if workflow not in flows:
+            raise WorkflowError(f"unknown workflow {workflow!r}. Available: {', '.join(flows) or 'none'}")
+
     if resume:
         path = runs / f"{resume}.jsonl"
-        if not path.exists():
+        if Path(resume).name != resume or not path.exists():
             raise WorkflowError(f"no run {resume}")
         journal = Journal.open(path)
         name = journal.header.get("workflow")
+        check(name)
         if args and args != journal.header.get("args"):
             raise WorkflowError("resume uses the original args; omit args")
         args, run_id = journal.header.get("args") or {}, resume
     else:
+        check(name)  # before creating a journal, so a typo leaves no run file
         run_id = f"{name}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
         journal = Journal.open(
             runs / f"{run_id}.jsonl", {"workflow": name, "args": args or {}, "started": time.time()}
         )
         args = args or {}
-    flows = discover(api)
-    if name not in flows:
-        raise WorkflowError(f"unknown workflow {name!r}. Available: {', '.join(flows) or 'none'}")
     mod = load_module(flows[name])
     ctx = Context(api, run_id, journal, args, signal)
     try:

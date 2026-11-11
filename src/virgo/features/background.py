@@ -33,6 +33,7 @@ class Job:
     result: str = ""
     signal: threading.Event = field(default_factory=threading.Event)
     proc: object = None
+    reported: bool = False  # its completion notification has been delivered
 
     def elapsed(self) -> str:
         return f"{(self.ended or time.time()) - self.started:.0f}s"
@@ -54,11 +55,25 @@ class JobManager:
     def active(self) -> list[Job]:
         return [j for j in self.jobs.values() if j.status == "running"]
 
+    def unreported(self) -> list[Job]:
+        """Running jobs, and finished ones whose notification is still being delivered."""
+        return [j for j in self.jobs.values() if not j.reported]
+
     def start_command(self, command: str, cwd: Path, timeout: float | None = None) -> Job:
         job = self._new("bash", command)
-        job.log = outputs_dir(cwd) / f"{job.id}-{int(job.started)}.log"
-        fh = open(job.log, "wb")  # noqa: SIM115 - closed by the watcher thread
-        proc = spawn(command, cwd, stdout=fh)
+        fh = None
+        try:
+            job.log = outputs_dir(cwd) / f"{job.id}-{int(job.started)}.log"
+            fh = open(job.log, "wb")  # noqa: SIM115 - closed by the watcher thread
+            proc = spawn(command, cwd, stdout=fh)
+        except BaseException:
+            # A job that never started must not count as pending work forever.
+            if fh is not None:
+                fh.close()
+                job.log.unlink(missing_ok=True)
+            with self._lock:
+                self.jobs.pop(job.id, None)
+            raise
         job.proc = proc
 
         def watch():
@@ -71,10 +86,9 @@ class JobManager:
             proc.wait()
             fh.close()
             job.exit_code = proc.returncode
-            job.status = (
-                "killed" if job.signal.is_set() else ("completed" if proc.returncode == 0 else "failed")
+            self._finish(
+                job, "killed" if job.signal.is_set() else ("completed" if proc.returncode == 0 else "failed")
             )
-            self._finish(job)
 
         threading.Thread(target=watch, daemon=True, name=f"virgo-{job.id}").start()
         return job
@@ -88,11 +102,11 @@ class JobManager:
                 text = res if isinstance(res, str) else res.as_text()
                 failed = not isinstance(res, str) and res.is_error
                 job.result = text
-                job.status = "killed" if job.signal.is_set() else ("failed" if failed else "completed")
+                status = "killed" if job.signal.is_set() else ("failed" if failed else "completed")
             except Exception as e:  # noqa: BLE001
                 job.result = f"{type(e).__name__}: {e}"
-                job.status = "failed"
-            self._finish(job)
+                status = "failed"
+            self._finish(job, status)
 
         threading.Thread(target=run, daemon=True, name=f"virgo-{job.id}").start()
         return job
@@ -110,18 +124,24 @@ class JobManager:
         if job.proc is not None:
             kill_tree(job.proc)
 
-    def _finish(self, job: Job) -> None:
+    def _finish(self, job: Job, status: str) -> None:
+        job.status = status
         job.ended = time.time()
-        out = self.output(job).strip()
-        tail = out[-1200:] if len(out) > 1200 else out
-        code = f", exit code {job.exit_code}" if job.exit_code is not None else ""
-        text = (
-            f"Background job {job.id} ({job.kind}: {job.label[:80]}) {job.status}{code} after {job.elapsed()}.\n"
-            f"{'Last output' if job.kind == 'bash' else 'Result'}:\n{tail or '(no output)'}"
-        )
-        if len(out) > 1200:
-            text += f"\n[{len(out)} chars total — use job_output id={job.id} for all of it]"
-        self.api.notify(text, mode="steer", source="jobs")
+        try:
+            out = self.output(job).strip()
+            tail = out[-1200:] if len(out) > 1200 else out
+            code = f", exit code {job.exit_code}" if job.exit_code is not None else ""
+            text = (
+                f"Background job {job.id} ({job.kind}: {job.label[:80]}) {job.status}{code} after {job.elapsed()}.\n"
+                f"{'Last output' if job.kind == 'bash' else 'Result'}:\n{tail or '(no output)'}"
+            )
+            if len(out) > 1200:
+                text += f"\n[{len(out)} chars total — use job_output id={job.id} for all of it]"
+            self.api.notify(text, mode="steer", source="jobs")
+        finally:
+            # Idle detection waits for this flag, not the status: the
+            # notification must be queued before print mode can finish.
+            job.reported = True
 
 
 def setup(api: ExtensionAPI) -> None:
@@ -223,7 +243,7 @@ def setup(api: ExtensionAPI) -> None:
         )
 
     api.register_command("jobs", cmd, "list background jobs", concurrent=True)
-    api.on("pending_work", lambda s: bool(jobs.active()))
+    api.on("pending_work", lambda s: bool(jobs.unreported()))
 
     def shutdown(session):
         for j in jobs.active():

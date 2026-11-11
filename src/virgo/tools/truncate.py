@@ -60,14 +60,13 @@ def save_output(text: str, cwd: Path, prefix: str) -> Path:
 
 def budget(text: str, cwd: Path, prefix: str, keep: str = "head") -> str:
     """Bound `text`; if cut, save the full text and append a pointer to it."""
-    if len(text.encode("utf-8")) <= MAX_BYTES and text.count("\n") < MAX_LINES:
-        return text
     fn = truncate_tail if keep == "tail" else truncate_head
-    shown, _ = fn(text)
+    shown, cut = fn(text)
+    if not cut:
+        return text
     path = save_output(text, cwd, prefix)
-    total = text.count("\n") + 1
     where = "last" if keep == "tail" else "first"
     return (
-        f"{shown.rstrip()}\n\n[Output truncated: showing the {where} {shown.count(chr(10)) + 1} of {total} lines. "
-        f"Full output saved to {path} — use read with offset/limit or grep to inspect it.]"
+        f"{shown.rstrip()}\n\n[Output truncated: showing the {where} {len(shown.splitlines())} of "
+        f"{len(text.splitlines())} lines. Full output saved to {path} — use read with offset/limit or grep to inspect it.]"
     )

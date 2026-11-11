@@ -47,7 +47,7 @@ class MCPClient:
     ):
         self.name = name
         self.command = command
-        self.args = [_expand(a) for a in args or []]
+        self.args = [_expand(str(a)) for a in args or []]
         self.env = {**os.environ, **{k: _expand(str(v)) for k, v in (env or {}).items()}}
         self.cwd = cwd
         self.proc: subprocess.Popen | None = None
@@ -77,6 +77,8 @@ class MCPClient:
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if not isinstance(msg, dict):
                 continue
             if "id" in msg and ("result" in msg or "error" in msg):
                 with self._cv:
@@ -112,7 +114,10 @@ class MCPClient:
                 f"{self.name}: {'timeout' if not ok else self.error or 'no response'} for {method}"
             )
         if "error" in msg:
-            raise MCPError(f"{self.name}: {msg['error'].get('message', msg['error'])}")
+            error = msg["error"]
+            raise MCPError(f"{self.name}: {error.get('message', error) if isinstance(error, dict) else error}")
+        if not isinstance(msg["result"], dict):
+            raise MCPError(f"{self.name}: invalid result for {method}")
         return msg["result"]
 
     def notify(self, method: str, params: dict | None = None) -> None:
@@ -135,7 +140,10 @@ class MCPClient:
         tools, cursor = [], None
         while True:
             page = self.request("tools/list", {"cursor": cursor} if cursor else {}, timeout)
-            tools.extend(page.get("tools", []))
+            listed = page.get("tools", [])
+            if not isinstance(listed, list):
+                raise MCPError(f"{self.name}: invalid tools/list result")
+            tools.extend(t for t in listed if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"])
             cursor = page.get("nextCursor")
             if not cursor:
                 break
@@ -185,8 +193,12 @@ def load_config(api: ExtensionAPI) -> dict:
     for f in api.paths.both("mcp.json"):
         if f.is_file():
             try:
-                servers.update(json.loads(f.read_text(encoding="utf-8")).get("mcpServers", {}))
-            except json.JSONDecodeError as e:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                listed = data.get("mcpServers", {}) if isinstance(data, dict) else None
+                if not isinstance(listed, dict):
+                    raise ValueError("mcpServers must be an object")
+                servers.update(listed)
+            except ValueError as e:  # includes JSONDecodeError
                 api.ui.print(f"[mcp: invalid {f}: {e}]", "error")
     servers.update(api.settings.get("mcpServers", {}) or {})
     return {
@@ -234,8 +246,8 @@ def setup(api: ExtensionAPI) -> None:
             c = MCPClient(name, conf["command"], conf.get("args"), conf.get("env"), api.session.cwd)
             try:
                 c.connect(timeout=float(conf.get("timeout", 30)))
-            except (MCPError, OSError) as e:
-                c.error = str(e)
+            except Exception as e:  # noqa: BLE001 - one broken server must not stop the session
+                c.error = str(e) or type(e).__name__
                 c.close()
             return c
 

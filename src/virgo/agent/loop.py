@@ -111,7 +111,7 @@ def _stream_assistant(
         if ev.type not in ("start", "done", "error"):
             emit(AgentEvent("message_update", cfg.name, message=ev.partial, stream_event=ev))
     msg = stream.result()
-    if signal.is_set() and msg.stop_reason not in ("error",):
+    if signal.is_set() and msg.stop_reason != "error":
         msg.stop_reason = "aborted"
     return msg
 

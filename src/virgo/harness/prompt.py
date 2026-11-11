@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..agent.types import AgentTool
     from .session import AgentSession
 
 IDENTITY = {
@@ -67,13 +68,16 @@ def _first_file(paths: list[Path]) -> str | None:
 
 
 def build_system(
-    session: AgentSession, role: str = "main", extra: str | None = None, cwd: Path | None = None
+    session: AgentSession, role: str = "main", extra: str | None = None, cwd: Path | None = None,
+    tools: list[AgentTool] | None = None,
 ) -> str:
+    """``tools`` lists the conversation's actual tool set (default: every tool of ``role``)."""
     cwd = Path(cwd or session.cwd)
     parts: list[str] = []
     custom = _first_file(session.paths.both("SYSTEM.md")) if role == "main" else None
     parts.append(custom or IDENTITY.get(role, IDENTITY["main"]))
-    tools = session.tools_for(role)
+    if tools is None:
+        tools = session.tools_for(role)
     if tools:
         lines = [f"- {t.name}: {t.snippet or t.description.split('.')[0]}" for t in tools]
         parts.append("<tools>\n" + "\n".join(lines) + "\n</tools>")
