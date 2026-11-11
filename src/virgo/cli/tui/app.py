@@ -26,7 +26,7 @@ from .activity import RunActivity
 from .bridge import FullscreenUI
 from .choices import ChoiceList, CommandChoice
 from .controller import RunController
-from .dialogs import ApprovalScreen, SessionPicker
+from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
@@ -131,18 +131,13 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     ToastRack { dock: top; margin: 0 1; }
     Toast { width: auto; max-width: 50%; padding: 0 1; margin: 0;
         border: none; color: #FFFFFF; background: #7C3AED; }
-    OptionList, Button { background: $background; color: $foreground; }
+    OptionList { background: $background; color: $foreground; }
     OptionList > .option-list--option-highlighted { background: $background;
         color: $foreground; text-style: reverse; }
+    #approval-options > .option-list--option-highlighted,
+    #approval-options:focus > .option-list--option-highlighted {
+        background: $background; color: #7C3AED; text-style: bold; }
     ModalScreen { align: center middle; background: $background; }
-    .dialog { width: 76; max-width: 95%; height: auto; max-height: 90%;
-        padding: 1 2; border: round #7C3AED; background: $background; }
-    .dialog > Static { height: auto; margin-bottom: 1; }
-    .question { height: auto; max-height: 12; margin-bottom: 1; }
-    .question Static { height: auto; }
-    .dialog-buttons { height: auto; }
-    .dialog-buttons Button { width: 1fr; min-width: 8; padding: 0; }
-    Button:focus { text-style: reverse; }
     """
     BINDINGS = [
         Binding("ctrl+c", "interrupt", priority=True, show=False),
@@ -193,6 +188,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         with Vertical(id="dock"):
             yield Static("↓ Latest message", id="jump")
             yield Static("", id="pending", markup=False)
+            yield ApprovalPicker(id="approval")
             yield PreferencePicker(id="preferences")
             yield Static("", id="auth-question", markup=False)
             yield ChoiceList(id="completions")
@@ -224,14 +220,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.action_sessions()
 
     def action_sessions(self) -> None:
-        if self.controller.closing or self.has_modal or self.active_input is not None:
+        if self.controller.closing or self.has_modal or self.active_input is not None or self.active_confirmation is not None:
             return
         self.hide_completions()
         self._browse_requested = True
         self.show_session_picker()
 
     def show_session_picker(self) -> None:
-        if not self._browse_requested or not self.controller.can_browse or self.has_modal or self.active_input is not None:
+        if not self._browse_requested or not self.controller.can_browse or self.has_modal or self.active_input is not None or self.active_confirmation is not None:
             return
         self._browse_requested = False
         self.controller.browsing = True
@@ -324,8 +320,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     self.confirmations.append(update.payload)
                 elif update.kind == "confirmation_cancelled":
                     self.confirmations = deque(c for c in self.confirmations if c.id != update.payload)
-                    if self.active_confirmation == update.payload and isinstance(self.screen, ApprovalScreen):
-                        self.screen.dismiss(None)
+                    self.finish_confirmation(None, update.payload)
                 elif update.kind == "input":
                     self.input_requests.append(update.payload)
                 elif update.kind == "input_cancelled":
@@ -357,6 +352,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 self.transcript.max_scroll_y > 0
                 and not self.transcript.follow_latest
                 and self.transcript.display
+                and self.active_confirmation is None
                 and not (self.input_request and self.input_request.preferences)
             )
             pending = self.controller.pending
@@ -373,20 +369,43 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self._polling = False
 
     def show_next_confirmation(self) -> None:
-        if self.controller.closing or self.has_modal or not self.confirmations:
+        if self.controller.closing or self.has_modal or self.active_confirmation is not None or self.active_input is not None:
             return
-        confirmation = self.confirmations.popleft()
+        while self.confirmations:
+            confirmation = self.confirmations.popleft()
+            if self.ui.is_confirmation_pending(confirmation.id):
+                break
+        else:
+            return
         self.active_confirmation = confirmation.id
+        self.hide_completions()
+        root = self.screen_stack[0]
+        for selector in ("#editor", "#metrics", "#status", "#hints", "#jump"):
+            root.query_one(selector).display = False
+        root.query_one(ApprovalPicker).open(confirmation)
+        self.update_status()
 
-        def answered(answer: str | None) -> None:
-            self.ui.resolve_confirmation(confirmation.id, answer)
-            self.active_confirmation = None
-            self.focus_composer()
+    def finish_confirmation(self, answer: str | None, confirmation_id: int | None = None) -> None:
+        request_id = self.active_confirmation
+        if request_id is None or (confirmation_id is not None and request_id != confirmation_id):
+            return
+        self.active_confirmation = None
+        root = self.screen_stack[0]
+        root.query_one(ApprovalPicker).close()
+        for selector in ("#editor", "#metrics", "#status", "#hints"):
+            root.query_one(selector).display = True
+        self.ui.resolve_confirmation(request_id, answer)
+        self.update_completions()
+        self.focus_composer()
+        self.update_status()
 
-        self.push_screen(ApprovalScreen(confirmation), answered)
+    @on(ApprovalPicker.Answered)
+    def approval_answered(self, event: ApprovalPicker.Answered) -> None:
+        event.stop()
+        self.finish_confirmation(event.answer, event.confirmation.id)
 
     def show_next_input(self) -> None:
-        if self.controller.closing or self.has_modal or self.active_input is not None:
+        if self.controller.closing or self.has_modal or self.active_input is not None or self.active_confirmation is not None:
             return
         while self.input_requests:
             request = self.input_requests.popleft()
@@ -426,7 +445,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def focus_composer(self) -> None:
         if self.has_modal:
             return
-        if self.input_request is None:
+        if self.active_confirmation is not None:
+            self.screen_stack[0].query_one(ApprovalPicker).focus_control()
+        elif self.input_request is None:
             self.editor.focus()
         elif self.input_request.preferences is not None:
             self.screen_stack[0].query_one(PreferencePicker).focus_control()
@@ -571,7 +592,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.update_completions()
 
     def update_completions(self) -> None:
-        if self.active_input is not None:
+        if self.active_input is not None or self.active_confirmation is not None:
             return
         text = self.editor.text
         self.completion_query = text
@@ -621,8 +642,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.accept_completion()
 
     def action_escape(self) -> None:
-        if isinstance(self.screen, ApprovalScreen):
-            self.screen.dismiss("n")
+        if self.active_confirmation is not None:
+            self.finish_confirmation("n")
         elif isinstance(self.screen, SessionPicker):
             self.screen.dismiss(None)
         elif self.active_input is not None:
@@ -634,7 +655,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.controller.abort()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if (self.has_modal or self.active_input is not None) and action in {"page", "top", "tools", "thinking", "cycle_permissions"}:
+        if (self.has_modal or self.active_input is not None or self.active_confirmation is not None) and action in {"page", "top", "tools", "thinking", "cycle_permissions"}:
             return False
         return True
 
@@ -644,7 +665,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.exit(self.exit_code)
         elif self.controller.busy:
             self.controller.abort()
-        elif self.has_modal:
+        elif self.has_modal or self.active_confirmation is not None:
             self.action_escape()
         elif self.editor.text:
             self.editor.clear()
@@ -666,9 +687,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.update_status()
 
     def action_eof(self) -> None:
-        if not self.editor.text:
+        if self.active_confirmation is not None or not self.editor.text:
             self.controller.request_close()
-        elif not self.has_modal:
+        elif not self.has_modal and self.active_confirmation is None:
             self.editor.action_delete_right()
 
     def action_tools(self) -> None:
@@ -695,7 +716,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def jump_clicked(self) -> None:
         if not self.has_modal:
             self.transcript.go_latest()
-            self.editor.focus()
+            self.focus_composer()
 
     def on_unmount(self) -> None:
         if hasattr(self, "_poll_timer"):

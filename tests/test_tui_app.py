@@ -11,13 +11,13 @@ import pytest
 from rich.cells import cell_len
 from textual import events
 from textual.color import Color
-from textual.widgets import Static
+from textual.widgets import OptionList, Static
 
 from virgo.ai.providers import faux
 from virgo.ai.types import UserMessage
 from virgo.cli.tui.app import VirgoApp
-from virgo.cli.tui.bridge import Confirmation, FullscreenUI
-from virgo.cli.tui.dialogs import ApprovalScreen, SessionPicker
+from virgo.cli.tui.bridge import FullscreenUI
+from virgo.cli.tui.dialogs import ApprovalPicker, SessionPicker
 from virgo.cli.tui.transcript import AssistantView
 from virgo.features import permission as permission_module
 from virgo.features.permission import ReviewDecision
@@ -242,7 +242,12 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
         (("n",), "n"),
         (("escape",), "n"),
         (("a",), "a"),
+        (("1",), "y"),
+        (("2",), "n"),
+        (("3",), "a"),
         (("enter",), "n"),
+        (("up", "enter"), "y"),
+        (("down", "enter"), "a"),
         (("left", "enter"), "y"),
         (("right", "enter"), "a"),
         (("left", "left", "left", "enter"), "n"),
@@ -262,14 +267,17 @@ def test_permission_answers_control_real_file_writes(make_session, project, monk
         session = make_session(faux.reply(tools=calls), faux.reply("finished"), ui=ui, mode="auto-review")
         app = VirgoApp(session, ui, initial="write files")
         async with app.run_test(size=(80, 24)) as pilot:
-            await wait_for(pilot, lambda: isinstance(app.screen, ApprovalScreen) and app.focused is not None)
-            assert app.focused.id == "deny"
-            assert "approved.txt" in app.screen.confirmation.question
+            picker = app.query_one(ApprovalPicker)
+            await wait_for(pilot, lambda: picker.display and app.focused is not None)
+            assert not app.has_modal
+            assert picker.query_one("#approval-options", OptionList).highlighted == 1
+            assert "approved.txt" in picker.confirmation.question
             assert not (outside / "approved.txt").exists()
             await pilot.press(*keys)
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
             assert (outside / "approved.txt").exists() is (answer != "n")
             assert not app.has_modal
+            assert not picker.display and app.focused is app.editor
             if answer == "a":
                 assert (outside / "approved.txt").read_text() == "first"
                 assert session.services["permissions"].session_rules
@@ -277,42 +285,154 @@ def test_permission_answers_control_real_file_writes(make_session, project, monk
     asyncio.run(scenario())
 
 
-def test_permission_arrows_cycle_buttons_without_answering_or_focusing_question(make_session):
+def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("Earlier response."), ui=ui)
+        app = VirgoApp(session, ui, initial="hello")
+        answers = []
+        worker = threading.Thread(
+            target=lambda: answers.append(ui.confirm("Long permission question\n" * 30)),
+            daemon=True,
+        )
+        try:
+            async with app.run_test(size=(80, 24)) as pilot:
+                await wait_for(pilot, lambda: has_reply(app, "Earlier response.") and not app.controller.busy)
+                draft = "Keep this draft\n第二行"
+                app.editor.load_text(draft)
+                original_mode = session.permission_mode
+                worker.start()
+                picker = app.query_one(ApprovalPicker)
+                await wait_for(pilot, lambda: picker.display)
+                await pilot.pause()
+                choices = picker.query_one("#approval-options", OptionList)
+                question = picker.query_one("#approval-question")
+                assert len(app.screen_stack) == 1
+                assert app.transcript.display and has_reply(app, "Earlier response.")
+                assert not app.editor.display
+                assert choices.highlighted == 1 and question.max_scroll_y > 0
+                highlight = choices.get_component_styles("option-list--option-highlighted")
+                assert highlight.color == Color.parse("#7C3AED")
+                assert highlight.text_style.bold and not highlight.text_style.reverse
+                for key, selected in (
+                    ("up", 0), ("up", 2), ("up", 1),
+                    ("down", 2), ("down", 0), ("down", 1),
+                    ("left", 0), ("right", 1),
+                ):
+                    await pilot.press(key)
+                    assert choices.highlighted == selected
+                    assert picker.display and not answers
+                await pilot.press("pagedown")
+                await pilot.pause()
+                assert question.scroll_y > 0
+                await pilot.press("ctrl+r", "shift+tab")
+                assert not app.has_modal and session.permission_mode == original_mode
+                for width, height in ((40, 16), (120, 40), (80, 24)):
+                    await pilot.resize_terminal(width, height)
+                    await pilot.pause()
+                    assert app.transcript.region.height > 0
+                    assert picker.region.bottom <= height
+                    assert choices.region.bottom <= height
+                    assert choices.region.width <= width
+                    assert app.editor.text == draft
+                choices.focus()
+                await pilot.press("escape")
+                await wait_for(pilot, lambda: answers == ["n"] and not picker.display)
+                assert app.editor.display and app.focused is app.editor
+                assert app.editor.text == draft
+        finally:
+            ui.close()
+            if worker.ident is not None:
+                worker.join(timeout=1)
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_inline_approval_advances_queue_and_ignores_stale_answer(make_session):
     async def scenario():
         ui = FullscreenUI()
         app = VirgoApp(make_session(ui=ui), ui)
-        async with app.run_test(size=(80, 24)) as pilot:
-            screen = ApprovalScreen(Confirmation(1, "Long permission question\n" * 30, "main"))
-            answers = []
-            await app.push_screen(screen, answers.append)
-            await pilot.pause()
-            assert app.focused.id == "deny"
-            question = screen.query_one(".question")
-            assert question.max_scroll_y > 0
-            for key, focused in (
-                ("left", "allow"),
-                ("left", "always"),
-                ("left", "deny"),
-                ("right", "always"),
-                ("right", "allow"),
-                ("right", "deny"),
-            ):
-                await pilot.press(key)
-                assert app.focused.id == focused
-                assert app.screen is screen and not answers
-            question.focus()
-            await pilot.press("down")
-            await pilot.pause()
-            assert question.scroll_y > 0
-            await pilot.press("right")
-            assert app.focused.id == "allow"
-            await pilot.press("tab")
-            assert app.focused.id == "deny"
-            await pilot.press("shift+tab")
-            assert app.focused.id == "allow"
-            assert not answers
-            await pilot.press("escape")
-            assert answers == ["n"]
+        answers = {}
+        workers = [
+            threading.Thread(
+                target=lambda name=name: answers.update({name: ui.confirm(f"Allow {name}?", name)}),
+                daemon=True,
+            )
+            for name in ("main", "helper")
+        ]
+        try:
+            async with app.run_test(size=(80, 24)) as pilot:
+                picker = app.query_one(ApprovalPicker)
+                workers[0].start()
+                await wait_for(pilot, lambda: picker.display)
+                first = picker.confirmation
+                workers[1].start()
+                await wait_for(pilot, lambda: len(app.confirmations) == 1)
+                assert ui.resolve_confirmation(first.id, None)
+                await wait_for(pilot, lambda: picker.confirmation is not None and picker.confirmation.agent == "helper")
+                second = picker.confirmation
+                assert len(app.screen_stack) == 1
+                picker.post_message(ApprovalPicker.Answered(first, "y"))
+                await pilot.pause()
+                assert app.active_confirmation == second.id and ui.is_confirmation_pending(second.id)
+                assert answers == {"main": None}
+                await pilot.press("y")
+                await wait_for(pilot, lambda: answers == {"main": None, "helper": "y"})
+                assert not picker.display and app.active_confirmation is None
+                assert app.focused is app.editor
+        finally:
+            ui.close()
+            for worker in workers:
+                if worker.ident is not None:
+                    worker.join(timeout=1)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("approval_first", [False, True])
+def test_inline_approval_and_input_prompts_are_serialized(make_session, approval_first):
+    async def scenario():
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        answers = {}
+        workers = {
+            "approval": threading.Thread(
+                target=lambda: answers.update(approval=ui.confirm("Allow helper?", "helper")), daemon=True,
+            ),
+            "input": threading.Thread(
+                target=lambda: answers.update(input=ui.select("Pick one", ["first", "second"])), daemon=True,
+            ),
+        }
+        try:
+            async with app.run_test(size=(80, 24)) as pilot:
+                picker = app.query_one(ApprovalPicker)
+                first, second = ("approval", "input") if approval_first else ("input", "approval")
+                workers[first].start()
+                await wait_for(pilot, lambda: app.active_confirmation is not None or app.active_input is not None)
+                workers[second].start()
+                await wait_for(pilot, lambda: bool(app.input_requests if approval_first else app.confirmations))
+                assert not app.has_modal
+                assert picker.display is approval_first
+                assert app.query_one("#completions").display is not approval_first
+                assert (app.active_input is None) is approval_first
+                assert (app.active_confirmation is not None) is approval_first
+                await pilot.press("n" if approval_first else "enter")
+                await wait_for(
+                    pilot,
+                    lambda: first in answers and (
+                        app.active_input is not None if approval_first else app.active_confirmation is not None
+                    ),
+                )
+                assert not app.has_modal
+                await pilot.press("enter" if approval_first else "n")
+                await wait_for(pilot, lambda: answers == {"approval": "n", "input": "first"})
+                assert app.active_input is None and app.active_confirmation is None
+                assert not picker.display and app.focused is app.editor
+        finally:
+            ui.close()
+            for worker in workers.values():
+                if worker.ident is not None:
+                    worker.join(timeout=1)
 
     asyncio.run(scenario())
 
@@ -332,18 +452,20 @@ def test_exit_releases_displayed_and_queued_approvals(make_session):
         ]
         try:
             async with app.run_test(size=(80, 24)) as pilot:
+                app.editor.load_text("Preserve this hidden draft")
                 for worker in workers:
                     worker.start()
                 await wait_for(
-                    pilot, lambda: len(ui._waiting) == 3 and isinstance(app.screen, ApprovalScreen)
+                    pilot, lambda: len(ui._waiting) == 3 and app.query_one(ApprovalPicker).display
                 )
-                assert len(app.screen_stack) == 2
+                assert len(app.screen_stack) == 1
                 await pilot.press("ctrl+d")
                 await wait_for(pilot, lambda: app.controller.closed)
                 await wait_for(pilot, lambda: len(answers) == 3)
                 assert all(answer is None for answer in answers.values())
                 assert not ui._waiting
                 assert app.return_value == 0
+                assert app.editor.text == "Preserve this hidden draft"
         finally:
             ui.close()
             for worker in workers:
