@@ -12,7 +12,6 @@ that no answer came. Runs with no interactive client never show the question at 
 from __future__ import annotations
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
-from ..ai.types import UserMessage
 from ..harness.extensions import ExtensionAPI
 from ..harness.ui import TIMED_OUT
 
@@ -63,16 +62,10 @@ def setup(api: ExtensionAPI) -> None:
                 getattr(p, "kind", None) == "notification" for p in prompts
             )
 
-    def watch(ev, rt) -> None:
-        # A message the user typed into an unattended run shows that someone is there.
-        if (
-            state["unattended"]
-            and rt.role == "main"
-            and ev.type == "message_end"
-            and isinstance(ev.message, UserMessage)
-            and ev.message.kind is None
-        ):
-            state["unattended"] = False
+    def user_present(_text, _session) -> None:
+        # Steering is delivered only after the current tool batch, so react when it is queued:
+        # a question in that batch must not time out on a user who is typing.
+        state["unattended"] = False
 
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
         question = args["question"].strip()
@@ -184,4 +177,4 @@ def setup(api: ExtensionAPI) -> None:
         order=20,
     )
     api.on("before_agent_start", run_started)
-    api.on("agent_event", watch)
+    api.on("user_steer", user_present)

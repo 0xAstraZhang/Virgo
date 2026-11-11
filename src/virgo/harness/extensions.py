@@ -13,6 +13,7 @@ A user extension is a Python file in ``~/.virgo/extensions/`` or ``.virgo/extens
 Events (handler signature):
   session_start(session)                 session_shutdown(session)
   input(text, session) -> str | Handled | None      (transform or consume user input)
+  user_steer(text, session)              the user queued a steering message in a running run
   before_agent_start(runtime, prompts)   agent_end(runtime)
   agent_event(event, runtime)            every AgentEvent from any agent
   context(messages, runtime) -> list | None          (request-time view; keep it append-only)

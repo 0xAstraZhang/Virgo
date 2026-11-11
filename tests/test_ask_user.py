@@ -7,7 +7,7 @@ import threading
 import time
 
 from virgo.ai.providers import faux
-from virgo.ai.types import ToolResultMessage, UserMessage
+from virgo.ai.types import ToolResultMessage
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.harness.ui import TIMED_OUT
 
@@ -152,16 +152,18 @@ def test_runs_woken_by_notifications_time_out_to_the_recommendation(make_session
 
 def test_typing_into_an_unattended_run_removes_the_deadline(make_session):
     ui = AskingUI(picks=[0])
-    s = make_session(faux.reply("checking"), faux.reply(tools=[("ask_user", ASK)]), faux.reply("ok"), ui=ui)
-    original = s.main.agent.prompt
+    steered = []
 
-    def prompt_with_steer(prompts):
-        s.main.agent.steer(UserMessage("I'm here"))
-        return original(prompts)
+    def ask_while_user_steers(ctx):
+        # The user types while the response that calls ask_user is still streaming: the message is
+        # only queued, and is delivered to the model after the whole tool batch.
+        steered.append(s.steer("I'm here"))
+        return faux.reply(tools=[("ask_user", ASK)])
 
-    s.main.agent.prompt = prompt_with_steer
+    s = make_session(ask_while_user_steers, faux.reply("ok"), ui=ui)
     s.notify("job finished", source="jobs")
     assert s.run_pending()
+    assert steered == [True]
     assert ui.asks[0][3] is None
 
 
@@ -261,13 +263,13 @@ def test_fullscreen_app_answers_mid_run_and_withdraws_unattended_questions(make_
                 await pilot.press("down", "enter")
                 await wait_for(pilot, lambda: s.main.agent.last_text == "stored")
                 assert ask_results(s)[0].text() == "The user chose B: SQLite"
-                assert app.input_request is None and app.focused is app.editor
+                await wait_for(pilot, lambda: app.input_request is None and app.focused is app.editor)
 
                 s.notify("check CI", mode="follow_up", source="schedule")
                 await wait_for(pilot, lambda: s.main.agent.last_text == "checked", timeout=10)
                 assert ask_results(s)[1].details["timed_out"] is True
-                await wait_for(pilot, lambda: app.input_request is None)
-                assert app.focused is app.editor and not app.input_requests
+                await wait_for(pilot, lambda: app.input_request is None and app.focused is app.editor)
+                assert not app.input_requests
         finally:
             ui.close()
 
