@@ -7,7 +7,7 @@ from dataclasses import asdict
 
 
 def record_call(store, model, message, *, purpose, started, effort=None, agent="main", tool_call_id=None,
-                duration=None):
+                duration=None, request_metadata=None, call_metadata=None):
     data = {
         "purpose": purpose,
         "agent": agent,
@@ -18,4 +18,8 @@ def record_call(store, model, message, *, purpose, started, effort=None, agent="
         "stop_reason": message.stop_reason,
         "usage": asdict(message.usage),
     }
+    if request_metadata is not None:
+        data.update(request_metadata)
+    if call_metadata is not None:
+        data["review_context"] = call_metadata
     return store.append("custom", kind="model_call", data=data)["id"]

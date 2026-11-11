@@ -7,16 +7,18 @@ import pytest
 
 from virgo.agent.types import Block, ToolCallEvent
 from virgo.ai.providers import faux
-from virgo.ai.types import ToolResultMessage
+from virgo.ai.types import ToolResultMessage, UserMessage
 from virgo.features import permission
 from virgo.features.permission import (
     MODES,
+    ReviewDecision,
     is_read_only_command,
     normalize_permission_mode,
     permission_mode_label,
     rule_matches,
 )
 from virgo.features.permission_scope import command_review_reason
+from virgo.harness.session import Runtime
 
 from .conftest import RecordingUI
 
@@ -116,18 +118,18 @@ def test_auto_review_executes_internal_changes_without_asking(make_session, proj
 def test_small_model_safe_verdict_allows_external_read_without_tools(make_session, tmp_path):
     s = make_session(mode="auto-review")
     s.small_model = s.resolve("faux/reviewer")
-    faux.script("reviewer", faux.reply('{"safe":true,"reason":"ordinary public information"}'))
+    faux.script("reviewer", faux.reply('{"decision":"allow","risk":"low","authorization":"implicit","reason":"ordinary public information","evidence_ids":[]}'))
     ev = event(s, "read", {"path": str(tmp_path / "outside.txt")})
     assert s.services["permissions"].decide(ev) == ("allow", "")
     call = faux.CALLS["reviewer"][0]
     assert call["tools"] == []
     payload = json.loads(call["messages"][0]["content"])
-    assert payload["tool"] == "read" and payload["arguments"] == ev.args
+    assert payload["action"]["tool"] == "read" and payload["action"]["arguments"] == ev.args
     assert "untrusted data" in call["system"]
 
 
 @pytest.mark.parametrize("reply", [
-    faux.reply('{"safe":false,"reason":"deletes external data"}'),
+    faux.reply('{"decision":"ask","risk":"high","authorization":"unknown","reason":"deletes external data","evidence_ids":[]}'),
     faux.reply('{"safe":"true","reason":"not a boolean"}'),
     faux.reply('{"safe":true,"reason":""}'),
     faux.reply('{"safe":true,"reason":"x","risk":true}'),
@@ -149,7 +151,7 @@ def test_risky_review_respects_allow_once_and_exact_session_approval(make_sessio
     reviewed = []
     def review(*args):
         reviewed.append(args)
-        return False, "external write"
+        return ReviewDecision("ask", "external write")
     monkeypatch.setattr(permission, "review_tool_call", review)
     ui = RecordingUI(answers=["y", "a", "n"])
     s = make_session(ui=ui, mode="auto-review")
@@ -200,7 +202,7 @@ def test_unattended_review_fallback_is_denied(make_session, tmp_path, monkeypatc
     class Headless(RecordingUI):
         def confirm(self, q, agent="main"):
             return None
-    monkeypatch.setattr(permission, "review_tool_call", lambda *_: (False, "external file"))
+    monkeypatch.setattr(permission, "review_tool_call", lambda *_: ReviewDecision("ask", "external file"))
     s = make_session(ui=Headless(), mode="auto-review")
     block = s.services["permissions"].on_tool_call(event(s, "write", {"path": str(tmp_path / "x"), "content": ""}), s)
     assert isinstance(block, Block) and "nobody is available" in block.reason
@@ -212,11 +214,11 @@ def test_review_and_human_approval_recheck_changed_mode(make_session, tmp_path, 
     ev = event(s, "write", {"path": str(tmp_path / "outside"), "content": "x"})
     def review(*_):
         s.permission_mode = "plan"
-        return True, "approved before mode switched"
+        return ReviewDecision("allow", "approved before mode switched")
     monkeypatch.setattr(permission, "review_tool_call", review)
     assert isinstance(perms.on_tool_call(ev, s), Block)
     s.permission_mode = "auto-review"
-    monkeypatch.setattr(permission, "review_tool_call", lambda *_: (False, "external"))
+    monkeypatch.setattr(permission, "review_tool_call", lambda *_: ReviewDecision("ask", "external"))
     def confirm(*_):
         s.permission_mode = "plan"
         return "y"
@@ -225,7 +227,7 @@ def test_review_and_human_approval_recheck_changed_mode(make_session, tmp_path, 
 
 
 def test_execution_rechecks_mode_arguments_and_symlink_boundary(make_session, tmp_path, monkeypatch):
-    monkeypatch.setattr(permission, "review_tool_call", lambda *_: (False, "external file"))
+    monkeypatch.setattr(permission, "review_tool_call", lambda *_: ReviewDecision("ask", "external file"))
     s = make_session(mode="auto-review")
     perms = s.services["permissions"]
     ev = event(s, "write", {"path": "new/file", "content": "x"})
@@ -238,6 +240,7 @@ def test_execution_rechecks_mode_arguments_and_symlink_boundary(make_session, tm
     (s.cwd / "new").symlink_to(tmp_path, target_is_directory=True)
     assert isinstance(perms.before_execute(ev), Block)
     (s.cwd / "new").unlink()
+    s.main.messages.append(UserMessage("The external link is removed; proceed within the workspace."))
     assert perms.on_tool_call(ev, s) is None
     ev.args["path"] = str(tmp_path / "external")
     assert isinstance(perms.before_execute(ev), Block)
@@ -245,7 +248,7 @@ def test_execution_rechecks_mode_arguments_and_symlink_boundary(make_session, tm
 
 def test_search_review_matches_actual_ignored_and_filtered_files(make_session, tmp_path, monkeypatch):
     reviews = []
-    monkeypatch.setattr(permission, "review_tool_call", lambda *args: (reviews.append(args) or (False, "external link")))
+    monkeypatch.setattr(permission, "review_tool_call", lambda *args: (reviews.append(args) or ReviewDecision("ask", "external link")))
     s = make_session(mode="auto-review")
     hidden = s.cwd / ".venv"
     hidden.mkdir()
@@ -260,7 +263,7 @@ def test_search_review_matches_actual_ignored_and_filtered_files(make_session, t
 
 
 def test_search_review_selects_the_same_files_as_the_glob_tools(make_session, tmp_path, monkeypatch):
-    monkeypatch.setattr(permission, "review_tool_call", lambda *args: (False, "external link"))
+    monkeypatch.setattr(permission, "review_tool_call", lambda *args: ReviewDecision("ask", "external link"))
     s = make_session(mode="auto-review")
     (s.cwd / "src" / "pkg").mkdir(parents=True)
     (s.cwd / "src" / "link.py").symlink_to(tmp_path / "outside")
@@ -277,8 +280,10 @@ def test_review_uses_call_signal_instead_of_interrupted_main(make_session, tmp_p
     s = make_session(mode="auto-review")
     s.small_model = s.resolve("faux/reviewer")
     s.main.agent.signal.set()
-    faux.script("reviewer", faux.reply('{"safe":true,"reason":"ordinary read"}', delay=0.01))
+    faux.script("reviewer", faux.reply('{"decision":"allow","risk":"low","authorization":"implicit","reason":"ordinary read","evidence_ids":[]}', delay=0.01))
     ev = event(s, "read", {"path": str(tmp_path / "outside")}, agent="teammate")
+    runtime = Runtime(s, "teammate", "teammate")
+    ev.review_source = runtime.review_source
     ev.signal = threading.Event()
     assert s.services["permissions"].decide(ev)[0] == "allow"
 
@@ -286,7 +291,7 @@ def test_review_uses_call_signal_instead_of_interrupted_main(make_session, tmp_p
 @pytest.mark.parametrize("command", ["cat fixed link", "cd sub && cat ../fixed link", "git -C sub diff ../fixed link"])
 def test_shell_session_approval_binds_all_resolved_path_targets(make_session, tmp_path, monkeypatch, command):
     reviews = []
-    monkeypatch.setattr(permission, "review_tool_call", lambda *args: (reviews.append(args) or (False, "external read")))
+    monkeypatch.setattr(permission, "review_tool_call", lambda *args: (reviews.append(args) or ReviewDecision("ask", "external read")))
     ui = RecordingUI(answers=["a", "n"])
     s = make_session(ui=ui, mode="auto-review")
     (s.cwd / "sub").mkdir()
@@ -305,7 +310,7 @@ def test_shell_session_approval_binds_all_resolved_path_targets(make_session, tm
 
 
 def test_dynamic_shell_approval_is_once_and_inherited_cdpath_needs_review(make_session, monkeypatch):
-    monkeypatch.setattr(permission, "review_tool_call", lambda *_: (False, "dynamic command"))
+    monkeypatch.setattr(permission, "review_tool_call", lambda *_: ReviewDecision("ask", "dynamic command"))
     ui = RecordingUI(answers=["a", "n"])
     s = make_session(ui=ui, mode="auto-review")
     perms = s.services["permissions"]

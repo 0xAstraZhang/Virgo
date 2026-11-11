@@ -190,7 +190,7 @@ def _execute(
             if signal.is_set():
                 results[i] = ToolResult.error("Operation aborted.")
                 return
-        ctx = ToolContext(ev.call_id, ev.cwd, signal, cfg.name)
+        ctx = ToolContext(ev.call_id, ev.cwd, signal, cfg.name, review_source=ev.review_source)
         start = time.time()
         try:
             out = ev.tool.execute(ev.args, ctx)

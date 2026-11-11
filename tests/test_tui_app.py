@@ -20,6 +20,7 @@ from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalScreen, SessionPicker
 from virgo.cli.tui.transcript import AssistantView
 from virgo.features import permission as permission_module
+from virgo.features.permission import ReviewDecision
 
 
 async def wait_for(pilot, predicate, *, timeout=4):
@@ -236,7 +237,7 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
 
 @pytest.mark.parametrize(("key", "allowed"), [("y", True), ("n", False), ("escape", False), ("a", True)])
 def test_permission_answers_control_real_file_writes(make_session, project, monkeypatch, key, allowed):
-    monkeypatch.setattr(permission_module, "review_tool_call", lambda *_: (False, "writes outside the workspace"))
+    monkeypatch.setattr(permission_module, "review_tool_call", lambda *_: ReviewDecision("ask", "writes outside the workspace"))
     outside = project.parent / "outside"
     outside.mkdir()
 

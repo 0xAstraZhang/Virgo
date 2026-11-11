@@ -15,8 +15,9 @@ from virgo.features.permission import review_tool_call
 
 
 @pytest.mark.parametrize("levels,default,expected", [
-    pytest.param(("low", "medium", "high"), "high", "medium", id="supports-medium"),
-    pytest.param(("low", "high"), "high", "high", id="model-default"),
+    pytest.param(("low", "medium", "high"), "high", "low", id="supports-low"),
+    pytest.param(("low", "high", "max"), None, "low", id="compatible-low-without-default"),
+    pytest.param(("high", "max"), "high", "high", id="model-default"),
     pytest.param(None, None, None, id="server-default"),
 ])
 @pytest.mark.parametrize("consumer", ["permission", "goal", "compaction", "memory-tidy", "memory-extract"])
@@ -36,9 +37,14 @@ def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consu
 
     monkeypatch.setattr(ai, "stream", record_stream)
     if consumer == "permission":
-        faux.script("small", faux.reply('{"safe":true,"reason":"public file"}'))
+        faux.script("small", faux.reply(json.dumps({
+            "decision": "allow", "reason": "public file", "risk": "low", "authorization": "implicit",
+            "evidence_ids": [],
+        })))
         event = ToolCallEvent("review", "read", {"path": "/etc/hosts"}, session.tool("read"), "main", session.cwd)
-        assert review_tool_call(session, event, "outside workspace") == (True, "public file")
+        verdict = review_tool_call(session, event, "outside workspace")
+        assert verdict.decision == "allow"
+        assert verdict.reason == "public file"
     elif consumer == "goal":
         faux.script("small", faux.reply('{"met":true,"reason":"tests passed","impossible":false}'))
         verdict = evaluate(session, "tests pass", [UserMessage("Tests: 3 passed")])

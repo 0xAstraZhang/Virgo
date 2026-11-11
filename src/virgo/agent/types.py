@@ -38,6 +38,7 @@ class ToolContext:
     signal: threading.Event
     agent: str = "main"
     on_update: Callable[[str], None] | None = None
+    review_source: Any = None  # Bound task/runtime source, never the currently selected chat.
 
 
 @dataclass
@@ -65,6 +66,7 @@ class ToolCallEvent:
     agent: str
     cwd: Path
     signal: threading.Event | None = None
+    review_source: Any = None
 
 
 @dataclass

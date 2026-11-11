@@ -11,6 +11,7 @@ from virgo.ai.stream import StreamEvent
 from virgo.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.controller import RunController
+from virgo.features.permission import ReviewDecision
 
 
 def until(predicate, timeout=3):
@@ -245,7 +246,7 @@ def test_background_notification_wakes_idle_session(make_session):
 def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, project, monkeypatch):
     monkeypatch.setattr(
         "virgo.features.permission.review_tool_call",
-        lambda *_: (False, "external file write needs approval"),
+        lambda *_: ReviewDecision("ask", "external file write needs approval"),
     )
     first, second = project.parent / "one.txt", project.parent / "two.txt"
     ui = FullscreenUI()

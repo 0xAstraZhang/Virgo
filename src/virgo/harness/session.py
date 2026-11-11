@@ -29,6 +29,7 @@ from ..ai.stream import EventStream, StreamEvent
 from ..ai.transform import strip_thinking
 from ..ai.types import AssistantMessage, Context, StreamOptions, TextContent, UserMessage
 from ..features.permission import normalize_permission_mode, plan_tool_allowed
+from ..features.permission_context import ReviewSource
 from ..tools import BASE_TOOLS
 from ..tools.truncate import MAX_BYTES, budget
 from . import compaction
@@ -46,6 +47,8 @@ from .settings import Paths, Settings
 from .store import SessionStore
 from .telemetry import record_call
 from .ui import UI
+
+_DEFAULT_EFFORT = object()
 
 
 class Runtime:
@@ -67,6 +70,7 @@ class Runtime:
         max_turns: int | None = None,
         signal: threading.Event | None = None,
         compaction: bool = True,
+        review_parent: ReviewSource | None = None,
     ):
         self.session = session
         self.name = name
@@ -74,6 +78,11 @@ class Runtime:
         self.cwd = Path(cwd or session.cwd)
         self.store = store
         self.accounting_store = session.store
+        if role != "main" and review_parent is None:
+            review_parent = getattr(getattr(session, "main", None), "review_source", None)
+        if review_parent is not None:
+            review_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
+            self.accounting_store = review_parent.root
         self.ids: list = list(ids or [])
         self.model = model or session.model
         self.system_extra = system_extra
@@ -91,13 +100,16 @@ class Runtime:
             call_model=self.call_model,
             name=name,
             cwd=self.cwd,
-            before_tool_call=session._before_tool,
+            before_tool_call=self._before_tool,
             before_tool_execute=session._before_tool_execute,
             after_tool_call=session._after_tool,
             should_stop=lambda _msgs: session.bus.first("agent_stop", self),
             max_turns=max_turns,
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
+        self.review_source = ReviewSource(self, review_parent)
+        for message in self.agent.messages:
+            self.review_source.remember(message)
         self.agent.subscribe(self._on_event)
 
     @property
@@ -107,9 +119,14 @@ class Runtime:
     def rebuild_system(self) -> None:
         self.system = build_system(self.session, self.role, self.system_extra, self.cwd)
 
+    def _before_tool(self, ev: ToolCallEvent):
+        ev.review_source = self.review_source
+        return self.session._before_tool(ev)
+
     def _on_event(self, ev: AgentEvent) -> None:
         if ev.type == "message_end":
             self.ids.append(self.store.append_message(ev.message) if self.store else None)
+            self.review_source.remember(ev.message, self.ids[-1])
             if self.role != "main" and isinstance(ev.message, AssistantMessage):
                 record_call(
                     self.accounting_store, self.model, ev.message, purpose="agent",
@@ -358,19 +375,55 @@ class AgentSession:
         model = self.small_model
         if not model.reasoning:
             return None
-        if "medium" in (model.supported_reasoning_levels or ()):
-            return "medium"
-        return model.default_reasoning_level
+        if "low" in (model.supported_reasoning_levels or ()):
+            return "low"
+        default = model.default_reasoning_level
+        if model.supported_reasoning_levels is None or default in model.supported_reasoning_levels:
+            return default
+        return None
+
+    @property
+    def small_model_effort_fallback_reason(self) -> str | None:
+        model = self.small_model
+        if not model.reasoning:
+            return "model does not support reasoning controls"
+        selected = self.small_model_effort
+        if selected == "low":
+            return None
+        if selected is not None:
+            return "low is unavailable; using the declared model default"
+        if model.supported_reasoning_levels is None:
+            return "reasoning capabilities are unknown; using the server default"
+        return "low is unavailable and no valid model default is declared; using the server default"
 
     def complete(self, purpose: str, system: str, prompt: str, *, model=None,
-                 effort=None, max_tokens=None, signal=None, agent="main", tool_call_id=None):
+                 effort=_DEFAULT_EFFORT, max_tokens=None, total_max_tokens=None, signal=None, agent="main", tool_call_id=None,
+                 accounting_store=None, call_metadata=None):
         """Account for a tool-free request separately from the conversation context."""
+        if effort is _DEFAULT_EFFORT:
+            effort = self.small_model_effort if model is None else None
+        uses_small_default = model is None and effort == self.small_model_effort
+        requested_effort = "low" if uses_small_default else effort
+        fallback_reason = self.small_model_effort_fallback_reason if uses_small_default else None
         model = model or self.small_model
-        store = self.store  # A concurrent session switch must not move this request's usage.
+        # A caller may bind a background request to its original conversation before a session switch.
+        store = accounting_store if accounting_store is not None else self.store
         started = time.monotonic()
-        message = ai.complete(model, system, prompt, max_tokens=max_tokens, effort=effort, signal=signal)
+        message = ai.complete(model, system, prompt, max_tokens=max_tokens, total_max_tokens=total_max_tokens,
+                              effort=effort, signal=signal)
+        metadata = getattr(message, "request_metadata", None) or ai.completion_request_metadata(
+            model, effort, ai.completion_token_limit(model, max_tokens, total_max_tokens)
+        )
+        metadata = {**metadata, "requested_effort": requested_effort, "effort_fallback_reason": fallback_reason}
+        if total_max_tokens is not None:
+            metadata["requested_max_tokens"] = total_max_tokens
+        if effort is not None and metadata["effective_effort"] != effort:
+            metadata["effort_fallback_reason"] = (
+                f"adapter maps {effort!r} to {metadata['effective_effort']!r}"
+            )
         record_call(store, model, message, purpose=purpose, started=started, effort=effort,
-                    agent=agent, tool_call_id=tool_call_id)
+                    agent=agent, tool_call_id=tool_call_id, request_metadata=metadata,
+                    call_metadata=call_metadata)
         return message
 
     def _open_store(self, session) -> SessionStore:

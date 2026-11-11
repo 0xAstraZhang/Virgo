@@ -77,8 +77,8 @@ def test_aborted_summary_keeps_context_and_counts_usage(make_session):
 
 
 @pytest.mark.parametrize("reply,answer,source,decision", [
-    (faux.reply('{"safe":true,"reason":"public download"}'), None, "auto-review", "allow"),
-    (faux.reply('{"safe":false,"reason":"unknown script"}'), "n", "auto-review", "deny"),
+    (faux.reply('{"decision":"allow","risk":"low","authorization":"implicit","reason":"public download","evidence_ids":[]}'), None, "auto-review", "allow"),
+    (faux.reply('{"decision":"ask","risk":"unknown","authorization":"unknown","reason":"unknown script","evidence_ids":[]}'), "n", "auto-review", "deny"),
     (faux.reply("invalid"), "y", "review-error", "allow"),
     (faux.error("unavailable"), None, "review-error", "deny"),
 ])
@@ -110,7 +110,7 @@ def test_permission_audit_records_review_and_final_decision(make_session, tmp_pa
 def test_revalidation_has_auditable_argument_change(make_session, tmp_path):
     session = make_session(mode="auto-review")
     session.small_model = session.resolve("faux/reviewer")
-    faux.script("reviewer", faux.reply('{"safe":true,"reason":"known output"}'))
+    faux.script("reviewer", faux.reply('{"decision":"allow","risk":"low","authorization":"implicit","reason":"known output","evidence_ids":[]}'))
     ev = event(session, "write", {"path": "inside", "content": "one"})
     perms = session.services["permissions"]
     perms.on_tool_call(ev, session)

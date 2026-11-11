@@ -89,7 +89,7 @@ class Team:
         return [m.name for m in self.members.values() if m.state != "stopped"]
 
     # -- lifecycle ---------------------------------------------------------------
-    def spawn(self, name: str, role: str, prompt: str, plan_first: bool, worktree: bool) -> Teammate:
+    def spawn(self, name: str, role: str, prompt: str, plan_first: bool, worktree: bool, review_parent=None) -> Teammate:
         from ..harness.session import Runtime
 
         if not NAME_RE.match(name) or name.lower() in RESERVED:
@@ -109,7 +109,7 @@ class Team:
         perms = self.session.services.get("permissions")
         if plan_first and perms:
             perms.set_agent_mode(name, "plan")
-        lead_store = self.session.store
+        lead_store = review_parent.store if review_parent is not None else self.session.store
         store_path = (
             lead_store.path.parent / f"{lead_store.id}-team" / f"{name}.jsonl" if lead_store.path else None
         )
@@ -137,6 +137,7 @@ class Team:
             cwd=cwd,
             store=SessionStore(store_path, cwd),
             system_extra=extra,
+            review_parent=review_parent,
         )
         m.thread = threading.Thread(
             target=self._loop, args=(m, prompt), daemon=True, name=f"virgo-team-{name}"
@@ -310,6 +311,7 @@ def setup(api: ExtensionAPI) -> None:
                 args["prompt"],
                 bool(args.get("plan_first")),
                 bool(args.get("worktree")),
+                review_parent=ctx.review_source,
             )
         except ValueError as e:
             return ToolResult.error(str(e))

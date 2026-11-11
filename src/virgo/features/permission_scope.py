@@ -128,6 +128,12 @@ def _safe_read_words(words: list[str], extra: set[str]) -> bool:
         return True
     if name == "env":
         return not args  # env can otherwise execute an arbitrary program
+    if name == "date":
+        # Numeric operands and options such as -s can set the system clock. Only
+        # recognize the portable query forms; other options still need review.
+        if args[:1] == ["-u"]:
+            args = args[1:]
+        return not args or (len(args) == 1 and args[0].startswith("+"))
     if name == "find" and any(a.startswith(("-delete", "-exec", "-ok", "-fprint", "-fls")) for a in args):
         return False
     if name == "sed":

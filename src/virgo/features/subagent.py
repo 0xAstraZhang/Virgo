@@ -84,7 +84,7 @@ class Subagents:
         self.api = api
         self.types = load_types(api)
 
-    def run(self, prompt: str, type_name: str, description: str, signal, cwd=None) -> ToolResult:
+    def run(self, prompt: str, type_name: str, description: str, signal, cwd=None, review_parent=None) -> ToolResult:
         from ..harness.session import Runtime
 
         session = self.api.session
@@ -110,6 +110,7 @@ class Subagents:
                 max_turns=int(session.settings.get("subagents.maxTurns", 50)),
                 signal=signal,
                 compaction=True,
+                review_parent=review_parent,
             )
             rt.agent.prompt([UserMessage(prompt)])
         finally:
@@ -136,15 +137,17 @@ def setup(api: ExtensionAPI) -> None:
         prompt, desc = args["prompt"], args.get("description") or args["prompt"][:60]
         type_name = args.get("type") or "general"
         jobs = api.services.get("jobs")
+        review_parent = ctx.review_source or api.session.main.review_source
+        review_parent.root.entries()
         if args.get("background") and jobs is not None:
             job = jobs.start_callable(
-                f"agent: {desc}", lambda signal: subs.run(prompt, type_name, desc, signal, ctx.cwd)
+                f"agent: {desc}", lambda signal: subs.run(prompt, type_name, desc, signal, ctx.cwd, review_parent)
             )
             return ToolResult.text(
                 f"Started background agent {job.id} ({desc}). You will be notified when it finishes; "
                 "use job_output to read its result."
             )
-        return subs.run(prompt, type_name, desc, ctx.signal, ctx.cwd)
+        return subs.run(prompt, type_name, desc, ctx.signal, ctx.cwd, review_parent)
 
     api.register_tool(
         AgentTool(

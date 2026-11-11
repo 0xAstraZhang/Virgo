@@ -199,13 +199,17 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 ```
 
 - **模型提供方**：Anthropic、OpenAI 兼容和 xAI Responses 使用官方 SDK；OpenAI 账号与 Google 账号使用对应的流式接口。也可以在 `providers` 里声明自定义端点。
-- **小模型**：权限审批、其他 Provider 的压缩摘要、goal 评审和记忆整理共用自动选择的小模型。OpenAI API、Codex 账号及指向 OpenAI 官方 API 的自定义连接使用同一连接下的 `gpt-6-luna`；Anthropic 及指向其官方 API 的自定义连接使用同一连接下的 `claude-haiku-5-5`；其他厂商使用主模型。切换模型或登录后同步更新，旧 `smallModel` 配置不再参与选择。小模型支持 `medium` 时使用 `medium`，否则使用其默认强度；默认强度未知时省略参数，采用服务端默认。此规则不受主对话 `/effort` 影响。实时目录提供强度信息时优先使用，也可在 `providers.<厂商>.models.<模型>` 中补充 `supportedReasoningLevels` 和 `defaultReasoningLevel`。
+- **小模型**：权限审批、其他 Provider 的压缩摘要、goal 评审和记忆整理共用自动选择的小模型。OpenAI API、Codex 账号及指向 OpenAI 官方 API 的自定义连接使用同一连接下的 `gpt-6-luna`；Anthropic 及指向其官方 API 的自定义连接使用同一连接下的 `claude-haiku-5-5`；其他厂商使用主模型。切换模型或登录后同步更新，旧 `smallModel` 配置不再参与选择。小模型默认优先使用 `low`；不支持时使用合法的模型默认强度，没有合法默认值时省略参数并记录原因。非推理模型不发送强度参数。此规则不受主对话 `/effort` 影响。实时目录提供强度信息时优先使用，也可在 `providers.<厂商>.models.<模型>` 中补充 `supportedReasoningLevels` 和 `defaultReasoningLevel`。
 - **上下文压缩**：所有 Provider 默认在上下文估算达到模型窗口的 80% 时压缩；`triggerRatio` 可调整比例，非空 `triggerTokens` 优先指定绝对阈值，旧 `reserveTokens` 不再参与计算。OpenAI API 默认调用 [Responses 原生压缩](https://developers.openai.com/api/docs/guides/compaction)，压缩后使用 Responses 回传完整加密上下文；Codex 账号使用 Responses 的原生 `compaction_trigger`。Anthropic 默认调用 [按需压缩](https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand)，使用当前模型并原样保留签名块。其他 Provider（包括第三方兼容 API）继续使用小模型结构化摘要。`keepRecentTokens` 控制 Anthropic 和通用摘要保留的近期消息；OpenAI 使用服务端返回的完整窗口。`/compact [focus]` 的重点提示适用于 Anthropic 和通用摘要，OpenAI 使用服务端摘要指令。原生请求失败时保留原上下文并报告错误；切换到不兼容 Provider 时从完整历史重建。
 - **实时模型目录**：[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、[DeepSeek](https://api-docs.deepseek.com/api/list-models/) 及兼容连接查询其 API 根路径下的 `GET /models`；[Anthropic](https://platform.claude.com/docs/en/api/models/list) 查询 `GET /v1/models` 并处理分页；Codex 账号沿用[官方客户端的目录接口](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/models.rs)。服务端明确隐藏、不可用或不适用于文本对话的模型会被过滤。`providers.<厂商>.models` 仅补充模型参数，不再决定菜单中有哪些模型；服务端返回的上下文和输出限制优先用于当前会话。Google Code Assist 账号目前没有适配的实时目录，需使用 `/model provider/id` 指定模型；离线 `faux` 演示继续使用本地目录。
 - **目录版本更新**：Codex 从本机 `codex --version`、官方 `@openai/codex` 稳定发布元数据和上次成功的版本中选择最新候选，不使用 Virgo 的应用版本。发布元数据每 24 小时更新一次；目录为空或返回 HTTP 400/426 时强制刷新，至多再尝试一个候选版本。版本源无法连接时可使用本机或缓存版本继续查询；没有任何候选或重试仍失败时显示原因。版本信息保存在 `~/.virgo/cache/codex-catalog-version.json`（跟随 `VIRGO_HOME`），模型列表仍然每次实时获取。该流程只查询版本信息；固定 `providers.openai-codex.clientVersion` 会关闭自动选择与重试，删除该设置可恢复自动模式。
 - **其他厂商的版本**：OpenAI API、DeepSeek 等兼容目录不需要 Codex 客户端版本参数；Anthropic 目录的 `anthropic-version` 跟随已安装 SDK 的默认值，升级 SDK 后同步更新，也可用 `providers.<厂商>.apiVersion` 固定。API 日期代表[接口协议版本](https://platform.claude.com/docs/en/api/versioning)，与模型列表更新分开管理。
 - **权限规则**：写法是 `tool(pattern)`，pattern 为 fnmatch 风格，匹配命令或路径。例如 `bash(npm test*)`、`edit(src/**)`、`read(~/.ssh/*)`、`mcp__github__*`。
-- **权限模式**：`auto-review` 自动放行可确认在工作目录内的操作；外部路径、联网及无法静态确认边界的操作由小模型审批，判定有风险或审批失败时再请求用户确认。`accept-all` 跳过权限审批和 allow/deny 规则。`plan` 仅提供只读工具和命令，要求调查后给出方案。旧配置 `default`、`accept-edits` 自动映射到 `auto-review`，`yolo` 映射到 `accept-all`。
+- **权限模式**：`auto-review` 自动放行可确认在工作目录内的操作；外部路径、联网及无法静态确认边界的操作由小模型审批。审批分别判断风险和用户授权，返回 `allow`、`ask` 或 `deny`：允许后执行；证据不足或审批失败时使用现有人工确认；明确拒绝时阻断并把理由交给主 agent，只能采取实质更安全的方案或询问用户。同一授权上下文中的精确被拒操作不能反复送审；拒绝后其他执行、修改类操作也会复审，避免换一种命令写法便按工作区规则放行，只读调查仍可继续。新用户消息或权限规则改变后重新评估。`accept-all` 跳过权限审批和 allow/deny 规则。`plan` 仅提供只读工具和命令，要求调查后给出方案。旧配置 `default`、`accept-edits` 自动映射到 `auto-review`，`yolo` 映射到 `accept-all`。
+
+审批输入包含当前完整操作及发起 agent 所属分支的公开多轮轨迹：原始用户消息、助手公开文本、工具调用与结果、审批记录。子 agent 的委派指令、摘要和工具输出不会作为真实用户授权；隐藏思考及原生推理块不进入审查。输入总上限为 40,000 字符，优先缩短大段工具输出、移除旧工具交互，用户要求和人工审批按完整条目保留；缺失授权历史会标记并要求人工确认。会话压缩后仍可从当前分支回取原文，后台任务和子 agent 继续绑定原任务，避免切换聊天后串用上下文或记账。执行前会复核参数、路径边界、权限规则和用户授权上下文。
+
+权限审批请求显式设置 **4096 token 总输出上限**（包括推理），不叠加通用摘要调用的 4096 token 推理余量。DeepSeek、Anthropic、OpenAI Chat Completions 和 Responses 等适配器发送此上限；Codex 账号适配器目前不发送输出上限，日志标记 `token_limit_supported=false`，不能保证其服务端遵守 4096。审批超时、截断或格式错误分别记录为审查失败，不等同于操作被判危险。其他辅助任务保留各自原有预算。审批属于执行前检查，当前没有 OS 级运行时沙箱。
 - **命令钩子**：支持 `PreToolUse` / `PostToolUse` / `UserPromptSubmit` / `Stop` 四种。钩子从 stdin 收到 JSON；退出码 2 表示拦截（或要求继续），stderr 的内容作为反馈。
 - **功能开关**：每个内置功能都可以用 `features.<name>: false` 关闭（例如 `team`、`mcp`、`memory`）。
 - **上下文文件**：`~/.virgo/AGENTS.md`，加上从根目录到 cwd 每一层的 `AGENTS.md` 或 `CLAUDE.md`。`SYSTEM.md` 替换身份段落，`APPEND_SYSTEM.md` 追加到末尾。
@@ -242,7 +246,7 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 
 ### 运行审计与用量
 
-会话 JSONL 的 `custom` 记录保存 `permission_decision`（工具调用 ID、参数哈希、权限模式、判定来源、结论、理由和耗时）、`model_call`（辅助请求的模型、推理强度、停止原因、耗时和 token）及 `goal_evaluation`（评审结论、证据哈希和截断标记）。这些记录不进入模型上下文，也不重复保存内部提示词、工具参数或模型思考。人工确认、规则放行、审批失败和执行前重新审批也会留下记录；审批与模型调用通过工具调用 ID 关联。
+会话 JSONL 的 `custom` 记录保存 `permission_decision`（工具调用 ID、参数哈希、权限模式、判定来源、结论、理由、耗时及审查证据 ID/裁剪信息）、`model_call`（辅助请求的模型、期望/实际推理强度、回退原因、实际发送的预算、停止原因、耗时和 token）及 `goal_evaluation`（评审结论、证据哈希和截断标记）。这些审计记录不进入主对话模型上下文，也不重复保存内部提示词、工具参数或模型思考；权限审查可引用同分支的审批记录。人工确认、规则放行、审批失败和执行前重新审批也会留下记录；审批与模型调用通过工具调用 ID 关联。现有界面计时和累计用量展示保持不变。
 
 界面累计用量包含当前分支的主对话、审批、Goal、记忆整理、Workflow、子 Agent、摘要和原生压缩，以及已经重试的失败请求。恢复会话后继续累计，压缩不会清零；上下文百分比仍只计算主对话。旧会话只能汇总原有记录，无法补回历史上未记录的辅助请求用量。数字以模型服务实际返回的 usage 为准。
 

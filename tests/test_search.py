@@ -28,6 +28,7 @@ from virgo.ai.types import (
     message_from_dict,
     message_to_dict,
 )
+from virgo.features.permission import ReviewDecision
 from virgo.features.search import native_tool
 from virgo.harness.session import Runtime
 
@@ -238,7 +239,7 @@ def test_native_permission_review_is_cached_only_for_current_request(make_sessio
 
     def review(_session, event, reason):
         reviewed.append((event, reason))
-        return True, "Public research"
+        return ReviewDecision("allow", "Public research")
 
     monkeypatch.setattr("virgo.features.permission.review_tool_call", review)
     assert runtime.request_context(runtime.messages).web_search
@@ -253,7 +254,7 @@ def test_native_permission_review_is_cached_only_for_current_request(make_sessio
 def test_unapproved_native_scope_falls_back_without_asking_user(make_session, monkeypatch):
     session = make_session(mode="auto-review")
     runtime = select(session)
-    monkeypatch.setattr("virgo.features.permission.review_tool_call", lambda *a: (False, "Need exact query"))
+    monkeypatch.setattr("virgo.features.permission.review_tool_call", lambda *a: ReviewDecision("ask", "Need exact query"))
     context = runtime.request_context(runtime.messages)
     assert context.web_search is None
     assert "web_search" in [t.name for t in context.tools]

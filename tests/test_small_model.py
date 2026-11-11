@@ -23,7 +23,7 @@ def test_auxiliary_model_uses_the_same_connection(project, main, small):
         assert session.small_model.api == session.model.api
         assert session.small_model.auth_path == session.model.auth_path
         assert session.small_model.base_url == session.model.base_url
-        assert session.small_model_effort == "medium"
+        assert session.small_model_effort == "low"
     finally:
         session.shutdown()
 
@@ -67,13 +67,41 @@ def test_direct_model_command_updates_small_model_and_keeps_main_effort(make_ses
     session.prompt("/effort max")
     session.prompt("/model openai-codex/gpt-6.1-terra")
     assert session.small_model.spec == "openai-codex/gpt-6-luna"
-    assert session.small_model_effort == "medium"
+    assert session.small_model_effort == "low"
     session.prompt("/model anthropic/claude-opus-5-5")
     assert session.small_model.spec == "anthropic/claude-haiku-5-5"
-    assert session.small_model_effort == "medium"
+    assert session.small_model_effort == "low"
     session.prompt("/model deepseek/deepseek-flash")
     assert session.small_model is session.model
+    assert session.small_model_effort == "low"
     assert session.effort == "max"
+
+
+@pytest.mark.parametrize("spec", ["deepseek/deepseek-flash", "kimi/kimi-k3.1-pro", "glm/glm-5.3"])
+def test_compatible_provider_without_medium_or_default_uses_low(make_session, spec):
+    session = make_session()
+    session.set_model(spec)
+    assert session.small_model.supported_reasoning_levels == ("low", "high", "max")
+    assert session.small_model.default_reasoning_level is None
+    assert session.small_model_effort == "low"
+    assert session.small_model_effort_fallback_reason is None
+
+
+@pytest.mark.parametrize("reasoning,levels,default,expected", [
+    (False, ("low", "high"), "high", None),
+    (True, ("high",), "high", "high"),
+    (True, ("high",), "low", None),
+    (True, ("high",), None, None),
+    (True, None, None, None),
+    (True, None, "low", "low"),
+])
+def test_low_default_respects_declared_capabilities(make_session, reasoning, levels, default, expected):
+    session = make_session()
+    session.small_model.reasoning = reasoning
+    session.small_model.supported_reasoning_levels = levels
+    session.small_model.default_reasoning_level = default
+    assert session.small_model_effort == expected
+    assert bool(session.small_model_effort_fallback_reason) == (expected != "low")
 
 
 @pytest.mark.parametrize("default", ["max", None])

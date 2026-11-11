@@ -134,15 +134,18 @@ class Search:
             if pattern is not None and fnmatch.fnmatchcase("web_search", tool):
                 return False
         request = next((m for m in reversed(runtime.messages) if isinstance(m, UserMessage) and m.kind is None), None)
-        cache_key = (key, mode, json.dumps(rules, sort_keys=True), id(request))
-        if getattr(runtime, "_search_review", None) is not None and runtime._search_review[0] == cache_key:
-            return runtime._search_review[1]
         ev = ToolCallEvent(
             call_id=f"native-search-{runtime.name}-{id(request)}", tool_name="web_search",
             args={"native": True, "provider": model.provider, "request": request.text() if request else "",
              "scope": "Allow the provider to choose public web search queries for this user request."},
             tool=self.tool, cwd=runtime.cwd, agent=runtime.name, signal=runtime.agent.signal,
+            review_source=runtime.review_source,
         )
+        from .permission_context import review_context_key
+
+        cache_key = (key, mode, json.dumps(rules, sort_keys=True), id(request), review_context_key(self.session, ev))
+        if getattr(runtime, "_search_review", None) is not None and runtime._search_review[0] == cache_key:
+            return runtime._search_review[1]
         # Review once per user request. If the broad scope cannot be approved,
         # auto mode offers the builtin tool for exact-query review instead.
         decision, _reason = permissions.decide(ev)

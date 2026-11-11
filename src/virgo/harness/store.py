@@ -166,8 +166,12 @@ class SessionStore:
         store.created_at = _created_at(header, getattr(stat, "st_birthtime", stat.st_mtime))
         store.updated_at = stat.st_mtime
         for e in lines[1:]:
-            if e.get("type") == "leaf":  # explicit leaf moves (branching)
+            if "active_leaf" in e:  # Late review accounting on an inactive branch.
+                store.leaf = e["active_leaf"]
+            elif e.get("type") == "leaf":  # explicit leaf moves (branching)
                 store.leaf = e["target"]
+            else:
+                store.leaf = e["id"]
         return store
 
     @staticmethod
