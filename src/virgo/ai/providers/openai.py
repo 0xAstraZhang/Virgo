@@ -179,9 +179,13 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                 return
             if getattr(chunk, "usage", None):
                 u = chunk.usage
-                cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+                cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", None)
+                if cached is None:
+                    cached = getattr(u, "prompt_cache_hit_tokens", 0) or 0
                 out.usage = Usage(
-                    input=(u.prompt_tokens or 0) - cached, output=u.completion_tokens or 0, cache_read=cached
+                    input=max(0, (u.prompt_tokens or 0) - cached),
+                    output=u.completion_tokens or 0,
+                    cache_read=cached,
                 )
             if not chunk.choices:
                 continue

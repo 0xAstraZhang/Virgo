@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from virgo.agent import AgentTool
 from virgo.ai.providers import faux
 from virgo.ai.types import (
     AssistantMessage,
@@ -7,9 +10,11 @@ from virgo.ai.types import (
     ThinkingContent,
     ToolCall,
     ToolResultMessage,
+    ToolSpec,
+    Usage,
     UserMessage,
 )
-from virgo.harness.compaction import find_cut
+from virgo.harness.compaction import estimate_tokens, find_cut
 from virgo.harness.session import AgentSession
 
 from .conftest import RecordingUI, calls
@@ -40,6 +45,40 @@ def test_find_cut_never_splits_tool_pairs():
     ]
     cut = find_cut(msgs, keep_tokens=500)
     assert not isinstance(msgs[cut], ToolResultMessage)
+
+
+def test_estimate_includes_system_and_tool_definitions_without_usage():
+    messages = [UserMessage("x" * 40)]
+    tool = ToolSpec("example", "description", {"type": "object"})
+    assert estimate_tokens(messages, system="s" * 400) == 110
+    with_tools = estimate_tokens(messages, system="s" * 400, tools=[tool])
+    assert with_tools > 110
+    tool.description += "t" * 400
+    assert estimate_tokens(messages, system="s" * 400, tools=[tool]) == with_tools + 100
+
+
+def test_reported_usage_already_includes_system_and_cached_input():
+    messages = [AssistantMessage(usage=Usage(input=100, output=20, cache_read=60, cache_write=20)),
+                UserMessage("next" * 4)]
+    assert estimate_tokens(messages, system="s" * 4000) == 204
+    # A compaction or context reset invalidates the old request's usage.
+    assert estimate_tokens(messages, valid_from=1, system="s" * 4000) == 1004
+
+
+def test_runtime_estimate_counts_project_instructions_and_tools_without_request_hooks(make_session, project, monkeypatch):
+    (project / "AGENTS.md").write_text("project rules " * 100, encoding="utf-8")
+    session = make_session()
+    runtime = session.main
+    monkeypatch.setattr(session.bus, "chain", lambda *a: pytest.fail("status invoked a context hook"))
+    monkeypatch.setattr(session.services["search"], "prepare", lambda *a: pytest.fail("status prepared a request"))
+    assert ("project rules " * 100).strip() in runtime.system
+    baseline = runtime.context_tokens()
+    assert baseline > len(runtime.system) // 4 > 0
+    runtime.system += "s" * 400
+    assert runtime.context_tokens() == baseline + 100
+    runtime.tools = [*runtime.tools, AgentTool("example", "t" * 400, {"type": "object"}, lambda *a: None)]
+    assert runtime.context_tokens() > baseline + 200
+    assert session.store.total_usage() == dict(input=0, output=0, cache_read=0, cache_write=0)
 
 
 def test_manual_compaction_keeps_recent_and_strips_thinking(make_session, project):
@@ -77,9 +116,10 @@ def test_manual_compaction_keeps_recent_and_strips_thinking(make_session, projec
 
 
 def test_auto_compaction_triggers_before_model_call(make_session):
-    s = make_session(settings={"compaction": {"triggerTokens": 300, "keepRecentTokens": 50}})
+    s = make_session(settings={"compaction": {"keepRecentTokens": 50}})
     faux.push("test", scripted(faux.reply("x " * 1500)))
     s.prompt("first")
+    s.settings.set("compaction.triggerTokens", 300)
     faux.push("test", scripted(), scripted(faux.reply("after compaction")))  # summary call comes first
     s.prompt("second")
     assert s.main.messages[0].kind == "summary"

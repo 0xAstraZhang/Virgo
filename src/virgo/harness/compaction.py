@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from ..ai import native_compact
@@ -24,6 +25,7 @@ from ..ai.types import (
     RawContent,
     StreamOptions,
     ToolResultMessage,
+    ToolSpec,
     Usage,
     UserMessage,
     message_to_dict,
@@ -80,8 +82,10 @@ def _chars(m) -> int:
     )
 
 
-def estimate_tokens(messages: list, valid_from: int = 0) -> int:
-    """Last reported usage (if after `valid_from`) + chars/4 for everything after it."""
+def estimate_tokens(
+    messages: list, valid_from: int = 0, *, system: str = "", tools: list[ToolSpec] | None = None,
+) -> int:
+    """Use reported usage, or estimate the full prompt including instructions and tools."""
     for i in range(len(messages) - 1, valid_from - 1, -1):
         m = messages[i]
         if (
@@ -90,7 +94,10 @@ def estimate_tokens(messages: list, valid_from: int = 0) -> int:
             and m.stop_reason not in ("error", "aborted", "compaction")
         ):
             return m.usage.total + sum(_chars(x) for x in messages[i + 1 :]) // 4
-    return sum(_chars(m) for m in messages) // 4
+    # Reported usage already includes the system prompt and tool definitions.
+    # Add them only when no valid usage exists (new, legacy or compacted context).
+    overhead = len(system) + sum(len(json.dumps(asdict(tool), ensure_ascii=False)) for tool in tools or [])
+    return (overhead + sum(_chars(m) for m in messages)) // 4
 
 
 def find_cut(messages: list, keep_tokens: int) -> int:
@@ -170,7 +177,7 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, mo
     if not to_summarize:
         return None
     session.bus.emit("before_compact", rt)
-    tokens_before = estimate_tokens(messages, rt.compacted_at)
+    tokens_before = rt.context_tokens()
 
     prev_entry = rt.store.last_compaction() if rt.store else None
     prev_details = (prev_entry or {}).get("details", {})
@@ -242,7 +249,7 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     if not cut or (cut == 1 and is_native_context(messages[0])):
         return None
     session.bus.emit("before_compact", rt)
-    tokens_before = estimate_tokens(messages, rt.compacted_at)
+    tokens_before = rt.context_tokens()
     if focus and api != "anthropic":
         session.ui.print("[OpenAI native compaction uses the provider's summary instructions; focus is not applied.]", "warn")
     context = rt.request_context(messages[:cut], model)

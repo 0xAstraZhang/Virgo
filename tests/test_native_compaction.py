@@ -104,7 +104,7 @@ def test_openai_compaction_uses_complete_window_and_roundtrips(make_session, mon
     assert session.main.messages[0].usage.total == 0
     assert session.store.total_usage() == dict(input=90000, output=100, cache_read=0, cache_write=0)
     assert responses.convert_messages(session.main.messages, api=native_api(session.model)) == payload
-    assert session.context_tokens() < 1000
+    assert len(session.main.system) // 4 < session.context_tokens() < 90000
 
     restored = AgentSession(project, model=spec, session=session.store.path, extensions=False)
     try:

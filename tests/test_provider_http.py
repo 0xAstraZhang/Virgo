@@ -284,3 +284,30 @@ def test_openai_streaming_roundtrip(server, monkeypatch):
     body = server["requests"][0]["json"]
     assert body["messages"][0] == {"role": "system", "content": "SYS"}
     assert body["reasoning_effort"] == "high" and "max_completion_tokens" in body
+
+
+@pytest.mark.parametrize("cache_fields,expected_cached", [
+    ({"prompt_tokens_details": {"cached_tokens": 60}}, 60),
+    ({"prompt_cache_hit_tokens": 60, "prompt_cache_miss_tokens": 40}, 60),
+    ({"prompt_tokens_details": {"cached_tokens": None}, "prompt_cache_hit_tokens": 60}, 60),
+    ({"prompt_tokens_details": {"cached_tokens": 60}, "prompt_cache_hit_tokens": 60}, 60),
+    ({"prompt_tokens_details": {"cached_tokens": 0}, "prompt_cache_hit_tokens": 60}, 0),
+    ({}, 0),
+])
+def test_openai_compatible_cache_usage(server, monkeypatch, cache_fields, expected_cached):
+    pytest.importorskip("openai")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    chunks = [
+        {**OPENAI_CHUNK, "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]},
+        {**OPENAI_CHUNK, "choices": [], "usage": {
+            "prompt_tokens": 100, "completion_tokens": 4, "total_tokens": 104, **cache_fields,
+        }},
+    ]
+    server["body"] = sse(chunks, named=False)
+    model = ai.resolve_model("deepseek/deepseek-flash")
+    model.base_url = server["url"]
+    msg = ai.stream(model, Context("System instructions", [UserMessage("hi")]), StreamOptions()).result()
+    assert msg.stop_reason == "stop" and msg.text() == "ok"
+    assert msg.usage.input == 100 - expected_cached
+    assert msg.usage.cache_read == expected_cached
+    assert msg.usage.total == 104

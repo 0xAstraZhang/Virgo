@@ -74,14 +74,23 @@ def block_from_dict(d: dict) -> Content:
 
 @dataclass
 class Usage:
+    # Providers normalize input into disjoint uncached, cache-read and cache-write counts.
     input: int = 0
     output: int = 0
     cache_read: int = 0
     cache_write: int = 0
 
     @property
+    def input_total(self) -> int:
+        return self.input + self.cache_read + self.cache_write
+
+    @property
+    def cache_hit_rate(self) -> float:
+        return self.cache_read / self.input_total if self.input_total else 0.0
+
+    @property
     def total(self) -> int:
-        return self.input + self.output + self.cache_read + self.cache_write
+        return self.input_total + self.output
 
 
 StopReason = Literal["stop", "length", "tool_use", "pause_turn", "refusal", "error", "aborted"]

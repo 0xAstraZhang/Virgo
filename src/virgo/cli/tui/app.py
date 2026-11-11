@@ -19,6 +19,7 @@ from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ... import __version__
+from ...ai.types import Usage
 from ...features.permission import MODES, normalize_permission_mode, permission_mode_label
 from ...harness.preferences import PreferenceChoice
 from ...harness.store import SessionStore
@@ -546,14 +547,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 cwd = cwd[1:]
             cwd = "…" + cwd
         self.screen_stack[0].query_one("#cwd", Static).update(Text(cwd, no_wrap=True))
-        usage = self.session.store.total_usage()
+        usage = Usage(**self.session.store.total_usage())
         tokens = self.session.context_tokens()
         window = self.session.main.model.context_window
         context = f"~{tokens / max(window, 1):.1%}/{short_number(window)}"
-        used = f"↑{short_number(usage['input'])} ↓{short_number(usage['output'])}"
-        cache = usage["cache_read"] + usage["cache_write"]
-        if cache:
-            used += f" cache {short_number(cache)}"
+        used = (
+            f"↑{short_number(usage.input_total)} ↓{short_number(usage.output)}"
+            f" cache {usage.cache_hit_rate:.1%}"
+        )
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
         metrics.truncate(width, overflow="ellipsis")
         self.screen_stack[0].query_one("#metrics", Static).update(metrics)

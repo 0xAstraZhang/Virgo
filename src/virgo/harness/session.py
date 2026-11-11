@@ -160,7 +160,11 @@ class Runtime:
         return True
 
     def context_tokens(self) -> int:
-        return compaction.estimate_tokens(self.messages, self.compacted_at)
+        # Status refreshes must not invoke extension hooks or search approvals.
+        context = self._base_context(self.messages)
+        return compaction.estimate_tokens(
+            context.messages, self.compacted_at, system=context.system, tools=context.tools,
+        )
 
     def _compaction_due(self, model=None) -> bool:
         s = self.session.settings
@@ -171,10 +175,9 @@ class Runtime:
             trigger = int((model or self.model).context_window * float(s.get("compaction.triggerRatio", 0.8)))
         return self.context_tokens() >= trigger
 
-    def request_context(self, messages: list, model=None) -> Context:
-        """Use the same instructions, tools and extension view for generation and compaction."""
+    def _base_context(self, messages: list) -> Context:
+        """Assemble instructions and permitted tool schemas without request side effects."""
         s = self.session
-        view = s.bus.chain("context", list(messages), self)
         permissions = s.services.get("permissions")
         mode = permissions.mode_for(self.name) if permissions else s.permission_mode
         system = self.system
@@ -190,7 +193,13 @@ class Runtime:
             for tool in tools:
                 if tool.name == "bash":
                     tool.description = "Run a read-only shell command to inspect the project. Do not modify files or system state."
-        context = Context(system, view, tools)
+        return Context(system, messages, tools)
+
+    def request_context(self, messages: list, model=None) -> Context:
+        """Use the same instructions, tools and extension view for generation and compaction."""
+        s = self.session
+        view = s.bus.chain("context", list(messages), self)
+        context = self._base_context(view)
         if search := s.services.get("search"):
             search.prepare(self, context, model or self.model)
         if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):

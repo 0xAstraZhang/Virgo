@@ -120,6 +120,7 @@ def stream(model: Model, ctx: Context, opts: StreamOptions) -> EventStream:
 def _events(responder: Responder, ctx: Context, out: AssistantMessage, opts: StreamOptions):
     r = responder(ctx) if callable(responder) else responder
     chars = len(ctx.system) + sum(len(json.dumps(asdict(m), default=str)) for m in ctx.messages)
+    chars += sum(len(json.dumps(asdict(t), ensure_ascii=False)) for t in ctx.tools)
     out.usage = Usage(input=chars // 4)
     yield StreamEvent("start", out)
     if r.delay:
