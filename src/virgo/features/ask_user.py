@@ -1,0 +1,187 @@
+"""ask_user: the lead agent asks the user a question when it is unsure.
+
+The model may offer up to three options; the first is its recommendation and a final
+"type my own answer" option is always added. Without options the user gets a plain input box.
+
+Runs that the user did not start (woken by a schedule, a finished background job or a teammate)
+may have nobody watching. There the question is withdrawn after ``askUser.unattendedTimeout``
+seconds (default 300) and the recommended option is taken; without options the agent is told
+that no answer came. Runs with no interactive client never show the question at all.
+"""
+
+from __future__ import annotations
+
+from ..agent.types import AgentTool, ToolContext, ToolResult
+from ..ai.types import UserMessage
+from ..harness.extensions import ExtensionAPI
+from ..harness.ui import TIMED_OUT
+
+LETTERS = "ABCD"
+MAX_OPTIONS = 3
+DEFAULT_UNATTENDED_TIMEOUT = 300.0
+
+NO_USER = (
+    "Nobody can answer questions in this session (it is not interactive). Proceed with the most "
+    "reasonable assumption and state that assumption explicitly in your final answer."
+)
+DECLINED = (
+    "The user dismissed the question without answering. Do not ask it again; proceed with your best "
+    "judgment, or stop and explain what you need."
+)
+
+DESCRIPTION = (
+    "Ask the user a question and wait for the answer. Use it only when the request is ambiguous or a "
+    "decision is genuinely the user's to make, and the answer would change what you do. Do not ask "
+    "for things you can find out yourself with tools, for permission to run tools (the harness asks "
+    "for that), or for approval of finished work. Never use it to collect API keys, passwords or "
+    "other secrets: answers are kept in the conversation.\n"
+    "Ask one question per call. Optionally offer up to 3 options: put your recommended option first. "
+    "The user can always type their own answer instead. Leave options out for open questions."
+)
+
+
+def _timeout(api: ExtensionAPI) -> float:
+    value = api.settings.get("askUser.unattendedTimeout", DEFAULT_UNATTENDED_TIMEOUT)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return DEFAULT_UNATTENDED_TIMEOUT
+    return max(0.0, float(value))
+
+
+def _wait_text(seconds: float) -> str:
+    if seconds >= 60 and seconds % 60 == 0:
+        n = int(seconds // 60)
+        return f"{n} minute{'s' if n != 1 else ''}"
+    return f"{seconds:g} seconds"
+
+
+def setup(api: ExtensionAPI) -> None:
+    state = {"unattended": False}
+
+    def run_started(rt, prompts) -> None:
+        if rt.role == "main":
+            state["unattended"] = bool(prompts) and all(
+                getattr(p, "kind", None) == "notification" for p in prompts
+            )
+
+    def watch(ev, rt) -> None:
+        # A message the user typed into an unattended run shows that someone is there.
+        if (
+            state["unattended"]
+            and rt.role == "main"
+            and ev.type == "message_end"
+            and isinstance(ev.message, UserMessage)
+            and ev.message.kind is None
+        ):
+            state["unattended"] = False
+
+    def execute(args: dict, ctx: ToolContext) -> ToolResult:
+        question = args["question"].strip()
+        options = [
+            {"label": str(o["label"]).strip(), "description": str(o.get("description") or "").strip()}
+            for o in args.get("options") or []
+        ]
+        if not question:
+            return ToolResult.error("question is empty")
+        if any(not o["label"] for o in options):
+            return ToolResult.error("every option needs a non-empty label")
+        ui = api.ui
+        if not getattr(ui, "interactive", False):
+            return ToolResult.text(NO_USER, details={"question": question, "answered": False})
+        timeout = _timeout(api) if state["unattended"] else None
+        details: dict = {"question": question, "options": [o["label"] for o in options]}
+
+        def declined() -> ToolResult:
+            if ctx.signal.is_set():
+                return ToolResult.error("Operation aborted.")
+            return ToolResult.text(DECLINED, details={**details, "answered": False})
+
+        if options:
+            labels = []
+            for i, o in enumerate(options):
+                label = f"{LETTERS[i]}. {o['label']}" + (" (recommended)" if i == 0 else "")
+                labels.append(label + (f" — {o['description']}" if o["description"] else ""))
+            custom = f"{LETTERS[len(options)]}. Type my own answer"
+            picked = ui.select(question, [*labels, custom], timeout=timeout)
+            if picked is TIMED_OUT:
+                text = (
+                    f"The user did not answer within {_wait_text(timeout)}, so the recommended option "
+                    f"was taken automatically: A. {options[0]['label']}. Mention in your final answer "
+                    "that this was decided without the user, so they can revisit it."
+                )
+                return ToolResult.text(
+                    text, details={**details, "answered": False, "timed_out": True, "choice": "A",
+                                   "answer": options[0]["label"]}
+                )
+            if picked is None:
+                return declined()
+            if picked != custom:
+                i = labels.index(picked)
+                return ToolResult.text(
+                    f"The user chose {LETTERS[i]}: {options[i]['label']}",
+                    details={**details, "answered": True, "choice": LETTERS[i], "answer": options[i]["label"]},
+                )
+            # The user is present once they picked the custom option: wait for them to type.
+            timeout = None
+        answer = ui.input(question, timeout=timeout)
+        if answer is TIMED_OUT:
+            text = (
+                f"The user did not answer within {_wait_text(timeout)}. Proceed with the most reasonable "
+                "assumption and state that assumption explicitly in your final answer."
+            )
+            return ToolResult.text(text, details={**details, "answered": False, "timed_out": True})
+        if answer is None or not answer.strip():
+            return declined()
+        answer = answer.strip()
+        return ToolResult.text(
+            f"The user answered: {answer}", details={**details, "answered": True, "answer": answer}
+        )
+
+    api.register_tool(
+        AgentTool(
+            name="ask_user",
+            label="Ask user",
+            description=DESCRIPTION,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The complete question, understandable on its own",
+                    },
+                    "options": {
+                        "type": "array",
+                        "maxItems": MAX_OPTIONS,
+                        "description": "Optional choices, recommended first. A free-text choice is added automatically.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string", "minLength": 1, "description": "Short choice text"},
+                                "description": {"type": "string", "description": "What choosing it means"},
+                            },
+                            "required": ["label"],
+                        },
+                    },
+                },
+                "required": ["question"],
+            },
+            execute=execute,
+            snippet="ask the user a question when a decision is theirs or the request is ambiguous",
+            read_only=True,
+            sequential=True,
+        ),
+        roles=("main",),
+    )
+    api.add_system_section(
+        "ask_user",
+        lambda role: (
+            "<asking>\nWhen the request is ambiguous or a decision is the user's to make, and the answer "
+            "would change what you do, ask with ask_user instead of guessing. Do not ask what you can find "
+            "out with tools.\n</asking>"
+        )
+        if role == "main"
+        else None,
+        order=20,
+    )
+    api.on("before_agent_start", run_started)
+    api.on("agent_event", watch)

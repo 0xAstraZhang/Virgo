@@ -156,6 +156,7 @@ BUILTIN_FEATURES = [
     "permission",
     "search",
     "todo",
+    "ask_user",
     "subagent",
     "skills",
     "memory",
