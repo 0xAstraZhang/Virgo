@@ -44,6 +44,7 @@ from .extensions import (
 from .prompt import build_system
 from .settings import Paths, Settings
 from .store import SessionStore
+from .telemetry import record_call
 from .ui import UI
 
 
@@ -72,6 +73,7 @@ class Runtime:
         self.role = role
         self.cwd = Path(cwd or session.cwd)
         self.store = store
+        self.accounting_store = session.store
         self.ids: list = list(ids or [])
         self.model = model or session.model
         self.system_extra = system_extra
@@ -108,6 +110,11 @@ class Runtime:
     def _on_event(self, ev: AgentEvent) -> None:
         if ev.type == "message_end":
             self.ids.append(self.store.append_message(ev.message) if self.store else None)
+            if self.role != "main" and isinstance(ev.message, AssistantMessage):
+                record_call(
+                    self.accounting_store, self.model, ev.message, purpose="agent",
+                    started=self._call_started, effort=self.session.effort, agent=self.name,
+                )
             if self._native_source is not None:
                 self._native_source.append(ev.message)
         self.session.bus.emit("agent_event", ev, self)
@@ -173,6 +180,7 @@ class Runtime:
 
     # -- model calls ---------------------------------------------------------
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
+        self._call_started = time.monotonic()
         fallback = AssistantMessage(api=self.model.api, provider=self.model.provider, model=self.model.id)
         return EventStream(self._attempts(messages, signal), fallback)
 
@@ -190,6 +198,8 @@ class Runtime:
                 self.compact(reason="auto", model=model)
             ctx = self.request_context(messages, model)
             opts = StreamOptions(signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort)
+            request_model = model
+            self._call_started = time.monotonic()
             failed: AssistantMessage | None = None
             for ev in ai.stream(model, ctx, opts):
                 if ev.type == "error" and ev.partial.stop_reason == "error":
@@ -198,10 +208,13 @@ class Runtime:
                 yield ev
             if failed is None:
                 return
+            duration = time.monotonic() - self._call_started
             if failed.error_kind == "overflow" and not overflow_done and self.compaction:
                 overflow_done = True
                 yield StreamEvent("retry", failed)
                 if self.compact(reason="overflow", model=model) is not None:
+                    record_call(self.accounting_store, request_model, failed, purpose="retry",
+                                started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
                     continue
             elif failed.error_kind == "retryable" and retries < max_retries and not signal.is_set():
                 retries += 1
@@ -221,6 +234,8 @@ class Runtime:
                     failed.stop_reason = "aborted"
                     yield StreamEvent("error", failed)
                     return
+                record_call(self.accounting_store, request_model, failed, purpose="retry",
+                            started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
                 continue
             yield StreamEvent("error", failed)
             return
@@ -330,6 +345,17 @@ class AgentSession:
         if "medium" in (model.supported_reasoning_levels or ()):
             return "medium"
         return model.default_reasoning_level
+
+    def complete(self, purpose: str, system: str, prompt: str, *, model=None,
+                 effort=None, max_tokens=None, signal=None, agent="main", tool_call_id=None):
+        """Account for a tool-free request separately from the conversation context."""
+        model = model or self.small_model
+        store = self.store  # A concurrent session switch must not move this request's usage.
+        started = time.monotonic()
+        message = ai.complete(model, system, prompt, max_tokens=max_tokens, effort=effort, signal=signal)
+        record_call(store, model, message, purpose=purpose, started=started, effort=effort,
+                    agent=agent, tool_call_id=tool_call_id)
+        return message
 
     def _open_store(self, session) -> SessionStore:
         if session is None:

@@ -507,12 +507,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 cwd = cwd[1:]
             cwd = "…" + cwd
         self.screen_stack[0].query_one("#cwd", Static).update(Text(cwd, no_wrap=True))
-        usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-        for entry in self.session.store.branch():
-            msg = entry.get("message", {})
-            if msg.get("role") == "assistant":
-                for key in usage:
-                    usage[key] += msg.get("usage", {}).get(key, 0)
+        usage = self.session.store.total_usage()
         tokens = self.session.context_tokens()
         window = self.session.main.model.context_window
         context = f"~{tokens / max(window, 1):.1%}/{short_number(window)}"

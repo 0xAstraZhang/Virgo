@@ -96,17 +96,19 @@ def test_openai_compaction_uses_complete_window_and_roundtrips(make_session, mon
         return copy.deepcopy(result)
 
     monkeypatch.setattr(compaction, "native_compact", compact)
-    monkeypatch.setattr(compaction, "complete", lambda *a, **kw: pytest.fail("must use native compaction"))
+    monkeypatch.setattr(session, "complete", lambda *a, **kw: pytest.fail("must use native compaction"))
     session.compact()
     assert requests[0][0] is session.model
     assert requests[0][1].messages == original
     assert len(session.main.messages) == 1
     assert session.main.messages[0].usage.total == 0
+    assert session.store.total_usage() == dict(input=90000, output=100, cache_read=0, cache_write=0)
     assert responses.convert_messages(session.main.messages, api=native_api(session.model)) == payload
     assert session.context_tokens() < 1000
 
     restored = AgentSession(project, model=spec, session=session.store.path, extensions=False)
     try:
+        assert restored.store.total_usage() == session.store.total_usage()
         assert responses.convert_messages(restored.main.messages, api=native_api(session.model)) == payload
         monkeypatch.setattr("virgo.ai.auth.authenticated_model", lambda model, signal=None: model)
         observed = []
@@ -154,9 +156,11 @@ def test_native_failure_preserves_history_and_never_calls_summary(make_session, 
     append(session.main, UserMessage("important"), AssistantMessage([TextContent("work")]))
     before = copy.deepcopy(session.main.messages), list(session.main.ids), list(session.store.entries)
     monkeypatch.setattr(compaction, "native_compact", lambda *a, **kw: AssistantMessage(stop_reason="error", error_message="failed"))
-    monkeypatch.setattr(compaction, "complete", lambda *a, **kw: pytest.fail("unexpected summary fallback"))
+    monkeypatch.setattr(session, "complete", lambda *a, **kw: pytest.fail("unexpected summary fallback"))
     assert session.compact() is None
-    assert (session.main.messages, session.main.ids, session.store.entries) == before
+    assert (session.main.messages, session.main.ids) == before[:2]
+    assert session.store.entries[:-1] == before[2]
+    assert session.store.custom("model_call")[-1]["stop_reason"] == "error"
 
 
 def test_manual_native_compaction_after_abort_starts_new_operation(make_session, monkeypatch):

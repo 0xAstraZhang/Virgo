@@ -8,14 +8,15 @@ Rules look like ``bash(npm test*)``, ``edit(src/**)``, ``read(~/.ssh/*)``, ``mcp
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..agent.types import AgentTool, Block, ToolCallEvent
-from ..ai import complete
 from ..ai.types import UserMessage
 from ..tools.fs import IGNORE_DIRS, glob_match
 from .permission_scope import command_path_targets, command_review_reason, inside, is_read_only_command
@@ -68,9 +69,10 @@ def review_tool_call(session, ev: ToolCallEvent, boundary_reason: str) -> tuple[
     )
     if len(payload) > 40_000:
         return False, "action is too large for an automatic review"
-    msg = complete(
-        session.small_model, REVIEW_SYSTEM, payload, max_tokens=512, effort=session.small_model_effort,
+    msg = session.complete(
+        "permission", REVIEW_SYSTEM, payload, max_tokens=512, effort=session.small_model_effort,
         signal=getattr(ev, "signal", None) or session.main.agent.signal,
+        agent=ev.agent, tool_call_id=ev.call_id,
     )
     if msg.stop_reason != "stop":
         raise RuntimeError("review did not complete")
@@ -192,11 +194,18 @@ class Permissions:
     def decide(self, ev: ToolCallEvent) -> tuple[str, str]:
         s = self.session.settings
         mode = self.mode_for(ev.agent)
+        started = time.monotonic()
+
+        def finish(decision, reason, source, *, audit_reason=None):
+            self._record(ev, mode, decision, audit_reason if audit_reason is not None else reason,
+                         source, started)
+            return decision, reason
+
         if mode == "accept-all":
-            return "allow", ""
+            return finish("allow", "", "accept-all")
         for rule in s.get("permissions.deny", []) or []:
             if rule_matches(rule, ev):
-                return "deny", f"Denied by permission rule {rule!r}."
+                return finish("deny", f"Denied by permission rule {rule!r}.", "deny-rule")
         if mode == "plan":
             read_only = plan_tool_allowed(ev.tool)
             if ev.tool_name == "bash":
@@ -205,26 +214,42 @@ class Permissions:
             elif ev.tool_name == "team_spawn" and ev.args.get("worktree"):
                 read_only = False
             if not read_only:
-                return "deny", "Plan mode is read-only: investigate and plan, but do not modify anything yet."
-            return "allow", ""
+                return finish("deny", "Plan mode is read-only: investigate and plan, but do not modify anything yet.", "plan")
+            return finish("allow", "", "plan")
         if self._approval_key(ev) in self.session_approvals:
-            return "allow", ""
+            return finish("allow", "", "session-approval")
         for rule in s.get("permissions.allow", []) or []:
             if rule_matches(rule, ev):
-                return "allow", ""
+                return finish("allow", "", "allow-rule", audit_reason=rule)
         boundary_reason = self._boundary_reason(ev)
         if not boundary_reason:
-            return "allow", ""
+            return finish("allow", "", "workspace")
+        source = "auto-review"
         try:
             safe, reason = review_tool_call(self.session, ev, boundary_reason)
         except Exception:  # noqa: BLE001 - failed reviews must go to a person, never fail open
             signal = getattr(ev, "signal", None) or self.session.main.agent.signal
             if signal.is_set():
-                return "deny", "Permission review was interrupted."
+                return finish("deny", "Permission review was interrupted.", "interrupted")
             safe, reason = False, f"automatic review could not approve this action: {boundary_reason}"
+            source = "review-error"
         if mode != self.mode_for(ev.agent):
+            finish("superseded", reason, source)
             return self.decide(ev)
-        return ("allow", "") if safe else ("ask", f"automatic review requires approval: {reason}")
+        return finish("allow", "", source, audit_reason=reason) if safe else finish(
+            "ask", f"automatic review requires approval: {reason}", source
+        )
+
+    def _record(self, ev, mode, decision, reason, source, started):
+        # Link to the existing tool call without duplicating command bodies or file contents.
+        arguments = json.dumps(ev.args, sort_keys=True, ensure_ascii=False, default=str)
+        self.api.append_entry("permission_decision", {
+            "tool_call_id": ev.call_id, "tool": ev.tool_name, "agent": ev.agent,
+            "cwd": str(ev.cwd), "mode": mode, "source": source, "decision": decision,
+            "reason": reason, "arguments_sha256": hashlib.sha256(arguments.encode()).hexdigest(),
+            "model": self.session.small_model.spec if source in {"auto-review", "review-error", "interrupted"} else None,
+            "duration": round(time.monotonic() - started, 6),
+        })
 
     def remember(self, ev: ToolCallEvent) -> str:
         if ev.tool_name == "bash" and command_path_targets(ev.args.get("command", ""), ev.cwd) is None:
@@ -260,11 +285,16 @@ class Permissions:
             return Block(reason)
         summary = describe(ev)
         who = "" if ev.agent == "main" else f"[{ev.agent}] "
+        started = time.monotonic()
         answer = self.session.ui.confirm(
             f"{who}{summary}\n  ({reason})  Allow? [y]es / [n]o / [a]lways this session", ev.agent
         )
         if mode != self.mode_for(ev.agent):
+            self._record(ev, mode, "superseded", "Permission mode changed during confirmation.", "human", started)
             return self.on_tool_call(ev, _session)
+        self._record(ev, mode, "allow" if answer in {"y", "a"} else "deny",
+                     {"y": "Allowed once.", "a": "Allowed for this session.", "n": "Denied by user."}.get(
+                         answer, "No approver available."), "human", started)
         if answer is None:
             return Block(
                 f"Permission required ({reason}) but nobody is available to approve it. "

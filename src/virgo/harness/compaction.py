@@ -13,9 +13,10 @@ Per-result output budgets live in tools/truncate.py.
 from __future__ import annotations
 
 import json
+import time
 from typing import TYPE_CHECKING
 
-from ..ai import complete, native_compact
+from ..ai import native_compact
 from ..ai.compaction import context_binding, is_native_context, native_api
 from ..ai.transform import is_user_like, strip_thinking
 from ..ai.types import (
@@ -28,6 +29,7 @@ from ..ai.types import (
     message_to_dict,
 )
 from .store import summary_message
+from .telemetry import record_call
 
 if TYPE_CHECKING:
     from .session import Runtime
@@ -151,6 +153,8 @@ def _files(messages: list) -> tuple[set, set]:
 
 def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
     model = model or rt.model
+    if reason == "manual" and not rt.agent.running:
+        rt.agent.signal.clear()
     rt.restore_native_context(model)
     if api := native_api(model):
         return _native_compact(rt, model, api, focus, reason)
@@ -182,8 +186,9 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, mo
     if focus:
         prompt += f"Pay special attention to: {focus}\n\n"
     prompt += SUMMARY_FORMAT
-    msg = complete(session.small_model, SUMMARY_SYSTEM, prompt, max_tokens=8000, effort=session.small_model_effort)
-    if msg.stop_reason in ("error", "refusal") or not msg.text().strip():
+    msg = session.complete("compaction", SUMMARY_SYSTEM, prompt, max_tokens=8000,
+                           effort=session.small_model_effort, signal=rt.agent.signal, agent=rt.name)
+    if msg.stop_reason != "stop" or rt.agent.signal.is_set() or not msg.text().strip():
         session.ui.print(f"[compaction failed: {msg.error_message or 'empty summary'}]", "error")
         return None
     summary = msg.text().strip()
@@ -229,8 +234,6 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     if not messages or (len(messages) == 1 and is_native_context(messages[0])):
         return None
     session = rt.session
-    if reason == "manual" and not rt.agent.running:
-        rt.agent.signal.clear()
     keep = int(session.settings.get("compaction.keepRecentTokens", 20000))
     if reason == "overflow":
         keep //= 2
@@ -244,12 +247,15 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
         session.ui.print("[OpenAI native compaction uses the provider's summary instructions; focus is not applied.]", "warn")
     context = rt.request_context(messages[:cut], model)
     binding = context_binding(model, context)
+    started = time.monotonic()
     result = native_compact(
         model,
         context,
         StreamOptions(signal=rt.agent.signal, max_tokens=min(8000, model.max_tokens), effort=session.effort),
         focus=focus,
     )
+    record_call(rt.accounting_store, model, result, purpose="compaction", started=started,
+                effort=session.effort, agent=rt.name)
     if rt.agent.signal.is_set() or not is_native_context(result):
         session.ui.print(f"[compaction failed: {result.error_message or result.stop_reason}]", "error")
         return None

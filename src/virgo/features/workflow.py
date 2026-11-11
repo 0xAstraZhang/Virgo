@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
-from ..ai import complete
 from ..ai.types import UserMessage
 from ..ai.validate import parse_json_loose, validate
 from ..harness.extensions import ExtensionAPI
@@ -159,10 +158,11 @@ class Context:
                     system
                     or "You are a focused workflow step. Complete exactly the requested step and return only the result."
                 )
-                msg = complete(
-                    self.session.model,
+                msg = self.session.complete(
+                    "workflow",
                     sys_prompt,
                     instructions,
+                    model=self.session.model,
                     effort=self.session.effort,
                     signal=self.signal,
                 )

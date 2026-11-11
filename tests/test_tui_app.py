@@ -379,6 +379,11 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             metrics = app.query_one("#metrics", Static)
             status = app.query_one("#status", Static)
             assert str(metrics.content).startswith("↑0 ↓0  ~0.0%/")
+            session.store.append("custom", kind="model_call", data={
+                "purpose": "permission", "usage": {"input": 12, "output": 3, "cache_read": 45},
+            })
+            app.update_status()
+            assert str(metrics.content).startswith("↑12 ↓3 cache 45  ~0.0%/")
             assert metrics.styles.text_align == "right"
             assert metrics.render_line(0).text.endswith(str(metrics.content))
             assert metrics.render_line(0).text.startswith(" ")

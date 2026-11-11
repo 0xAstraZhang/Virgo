@@ -298,6 +298,21 @@ class SessionStore:
         path.reverse()
         return path
 
+    def total_usage(self) -> dict[str, int]:
+        """Main messages plus auxiliary calls on this branch, including pre-compaction history."""
+        totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+        for entry in self.branch():
+            message = entry.get("message", {})
+            if message.get("role") == "assistant":
+                usage = message.get("usage", {})
+            elif entry.get("type") == "custom" and entry.get("kind") == "model_call":
+                usage = entry.get("data", {}).get("usage", {})
+            else:
+                continue
+            for key in totals:
+                totals[key] += usage.get(key, 0)
+        return totals
+
     def build_context(self) -> tuple[list, list]:
         """Messages to send for the active branch, with their entry ids."""
         path = self.branch()

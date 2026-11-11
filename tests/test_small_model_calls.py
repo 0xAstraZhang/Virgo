@@ -73,6 +73,12 @@ def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consu
 
     assert requests == [("faux/small", expected, [])]
     assert session.effort == "max"
+    records = session.store.custom("model_call")
+    assert len(records) == 1
+    assert records[0]["purpose"] == consumer
+    assert records[0]["model"] == "faux/small"
+    assert records[0]["effort"] == expected
+    assert records[0]["usage"]["input"] > 0
 
 
 @pytest.mark.parametrize("limit,model_max,expected", [
