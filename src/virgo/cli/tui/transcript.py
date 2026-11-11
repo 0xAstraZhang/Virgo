@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from functools import partial
 
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.geometry import Size
+from textual.layout import DockArrangeResult
+from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
 from ...agent.types import AgentEvent
@@ -25,9 +30,29 @@ from ...ai.types import (
 )
 from .folding import Foldable, FoldHeader
 
+# Saved runs replayed at a time: when a session opens, then whenever the
+# reader scrolls within OLDER_MARGIN screens of the first replayed run.
+HISTORY_RUNS = 30
+OLDER_MARGIN = 2
+TOOL_KINDS = ("tool_call", "tool_result", "sources")
+
 
 def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def _is_run_start(entry: dict) -> bool:
+    return entry.get("type") == "custom" and entry.get("kind") == "transcript_run_start"
+
+
+def _split_runs(entries: list[dict]) -> list[list[dict]]:
+    """Split at run starts, where replay state resets, so each part stands alone."""
+    runs: list[list[dict]] = [[]]
+    for entry in entries:
+        if _is_run_start(entry) and runs[-1]:
+            runs.append([])
+        runs[-1].append(entry)
+    return runs
 
 
 class EventView(Foldable):
@@ -48,6 +73,7 @@ class EventView(Foldable):
         self.expanded = False
         self.header = FoldHeader("", markup=False)
         self.output = Static("", classes="output", markup=False)
+        self._output_text: str | None = None
         self.set_class(kind in ("tool_call", "tool_result"), "tool")
 
     def compose(self) -> ComposeResult:
@@ -80,8 +106,12 @@ class EventView(Foldable):
         if width and title.cell_len > width:
             title.truncate(max(0, width - 3), overflow="crop")
             title.append("." * min(3, width))
-        self.header.update(title)
-        self.output.update(self.text or "(no output)")
+        # Headers are one fixed line, so new text never needs a layout pass.
+        self.header.update(title, layout=False)
+        output = self.text or "(no output)"
+        if output != self._output_text:
+            self._output_text = output
+            self.output.update(output)
         self.output.display = self.expanded
 
     def set_text(self, text: str) -> None:
@@ -155,39 +185,52 @@ class AssistantView(Foldable):
         self.thought_body = Vertical(classes="thought-body")
         self.body = Markdown(open_links=False)
         self.error = Static("", classes="error", markup=False)
+        self.body.display = self.error.display = False
         self.has_prompt = False
 
     def compose(self) -> ComposeResult:
+        # A replayed run is built before it is mounted; compose its events in
+        # one pass. Live runs are mounted empty and receive events afterwards.
         yield self.thought_header
-        yield self.thought_body
+        with self.thought_body:
+            yield from self.events
         yield self.body
         yield self.error
 
     def on_mount(self) -> None:
-        self.body.display = self.error.display = False
         self._render_thinking()
 
     async def append_event(self, event: EventView) -> None:
         self.events.append(event)
-        await self.thought_body.mount(event)
+        if self.thought_body.is_attached:
+            await self.thought_body.mount(event)
         self._render_thinking()
+
+    async def _show_answer(self, text: str) -> None:
+        # Each Markdown update parses in a thread and remounts its blocks, so
+        # skip no-op updates (every message start clears the answer).
+        if text != self.text:
+            self.text = text
+            if self.body.is_attached:
+                await self.body.update(text)
+            else:
+                # Not mounted yet (history replay): render once, on mount.
+                self.body = Markdown(text, open_links=False)
+        self.body.display = bool(text)
 
     async def clear_answer(self) -> None:
         for event in self.answer_events:
             event.display = True
         self.answer_events.clear()
-        self.text = ""
-        await self.body.update("")
-        self.body.display = self.error.display = False
+        await self._show_answer("")
+        self.error.display = False
         self._render_thinking()
 
     async def set_answer(self, message: AssistantMessage, events: list[EventView]) -> None:
         self.message, self.answer_events = message, events
-        self.text = "".join(event.text for event in events)
         for event in events:
             event.display = False
-        await self.body.update(self.text)
-        self.body.display = bool(self.text)
+        await self._show_answer("".join(event.text for event in events))
         error = ""
         if message.stop_reason in ("error", "refusal", "aborted", "length"):
             error = message.error_message or {
@@ -209,7 +252,7 @@ class AssistantView(Foldable):
             title.append(self.activity)
         else:
             title.append(f"Thinking · {count} events")
-        self.thought_header.update(title)
+        self.thought_header.update(title, layout=False)
         self.thought_header.set_class(self.activity is not None, "active")
         self.thought_body.display = bool(self.show_thinking and count)
 
@@ -260,6 +303,17 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self._message_open: set[str] = set()
         self._run: AssistantView | None = None
         self._running = False
+        # Top-level widgets built by history replay, mounted together at the end.
+        self._staged: list[Widget] | None = None
+        # Saved runs not replayed yet (oldest first) and how to show them.
+        self._older: list[list[dict]] = []
+        self._older_lock = asyncio.Lock()
+        self._older_pending = False
+        self._older_tools = False
+        # While older runs are prepended: a widget below them, its last y, and
+        # whether the mount is still under way.
+        self._keep_in_view: tuple[Widget, int] | None = None
+        self._prepending = False
 
     @property
     def follow_latest(self) -> bool:
@@ -278,22 +332,99 @@ class Transcript(VerticalScroll, inherit_bindings=False):
 
     def action_page_up(self) -> None:
         self.release_anchor()
-        self.scroll_page_up(animate=False)
+        self._scroll_page(-1)
 
     def action_page_down(self) -> None:
-        self.scroll_page_down(animate=False)
+        self._scroll_page(1)
+
+    def _scroll_page(self, direction: int) -> None:
+        # Scroll now: Textual otherwise applies an absolute target after the
+        # next refresh, which would be stale once older runs are prepended.
+        y = self.scroll_y + direction * self.scrollable_content_region.height
+        self.scroll_to(y=y, animate=False, immediate=True)
 
     def action_scroll_home(self) -> None:
         self.release_anchor()
-        self.scroll_home(animate=False, x_axis=False)
+        if self._older:
+            # The top is the session's first run: replay the rest, then go there.
+            self.run_worker(partial(self._load_older, everything=True), group="older-history")
+        else:
+            self.scroll_home(animate=False, x_axis=False)
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        self._check_older()
+
+    def watch_virtual_size(self) -> None:
+        self._check_older()
+
+    def _check_older(self) -> None:
+        height = self.size.height
+        if self._older and not self._older_pending and height and self.scroll_y < OLDER_MARGIN * height:
+            self._older_pending = True
+            # Pass the method, not a coroutine: a worker cancelled before it
+            # starts would otherwise leave that coroutine never awaited.
+            self.run_worker(self._load_older, group="older-history")
+
+    async def _load_older(self, *, everything: bool = False) -> None:
+        try:
+            async with self._older_lock:
+                if self._older:
+                    count = len(self._older) if everything else HISTORY_RUNS
+                    runs, self._older = self._older[-count:], self._older[:-count]
+                    widgets = await self._replay_detached([entry for run in runs for entry in run], True)
+                    with self.app.batch_update():
+                        first = self.children[0] if self.children else None
+                        if first is not None and not everything:
+                            # Prepending moves everything down; keep the reader's place.
+                            self._keep_in_view = (first, first.virtual_region.y)
+                        self._prepending = True
+                        try:
+                            await self.mount_all(widgets, before=first)
+                        finally:
+                            self._prepending = False
+        finally:
+            self._older_pending = False
+        if everything:
+            self.scroll_home(animate=False, x_axis=False)
+        else:
+            self.call_after_refresh(self._check_older)
+
+    def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
+        arrangement = super().arrange(size, optimal)
+        if self._keep_in_view is not None and not optimal:
+            # The compositor scrolls right after arranging, so moving the
+            # scroll position by however far the prepended runs pushed this
+            # widget keeps even the first frame in place. (Textual applies its
+            # own bottom anchor at the same point.)
+            widget, old_y = self._keep_in_view
+            new_y = next((p.region.y for p in arrangement.placements if p.widget is widget), old_y)
+            # Follow it through any reflow during the mount, then stop. Update
+            # this first: moving the scrollbar below can re-enter arrange.
+            self._keep_in_view = (widget, new_y) if self._prepending else None
+            if new_y != old_y:
+                y = self.scroll_y + new_y - old_y
+                self.set_reactive(Widget.scroll_y, y)
+                self.set_reactive(Widget.scroll_target_y, y)
+                if self.show_vertical_scrollbar:
+                    self.vertical_scrollbar.position = y
+        return arrangement
 
     async def _assistant(self, agent: str = "main") -> AssistantView:
         if self._run is None:
             self._run = AssistantView(show_thinking=self.show_thinking)
             self.active[agent] = self.activity_card = self._run
-            await self.mount(self._run)
+            await self._place(self._run)
         self.active[agent] = self.activity_card = self._run
         return self._run
+
+    async def _place(self, widget: Widget, *, before: Widget | None = None) -> None:
+        if self._staged is None:
+            await self.mount(widget, before=before)
+        elif before is None:
+            self._staged.append(widget)
+        else:
+            self._staged.insert(self._staged.index(before), widget)
 
     def show_activity(self, label: Text | None) -> None:
         if self.activity_card is not None:
@@ -464,16 +595,57 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         if pending is not None and (pending.has_prompt or pending.events):
             self.finish_activity()
             pending = None
-        await self.mount(Static(Text("> " + text), classes="user-message"), before=pending)
+        await self._place(Static(Text("> " + text), classes="user-message"), before=pending)
         if pending is not None:
             pending.has_prompt = True
 
     async def load_history(self, entries: list[dict]) -> None:
+        self.workers.cancel_group(self, "older-history")
         self.finish_activity()
         self.tools.clear()
         self.results.clear()
-        await self.remove_children()
+        self._older, self._older_pending, self._older_tools, self._keep_in_view = [], False, False, None
+        self._prepending = False
         has_run_boundaries = any(e.get("kind") == "transcript_run_start" for e in entries)
+        if has_run_boundaries:
+            # Every widget costs Textual a mount and a share of each layout
+            # pass, so show the latest runs now and the rest when scrolled to.
+            runs = _split_runs(entries)
+            self._older = runs[:-HISTORY_RUNS]
+            entries = [entry for run in runs[-HISTORY_RUNS:] for entry in run]
+        widgets = await self._replay_detached(entries, has_run_boundaries)
+        # Mounting replayed widgets one by one laid out the whole transcript
+        # after each, so loading grew quadratically. Mount and lay out once.
+        with self.app.batch_update():
+            await self.remove_children()
+            await self.mount_all(widgets)
+        self.go_latest()
+        # Content that fits on screen can't scroll, so check once it's laid out.
+        self.call_after_refresh(self._check_older)
+
+    async def _replay_detached(self, entries: list[dict], has_run_boundaries: bool) -> list[Widget]:
+        """Replay saved entries into new top-level widgets that are not mounted yet.
+
+        A separate, never-mounted Transcript keeps its replay state, so a live
+        run here is unaffected when older runs are replayed later.
+        """
+        replay = Transcript()
+        replay.show_thinking = self.show_thinking
+        replay._staged = []
+        await replay._replay(entries, has_run_boundaries)
+        replay.finish_activity()
+        # Older runs come first, as if the whole history had been replayed.
+        self.tools = replay.tools | self.tools
+        self.results = replay.results | self.results
+        if self._older_tools:
+            # Loaded history follows the last toggle, like the runs already shown.
+            for card in replay._staged:
+                for event in getattr(card, "events", ()):
+                    if event.kind in TOOL_KINDS:
+                        event.set_expanded(True)
+        return replay._staged
+
+    async def _replay(self, entries: list[dict], has_run_boundaries: bool) -> None:
         partials: dict[str, AssistantMessage] = {}
         for entry in entries:
             if entry.get("type") == "message":
@@ -493,7 +665,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 await self.consume(AgentEvent("message_end", message=message))
                 if isinstance(message, AssistantMessage):
                     partials.pop("main", None)
-            elif entry.get("type") == "custom" and entry.get("kind") == "transcript_run_start":
+            elif _is_run_start(entry):
                 partials.clear()
                 await self.consume(AgentEvent("agent_start"))
                 await self.consume(AgentEvent("turn_start"))
@@ -528,8 +700,6 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     await self.add_notice("Unable to display a saved tool event.", "warn")
             elif entry.get("type") == "compaction":
                 await self.add_notice("Earlier context compacted · full conversation retained", "dim")
-        self.finish_activity()
-        self.go_latest()
 
     async def add_notice(self, text: str, style: str | None = None) -> None:
         if self._run is not None:
@@ -539,12 +709,12 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             await self._append(row)
         else:
             rich_style = {"error": "red", "warn": "yellow", "dim": "dim", "ok": "green", "bold": "bold"}.get(style, "")
-            await self.mount(Static(Text(text, style=rich_style), classes="notice"))
+            await self._place(Static(Text(text, style=rich_style), classes="notice"))
 
     def toggle_tools(self) -> None:
-        self.show_tools = not self.show_tools
+        self.show_tools = self._older_tools = not self.show_tools
         for card in self.query(EventView):
-            if card.kind in ("tool_call", "tool_result", "sources"):
+            if card.kind in TOOL_KINDS:
                 card.set_expanded(self.show_tools)
 
     def toggle_thinking(self) -> None:
