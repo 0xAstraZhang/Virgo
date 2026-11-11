@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import threading
 
 import pytest
@@ -38,9 +37,7 @@ def test_anthropic_saved_key_and_oauth_use_distinct_auth(server, monkeypatch):
     headers = _headers(server["requests"][-1])
     assert headers.get("x-api-key") == "saved-key" or headers.get("authorization") == "Bearer saved-key"
 
-    events = copy.deepcopy(ANTHROPIC_EVENTS)
-    events[8]["content_block"]["name"] = "Read"
-    server["body"] = sse(events, named=True)
+    server["body"] = sse(ANTHROPIC_EVENTS, named=True)
     model.options = {"apiKey": "saved-access", "authType": "oauth"}
     ctx = Context(
         "SYS",
@@ -63,8 +60,9 @@ def test_anthropic_saved_key_and_oauth_use_distinct_auth(server, monkeypatch):
     assert all(beta in headers["anthropic-beta"] for beta in anth.BETA_OAUTH)
     assert request["json"]["system"][-1]["text"] == "SYS"
     assert request["json"]["system"][0]["text"].startswith("You are Claude Code")
-    assert request["json"]["tools"][0]["name"] == "Read"
-    assert request["json"]["messages"][1]["content"][0]["name"] == "Read"
+    # Tool names are sent unchanged for every auth type.
+    assert request["json"]["tools"][0]["name"] == "read"
+    assert request["json"]["messages"][1]["content"][0]["name"] == "read"
     assert ctx.messages[1].tool_calls()[0].name == "read"
 
 

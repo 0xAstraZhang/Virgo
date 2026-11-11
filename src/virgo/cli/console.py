@@ -13,9 +13,10 @@ import select
 import shutil
 import sys
 import threading
+import time
 
 from ..agent.types import AgentEvent
-from ..harness.ui import UI
+from ..harness.ui import TIMED_OUT, UI
 
 STYLES = {
     "dim": "\033[2m",
@@ -166,7 +167,9 @@ class ConsoleBroker:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
 
-    def read_value(self, question: str, write, *, password: bool = False) -> str | None:
+    def read_value(
+        self, question: str, write, *, password: bool = False, timeout: float | None = None
+    ) -> str | None:
         with self._ask_lock:
             with self._state_lock:
                 if self.closed:
@@ -187,7 +190,15 @@ class ConsoleBroker:
                 self.resume_reading()
                 ready.wait()
                 write(question + "\n> ")
-                ev.wait()
+                if not ev.wait(timeout):
+                    with self._state_lock:
+                        answered = ev.is_set()  # the answer may have arrived just now
+                        if not answered:
+                            self._cancelled = True
+                            ev.set()
+                    if not answered:
+                        write("\n")
+                        return TIMED_OUT
                 return None if self.closed or self._cancelled else self._answer
             finally:
                 # A cancelled form must finish flushing partial input and
@@ -199,6 +210,10 @@ class ConsoleBroker:
                 self._password = False
                 self._prompt_ready = None
                 self._read_complete = None
+                if already_reading and not self.closed:
+                    # The question borrowed a read that was serving the REPL (e.g. steering
+                    # while the agent works); keep reading lines for it afterwards.
+                    self.resume_reading()
 
     def ask(self, question: str, write) -> str | None:
         answer = self.read_value(question, write)
@@ -211,7 +226,7 @@ class ConsoleBroker:
 
 def _brief(args: dict | None) -> str:
     args = args or {}
-    for key in ("command", "path", "pattern", "description", "name", "to", "action"):
+    for key in ("command", "path", "pattern", "description", "name", "to", "action", "question"):
         if key in args and isinstance(args[key], str):
             v = args[key].replace("\n", " ")
             return v if len(v) < 100 else v[:97] + "..."
@@ -261,19 +276,28 @@ class TerminalUI(UI):
             self._newline()
         return self.broker.ask(self._style("? ", "warn") + question, self.write)
 
-    def input(self, question: str, *, password: bool = False, default: str = "") -> str | None:
+    def input(
+        self, question: str, *, password: bool = False, default: str = "", timeout: float | None = None
+    ) -> str | None:
         with self._lock:
             self._newline()
         prompt = question + (f" [{default}]" if default and not password else "")
-        value = self.broker.read_value(prompt, self.write, password=password)
+        value = self.broker.read_value(prompt, self.write, password=password, timeout=timeout)
+        if value is TIMED_OUT:
+            self.print("(no answer in time)", "dim")
+            return value
         return default if value == "" else value
 
-    def select(self, question: str, options: list[str]) -> str | None:
+    def select(self, question: str, options: list[str], *, timeout: float | None = None) -> str | None:
         if not options:
             return None
+        deadline = None if timeout is None else time.monotonic() + timeout
         prompt = "\n".join([question, *(f"  {i}. {label}" for i, label in enumerate(options, 1))])
         while True:
-            value = self.input(prompt + "\nChoose a number (empty to cancel)")
+            left = None if deadline is None else max(0.0, deadline - time.monotonic())
+            value = self.input(prompt + "\nChoose a number (empty to cancel)", timeout=left)
+            if value is TIMED_OUT:
+                return value
             if value is None or not value.strip():
                 return None
             value = value.strip()

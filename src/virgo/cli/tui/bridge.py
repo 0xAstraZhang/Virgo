@@ -16,7 +16,7 @@ from typing import Any
 
 from ...agent.types import AgentEvent
 from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest
-from ...harness.ui import UI
+from ...harness.ui import TIMED_OUT, UI
 
 
 @dataclass(frozen=True)
@@ -158,18 +158,20 @@ class FullscreenUI(UI):
             for request_id in ids:
                 self.resolve_confirmation(request_id, None)
 
-    def select(self, question: str, options: list[str]) -> str | None:
+    def select(self, question: str, options: list[str], *, timeout: float | None = None) -> str | None:
         if not options:
             return None
-        return self._ask_input(question, options=tuple(options))
+        return self._ask_input(question, timeout=timeout, options=tuple(options))
 
-    def input(self, question: str, *, password: bool = False, default: str = "") -> str | None:
-        return self._ask_input(question, password=password, default=default)
+    def input(
+        self, question: str, *, password: bool = False, default: str = "", timeout: float | None = None
+    ) -> str | None:
+        return self._ask_input(question, timeout=timeout, password=password, default=default)
 
     def choose_preferences(self, request: PreferenceRequest) -> PreferenceChoice | None:
         return self._ask_input("Select model" if request.kind == "model" else "Effort", preferences=request)
 
-    def _ask_input(self, question: str, **kwargs) -> str | PreferenceChoice | None:
+    def _ask_input(self, question: str, timeout: float | None = None, **kwargs) -> str | PreferenceChoice | None:
         with self._lock:
             signal = self._signals.get("main")
             if self._closed or (signal is not None and signal.is_set()):
@@ -178,10 +180,15 @@ class FullscreenUI(UI):
             waiting = _Waiting(request)
             self._inputs[request.id] = waiting
             self.push("input", request)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        timed_out = False
         while not waiting.ready.wait(0.05):
             if signal is not None and signal.is_set():
                 self.resolve_input(request.id, None)
-        return waiting.answer
+            elif deadline is not None and time.monotonic() >= deadline:
+                # Withdraws the form; an answer that won the race is kept instead.
+                timed_out = self.resolve_input(request.id, None)
+        return TIMED_OUT if timed_out else waiting.answer
 
     def is_input_pending(self, request_id: int) -> bool:
         with self._lock:
