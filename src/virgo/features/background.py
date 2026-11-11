@@ -138,9 +138,20 @@ class JobManager:
             if len(out) > 1200:
                 text += f"\n[{len(out)} chars total — use job_output id={job.id} for all of it]"
             self.api.notify(text, mode="steer", source="jobs")
+        except Exception as e:  # noqa: BLE001
+            # Leaving the job unreported would hold print mode until its idle timeout;
+            # surface the lost notification instead so the user still learns the outcome.
+            try:
+                self.api.ui.print(
+                    f"[jobs: could not deliver the notification for {job.id} ({job.status}): "
+                    f"{type(e).__name__}: {e}]",
+                    "error",
+                )
+            except Exception:  # noqa: BLE001
+                pass
         finally:
-            # Idle detection waits for this flag, not the status: the
-            # notification must be queued before print mode can finish.
+            # Idle detection waits for this flag, not the status: the notification
+            # must be queued (or its failure reported) before print mode can finish.
             job.reported = True
 
 

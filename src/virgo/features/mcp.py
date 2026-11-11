@@ -200,7 +200,11 @@ def load_config(api: ExtensionAPI) -> dict:
                 servers.update(listed)
             except ValueError as e:  # includes JSONDecodeError
                 api.ui.print(f"[mcp: invalid {f}: {e}]", "error")
-    servers.update(api.settings.get("mcpServers", {}) or {})
+    from_settings = api.settings.get("mcpServers", {}) or {}
+    if isinstance(from_settings, dict):
+        servers.update(from_settings)
+    else:
+        api.ui.print("[mcp: invalid settings: mcpServers must be an object]", "error")
     return {
         k: v for k, v in servers.items() if isinstance(v, dict) and v.get("command") and not v.get("disabled")
     }
