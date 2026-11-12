@@ -110,10 +110,20 @@ def probe_shell(value: str) -> Shell:
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ValueError(f"Shell unavailable: {executable} ({type(error).__name__})") from error
     version = result.stdout.decode("utf-8", errors="replace").strip()
+    reason = ""
     if result.returncode or not version or len(version) > 120 or "\n" in version:
-        raise ValueError(f"Shell unavailable: {executable} (version probe failed)")
-    if kind not in {"sh", "dash"} and not re.match(r"\d+\.\d+", version):
-        raise ValueError(f"Shell unavailable: {executable} (unrecognized version)")
+        reason = "version probe failed"
+    elif kind not in {"sh", "dash"} and not re.match(r"\d+\.\d+", version):
+        reason = "unrecognized version"
+    if reason:
+        def excerpt(data: bytes) -> str:
+            text = data.decode("utf-8", errors="replace")
+            return repr(text[:1024]) + (" [truncated]" if len(text) > 1024 else "")
+
+        raise ValueError(
+            f"Shell unavailable: {executable} ({reason}; exit_code={result.returncode}; "
+            f"stdout={excerpt(result.stdout)}; stderr={excerpt(result.stderr)})"
+        )
     if kind == "powershell" and not version.startswith("5.1.") and int(version.split(".")[0]) < 7:
         raise ValueError("PowerShell requires Windows PowerShell 5.1 or PowerShell 7+.")
     if kind == "pwsh" and int(version.split(".")[0]) < 7:

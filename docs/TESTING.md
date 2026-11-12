@@ -264,6 +264,19 @@ PY
 
 ## Shell selection failures in CI
 
+PR #14 comparison run `43189800255` at `231eb63` failed seven Ubuntu `pwsh`
+cases at shell selection with `version probe failed`; base, Windows and macOS
+passed. This message does not distinguish a nonzero exit from empty or malformed
+version output. Failed probes now include the exit code and escaped stdout/stderr,
+each limited to 1024 characters with explicit truncation. Four real-process
+`/shell` regressions cover nonzero exit, empty/invalid version and long output;
+all failed before the diagnostic change and passed afterwards.
+
+For targeted investigation, dispatch `shell-selection.yml` at the PR branch with
+`powershell_diagnostics=true`. It runs only Ubuntu's seven `pwsh` cases and the
+four diagnostic regressions, and requires `pwsh` to exist before collection.
+Normal workflow runs retain their complete three-platform selection.
+
 Shell execution scenarios must assert that `/shell <name>` selected the requested
 interpreter before sending commands, and include the recorded UI output on failure.
 A failed selection preserves the previous shell: otherwise PowerShell tests can

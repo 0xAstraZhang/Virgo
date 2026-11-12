@@ -33,6 +33,30 @@ SHELLS = [name for name in ("bash", "zsh", "sh", "dash", "pwsh", "powershell")
           if shutil.which(name) and (os.name != "nt" or name in {"pwsh", "powershell"})]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable fixture")
+@pytest.mark.parametrize("output,exit_code", [("7.4.0", 23), ("", 0), ("bad-version", 0), ("x" * 2000, 0)])
+def test_failed_shell_probe_reports_process_output(make_session, tmp_path, output, exit_code):
+    # Failure modes: nonzero exit despite valid stdout, empty/malformed version,
+    # and excessive output. Diagnostics must survive /shell without changing selection.
+    session = make_session()
+    before = selected(session)
+    executable = tmp_path / "pwsh"
+    executable.write_text(
+        f"#!/bin/sh\nprintf '%s' '{output}'\nprintf 'probe error\\n' >&2\nexit {exit_code}\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    session.prompt(f'/shell "{executable}"')
+    diagnostic = session.ui.text
+    assert selected(session) == before
+    assert f"exit_code={exit_code}" in diagnostic
+    assert "stderr='probe error\\n'" in diagnostic
+    assert f"stdout={output[:1024]!r}" in diagnostic
+    if len(output) > 1024:
+        assert "[truncated]" in diagnostic
+        assert output not in diagnostic
+
+
 
 @pytest.mark.parametrize("name", SHELLS)
 def test_select_execute_and_model_metadata_survive_restart(make_session, project, name):
