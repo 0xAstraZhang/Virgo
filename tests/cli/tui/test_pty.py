@@ -6,6 +6,7 @@ signals, and terminal restoration. No user Terminal window is opened or changed.
 
 from __future__ import annotations
 
+import json
 import re
 import struct
 import sys
@@ -15,6 +16,43 @@ import pytest
 from tests.support.terminal import ENTER_SCREEN, PtyClient, fcntl, plain, termios
 
 pytestmark = pytest.mark.pty
+
+
+@pytest.mark.parametrize("draft", ["", "unfinished draft "])
+def test_fullscreen_pty_history_round_trip_past_slash_command(project, tmp_path, draft):
+    home = tmp_path / "pty-history-home"
+    home.mkdir()
+    entries = ["older input", "/login", "newer input"]
+    (home / "tui-history.jsonl").write_text(
+        "".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8"
+    )
+    with PtyClient(project, home) as terminal:
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
+        if draft:
+            terminal.send(draft.encode())
+            terminal.wait_for(lambda data: draft in plain(data))
+        # Both directions must cross a slash command without its menu stealing arrows.
+        for key, expected in [
+            (b"\x1b[A", "newer input"),
+            (b"\x1b[A", "/login"),
+            (b"\x1b[A", "older input"),
+            (b"\x1b[B", "/login"),
+            (b"\x1b[B", "newer input"),
+        ]:
+            start = len(terminal.output)
+            terminal.send(key)
+            terminal.wait_for(lambda data, expected=expected: expected in plain(data), start=start)
+        terminal.send(b"\x1b[B")
+        terminal.pump(0.2)
+        # Submitting a suffix proves we restored exactly the draft (including blank).
+        start = len(terminal.output)
+        terminal.send(b"history-sentinel\r")
+        terminal.wait_for(
+            lambda data: f"(faux) You said: {draft}history-sentinel" in plain(data), start=start
+        )
+        terminal.send(b"\x04")
+        assert terminal.finish() == 0
+        terminal.assert_restored()
 
 
 def test_fullscreen_pty_paste_resize_and_clean_exit(project, tmp_path):
