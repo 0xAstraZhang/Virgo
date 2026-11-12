@@ -217,3 +217,17 @@ finally:
     session.shutdown()
 PY
 ```
+
+## Shell selection failures in CI
+
+Shell execution scenarios must assert that `/shell <name>` selected the requested
+interpreter before sending commands, and include the recorded UI output on failure.
+A failed selection preserves the previous shell: otherwise PowerShell tests can
+accidentally exercise Bash, pass negative assertions, or skip native-error coverage.
+Keep these cases enabled on macOS/Linux when the executable is installed; PowerShell
+7 is supported there, including a `powershell` alias pointing to version 7+.
+
+PR #13's initial comparison at `6fd1442` reported four macOS failures and one new
+skip, all following unsuccessful PowerShell selection. Its macOS baseline passed
+the same cases. The initial report omitted the selection error, so it does not
+establish why the runner could not launch or validate PowerShell.
