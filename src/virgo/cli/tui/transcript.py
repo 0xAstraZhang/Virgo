@@ -544,12 +544,12 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             terminal_error = message.stop_reason in ("error", "refusal", "aborted", "length")
             if agent == "main" and (terminal_error or (not message.tool_calls() and message.stop_reason != "pause_turn")):
                 last_tool = max((i for i, row in blocks.items() if row.kind in ("tool_call", "tool_result")), default=-1)
-                text_rows = [(i, row) for i, row in blocks.items() if row.kind == "text" and row.text.strip()]
+                text_rows = [(i, row) for i, row in blocks.items() if row.kind == "text"]
                 answer = [row for i, row in text_rows if i > last_tool]
                 # Native search can append its final answer to a text block
                 # opened before the search. Block order alone must not hide
                 # all available text when a terminal message has no suffix.
-                if not answer:
+                if not any(row.text.strip() for row in answer):
                     answer = [row for _, row in text_rows]
                 await card.set_answer(message, answer)
             self._message_open.discard(agent)

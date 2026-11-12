@@ -7,6 +7,8 @@ import copy
 import json
 from dataclasses import asdict
 
+import pytest
+
 from virgo.agent.types import AgentEvent
 from virgo.ai.providers.responses import parse_events
 from virgo.ai.stream import StreamEvent
@@ -24,6 +26,41 @@ from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.transcript import AssistantView, Transcript
 
 from tests.support.tui import TranscriptApp
+
+
+@pytest.mark.parametrize("region", ["ordinary", "trailing", "fallback"])
+def test_answer_preserves_whitespace_blocks_live_and_in_history(region):
+    answer = [TextContent("First paragraph."), TextContent("\n\n"), TextContent("Second paragraph.")]
+    search = RawContent("openai-responses", {
+        "type": "web_search_call", "id": "search", "status": "completed",
+        "action": {"type": "search", "query": "release"},
+    })
+    content = answer
+    expected = "First paragraph.\n\nSecond paragraph."
+    if region == "trailing":
+        content = [TextContent("Checking."), search, *answer]
+    elif region == "fallback":
+        content = [*answer, search, TextContent("\n\n")]
+        expected += "\n\n"
+    message = AssistantMessage(content, api="openai-responses")
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("message_start", message=message))
+            await view.consume(AgentEvent("message_end", message=message))
+            for replay in (False, True):
+                if replay:
+                    await view.load_history([{"type": "message", "message": message_to_dict(message)}])
+                await pilot.pause()
+                card = view.query_one(AssistantView)
+                assert card.body.display
+                assert card.body._markdown == expected
+                assert len(card.body.query("MarkdownParagraph")) == 2
+                assert all(not event.display for event in card.answer_events)
+
+    asyncio.run(scenario())
 
 
 def test_bridge_only_coalesces_matching_token_deltas():

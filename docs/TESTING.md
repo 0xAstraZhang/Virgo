@@ -4,6 +4,17 @@ The suite exercises real tool execution, local HTTP servers, session flows and
 Textual/PTY interactions without live model credentials. See the development
 section in [README](../README.md) for commands and the test layout.
 
+## Answer whitespace regression (PR #14)
+
+Answer selection must preserve whitespace-only text blocks: they can separate
+Markdown paragraphs. Use a nonblank check only to decide whether a terminal
+message needs the pre-search text fallback. The Textual live/history regression
+in `test_native_event_order.py` covers ordinary answers, trailing answers after
+search, and fallback answers with a whitespace-only suffix. All three cases
+failed before the two-line correction; afterwards, all 37 transcript, native-event,
+timeline, run-boundary and history-load tests passed. Ruff and `git diff --check`
+passed as well.
+
 ## Cross-platform fixtures and assertions
 
 ### Native-search final-answer regression
