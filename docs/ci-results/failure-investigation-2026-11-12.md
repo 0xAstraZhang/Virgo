@@ -5,6 +5,13 @@ changes and intermittent PowerShell startup failures. Re-running can change the
 latter; it does not resolve an unmapped test rename. The initial observations
 below are retained as evidence; the subsequent CI correction is described next.
 
+Follow-up: the residual macOS `SIGSEGV` after startup-profile protection has now
+been reproduced with a native crash report. It faults in .NET's named-mutex wait
+on the cold-cache telemetry path. See the
+[dedicated investigation and CI mitigation](powershell-macos-2026-11-12.md).
+The older failures below did not retain native reports and cannot all be assigned
+to this newly captured mechanism.
+
 ## CI correction
 
 The comparator now explicitly maps PR #18's two replacement names to the original
