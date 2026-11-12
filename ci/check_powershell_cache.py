@@ -6,6 +6,10 @@ changed HOME or parent environment; leaked temporary directories after success,
 test failure or collection error; swallowed pytest failure; different protection
 for base and head; unintended Windows environment changes. Missing pwsh fails
 this acceptance check rather than silently skipping it.
+
+Cold-cache regression: concurrent Unix shells must not initialize telemetry or
+create telemetry.uuid (which takes a process-wide named mutex). An inherited
+explicit telemetry opt-in must not re-enable that unrelated CI startup path.
 """
 from __future__ import annotations
 
@@ -41,6 +45,9 @@ def main():
                "TMPDIR": str(temporary), "TMP": str(temporary), "TEMP": str(temporary),
                "VIRGO_TEST_PWSH": powershell, "VIRGO_INHERITED_CACHE": str(inherited),
                "VIRGO_EXPECTED_HOME": os.environ.get("HOME", "")}
+        # Exercise the runner's policy even when its parent explicitly opts in.
+        if os.name != "nt":
+            env["POWERSHELL_TELEMETRY_OPTOUT"] = "false"
         original_environment = dict(os.environ)
         source.write_text(textwrap.dedent('''\
             import os
@@ -66,6 +73,7 @@ def main():
 
                 def launch(index):
                     command = ("$PSVersionTable.PSVersion.ToString(); "
+                               "[Microsoft.PowerShell.Telemetry.ApplicationInsightsTelemetry]::CanSendTelemetry; "
                                f"Write-Output 'command-{index}'")
                     result = subprocess.run([
                         os.environ["VIRGO_TEST_PWSH"], "-NoLogo", "-NoProfile",
@@ -74,11 +82,14 @@ def main():
                     assert result.returncode == 0, result.stderr
                     assert f"command-{index}" in result.stdout
                     assert result.stdout.splitlines()[0].startswith("7.")
+                    if os.name != "nt":
+                        assert result.stdout.splitlines()[1] == "False", result.stdout
 
                 with ThreadPoolExecutor(max_workers=8) as pool:
                     list(pool.map(launch, range(24)))
                 if os.name != "nt":
                     assert (cache / "powershell" / "StartupProfileData-NonInteractive").read_bytes() == b""
+                    assert not (cache / "powershell" / "telemetry.uuid").exists()
             '''), encoding="utf-8")
 
         def run(label, expected):

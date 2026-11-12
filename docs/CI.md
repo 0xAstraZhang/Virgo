@@ -45,13 +45,18 @@ an ambiguous result, an incomplete run, or a missing artifact fails the comparis
 New skips also fail the comparison so a platform skip cannot hide a regression.
 Module-level collection skips are reported separately from individual test skips.
 
-## PowerShell startup cache isolation
+## PowerShell startup isolation
 
 Both revisions use `ci/run_pytest.py`, from the same comparison-tools checkout.
 On Unix it gives pytest a fresh `XDG_CACHE_HOME` and pre-creates empty, read-only
 `powershell/StartupProfileData-Interactive` and `StartupProfileData-NonInteractive`
 files. This avoids inheriting corrupt profiles and prevents concurrent probes or
-commands in one job from overwriting them. Other caches remain writable, `HOME`
+commands in one job from overwriting them. It also sets
+`POWERSHELL_TELEMETRY_OPTOUT=true` for the Unix pytest child: a fresh cache would
+otherwise make concurrent shells initialize a telemetry UUID through a named
+mutex that can crash inside .NET. See the
+[macOS native-crash investigation](ci-results/powershell-macos-2026-11-12.md)
+for the captured fault and validation. Other caches remain writable, `HOME`
 is unchanged, and the temporary directory is removed when pytest exits, including
 test failures and collection errors. Run this wrapper as an unprivileged user;
 it fails explicitly if the startup files remain writable. Windows keeps its
@@ -78,6 +83,8 @@ It must cover these failure modes before runner changes are made:
 - A previously executed test disappears or starts being skipped without being reported.
 - An approved test replacement hides a regression or collides with its old name.
 - A corrupt inherited PowerShell startup cache or concurrent writers crash probes.
+- Cold-cache PowerShell processes initialize telemetry and enter its named-mutex
+  path, including when the parent explicitly enables telemetry.
 - Cache protection prevents real shell execution, changes HOME, leaks directories,
   swallows pytest failures, or differs between base and head.
 
