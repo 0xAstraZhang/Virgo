@@ -67,10 +67,20 @@ def main():
                 def launch(index):
                     command = ("$PSVersionTable.PSVersion.ToString(); "
                                f"Write-Output 'command-{index}'")
-                    result = subprocess.run([
+                    process = subprocess.Popen([
                         os.environ["VIRGO_TEST_PWSH"], "-NoLogo", "-NoProfile",
                         "-NonInteractive", "-Command", command,
-                    ], capture_output=True, text=True, timeout=30)
+                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    try:
+                        stdout, stderr = process.communicate(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        sample = Path(os.environ["VIRGO_DIAGNOSTICS_DIR"]) / f"sample-{process.pid}.txt"
+                        subprocess.run(["/usr/bin/sample", str(process.pid), "1", "1", "-file", str(sample)],
+                                       capture_output=True, text=True, timeout=15)
+                        process.kill()
+                        stdout, stderr = process.communicate(timeout=15)
+                        raise AssertionError(("native timeout", process.pid, stdout, stderr, str(sample)))
+                    result = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
                     assert result.returncode == 0, result.stderr
                     assert f"command-{index}" in result.stdout
                     assert result.stdout.splitlines()[0].startswith("7.")

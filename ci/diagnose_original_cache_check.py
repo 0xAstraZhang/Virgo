@@ -10,9 +10,11 @@ mode = sys.argv[1]
 root = Path(tempfile.mkdtemp(prefix='virgo-original-cache-check-'))
 Path('diagnostic-path.txt').write_text(str(root))
 env = dict(os.environ)
+env['VIRGO_DIAGNOSTICS_DIR'] = str(root)
 if mode != 'readonly-plain':
     env.update({'DOTNET_DbgEnableMiniDump': '1', 'DOTNET_DbgMiniDumpType': '1',
-                'DOTNET_DbgMiniDumpName': str(root / 'pwsh.%p.dmp'), 'DOTNET_EnableCrashReport': '1'})
+                'DOTNET_DbgMiniDumpName': str(root / 'pwsh.%p.dmp'), 'DOTNET_EnableCrashReport': '1',
+                'DOTNET_CreateDumpDiagnostics': '1'})
 if mode == 'disabled':
     env['DOTNET_MultiCoreJitMinNumCpus'] = 'ffffffff'
 start = time.monotonic()

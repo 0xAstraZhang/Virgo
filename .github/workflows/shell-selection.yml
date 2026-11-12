@@ -26,6 +26,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p diagnostics
+          sleep 5
           cp -R "$(cat diagnostic-path.txt)" diagnostics/
           cp "$HOME"/Library/Logs/DiagnosticReports/pwsh* diagnostics/ 2>/dev/null || true
           python3 - <<'PY'
