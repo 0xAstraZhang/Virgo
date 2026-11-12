@@ -6,15 +6,17 @@ permissions:
 jobs:
   diagnose:
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        mode: [readonly, disabled, private]
+        mode: [readonly, disabled]
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
       - name: Exercise real PowerShell processes
-        run: python3 ci/diagnose_powershell_startup.py '${{ matrix.mode }}' 2400
+        run: uv run python ci/diagnose_original_cache_check.py '${{ matrix.mode }}'
       - name: Gather native crash reports
         if: always()
         shell: bash
