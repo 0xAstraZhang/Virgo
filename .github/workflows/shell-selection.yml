@@ -1,40 +1,44 @@
-name: Shell selection E2E
+name: PowerShell startup diagnostic
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
-    inputs:
-      powershell_diagnostics:
-        description: Run only PowerShell selection regressions on Ubuntu
-        type: boolean
-        default: false
 permissions:
   contents: read
 jobs:
-  shell-selection:
+  diagnose:
+    runs-on: macos-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.powershell_diagnostics && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
-    runs-on: ${{ matrix.os }}
+        mode: [readonly, disabled, private]
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync --locked
-      - name: Check CI runner end to end
+      - name: Exercise real PowerShell processes
+        run: python3 ci/diagnose_powershell_startup.py '${{ matrix.mode }}' 2400
+      - name: Gather native crash reports
+        if: always()
+        shell: bash
         run: |
-          uv run python ci/check_comparison.py
-          uv run python ci/check_powershell_cache.py
-      - if: ${{ !inputs.powershell_diagnostics }}
-        run: uv run python ci/run_pytest.py tests/harness/test_shell_commands.py tests/tools/test_shell_runtime.py -q --junitxml=shell-results.xml
-      - if: ${{ inputs.powershell_diagnostics }}
-        run: |
-          command -v pwsh
-          uv run python ci/run_pytest.py tests/harness/test_shell_commands.py -k 'pwsh or failed_shell_probe_reports' -v --junitxml=shell-results.xml
-      - run: uv run ruff check
+          mkdir -p diagnostics
+          cp -R "$(cat diagnostic-path.txt)" diagnostics/
+          cp "$HOME"/Library/Logs/DiagnosticReports/pwsh* diagnostics/ 2>/dev/null || true
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for path in Path('diagnostics').rglob('*.ips'):
+              print(path)
+              lines = path.read_text().splitlines()
+              try:
+                  report = json.loads('\n'.join(lines[1:]))
+                  index = report.get('faultingThread')
+                  print(json.dumps({'exception': report.get('exception'), 'faultingThread': index,
+                                    'thread': report['threads'][index] if index is not None else None}))
+              except Exception as error:
+                  print(error)
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: shell-results-${{ matrix.os }}
-          path: shell-results.xml
+          name: powershell-${{ matrix.mode }}
+          path: diagnostics/
+          retention-days: 7
