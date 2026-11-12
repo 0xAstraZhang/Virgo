@@ -24,6 +24,11 @@ virgo.cli                         全屏 TUI / plain REPL、-p 打印模式、--
 uv sync
 ```
 
+Codex 本地环境配置保存在 `.codex/environments/environment.toml`，应随项目一起纳入 Git。
+当前配置保留空的 setup 脚本，依赖仍按上面的命令手动安装。
+若创建工作树时报该文件 `ENOENT`，先将配置恢复到所选环境对应的源码目录，
+再重试；仅在其他工作树中恢复文件不会修复原目录的缺失路径。
+
 启动后输入 `/login`，选择账号登录或 API 接入。也可以继续使用环境变量，例如 Claude 的 API 密钥：
 
 ```bash
