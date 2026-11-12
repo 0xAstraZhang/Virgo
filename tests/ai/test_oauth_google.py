@@ -221,3 +221,54 @@ def test_google_http_errors_never_expose_response_body(monkeypatch, status, body
 def test_google_refresh_rejects_missing_project():
     with pytest.raises(oauth.AuthError, match="project"):
         google.refresh({"refresh": "r"})
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        (
+            {
+                "error": {
+                    "message": "Enable Gemini API",
+                    "status": "PERMISSION_DENIED",
+                    "details": [{"reason": "SERVICE_DISABLED"}],
+                }
+            },
+            "PERMISSION_DENIED: Enable Gemini API: SERVICE_DISABLED",
+        ),
+        (
+            {"error": "invalid_grant", "error_description": "Authorization expired"},
+            "invalid_grant: Authorization expired",
+        ),
+        ({"error": ["unexpected"]}, "HTTP 403)"),
+        ({"error": {"message": "access-secret\n\x1b[31m denied"}}, "[REDACTED]"),
+        ({"error": {"message": "x" * 3000}}, "…"),
+    ],
+)
+def test_google_error_details_are_useful_and_safe(monkeypatch, body, expected):
+    original_client = httpx.Client
+    transport = httpx.MockTransport(lambda req: httpx.Response(403, json=body))
+    monkeypatch.setattr(
+        google.httpx, "Client", lambda **kwargs: original_client(transport=transport, **kwargs)
+    )
+    with pytest.raises(oauth.AuthError) as error:
+        google._request(
+            "POST", google.CODE_ASSIST_URL + ":onboardUser", headers={"Authorization": "Bearer access-secret"}
+        )
+    message = str(error.value)
+    assert expected in message
+    assert "access-secret" not in message
+    assert "\x1b" not in message
+    assert "\n" not in message
+    assert len(message) < 1300
+
+
+def test_google_html_error_keeps_http_status(monkeypatch):
+    original_client = httpx.Client
+    transport = httpx.MockTransport(lambda req: httpx.Response(502, text="<html>proxy error</html>"))
+    monkeypatch.setattr(
+        google.httpx, "Client", lambda **kwargs: original_client(transport=transport, **kwargs)
+    )
+    with pytest.raises(oauth.AuthError, match=r"HTTP 502\)") as error:
+        google._request("POST", google.TOKEN_URL)
+    assert "<html>" not in str(error.value)
