@@ -548,9 +548,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             cwd = "…" + cwd
         update_static(root.query_one("#cwd", Static), Text(cwd, no_wrap=True))
         usage = Usage(**self.session.store.total_usage())
-        tokens = self.session.context_tokens()
         window = self.session.main.model.context_window
-        context = f"~{tokens / max(window, 1):.1%}/{short_number(window)}"
+        if self.session.main.messages:
+            tokens = self.session.context_tokens()
+            context = f"~{tokens / max(window, 1):.1%}/{short_number(window)}"
+        else:
+            context = f"0.0%/{short_number(window)}"
         used = (
             f"↑{short_number(usage.input_total)} ↓{short_number(usage.output)}"
             f" cache {usage.cache_hit_rate:.1%}"
