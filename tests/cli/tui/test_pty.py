@@ -208,7 +208,7 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--model', 'faux
         terminal.wait_for(lambda data: ENTER_SCREEN in data and "Thinking" in plain(data))
         before_browser = len(terminal.output)
         terminal.send(b"\x12")
-        terminal.wait_for(lambda data: "Sessions" in plain(data) and "Running" in plain(data), start=before_browser)
+        terminal.wait_for(lambda data: "Session" in plain(data) and "Updated" in plain(data) and "Running" in plain(data), start=before_browser)
         before_new = len(terminal.output)
         terminal.send(b"n")
         terminal.wait_for(lambda data: "auto review" in plain(data), start=before_new)
