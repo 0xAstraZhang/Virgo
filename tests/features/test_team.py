@@ -53,8 +53,9 @@ def test_team_messaging_plan_approval_and_shutdown(make_session):
     assert not (s.cwd / "out.txt").exists()  # plan mode blocked the early write
     assert "approved" in team.review(rid, True, "go ahead")
     wait_until(lambda: (s.cwd / "out.txt").exists())
-    assert (s.cwd / "out.txt").read_text() == "made by alice"
+    # Creation precedes writing; wait for the teammate to finish before reading.
     wait_until(lambda: team.members["alice"].state == "idle")
+    assert (s.cwd / "out.txt").read_text() == "made by alice"
     assert "Shutdown requested" in team.request_stop("alice")
     wait_until(lambda: team.members["alice"].state == "stopped")
 

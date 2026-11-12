@@ -126,3 +126,17 @@ names and PR identity, including on reruns. Missing event data fails resolution
 without querying the live PR. Manual `workflow_dispatch` runs resolve the selected
 PR from the API at startup and retain the existing latest-PR fallback. The
 workflow runs the resolution end-to-end checks before producing its target.
+
+## Team output synchronization
+
+The Linux [PR #10 comparison run](https://github.com/0xAstraZhang/Virgo/actions/runs/43172126634)
+at `4c69352` exposed a test race: `out.txt` existed before the teammate finished
+writing, so the approval/shutdown scenario read an empty file. File existence is
+not a completion signal. Wait for both creation and the teammate's idle state
+before checking the exact content; waiting only for idle could observe the idle
+state before the approved turn begins. Keep the pre-approval write prohibition
+and shutdown assertions intact.
+
+This was reproduced through the real session scenario by temporarily delaying
+the write for 100 ms after creating the output file. The original test failed
+with the same empty-content assertion; the synchronized test passes that case.
