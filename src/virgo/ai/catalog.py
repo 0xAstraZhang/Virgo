@@ -106,7 +106,12 @@ def _metadata(row: dict) -> dict:
         value = next((row[key] for key in sources if row.get(key) is not None), None)
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             out[dest] = value
-    levels = row.get("supported_reasoning_levels", row.get("reasoning"))
+    modalities = row.get("input_modalities")
+    if isinstance(modalities, list) and modalities:
+        out["vision"] = "image" in modalities
+    effort = row.get("effort")
+    effort = effort if isinstance(effort, dict) else {}
+    levels = row.get("supported_reasoning_levels", row.get("reasoning", effort.get("supported_levels")))
     if isinstance(levels, list):
         values = [level.get("effort") if isinstance(level, dict) else level for level in levels]
         supported = tuple(dict.fromkeys(value for value in values if isinstance(value, str) and value))
@@ -117,7 +122,7 @@ def _metadata(row: dict) -> dict:
         out["reasoning"] = levels
         if not levels:
             out["supported_reasoning_levels"] = ()
-    default_level = row.get("default_reasoning_level")
+    default_level = row.get("default_reasoning_level", effort.get("default_level"))
     if isinstance(default_level, str) and default_level:
         out["default_reasoning_level"] = default_level
         out.setdefault("reasoning", True)

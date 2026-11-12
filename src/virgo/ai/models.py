@@ -27,6 +27,11 @@ BUILTIN_PROVIDERS = {
 
 # Known model metadata (context window, max output). Unknown ids get provider defaults.
 KNOWN_MODELS = {
+    # Official documentation snapshot, verified 2026-11-12.
+    # https://docs.x.ai/developers/grok-4-7
+    # The directory may omit limits; do not mistake pricing thresholds for capacity.
+    "grok-4.7": {"contextWindow": 500_000},
+    "grok-4.7-fast": {"contextWindow": 500_000},
     "gpt-6-luna": {
         "contextWindow": 1_050_000,
         "maxTokens": 128_000,

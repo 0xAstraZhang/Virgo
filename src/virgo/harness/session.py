@@ -379,6 +379,7 @@ class AgentSession:
         self.busy = False
         self.wakeups: deque = deque()
         self.discovered_models: dict[str, dict] = {}
+        self._metadata_connections: set[tuple] = set()
         self.model = self.resolve(model or self.settings.get("model"))
         self.small_model = self._small_model(self.model)
 
@@ -409,6 +410,22 @@ class AgentSession:
 
     def resolve(self, spec: str) -> ai.Model:
         providers = self.settings.get("providers", {})
+        candidate = ai.resolve_model(spec, providers)
+        candidate.auth_path = str(self.auth.path)
+        # Resolve each connection once, including startup and direct /model selections.
+        # Directory enumeration itself must not recursively trigger another lookup.
+        connection = (candidate.provider, candidate.api, base_url(candidate))
+        if candidate.id != "_catalog" and connection not in self._metadata_connections:
+            from ..ai.catalog import CatalogError
+            from .preferences import _model_available, fetch_model_catalog
+
+            if candidate.api != "google-gemini-cli" and _model_available(candidate, self.auth.all()) and candidate.api != "faux":
+                self._metadata_connections.add(connection)
+                try:
+                    for item in fetch_model_catalog(candidate):
+                        self.discovered_models[f"{candidate.provider}/{item.id}"] = item.metadata
+                except CatalogError as error:
+                    self.ui.print(f"Model metadata: {error} Using configured or built-in limits.", "warn")
         if metadata := self.discovered_models.get(spec):
             provider, model_id = spec.split("/", 1)
             config = providers.get(provider, {})
@@ -419,7 +436,7 @@ class AgentSession:
                 "default_reasoning_level": "defaultReasoningLevel",
             }
             live = {names[key]: value for key, value in metadata.items() if key in names}
-            providers = {**providers, provider: {**config, "models": {**models, model_id: {**models.get(model_id, {}), **live}}}}
+            providers = {**providers, provider: {**config, "models": {**models, model_id: {**live, **models.get(model_id, {})}}}}
         m = ai.resolve_model(spec, providers)
         m.auth_path = str(self.auth.path)
         if m.api == "anthropic":

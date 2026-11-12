@@ -79,7 +79,9 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="virgo-discovery") as pool:
         pending = {pool.submit(fetch_model_catalog, model, signal): model for model in connections}
         for future in as_completed(pending):
-            provider = pending[future].provider
+            connection = pending[future]
+            provider = connection.provider
+            session._metadata_connections.add((provider, connection.api, base_url(connection)))
             # Never retain a failed provider's previous directory or stale metadata.
             session.discovered_models = {
                 spec: meta for spec, meta in session.discovered_models.items() if not spec.startswith(provider + "/")

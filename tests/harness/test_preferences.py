@@ -117,14 +117,14 @@ def test_catalog_prechecks_saved_login_endpoint_expiry_and_metadata(make_session
 
 def test_catalog_refreshes_on_each_open_and_does_not_fallback_after_failure(make_session, monkeypatch, provider_catalogs):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    session = make_session(settings={"providers": {"deepseek": {"models": {"new-model": {"contextWindow": "outdated-invalid"}}}}})
+    session = make_session(settings={"providers": {"deepseek": {"models": {"new-model": {"contextWindow": 123456}}}}})
     first = {item.spec for item in model_choices(session)}
     assert "deepseek/deepseek-flash" in first
     provider_catalogs["deepseek"] = [CatalogModel("new-model", {"context_window": 234567, "reasoning": True})]
     second = {item.spec for item in model_choices(session)}
     assert "deepseek/new-model" in second and "deepseek/deepseek-flash" not in second
     resolved = session.resolve("deepseek/new-model")
-    assert resolved.context_window == 234567 and resolved.reasoning
+    assert resolved.context_window == 123456 and resolved.reasoning
 
     def fail(*_):
         raise CatalogError("Model directory returned HTTP 503.")
