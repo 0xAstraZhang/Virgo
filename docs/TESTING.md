@@ -4,6 +4,22 @@ The suite exercises real tool execution, local HTTP servers, session flows and
 Textual/PTY interactions without live model credentials. See the development
 section in [README](../README.md) for commands and the test layout.
 
+## Transcript scroll ordering (Issue #24)
+
+`Transcript.go_latest()` uses Textual's anchor to scroll immediately and follow
+later layout changes. Do not add an unconditional deferred `scroll_end()` after
+it: that callback can run after page-up, restore the bottom position and silently
+resume following. Manual scrolling must take precedence over an earlier jump.
+
+`test_jump_then_manual_scroll_survives_refresh_and_new_messages` exercises the
+real Textual event loop with page-up and scroll-home. It first confirms overflow,
+then jumps and scrolls manually without yielding, and waits for a refresh callback
+barrier before checking the position and follow state. It also checks new messages,
+an explicit jump back to the bottom, and resizing. The page-up case failed before
+the fix with `scroll_y == 46` instead of `22`. Keep this ordering deterministic;
+fixed sleeps and retries can hide the race. A single `pilot.pause()` or a current
+bottom position does not prove that previously queued refresh callbacks have run.
+
 ## Concurrent fullscreen conversations
 
 `test_sessions.py` drives the assembled Textual app through Ctrl+R → n and
