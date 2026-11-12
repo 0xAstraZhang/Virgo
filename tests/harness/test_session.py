@@ -388,9 +388,10 @@ def test_loop_notices_are_not_recorded_as_model_calls(make_session):
     assert len(records) == 1 and records[0]["agent"] == "worker"
 
 
-def test_post_tool_hook_feedback_keeps_image_results(make_session, project):
+def test_post_tool_hook_feedback_keeps_image_results(make_session, project, python_command):
     (project / "pixel.png").write_bytes(b"\x89PNG fake")
-    hook = {"matcher": "read", "command": "echo checked >&2; exit 2"}
+    command = python_command("import sys; print('checked', file=sys.stderr); sys.exit(2)")
+    hook = {"matcher": "read", "command": command}
     session = make_session(
         faux.reply(tools=[("read", {"path": "pixel.png"})]), faux.reply("seen"),
         settings={"hooks": {"PostToolUse": [hook]}},
@@ -401,11 +402,12 @@ def test_post_tool_hook_feedback_keeps_image_results(make_session, project):
     assert result.text().endswith("\n\n[hook feedback] checked")
 
 
-def test_post_tool_hook_feedback_keeps_terminate(make_session):
+def test_post_tool_hook_feedback_keeps_terminate(make_session, python_command):
     from virgo.agent.types import AgentTool
     from virgo.ai.providers.faux import CALLS
 
-    hook = {"matcher": "finish", "command": "echo noted >&2; exit 2"}
+    command = python_command("import sys; print('noted', file=sys.stderr); sys.exit(2)")
+    hook = {"matcher": "finish", "command": command}
     session = make_session(faux.reply(tools=[("finish", {})]), settings={"hooks": {"PostToolUse": [hook]}})
     session.register_tool(
         AgentTool(

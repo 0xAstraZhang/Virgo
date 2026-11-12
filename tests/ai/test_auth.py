@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -17,7 +18,8 @@ def test_store_permissions_merge_logout_and_malformed_preservation(tmp_path):
     store.set("one", {"type": "api_key", "key": "first-secret"})
     AuthStore(path).set("two", {"type": "api_key", "key": "second-secret"})
     assert set(store.all()) == {"one", "two"}
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":  # Windows st_mode does not represent POSIX permissions.
+        assert path.stat().st_mode & 0o777 == 0o600
     assert store.remove(["one", "missing"]) == ["one"]
     assert store.all()["two"]["key"] == "second-secret"
     path.write_text('{"secret": broken}')

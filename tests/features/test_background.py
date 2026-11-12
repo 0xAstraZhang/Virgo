@@ -12,10 +12,11 @@ from virgo.features import background
 from tests.support.harness import RecordingUI, calls, last_message_text, tool_results, wait_until
 
 
-def test_background_job_notifies_idle_session(make_session):
+def test_background_job_notifies_idle_session(make_session, python_command):
     ui = RecordingUI()
+    command = python_command("import time; time.sleep(0.3); print('built')")
     s = make_session(
-        faux.reply(tools=[("bash", {"command": "sleep 0.3; echo built", "background": True})]),
+        faux.reply(tools=[("bash", {"command": command, "background": True})]),
         faux.reply("started"),
         ui=ui,
     )

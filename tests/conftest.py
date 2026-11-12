@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,6 +40,24 @@ def project(tmp_path) -> Path:
     p = tmp_path / "proj"
     p.mkdir()
     return p
+
+
+@pytest.fixture
+def python_command(tmp_path):
+    """Run Python through the real default shell, with native argument quoting."""
+    directory = tmp_path / "python commands"
+    directory.mkdir()
+    count = 0
+
+    def command(source):
+        nonlocal count
+        count += 1
+        script = directory / f"command-{count}.py"
+        script.write_text(source, encoding="utf-8", newline="\n")
+        argv = [sys.executable, str(script)]
+        return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+    return command
 
 
 @pytest.fixture

@@ -57,7 +57,7 @@ def test_grouping_sorts_by_workspace_creation_then_update_and_keeps_selection():
         ])
         app = PickerApp(picker)
         async with app.run_test(size=(80, 24)) as pilot:
-            assert row_ids(picker) == ["/new/second", "/new/first", "/old/first"]
+            assert row_ids(picker) == [str(Path(p)) for p in ("/new/second", "/new/first", "/old/first")]
             highlight = picker.query_one(OptionList).get_component_rich_style("option-list--option-highlighted")
             assert highlight.color.triplet == (255, 255, 255)
             assert highlight.bgcolor.triplet == (124, 58, 237)
@@ -67,12 +67,12 @@ def test_grouping_sorts_by_workspace_creation_then_update_and_keeps_selection():
             assert picker.selected_path == Path("/new/first")
             await pilot.press("g")
             assert not picker.grouped
-            assert row_ids(picker) == ["/old/first", "/new/second", "/new/first"]
+            assert row_ids(picker) == [str(Path(p)) for p in ("/old/first", "/new/second", "/new/first")]
             assert not any(option.disabled for option in picker.query_one(OptionList).options)
             assert picker.selected_path == Path("/new/first")
             await pilot.press("g")
             assert picker.grouped
-            assert row_ids(picker) == ["/new/second", "/new/first", "/old/first"]
+            assert row_ids(picker) == [str(Path(p)) for p in ("/new/second", "/new/first", "/old/first")]
             assert picker.selected_path == Path("/new/first")
             await pilot.press("down", "enter")
             assert app.result == Path("/old/first")
@@ -171,7 +171,7 @@ def test_paging_resize_and_chinese_title_stay_within_browser():
             await pilot.press("end")
             assert picker.selected_path == Path("/workspace/0")
             assert choices.scroll_y > 0
-            option = choices.get_option("/workspace/0")
+            option = choices.get_option(str(Path("/workspace/0")))
             assert option.prompt.status == "Ready"
             assert option.prompt.selected
             await pilot.resize_terminal(36, 14)

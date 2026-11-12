@@ -22,7 +22,7 @@ def edit(cwd, path, *pairs):
 
 def test_read_pages_large_files(project):
     f = project / "big.txt"
-    f.write_text("".join(f"line {i}\n" for i in range(1, MAX_LINES + 501)))
+    f.write_text("".join(f"line {i}\n" for i in range(1, MAX_LINES + 501)), newline="\n")
     r = READ.execute({"path": "big.txt"}, ctx(project))
     assert f"Use offset={MAX_LINES + 1}" in r.as_text()
     r2 = READ.execute({"path": "big.txt", "offset": MAX_LINES + 1, "limit": 3}, ctx(project))
@@ -83,9 +83,9 @@ def test_glob_and_grep(project):
     (project / "node_modules").mkdir()
     (project / "node_modules" / "skip.py").write_text("hello")
     g = GLOB.execute({"pattern": "**/*.py"}, ctx(project)).as_text()
-    assert "src/a.py" in g and "skip.py" not in g
+    assert str(Path("src/a.py")) in g and "skip.py" not in g
     out = GREP.execute({"pattern": "hello", "glob": "*.py"}, ctx(project)).as_text()
-    assert out == "src/a.py:1:def hello():"
+    assert out == f"{Path('src/a.py')}:1:def hello():"
     assert (
         "b.txt:1:hello world"
         in GREP.execute({"pattern": "HELLO", "ignore_case": True}, ctx(project)).as_text()
@@ -99,7 +99,7 @@ def test_glob_patterns_respect_path_segments(project):
 
     def found(pattern, **kw):
         out = GLOB.execute({"pattern": pattern, **kw}, ctx(project)).as_text()
-        return set() if out == "(no matches)" else set(out.splitlines())
+        return set() if out == "(no matches)" else {Path(line).as_posix() for line in out.splitlines()}
 
     nested = {"src/top.py", "src/pkg/a.py", "src/pkg/sub/c.py"}
     assert found("src/**/*.py") == nested  # `**/` also matches no directory at all
@@ -113,7 +113,7 @@ def test_glob_patterns_respect_path_segments(project):
 
     def searched(glob):
         out = GREP.execute({"pattern": "value", "glob": glob}, ctx(project)).as_text()
-        return {line.split(":", 1)[0] for line in out.splitlines()}
+        return {Path(line.split(":", 1)[0]).as_posix() for line in out.splitlines()}
 
     assert searched("**/*.py") == nested | {"main.py", "docs/a.py"}  # root-level files were skipped
     assert searched("src/**/*.py") == nested

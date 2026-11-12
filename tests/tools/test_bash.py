@@ -124,21 +124,21 @@ def test_background_download_failure_does_not_read_old_file(make_session, projec
     assert not (project / "consumed").exists()
 
 
-def test_bash_exit_codes_timeout_and_truncation(project):
-    r = BASH.execute({"command": "echo hi; exit 3"}, ctx(project))
+def test_bash_exit_codes_timeout_and_truncation(project, python_command):
+    r = run(project, python_command("import sys; print('hi'); sys.exit(3)"))
     assert r.is_error and "hi" in r.as_text() and "Exit code 3" in r.as_text()
-    assert BASH.execute({"command": "pwd"}, ctx(project)).as_text().strip() == str(project)
-    t = BASH.execute({"command": "sleep 5", "timeout": 0.3}, ctx(project))
+    assert run(project, python_command("import os; print(os.getcwd())")).as_text().strip() == str(project)
+    t = BASH.execute({"command": python_command("import time; time.sleep(5)"), "timeout": 0.3}, ctx(project))
     assert t.is_error and "timed out" in t.as_text()
-    big = BASH.execute({"command": f"seq 1 {MAX_LINES + 100}"}, ctx(project)).as_text()
+    big = run(project, python_command(f"for i in range(1, {MAX_LINES + 101}): print(i)")).as_text()
     assert "Output truncated" in big and big.rstrip().endswith(str(MAX_LINES + 100))
     saved = Path(big.split("Full output: ")[1].split("]")[0])
     assert saved.parent == project / ".virgo" / "outputs"
     assert saved.read_text().startswith("1\n")
 
 
-def test_bash_marks_child_processes(project):
-    result = BASH.execute({"command": 'printf "%s" "$VIRGO"'}, ctx(project))
+def test_bash_marks_child_processes(project, python_command):
+    result = run(project, python_command("import os; print(os.environ['VIRGO'])"))
     assert not result.is_error and result.as_text() == "1"
 
 

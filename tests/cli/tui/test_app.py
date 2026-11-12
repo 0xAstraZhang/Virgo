@@ -45,7 +45,7 @@ def test_initial_prompt_and_chinese_multiline_paste_submit_once(make_session):
                 "你好，世界\n第二行\nZ",
             ]
             assert len(app.transcript.query(".user-message")) == 2
-            history = [json.loads(line) for line in app.history.path.read_text().splitlines()]
+            history = [json.loads(line) for line in app.history.path.read_text(encoding="utf-8").splitlines()]
             assert history[-1] == "你好，世界\n第二行\nZ"
             await pilot.press("up")
             assert app.editor.text == history[-1]
