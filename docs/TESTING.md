@@ -54,6 +54,25 @@ Seven cases expose unresolved application behavior and retain their assertions:
   consequently rejects these forms. Resolving the Windows shell/path policy is
   an application change; the test-only fix does not relax the classifier tests.
 
-Local macOS validation: all 1159 tests passed, including PTY and Bash/Zsh download
-cases; `ruff check` passed. No test function names, parameter IDs or skip markers
-were changed. The Windows corrections still require a native Windows CI run.
+## Validation of the correction
+
+[Three-platform CI run](https://github.com/0xAstraZhang/Virgo/actions/runs/43147759020)
+tested commit `b310ebf6cc328838f6f4ad476624c0bfae856f4e` with Python 3.13 and locked
+dependencies:
+
+| Runner | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| Ubuntu | 1159 | 0 | 0 |
+| macOS | 1159 | 0 | 0 |
+| Windows | 1134 | 7 | 18 |
+
+All eleven test-assumption failures now pass on Windows. The seven remaining
+failures are exactly the application cases above. Existing Windows skips remain
+the ten POSIX PTY cases, seven unavailable zsh variants and one readline case.
+The workflow enables `PYTHONUTF8=1`; the explicit UTF-8 history read also removes
+the test's dependency on that setting, but this run does not exercise a legacy
+Windows locale.
+
+Local macOS validation also passed all 1159 tests (94.14 s), including PTY and
+Bash/Zsh download cases; `ruff check` passed. No test function names, parameter
+IDs or skip markers were changed. Application source and dependencies are unchanged.
