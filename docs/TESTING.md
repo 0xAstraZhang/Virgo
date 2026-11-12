@@ -106,3 +106,23 @@ automatic review and plan-mode denial. No permissions are broadened to make test
 The CI workflow and comparison rules are retained. The updated
 [PR #10 description](https://github.com/0xAstraZhang/Virgo/pull/10) records the final
 tested commit, three-platform totals and comparison run.
+
+## Comparison revision binding
+
+Before changing revision resolution, the failure cases are: a queued PR run or
+historical rerun selecting newer base/head commits; using the base repository for
+a fork's head; a manual PR input overriding event identity; missing or malformed
+event data falling back to live state; and breaking explicit/latest-PR manual
+selection or the target artifact/job outputs.
+
+`python ci/check_resolution.py` exercises the real resolver CLI in subprocesses
+with a local `gh` executable fixture. It checks event A while the API already
+returns B, repeats A to model a rerun, checks same-repository and fork targets,
+and verifies both `target.json` and `GITHUB_OUTPUT`. No GitHub credentials or
+network access are required.
+
+Automatic `pull_request` runs use the event payload's base/head SHAs, repository
+names and PR identity, including on reruns. Missing event data fails resolution
+without querying the live PR. Manual `workflow_dispatch` runs resolve the selected
+PR from the API at startup and retain the existing latest-PR fallback. The
+workflow runs the resolution end-to-end checks before producing its target.

@@ -35,15 +35,22 @@ def resolve():
     def api(endpoint):
         return json.loads(subprocess.check_output(["gh", "api", endpoint], text=True, encoding="utf-8"))
 
-    if not number:
-        candidates = api(f"repos/{repository}/pulls?state=open&sort=created&direction=desc&per_page=100")
-        candidates = [pr for pr in candidates if pr["head"]["ref"] != "codex/cross-platform-ci"]
-        if not candidates:
-            raise SystemExit("No open PR to compare; supply a PR number.")
-        number = str(candidates[0]["number"])
-    if not number.isdecimal():
-        raise SystemExit("PR number must be an integer")
-    pr = api(f"repos/{repository}/pulls/{number}")
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        # A queued run or rerun must keep the revisions that triggered it, even
+        # when the PR's live refs have advanced. Never fall back to the API.
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        pr = event["pull_request"]
+        number = str(pr["number"])
+    else:
+        if not number:
+            candidates = api(f"repos/{repository}/pulls?state=open&sort=created&direction=desc&per_page=100")
+            candidates = [pr for pr in candidates if pr["head"]["ref"] != "codex/cross-platform-ci"]
+            if not candidates:
+                raise SystemExit("No open PR to compare; supply a PR number.")
+            number = str(candidates[0]["number"])
+        if not number.isdecimal():
+            raise SystemExit("PR number must be an integer")
+        pr = api(f"repos/{repository}/pulls/{number}")
     target = {
         "pr": int(number), "url": pr["html_url"],
         "base_sha": pr["base"]["sha"], "head_sha": pr["head"]["sha"],
