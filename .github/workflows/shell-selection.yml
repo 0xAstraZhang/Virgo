@@ -1,6 +1,10 @@
 name: PowerShell startup diagnostic
 on:
   workflow_dispatch:
+    inputs:
+      modes:
+        type: string
+        default: '["readonly", "disabled"]'
 permissions:
   contents: read
 jobs:
@@ -10,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [readonly, disabled]
+        mode: ${{ fromJSON(inputs.modes) }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
