@@ -81,11 +81,6 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
         for future in as_completed(pending):
             connection = pending[future]
             provider = connection.provider
-            session._metadata_connections.add((provider, connection.api, base_url(connection)))
-            # Never retain a failed provider's previous directory or stale metadata.
-            session.discovered_models = {
-                spec: meta for spec, meta in session.discovered_models.items() if not spec.startswith(provider + "/")
-            }
             try:
                 models = future.result()
             except CatalogCancelled:
@@ -97,6 +92,7 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
                 return ()
             if not models:
                 session.ui.print(f"{provider_name(provider)}: the live directory returned no selectable models.", "warn")
+            session.remember_model_metadata(connection, models)
             for item in models:
                 spec = f"{provider}/{item.id}"
                 session.discovered_models[spec] = item.metadata

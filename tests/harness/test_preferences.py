@@ -131,7 +131,8 @@ def test_catalog_refreshes_on_each_open_and_does_not_fallback_after_failure(make
 
     monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", fail)
     assert not any(item.spec.startswith("deepseek/") for item in model_choices(session))
-    assert not session.discovered_models
+    assert session.resolve("deepseek/new-model").context_window == 123456
+    assert session.discovered_models["deepseek/new-model"]["context_window"] == 234567
     assert "HTTP 503" in session.ui.text
 
 

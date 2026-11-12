@@ -105,18 +105,19 @@ def test_low_default_respects_declared_capabilities(make_session, reasoning, lev
 
 
 @pytest.mark.parametrize("default", ["max", None])
-def test_live_luna_reasoning_metadata_overrides_builtin_and_configured_defaults(make_session, default):
+def test_configured_luna_reasoning_metadata_overrides_live_defaults(make_session, default):
     session = make_session(settings={"providers": {"openai": {"models": {"gpt-6-luna": {
         "supportedReasoningLevels": ["low", "medium"], "defaultReasoningLevel": "medium",
     }}}}})
+    session.resolve("openai/_catalog")
     session.discovered_models["openai/gpt-6-luna"] = {
         "supported_reasoning_levels": ("high", "max"),
     }
     if default is not None:
         session.discovered_models["openai/gpt-6-luna"]["default_reasoning_level"] = default
     session.set_model("openai/gpt-6-sol")
-    assert session.small_model.supported_reasoning_levels == ("high", "max")
-    assert session.small_model_effort == default
+    assert session.small_model.supported_reasoning_levels == ("low", "medium")
+    assert session.small_model_effort == "low"
 
 
 def test_selecting_current_model_refreshes_small_model_metadata(make_session, monkeypatch):

@@ -25,6 +25,7 @@ from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, ToolResult
 from ..ai.auth import AuthStore
 from ..ai.compaction import compatible_context, context_binding, is_native_context
+from ..ai.model_metadata import cache_path, clean_metadata, read_metadata, write_metadata
 from ..ai.models import base_url
 from ..ai.stream import EventStream, StreamEvent
 from ..ai.transform import strip_thinking
@@ -379,7 +380,7 @@ class AgentSession:
         self.busy = False
         self.wakeups: deque = deque()
         self.discovered_models: dict[str, dict] = {}
-        self._metadata_connections: set[tuple] = set()
+        self._metadata_paths: dict[str, Path] = {}
         self.model = self.resolve(model or self.settings.get("model"))
         self.small_model = self._small_model(self.model)
 
@@ -411,23 +412,12 @@ class AgentSession:
     def resolve(self, spec: str) -> ai.Model:
         providers = self.settings.get("providers", {})
         candidate = ai.resolve_model(spec, providers)
-        candidate.auth_path = str(self.auth.path)
-        # Resolve each connection once, including startup and direct /model selections.
-        # Directory enumeration itself must not recursively trigger another lookup.
-        connection = (candidate.provider, candidate.api, base_url(candidate))
-        if candidate.id != "_catalog" and connection not in self._metadata_connections:
-            from ..ai.catalog import CatalogError
-            from .preferences import _model_available, fetch_model_catalog
-
-            if candidate.api != "google-gemini-cli" and _model_available(candidate, self.auth.all()) and candidate.api != "faux":
-                self._metadata_connections.add(connection)
-                try:
-                    for item in fetch_model_catalog(candidate):
-                        self.discovered_models[f"{candidate.provider}/{item.id}"] = item.metadata
-                except CatalogError as error:
-                    self.ui.print(f"Model metadata: {error} Using configured or built-in limits.", "warn")
-        if metadata := self.discovered_models.get(spec):
-            provider, model_id = spec.split("/", 1)
+        path = cache_path(self.paths.user, candidate)
+        if self._metadata_paths.get(candidate.provider) != path:
+            self._replace_metadata(candidate.provider, read_metadata(path))
+            self._metadata_paths[candidate.provider] = path
+        if metadata := self.discovered_models.get(candidate.spec):
+            provider, model_id = candidate.provider, candidate.id
             config = providers.get(provider, {})
             models = config.get("models") or {}
             names = {
@@ -443,6 +433,22 @@ class AgentSession:
             for k in ("fallbacks", "thinkingDisplay", "thinkingBinding"):
                 m.options.setdefault(k, self.settings.get(f"anthropic.{k}"))
         return m
+
+    def _replace_metadata(self, provider: str, models: dict) -> None:
+        self.discovered_models = {
+            spec: meta for spec, meta in self.discovered_models.items() if not spec.startswith(provider + "/")
+        }
+        self.discovered_models.update({f"{provider}/{key}": clean_metadata(value) for key, value in models.items()})
+
+    def remember_model_metadata(self, connection: ai.Model, models: list) -> None:
+        metadata = {item.id: item.metadata for item in models}
+        path = cache_path(self.paths.user, connection)
+        self._replace_metadata(connection.provider, metadata)
+        self._metadata_paths[connection.provider] = path
+        try:
+            write_metadata(path, metadata)
+        except OSError:
+            self.ui.print("Could not save model metadata; refreshed parameters remain available in this session.", "warn")
 
     def _small_model(self, model: ai.Model) -> ai.Model:
         host = urlsplit(base_url(model)).hostname
