@@ -1,45 +1,23 @@
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 
 import pytest
 
 from virgo.ai.providers import faux
 from virgo.harness.session import AgentSession
-from virgo.harness.ui import UI
+
+from tests.support.harness import RecordingUI
+from tests.support.terminal import HAS_PTY
 
 
-class RecordingUI(UI):
-    """Collects output; answers permission questions from a list (default: deny)."""
-
-    def __init__(self, answers=None):
-        self.lines: list[str] = []
-        self.events = []
-        self.questions: list[str] = []
-        self.answers = list(answers or [])
-        self.woken = threading.Event()
-        self._lock = threading.Lock()
-
-    def on_event(self, ev):
-        with self._lock:
-            self.events.append(ev)
-
-    def print(self, text, style=None):
-        with self._lock:
-            self.lines.append(text)
-
-    def confirm(self, question, agent="main"):
-        with self._lock:
-            self.questions.append(question)
-            return self.answers.pop(0) if self.answers else "n"
-
-    def wake(self):
-        self.woken.set()
-
-    @property
-    def text(self) -> str:
-        return "\n".join(self.lines)
+def pytest_collection_modifyitems(config, items):
+    if HAS_PTY:
+        return
+    skip = pytest.mark.skip(reason="needs a POSIX pseudo terminal")
+    for item in items:
+        if item.get_closest_marker("pty"):
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)
@@ -83,5 +61,18 @@ def make_session(project):
         s.shutdown()
 
 
-def calls(model_id: str = "test") -> list[dict]:
-    return faux.CALLS[model_id]
+@pytest.fixture
+def trash(tmp_path, monkeypatch):
+    """Send deleted sessions to a local folder instead of the system trash; record (source, destination)."""
+    directory = tmp_path / "trash"
+    directory.mkdir()
+    moved = []
+
+    def move(path):
+        source = Path(path)
+        destination = directory / source.name
+        source.rename(destination)
+        moved.append((source, destination))
+
+    monkeypatch.setattr("virgo.harness.store.send2trash", move)
+    return moved
