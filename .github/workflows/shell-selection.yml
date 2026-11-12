@@ -26,9 +26,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p diagnostics
-          sleep 5
+          sleep 10
           cp -R "$(cat diagnostic-path.txt)" diagnostics/
           cp "$HOME"/Library/Logs/DiagnosticReports/pwsh* diagnostics/ 2>/dev/null || true
+          sudo cp /Library/Logs/DiagnosticReports/pwsh* diagnostics/ 2>/dev/null || true
           python3 - <<'PY'
           import json
           from pathlib import Path

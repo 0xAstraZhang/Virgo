@@ -75,9 +75,12 @@ def main():
                         stdout, stderr = process.communicate(timeout=15)
                     except subprocess.TimeoutExpired:
                         sample = Path(os.environ["VIRGO_DIAGNOSTICS_DIR"]) / f"sample-{process.pid}.txt"
-                        subprocess.run(["/usr/bin/sample", str(process.pid), "1", "1", "-file", str(sample)],
-                                       capture_output=True, text=True, timeout=15)
-                        process.kill()
+                        try:
+                            sampled = subprocess.run(["sudo", "/usr/bin/sample", str(process.pid), "1", "1", "-file", str(sample)],
+                                                     capture_output=True, text=True, timeout=30)
+                            sample.with_suffix(".log").write_text(sampled.stdout + sampled.stderr)
+                        finally:
+                            process.kill()
                         stdout, stderr = process.communicate(timeout=15)
                         raise AssertionError(("native timeout", process.pid, stdout, stderr, str(sample)))
                     result = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)

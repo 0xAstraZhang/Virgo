@@ -18,7 +18,7 @@ if mode != 'readonly-plain':
 if mode == 'disabled':
     env['DOTNET_MultiCoreJitMinNumCpus'] = 'ffffffff'
 start = time.monotonic()
-for iteration in range(30):
+for iteration in range(60):
     result = subprocess.run([sys.executable, 'ci/check_powershell_cache.py'],
                             env=env, capture_output=True, text=True, timeout=180)
     print(json.dumps({'iteration': iteration, 'code': result.returncode,
@@ -27,4 +27,4 @@ for iteration in range(30):
     if result.returncode:
         print(result.stdout + result.stderr, flush=True)
         sys.exit(result.returncode)
-print('All 30 original acceptance invocations passed (1440 concurrent launches)', flush=True)
+print('All 60 original acceptance invocations passed (2880 concurrent launches)', flush=True)
