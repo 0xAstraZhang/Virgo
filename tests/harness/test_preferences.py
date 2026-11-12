@@ -37,6 +37,15 @@ def provider_catalogs(monkeypatch):
     return responses
 
 
+@pytest.fixture
+def make_session(make_session):
+    def ready(*args, **kwargs):
+        session = make_session(*args, **kwargs)
+        assert session._catalog_refresh_done.wait(3)
+        return session
+    return ready
+
+
 def test_catalog_only_offers_authenticated_or_explicit_local_models(make_session, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     session = make_session(
@@ -102,6 +111,7 @@ def test_catalog_prechecks_saved_login_endpoint_expiry_and_metadata(make_session
         "expires": 0, "accountId": "test-account",
         "connection": {"api": "openai-codex", "baseUrl": "https://chatgpt.com/backend-api/codex"},
     }
+    session.remember_model_metadata(session.resolve("openai-codex/_catalog"), [CatalogModel("gpt-6.1-terra")])
     session.auth.set("openai-codex", credential)
     assert "openai-codex/gpt-6.1-terra" in {model.spec for model in model_choices(session)}
     for patch in (
@@ -115,12 +125,14 @@ def test_catalog_prechecks_saved_login_endpoint_expiry_and_metadata(make_session
     assert "openai-codex/gpt-6.1-terra" in {model.spec for model in model_choices(session)}
 
 
-def test_catalog_refreshes_on_each_open_and_does_not_fallback_after_failure(make_session, monkeypatch, provider_catalogs):
+def test_catalog_refreshes_on_restart_and_keeps_cache_after_failure(make_session, monkeypatch, provider_catalogs):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     session = make_session(settings={"providers": {"deepseek": {"models": {"new-model": {"contextWindow": 123456}}}}})
     first = {item.spec for item in model_choices(session)}
     assert "deepseek/deepseek-flash" in first
     provider_catalogs["deepseek"] = [CatalogModel("new-model", {"context_window": 234567, "reasoning": True})]
+    assert {item.spec for item in model_choices(session)} == first
+    session = make_session(settings={"providers": {"deepseek": {"models": {"new-model": {"contextWindow": 123456}}}}})
     second = {item.spec for item in model_choices(session)}
     assert "deepseek/new-model" in second and "deepseek/deepseek-flash" not in second
     resolved = session.resolve("deepseek/new-model")
@@ -130,7 +142,8 @@ def test_catalog_refreshes_on_each_open_and_does_not_fallback_after_failure(make
         raise CatalogError("Model directory returned HTTP 503.")
 
     monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", fail)
-    assert not any(item.spec.startswith("deepseek/") for item in model_choices(session))
+    session = make_session(settings={"providers": {"deepseek": {"models": {"new-model": {"contextWindow": 123456}}}}})
+    assert "deepseek/new-model" in {item.spec for item in model_choices(session)}
     assert session.resolve("deepseek/new-model").context_window == 123456
     assert session.discovered_models["deepseek/new-model"]["context_window"] == 234567
     assert "HTTP 503" in session.ui.text

@@ -1,13 +1,15 @@
-"""Persist capability metadata only; never use this cache as a model availability list."""
+"""Persist validated provider directory snapshots for startup and offline pickers."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
 
+from .catalog import CatalogModel
 from .models import base_url
 from .types import Model
 
@@ -38,25 +40,36 @@ def clean_metadata(value: object) -> dict:
     return result
 
 
-def read_metadata(path: Path) -> dict:
+def read_catalog(path: Path) -> list[CatalogModel]:
     try:
         if path.stat().st_size > 8 * 1024 * 1024:
-            return {}
+            return []
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("models"), dict):
-            return {}
-        return {key: clean_metadata(value) for key, value in data["models"].items() if isinstance(key, str)}
-    except (OSError, ValueError, RecursionError):
-        return {}
+            return []
+        dates = data.get("released_at", {})
+        dates = dates if isinstance(dates, dict) else {}
+        result = []
+        for key, value in data["models"].items():
+            if not isinstance(key, str) or not key or any(c.isspace() or ord(c) < 32 for c in key):
+                continue
+            date = dates.get(key)
+            if not isinstance(date, (float, int)) or isinstance(date, bool) or not math.isfinite(date) or date < 0:
+                date = None
+            result.append(CatalogModel(key, clean_metadata(value), date))
+        return result
+    except (OSError, ValueError, RecursionError, OverflowError):
+        return []
 
 
-def write_metadata(path: Path, models: dict) -> None:
+def write_metadata(path: Path, models: list[CatalogModel]) -> None:
     """Replace a single connection snapshot atomically, including successful empty lists."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=".metadata-", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump({"version": 1, "models": {key: clean_metadata(value) for key, value in models.items()}}, stream)
+            json.dump({"version": 1, "models": {item.id: clean_metadata(item.metadata) for item in models},
+                       "released_at": {item.id: item.released_at for item in models}}, stream)
         os.replace(name, path)
     finally:
         if os.path.exists(name):
