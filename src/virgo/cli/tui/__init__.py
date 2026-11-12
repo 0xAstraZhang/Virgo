@@ -15,6 +15,6 @@ def run_fullscreen(session, ui, initial: str | None = None, pick_session: bool =
     finally:
         # Textual restores the terminal even if composing/rendering raises.
         # The controller also releases approvals on exceptional exit.
-        app.controller.request_close()
-        if not app.controller.wait_closed(timeout=5):
+        app.request_close()
+        if not app.wait_closed(timeout=5):
             print("virgo: terminal restored; a shutdown hook is still waiting.", file=sys.stderr)

@@ -194,3 +194,57 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
         terminal.send(b"\x04")
         assert terminal.finish() == 0
         terminal.assert_restored()
+
+
+def test_fullscreen_pty_new_session_while_first_reply_is_running(project, tmp_path):
+    home = tmp_path / "pty-concurrent-home"
+    script = """
+from pathlib import Path
+from virgo.ai.providers import faux
+from virgo.cli.main import main
+from virgo.cli.tui.app import VirgoApp
+
+change_conversation = VirgoApp.change_conversation
+
+async def observe_switch(self, *args, **kwargs):
+    previous = self.session
+    await change_conversation(self, *args, **kwargs)
+    if self.session is not previous:
+        Path('conversation-ready').write_text(self.session.store.id)
+
+VirgoApp.change_conversation = observe_switch
+faux.script('concurrent', faux.reply('old-terminal-answer', delay=30), faux.reply('new-terminal-answer'))
+raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--model', 'faux/concurrent', 'old-terminal-question']))
+"""
+    with PtyClient(project, home, [sys.executable, "-c", script]) as terminal:
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and "Thinking" in plain(data))
+        before_browser = len(terminal.output)
+        terminal.send(b"\x12")
+        terminal.wait_for(lambda data: "Session" in plain(data) and "Updated" in plain(data) and "Running" in plain(data), start=before_browser)
+        before_new = len(terminal.output)
+        terminal.send(b"n")
+        # Dismissing the picker repaints the old status before asynchronous
+        # construction finishes. Observe completion without changing its timing.
+        terminal.wait_for(
+            lambda data: (project / "conversation-ready").exists() and "auto review" in plain(data),
+            start=before_new,
+        )
+        before_reply = len(terminal.output)
+        terminal.send(b"new-terminal-question\r")
+        terminal.wait_for(lambda data: "new-terminal-answer" in plain(data), start=before_reply)
+        assert "old-terminal-answer" not in plain(bytes(terminal.output))
+        before_browser = len(terminal.output)
+        terminal.send(b"\x12")
+        terminal.wait_for(
+            lambda data: "old-terminal-question" in plain(data) and "Running" in plain(data), start=before_browser,
+        )
+        terminal.send(b"\x04")
+        assert terminal.finish() == 0
+        terminal.assert_restored()
+        files = list(home.glob("sessions/**/*.jsonl"))
+        assert len(files) == 2
+        texts = [path.read_text(encoding="utf-8") for path in files]
+        old = next(text for text in texts if 'old-terminal-question' in text)
+        new = next(text for text in texts if 'new-terminal-question' in text)
+        assert 'new-terminal-answer' in new and 'old-terminal-question' not in new
+        assert 'new-terminal-question' not in old and 'new-terminal-answer' not in old

@@ -169,66 +169,90 @@ def test_browser_opens_immediately_while_work_continues(make_session, entry, wor
 
 
 @pytest.mark.parametrize("work", ["agent", "command", "helper", "queued", "new"])
-def test_browser_keeps_running_work_safe_and_unlocks_after_completion(make_session, work):
+def test_browser_keeps_running_work_safe_and_unlocks_after_completion(make_session, work, trash):
+    # Keep the baseline case identities; opening/new now succeeds before completion.
+    exercise_independent_conversations(make_session, work, "picker", trash)
+
+
+@pytest.mark.parametrize("work", ["agent", "command", "helper", "queued"])
+def test_new_command_keeps_running_work_in_its_own_conversation(make_session, work, trash):
+    exercise_independent_conversations(make_session, work, "command", trash)
+
+
+def exercise_independent_conversations(make_session, work, entry, trash):
     async def scenario():
         entered, release = threading.Event(), threading.Event()
 
         def wait(*_args):
             entered.set()
             assert release.wait(15)
-            return faux.reply("finished")
+            return faux.reply("old finished")
 
         ui = FullscreenUI()
-        session = make_session(faux.reply("saved answer"), wait, ui=ui, persist=True)
-        session.prompt("saved question")
-        saved = session.store.path
-        session.new_session()
-        current = session.store.path
+        session = make_session(wait, ui=ui, persist=True)
         session.commands.register("waiting", wait, concurrent=work == "helper")
-        app = VirgoApp(session, ui, initial="running" if work == "agent" else "/waiting")
+        app = VirgoApp(session, ui, initial="old question" if work == "agent" else "/waiting")
         async with app.run_test(size=(80, 24)) as pilot:
             try:
                 await wait_for(pilot, entered.is_set)
+                old_controller = app.controller
+                old_path = session.store.path
                 if work in {"queued", "new"}:
                     app.controller.submit("/new" if work == "new" else "/effort high")
-                app.editor.load_text("draft stays here")
+                if entry == "picker":
+                    app.editor.load_text("old draft")
+                    await pilot.press("ctrl+r", "n")
+                else:
+                    app.editor.load_text("/new")
+                    await pilot.press("enter")
+                await wait_for(pilot, lambda: app.session is not session and not app.has_modal)
+                new_session = app.session
+                new_controller = app.controller
+                new_path = new_session.store.path
+                assert new_path != old_path
+                assert not session._shutdown_started and not session.main.agent.signal.is_set()
+                assert not release.is_set()
+                faux.script("test", faux.reply("new finished"))
+                app.editor.load_text("new question")
+                await pilot.press("enter")
+                await wait_for(pilot, lambda: has_reply(app, "new finished") and not app.controller.busy)
+                assert not has_reply(app, "old finished")
                 await pilot.press("ctrl+r")
                 picker = app.screen
-                assert isinstance(picker, SessionPicker)
                 choices = picker.query_one(OptionList)
-                choices.highlighted = choices.get_option_index(str(current))
-                await pilot.press("n", "ctrl+x")
-                assert app.screen is picker and session.store.path == current
+                choices.highlighted = choices.get_option_index(str(old_path))
+                assert choices.get_option(str(old_path)).prompt.status == "Running"
+                await pilot.press("ctrl+x")
+                assert not trash and app.screen is picker
                 await pilot.press("enter")
-                assert not app.has_modal and app.editor.text == "draft stays here"
-                assert not session.main.agent.signal.is_set()
+                await wait_for(pilot, lambda: app.controller is old_controller)
+                assert app.editor.text == ("old draft" if entry == "picker" else "")
+                assert not has_reply(app, "new finished")
+                # Finish the first worker while the second conversation is visible.
                 await pilot.press("ctrl+r")
-                picker = app.screen
-                choices = picker.query_one(OptionList)
-                choices.highlighted = choices.get_option_index(str(saved))
+                app.screen.query_one(OptionList).highlighted = app.screen.query_one(OptionList).get_option_index(str(new_path))
                 await pilot.press("enter")
-                assert app.screen is picker and session.store.path == current
-                assert picker.selected_path == saved
-                assert app.editor.text == "draft stays here"
-                assert choices.get_option(str(current)).prompt.status == "Running"
+                await wait_for(pilot, lambda: app.controller is new_controller)
                 release.set()
-                await wait_for(pilot, lambda: picker.current_status == "Ready")
-                assert app.controller.can_switch and app.controller.browsing
-                if work == "queued":
-                    assert session.effort == "high" and not app.controller.pending
+                await wait_for(pilot, lambda: old_controller.can_switch)
                 if work == "new":
-                    assert picker.current_path == session.store.path != current
-                    assert all(item["path"] != current for item in picker.sessions)
-                if work == "agent":
-                    assert has_reply(app, "finished")
-                assert picker.selected_path == saved
-                assert choices.get_option(str(session.store.path)).prompt.status == "Ready"
+                    assert session.store.path != old_path
+                    old_path = session.store.path
+                assert not has_reply(app, "old finished") and has_reply(app, "new finished")
+                if work == "queued":
+                    assert session.effort == "high" and new_session.effort != "high"
+                await pilot.press("ctrl+r")
+                app.screen.query_one(OptionList).highlighted = app.screen.query_one(OptionList).get_option_index(str(old_path))
                 await pilot.press("enter")
-                await wait_for(pilot, lambda: session.store.path == saved and not app.controller.busy)
-                assert has_reply(app, "saved answer")
-                assert not app.has_modal and app.editor.text == ""
+                await wait_for(pilot, lambda: app.controller is old_controller)
+                if work == "agent":
+                    await wait_for(pilot, lambda: has_reply(app, "old finished"))
+                    assert SessionStore.load(old_path).build_context()[0][-1].text() == "old finished"
+                assert not has_reply(app, "new finished")
             finally:
                 release.set()
+        assert old_controller.wait_closed() and new_controller.wait_closed()
+        assert session._shutdown_started and new_session._shutdown_started
 
     asyncio.run(scenario())
 
@@ -259,7 +283,14 @@ def test_browser_preserves_pending_input_and_focus(make_session, kind):
             await pilot.press("ctrl+r")
             assert isinstance(app.screen, SessionPicker)
             assert app.screen.current_status == "Waiting"
-            await pilot.press("n", "ctrl+x", "escape")
+            await pilot.press("n")
+            await wait_for(pilot, lambda: app.session is not session)
+            assert app.active_input is None and not answers
+            assert ui.is_input_pending(request_id)
+            await pilot.press("ctrl+r")
+            app.screen.query_one(OptionList).highlighted = app.screen.query_one(OptionList).get_option_index(str(session.store.path))
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: app.session is session)
             assert not app.has_modal and not answers
             assert app.active_input == request_id and ui.is_input_pending(request_id)
             assert app.focused is focused and focused.display
@@ -459,3 +490,234 @@ def test_shutdown_prevents_restarting_a_saved_or_new_session(make_session):
     session.open_session(previous.path)
     session.new_session()
     assert session.store is previous and not starts
+
+
+def test_background_approval_remains_pending_and_shutdown_releases_every_session(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui, persist=True)
+        answers = []
+        session.commands.register("approve", lambda *_: answers.append(ui.confirm("Old approval")))
+        app = VirgoApp(session, ui, initial="/approve")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: app.active_confirmation is not None)
+            request_id = app.active_confirmation
+            old_controller = app.controller
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            new_controller = app.controller
+            assert ui.is_confirmation_pending(request_id) and not answers
+            assert app.active_confirmation is None
+            await pilot.press("ctrl+r")
+            app.screen.query_one(OptionList).highlighted = app.screen.query_one(OptionList).get_option_index(str(session.store.path))
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: app.session is session and app.active_confirmation == request_id)
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            await pilot.press("ctrl+d")
+        assert old_controller.wait_closed() and new_controller.wait_closed()
+        assert answers == [None]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_open_saved_workspace_while_running_keeps_old_session_alive(make_session, tmp_path, invalid):
+    from virgo.ai.types import UserMessage
+
+    target = tmp_path / "other"
+    target.mkdir()
+    (target / "AGENTS.md").write_text("Other workspace instructions.")
+    path = SessionStore.new(tmp_path / "home" / "sessions" / "other", target)
+    path.append_message(UserMessage("saved question"))
+    if invalid:
+        path.append("message", message={"role": "invalid"})
+
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("old response", delay=10), ui=ui, persist=True)
+        app = VirgoApp(session, ui, initial="old question")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: session.busy)
+            old_controller = app.controller
+            notices = []
+            app.notify = lambda message, **_: notices.append(message)
+            await pilot.press("ctrl+r")
+            app.screen.query_one(OptionList).highlighted = app.screen.query_one(OptionList).get_option_index(str(path.path))
+            await pilot.press("enter")
+            if invalid:
+                await wait_for(pilot, lambda: bool(notices))
+                assert app.session is session and app.controller.busy
+            else:
+                await wait_for(pilot, lambda: app.session.cwd == target)
+                assert "Other workspace instructions." in app.session.main.system
+                assert app.session.main.messages[0].text() == "saved question"
+            assert not session._shutdown_started and not session.main.agent.signal.is_set()
+        assert old_controller.wait_closed()
+
+    asyncio.run(scenario())
+
+
+def test_multiple_live_conversations_isolate_approvals_and_interrupts(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui, persist=True)
+        answers = []
+        session.commands.register("approve", lambda *_: answers.append(("old", ui.confirm("Old approval"))))
+        app = VirgoApp(session, ui, initial="/approve")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: app.active_confirmation is not None)
+            old_controller = app.controller
+            old_id = app.active_confirmation
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            second = app.session
+            second_ui = app.ui
+            second.commands.register("approve", lambda *_: answers.append(("second", second_ui.confirm("Second approval"))))
+            app.editor.load_text("/approve")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: app.active_confirmation is not None)
+            # Each bridge starts numbering at one. Answers must be routed by session.
+            assert app.active_confirmation == old_id
+            await pilot.press("y")
+            await wait_for(pilot, lambda: answers == [("second", "y")])
+            assert ui.is_confirmation_pending(old_id)
+            app.editor.load_text("run second")
+            faux.script("test", faux.reply("second delayed", delay=10))
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: second.busy)
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not second)
+            third = app.session
+            assert third is not session
+            faux.push("test", faux.reply("third delayed", delay=10))
+            app.editor.load_text("run third")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: third.busy)
+            await pilot.press("escape")
+            await wait_for(pilot, lambda: not app.controller.busy)
+            assert not second.main.agent.signal.is_set() and second.busy
+            assert ui.is_confirmation_pending(old_id) and not session.main.agent.signal.is_set()
+            await pilot.press("ctrl+d")
+        assert app.wait_closed() and old_controller.wait_closed()
+        assert answers == [("second", "y"), ("old", None)]
+        assert second._shutdown_started and third._shutdown_started
+
+    asyncio.run(scenario())
+
+
+def test_new_conversation_preserves_no_session_mode(make_session, tmp_path):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("old", delay=10), faux.reply("new answer"), ui=ui)
+        app = VirgoApp(session, ui, initial="old question")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: session.busy)
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            assert app.session.store.path is None
+            app.editor.load_text("new question")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: has_reply(app, "new answer"))
+        assert app.wait_closed()
+        assert not list((tmp_path / "home" / "sessions").glob("**/*.jsonl"))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("work", ["approval", "agent"])
+def test_memory_conversations_remain_selectable(make_session, tmp_path, trash, work):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("old answer", delay=30), ui=ui)
+        answers = []
+        session.commands.register("approve", lambda *_: answers.append(ui.confirm("Old approval")))
+        app = VirgoApp(session, ui, initial="/approve" if work == "approval" else "old question")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: app.active_confirmation is not None if work == "approval" else session.busy)
+            old_controller = app.controller
+            app.editor.load_text("old draft")
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            second = app.session
+            faux.script("test", faux.reply("new answer"))
+            app.editor.load_text("new question")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: has_reply(app, "new answer") and app.controller.can_switch)
+            await pilot.press("ctrl+r")
+            picker = app.screen
+            assert len(picker.sessions) == 2
+            choices = picker.query_one(OptionList)
+            old_key = next(key for key, item in picker._rows.items() if item["id"] == session.store.id)
+            choices.highlighted = choices.get_option_index(old_key)
+            assert choices.get_option(old_key).prompt.status == ("Waiting" if work == "approval" else "Running")
+            await pilot.press("g", "enter")
+            await wait_for(pilot, lambda: app.controller is old_controller)
+            assert app.editor.text == "old draft" and not has_reply(app, "new answer")
+            if work == "approval":
+                await pilot.press("y")
+                await wait_for(pilot, lambda: answers == ["y"] and app.controller.can_switch)
+            else:
+                await pilot.press("escape")
+                await wait_for(pilot, lambda: app.controller.can_switch)
+                assert session.main.agent.signal.is_set()
+            assert not second.main.agent.signal.is_set()
+            await pilot.press("ctrl+r")
+            picker = app.screen
+            choices = picker.query_one(OptionList)
+            choices.highlighted = choices.get_option_index(old_key)
+            await pilot.press("ctrl+x")
+            assert not trash and len(picker.sessions) == 2
+            new_key = next(key for key, item in picker._rows.items() if item["id"] == second.store.id)
+            choices.highlighted = choices.get_option_index(new_key)
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: app.session is second and has_reply(app, "new answer"))
+        assert app.wait_closed()
+        assert not list((tmp_path / "home" / "sessions").glob("**/*.jsonl"))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["at", "cron"])
+def test_live_conversations_deliver_persisted_schedule_once(make_session, project, kind):
+    from datetime import datetime
+
+    when = datetime(2099, 1, 1, 12)
+    (project / ".virgo").mkdir()
+    schedule_file = project / ".virgo" / "schedules.json"
+    schedule_file.write_text(json.dumps([{
+        "id": "s1", "prompt": "scheduled work", "persist": True,
+        **({"at": when.isoformat()} if kind == "at" else {"cron": "0 12 1 1 *"}),
+    }]), encoding="utf-8")
+
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui, persist=True)
+        answers = []
+        session.commands.register("approve", lambda *_: answers.append(ui.confirm("Hold first session")))
+        app = VirgoApp(session, ui, initial="/approve")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: app.active_confirmation is not None)
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            second = app.session
+            second.commands.register("approve", lambda *_: second.ui.confirm("Hold second session"))
+            app.editor.load_text("/approve")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: app.active_confirmation is not None)
+            # Tick every real scheduler at the same due time. Approvals keep the
+            # agents occupied so all delivered prompts remain observable.
+            for pane in app._panes:
+                pane.controller.session.services["schedule"].tick(when)
+            deliveries = list(session.wakeups) + list(second.wakeups)
+            assert len(deliveries) == 1
+            assert "scheduled work" in str(deliveries[0].content)
+            assert len(session.wakeups) == 1
+            saved = json.loads(schedule_file.read_text(encoding="utf-8"))
+            assert len(saved) == (1 if kind == "cron" else 0)
+            for pane in app._panes:
+                pane.controller.session.services["schedule"].tick(when)
+            assert len(session.wakeups) + len(second.wakeups) == 1
+        assert app.wait_closed()
+
+    asyncio.run(scenario())

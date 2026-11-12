@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +17,11 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
+
+
+def session_key(item: dict) -> Path | str:
+    """Address live memory stores without pretending they have a filesystem path."""
+    return Path(item["path"]) if item["path"] is not None else f"memory:{item['id']}"
 
 
 def relative_time(timestamp: float, *, now: float | None = None) -> str:
@@ -130,17 +134,15 @@ class SessionPicker(ModalScreen[Path | str | None]):
         self,
         sessions: list[dict],
         *,
-        current_path: Path | None = None,
+        current_path: Path | str | None = None,
         grouped: bool = True,
         current_status: str = "Ready",
-        can_manage: Callable[[], bool] | None = None,
     ):
         super().__init__()
         self.sessions = sessions
-        self.current_path = Path(current_path) if current_path is not None else None
+        self.current_path = current_path
         self.grouped = grouped
         self.current_status = current_status
-        self.can_manage = can_manage
         self._rows: dict[str, dict] = {}
         self._selected_id: str | None = None
 
@@ -156,20 +158,20 @@ class SessionPicker(ModalScreen[Path | str | None]):
         self.query_one("#session-list", OptionList).focus()
 
     def _row(self, item: dict, *, selected: bool = False) -> SessionRow:
-        current = self.current_path is not None and Path(item["path"]) == self.current_path
+        current = self.current_path is not None and str(session_key(item)) == str(self.current_path)
         return SessionRow(
             (item.get("title") if item.get("title") != "(empty)" else None) or "Untitled session",
-            self.current_status if current else "Saved",
+            self.current_status if current else item.get("status", "Saved"),
             relative_time(item.get("mtime", time.time())),
             selected=selected,
         )
 
-    def _rebuild(self, selected_path: Path | None = None) -> None:
+    def _rebuild(self, selected_path: Path | str | None = None) -> None:
         choices = self.query_one("#session-list", OptionList)
         choices.clear_options()
         self._selected_id = None
         self._rows = {}
-        rows = sorted(self.sessions, key=lambda item: (-item.get("mtime", 0), str(item["path"])))
+        rows = sorted(self.sessions, key=lambda item: (-item.get("mtime", 0), str(session_key(item))))
         if self.grouped:
             workspaces: dict[str, list[dict]] = defaultdict(list)
             for item in rows:
@@ -187,7 +189,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
                     options.append(Option(Text(""), disabled=True))
                 options.append(Option(Text(workspace_name(cwd), no_wrap=True, overflow="ellipsis"), disabled=True))
             for item in items:
-                key = str(item["path"])
+                key = str(session_key(item))
                 self._rows[key] = item
                 options.append(Option(self._row(item), id=key))
         choices.add_options(options)
@@ -207,7 +209,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
             choices.action_first()
         self._update_selection()
 
-    def refresh_sessions(self, sessions: list[dict], current_path: Path | None) -> None:
+    def refresh_sessions(self, sessions: list[dict], current_path: Path | str | None) -> None:
         selected = self.selected_path
         self.sessions = sessions
         self.current_path = current_path
@@ -223,19 +225,19 @@ class SessionPicker(ModalScreen[Path | str | None]):
             keys = list(self._rows)
             index = keys.index(key)
             keys.remove(key)
-            selected_path = Path(keys[min(index, len(keys) - 1)]) if keys else None
-        self.sessions = [item for item in self.sessions if str(item["path"]) != key]
+            selected_path = session_key(self._rows[keys[min(index, len(keys) - 1)]]) if keys else None
+        self.sessions = [item for item in self.sessions if str(session_key(item)) != key]
         if self.current_path == path:
             self.current_path = None
         self._rebuild(selected_path)
 
     @property
-    def selected_path(self) -> Path | None:
+    def selected_path(self) -> Path | str | None:
         choices = self.query_one("#session-list", OptionList)
         if choices.highlighted is None:
             return None
         key = choices.get_option_at_index(choices.highlighted).id
-        return Path(key) if key in self._rows else None
+        return session_key(self._rows[key]) if key in self._rows else None
 
     def _update_selection(self) -> None:
         choices = self.query_one("#session-list", OptionList)
@@ -259,11 +261,13 @@ class SessionPicker(ModalScreen[Path | str | None]):
                 key, self._row(self._rows[key], selected=key == self._selected_id),
             )
 
-    def _allow_change(self) -> bool:
-        if self.can_manage is None or self.can_manage():
-            return True
-        self.notify("Current work is still active. Press Esc to return and finish or interrupt it.")
-        return False
+    def set_statuses(self, statuses: dict[str, str]) -> None:
+        choices = self.query_one("#session-list", OptionList)
+        for key, item in self._rows.items():
+            status = statuses.get(key, "Saved")
+            if item.get("status", "Saved") != status:
+                item["status"] = status
+                choices.replace_option_prompt(key, self._row(item, selected=key == self._selected_id))
 
     @on(OptionList.OptionHighlighted, "#session-list")
     def highlighted(self, event: OptionList.OptionHighlighted) -> None:
@@ -272,9 +276,8 @@ class SessionPicker(ModalScreen[Path | str | None]):
     @on(OptionList.OptionSelected, "#session-list")
     def selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_id in self._rows:
-            path = Path(event.option_id)
-            if path == self.current_path or self._allow_change():
-                self.dismiss(path)
+            path = session_key(self._rows[event.option_id])
+            self.dismiss(path)
 
     def action_toggle_group(self) -> None:
         path = self.selected_path
@@ -283,12 +286,11 @@ class SessionPicker(ModalScreen[Path | str | None]):
         self.post_message(self.GroupingChanged(self.grouped))
 
     def action_new(self) -> None:
-        if self._allow_change():
-            self.dismiss("new")
+        self.dismiss("new")
 
     def action_delete(self) -> None:
         path = self.selected_path
-        if path is not None and self._allow_change():
+        if isinstance(path, Path):
             self.post_message(self.DeleteRequested(path))
 
     def action_cancel(self) -> None:

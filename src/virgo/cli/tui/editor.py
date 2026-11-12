@@ -140,7 +140,7 @@ class ChatEditor(TextArea):
         self.app.sync_completions()
         names = self.app.completion_names
         if names:
-            choices = self.app.screen_stack[0].query_one("#completions", ChoiceList)
+            choices = self.parent.query_one("#completions", ChoiceList)
             selected = names[choices.highlighted or 0]
             if self.text != selected and self.app.accept_completion():
                 return
