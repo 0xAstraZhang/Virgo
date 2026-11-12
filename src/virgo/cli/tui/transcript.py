@@ -1,4 +1,4 @@
-"""Chronological, folded run events and final answers for the fullscreen client."""
+"""Chronological messages with independently folded reasoning and tools."""
 
 from __future__ import annotations
 
@@ -77,6 +77,7 @@ class EventView(Foldable):
     EventView { height: auto; margin: 0; background: $background; }
     EventView > FoldHeader { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
     EventView > .output { height: auto; padding-left: 2; text-style: dim; }
+    EventView.message > .output { padding: 0; margin: 1 0; text-style: none; }
     EventView.tool > FoldHeader { color: $accent; }
     EventView.error > FoldHeader, EventView.error > .output { color: $error; }
     """
@@ -87,7 +88,10 @@ class EventView(Foldable):
         self.text = text
         self.expanded = False
         self.header = FoldHeader("", markup=False)
-        self.output = Static("", classes="output", markup=False)
+        self.output = (Markdown(text, classes="output", open_links=False) if kind == "text"
+                       else Static("", classes="output", markup=False))
+        self._rendered_text = text
+        self.set_class(kind == "text", "message")
         self.set_class(kind in ("tool_call", "tool_result"), "tool")
 
     def compose(self) -> ComposeResult:
@@ -115,6 +119,16 @@ class EventView(Foldable):
         return title
 
     def render_state(self) -> None:
+        if self.kind == "text":
+            self.header.display = self.agent != "main"
+            update_static(self.header, Text(f"[{self.agent}]"), layout=False)
+            self.output.display = True
+            if self._rendered_text != self.text:
+                self._rendered_text = self.text
+                self.output.update(self.text)
+            return
+        if self.kind == "thinking":
+            self.display = bool(self.text.strip())
         title = self.summary()
         width = self.header.size.width
         if width and title.cell_len > width:
@@ -134,7 +148,11 @@ class EventView(Foldable):
         self.render_state()
 
     def action_toggle(self) -> None:
-        self.set_expanded(not self.expanded)
+        if self.kind != "text":
+            self.set_expanded(not self.expanded)
+
+    def _owns_fold_gesture(self, widget) -> bool:
+        return self.kind != "text" and super()._owns_fold_gesture(widget)
 
 
 class ToolView(EventView):
@@ -165,8 +183,8 @@ class ToolView(EventView):
         self.set_text(text)
 
 
-class AssistantView(Foldable):
-    """One Thinking timeline per run, followed by the current final answer."""
+class AssistantView(Vertical):
+    """An always-visible run timeline, followed by the current final answer."""
 
     DEFAULT_CSS = """
     AssistantView { height: auto; margin-bottom: 1; background: $background; }
@@ -175,7 +193,7 @@ class AssistantView(Foldable):
         text-wrap: nowrap; text-overflow: ellipsis;
     }
     AssistantView > .thought-header.active { color: $accent; text-style: none; }
-    AssistantView > .thought-body { height: auto; padding-left: 2; }
+    AssistantView > .thought-body { height: auto; }
     AssistantView > Markdown { margin: 0; padding: 0; background: $background; }
     AssistantView MarkdownFence, AssistantView MarkdownFence > Label {
         background: $background; color: $foreground;
@@ -192,7 +210,7 @@ class AssistantView(Foldable):
         self.activity: Text | None = None
         self.events: list[EventView] = []
         self.answer_events: list[EventView] = []
-        self.thought_header = FoldHeader("", classes="thought-header", markup=False)
+        self.thought_header = Static("", classes="thought-header", markup=False)
         self.thought_body = Vertical(classes="thought-body")
         self.body = Markdown(open_links=False)
         self.error = Static("", classes="error", markup=False)
@@ -213,6 +231,8 @@ class AssistantView(Foldable):
 
     async def append_event(self, event: EventView) -> None:
         self.events.append(event)
+        if event.kind == "thinking":
+            event.set_expanded(self.show_thinking)
         if self.thought_body.is_attached:
             await self.thought_body.mount(event)
         self._render_thinking()
@@ -254,20 +274,10 @@ class AssistantView(Foldable):
         self._render_thinking()
 
     def _render_thinking(self) -> None:
-        count = sum(event.display for event in self.events)
-        self.thought_header.display = bool(count or self.activity)
-        title = Text("▾ " if self.show_thinking else "▸ ", no_wrap=True, overflow="ellipsis")
-        if self.activity is not None:
-            if "Thinking" not in self.activity.plain:
-                title.append("Thinking · ")
-            title.append(self.activity)
-        else:
-            title.append(f"Thinking · {count} events")
-        # The header is one row at full width, so its live activity label (redrawn
-        # every frame during a run) never needs a layout pass.
-        update_static(self.thought_header, title, layout=False)
+        self.thought_header.display = self.activity is not None
+        update_static(self.thought_header, self.activity or Text(""), layout=False)
         self.thought_header.set_class(self.activity is not None, "active")
-        self.thought_body.display = bool(self.show_thinking and count)
+        self.thought_body.display = True
 
     def set_activity(self, label: Text | None) -> None:
         self.activity = label.copy() if label is not None else None
@@ -275,14 +285,9 @@ class AssistantView(Foldable):
 
     def set_thinking(self, expanded: bool) -> None:
         self.show_thinking = expanded
-        self._render_thinking()
-
-    def action_toggle(self) -> None:
-        self.set_thinking(not self.show_thinking)
-
-    def _owns_fold_gesture(self, widget) -> bool:
-        # Final answers share the run widget but are outside the Thinking fold.
-        return widget in (self, self.thought_header, self.thought_body)
+        for event in self.events:
+            if event.kind == "thinking":
+                event.set_expanded(expanded)
 
 
 class Transcript(VerticalScroll, inherit_bindings=False):
@@ -516,16 +521,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             elif isinstance(block, (TextContent, ThinkingContent)):
                 if isinstance(block, ThinkingContent):
                     kind = "thinking"
-                    value = "[redacted thinking]" if block.redacted else block.thinking
-                    if not value.strip() and block.signature:
-                        try:
-                            signature = json.loads(block.signature)
-                        except (ValueError, TypeError):
-                            signature = None
-                        if isinstance(signature, dict) and signature.get("encrypted_content"):
-                            # Display-only label: preserve the original block
-                            # and signature for persistence and model replay.
-                            value = "内容已加密"
+                    # Opaque signatures remain in the message for model replay.
+                    # Only readable, non-redacted reasoning belongs in the UI.
+                    value = "" if block.redacted else block.thinking
                 else:
                     kind = "sources" if block.text.startswith("\n\nSources:\n") else "text"
                     value = block.text

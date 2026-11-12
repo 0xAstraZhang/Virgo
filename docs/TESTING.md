@@ -37,16 +37,26 @@ history. Both paths displayed the complete 1496-character answer with
 Thinking collapsed; all 36 timeline events were retained. The private session
 is not committed as a fixture.
 
-Thought blocks with no readable summary but a nonempty `encrypted_content`
-now display `内容已加密` in both their header and expanded body. This label is
-UI-only: the original thinking text, signature, message and session file stay
-unchanged for model replay. Readable summaries take precedence; an ordinary
-signature or empty block without encryption is not labeled encrypted.
-The same trajectory replay confirmed 13 encrypted labels and one preserved
-readable summary in both rendering paths, with the 1496-character answer
-still visible. Message equality and the original session file's SHA-256
-were unchanged. The transcript, native-event, timeline, run-boundary and
-history-load scenarios passed (34 tests), as did Ruff.
+### Codex-style timeline
+
+The timeline is always visible. Progress messages render as Markdown without a
+fold header; reasoning and tools fold independently. Empty, whitespace-only,
+encrypted-only and redacted thoughts have no visible row. Their original
+signatures and message data remain unchanged for replay. This supersedes the
+previous encrypted-content placeholder and outer Thinking fold.
+
+Before implementation, Textual event-loop scenarios were updated to cover live
+progress, empty thoughts becoming readable during streaming, independent
+keyboard folds, resize behavior and live/history parity. The two focused
+regressions failed on the previous renderer. Existing checks retain final-answer
+whitespace, native-search ordering, retry/error output, scroll anchoring and
+history loading coverage.
+
+Validation: all 38 focused transcript/timeline/history scenarios passed. The
+complete TUI run passed 209 cases and exposed two obsolete outer-fold assertions
+in the activity/shortcut scenarios; after updating those expectations, all 22
+activity, shortcut and transcript scenarios passed. Ruff and diff whitespace
+checks passed. These runs use faux providers and do not exercise a live model.
 
 ### Portability conventions
 
