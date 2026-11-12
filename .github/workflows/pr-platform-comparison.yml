@@ -9,8 +9,6 @@ on:
         description: PR number (blank selects the newest open PR)
         type: string
         required: false
-  push:
-    branches: [codex/cross-platform-ci]
 
 permissions:
   contents: read

@@ -5,13 +5,17 @@ The `Cross-platform PR comparison` workflow runs the PR head and its base SHA on
 revision's locked dependencies. Linux installs zsh and curl so shell variants run.
 Windows retains its native default shell; POSIX PTY tests skip where unsupported.
 
-Every pull request runs automatically once this workflow is on the default branch.
-For a manual run, select the workflow and enter a PR number (blank selects the
-newest open PR). The `codex/cross-platform-ci` push trigger bootstraps the workflow
-before it has been merged; it ignores its own configuration PR when choosing a target.
+The `pull_request` event runs the comparison for the triggering PR, including this
+configuration PR. Once the workflow is on the default branch, manual runs can
+select a PR number (blank selects the newest open PR other than the
+`codex/cross-platform-ci` configuration PR). The temporary configuration-branch
+push trigger has been removed so branch updates cannot select an unrelated PR.
 The resolve job records immutable head/base SHAs before starting the six jobs.
 
-Recorded runs: [PR #9 on 2026-11-12](ci-results/pr-9-2026-11-12.md).
+Recorded runs and the current-main audit:
+[PR #9 on 2026-11-12](ci-results/pr-9-2026-11-12.md).
+The separate `Shell selection E2E` workflow on main runs two shell test modules;
+it does not replace this complete-suite baseline comparison.
 
 ## Reading results
 

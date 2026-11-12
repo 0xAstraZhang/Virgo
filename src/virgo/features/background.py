@@ -16,8 +16,9 @@ from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..harness.extensions import ExtensionAPI
-from ..tools.bash import BASH, BASH_PARAMS, kill_tree, spawn
-from ..tools.truncate import budget, outputs_dir
+from ..tools.bash import kill_tree, spawn
+from ..tools.command_output import display_output, open_output, read_output
+from ..tools.truncate import MAX_BYTES, budget
 
 
 @dataclass
@@ -59,13 +60,15 @@ class JobManager:
         """Running jobs, and finished ones whose notification is still being delivered."""
         return [j for j in self.jobs.values() if not j.reported]
 
-    def start_command(self, command: str, cwd: Path, timeout: float | None = None) -> Job:
-        job = self._new("bash", command)
+    def start_command(self, command: str, cwd: Path, timeout: float | None = None, *, shell=None) -> Job:
+        shell = shell or self.api.services["shell"].current
+        if shell is None:
+            raise ValueError("No shell is available; use /shell to select one.")
+        job = self._new(shell.tool_name, command)
         fh = None
         try:
-            job.log = outputs_dir(cwd) / f"{job.id}-{int(job.started)}.log"
-            fh = open(job.log, "wb")  # noqa: SIM115 - closed by the watcher thread
-            proc = spawn(command, cwd, stdout=fh)
+            job.log, fh = open_output(cwd, job.id)
+            proc = spawn(command, cwd, stdout=fh, interpreter=shell)
         except BaseException:
             # A job that never started must not count as pending work forever.
             if fh is not None:
@@ -77,9 +80,11 @@ class JobManager:
         job.proc = proc
 
         def watch():
-            deadline = time.time() + timeout if timeout else None
+            deadline = time.monotonic() + timeout if timeout else None
+            timed_out = False
             while proc.poll() is None:
-                if job.signal.is_set() or (deadline and time.time() > deadline):
+                if job.signal.is_set() or (deadline and time.monotonic() > deadline):
+                    timed_out = not job.signal.is_set()
                     kill_tree(proc)
                     break
                 time.sleep(0.1)
@@ -87,7 +92,7 @@ class JobManager:
             fh.close()
             job.exit_code = proc.returncode
             self._finish(
-                job, "killed" if job.signal.is_set() else ("completed" if proc.returncode == 0 else "failed")
+                job, "killed" if job.signal.is_set() else ("completed" if proc.returncode == 0 and not timed_out else "failed")
             )
 
         threading.Thread(target=watch, daemon=True, name=f"virgo-{job.id}").start()
@@ -114,7 +119,7 @@ class JobManager:
     def output(self, job: Job) -> str:
         if job.log is not None:
             try:
-                return job.log.read_text(encoding="utf-8", errors="replace")
+                return read_output(job.log).text
             except FileNotFoundError:
                 return ""
         return job.result
@@ -128,15 +133,21 @@ class JobManager:
         job.status = status
         job.ended = time.time()
         try:
-            out = self.output(job).strip()
+            if job.log is not None:
+                captured = read_output(job.log, max_bytes=4800)
+                out, total = captured.text.strip(), captured.total_bytes
+                unit = "bytes"
+            else:
+                out = job.result.strip()
+                total, unit = len(out), "chars"
             tail = out[-1200:] if len(out) > 1200 else out
             code = f", exit code {job.exit_code}" if job.exit_code is not None else ""
             text = (
                 f"Background job {job.id} ({job.kind}: {job.label[:80]}) {job.status}{code} after {job.elapsed()}.\n"
-                f"{'Last output' if job.kind == 'bash' else 'Result'}:\n{tail or '(no output)'}"
+                f"{'Result' if job.kind == 'agent' else 'Last output'}:\n{tail or '(no output)'}"
             )
-            if len(out) > 1200:
-                text += f"\n[{len(out)} chars total — use job_output id={job.id} for all of it]"
+            if total > 1200:
+                text += f"\n[{total} {unit} total — use job_output id={job.id} for the log path and bounded output]"
             self.api.notify(text, mode="steer", source="jobs")
         except Exception as e:  # noqa: BLE001
             # Leaving the job unreported would hold print mode until its idle timeout;
@@ -159,36 +170,7 @@ def setup(api: ExtensionAPI) -> None:
     jobs = JobManager(api)
     api.services["jobs"] = jobs
 
-    def bash(args: dict, ctx: ToolContext):
-        if args.get("background"):
-            job = jobs.start_command(args["command"], ctx.cwd, args.get("timeout"))
-            return ToolResult.text(
-                f"Started background job {job.id}. You will be notified when it finishes; "
-                "meanwhile continue with other work (job_output shows progress)."
-            )
-        return BASH.execute(args, ctx)
-
-    params = {
-        **BASH_PARAMS,
-        "properties": {
-            **BASH_PARAMS["properties"],
-            "background": {
-                "type": "boolean",
-                "description": "Run without waiting (servers, long builds/tests); you get a notification when it ends",
-            },
-        },
-    }
-    api.register_tool(
-        AgentTool(
-            name="bash",
-            label="Bash",
-            description=BASH.description + " Set background=true for long-running commands.",
-            parameters=params,
-            execute=bash,
-            snippet=BASH.snippet,
-        ),
-        roles=("main",),  # notifications go to the lead, so only the lead gets background bash
-    )
+    api.services["shell"].install_tools()
 
     def find(args: dict) -> Job | ToolResult:
         job = jobs.jobs.get(args["id"])
@@ -204,10 +186,16 @@ def setup(api: ExtensionAPI) -> None:
         end = time.time() + wait
         while job.status == "running" and time.time() < end and not ctx.signal.is_set():
             time.sleep(0.2)
-        head = f"{job.id} [{job.status}] {job.kind}: {job.label} ({job.elapsed()})"
-        return ToolResult.text(
-            head + "\n" + budget(jobs.output(job) or "(no output yet)", ctx.cwd, job.id, keep="tail")
-        )
+        label = job.label if len(job.label) <= 300 else job.label[:300] + "…"
+        head = f"{job.id} [{job.status}] {job.kind}: {label} ({job.elapsed()})"
+        if job.log is not None:
+            captured = read_output(job.log)
+            displayed = display_output(captured, max_bytes=MAX_BYTES - len(head.encode("utf-8")) - 1)
+            return ToolResult.text(head + "\n" + displayed, {
+                "output_path": str(job.log), "output_bytes": captured.total_bytes,
+                "truncated": displayed.startswith("[Output truncated:"),
+            })
+        return ToolResult.text(head + "\n" + budget(job.result or "(no output yet)", ctx.cwd, job.id, keep="tail"))
 
     def kill(args: dict, ctx: ToolContext) -> ToolResult:
         job = find(args)

@@ -40,6 +40,10 @@
 
 权限请求按顺序显示。中止时释放对应的待决确认，工具预检在权限检查前检测取消信号。退出时禁止新任务调度并释放全部确认，关闭钩子在后台执行且只执行一次；后台任务、调度器、队友和 MCP 先停止，可选的自动记忆提取最后执行。界面线程不等待工作线程或关闭钩子。
 
+## 命令解释器
+
+`ShellSelection` 保存会话级选择，`ShellTool` 绑定不可变的解释器信息；前台、后台和模型提示使用同一个绑定。`/shell` 在运行边界更新主 Runtime，新子 Runtime 继承当前选择，已有子 Runtime 和后台命令保持原选择。PowerShell 使用独立权限分支。探测、配置优先级、兼容模式和验证入口见 [Shell 选择与执行](SHELLS.md)。
+
 ## 消息模型（`virgo.ai.types`）
 
 - 内容块：`TextContent`、`ThinkingContent(signature, redacted)`、`ImageContent`、`ToolCall`、`RawContent`（provider 专有的块，原样回传，例如 Anthropic 的 `fallback`）。
@@ -114,7 +118,7 @@ agent 准备停止时，依次检查：
 
 适配器合并相邻同角色消息的方式是确定性的，所以合并结果每次相同。这样提示缓存可以命中，Claude 的 thinking 块也能保持有效。
 
-`tests/test_session.py::test_requests_are_append_only` 会验证这一点。
+`tests/harness/test_session.py::test_requests_are_append_only` 会验证这一点。
 
 每次模型调用前检查压缩条件，所有 Provider 默认阈值为模型上下文窗口的 80%（`compaction.triggerRatio=0.8`）；显式 `triggerTokens` 优先，旧 `reserveTokens` 不再使用。`/compact` 可手动触发，overflow 时另尝试一次压缩。
 

@@ -115,6 +115,7 @@ def expand_template(body: str, args: str) -> str:
 def register_builtins(session: AgentSession) -> None:
     from .auth_commands import login, logout
     from .preferences import configure_preference
+    from .shell_commands import configure_shell
 
     c = session.commands
 
@@ -187,6 +188,7 @@ def register_builtins(session: AgentSession) -> None:
     c.register("help", help_, "show commands", concurrent=True)
     c.register("login", login, "sign in to an account or configure an API (/login [auth|api] [provider])")
     c.register("logout", logout, "remove saved credentials (/logout [provider|all])")
+    c.register("shell", configure_shell, "detect and choose the command shell (/shell [name|path|auto])")
     c.register("model", model, "show or switch the model (/model provider/id)")
     c.register("effort", effort, "show or set reasoning effort")
     c.register("compact", compact, "summarize older context now (/compact [focus])")
