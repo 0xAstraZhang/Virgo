@@ -49,9 +49,9 @@ PowerShell 在 `auto-review` 中按独立规则处理，其余脚本交给审批
 
 ## 验证
 
-`tests/test_shell_selection_e2e.py` 使用 faux 模型驱动真实会话、工具与解释器，包含两种 UI 的选择/取消、配置保留和失败回滚、重启优先级、缺失路径、模型元信息、跨会话与后台绑定、中文和引号、工作目录、错误状态、超时、输出截断及终止后代进程。PowerShell 场景在解释器可用时运行；没有安装时跳过。
+`tests/harness/test_shell_commands.py` 使用 faux 模型驱动真实会话、工具与解释器，包含两种 UI 的选择/取消、配置保留和失败回滚、重启优先级、缺失路径、模型元信息、跨会话与后台绑定、中文和引号、工作目录、错误状态、超时、输出截断及终止后代进程。PowerShell 场景在解释器可用时运行；没有安装时跳过。
 
-`tests/test_shell_runtime_e2e.py` 补充 32 MiB 输出的实时日志与内存上限、原始字节保留、日志创建失败、后台读取预算，以及 Windows 的根进程退出、超时、取消、会话关闭、监督进程崩溃、句柄释放和并行 Job 隔离验收。
+`tests/tools/test_shell_runtime.py` 补充 32 MiB 输出的实时日志与内存上限、原始字节保留、日志创建失败、后台读取预算，以及 Windows 的根进程退出、超时、取消、会话关闭、监督进程崩溃、句柄释放和并行 Job 隔离验收。
 
 `.github/workflows/shell-selection.yml` 在 Windows、macOS、Linux 执行上述两份端到端测试并上传 JUnit 结果；Windows 测试分别运行 PowerShell 7 和系统 PowerShell 5.1。本机通过不等价于 Windows CI 已通过。
 

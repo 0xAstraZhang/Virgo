@@ -673,7 +673,10 @@ class AgentSession:
             if self._shutdown_started or not self.busy:
                 return False
             self.main.agent.steer(UserMessage(text))
-            return True
+        # Queued messages reach the model only after the current tool batch; this tells
+        # features right away that the user is present.
+        self.bus.emit("user_steer", text, self)
+        return True
 
     def notify(self, text: str, mode: str = "steer", source: str | None = None) -> None:
         """Deliver harness information to the lead agent; wakes it if idle."""

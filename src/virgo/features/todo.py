@@ -108,7 +108,7 @@ def setup(api: ExtensionAPI) -> None:
         return Continue(
             "<reminder>\nYour todo list still has unfinished items:\n"
             f"{listing}\nContinue working on them, or update the list with todo_write if they are done or no "
-            "longer needed. If you need input from the user, say so and stop.\n</reminder>"
+            "longer needed. If you need input from the user, ask with ask_user, or say so and stop.\n</reminder>"
         )
 
     api.on("session_start", restore)

@@ -3,14 +3,14 @@
 Virgo 是一个轻量、可扩展的 Coding Agent。
 
 - **架构参考** [Pi](https://github.com/earendil-works/pi)，分三层：统一 LLM 层 → 无 I/O 的 agent 循环 → harness（工具、会话、压缩、扩展）。
-- **功能**：支持权限、钩子、TodoWrite、子 Agent、技能、上下文压缩、记忆、任务图、后台任务、定时任务、Agent 团队、MCP、Workflow、Goal loop 等。
+- **功能**：支持权限、钩子、TodoWrite、主动提问（ask_user）、子 Agent、技能、上下文压缩、记忆、任务图、后台任务、定时任务、Agent 团队、MCP、Workflow、Goal loop 等。
 
 ```
 virgo.ai                          统一流式模型、账号认证 + Anthropic / OpenAI / Google / faux 适配器
 virgo.agent                       事件驱动的工具调用循环（steer / follow-up 队列、并行工具、abort）
 virgo.harness                     会话树、system prompt、扩展总线、命令、压缩、集成运行时
 virgo.tools                       read / write / edit / bash 或 powershell / glob / grep / web_search
-virgo.features                    内置扩展：权限、todo、子 agent、技能、记忆、任务、后台、定时、团队、MCP、workflow、goal
+virgo.features                    内置扩展：权限、todo、ask_user、子 agent、技能、记忆、任务、后台、定时、团队、MCP、workflow、goal
 virgo.cli                         全屏 TUI / plain REPL、-p 打印模式、--mode json 事件流
 ```
 
@@ -307,6 +307,7 @@ def setup(api):
 | 权限 | `features/permission.py` | 三种模式；auto-review 识别工作区边界并对外部/联网操作调用小模型审批；accept-all 全部放行；plan 只读；无人值守时需要人工审批的操作视为拒绝 |
 | 钩子 | `harness/extensions.py` | 带优先级的事件总线：`tool_call` 可拦截或改参，`tool_result` 可改结果，`agent_stop` 可要求继续；另有 shell 命令钩子 |
 | TodoWrite | `features/todo.py` | 整表替换、校验失败不改状态；状态存在工具结果 `details` 里，可从会话重建；只在 agent 准备结束但仍有未完成项时提醒一次 |
+| 主动提问 | `features/ask_user.py` | 只给主 agent；模型可给 0–3 个选项，第一个为推荐项，末尾自动追加“自定义”输入；不给选项时直接显示输入框。非用户发起的运行（定时任务、后台任务完成、队友消息唤醒）在 `askUser.unattendedTimeout` 秒后（默认 300）收回问题：有选项自动采用推荐项，无选项让模型按合理假设继续；用户在这类运行中发消息即取消时限。`-p` 等非交互模式不弹出问题，直接让模型按假设继续 |
 | 子 Agent | `features/subagent.py` | 全新上下文，只返回最终答案；不能递归；`general` / `explore` 两种类型，可在 `agents/*.md` 自定义；可并行、可后台 |
 | 技能 | `features/skills.py` | 渐进披露：prompt 只列目录，模型用 `read` 加载正文；`/skill:` 强制使用 |
 | 上下文压缩 | `harness/compaction.py`、`ai/compaction.py`、`tools/truncate.py` | 默认 80% 窗口触发；OpenAI / Anthropic 原生压缩，其他 Provider 用增量摘要；完整历史保留，支持 `/compact` 和超限补救 |
@@ -343,6 +344,12 @@ def setup(api):
 
 ```bash
 uv run pytest -q
+```
+
+`tests/` 的目录与 `src/virgo/` 一一对应（`agent/`、`ai/`、`ai/providers/`、`cli/`、`cli/tui/`、`features/`、`harness/`、`tools/`），新测试放进被测模块对应的文件。共享的测试替身和工具在 `tests/support/`，测试模块之间不互相导入。跨平台测试约定和已知失败分析见 [docs/TESTING.md](docs/TESTING.md)。驱动真实伪终端的测试带 `pty` 标记，日常迭代可以跳过：
+
+```bash
+uv run pytest -q -m "not pty"
 ```
 
 静态检查：

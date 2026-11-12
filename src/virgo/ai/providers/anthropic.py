@@ -39,15 +39,6 @@ BETA_FALLBACK = "server-side-fallback-2026-07-01"
 BETA_BINDING = "thinking-binding-controls-2026-08-01"
 BETA_COMPACTION = "compact-2026-09-04"
 BETA_OAUTH = ("claude-code-20250219", "oauth-2025-04-20")
-# Pi's subscription compatibility mapping. Keep local tool names unchanged.
-_CLAUDE_CODE_TOOLS = {
-    name.lower(): name
-    for name in (
-        "Read", "Write", "Edit", "Bash", "Grep", "Glob", "AskUserQuestion", "EnterPlanMode",
-        "ExitPlanMode", "KillShell", "NotebookEdit", "Skill", "Task", "TaskOutput", "TodoWrite",
-        "WebFetch", "WebSearch",
-    )
-}
 # models that accept server-side refusal fallbacks
 FALLBACK_MODELS = {
     "claude-opus-5-5",
@@ -132,7 +123,7 @@ def _user_blocks(content) -> list:
     return out
 
 
-def convert_messages(messages: list, oauth: bool = False) -> list[dict]:
+def convert_messages(messages: list) -> list[dict]:
     out: list[dict] = []
 
     def add(role: str, blocks: list):
@@ -174,8 +165,7 @@ def convert_messages(messages: list, oauth: bool = False) -> list[dict]:
                     elif b.signature:
                         blocks.append({"type": "thinking", "thinking": b.thinking, "signature": b.signature})
                 elif isinstance(b, ToolCall):
-                    name = _CLAUDE_CODE_TOOLS.get(b.name.lower(), b.name) if oauth else b.name
-                    blocks.append({"type": "tool_use", "id": b.id, "name": name, "input": b.arguments})
+                    blocks.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.arguments})
                 elif isinstance(b, RawContent) and b.api == "anthropic":
                     blocks.append(b.data)
             add("assistant", blocks)
@@ -188,7 +178,7 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
     params: dict = {
         "model": model.id,
         "max_tokens": opts.max_tokens or min(model.max_tokens, 64_000),
-        "messages": convert_messages(ctx.messages, oauth),
+        "messages": convert_messages(ctx.messages),
         "cache_control": {"type": "ephemeral"},
     }
     if ctx.system:
@@ -201,7 +191,7 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
     if ctx.tools:
         params["tools"] = [
             {
-                "name": _CLAUDE_CODE_TOOLS.get(t.name.lower(), t.name) if oauth else t.name,
+                "name": t.name,
                 "description": t.description,
                 "input_schema": t.parameters,
                 "eager_input_streaming": True,
@@ -365,10 +355,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     out.content.append(ThinkingContent("", signature=b.data, redacted=True))
                     kind = "thinking_start"
                 elif b.type == "tool_use":
-                    name = b.name
-                    if _is_oauth(model):
-                        name = next((t.name for t in ctx.tools if t.name.lower() == name.lower()), name)
-                    out.content.append(ToolCall(b.id, name, b.input or {}))
+                    out.content.append(ToolCall(b.id, b.name, b.input or {}))
                     json_bufs[ev.index] = ""
                     kind = "toolcall_start"
                 else:  # fallback / server blocks: echo back verbatim

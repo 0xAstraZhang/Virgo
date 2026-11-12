@@ -118,7 +118,7 @@ agent 准备停止时，依次检查：
 
 适配器合并相邻同角色消息的方式是确定性的，所以合并结果每次相同。这样提示缓存可以命中，Claude 的 thinking 块也能保持有效。
 
-`tests/test_session.py::test_requests_are_append_only` 会验证这一点。
+`tests/harness/test_session.py::test_requests_are_append_only` 会验证这一点。
 
 每次模型调用前检查压缩条件，所有 Provider 默认阈值为模型上下文窗口的 80%（`compaction.triggerRatio=0.8`）；显式 `triggerTokens` 优先，旧 `reserveTokens` 不再使用。`/compact` 可手动触发，overflow 时另尝试一次压缩。
 
