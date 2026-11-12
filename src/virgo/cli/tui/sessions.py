@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -135,14 +134,12 @@ class SessionPicker(ModalScreen[Path | str | None]):
         current_path: Path | None = None,
         grouped: bool = True,
         current_status: str = "Ready",
-        can_manage: Callable[[], bool] | None = None,
     ):
         super().__init__()
         self.sessions = sessions
         self.current_path = Path(current_path) if current_path is not None else None
         self.grouped = grouped
         self.current_status = current_status
-        self.can_manage = can_manage
         self._rows: dict[str, dict] = {}
         self._selected_id: str | None = None
 
@@ -170,7 +167,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
         current = self.current_path is not None and Path(item["path"]) == self.current_path
         return SessionRow(
             (item.get("title") if item.get("title") != "(empty)" else None) or "Untitled session",
-            self.current_status if current else "Saved",
+            self.current_status if current else item.get("status", "Saved"),
             relative_time(item.get("mtime", time.time())),
             selected=selected,
         )
@@ -267,11 +264,13 @@ class SessionPicker(ModalScreen[Path | str | None]):
                 key, self._row(self._rows[key], selected=key == self._selected_id),
             )
 
-    def _allow_change(self) -> bool:
-        if self.can_manage is None or self.can_manage():
-            return True
-        self.notify("Current work is still active. Press Esc to return and finish or interrupt it.")
-        return False
+    def set_statuses(self, statuses: dict[str, str]) -> None:
+        choices = self.query_one("#session-list", OptionList)
+        for key, item in self._rows.items():
+            status = statuses.get(key, "Saved")
+            if item.get("status", "Saved") != status:
+                item["status"] = status
+                choices.replace_option_prompt(key, self._row(item, selected=key == self._selected_id))
 
     @on(OptionList.OptionHighlighted, "#session-list")
     def highlighted(self, event: OptionList.OptionHighlighted) -> None:
@@ -281,8 +280,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
     def selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_id in self._rows:
             path = Path(event.option_id)
-            if path == self.current_path or self._allow_change():
-                self.dismiss(path)
+            self.dismiss(path)
 
     def action_toggle_group(self) -> None:
         path = self.selected_path
@@ -291,12 +289,11 @@ class SessionPicker(ModalScreen[Path | str | None]):
         self.post_message(self.GroupingChanged(self.grouped))
 
     def action_new(self) -> None:
-        if self._allow_change():
-            self.dismiss("new")
+        self.dismiss("new")
 
     def action_delete(self) -> None:
         path = self.selected_path
-        if path is not None and self._allow_change():
+        if path is not None:
             self.post_message(self.DeleteRequested(path))
 
     def action_cancel(self) -> None:

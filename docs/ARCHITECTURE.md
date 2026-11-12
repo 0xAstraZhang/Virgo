@@ -32,6 +32,7 @@
 `--ui auto` 在 stdin/stdout 均为 TTY 且 `TERM` 可用时选择 Textual 全屏界面，否则继续使用 `ConsoleBroker + TerminalUI`。`--ui plain` 显式选择逐行 REPL；`--ui fullscreen` 在不支持的环境中返回错误。`-p` 和 JSON 事件流使用独立的 `PrintUI`。
 
 - **`VirgoApp`**：管理布局、输入、补全、滚动、权限弹层和会话选择器。对话占剩余高度，底部固定输入和状态栏；正文和背景使用终端默认色。Textual 管理 alternate screen 和终端恢复。
+- **`ConversationPane`**：运行期间切换或新建会话时，为另一个会话保留独立的 `AgentSession`、`RunController`、`FullscreenUI` 和界面组件。隐藏的会话继续调度排队命令与唤醒，显示事件暂存至切回后按顺序消费；草稿、滚动、审批、输入表单与补全状态随面板保留。切回运行中的会话复用原运行时，不从磁盘再创建一个写入者。空闲且无需恢复已有面板时沿用原控制器的会话切换流程。退出时先关闭所有桥接与服务，再在统一超时预算内等待所有控制器。
 - **`FullscreenUI`**：实现现有 `UI.on_event / print / confirm / wake` 接口。工作线程送来的事件先复制为快照，再放入线程安全队列；`confirm` 在工作线程等待，每个请求独立记录答案与完成信号。
 - **`RunController`**：调度同步 `AgentSession` 的工作线程。忙时普通输入走 steering，非并发命令排队，通知触发 `run_pending`。UI 定时消费队列，所有组件更新都发生在界面线程。
 - **`Transcript`**：维护消息和工具组件，工具用 agent 与调用 ID 关联。流式更新合并刷新同一条消息，重试清除失败尝试，结束事件校准最终内容；工具和思考可折叠。用户上滚后暂停跟随，回到末尾恢复跟随。

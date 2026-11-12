@@ -4,6 +4,31 @@ The suite exercises real tool execution, local HTTP servers, session flows and
 Textual/PTY interactions without live model credentials. See the development
 section in [README](../README.md) for commands and the test layout.
 
+## Concurrent fullscreen conversations
+
+`test_sessions.py` drives the assembled Textual app through Ctrl+R → n and
+`/new` while a model run, command, helper, queued command, approval or input is
+pending. It verifies independent replies and persisted histories, switching back
+to the same runtime, background queue completion, draft/form restoration,
+cross-workspace loading, invalid-history recovery, isolated approval IDs and
+interrupts, and shutdown of all live conversations. The new-session regression
+failed on the original implementation before the fix. Existing browser test
+identities remain comparable; their former blocking expectations now assert that
+new/open succeeds while the old work continues.
+
+The PTY scenario in `test_pty.py` starts a delayed model reply, creates another
+conversation with real Ctrl+R/n keystrokes, receives its answer while the first
+still runs, checks the session list and separate JSONL histories, and verifies
+terminal restoration on exit. All providers are local faux providers.
+
+Local macOS validation covered all 220 TUI cases: the complete run passed 219,
+with the new PTY case initially waiting for the wrong activity label; after
+correcting that expectation to `Thinking`, all five PTY cases passed against
+the worktree source. The final session scenarios passed all 42 cases, CLI entry
+points passed all 40, and Ruff plus `git diff --check` passed. Subprocess checks
+use an absolute worktree `PYTHONPATH` so changing the child working directory
+does not fall back to another installed checkout.
+
 ## Answer whitespace regression (PR #14)
 
 Answer selection must preserve whitespace-only text blocks: they can separate
