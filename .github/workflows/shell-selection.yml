@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      powershell_diagnostics:
+        description: Run only PowerShell selection regressions on Ubuntu
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -11,13 +16,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.powershell_diagnostics && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --locked
-      - run: uv run pytest tests/harness/test_shell_commands.py tests/tools/test_shell_runtime.py -q --junitxml=shell-results.xml
+      - if: ${{ !inputs.powershell_diagnostics }}
+        run: uv run pytest tests/harness/test_shell_commands.py tests/tools/test_shell_runtime.py -q --junitxml=shell-results.xml
+      - if: ${{ inputs.powershell_diagnostics }}
+        run: |
+          command -v pwsh
+          uv run pytest tests/harness/test_shell_commands.py -k 'pwsh or failed_shell_probe_reports' -v --junitxml=shell-results.xml
       - run: uv run ruff check
       - uses: actions/upload-artifact@v4
         if: always()

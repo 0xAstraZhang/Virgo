@@ -4,7 +4,51 @@ The suite exercises real tool execution, local HTTP servers, session flows and
 Textual/PTY interactions without live model credentials. See the development
 section in [README](../README.md) for commands and the test layout.
 
+## Answer whitespace regression (PR #14)
+
+Answer selection must preserve whitespace-only text blocks: they can separate
+Markdown paragraphs. Use a nonblank check only to decide whether a terminal
+message needs the pre-search text fallback. The Textual live/history regression
+in `test_native_event_order.py` covers ordinary answers, trailing answers after
+search, and fallback answers with a whitespace-only suffix. All three cases
+failed before the two-line correction; afterwards, all 37 transcript, native-event,
+timeline, run-boundary and history-load tests passed. Ruff and `git diff --check`
+passed as well.
+
 ## Cross-platform fixtures and assertions
+
+### Native-search final-answer regression
+
+Some Responses streams reuse a text block opened before native search for the
+complete answer. The block index therefore does not describe when its final
+text arrived. If a terminal assistant message has no nonblank text after its
+last tool block, the transcript promotes its existing nonblank text instead
+of hiding the entire answer in Thinking. A separate trailing answer still
+takes precedence; search results and Sources remain folded.
+
+`tests/cli/tui/test_native_event_order.py` exercises this through the Textual
+event loop, both live and after history replay, including opening Thinking
+without duplicating the answer. The regression was observed failing before
+the rendering correction.
+
+The original local session `f8b4e0f626d1` (2026-11-12 16:47:49–16:48:49)
+was also replayed at 80×24 with both its final message and full persisted
+history. Both paths displayed the complete 1496-character answer with
+Thinking collapsed; all 36 timeline events were retained. The private session
+is not committed as a fixture.
+
+Thought blocks with no readable summary but a nonempty `encrypted_content`
+now display `内容已加密` in both their header and expanded body. This label is
+UI-only: the original thinking text, signature, message and session file stay
+unchanged for model replay. Readable summaries take precedence; an ordinary
+signature or empty block without encryption is not labeled encrypted.
+The same trajectory replay confirmed 13 encrypted labels and one preserved
+readable summary in both rendering paths, with the 1496-character answer
+still visible. Message equality and the original session file's SHA-256
+were unchanged. The transcript, native-event, timeline, run-boundary and
+history-load scenarios passed (34 tests), as did Ruff.
+
+### Portability conventions
 
 - Compare filesystem output with native `Path` strings, or normalize both sides
   as paths. Glob patterns still use `/`; rendered paths use the host separator.
@@ -219,6 +263,29 @@ PY
 ```
 
 ## Shell selection failures in CI
+
+PR #14 comparison run `43189800255` at `231eb63` failed seven Ubuntu `pwsh`
+cases at shell selection with `version probe failed`; base, Windows and macOS
+passed. This message does not distinguish a nonzero exit from empty or malformed
+version output. Failed probes now include the exit code and escaped stdout/stderr,
+each limited to 1024 characters with explicit truncation. Four real-process
+`/shell` regressions cover nonzero exit, empty/invalid version and long output;
+all failed before the diagnostic change and passed afterwards.
+
+For targeted investigation, dispatch `shell-selection.yml` at the PR branch with
+`powershell_diagnostics=true`. It runs only Ubuntu's seven `pwsh` cases and the
+four diagnostic regressions, and requires `pwsh` to exist before collection.
+Normal workflow runs retain their complete three-platform selection.
+
+The [targeted run](https://github.com/0xAstraZhang/Virgo/actions/runs/43191809052)
+at `8d1e313` passed all 11 selected tests (20 deselected) in 19.60 seconds;
+Ruff passed. Both this run and the failing comparison used Ubuntu image
+`20261101.186.1` and Python 3.13.18. The failure was not reproduced in isolation:
+this does not distinguish a transient runner problem from full-suite ordering
+or setup effects, nor establish the original probe's exit code/output. The full
+comparison was intentionally not rerun. Diagnostic-only commits use `[skip ci]`
+to avoid triggering the automatic full suite; this targeted success does not
+replace a complete comparison check.
 
 Shell execution scenarios must assert that `/shell <name>` selected the requested
 interpreter before sending commands, and include the recorded UI output on failure.

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from dataclasses import asdict
+
+import pytest
 
 from virgo.agent.types import AgentEvent
 from virgo.ai.providers.responses import parse_events
@@ -15,6 +18,7 @@ from virgo.ai.types import (
     RawContent,
     StreamOptions,
     TextContent,
+    ThinkingContent,
     UserMessage,
     message_to_dict,
 )
@@ -22,6 +26,41 @@ from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.transcript import AssistantView, Transcript
 
 from tests.support.tui import TranscriptApp
+
+
+@pytest.mark.parametrize("region", ["ordinary", "trailing", "fallback"])
+def test_answer_preserves_whitespace_blocks_live_and_in_history(region):
+    answer = [TextContent("First paragraph."), TextContent("\n\n"), TextContent("Second paragraph.")]
+    search = RawContent("openai-responses", {
+        "type": "web_search_call", "id": "search", "status": "completed",
+        "action": {"type": "search", "query": "release"},
+    })
+    content = answer
+    expected = "First paragraph.\n\nSecond paragraph."
+    if region == "trailing":
+        content = [TextContent("Checking."), search, *answer]
+    elif region == "fallback":
+        content = [*answer, search, TextContent("\n\n")]
+        expected += "\n\n"
+    message = AssistantMessage(content, api="openai-responses")
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("message_start", message=message))
+            await view.consume(AgentEvent("message_end", message=message))
+            for replay in (False, True):
+                if replay:
+                    await view.load_history([{"type": "message", "message": message_to_dict(message)}])
+                await pilot.pause()
+                card = view.query_one(AssistantView)
+                assert card.body.display
+                assert card.body._markdown == expected
+                assert len(card.body.query("MarkdownParagraph")) == 2
+                assert all(not event.display for event in card.answer_events)
+
+    asyncio.run(scenario())
 
 
 def test_bridge_only_coalesces_matching_token_deltas():
@@ -68,6 +107,45 @@ def test_native_search_completion_stays_after_preceding_message_in_one_frame():
             assert rows[1].text == "Checking the release now."
             assert rows[2].tool_name == "web_search"
             assert all(not row.expanded for row in rows)
+
+    asyncio.run(scenario())
+
+
+def test_encrypted_thought_label_is_display_only_live_and_in_history():
+    encrypted = json.dumps({"type": "reasoning", "summary": [], "encrypted_content": "opaque-secret"})
+    message = AssistantMessage([
+        ThinkingContent("", signature=encrypted),
+        ThinkingContent("Readable summary", signature=encrypted),
+        ThinkingContent("", signature="ordinary-signature"),
+        ThinkingContent("", signature='[]'),
+        ThinkingContent("", signature='{"summary": []}'),
+        TextContent("Answer"),
+    ], api="openai-responses")
+    original = copy.deepcopy(message_to_dict(message))
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("message_end", message=message))
+            for replay in (False, True):
+                if replay:
+                    await view.load_history([{"type": "message", "message": original}])
+                await pilot.pause()
+                card = view.query_one(AssistantView)
+                thoughts = [e for e in card.events if e.kind == "thinking"]
+                assert thoughts[0].text == "内容已加密"
+                assert "内容已加密" in thoughts[0].summary().plain
+                card.set_thinking(True)
+                thoughts[0].set_expanded(True)
+                await pilot.pause()
+                assert str(thoughts[0].output.content) == "内容已加密"
+                assert thoughts[1].text == "Readable summary"
+                assert all(e.text == "" for e in thoughts[2:])
+                assert card.text == "Answer" and card.body.display
+                assert message_to_dict(card.message) == original
+                assert "opaque-secret" not in "".join(e.text for e in card.events)
+            assert message_to_dict(message) == original
 
     asyncio.run(scenario())
 
@@ -152,3 +230,53 @@ def test_stream_history_retry_keeps_attempts_separate():
         AgentEvent("message_update", stream_event=StreamEvent("text_start", message, 0)),
     ]
     _assert_history_matches_live(events, message, ["text", "retry", "text"])
+
+
+def test_reused_text_block_before_native_search_remains_visible_live_and_in_history():
+    # Some Responses providers append the answer to a text block opened before
+    # search. Content indices then no longer describe when the answer arrived.
+    message = AssistantMessage([TextContent("Checking. ")], api="openai-responses")
+    events = [AgentEvent("message_update", stream_event=StreamEvent(
+        "text_start", copy.deepcopy(message), 0,
+    ))]
+    message.content.append(RawContent("openai-responses", {
+        "type": "web_search_call", "id": "search", "status": "completed",
+        "action": {"type": "search", "query": "release"},
+    }))
+    events.append(AgentEvent("message_update", stream_event=StreamEvent(
+        "native_tool_end", copy.deepcopy(message), 1,
+    )))
+    message.content[0].text += "The complete answer."
+    message.content.append(TextContent("\n\nSources:\nhttps://example.com"))
+    entries = [
+        {"type": "custom", "kind": "transcript_run_start", "data": {"agent": "main"}},
+        {"type": "message", "message": message_to_dict(UserMessage("Search"))},
+        *[_stream_entry(event) for event in events],
+        {"type": "message", "message": message_to_dict(message)},
+        {"type": "custom", "kind": "transcript_run_end", "data": {"agent": "main"}},
+    ]
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one(Transcript)
+            for event in events:
+                await view.consume(event)
+            await view.consume(AgentEvent("message_end", message=message))
+            for replay in (False, True):
+                if replay:
+                    await view.load_history(entries)
+                await pilot.pause()
+                card = view.query_one(AssistantView)
+                assert card.body.display
+                assert card.body._markdown == "Checking. The complete answer."
+                assert not card.thought_body.display
+                assert len(card.answer_events) == 1
+                assert not card.answer_events[0].display
+                card.set_thinking(True)
+                await pilot.pause()
+                assert card.body.display
+                assert not card.answer_events[0].display
+                assert all(e.display for e in card.events if e.kind in ("tool_call", "tool_result", "sources"))
+
+    asyncio.run(scenario())
