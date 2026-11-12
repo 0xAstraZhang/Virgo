@@ -28,6 +28,10 @@ PARAMETER_ALIASES = {
         "test_runs_woken_by_notifications_time_out_to_the_recommendation",
     "test_parallel_todos_have_no_size_cap_or_stop_continuation":
         "test_todo_validation_and_stop_reminder",
+    "test_unreadable_thoughts_are_hidden_live_and_in_history":
+        "test_encrypted_thought_label_is_display_only_live_and_in_history",
+    "test_inline_activity_is_separate_from_thought_folding_and_follows_prompt":
+        "test_inline_activity_reuses_thought_header_and_keeps_prompt_before_reply",
 }
 
 
@@ -80,7 +84,8 @@ def run(args):
     started = time.monotonic()
     with (output / "pytest.log").open("w", encoding="utf-8") as log:
         result = subprocess.run([
-            sys.executable, "-m", "pytest", "-q", "-ra", "--color=no",
+            sys.executable, str(Path(__file__).with_name("run_pytest.py").resolve()),
+            "-q", "-ra", "--color=no",
             f"--junitxml={junit}",
         ], cwd=project, stdout=log, stderr=subprocess.STDOUT, check=False)
     report = {

@@ -2,8 +2,33 @@
 
 Two independent conditions produce the same failed comparison job: test identity
 changes and intermittent PowerShell startup failures. Re-running can change the
-latter; it does not resolve an unmapped test rename. This investigation changes
-documentation only.
+latter; it does not resolve an unmapped test rename. The initial observations
+below are retained as evidence; the subsequent CI correction is described next.
+
+## CI correction
+
+The comparator now explicitly maps PR #18's two replacement names to the original
+cases. Its CLI acceptance check covers passing replacements, failing replacements,
+unknown renames, and old/new names colliding in one suite. It reproduced the
+original false disappearance before the mapping was added and passes afterward.
+
+`ci/run_pytest.py` now isolates Unix CI runs from existing PowerShell caches and
+protects the two startup-profile files against writes. Both baseline/head suites
+and the shell workflow use it. Empty read-only profiles prevent the known write
+race even within one job; other cache files remain writable. This implements the
+upstream read-only-file workaround in a disposable directory rather than changing
+the user's cache. Windows keeps its existing environment. Application shell code
+and ordinary local runs are unchanged.
+
+The cache acceptance check failed before implementation because pytest inherited
+the old cache directory. After implementation it passed using the official
+PowerShell 7.6.9 macOS arm64 portable archive (SHA-256 verified against the release
+asset). It executed 48 real version probes/commands, up to eight concurrently,
+across the base/head runner paths; verified the protected files stayed empty,
+other cache writes worked, HOME and the caller's cache were preserved; and checked
+cleanup and exit codes after passing tests, failing tests, and collection errors.
+This validates prevention of shared startup-profile writes, not reproduction of
+the historical crash from an unavailable corrupt runner cache.
 
 ## PR #18: deterministic test identity mismatch
 
@@ -93,9 +118,9 @@ matrix machines to share a filesystem.
 
 Cache corruption is a strong inference from the error signatures and execution
 path, not a direct examination of a failing runner's cache. The failed machines'
-cache files were not retained, and PowerShell is unavailable in the local
-investigation environment. No local PowerShell reproduction or mitigation stress
-test was performed. The PR #13 rerun proves nondeterminism, but its older logs
+cache files were not retained. PowerShell was unavailable during the initial
+investigation; the subsequent portable-runtime validation is recorded above.
+The PR #13 rerun proves nondeterminism, but its older logs
 cannot conclusively establish that it had this exact cache failure.
 
 Recommended follow-up: capture shell versions, probe stderr and cache metadata;
