@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import sys
 import textwrap
 import threading
 
@@ -29,6 +28,7 @@ from virgo.harness.store import SessionStore
 
 from tests.support import REPO_ROOT
 from tests.support.harness import RecordingUI, calls
+from tests.support.shell import selected
 
 
 def test_session_persists_and_resumes(make_session, project):
@@ -231,7 +231,9 @@ def test_requests_are_append_only(make_session):
 
 
 def test_plan_mode_exposes_read_only_tools_and_changes_back_on_switch(make_session):
-    s = make_session(faux.reply("The plan."), faux.reply("Implementation."), mode="plan")
+    # PowerShell is intentionally unavailable in plan mode (covered by shell command tests).
+    s = make_session(faux.reply("The plan."), faux.reply("Implementation."), mode="plan",
+                     settings={"shell": {"executable": "bash"}})
     s.prompt("Plan the change")
     planned = calls()[0]
     assert "Plan mode is active" in planned["system"]
@@ -283,9 +285,8 @@ def test_commands_and_templates(make_session, project):
     assert "Unknown command" in ui.text
 
 
-def test_command_hooks(make_session, project):
-    hook = project / "guard.py"
-    hook.write_text(
+def test_command_hooks(make_session, python_command):
+    hook = python_command(
         textwrap.dedent("""
         import json, sys
         data = json.load(sys.stdin)
@@ -294,11 +295,13 @@ def test_command_hooks(make_session, project):
             sys.exit(2)
     """)
     )
-    settings = {"hooks": {"PreToolUse": [{"matcher": "bash", "command": f"{sys.executable} {hook}"}]}}
-    s = make_session(
-        faux.reply(tools=[("bash", {"command": "echo forbidden"}), ("bash", {"command": "echo fine"})]),
+    settings = {"hooks": {"PreToolUse": [{"matcher": "bash|powershell", "command": hook}]}}
+    s = make_session(settings=settings)
+    tool_name = selected(s).tool_name
+    faux.push(
+        "test",
+        faux.reply(tools=[(tool_name, {"command": "echo forbidden"}), (tool_name, {"command": "echo fine"})]),
         faux.reply("ok"),
-        settings=settings,
     )
     s.prompt("go")
     r = [m for m in s.main.messages if isinstance(m, ToolResultMessage)]

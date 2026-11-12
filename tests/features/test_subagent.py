@@ -30,6 +30,7 @@ def test_subagent_fresh_context_and_no_recursion(make_session):
 
 
 def test_subagent_system_prompt_lists_only_its_own_tools(make_session):
+    # Explore uses plan permissions, where only the POSIX command tool is supported.
     seen = {}
 
     def respond(ctx):
@@ -38,7 +39,7 @@ def test_subagent_system_prompt_lists_only_its_own_tools(make_session):
             return faux.reply("sub done")
         return faux.reply("main done")
 
-    session = make_session()
+    session = make_session(settings={"shell": {"executable": "bash"}})
     faux.push("test", faux.reply(tools=[("agent", {"description": "look", "prompt": "find", "type": "explore"})]))
     faux.handler("test", respond)
     session.prompt("delegate")

@@ -34,11 +34,12 @@ def test_public_modes_and_legacy_config_aliases():
 
 
 def test_auto_review_executes_internal_changes_without_asking(make_session, project, monkeypatch):
+    # The static workspace classifier is for POSIX syntax; PowerShell requires review.
     monkeypatch.setattr(permission, "review_tool_call", lambda *_: pytest.fail("internal action was reviewed"))
     ui = RecordingUI()
     s = make_session(
         faux.reply(tools=[("write", {"path": "a.txt", "content": "1"}), ("bash", {"command": "touch b.txt"})]),
-        faux.reply("done"), ui=ui, mode="auto-review",
+        faux.reply("done"), ui=ui, mode="auto-review", settings={"shell": {"executable": "bash"}},
     )
     s.prompt("create the files")
     assert (project / "a.txt").read_text() == "1"

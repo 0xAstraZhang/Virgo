@@ -346,6 +346,8 @@ def setup(api):
 uv run pytest -q
 ```
 
+跨平台 PR/基线对比、运行方式及报告说明见 [CI 文档](docs/CI.md)。
+
 `tests/` 的目录与 `src/virgo/` 一一对应（`agent/`、`ai/`、`ai/providers/`、`cli/`、`cli/tui/`、`features/`、`harness/`、`tools/`），新测试放进被测模块对应的文件。共享的测试替身和工具在 `tests/support/`，测试模块之间不互相导入。跨平台测试约定和已知失败分析见 [docs/TESTING.md](docs/TESTING.md)。驱动真实伪终端的测试带 `pty` 标记，日常迭代可以跳过：
 
 ```bash
