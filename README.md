@@ -342,6 +342,8 @@ def setup(api):
 uv run pytest -q
 ```
 
+跨平台 PR/基线对比、运行方式及报告说明见 [CI 文档](docs/CI.md)。
+
 静态检查：
 
 ```bash
