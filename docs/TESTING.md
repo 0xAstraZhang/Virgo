@@ -24,10 +24,12 @@ terminal restoration on exit. All providers are local faux providers.
 Local macOS validation covered all 220 TUI cases: the complete run passed 219,
 with the new PTY case initially waiting for the wrong activity label; after
 correcting that expectation to `Thinking`, all five PTY cases passed against
-the worktree source. The final session scenarios passed all 42 cases, CLI entry
+the worktree source. The session scenarios passed all 42 cases, CLI entry
 points passed all 40, and Ruff plus `git diff --check` passed. Subprocess checks
 use an absolute worktree `PYTHONPATH` so changing the child working directory
-does not fall back to another installed checkout.
+does not fall back to another installed checkout. A further end-to-end check
+verifies that creating a conversation during a run preserves `--no-session`
+and writes no session JSONL files.
 
 ## Answer whitespace regression (PR #14)
 

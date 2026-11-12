@@ -355,7 +355,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     cwd = store.cwd
                     if not cwd.is_dir():
                         raise FileNotFoundError(f"Workspace no longer exists: {cwd}")
-                return AgentSession(cwd, ui=ui, session=path, **previous.session_options)
+                storage = None if path == "new" and previous.store.path is None else path
+                return AgentSession(cwd, ui=ui, session=storage, **previous.session_options)
 
             try:
                 candidate = await asyncio.to_thread(construct)

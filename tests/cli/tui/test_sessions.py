@@ -585,3 +585,22 @@ def test_multiple_live_conversations_isolate_approvals_and_interrupts(make_sessi
         assert second._shutdown_started and third._shutdown_started
 
     asyncio.run(scenario())
+
+
+def test_new_conversation_preserves_no_session_mode(make_session, tmp_path):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("old", delay=10), faux.reply("new answer"), ui=ui)
+        app = VirgoApp(session, ui, initial="old question")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: session.busy)
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            assert app.session.store.path is None
+            app.editor.load_text("new question")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: has_reply(app, "new answer"))
+        assert app.wait_closed()
+        assert not list((tmp_path / "home" / "sessions").glob("**/*.jsonl"))
+
+    asyncio.run(scenario())
