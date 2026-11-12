@@ -186,7 +186,7 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 
 使用 `/shell` 探测并选择 Bash、Zsh、sh/dash、PowerShell 7 或 Windows PowerShell 5.1；列表显示版本、路径和当前选择。也可用 `/shell pwsh`、`/shell zsh`、`/shell "C:\Program Files\PowerShell\7\pwsh.exe"` 或 `/shell auto`。选择立即生效并保存用户默认值；重启时项目、Runtime 配置及 `VIRGO_SHELL` 仍有更高优先级。Windows 自动优先 PowerShell，macOS/Linux 优先 Bash。显式配置失效时提示重新选择，不静默更换解释器。模型会收到实际 shell 类型、版本、路径和语法信息；已运行的后台任务保留启动时的 shell。
 
-Bash/Zsh 开启 `errexit` 和 `pipefail`；PowerShell 7.4+ 对 cmdlet 和原生命令启用失败即停止。Windows PowerShell 5.1 / PowerShell 7.0–7.3 仅自动传播最后一个原生命令退出码，需逐条检查 `$LASTEXITCODE`；工具描述会提醒模型。PowerShell 使用独立 `powershell(...)` 权限规则，`plan` 模式不提供该工具。完整行为、探测范围及兼容性见 [Shell 选择与执行](docs/SHELLS.md)。
+Bash/Zsh 开启 `errexit` 和 `pipefail`；PowerShell 7.4+ 对 cmdlet 和原生命令启用失败即停止。Windows PowerShell 5.1 / PowerShell 7.0–7.3 仅自动传播最后一个原生命令退出码，需逐条检查 `$LASTEXITCODE`；工具描述会提醒模型。PowerShell 使用独立 `powershell(...)` 权限规则，`plan` 模式不提供该工具。Windows 10+ 用 Job Object 管理命令及其后代进程，前后台输出直接落盘，展示和读取只保留有限尾部。完整行为、探测范围及兼容性见 [Shell 选择与执行](docs/SHELLS.md)。
 
 ```json
 {

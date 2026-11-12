@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
+from .command_output import CommandOutput, display_output, open_output, read_output
 from .truncate import MAX_BYTES, MAX_LINES, save_output, truncate_tail
 
 DEFAULT_TIMEOUT = 300
@@ -31,6 +32,13 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None) 
         shell = False
     else:
         argv, shell = command, True
+    if os.name == "nt":
+        from .windows_process import WindowsProcess
+
+        if shell:
+            comspec = os.environ.get("ComSpec") or str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe")
+            argv = f'"{comspec}" /d /s /c "{command}"'
+        return WindowsProcess(argv, cwd=cwd, env=env, stdout=stdout)
     return subprocess.Popen(
         argv,
         shell=shell,
@@ -56,63 +64,52 @@ def kill_tree(proc: subprocess.Popen) -> None:
                 time.sleep(0.05)
             os.killpg(proc.pid, _signal.SIGKILL)
         else:
-            # Terminate descendants too (build tools and servers often spawn children).
-            taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
-            try:
-                subprocess.run([str(taskkill), "/PID", str(proc.pid), "/T", "/F"],
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               timeout=5, creationflags=subprocess.CREATE_NO_WINDOW, check=False)
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
+            # The Windows process wrapper terminates its Job Object, not just the root PID.
+            proc.kill()
     except (OSError, subprocess.TimeoutExpired):
         pass
 
 
 def run_command(
     command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter=None
-) -> tuple[str, int | None, str]:
-    """Run to completion. Returns (output, exit_code, status) with status in ok|timeout|aborted."""
+) -> tuple[CommandOutput, int | None, str]:
+    """Spool stdout/stderr directly to disk, returning only a bounded tail and metadata."""
     if signal.is_set():
-        return "", None, "aborted"
-    proc = spawn(command, cwd, interpreter=interpreter)
-    chunks: list[bytes] = []
-
-    def pump():
-        assert proc.stdout is not None
-        for chunk in iter(lambda: proc.stdout.read(8192), b""):
-            chunks.append(chunk)
-
-    reader = threading.Thread(target=pump, daemon=True)
-    reader.start()
-    deadline = time.monotonic() + timeout
-    status = "ok"
-    while proc.poll() is None:
-        if signal.is_set():
-            status = "aborted"
-            kill_tree(proc)
-            break
-        if time.monotonic() > deadline:
-            status = "timeout"
-            kill_tree(proc)
-            break
-        time.sleep(0.05)
-    proc.wait(timeout=5)
-    reader.join(timeout=2)
-    out = b"".join(chunks).decode("utf-8", errors="replace")
-    return out, proc.poll(), status
+        return CommandOutput(""), None, "aborted"
+    prefix = interpreter.tool_name if interpreter is not None else "bash"
+    path, output_file = open_output(cwd, prefix)
+    with output_file:
+        proc = spawn(command, cwd, stdout=output_file, interpreter=interpreter)
+        deadline = time.monotonic() + timeout
+        status = "ok"
+        try:
+            while proc.poll() is None:
+                if signal.is_set():
+                    status = "aborted"
+                    kill_tree(proc)
+                    break
+                if time.monotonic() > deadline:
+                    status = "timeout"
+                    kill_tree(proc)
+                    break
+                time.sleep(0.05)
+            proc.wait(timeout=5)
+        finally:
+            if proc.poll() is None:
+                kill_tree(proc)
+                proc.wait(timeout=5)
+    return read_output(path), proc.returncode, status
 
 
-def format_output(output: str, code: int | None, status: str, cwd: Path, timeout: float, *, prefix="bash") -> ToolResult:
-    text, cut = truncate_tail(output)
-    if cut:
-        path = save_output(output, cwd, prefix)
-        text = (
-            f"[Output truncated: showing the last {len(text.splitlines())} of {len(output.splitlines())} lines "
-            f"(limit {MAX_LINES} lines / {MAX_BYTES // 1024}KB). Full output: {path}]\n{text}"
-        )
-    text = text.rstrip() or "(no output)"
-    details = {"exit_code": code, "status": status}
+def format_output(output: CommandOutput | str, code: int | None, status: str, cwd: Path, timeout: float, *, prefix="bash") -> ToolResult:
+    if isinstance(output, str):
+        # Compatibility for extensions that format a pre-existing in-memory result.
+        text, cut = truncate_tail(output)
+        path = save_output(output, cwd, prefix) if cut else None
+        output = CommandOutput(text, path, cut, len(output.encode("utf-8")))
+    text = display_output(output, max_bytes=MAX_BYTES - 256)
+    details = {"exit_code": code, "status": status, "truncated": text.startswith("[Output truncated:"),
+               "output_bytes": output.total_bytes, "output_path": str(output.path) if output.path else None}
     if status == "timeout":
         return ToolResult.error(f"{text}\n\n[Command timed out after {timeout:g}s]", details)
     if status == "aborted":

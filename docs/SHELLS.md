@@ -41,7 +41,9 @@ PowerShell 使用 `-NoProfile -NonInteractive -OutputFormat Text -EncodedCommand
 - 5.1 / 7.0–7.3 为兼容模式：只自动传播最后一个原生命令退出码。模型必须在每次原生命令后检查 `$LASTEXITCODE`，避免后续成功命令掩盖失败。此限制写入工具描述。
 - 预期非零状态应显式处理；PowerShell 中必要时局部关闭 native error 偏好、检查并重置 `$LASTEXITCODE`。`exit N` 保留显式退出码。
 
-前后台复用原有输出截断、日志和任务管理。超时上限 3600 秒；前台默认 300 秒，后台未提供超时则持续运行。Unix 沿用进程组取消；Windows 使用系统 `taskkill /T /F`，失败后至少终止父进程。这是尽力清理，不是 Job Object 隔离，也不保证清理主动脱离进程树的程序。
+前后台的 stdout/stderr 都直接写入 `.virgo/outputs/` 的日志，命令尚未退出时日志就可读取。前台结束、后台通知和 `job_output` 只读取文件尾部的固定大小窗口，内存不随总输出增长；超长单行也受此限制。完整日志保存原始字节，展示时以 UTF-8 解码并替换非法字节。截断提示头计入 50 KiB 预算，避免 harness 再次截断时丢失最后的错误或完成标记。结果 details 提供 `output_path`、`output_bytes` 和 `truncated`；完整内容用 `read` 分页读取。日志无法创建时不会启动命令。
+
+超时上限 3600 秒；前台默认 300 秒，后台未提供超时则持续运行。Unix 沿用进程组取消。Windows 10+/Server 2016+ 使用独立 Job Object：创建进程时通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 原子绑定，无先运行再加入的窗口；只继承 stdin/stdout 句柄，Job 句柄不继承。`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 负责监督进程异常退出时清理，取消、超时、`job_kill`、会话退出和根命令正常结束都清理同一 Job 的后代。创建或绑定失败会报错，不退回无 Job 管理的启动方式。Job Object 负责普通进程树生命周期，不是权限沙箱，也不覆盖经外部服务代为启动的程序。
 
 PowerShell 在 `auto-review` 中按独立规则处理，其余脚本交给审批模型，审批输入包含实际 shell 信息；不使用 POSIX 词法判断。`plan` 不提供 PowerShell，使用文件读取工具调查；`accept-all` 正常执行。动态 PowerShell 路径无法静态确定，不记忆“本会话允许”。审批缓存键包含解释器信息，切换后不复用旧解释器的审批。
 
@@ -49,6 +51,10 @@ PowerShell 在 `auto-review` 中按独立规则处理，其余脚本交给审批
 
 `tests/test_shell_selection_e2e.py` 使用 faux 模型驱动真实会话、工具与解释器，包含两种 UI 的选择/取消、配置保留和失败回滚、重启优先级、缺失路径、模型元信息、跨会话与后台绑定、中文和引号、工作目录、错误状态、超时、输出截断及终止后代进程。PowerShell 场景在解释器可用时运行；没有安装时跳过。
 
-`.github/workflows/shell-selection.yml` 为 Windows、macOS、Linux 配置相同端到端入口；本机通过不等价于 Windows CI 已通过。
+`tests/test_shell_runtime_e2e.py` 补充 32 MiB 输出的实时日志与内存上限、原始字节保留、日志创建失败、后台读取预算，以及 Windows 的根进程退出、超时、取消、会话关闭、监督进程崩溃、句柄释放和并行 Job 隔离验收。
+
+`.github/workflows/shell-selection.yml` 在 Windows、macOS、Linux 执行上述两份端到端测试并上传 JUnit 结果；Windows 测试分别运行 PowerShell 7 和系统 PowerShell 5.1。本机通过不等价于 Windows CI 已通过。
 
 参考：[PowerShell 启动参数](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh?view=powershell-7.5)、[错误偏好变量](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_preference_variables?view=powershell-7.5)。
+
+Windows API 参考：[启动属性与 JOB_LIST](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)、[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。

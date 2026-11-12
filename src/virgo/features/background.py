@@ -17,7 +17,8 @@ from pathlib import Path
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..harness.extensions import ExtensionAPI
 from ..tools.bash import kill_tree, spawn
-from ..tools.truncate import budget, outputs_dir
+from ..tools.command_output import display_output, read_output
+from ..tools.truncate import MAX_BYTES, budget, outputs_dir
 
 
 @dataclass
@@ -119,7 +120,7 @@ class JobManager:
     def output(self, job: Job) -> str:
         if job.log is not None:
             try:
-                return job.log.read_text(encoding="utf-8", errors="replace")
+                return read_output(job.log).text
             except FileNotFoundError:
                 return ""
         return job.result
@@ -133,15 +134,21 @@ class JobManager:
         job.status = status
         job.ended = time.time()
         try:
-            out = self.output(job).strip()
+            if job.log is not None:
+                captured = read_output(job.log, max_bytes=4800)
+                out, total = captured.text.strip(), captured.total_bytes
+                unit = "bytes"
+            else:
+                out = job.result.strip()
+                total, unit = len(out), "chars"
             tail = out[-1200:] if len(out) > 1200 else out
             code = f", exit code {job.exit_code}" if job.exit_code is not None else ""
             text = (
                 f"Background job {job.id} ({job.kind}: {job.label[:80]}) {job.status}{code} after {job.elapsed()}.\n"
                 f"{'Result' if job.kind == 'agent' else 'Last output'}:\n{tail or '(no output)'}"
             )
-            if len(out) > 1200:
-                text += f"\n[{len(out)} chars total — use job_output id={job.id} for all of it]"
+            if total > 1200:
+                text += f"\n[{total} {unit} total — use job_output id={job.id} for the log path and bounded output]"
             self.api.notify(text, mode="steer", source="jobs")
         finally:
             # Idle detection waits for this flag, not the status: the
@@ -169,10 +176,16 @@ def setup(api: ExtensionAPI) -> None:
         end = time.time() + wait
         while job.status == "running" and time.time() < end and not ctx.signal.is_set():
             time.sleep(0.2)
-        head = f"{job.id} [{job.status}] {job.kind}: {job.label} ({job.elapsed()})"
-        return ToolResult.text(
-            head + "\n" + budget(jobs.output(job) or "(no output yet)", ctx.cwd, job.id, keep="tail")
-        )
+        label = job.label if len(job.label) <= 300 else job.label[:300] + "…"
+        head = f"{job.id} [{job.status}] {job.kind}: {label} ({job.elapsed()})"
+        if job.log is not None:
+            captured = read_output(job.log)
+            displayed = display_output(captured, max_bytes=MAX_BYTES - len(head.encode("utf-8")) - 1)
+            return ToolResult.text(head + "\n" + displayed, {
+                "output_path": str(job.log), "output_bytes": captured.total_bytes,
+                "truncated": displayed.startswith("[Output truncated:"),
+            })
+        return ToolResult.text(head + "\n" + budget(job.result or "(no output yet)", ctx.cwd, job.id, keep="tail"))
 
     def kill(args: dict, ctx: ToolContext) -> ToolResult:
         job = find(args)
