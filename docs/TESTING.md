@@ -277,6 +277,16 @@ For targeted investigation, dispatch `shell-selection.yml` at the PR branch with
 four diagnostic regressions, and requires `pwsh` to exist before collection.
 Normal workflow runs retain their complete three-platform selection.
 
+The [targeted run](https://github.com/0xAstraZhang/Virgo/actions/runs/43191809052)
+at `8d1e313` passed all 11 selected tests (20 deselected) in 19.60 seconds;
+Ruff passed. Both this run and the failing comparison used Ubuntu image
+`20261101.186.1` and Python 3.13.18. The failure was not reproduced in isolation:
+this does not distinguish a transient runner problem from full-suite ordering
+or setup effects, nor establish the original probe's exit code/output. The full
+comparison was intentionally not rerun. Diagnostic-only commits use `[skip ci]`
+to avoid triggering the automatic full suite; this targeted success does not
+replace a complete comparison check.
+
 Shell execution scenarios must assert that `/shell <name>` selected the requested
 interpreter before sending commands, and include the recorded UI output on failure.
 A failed selection preserves the previous shell: otherwise PowerShell tests can
