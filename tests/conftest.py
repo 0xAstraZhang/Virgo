@@ -44,17 +44,21 @@ def project(tmp_path) -> Path:
 
 @pytest.fixture
 def python_command(tmp_path):
-    """Run Python through the real default shell, with native argument quoting."""
+    """Quote for an explicit selected shell, or the native shell used by hooks/legacy Bash."""
     directory = tmp_path / "python commands"
     directory.mkdir()
     count = 0
 
-    def command(source):
+    def command(source, *, shell=None):
         nonlocal count
         count += 1
         script = directory / f"command-{count}.py"
         script.write_text(source, encoding="utf-8", newline="\n")
         argv = [sys.executable, str(script)]
+        if shell is not None:
+            if shell.tool_name == "powershell":
+                return "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+            return shlex.join(argv)
         return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
 
     return command

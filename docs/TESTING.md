@@ -43,7 +43,7 @@ two session-picker path assertions, two glob/grep path assertions, one newline
 fixture, one background command, two hook commands, and two basic process-tool
 tests. The history decoding issue is also fixed for runs without UTF-8 mode.
 
-Seven cases expose unresolved application behavior and retain their assertions:
+At that revision, seven cases exposed unresolved application behavior and retained their assertions:
 
 - Five Bash download failures: `spawn()` recognizes only executable names `bash`
   and `zsh`, so `bash.exe` receives neither `-e` nor `-o pipefail`. Failed curl
@@ -76,3 +76,33 @@ Windows locale.
 Local macOS validation also passed all 1159 tests (94.14 s), including PTY and
 Bash/Zsh download cases; `ruff check` passed. No test function names, parameter
 IDs or skip markers were changed. Application source and dependencies are unchanged.
+
+## PR #10 Windows corrections
+
+The [complete baseline comparison](https://github.com/0xAstraZhang/Virgo/actions/runs/43158741262)
+tested main `811bc02` and PR head `83ba93f`. Both Windows revisions recorded the
+same 12 failures, 1169 passes and 20 skips. Each failure's traceback was checked
+against the selected-shell behavior introduced on main:
+
+| Failing test (parameter) | Diagnosis and correction |
+| --- | --- |
+| `test_failed_download_does_not_read_existing_file` (`bash-timeout-28`, `bash-error-22`) | Legacy `spawn()` did not recognize `bash.exe`, so later successful commands hid curl failures. Normalize executable case and `.exe` before adding `-e -o pipefail`. Keep exact curl exit codes, unchanged old content and absent consumer assertions. |
+| `test_failed_download_in_pipeline_is_not_reported_as_success` (`bash`) | The same missing flags hid the pipeline failure. Keep exit 22 and the absent consumer assertion. |
+| `test_download_publishes_only_after_success` (`bash-partial-18`) | The same missing flags allowed a partial download to replace the old file. Keep exit 18, original content and temporary-file cleanup assertions. |
+| `test_date_query_forms_are_read_only` (`/bin/date`, `/usr/bin/date`) | The POSIX classifier compared native Windows path parents to POSIX directories. Use `PurePosixPath` for command names and parents in both permission checks; filesystem confinement still uses native paths. |
+| `test_background_download_failure_does_not_read_old_file` (`bash`) | The test patched the legacy module, but jobs use the session's selected interpreter. Bind the session to the fixture's exact Bash/Zsh executable. Keep exit 28, failed status and no stale consumption. This also ensures the Zsh variant actually runs Zsh. |
+| `test_background_job_notifies_idle_session` | The faux model called `bash` while the Windows session exposed `powershell`. Use the selected tool and quote the Python command for that interpreter. Keep idle wakeup, pending delivery and output checks. |
+| `test_command_hooks` | The hard-coded Bash tool never reached the hook on Windows. Target the selected command tool, and quote the hook's Python invocation for the native hook shell, including paths with spaces. Keep forbidden-command denial and allowed-command output. |
+| `test_auto_review_executes_internal_changes_without_asking` | The POSIX `touch` scenario requires an explicitly selected Bash session. Preserve file writes and the assertion that neither review nor human approval occurs. PowerShell commands still require review. |
+| `test_subagent_system_prompt_lists_only_its_own_tools` | The expected explore tool list assumes Bash. Select Bash explicitly and retain exact equality between prompt and model tool lists. |
+| `test_plan_mode_exposes_read_only_tools_and_changes_back_on_switch` | The expected plan tool list assumes Bash. Select Bash explicitly and retain tool filtering, mode transition and message-history assertions. PowerShell remains unavailable in plan mode. |
+
+The correction keeps all existing test identities, assertions and skip rules.
+Additional regressions check executable suffix/case handling and reject nonstandard,
+traversal and Windows-style executable paths in the POSIX classifier. Existing
+PowerShell integration tests continue to cover execution, background jobs,
+automatic review and plan-mode denial. No permissions are broadened to make tests pass.
+
+The CI workflow and comparison rules are retained. The updated
+[PR #10 description](https://github.com/0xAstraZhang/Virgo/pull/10) records the final
+tested commit, three-platform totals and comparison run.

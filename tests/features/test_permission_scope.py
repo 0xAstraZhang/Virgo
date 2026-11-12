@@ -101,6 +101,15 @@ def test_date_query_preserves_workspace_boundaries(project, tmp_path):
     assert command_review_reason("date > output.txt", project, project) == ""
 
 
+@pytest.mark.parametrize("command", [
+    "/bin/../tmp/date", "/usr/bin/../../tmp/date", "./bin/date", "/usr/local/bin/date",
+    "'/bin\\date'", "'C:\\bin\\date.exe'", "C:/bin/date.exe",
+])
+def test_posix_command_paths_do_not_trust_other_executables(project, command):
+    assert not is_read_only_command(command)
+    assert command_review_reason(command, project, project)
+
+
 def test_home_desktop_and_date_need_no_review():
     from pathlib import Path
 

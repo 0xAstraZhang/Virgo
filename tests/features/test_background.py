@@ -10,15 +10,18 @@ from virgo.ai.providers import faux
 from virgo.features import background
 
 from tests.support.harness import RecordingUI, calls, last_message_text, tool_results, wait_until
+from tests.support.shell import selected
 
 
 def test_background_job_notifies_idle_session(make_session, python_command):
     ui = RecordingUI()
-    command = python_command("import time; time.sleep(0.3); print('built')")
-    s = make_session(
-        faux.reply(tools=[("bash", {"command": command, "background": True})]),
+    s = make_session(ui=ui)
+    shell = selected(s)
+    command = python_command("import time; time.sleep(0.3); print('built')", shell=shell)
+    faux.push(
+        "test",
+        faux.reply(tools=[(shell.tool_name, {"command": command, "background": True})]),
         faux.reply("started"),
-        ui=ui,
     )
     s.prompt("build in background")
     assert "Started background job job1" in tool_results(s)[0].text()

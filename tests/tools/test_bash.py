@@ -28,6 +28,7 @@ def shell(request, monkeypatch):
     if not executable:
         pytest.skip(f"{request.param} is not installed")
     monkeypatch.setattr(bash_module, "SHELL", executable)
+    return executable
 
 
 @pytest.fixture
@@ -61,6 +62,24 @@ def ctx(cwd: Path) -> ToolContext:
 
 def run(project, command):
     return BASH.execute({"command": command}, ctx(project))
+
+
+@pytest.mark.parametrize("executable", ["bash", "bash.exe", "BASH.EXE", "zsh.exe", "python.exe"])
+def test_compatibility_spawn_preserves_failure_flags(project, monkeypatch, executable):
+    seen = {}
+
+    def capture(argv, **kwargs):
+        seen["argv"] = argv
+        return object()
+
+    monkeypatch.setattr(bash_module, "SHELL", str(project / "shell directory" / executable))
+    if os.name == "nt":
+        monkeypatch.setattr("virgo.tools.windows_process.WindowsProcess", capture)
+    else:
+        monkeypatch.setattr(subprocess, "Popen", capture)
+    bash_module.spawn("false | cat; echo must-not-run", project)
+    options = [] if executable == "python.exe" else ["-e", "-o", "pipefail"]
+    assert seen["argv"] == [bash_module.SHELL, *options, "-c", "false | cat; echo must-not-run"]
 
 
 @pytest.mark.parametrize(("endpoint", "code"), [("timeout", 28), ("error", 22)])
@@ -115,7 +134,8 @@ def test_explicit_failure_handling_still_works(project, shell, download):
 
 def test_background_download_failure_does_not_read_old_file(make_session, project, shell, download):
     (project / "kv.xml").write_text("stale-search-result")
-    session = make_session()
+    # Background commands use the session selection, not the legacy module's SHELL.
+    session = make_session(settings={"shell": {"executable": shell}})
     jobs = session.services["jobs"]
     job = jobs.start_command(f"{download}/timeout -o kv.xml; cat kv.xml; touch consumed", project)
     assert session.ui.woken.wait(5)

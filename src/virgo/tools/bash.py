@@ -27,7 +27,8 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None) 
     elif SHELL:
         # Do not let a later ls/head/cat hide a failed download or pipeline.
         # Only add flags for known shells; VIRGO_SHELL may be another interpreter.
-        options = ["-e", "-o", "pipefail"] if Path(SHELL).name in {"bash", "zsh"} else []
+        kind = Path(SHELL).name.lower().removesuffix(".exe")
+        options = ["-e", "-o", "pipefail"] if kind in {"bash", "zsh"} else []
         argv: list[str] | str = [SHELL, *options, "-c", command]
         shell = False
     else:

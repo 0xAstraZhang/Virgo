@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def inside(path: str, cwd: Path, workspace: Path | None = None) -> bool:
@@ -114,9 +114,10 @@ def _safe_read_words(words: list[str], extra: set[str]) -> bool:
     if not words:
         return False
     executable, *args = words
-    name = os.path.basename(executable)
+    # These tokens are POSIX shell syntax, even when Git Bash runs on Windows.
+    name = PurePosixPath(executable).name
     # A path to an arbitrary project script must not masquerade as a standard command.
-    if "/" in executable and str(Path(executable).parent) not in {"/bin", "/usr/bin"}:
+    if "/" in executable and str(PurePosixPath(executable).parent) not in {"/bin", "/usr/bin"}:
         return False
     if name == "git":
         while len(args) >= 2 and args[0] == "-C":
@@ -230,7 +231,7 @@ def command_review_reason(command: str, cwd: Path, workspace: Path) -> str:
         if not words:
             return "shell environment changes need review"
         executable, *args = words
-        name = os.path.basename(executable)
+        name = PurePosixPath(executable).name
         # Inspect assignments too: an output directory can be supplied through an environment variable.
         command_index = len(raw_words) - len(words)
         for index, arg in enumerate(raw_words):
@@ -243,7 +244,7 @@ def command_review_reason(command: str, cwd: Path, workspace: Path) -> str:
             if ("/" in value or (not value.startswith("-") and (candidate.exists() or candidate.is_symlink()))) and index != command_index:
                 if not inside(value, current, workspace):
                     return f"command accesses a path outside the workspace: {(current / os.path.expanduser(value)).resolve()}"
-        if "/" in executable and str(Path(executable).parent) not in {"/bin", "/usr/bin"}:
+        if "/" in executable and str(PurePosixPath(executable).parent) not in {"/bin", "/usr/bin"}:
             return "executing a script or nonstandard executable needs review"
         if name in _NETWORK:
             return "command uses the network"
