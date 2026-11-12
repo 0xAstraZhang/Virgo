@@ -162,7 +162,12 @@ class ChatEditor(TextArea):
             self.screen.focus_next()
 
     def action_history(self, direction: int) -> None:
-        self.load_text(self.input_history.move(direction, self.text))
+        text = self.input_history.move(direction, self.text)
+        # Recalled slash commands must not open a menu that steals the next arrow.
+        # Editing the recalled text re-enables completion through update_completions.
+        self.app.completion_suppressed = text
+        self.app.hide_completions()
+        self.load_text(text)
         self.move_cursor(self.document.end)
 
     def action_cursor_up(self, select: bool = False) -> None:
