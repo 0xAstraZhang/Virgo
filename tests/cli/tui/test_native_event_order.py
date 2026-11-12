@@ -152,3 +152,53 @@ def test_stream_history_retry_keeps_attempts_separate():
         AgentEvent("message_update", stream_event=StreamEvent("text_start", message, 0)),
     ]
     _assert_history_matches_live(events, message, ["text", "retry", "text"])
+
+
+def test_reused_text_block_before_native_search_remains_visible_live_and_in_history():
+    # Some Responses providers append the answer to a text block opened before
+    # search. Content indices then no longer describe when the answer arrived.
+    message = AssistantMessage([TextContent("Checking. ")], api="openai-responses")
+    events = [AgentEvent("message_update", stream_event=StreamEvent(
+        "text_start", copy.deepcopy(message), 0,
+    ))]
+    message.content.append(RawContent("openai-responses", {
+        "type": "web_search_call", "id": "search", "status": "completed",
+        "action": {"type": "search", "query": "release"},
+    }))
+    events.append(AgentEvent("message_update", stream_event=StreamEvent(
+        "native_tool_end", copy.deepcopy(message), 1,
+    )))
+    message.content[0].text += "The complete answer."
+    message.content.append(TextContent("\n\nSources:\nhttps://example.com"))
+    entries = [
+        {"type": "custom", "kind": "transcript_run_start", "data": {"agent": "main"}},
+        {"type": "message", "message": message_to_dict(UserMessage("Search"))},
+        *[_stream_entry(event) for event in events],
+        {"type": "message", "message": message_to_dict(message)},
+        {"type": "custom", "kind": "transcript_run_end", "data": {"agent": "main"}},
+    ]
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one(Transcript)
+            for event in events:
+                await view.consume(event)
+            await view.consume(AgentEvent("message_end", message=message))
+            for replay in (False, True):
+                if replay:
+                    await view.load_history(entries)
+                await pilot.pause()
+                card = view.query_one(AssistantView)
+                assert card.body.display
+                assert card.body._markdown == "Checking. The complete answer."
+                assert not card.thought_body.display
+                assert len(card.answer_events) == 1
+                assert not card.answer_events[0].display
+                card.set_thinking(True)
+                await pilot.pause()
+                assert card.body.display
+                assert not card.answer_events[0].display
+                assert all(e.display for e in card.events if e.kind in ("tool_call", "tool_result", "sources"))
+
+    asyncio.run(scenario())

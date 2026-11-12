@@ -6,6 +6,29 @@ section in [README](../README.md) for commands and the test layout.
 
 ## Cross-platform fixtures and assertions
 
+### Native-search final-answer regression
+
+Some Responses streams reuse a text block opened before native search for the
+complete answer. The block index therefore does not describe when its final
+text arrived. If a terminal assistant message has no nonblank text after its
+last tool block, the transcript promotes its existing nonblank text instead
+of hiding the entire answer in Thinking. A separate trailing answer still
+takes precedence; search results and Sources remain folded.
+
+`tests/cli/tui/test_native_event_order.py` exercises this through the Textual
+event loop, both live and after history replay, including opening Thinking
+without duplicating the answer. The regression was observed failing before
+the rendering correction.
+
+The original local session `f8b4e0f626d1` (2026-11-12 16:47:49–16:48:49)
+was also replayed at 80×24 with both its final message and full persisted
+history. Both paths displayed the complete 1496-character answer with
+Thinking collapsed; all 36 timeline events were retained. The private session
+is not committed as a fixture. The transcript, native-event, timeline,
+run-boundary and history-load scenarios passed (33 tests), as did Ruff.
+
+### Portability conventions
+
 - Compare filesystem output with native `Path` strings, or normalize both sides
   as paths. Glob patterns still use `/`; rendered paths use the host separator.
 - Read persisted UTF-8 data with `encoding="utf-8"`. Do not rely on the runner's
