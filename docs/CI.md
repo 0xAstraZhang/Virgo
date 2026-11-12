@@ -11,6 +11,8 @@ newest open PR). The `codex/cross-platform-ci` push trigger bootstraps the workf
 before it has been merged; it ignores its own configuration PR when choosing a target.
 The resolve job records immutable head/base SHAs before starting the six jobs.
 
+Recorded runs: [PR #9 on 2026-11-12](ci-results/pr-9-2026-11-12.md).
+
 ## Reading results
 
 The comparison job's summary and `comparison` artifact contain the outcome table,
