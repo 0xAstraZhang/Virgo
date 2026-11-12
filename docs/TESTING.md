@@ -24,8 +24,18 @@ The original local session `f8b4e0f626d1` (2026-11-12 16:47:49–16:48:49)
 was also replayed at 80×24 with both its final message and full persisted
 history. Both paths displayed the complete 1496-character answer with
 Thinking collapsed; all 36 timeline events were retained. The private session
-is not committed as a fixture. The transcript, native-event, timeline,
-run-boundary and history-load scenarios passed (33 tests), as did Ruff.
+is not committed as a fixture.
+
+Thought blocks with no readable summary but a nonempty `encrypted_content`
+now display `内容已加密` in both their header and expanded body. This label is
+UI-only: the original thinking text, signature, message and session file stay
+unchanged for model replay. Readable summaries take precedence; an ordinary
+signature or empty block without encryption is not labeled encrypted.
+The same trajectory replay confirmed 13 encrypted labels and one preserved
+readable summary in both rendering paths, with the 1496-character answer
+still visible. Message equality and the original session file's SHA-256
+were unchanged. The transcript, native-event, timeline, run-boundary and
+history-load scenarios passed (34 tests), as did Ruff.
 
 ### Portability conventions
 

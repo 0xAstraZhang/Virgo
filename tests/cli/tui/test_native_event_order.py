@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from dataclasses import asdict
 
 from virgo.agent.types import AgentEvent
@@ -15,6 +16,7 @@ from virgo.ai.types import (
     RawContent,
     StreamOptions,
     TextContent,
+    ThinkingContent,
     UserMessage,
     message_to_dict,
 )
@@ -68,6 +70,45 @@ def test_native_search_completion_stays_after_preceding_message_in_one_frame():
             assert rows[1].text == "Checking the release now."
             assert rows[2].tool_name == "web_search"
             assert all(not row.expanded for row in rows)
+
+    asyncio.run(scenario())
+
+
+def test_encrypted_thought_label_is_display_only_live_and_in_history():
+    encrypted = json.dumps({"type": "reasoning", "summary": [], "encrypted_content": "opaque-secret"})
+    message = AssistantMessage([
+        ThinkingContent("", signature=encrypted),
+        ThinkingContent("Readable summary", signature=encrypted),
+        ThinkingContent("", signature="ordinary-signature"),
+        ThinkingContent("", signature='[]'),
+        ThinkingContent("", signature='{"summary": []}'),
+        TextContent("Answer"),
+    ], api="openai-responses")
+    original = copy.deepcopy(message_to_dict(message))
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("message_end", message=message))
+            for replay in (False, True):
+                if replay:
+                    await view.load_history([{"type": "message", "message": original}])
+                await pilot.pause()
+                card = view.query_one(AssistantView)
+                thoughts = [e for e in card.events if e.kind == "thinking"]
+                assert thoughts[0].text == "内容已加密"
+                assert "内容已加密" in thoughts[0].summary().plain
+                card.set_thinking(True)
+                thoughts[0].set_expanded(True)
+                await pilot.pause()
+                assert str(thoughts[0].output.content) == "内容已加密"
+                assert thoughts[1].text == "Readable summary"
+                assert all(e.text == "" for e in thoughts[2:])
+                assert card.text == "Answer" and card.body.display
+                assert message_to_dict(card.message) == original
+                assert "opaque-secret" not in "".join(e.text for e in card.events)
+            assert message_to_dict(message) == original
 
     asyncio.run(scenario())
 

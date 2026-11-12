@@ -517,6 +517,15 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 if isinstance(block, ThinkingContent):
                     kind = "thinking"
                     value = "[redacted thinking]" if block.redacted else block.thinking
+                    if not value.strip() and block.signature:
+                        try:
+                            signature = json.loads(block.signature)
+                        except (ValueError, TypeError):
+                            signature = None
+                        if isinstance(signature, dict) and signature.get("encrypted_content"):
+                            # Display-only label: preserve the original block
+                            # and signature for persistence and model replay.
+                            value = "内容已加密"
                 else:
                     kind = "sources" if block.text.startswith("\n\nSources:\n") else "text"
                     value = block.text
