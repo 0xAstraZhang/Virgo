@@ -110,6 +110,11 @@ class ConversationPane(Vertical):
         self.state: dict = {}
         self.updates = deque()
 
+    @property
+    def key(self):
+        store = self.controller.session.store
+        return store.path if store.path is not None else f"memory:{store.id}"
+
     def compose(self) -> ComposeResult:
         yield Static("", id="cwd", markup=False)
         yield Static(input_hints(), id="hints", markup=False)
@@ -253,7 +258,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.hide_completions()
         self.controller.browsing = True
         picker = SessionPicker(
-            self.session_browser_items(), current_path=self.session.store.path, grouped=self.session_grouped,
+            self.session_browser_items(), current_path=self._pane.key, grouped=self.session_grouped,
             current_status=self.session_browser_status(),
         )
         self._session_picker = picker
@@ -264,9 +269,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         for pane in self._panes:
             controller = pane.controller
             path = controller.session.store.path
-            if path is None or (self.pick_session and pane is self._pane):
+            if self.pick_session and pane is self._pane:
                 continue
-            item = next((item for item in items if item["path"] == path), None)
+            item = next((item for item in items if path is not None and item["path"] == path), None)
             if item is None:
                 item = controller.session.store.describe()
                 items.append(item)
@@ -315,7 +320,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         except (OSError, ValueError) as error:
             self.notify(f"Cannot move session to Trash: {error}", severity="error")
             return
-        picker.current_path = self.session.store.path
+        picker.current_path = self._pane.key
         picker.remove_session(event.path)
         if current:
             self.history.reset()
@@ -336,13 +341,13 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             return
         initial = self.initial if startup else None
         self.initial = None
-        if not startup and path == self.session.store.path:
+        if not startup and path == self._pane.key:
             self.focus_composer()
             return
         self._pending_switch = (path, initial)
 
     async def change_conversation(self, path, initial=None) -> None:
-        target = next((pane for pane in self._panes if pane.controller.session.store.path == path), None)
+        target = next((pane for pane in self._panes if pane.key == path), None)
         if target is None and not self.can_change_session():
             ui = FullscreenUI()
             previous = self.session
@@ -458,11 +463,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.show_next_confirmation()
             self.show_next_input()
             if self._session_picker is not None and self._session_picker.is_mounted:
-                if self._session_picker.current_path != self.session.store.path:
-                    self._session_picker.refresh_sessions(self.session_browser_items(), self.session.store.path)
+                if self._session_picker.current_path != self._pane.key:
+                    self._session_picker.refresh_sessions(self.session_browser_items(), self._pane.key)
                 self._session_picker.set_current_status(self.session_browser_status())
                 self._session_picker.set_statuses({
-                    str(pane.controller.session.store.path): self.pane_status(pane) for pane in self._panes
+                    str(pane.key): self.pane_status(pane) for pane in self._panes
                 })
             self.activity.waiting = (
                 "Closing"

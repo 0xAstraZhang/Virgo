@@ -116,21 +116,21 @@ def test_delete_requests_selected_path_and_success_selects_adjacent_session(grou
             await pilot.pause()
             assert row_ids(picker) == [original[0], original[2]]
             assert picker.selected_path == Path(original[2])
-            assert str(picker.query_one("#session-summary", Static).content) == "All 2"
+            assert not picker.query("#session-heading, #session-summary")
             assert picker.grouped == grouped
             assert picker.query_one(OptionList).get_option(original[2]).prompt.selected
 
             picker.remove_session(picker.selected_path)
             await pilot.pause()
             assert picker.selected_path == Path(original[0])
-            assert str(picker.query_one("#session-summary", Static).content) == "All 1"
+            assert not picker.query("#session-heading, #session-summary")
             assert len(picker.query_one(OptionList).options) == (2 if grouped else 1)
 
             picker.remove_session(picker.selected_path)
             await pilot.pause()
             assert picker.selected_path is None
             assert row_ids(picker) == []
-            assert str(picker.query_one("#session-summary", Static).content) == "All 0"
+            assert not picker.query("#session-heading, #session-summary")
             assert picker.query_one("#session-empty").display
             assert not picker.query_one("#session-list").display
             assert not picker.query_one("#session-columns").display
@@ -181,7 +181,7 @@ def test_paging_resize_and_chinese_title_stay_within_browser():
             footer = picker.query_one("#session-footer", Static)
             assert footer.region.bottom <= 14
             assert choices.region.bottom <= footer.region.y
-            assert "Ctrl+X trash" in str(footer.content)
+            assert "Ctrl+X Move to trash" in str(footer.content)
             console = Console(width=footer.content_region.width)
             assert len(console.render_lines(footer.content, console.options)) <= footer.content_region.height
             await pilot.press("home")

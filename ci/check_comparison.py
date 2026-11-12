@@ -63,6 +63,30 @@ def main():
         report = compare(0)
         assert not report["added"] and not report["removed"]
 
+        # Approved replacements must remain comparable, including a failing
+        # replacement. Unknown renames must still fail as missing coverage.
+        replacements = {
+            "test_encrypted_thought_label_is_display_only_live_and_in_history":
+                "test_unreadable_thoughts_are_hidden_live_and_in_history",
+            "test_inline_activity_reuses_thought_header_and_keeps_prompt_before_reply":
+                "test_inline_activity_is_separate_from_thought_folding_and_follows_prompt",
+        }
+        run("base", "\n".join(f"def {name}(): pass" for name in replacements))
+        run("head", "\n".join(f"def {name}(): pass" for name in replacements.values())
+            + "\ndef test_live_messages_are_visible_and_folds_are_independent(): pass\n")
+        report = compare(0)
+        assert report["added"] == ["test_live_messages_are_visible_and_folds_are_independent"]
+        assert not report["removed"] and not report["problems"]
+        run("head", "\n".join(f"def {name}(): assert False" for name in replacements.values()))
+        report = compare(1)
+        assert report["regressions"] == sorted(replacements)
+        assert not report["removed"] and not report["newly_exposed_failures"]
+        run("head", "def test_unapproved_replacement(): pass\n")
+        assert compare(1)["removed"] == sorted(replacements)
+        run("head", "\n".join(f"def {name}(): pass" for name in
+                             [*replacements, *replacements.values()]))
+        assert any("Ambiguous test name" in problem for problem in compare(1)["problems"])
+
         run("head", "def test_duplicate(): pass\n", extra="def test_duplicate(): pass\n")
         assert compare(1)["problems"]
         (root / "head" / "test_other.py").unlink()

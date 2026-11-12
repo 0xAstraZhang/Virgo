@@ -7,7 +7,7 @@ import json
 import threading
 
 import pytest
-from textual.widgets import Input, OptionList
+from textual.widgets import Input, OptionList, Static
 
 from virgo.ai.providers import faux
 from virgo.cli.tui.app import VirgoApp
@@ -35,7 +35,26 @@ def test_browser_entry_cancel_preserves_session_and_remembers_grouping(make_sess
             await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
             assert len(app.screen.sessions) == 1
             assert app.screen.sessions[0]["path"] == original.path
-            await pilot.press("g", "escape")
+            picker = app.screen
+            assert not picker.query("#session-heading, #session-summary")
+            columns = picker.query_one("#session-columns")
+            assert columns.region.y == 1
+            choices = picker.query_one(OptionList)
+            headers = [option for option in choices.options if option.disabled]
+            assert len(headers) == 1
+            assert str(headers[0].prompt) == str(session.cwd)
+            style = choices.get_component_rich_style("option-list--option-disabled")
+            assert style.color.triplet == (37, 99, 235) and not style.dim
+            footer = picker.query_one("#session-footer", Static)
+            assert str(footer.content) == (
+                "Esc Back   ↑/↓ Select   Enter Open\n"
+                "G Ungroup   N New session   Ctrl+X Move to trash"
+            )
+            assert footer.content_region.height == 2
+            await pilot.press("g")
+            assert "G Group by workspace" in str(footer.content)
+            assert not any(option.disabled for option in choices.options)
+            await pilot.press("escape")
             assert session.store is original and not app.controller.closing
             assert app.editor.text == ("draft stays here" if entry == "ctrl+r" else "")
             await pilot.press("ctrl+r")
@@ -602,5 +621,103 @@ def test_new_conversation_preserves_no_session_mode(make_session, tmp_path):
             await wait_for(pilot, lambda: has_reply(app, "new answer"))
         assert app.wait_closed()
         assert not list((tmp_path / "home" / "sessions").glob("**/*.jsonl"))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("work", ["approval", "agent"])
+def test_memory_conversations_remain_selectable(make_session, tmp_path, trash, work):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("old answer", delay=30), ui=ui)
+        answers = []
+        session.commands.register("approve", lambda *_: answers.append(ui.confirm("Old approval")))
+        app = VirgoApp(session, ui, initial="/approve" if work == "approval" else "old question")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: app.active_confirmation is not None if work == "approval" else session.busy)
+            old_controller = app.controller
+            app.editor.load_text("old draft")
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            second = app.session
+            faux.script("test", faux.reply("new answer"))
+            app.editor.load_text("new question")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: has_reply(app, "new answer") and app.controller.can_switch)
+            await pilot.press("ctrl+r")
+            picker = app.screen
+            assert len(picker.sessions) == 2
+            choices = picker.query_one(OptionList)
+            old_key = next(key for key, item in picker._rows.items() if item["id"] == session.store.id)
+            choices.highlighted = choices.get_option_index(old_key)
+            assert choices.get_option(old_key).prompt.status == ("Waiting" if work == "approval" else "Running")
+            await pilot.press("g", "enter")
+            await wait_for(pilot, lambda: app.controller is old_controller)
+            assert app.editor.text == "old draft" and not has_reply(app, "new answer")
+            if work == "approval":
+                await pilot.press("y")
+                await wait_for(pilot, lambda: answers == ["y"] and app.controller.can_switch)
+            else:
+                await pilot.press("escape")
+                await wait_for(pilot, lambda: app.controller.can_switch)
+                assert session.main.agent.signal.is_set()
+            assert not second.main.agent.signal.is_set()
+            await pilot.press("ctrl+r")
+            picker = app.screen
+            choices = picker.query_one(OptionList)
+            choices.highlighted = choices.get_option_index(old_key)
+            await pilot.press("ctrl+x")
+            assert not trash and len(picker.sessions) == 2
+            new_key = next(key for key, item in picker._rows.items() if item["id"] == second.store.id)
+            choices.highlighted = choices.get_option_index(new_key)
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: app.session is second and has_reply(app, "new answer"))
+        assert app.wait_closed()
+        assert not list((tmp_path / "home" / "sessions").glob("**/*.jsonl"))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["at", "cron"])
+def test_live_conversations_deliver_persisted_schedule_once(make_session, project, kind):
+    from datetime import datetime
+
+    when = datetime(2099, 1, 1, 12)
+    (project / ".virgo").mkdir()
+    schedule_file = project / ".virgo" / "schedules.json"
+    schedule_file.write_text(json.dumps([{
+        "id": "s1", "prompt": "scheduled work", "persist": True,
+        **({"at": when.isoformat()} if kind == "at" else {"cron": "0 12 1 1 *"}),
+    }]), encoding="utf-8")
+
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui, persist=True)
+        answers = []
+        session.commands.register("approve", lambda *_: answers.append(ui.confirm("Hold first session")))
+        app = VirgoApp(session, ui, initial="/approve")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_for(pilot, lambda: app.active_confirmation is not None)
+            await pilot.press("ctrl+r", "n")
+            await wait_for(pilot, lambda: app.session is not session)
+            second = app.session
+            second.commands.register("approve", lambda *_: second.ui.confirm("Hold second session"))
+            app.editor.load_text("/approve")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: app.active_confirmation is not None)
+            # Tick every real scheduler at the same due time. Approvals keep the
+            # agents occupied so all delivered prompts remain observable.
+            for pane in app._panes:
+                pane.controller.session.services["schedule"].tick(when)
+            deliveries = list(session.wakeups) + list(second.wakeups)
+            assert len(deliveries) == 1
+            assert "scheduled work" in str(deliveries[0].content)
+            assert len(session.wakeups) == 1
+            saved = json.loads(schedule_file.read_text(encoding="utf-8"))
+            assert len(saved) == (1 if kind == "cron" else 0)
+            for pane in app._panes:
+                pane.controller.session.services["schedule"].tick(when)
+            assert len(session.wakeups) + len(second.wakeups) == 1
+        assert app.wait_closed()
 
     asyncio.run(scenario())

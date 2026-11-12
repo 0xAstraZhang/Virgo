@@ -72,3 +72,44 @@ def test_schedule_file_with_zone_qualified_or_invalid_times_is_repaired(make_ses
     }
     assert "skipping invalid entry" in ui.text
     assert sched.tick(datetime(2026, 1, 1)) == []  # ticking no longer raises on the saved entry
+
+
+def test_live_workspace_schedule_ownership_survives_changes_and_shutdown(make_session, project, tmp_path):
+    """Exercise the real tool, storage, session hooks and notification delivery."""
+    when = "2099-01-01T12:00:00"
+    first = make_session()
+    second = make_session()
+    other_project = tmp_path / "other"
+    other_project.mkdir()
+    other = make_session(cwd=other_project)
+
+    def tool(session, **args):
+        faux.script("test", faux.reply(tools=[("schedule", args)]), faux.reply("done"))
+        session.prompt("manage schedule")
+
+    tool(first, action="add", prompt="shared first", at=when, persist=True)
+    tool(second, action="add", prompt="shared second", at=when, persist=True)
+    tool(second, action="add", prompt="local second", at=when)
+    tool(other, action="add", prompt="other workspace", at=when, persist=True)
+    first_sched, second_sched = first.services["schedule"], second.services["schedule"]
+    assert {s.prompt for s in first_sched.items.values()} == {"shared first", "shared second"}
+    assert {s.prompt for s in second_sched.items.values()} == {"shared first", "shared second", "local second"}
+    saved_file = project / ".virgo" / "schedules.json"
+    assert {s["prompt"] for s in json.loads(saved_file.read_text(encoding="utf-8"))} == {"shared first", "shared second"}
+    sid = next(s.id for s in second_sched.items.values() if s.prompt == "shared first")
+    tool(second, action="cancel", id=sid)
+    assert sid not in first_sched.items
+    tool(first, action="add", prompt="transfer on shutdown", at=when, persist=True)
+    tool(first, action="add", prompt="discard on shutdown", at=when)
+    first.shutdown()
+    # A new main runtime must not reload an already owned schedule file.
+    second.new_session()
+    second_sched.tick(datetime.fromisoformat(when))
+    first_sched.tick(datetime.fromisoformat(when))
+    assert len(second.wakeups) == 3
+    assert not first.wakeups and not other.wakeups
+    assert {s.prompt for s in other.services["schedule"].items.values()} == {"other workspace"}
+    assert json.loads(saved_file.read_text(encoding="utf-8")) == []
+    second.shutdown()
+    restarted = make_session()
+    assert not restarted.services["schedule"].items

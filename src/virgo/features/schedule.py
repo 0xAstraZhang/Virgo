@@ -17,8 +17,10 @@ import os
 import re
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..harness.extensions import ExtensionAPI
@@ -118,17 +120,54 @@ class Schedule:
         return f"{self.id} {when}{' (persisted)' if self.persist else ''}: {self.prompt[:70]}"
 
 
+@dataclass
+class _WorkspaceSchedules:
+    items: dict[str, Schedule] = field(default_factory=dict)
+    owners: dict[str, Scheduler] = field(default_factory=dict)
+    members: list[Scheduler] = field(default_factory=list)
+    ids: Iterator[int] = field(default_factory=lambda: itertools.count(1))
+
+
+# A TUI can retain several AgentSessions in one workspace. Serialize their
+# schedule mutations and keep a single delivery owner for each persisted entry.
+_workspace_lock = threading.RLock()
+_workspaces: dict[Path, _WorkspaceSchedules] = {}
+
+
 class Scheduler:
     def __init__(self, api: ExtensionAPI):
         self.api = api
-        self.file = api.paths.project / "schedules.json"
-        self.items: dict[str, Schedule] = {}
-        self._ids = itertools.count(1)
-        self._lock = threading.Lock()
+        self.file = (api.paths.project / "schedules.json").resolve()
+        self._workspace: _WorkspaceSchedules | None = None
+        self._lock = _workspace_lock
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    @property
+    def items(self) -> dict[str, Schedule]:
+        with self._lock:
+            if self._workspace is None or self._stop.is_set():
+                return {}
+            return {
+                sid: s for sid, s in self._workspace.items.items()
+                if s.persist or self._workspace.owners[sid] is self
+            }
+
     def load(self) -> None:
+        with self._lock:
+            if self._workspace is not None or self._stop.is_set():
+                return
+            workspace = _workspaces.get(self.file)
+            if workspace is None:
+                workspace = _workspaces[self.file] = _WorkspaceSchedules()
+                self._workspace = workspace
+                workspace.members.append(self)
+                self._load_file()
+            else:
+                self._workspace = workspace
+                workspace.members.append(self)
+
+    def _load_file(self) -> None:
         try:
             data = json.loads(self.file.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -143,14 +182,15 @@ class Scheduler:
                     Cron(s.cron)
                 if s.at:  # also repairs zone-qualified times saved by earlier versions
                     s.at = parse_at(str(s.at)).isoformat(timespec="seconds")
-                self.items[s.id] = s
+                self._workspace.items[s.id] = s
+                self._workspace.owners[s.id] = self
             except (TypeError, ValueError) as e:
                 self.api.ui.print(f"[schedules: skipping invalid entry {d}: {e}]", "error")
         nums = [int(i[1:]) for i in self.items if i[1:].isdigit()]
-        self._ids = itertools.count(max(nums, default=0) + 1)
+        self._workspace.ids = itertools.count(max(nums, default=0) + 1)
 
     def save(self) -> None:
-        data = [asdict(s) for s in self.items.values() if s.persist]
+        data = [asdict(s) for s in self._workspace.items.values() if s.persist]
         if not data and not self.file.exists():
             return
         self.file.parent.mkdir(parents=True, exist_ok=True)
@@ -165,15 +205,21 @@ class Scheduler:
             Cron(cron)
         at_iso = parse_at(at).isoformat(timespec="seconds") if at else None
         with self._lock:
-            s = Schedule(f"s{next(self._ids)}", prompt, cron, at_iso, persist)
-            self.items[s.id] = s
+            if self._stop.is_set():
+                raise ValueError("scheduler is closed")
+            s = Schedule(f"s{next(self._workspace.ids)}", prompt, cron, at_iso, persist)
+            self._workspace.items[s.id] = s
+            self._workspace.owners[s.id] = self
             self.save()
         self.start()
         return s
 
     def cancel(self, sid: str) -> bool:
         with self._lock:
-            found = self.items.pop(sid, None)
+            if sid not in self.items:
+                return False
+            found = self._workspace.items.pop(sid)
+            self._workspace.owners.pop(sid)
             self.save()
         return found is not None
 
@@ -182,12 +228,15 @@ class Scheduler:
         key = now.strftime("%Y-%m-%dT%H:%M")
         due = []
         with self._lock:
-            for s in list(self.items.values()):
+            for s in self.items.values():
+                if self._workspace.owners[s.id] is not self:
+                    continue
                 if s.cron and s.last_fired != key and _cron(s.cron).matches(now):
                     s.last_fired = key
                     due.append(s)
                 elif s.at and datetime.fromisoformat(s.at) <= now:
-                    self.items.pop(s.id, None)
+                    self._workspace.items.pop(s.id)
+                    self._workspace.owners.pop(s.id)
                     due.append(s)
             if due:
                 self.save()
@@ -196,7 +245,7 @@ class Scheduler:
         return due
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self._stop.is_set() or (self._thread and self._thread.is_alive()):
             return
 
         def loop():
@@ -208,7 +257,24 @@ class Scheduler:
         self._thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
+        with self._lock:
+            if self._stop.is_set():
+                return
+            self._stop.set()
+            workspace = self._workspace
+            if workspace is None:
+                return
+            workspace.members.remove(self)
+            for sid, owner in list(workspace.owners.items()):
+                if owner is not self:
+                    continue
+                if workspace.items[sid].persist and workspace.members:
+                    workspace.owners[sid] = workspace.members[0]
+                else:
+                    workspace.items.pop(sid)
+                    workspace.owners.pop(sid)
+            if not workspace.members:
+                _workspaces.pop(self.file, None)
 
 
 def setup(api: ExtensionAPI) -> None:
@@ -259,10 +325,9 @@ def setup(api: ExtensionAPI) -> None:
     )
 
     def start(session):
-        if not sched.items:
-            sched.load()
-        if sched.items:
-            sched.start()
+        sched.load()
+        # Even an empty member may inherit persisted work when its owner closes.
+        sched.start()
 
     api.on("session_start", start)
     api.on("session_shutdown", lambda s: sched.stop())

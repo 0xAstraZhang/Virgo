@@ -31,6 +31,24 @@ does not fall back to another installed checkout. A further end-to-end check
 verifies that creating a conversation during a run preserves `--no-session`
 and writes no session JSONL files.
 
+### PR #22 review regressions
+
+The Textual scenarios cover selecting both live `--no-session` conversations,
+returning to an approval or interrupting only the original task, restoring drafts
+and transcripts, changing grouping, and avoiding both JSONL writes and Trash
+operations for memory-only rows. The schedule scenarios open another conversation
+while approval is pending and tick both real schedulers at the same due time:
+`at` and `cron` must each produce exactly one notification, including a repeated
+tick. All four cases failed before the correction (missing rows or two deliveries).
+
+A real-session/tool scenario additionally covers persisted additions from both
+sessions, shared listing and cancellation, ID uniqueness, preservation of all
+persisted entries on disk, isolation of transient tasks and other workspaces,
+owner shutdown/transfer, `/new` without reloading, and reopening after all members
+close. It failed before shared workspace coordination was added. These tests use
+local faux providers and explicit future ticks, without waiting for wall-clock
+schedule deadlines or invoking external model services.
+
 ## Answer whitespace regression (PR #14)
 
 Answer selection must preserve whitespace-only text blocks: they can separate
