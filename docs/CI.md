@@ -14,6 +14,8 @@ The resolve job records immutable head/base SHAs before starting the six jobs.
 
 Recorded runs and the current-main audit:
 [PR #9 on 2026-11-12](ci-results/pr-9-2026-11-12.md).
+For deterministic test-rename failures and intermittent PowerShell startup crashes,
+see the [2026-11-12 failure investigation](ci-results/failure-investigation-2026-11-12.md).
 The separate `Shell selection E2E` workflow on main runs two shell test modules;
 it does not replace this complete-suite baseline comparison.
 
