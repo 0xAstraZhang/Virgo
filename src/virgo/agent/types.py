@@ -48,7 +48,6 @@ class AgentTool:
     parameters: dict
     execute: Callable[[dict, ToolContext], ToolResult | str]
     label: str = ""
-    snippet: str = ""  # one-line summary for the system prompt
     read_only: bool = False  # does not modify the user's files or system
     sequential: bool = False  # force the whole batch to run sequentially
     prepare_arguments: Callable[[dict], dict] | None = None

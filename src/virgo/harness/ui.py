@@ -56,6 +56,10 @@ class UI:
         """Choose model/effort settings, or cancel when this client has no picker."""
         return None
 
+    def cancel_input_timeouts(self) -> None:
+        """Keep currently displayed questions open after the user joins an unattended run."""
+        pass
+
     def wake(self) -> None:
         """Called when a notification arrives while the session is idle."""
         pass

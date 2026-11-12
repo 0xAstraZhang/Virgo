@@ -148,5 +148,4 @@ BASH = AgentTool(
     ),
     parameters=BASH_PARAMS,
     execute=_bash,
-    snippet="run shell commands (tests, builds, git, package managers)",
 )

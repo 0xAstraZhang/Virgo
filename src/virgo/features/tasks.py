@@ -174,15 +174,6 @@ class TaskStore:
                 ]
             return t, unblocked
 
-    def claim_next(self, owner: str) -> Task | None:
-        with self.lock():
-            for t in self.all():
-                if t.status == "pending" and not t.owner and not self.blockers(t):
-                    t.status, t.owner = "in_progress", owner
-                    self._save(t)
-                    return t
-        return None
-
     def release(self, owner: str) -> list[Task]:
         with self.lock():
             out = []
@@ -248,8 +239,7 @@ def setup(api: ExtensionAPI) -> None:
         AgentTool(
             "task_create",
             "Create a durable task in the shared task graph (survives sessions; teammates can claim it). "
-            "blocked_by lists ids of tasks that must be completed first. Create all tasks first, then wire "
-            "dependencies with task_update if ids were not known yet.",
+            "blocked_by lists existing task ids that must be completed first; task_update can change dependencies.",
             {
                 "type": "object",
                 "properties": {
@@ -260,7 +250,6 @@ def setup(api: ExtensionAPI) -> None:
                 "required": ["subject"],
             },
             create,
-            snippet="create durable tasks with dependencies (shared with teammates)",
             read_only=True,
         ),
         roles,
@@ -269,7 +258,8 @@ def setup(api: ExtensionAPI) -> None:
         AgentTool(
             "task_update",
             "Update a task. Setting status=in_progress claims it for you (refused if blocked or owned by someone "
-            "else); status=completed reports which tasks became ready.",
+            "else); status=completed reports which tasks became ready. "
+            "Setting owner does not wake a teammate; team_message delivers work.",
             {
                 "type": "object",
                 "properties": {
@@ -284,7 +274,6 @@ def setup(api: ExtensionAPI) -> None:
                 "required": ["id"],
             },
             update,
-            snippet="claim, complete or re-wire tasks",
             read_only=True,
         ),
         roles,
@@ -301,7 +290,6 @@ def setup(api: ExtensionAPI) -> None:
                 },
             },
             list_,
-            snippet="list tasks",
             read_only=True,
         ),
         roles,
@@ -312,7 +300,6 @@ def setup(api: ExtensionAPI) -> None:
             "Show one task with its full description.",
             {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
             get,
-            snippet="show a task",
             read_only=True,
         ),
         roles,

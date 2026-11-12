@@ -190,8 +190,7 @@ def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
             job = jobs.start_command(args["command"], ctx.cwd, timeout if args.get("timeout") else None, shell=shell)
             return ToolResult.text(
                 f"Started background job {job.id} using {shell.kind} {shell.version}. "
-                "You will be notified when it finishes; meanwhile continue with other work "
-                "(job_output shows progress)."
+                "You will be notified when it finishes; job_output shows progress."
             )
         out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell)
         result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name)
@@ -218,8 +217,8 @@ def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
         f"Output is limited to the last {MAX_LINES} lines / {MAX_BYTES // 1024}KB; longer output is saved to a file."
     )
     if jobs is not None:
-        description += " Set background=true for long-running commands."
+        description += " background=true returns a job ID before the command finishes."
     return ShellTool(
         name=shell.tool_name, label=shell.syntax, description=description, parameters=params,
-        execute=execute, snippet=f"run {shell.syntax} commands ({shell.kind} {shell.version})", shell=shell,
+        execute=execute, shell=shell,
     )

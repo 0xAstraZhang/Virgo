@@ -45,11 +45,8 @@ BUILTIN_TYPES = [
     ),
     AgentType(
         "explore",
-        "Fast read-only agent for finding code and answering questions about the codebase.",
-        prompt=(
-            "You are in read-only mode: search and read, do not modify files. Be efficient: use glob/grep to "
-            "locate, read only what is needed, and report concrete paths, line numbers and findings."
-        ),
+        "Read-only agent for finding code and answering questions about the codebase.",
+        prompt="You are in read-only mode; file and system changes are not permitted.",
         tools=["read", "glob", "grep", "bash"],
         permission="plan",
     ),
@@ -158,14 +155,13 @@ def setup(api: ExtensionAPI) -> None:
             label="Agent",
             description=(
                 "Delegate a self-contained task to a sub-agent with a fresh context. It cannot see this "
-                "conversation, so the prompt must contain everything it needs; only its final answer comes back. "
-                "Use it to keep large searches or side quests out of your context. Several agent calls in one "
+                "conversation, so include the needed context; only its final answer comes back. Several calls in one "
                 "response run in parallel. Set background=true to keep working while it runs."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "description": {"type": "string", "description": "3-6 word label for the task"},
+                    "description": {"type": "string", "description": "Short task label"},
                     "prompt": {
                         "type": "string",
                         "minLength": 1,
@@ -177,7 +173,6 @@ def setup(api: ExtensionAPI) -> None:
                 "required": ["description", "prompt"],
             },
             execute=execute,
-            snippet="delegate a focused task to a sub-agent (fresh context, returns its final answer)",
             read_only=True,  # its own tool calls are permission-checked individually
         ),
         roles=("main",),

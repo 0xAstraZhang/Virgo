@@ -140,3 +140,80 @@ and shutdown assertions intact.
 This was reproduced through the real session scenario by temporarily delaying
 the write for 100 ms after creating the output file. The original test failed
 with the same empty-content assertion; the synchronized test passes that case.
+
+## Harness simplification validation (2026-11-12)
+
+The final tree, rebased onto main `0cf0007`, passed **1217 tests, with 9 skips**
+in 127.50 seconds on Linux 6.18.57 / Python 3.13.5, including all 10 PTY cases.
+`ruff check .`, `ci/check_comparison.py` and `ci/check_resolution.py` passed.
+Before integrating the upstream changes, the initial validation passed 1205 tests
+with 9 skips in 123.95 seconds.
+The supplied pre-change baseline was 1178 passed / 9 skipped, with the 10 PTY
+cases excluded; 17 cases were added in this change. Tests use the faux provider
+and local services, so this does not establish real-model task success rates.
+
+Regression coverage includes actual tool definitions and role visibility, user
+system/project instructions, empty resource omission, stable request prefixes
+and permission-mode transitions; concurrent Todo entries and atomic rejection;
+idle teammates, explicit claiming, message wakeups and shutdown release;
+unanswered questions without fabricated answers, real choices/free text and
+cancellation of unattended deadlines; complete compaction text within budget,
+explicit omission over budget, freeform summary recovery and incremental reuse.
+Existing permission execution checks, workflow/Stop/Goal behavior and native
+compaction signatures/bindings remain covered by the full suite.
+
+### Fixed input size
+
+Measurements captured the actual first faux-provider `Context` before execution
+and after simplification, with the same empty project and user resource roots,
+Bash 5.2.37 at `/bin/bash`, `faux/test`, default features, and `accept-all` mode.
+The pre-change revision was `811bc024340dbe2dd496a909b9c665ee05bd1150`.
+
+| UTF-8 bytes | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| System | 5,100 | 933 | 81.71% |
+| Tool definitions | 11,900 | 10,965 | 7.86% |
+| Total fixed input | 17,000 | 11,898 | 30.01% |
+
+Both requests expose the same 24 default main-agent tools. The only validation
+schema change is removal of Todo's `maxItems: 50`; the agent task-label parameter
+also has shorter descriptive text. Tool descriptions account for the remaining
+tool-definition size change. Native search uses provider declarations and a short
+citation reminder, so its size differs from this client-tool measurement.
+
+The tool size is `json.dumps([asdict(t) for t in context.tools],
+ensure_ascii=False)` encoded as UTF-8 with Python's default JSON separators. The
+total is that size plus the UTF-8 system size; it excludes messages, provider
+request envelopes and tokenization. These numbers measure input volume, not
+capability or quality. Paths, shell versions, dates and user resources affect the
+absolute size.
+
+To repeat the measurement from the repository root (use empty roots for both
+revisions):
+
+```bash
+VIRGO_HOME=/tmp/virgo-harness-measure/home .venv/bin/python - <<'PY'
+import json
+from dataclasses import asdict
+from pathlib import Path
+from virgo.ai.providers import faux
+from virgo.harness.session import AgentSession
+
+project = Path('/tmp/virgo-harness-measure/project')
+project.mkdir(parents=True, exist_ok=True)
+
+def capture(context):
+    system = len(context.system.encode('utf-8'))
+    tools = len(json.dumps([asdict(t) for t in context.tools], ensure_ascii=False).encode('utf-8'))
+    print(dict(system_bytes=system, tools_bytes=tools, fixed_bytes=system + tools,
+               tool_count=len(context.tools)))
+    return faux.reply('done')
+
+faux.script('test', capture)
+session = AgentSession(project, model='faux/test', session=None, permission_mode='accept-all')
+try:
+    session.prompt('Inspect the project.')
+finally:
+    session.shutdown()
+PY
+```

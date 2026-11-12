@@ -173,7 +173,11 @@ def setup(api: ExtensionAPI) -> None:
         AgentTool(
             name="memory",
             label="Memory",
-            description="Save, update or delete a durable memory that future sessions will see. " + GUIDANCE,
+            description=(
+                "Save, update or delete a durable memory. Future sessions receive its index entry and can read "
+                "the file. Types user/feedback use user scope; project/reference use project scope. "
+                "Save requires type, description and body; update preserves omitted fields."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -186,7 +190,6 @@ def setup(api: ExtensionAPI) -> None:
                 "required": ["action", "name"],
             },
             execute=execute,
-            snippet="save durable memories (preferences, feedback, project facts) for future sessions",
             read_only=True,
         ),
         roles=("main",),
@@ -195,8 +198,8 @@ def setup(api: ExtensionAPI) -> None:
     def section(role: str):
         if role != "main":
             return None
-        index = store.index_text() or "(no memories yet)"
-        return f"<memory>\n{GUIDANCE}\n\nKnown memories (read a file for details):\n{index}\n</memory>"
+        index = store.index_text()
+        return f"<memory>\nKnown memories (read a file for details):\n{index}\n</memory>" if index else None
 
     api.add_system_section("memory", section, order=45)
 

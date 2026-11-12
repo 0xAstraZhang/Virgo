@@ -5,8 +5,8 @@ The model may offer up to three options; the first is its recommendation and a f
 
 Runs that the user did not start (woken by a schedule, a finished background job or a teammate)
 may have nobody watching. There the question is withdrawn after ``askUser.unattendedTimeout``
-seconds (default 300) and the recommended option is taken; without options the agent is told
-that no answer came. Runs with no interactive client never show the question at all.
+seconds (default 300) and reported as unanswered. Runs with no interactive client never show
+the question at all.
 """
 
 from __future__ import annotations
@@ -19,23 +19,14 @@ LETTERS = "ABCD"
 MAX_OPTIONS = 3
 DEFAULT_UNATTENDED_TIMEOUT = 300.0
 
-NO_USER = (
-    "Nobody can answer questions in this session (it is not interactive). Proceed with the most "
-    "reasonable assumption and state that assumption explicitly in your final answer."
-)
-DECLINED = (
-    "The user dismissed the question without answering. Do not ask it again; proceed with your best "
-    "judgment, or stop and explain what you need."
-)
+NO_USER = "The question was not answered: this session is not interactive."
+DECLINED = "The user dismissed the question without answering."
 
 DESCRIPTION = (
-    "Ask the user a question and wait for the answer. Use it only when the request is ambiguous or a "
-    "decision is genuinely the user's to make, and the answer would change what you do. Do not ask "
-    "for things you can find out yourself with tools, for permission to run tools (the harness asks "
-    "for that), or for approval of finished work. Never use it to collect API keys, passwords or "
-    "other secrets: answers are kept in the conversation.\n"
-    "Ask one question per call. Optionally offer up to 3 options: put your recommended option first. "
-    "The user can always type their own answer instead. Leave options out for open questions."
+    "Ask one question and wait for the user. Offer up to 3 options (the first is shown as recommended), "
+    "or omit options for free text. A custom-answer choice is always available. "
+    "Answers are saved in the conversation; do not request secrets. "
+    "Timeout, dismissal and non-interactive sessions return answered=false without an answer."
 )
 
 
@@ -66,6 +57,7 @@ def setup(api: ExtensionAPI) -> None:
         # Steering is delivered only after the current tool batch, so react when it is queued:
         # a question in that batch must not time out on a user who is typing.
         state["unattended"] = False
+        api.ui.cancel_input_timeouts()
 
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
         question = args["question"].strip()
@@ -85,8 +77,17 @@ def setup(api: ExtensionAPI) -> None:
 
         def declined() -> ToolResult:
             if ctx.signal.is_set():
-                return ToolResult.error("Operation aborted.")
+                return ToolResult.text(
+                    "The question was cancelled without an answer.",
+                    is_error=True, details={**details, "answered": False},
+                )
             return ToolResult.text(DECLINED, details={**details, "answered": False})
+
+        def timed_out() -> ToolResult:
+            return ToolResult.text(
+                f"The user did not answer within {_wait_text(timeout)}; the question was withdrawn.",
+                details={**details, "answered": False, "timed_out": True},
+            )
 
         if options:
             labels = []
@@ -96,15 +97,8 @@ def setup(api: ExtensionAPI) -> None:
             custom = f"{LETTERS[len(options)]}. Type my own answer"
             picked = ui.select(question, [*labels, custom], timeout=timeout)
             if picked is TIMED_OUT:
-                text = (
-                    f"The user did not answer within {_wait_text(timeout)}, so the recommended option "
-                    f"was taken automatically: A. {options[0]['label']}. Mention in your final answer "
-                    "that this was decided without the user, so they can revisit it."
-                )
-                return ToolResult.text(
-                    text, details={**details, "answered": False, "timed_out": True, "choice": "A",
-                                   "answer": options[0]["label"]}
-                )
+                return timed_out()
+            state["unattended"] = False
             if picked is None:
                 return declined()
             if picked != custom:
@@ -117,11 +111,8 @@ def setup(api: ExtensionAPI) -> None:
             timeout = None
         answer = ui.input(question, timeout=timeout)
         if answer is TIMED_OUT:
-            text = (
-                f"The user did not answer within {_wait_text(timeout)}. Proceed with the most reasonable "
-                "assumption and state that assumption explicitly in your final answer."
-            )
-            return ToolResult.text(text, details={**details, "answered": False, "timed_out": True})
+            return timed_out()
+        state["unattended"] = False
         if answer is None or not answer.strip():
             return declined()
         answer = answer.strip()
@@ -159,22 +150,10 @@ def setup(api: ExtensionAPI) -> None:
                 "required": ["question"],
             },
             execute=execute,
-            snippet="ask the user a question when a decision is theirs or the request is ambiguous",
             read_only=True,
             sequential=True,
         ),
         roles=("main",),
-    )
-    api.add_system_section(
-        "ask_user",
-        lambda role: (
-            "<asking>\nWhen the request is ambiguous or a decision is the user's to make, and the answer "
-            "would change what you do, ask with ask_user instead of guessing. Do not ask what you can find "
-            "out with tools.\n</asking>"
-        )
-        if role == "main"
-        else None,
-        order=20,
     )
     api.on("before_agent_start", run_started)
     api.on("user_steer", user_present)

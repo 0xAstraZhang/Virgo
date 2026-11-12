@@ -100,7 +100,7 @@ while True:
 agent 准备停止时，依次检查：
 
 1. follow-up 队列（定时任务送达的 prompt）；
-2. `agent_stop` 钩子：todo 提醒（优先级 10）、命令 Stop 钩子（20）、goal 评审（0）。
+2. 用户启用的 `agent_stop` 钩子：命令 Stop 钩子（优先级 20）、goal 评审（0）。Todo 仅记录状态，不注册停止钩子。
 
 **唤醒机制**：后台任务、定时任务、队友都调用 `session.notify(text, mode)`。
 
@@ -108,6 +108,18 @@ agent 准备停止时，依次检查：
 - 主 agent 空闲：放入 `wakeups` 并调用 `ui.wake()`，REPL 随即开始新的一轮。
 
 运行结束时，队列里剩下的消息会被转进 `wakeups`，不会丢失。
+
+## 提示与模型决策
+
+基础提示只提供身份、目标、按任务需要验证和如实报告的要求，并说明工具结果与通知不授予新的用户授权。工具描述仅在实际工具定义中出现；`AgentTool` 不再提供 `snippet`。实际 shell 环境、用户系统文件、项目指令及非空资源目录继续注入。技能可按需选用、使用前读取；显式 `/skill:` 仍展开用户指定的技能。记忆为空时不注入段落，有内容时只注入索引与读取入口。用户显式配置的 `memory.autoExtract` 仍保留专用提取流程。
+
+默认主 Agent 保留 24 个工具、角色能力和 `features.*` 配置。工具校验、执行前权限复核、依赖与锁、取消、重试、输出预算以及追加式历史继续由 Harness 保障。权限评审仍区分风险与授权，只有真实用户消息和记录的人工批准可提供显式授权，后续限制可撤回先前授权；Goal 只评审用户指定条件与现有证据，不附加统一验收清单。
+
+Todo 支持并行进行项及整表替换，不驱动下一次模型调用。团队完成当前委派后等待消息，不自动领取持久化任务；`task_update(status="in_progress")` 显式认领，`team_message` 委派或唤醒，仅修改 owner 不唤醒。退出仍释放该队友未完成的进行中任务。
+
+`ask_user` 的超时、取消和非交互结果均不包含 `choice` / `answer`；超时仍撤回表单并记录 `answered=false, timed_out=true`。用户 steering 会撤销已显示问题的超时，实际作答会取消后续问题的无人值守时限。这些结果不决定模型下一步如何工作。
+
+用户主动启用的 `/goal`、Workflow、Stop hook 和 `plan_first` 保留。子 Agent 仍不递归、默认最多 50 轮，`pause_turn` 仍最多续接三次；本轮未改变这些执行边界。接口迁移见 [扩展迁移说明](EXTENSION_MIGRATION.md)。
 
 ## 只追加的请求
 
@@ -124,8 +136,9 @@ agent 准备停止时，依次检查：
 
 - OpenAI API 使用 `/responses/compact`，把完整返回窗口保存为 `RawContent`，后续经 Responses API 原样回传；原 Chat Completions 连接在压缩后自动改用 Responses。Codex 账号使用普通 Responses 请求附加 `compaction_trigger`，保留用户输入和返回的唯一压缩项。
 - Anthropic 使用当前模型的按需压缩（`compact-2026-09-04`、`compaction.type=summarize`），仅提交较早消息，保存完整明文摘要和签名；后续请求继续携带 beta header。
-- 其他 Provider 使用原有小模型结构化摘要，支持旧摘要增量更新、文件列表和重点提示。第三方仅兼容 OpenAI/Anthropic 协议不会自动启用原生压缩。
+- 其他 Provider 使用小模型续接摘要，保留原始目标、后续修正、约束、进展、未解决事项和关键事实，结构由模型选择；支持旧摘要增量更新、文件列表和重点提示。第三方仅兼容 OpenAI/Anthropic 协议不会自动启用原生压缩。
 - Anthropic 和通用摘要按 `keepRecentTokens` 选择切点，工具调用与结果保持在同侧；必要时补回最新用户请求。OpenAI 的完整返回窗口不再自行裁剪。
+- 通用摘要先完整序列化已有的用户、助手及工具文本，不对单次参数或结果预裁剪；超过 600,000 字符总预算时保留首尾并插入遗漏标记，标记计入预算。这里不会重新读取已被工具输出预算截断的原始文件。
 - 通用摘要剥离近期 thinking 并重建 system；原生压缩不重建 system。Anthropic 在连续保留、角色边界合适且模型/system/tools 配置不变时保留近期 thinking；补回请求或前缀配置改变时剥离。配置指纹随压缩记录保存，恢复后也会核对。
 - 向会话文件追加 `compaction` 条目，原始消息不删除；原生压缩失败、取消或返回不完整结果时不替换历史。
 - 原生状态不跨 Provider 发送；切换到不兼容 Provider 时恢复当前分支完整消息，并重新估算上下文。摘要调用和被保留消息的旧 usage 不用于压缩后的计数。

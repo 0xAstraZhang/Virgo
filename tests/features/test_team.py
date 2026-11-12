@@ -8,7 +8,38 @@ import pytest
 
 from virgo.ai.providers import faux
 
-from tests.support.harness import wait_until
+from tests.support.harness import calls, wait_until
+
+
+def test_idle_teammate_waits_for_messages_and_claims_only_explicit_tasks(make_session):
+    session = make_session()
+    team, tasks = session.services["team"], session.services["tasks"]
+    stale = tasks.create("left over from another session")
+    assigned = tasks.create("new task")
+
+    def respond(ctx):
+        if ctx.messages[-1].role == "user" and "claim assigned task" in ctx.messages[-1].text():
+            return faux.reply(tools=[("task_update", {"id": assigned.id, "status": "in_progress"})])
+        return faux.reply("finished delegated work")
+
+    faux.handler("test", respond)
+    member = team.spawn("alice", "helper", "one focused task", False, False)
+    wait_until(lambda: member.state == "idle")
+    # Reaching idle means the loop has already had its opportunity to claim stale work.
+    assert tasks.get(stale.id).status == "pending" and tasks.get(stale.id).owner is None
+    assert len(calls()) == 1
+    tasks.update(assigned.id, "main", owner="alice")
+    assert member.inbox.empty() and member.state == "idle"
+    assert len(calls()) == 1
+    team.send("lead", "alice", "claim assigned task")
+    wait_until(lambda: tasks.get(assigned.id).status == "in_progress" and member.state == "idle")
+    assert tasks.get(assigned.id).owner == "alice"
+    assert len(calls()) == 3
+    team.request_stop("alice")
+    member.thread.join(5)
+    assert not member.thread.is_alive()
+    assert tasks.get(assigned.id).status == "pending" and tasks.get(assigned.id).owner is None
+    assert tasks.get(stale.id).status == "pending" and tasks.get(stale.id).owner is None
 
 
 def test_team_messaging_plan_approval_and_shutdown(make_session):

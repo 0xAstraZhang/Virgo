@@ -1,6 +1,6 @@
 # Virgo
 
-Virgo 是一个轻量、可扩展的 Coding Agent。
+Virgo 是一个轻量、可扩展的 Coding Agent。Harness 提供工具能力、环境事实和执行保障，由模型判断工作方法与任务进展。
 
 - **架构参考** [Pi](https://github.com/earendil-works/pi)，分三层：统一 LLM 层 → 无 I/O 的 agent 循环 → harness（工具、会话、压缩、扩展）。
 - **功能**：支持权限、钩子、TodoWrite、主动提问（ask_user）、子 Agent、技能、上下文压缩、记忆、任务图、后台任务、定时任务、Agent 团队、MCP、Workflow、Goal loop 等。
@@ -306,22 +306,24 @@ def setup(api):
 | 工具 | `tools/`、`AgentTool` | 工具注册即分发；`content` 给模型，`details` 给 UI 和状态；默认并行执行，同一文件的写操作串行；输出统一截断并落盘 |
 | 权限 | `features/permission.py` | 三种模式；auto-review 识别工作区边界并对外部/联网操作调用小模型审批；accept-all 全部放行；plan 只读；无人值守时需要人工审批的操作视为拒绝 |
 | 钩子 | `harness/extensions.py` | 带优先级的事件总线：`tool_call` 可拦截或改参，`tool_result` 可改结果，`agent_stop` 可要求继续；另有 shell 命令钩子 |
-| TodoWrite | `features/todo.py` | 整表替换、校验失败不改状态；状态存在工具结果 `details` 里，可从会话重建；只在 agent 准备结束但仍有未完成项时提醒一次 |
-| 主动提问 | `features/ask_user.py` | 只给主 agent；模型可给 0–3 个选项，第一个为推荐项，末尾自动追加“自定义”输入；不给选项时直接显示输入框。非用户发起的运行（定时任务、后台任务完成、队友消息唤醒）在 `askUser.unattendedTimeout` 秒后（默认 300）收回问题：有选项自动采用推荐项，无选项让模型按合理假设继续；用户在这类运行中发消息即取消时限。`-p` 等非交互模式不弹出问题，直接让模型按假设继续 |
+| TodoWrite | `features/todo.py` | 整表替换、校验失败不改状态；允许多个进行项，不限制条目数量；状态存在工具结果 `details` 里，可从会话重建，`/todos` 查看；未完成项不会触发续接 |
+| 主动提问 | `features/ask_user.py` | 只给主 agent；模型可给 0–3 个选项，第一个为推荐项，末尾自动追加“自定义”输入；不给选项时直接显示输入框。非用户发起的运行（定时任务、后台任务完成、队友消息唤醒）在 `askUser.unattendedTimeout` 秒后（默认 300）收回问题：`answered=false`、`timed_out=true`，不填写答案；用户发消息或作答后取消时限。取消和 `-p` 等非交互模式也只报告未回答，不代选 |
 | 子 Agent | `features/subagent.py` | 全新上下文，只返回最终答案；不能递归；`general` / `explore` 两种类型，可在 `agents/*.md` 自定义；可并行、可后台 |
 | 技能 | `features/skills.py` | 渐进披露：prompt 只列目录，模型用 `read` 加载正文；`/skill:` 强制使用 |
-| 上下文压缩 | `harness/compaction.py`、`ai/compaction.py`、`tools/truncate.py` | 默认 80% 窗口触发；OpenAI / Anthropic 原生压缩，其他 Provider 用增量摘要；完整历史保留，支持 `/compact` 和超限补救 |
-| 记忆 | `features/memory.py` | 用户级和项目级两层，每条记忆一个 Markdown 文件，各配一个 `MEMORY.md` 索引；会话开始时把索引放进 prompt；`memory` 工具主动保存并去重；`/memory tidy` 整理，失败回滚 |
+| 上下文压缩 | `harness/compaction.py`、`ai/compaction.py`、`tools/truncate.py` | 默认 80% 窗口触发；OpenAI / Anthropic 原生压缩，其他 Provider 用自由结构的增量摘要；已有文本完整序列化后按总预算首尾裁剪，保留遗漏标记；完整历史保留，支持 `/compact` 和超限补救 |
+| 记忆 | `features/memory.py` | 用户级和项目级两层，每条记忆一个 Markdown 文件，各配一个 `MEMORY.md` 索引；会话开始时仅把非空索引及读取入口放进 prompt；`memory` 工具主动保存并去重；`/memory tidy` 整理，失败回滚 |
 | 任务系统 | `features/tasks.py` | 持久化依赖图 + 文件锁；认领时校验依赖；做环检测；完成时报告新解锁的任务；与队友共享 |
 | 后台任务 | `features/background.py` | bash 和子 agent 共用一个 JobManager；完成后通知（agent 运行中则插入，空闲则唤醒） |
 | 定时任务 | `features/schedule.py` | 5 字段 cron 加 `at`（ISO 时间或 `+10m`）；到点作为 follow-up 送达；可持久化 |
-| Agent 团队 | `features/team.py` | 队友各占一个线程，有独立会话和进程内邮箱；空闲时先收邮件再自动认领任务；停止和计划审批都是带 request_id 的协议；计划审批复用权限的 plan 模式；可为队友建独立 git worktree |
+| Agent 团队 | `features/team.py` | 队友各占一个线程，有独立会话和进程内邮箱；完成当前委派后等待消息；模型通过 `task_list` / `task_update` 显式认领，`team_message` 委派或唤醒；仅设置 owner 不唤醒；停止和计划审批都是带 request_id 的协议；计划审批复用权限的 plan 模式；可为队友建独立 git worktree |
 | MCP | `features/mcp.py` | 真正的 stdio JSON-RPC 客户端（initialize → tools/list → tools/call）；工具命名 `mcp__server__tool`；默认需要授权 |
 | 集成 harness | `harness/session.py` | 所有功能都以扩展身份接入同一个循环；负责重试、回退模型、反应式压缩和统一唤醒 |
 | Workflow | `features/workflow.py` | 编排由脚本固定，模型只负责调用；结构化输出带校验和重试；journal 按调用内容哈希，续跑时已完成的调用直接命中 |
-| Goal loop | `features/goal.py` | 每次准备停止时由独立的无工具评审判断：达成 / 不可能 / 未满足则继续；有上限；后台任务未完成时暂缓评审 |
+| Goal loop | `features/goal.py` | 用户通过 `/goal` 启用后，准备停止时由无工具评审按用户条件和现有证据判断：达成 / 不可能 / 未满足则继续；有上限；后台任务未完成时暂缓评审 |
 
 ## 设计取舍
+
+默认主 Agent 保留 24 个工具和现有 `features.*` 开关。工具描述只通过工具定义提供，基础提示不再重复工具目录或规定统一工作流程。技能由模型按需选择、使用前读取；用户 `SYSTEM.md` / `APPEND_SYSTEM.md`、项目指令和资源目录仍保留。用户显式启用的 `/goal`、Workflow、Stop hook 和 `plan_first` 继续生效。扩展接口变更见 [扩展迁移说明](docs/EXTENSION_MIGRATION.md)。
 
 - **发送给 API 的历史只追加。** 
   - system prompt 和工具集合在同一权限模式及 shell 选择内保持稳定；`/shell` 显式切换时更新工具与环境信息；切换到或离开 plan 时更新规划提示和可用工具；通用摘要压缩后重建基础上下文，原生压缩保持前缀配置稳定；

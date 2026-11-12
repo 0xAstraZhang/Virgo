@@ -102,6 +102,7 @@ def test_dismissed_questions_are_not_errors(make_session):
     first, second = ask_results(s)
     for r in (first, second):
         assert not r.is_error and "dismissed" in r.text() and r.details["answered"] is False
+        assert "choice" not in r.details and "answer" not in r.details
 
 
 def test_too_many_options_are_rejected_before_asking(make_session):
@@ -112,12 +113,14 @@ def test_too_many_options_are_rejected_before_asking(make_session):
     assert ui.asks == [] and ask_results(s)[0].is_error
 
 
-def test_noninteractive_sessions_get_a_fallback_without_a_prompt(make_session):
+def test_noninteractive_sessions_report_no_answer_without_a_prompt(make_session):
     ui = RecordingUI()
     s = make_session(faux.reply(tools=[("ask_user", ASK)]), faux.reply("ok"), ui=ui)
     s.prompt("set up storage")
     (result,) = ask_results(s)
     assert not result.is_error and "not interactive" in result.text()
+    assert result.details["answered"] is False
+    assert "choice" not in result.details and "answer" not in result.details
 
 
 def test_only_the_lead_agent_gets_the_tool_and_plan_mode_allows_it(make_session):
@@ -128,10 +131,11 @@ def test_only_the_lead_agent_gets_the_tool_and_plan_mode_allows_it(make_session)
     s.prompt("plan storage")
     assert ask_results(s)[0].text() == "The user chose A: PostgreSQL"
     assert ui.questions == []  # no permission prompt
-    assert "ask with ask_user" in calls()[0]["system"]
+    assert "ask_user" in calls()[0]["tools"]
+    assert "<asking>" not in calls()[0]["system"]
 
 
-def test_runs_woken_by_notifications_time_out_to_the_recommendation(make_session):
+def test_runs_woken_by_notifications_time_out_without_an_answer(make_session):
     ui = AskingUI(picks=[TIMED_OUT, 0], typed=[TIMED_OUT])
     s = make_session(
         faux.reply(tools=[("ask_user", ASK)]),
@@ -146,9 +150,12 @@ def test_runs_woken_by_notifications_time_out_to_the_recommendation(make_session
     assert s.run_pending()
     picked, typed = ask_results(s)
     assert ui.asks[0][3] == 120 and ui.asks[1][3] == 120
-    assert "within 2 minutes" in picked.text() and "A. PostgreSQL" in picked.text()
-    assert picked.details == {**picked.details, "timed_out": True, "choice": "A", "answered": False}
-    assert "did not answer" in typed.text() and typed.details["timed_out"] is True
+    assert "within 2 minutes" in picked.text()
+    for result in (picked, typed):
+        assert "did not answer" in result.text()
+        assert result.details["timed_out"] is True
+        assert result.details["answered"] is False
+        assert "choice" not in result.details and "answer" not in result.details
     # A run the user started waits without a deadline.
     s.prompt("again")
     assert ui.asks[2][3] is None
@@ -270,3 +277,52 @@ def test_fullscreen_app_answers_mid_run_and_withdraws_unattended_questions(make_
             ui.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("options", [True, False])
+def test_aborted_question_has_no_answer(make_session, options):
+    from virgo.agent.types import ToolContext
+
+    signal = threading.Event()
+    ui = AskingUI(picks=[None], typed=[None])
+    session = make_session(ui=ui)
+    signal.set()
+    args = ASK if options else {"question": "Where?"}
+    result = session.tool("ask_user").execute(args, ToolContext("ask", session.cwd, signal))
+    assert result.is_error and result.details["answered"] is False
+    assert "choice" not in result.details and "answer" not in result.details
+
+
+def test_answering_an_unattended_question_removes_future_deadlines(make_session):
+    ui = AskingUI(picks=[0], typed=["more context"])
+    session = make_session(
+        faux.reply(tools=[("ask_user", ASK)]),
+        faux.reply(tools=[("ask_user", {"question": "What else?"})]), faux.reply("done"), ui=ui,
+    )
+    session.notify("check", source="schedule")
+    session.run_pending()
+    assert ui.asks[0][3] == 300 and ui.asks[1][3] is None
+
+
+def test_user_steering_keeps_an_already_displayed_question_open(make_session):
+    ui = FullscreenUI()
+    session = make_session(
+        faux.reply(tools=[("ask_user", ASK)]), faux.reply("done"), ui=ui,
+        settings={"askUser": {"unattendedTimeout": 0.3}},
+    )
+    session.notify("check", source="schedule")
+    worker = threading.Thread(target=session.run_pending)
+    worker.start()
+    requests = []
+    try:
+        wait_until(lambda: requests.extend(u.payload for u in ui.drain() if u.kind == "input") or requests)
+        assert session.steer("I'm here, let me decide")
+        worker.join(0.5)  # Beyond the original deadline, while the user is deciding.
+        assert worker.is_alive() and ui.is_input_pending(requests[0].id)
+        assert ui.resolve_input(requests[0].id, requests[0].options[1])
+        worker.join(3)
+        assert not worker.is_alive()
+        assert ask_results(session)[0].details["answer"] == "SQLite"
+    finally:
+        ui.close()
+        worker.join(3)

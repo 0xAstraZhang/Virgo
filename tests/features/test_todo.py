@@ -1,49 +1,59 @@
-"""The todo list validates progress and reminds the agent about unfinished items."""
+"""The checklist records model-chosen progress without driving the agent loop."""
 
 from __future__ import annotations
+
+import pytest
 
 from virgo.ai.providers import faux
 from virgo.ai.types import UserMessage
 
-from tests.support.harness import tool_results
+from tests.support.harness import calls, tool_results
 
 
-def test_todo_validation_and_stop_reminder(make_session):
-    s = make_session(
-        faux.reply(
-            tools=[
-                (
-                    "todo_write",
-                    {
-                        "todos": [
-                            {"content": "a", "status": "in_progress"},
-                            {"content": "b", "status": "in_progress"},
-                        ]
-                    },
-                )
-            ]
-        ),
-        faux.reply(
-            tools=[
-                (
-                    "todo_write",
-                    {
-                        "todos": [
-                            {"content": "a", "status": "in_progress"},
-                            {"content": "b", "status": "pending"},
-                        ]
-                    },
-                )
-            ]
-        ),
-        faux.reply("I'm done"),
-        faux.reply("ok, finishing b"),
+def test_parallel_todos_have_no_size_cap_or_stop_continuation(make_session):
+    todos = [{"content": f"task {i}", "status": "in_progress"} for i in range(60)]
+    session = make_session(
+        faux.reply(tools=[("todo_write", {"todos": todos})]), faux.reply("waiting for results"),
     )
-    s.prompt("go")
-    r = tool_results(s)
-    assert r[0].is_error and "only one" in r[0].text()
-    assert "[~] a" in r[1].text() and "(0/2 completed)" in r[1].text()
-    # stopping with open items triggers exactly one reminder
-    reminders = [m for m in s.main.messages if isinstance(m, UserMessage) and m.kind == "continue"]
-    assert len(reminders) == 1 and "unfinished" in reminders[0].text()
-    assert s.main.agent.last_text == "ok, finishing b"
+    session.prompt("track parallel work")
+    result, = tool_results(session)
+    assert not result.is_error and result.details["todos"] == todos
+    assert "(0/60 completed)" in result.text()
+    assert len(calls()) == 2
+    assert not any(isinstance(m, UserMessage) and m.kind == "continue" for m in session.main.messages)
+
+
+@pytest.mark.parametrize("invalid", [
+    [{"content": "new", "status": "pending"}, {"content": "  ", "status": "pending"}],
+    [{"content": "new", "status": "unknown"}],
+    [None],
+    "not a list",
+])
+def test_invalid_todos_leave_previous_state_intact(make_session, invalid):
+    original = [{"content": "keep", "status": "pending"}]
+    session = make_session(
+        faux.reply(tools=[("todo_write", {"todos": original})]),
+        faux.reply(tools=[("todo_write", {"todos": invalid})]), faux.reply("done"),
+    )
+    session.prompt("record work")
+    assert tool_results(session)[1].is_error
+    assert session.services["todos"]["todos"] == original
+
+
+def test_todos_replace_restore_and_display(make_session):
+    old = [{"content": "obsolete", "status": "pending"}]
+    current = [{"content": "keep", "status": "completed"}, {"content": "next", "status": "in_progress"}]
+    session = make_session(
+        faux.reply(tools=[("todo_write", {"todos": old})]),
+        faux.reply(tools=[("todo_write", {"todos": current})]), faux.reply("done"), persist=True,
+    )
+    session.prompt("record work")
+    restored = make_session(session=session.store.path)
+    assert restored.services["todos"]["todos"] == current
+    restored.prompt("/todos")
+    assert "[x] keep" in restored.ui.text and "[~] next" in restored.ui.text
+    assert "obsolete" not in restored.ui.text
+    assert calls() == []
+    faux.push("test", faux.reply(tools=[("todo_write", {"todos": []})]), faux.reply("cleared"))
+    restored.prompt("clear list")
+    assert restored.services["todos"]["todos"] == []
