@@ -114,8 +114,8 @@ def probe_shell(value: str) -> Shell:
         raise ValueError(f"Shell unavailable: {executable} (version probe failed)")
     if kind not in {"sh", "dash"} and not re.match(r"\d+\.\d+", version):
         raise ValueError(f"Shell unavailable: {executable} (unrecognized version)")
-    if kind == "powershell" and not version.startswith("5.1."):
-        raise ValueError("Windows PowerShell requires version 5.1; alternatively select pwsh.")
+    if kind == "powershell" and not version.startswith("5.1.") and int(version.split(".")[0]) < 7:
+        raise ValueError("PowerShell requires Windows PowerShell 5.1 or PowerShell 7+.")
     if kind == "pwsh" and int(version.split(".")[0]) < 7:
         raise ValueError("pwsh requires PowerShell 7 or later.")
     return Shell(kind, executable, version)

@@ -17,8 +17,8 @@ from pathlib import Path
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..harness.extensions import ExtensionAPI
 from ..tools.bash import kill_tree, spawn
-from ..tools.command_output import display_output, read_output
-from ..tools.truncate import MAX_BYTES, budget, outputs_dir
+from ..tools.command_output import display_output, open_output, read_output
+from ..tools.truncate import MAX_BYTES, budget
 
 
 @dataclass
@@ -67,8 +67,7 @@ class JobManager:
         job = self._new(shell.tool_name, command)
         fh = None
         try:
-            job.log = outputs_dir(cwd) / f"{job.id}-{int(job.started)}.log"
-            fh = open(job.log, "wb")  # noqa: SIM115 - closed by the watcher thread
+            job.log, fh = open_output(cwd, job.id)
             proc = spawn(command, cwd, stdout=fh, interpreter=shell)
         except BaseException:
             # A job that never started must not count as pending work forever.

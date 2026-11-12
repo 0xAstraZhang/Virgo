@@ -13,7 +13,7 @@
 /shell auto
 ```
 
-支持 Bash、Zsh、POSIX sh、dash、PowerShell 7+ (`pwsh`) 和 Windows PowerShell 5.1 (`powershell`)。CMD、Fish、WSL 发行版和任意自定义解释器尚未适配，不会因为存在可执行文件就展示为可用选项。sh/dash 无通用版本接口时明确显示版本未报告。
+支持 Bash、Zsh、POSIX sh、dash、PowerShell 7+ (`pwsh`，也接受指向 7+ 的 `powershell` 别名) 和 Windows PowerShell 5.1 (`powershell`)。CMD、Fish、WSL 发行版和任意自定义解释器尚未适配，不会因为存在可执行文件就展示为可用选项。sh/dash 无通用版本接口时明确显示版本未报告。
 
 探测范围为 PATH 的绝对目录、常见安装目录、Unix `/etc/shells` 中已适配的条目，以及当前选中的路径。每个解释器用固定版本查询做实际启动验证，单次限时 3 秒，并行探测，按类型和实际文件路径去重。额外安装位置可以直接传绝对路径；参数不是 shell 代码，不支持在路径后附加启动参数。
 

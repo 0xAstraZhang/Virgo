@@ -105,7 +105,12 @@ def test_output_bytes_and_tail_are_preserved_on_failure_and_timeout(make_session
         result = invoke(session, command, timeout=3)
         assert result.is_error and result.details["status"] == expected
         assert "中\nTAIL" in result.text()
-        assert Path(result.details["output_path"]).read_bytes() == b'\xff\xe4\xb8\xad\nTAIL\n'
+        raw = Path(result.details["output_path"]).read_bytes()
+        expected_bytes = b'\xff\xe4\xb8\xad\nTAIL\n'
+        assert raw.startswith(expected_bytes)
+        # Modern PowerShell appends its native-failure diagnostic to merged stderr.
+        if expected == "timeout" or not selected(session).native_errors:
+            assert raw == expected_bytes
 
 
 @pytest.mark.parametrize("engine", ENGINES)
@@ -221,3 +226,16 @@ def test_windows_repeated_commands_release_handles_and_isolate_jobs(make_session
     wait_until(lambda: first.reported and second.reported)
     assert first.status == "killed" and second.status == "completed"
     assert "independent" in jobs.output(second)
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_two_sessions_keep_separate_background_logs(make_session, engine):
+    first = make_session()
+    first.prompt(f"/shell {engine}")
+    second = make_session()
+    a = first.services["jobs"].start_command(python_command(selected(first), "print('first session')"), first.cwd)
+    b = second.services["jobs"].start_command(python_command(selected(second), "print('second session')"), second.cwd)
+    wait_until(lambda: a.reported and b.reported)
+    assert a.log != b.log
+    assert a.log.read_text().strip() == "first session"
+    assert b.log.read_text().strip() == "second session"
