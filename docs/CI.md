@@ -28,7 +28,9 @@ Comparison identifies tests by function/method name and parameter ID, ignoring t
 module path so moving a test does not manufacture a new failure. Duplicate keys
 are rejected as ambiguous. The two renamed parameter IDs in PR #9's
 `test_compaction_does_not_enable_native_search` are explicitly mapped to their
-previous names; other renames are reported as added/removed tests.
+previous names. The Harness simplification's four renamed Todo, question and
+sub-agent cases also map to their previous names so changed expectations remain
+comparable; other renames are reported as added/removed tests.
 
 A failed PR test is classified as a regression only if the baseline passed it.
 Failures that were skipped or absent in the baseline are listed separately as

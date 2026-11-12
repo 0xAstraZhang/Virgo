@@ -237,7 +237,6 @@ def setup(api: ExtensionAPI) -> None:
                     f"[MCP {client.name}] {desc}",
                     schema,
                     execute,
-                    snippet=f"[MCP {client.name}] {desc.splitlines()[0][:80]}",
                 ),
                 roles=ROLES_ALL,
             )

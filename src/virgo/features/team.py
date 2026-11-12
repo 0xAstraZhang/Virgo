@@ -1,7 +1,7 @@
 """Agent teams: long-lived teammates that work in parallel, message each other and share the task graph.
 
 Each teammate is an agent on its own thread with its own conversation and session file, and an
-in-process inbox. Idle teammates pick up messages first, then claim ready tasks from the task graph.
+in-process inbox. Idle teammates wait for messages; tasks are claimed explicitly with task_update.
 Coordination uses request/response messages with ids:
   - shutdown: ``team_stop`` -> the teammate finishes its current turn, acknowledges and exits
   - plan approval: ``plan_first`` teammates start in read-only *plan* permission mode, send a plan
@@ -116,11 +116,9 @@ class Team:
         others = ", ".join(n for n in self.active_names() if n != name) or "none yet"
         extra = (
             f"<team>\nYour name: {name}. Your role: {role}.\nThe lead coordinates the team; other teammates: {others}.\n"
-            "- Report progress, questions and results with team_message(to='lead'); message teammates by name.\n"
-            "- The shared task graph (task_list / task_update) holds team work; claim a task by setting it "
-            "in_progress and mark it completed when done.\n"
-            "- When your current work is done, report and end your turn. You are woken when messages or ready "
-            "tasks arrive.\n"
+            "- team_message(to='lead') reaches the lead; teammate names address their inboxes.\n"
+            "- task_list / task_update expose the shared task graph. Set status=in_progress to claim a task.\n"
+            "- After a turn ends, you wait for messages. Task ownership changes do not wake you.\n"
             + (
                 "- You start in read-only plan mode: investigate, then call submit_plan with a concrete plan and end "
                 "your turn. You can modify files only after the lead approves.\n"
@@ -197,16 +195,6 @@ class Team:
                 pending += self._drain(m)
                 if m.stop:
                     break
-                if not pending and tasks is not None and not m.awaiting_plan:
-                    t = tasks.claim_next(m.name)
-                    if t:
-                        pending = [
-                            UserMessage(
-                                f"[Task #{t.id} is now assigned to you] {t.subject}\n\n{t.description}\n\n"
-                                "When it is done, mark it completed with task_update and report to the lead.",
-                                kind="notification",
-                            )
-                        ]
                 if not pending:
                     m.state = "idle"
                     try:
@@ -327,7 +315,7 @@ def setup(api: ExtensionAPI) -> None:
             return ToolResult.error(str(e))
         return ToolResult.text(
             f"Spawned teammate {m.name} ({m.role}) in {m.cwd}. It works in the background and reports with "
-            "team messages; you will be notified. End your turn when you have nothing else to do."
+            "team messages; you will be notified."
         )
 
     def message(args: dict, ctx: ToolContext) -> ToolResult:
@@ -349,8 +337,8 @@ def setup(api: ExtensionAPI) -> None:
     api.register_tool(
         AgentTool(
             "team_spawn",
-            "Start a long-lived teammate that works in parallel on its own thread. Give it a clear role and a "
-            "complete first prompt (it cannot see this conversation). plan_first=true makes it propose a plan "
+            "Start a long-lived teammate with an independent context; include its task context in prompt. "
+            "It waits for messages after finishing a turn. plan_first=true requires a plan "
             "for your approval before changing anything; worktree=true gives it an isolated git worktree.",
             obj(
                 {
@@ -363,7 +351,6 @@ def setup(api: ExtensionAPI) -> None:
                 ["name", "role", "prompt"],
             ),
             spawn,
-            snippet="start a parallel teammate agent",
             read_only=True,
         ),
         roles=("main",),
@@ -371,10 +358,10 @@ def setup(api: ExtensionAPI) -> None:
     api.register_tool(
         AgentTool(
             "team_message",
-            "Send a message to a teammate by name, to 'lead', or to '*' (all teammates).",
+            "Send a message to a teammate by name, to 'lead', or to '*' (all teammates). "
+            "Wakes an idle recipient; reaches a working recipient at a message boundary.",
             obj({"to": s, "content": s}, ["to", "content"]),
             message,
-            snippet="message teammates or the lead",
             read_only=True,
         ),
         roles=("main", "teammate"),
@@ -385,7 +372,6 @@ def setup(api: ExtensionAPI) -> None:
             "List teammates and their state.",
             obj({}, []),
             lambda a, c: ToolResult.text(team.status()),
-            snippet="list teammates",
             read_only=True,
         ),
         roles=("main",),
@@ -396,7 +382,6 @@ def setup(api: ExtensionAPI) -> None:
             "Ask a teammate to finish its current turn and shut down (force=true aborts it).",
             obj({"name": s, "force": {"type": "boolean"}}, ["name"]),
             stop,
-            snippet="stop a teammate",
             read_only=True,
         ),
         roles=("main",),
@@ -407,7 +392,6 @@ def setup(api: ExtensionAPI) -> None:
             "Approve or reject a teammate's plan (request_id from its plan request).",
             obj({"request_id": s, "approve": {"type": "boolean"}, "feedback": s}, ["request_id", "approve"]),
             review,
-            snippet="approve or reject a teammate's plan",
             read_only=True,
         ),
         roles=("main",),
@@ -418,7 +402,6 @@ def setup(api: ExtensionAPI) -> None:
             "Submit your implementation plan to the lead for approval, then end your turn.",
             obj({"plan": s}, ["plan"]),
             submit,
-            snippet="submit a plan for the lead's approval",
             read_only=True,
         ),
         roles=("teammate",),

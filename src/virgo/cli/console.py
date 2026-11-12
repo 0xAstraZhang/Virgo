@@ -46,6 +46,7 @@ class ConsoleBroker:
         self._reading = False
         self._state_lock = threading.Lock()
         self._cancelled = False
+        self._input_timeout_cancelled = threading.Event()
         self._prompt_ready: threading.Event | None = None
         self._read_complete: threading.Event | None = None
         self._reader: threading.Thread | None = None
@@ -179,6 +180,7 @@ class ConsoleBroker:
                 ev = threading.Event()
                 self._answer = ""
                 self._cancelled = False
+                self._input_timeout_cancelled.clear()
                 self._password = password
                 self._waiting = ev
                 ready = self._prompt_ready = threading.Event()
@@ -190,8 +192,13 @@ class ConsoleBroker:
                 self.resume_reading()
                 ready.wait()
                 write(question + "\n> ")
-                if not ev.wait(timeout):
+                deadline = None if timeout is None else time.monotonic() + timeout
+                while not ev.wait(0.05):
+                    if self._input_timeout_cancelled.is_set() or deadline is None or time.monotonic() < deadline:
+                        continue
                     with self._state_lock:
+                        if self._input_timeout_cancelled.is_set():
+                            continue
                         answered = ev.is_set()  # the answer may have arrived just now
                         if not answered:
                             self._cancelled = True
@@ -214,6 +221,10 @@ class ConsoleBroker:
                     # The question borrowed a read that was serving the REPL (e.g. steering
                     # while the agent works); keep reading lines for it afterwards.
                     self.resume_reading()
+
+    def cancel_input_timeouts(self) -> None:
+        with self._state_lock:
+            self._input_timeout_cancelled.set()
 
     def ask(self, question: str, write) -> str | None:
         answer = self.read_value(question, write)
@@ -300,12 +311,16 @@ class TerminalUI(UI):
                 return value
             if value is None or not value.strip():
                 return None
+            deadline = None  # Any typed response establishes that the user is present.
             value = value.strip()
             if value in options:
                 return value
             if value.isdecimal() and 1 <= int(value) <= len(options):
                 return options[int(value) - 1]
             self.print("Choose one of the listed options.", "warn")
+
+    def cancel_input_timeouts(self) -> None:
+        self.broker.cancel_input_timeouts()
 
     def wake(self) -> None:
         self.broker.push("wake")

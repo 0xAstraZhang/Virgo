@@ -168,3 +168,34 @@ def test_print_mode_json_lines_stay_whole_across_threads(monkeypatch):
         thread.join()
     lines = "".join(out.parts).splitlines()
     assert sorted(json.loads(line)["result"] for line in lines) == ["a" * 4000, "b" * 4000]
+
+
+def test_plain_question_timeout_can_be_cancelled_without_answering(monkeypatch):
+    from virgo.cli.console import ConsoleBroker, TerminalUI
+    from virgo.harness.ui import TIMED_OUT
+
+    broker = ConsoleBroker()
+    # The terminal reader is already active; provide its eventual answer explicitly.
+    broker._reading = True
+    monkeypatch.setattr(broker, "resume_reading", lambda: None)
+    ui = TerminalUI(broker)
+    shown = threading.Event()
+    monkeypatch.setattr(ui, "write", lambda *args: shown.set())
+    results = []
+    worker = threading.Thread(target=lambda: results.append(ui.input("Where?", timeout=0.2)))
+    worker.start()
+    try:
+        assert shown.wait(3)
+        ui.cancel_input_timeouts()
+        worker.join(0.4)
+        assert worker.is_alive() and results == []
+        with broker._state_lock:
+            broker._answer = "staging"
+            broker._waiting.set()
+        worker.join(3)
+        assert not worker.is_alive() and results == ["staging"]
+        # Cancelling one form's deadline does not disable timeouts on future forms.
+        assert ui.input("Next?", timeout=0.01) is TIMED_OUT
+    finally:
+        broker.close()
+        worker.join(3)

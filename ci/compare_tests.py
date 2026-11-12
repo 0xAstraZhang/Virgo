@@ -20,6 +20,14 @@ PARAMETER_ALIASES = {
         "test_compaction_does_not_enable_native_search[virgo.ai.providers.responses]",
     "test_compaction_does_not_enable_native_search[openai-codex]":
         "test_compaction_does_not_enable_native_search[virgo.ai.providers.codex]",
+    "test_subagent_request_exposes_only_its_own_tools":
+        "test_subagent_system_prompt_lists_only_its_own_tools",
+    "test_noninteractive_sessions_report_no_answer_without_a_prompt":
+        "test_noninteractive_sessions_get_a_fallback_without_a_prompt",
+    "test_runs_woken_by_notifications_time_out_without_an_answer":
+        "test_runs_woken_by_notifications_time_out_to_the_recommendation",
+    "test_parallel_todos_have_no_size_cap_or_stop_continuation":
+        "test_todo_validation_and_stop_reminder",
 }
 
 

@@ -141,3 +141,53 @@ def test_reactive_compaction_on_overflow(make_session):
     s.prompt("second")
     assert s.main.agent.last_text == "fits now"
     assert s.main.messages[0].kind == "summary"
+
+
+def test_serialization_keeps_complete_tool_arguments_and_tail_evidence_within_budget():
+    from virgo.harness.compaction import serialize
+
+    command = "x" * 800 + " verify --output /tmp/complete-result.json"
+    output = "progress\n" * 1000 + "ERROR: missing entry\nFull output: /tmp/full-log.txt"
+    text = serialize([
+        AssistantMessage([ToolCall("check", "bash", {"command": command})]),
+        ToolResultMessage("check", "bash", [TextContent(output)], is_error=True),
+    ])
+    assert command in text and output in text
+    assert "(error)" in text and "omitted" not in text
+
+
+def test_serialization_applies_only_the_total_budget_with_explicit_omission(monkeypatch):
+    from virgo.harness import compaction
+
+    monkeypatch.setattr(compaction, "MAX_INPUT_CHARS", 6000)
+    text = compaction.serialize([
+        UserMessage("original request"),
+        AssistantMessage([ToolCall("large", "write", {"content": "x" * 20_000})]),
+        ToolResultMessage("large", "write", [TextContent("ERROR at end\nOutput: /tmp/result.txt")]),
+    ])
+    assert len(text) == 6000
+    assert "original request" in text and "middle of transcript omitted" in text
+    assert text.endswith("ERROR at end\nOutput: /tmp/result.txt")
+
+
+def test_freeform_summary_restores_and_can_be_compacted_incrementally(make_session):
+    session = make_session(
+        faux.reply("old work " * 1000),
+        faux.reply("Keep the original goal; the user corrected the target to /tmp/new. Pending: verification."),
+        persist=True, settings={"compaction": {"keepRecentTokens": 10}},
+    )
+    session.prompt("original request")
+    session.compact()
+    restored = make_session(
+        faux.reply("new progress " * 1000), faux.reply("Target /tmp/new is ready; verification still pending."),
+        session=session.store.path, settings={"compaction": {"keepRecentTokens": 10}},
+    )
+    assert "user corrected the target" in restored.main.messages[0].text()
+    restored.prompt("continue that work")
+    result = restored.compact()
+    assert result is not None and "verification still pending" in result["summary"]
+    request = calls()[-1]["messages"][0]["content"]
+    assert "<previous-summary>" in request and "user corrected the target" in request
+    assert "continue that work" in request
+    assert any("new progress" in m.text() for m in restored.main.messages)
+    assert any(m.text() == "continue that work" for m in restored.main.messages)

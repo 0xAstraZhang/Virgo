@@ -300,7 +300,6 @@ def setup(api: ExtensionAPI) -> None:
                 },
             },
             execute,
-            snippet="run a scripted multi-agent workflow (resumable)",
             read_only=True,  # each step is permission-checked
         ),
         roles=("main",),

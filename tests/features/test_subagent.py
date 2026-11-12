@@ -29,7 +29,7 @@ def test_subagent_fresh_context_and_no_recursion(make_session):
     assert s.main.agent.last_text == "main done"
 
 
-def test_subagent_system_prompt_lists_only_its_own_tools(make_session):
+def test_subagent_request_exposes_only_its_own_tools(make_session):
     # Explore uses plan permissions, where only the POSIX command tool is supported.
     seen = {}
 
@@ -43,6 +43,5 @@ def test_subagent_system_prompt_lists_only_its_own_tools(make_session):
     faux.push("test", faux.reply(tools=[("agent", {"description": "look", "prompt": "find", "type": "explore"})]))
     faux.handler("test", respond)
     session.prompt("delegate")
-    listed = seen["system"].split("<tools>\n", 1)[1].split("\n</tools>", 1)[0]
-    names = [line[2:].split(":", 1)[0] for line in listed.splitlines()]
-    assert sorted(names) == sorted(seen["tools"]) == ["bash", "glob", "grep", "read"]
+    assert "<tools>" not in seen["system"]
+    assert sorted(seen["tools"]) == ["bash", "glob", "grep", "read"]

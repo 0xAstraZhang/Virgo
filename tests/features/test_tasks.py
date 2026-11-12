@@ -26,7 +26,7 @@ def test_task_graph(project):
         st.update(a.id, "bob", status="in_progress")
     _, unblocked = st.update(a.id, "alice", status="completed")
     assert [t.id for t in unblocked] == [b.id]
-    claimed = st.claim_next("bob")
+    claimed, _ = st.update(b.id, "bob", status="in_progress")
     assert claimed.id == b.id and claimed.owner == "bob"
     assert st.release("bob")[0].status == "pending"
 

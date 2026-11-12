@@ -125,7 +125,6 @@ READ = AgentTool(
         "required": ["path"],
     },
     execute=_read,
-    snippet="read files (text or images), paging with offset/limit",
     read_only=True,
 )
 
@@ -150,15 +149,13 @@ def _write(args: dict, ctx: ToolContext) -> ToolResult:
 WRITE = AgentTool(
     name="write",
     label="Write",
-    description="Create or overwrite a file with the given content. Parent directories are created. "
-    "Prefer edit for changing part of an existing file.",
+    description="Create or overwrite a file with the given content. Parent directories are created.",
     parameters={
         "type": "object",
         "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
         "required": ["path", "content"],
     },
     execute=_write,
-    snippet="create or overwrite files",
 )
 
 # ---------------------------------------------------------------------------
@@ -311,7 +308,7 @@ EDIT = AgentTool(
     description=(
         "Replace exact text in a file. Each edit's old_text must match exactly one place in the current file "
         "(include enough context to be unique); edits must not overlap. Several edits to one file can be sent "
-        "in a single call. Read the file first."
+        "in a single call."
     ),
     parameters={
         "type": "object",
@@ -331,7 +328,6 @@ EDIT = AgentTool(
     },
     execute=_edit,
     prepare_arguments=_prepare_edit,
-    snippet="precise find-and-replace edits (old_text must be unique)",
 )
 
 # ---------------------------------------------------------------------------
@@ -402,7 +398,6 @@ GLOB = AgentTool(
         "required": ["pattern"],
     },
     execute=_glob,
-    snippet="find files by glob pattern",
     read_only=True,
 )
 
@@ -472,6 +467,5 @@ GREP = AgentTool(
         "required": ["pattern"],
     },
     execute=_grep,
-    snippet="search file contents by regex",
     read_only=True,
 )

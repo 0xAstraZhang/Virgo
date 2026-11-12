@@ -54,6 +54,7 @@ class InputRequest:
 class _Waiting:
     request: Confirmation | InputRequest
     ready: threading.Event = field(default_factory=threading.Event)
+    timeout_cancelled: threading.Event = field(default_factory=threading.Event)
     answer: str | PreferenceChoice | None = None
 
 
@@ -187,8 +188,15 @@ class FullscreenUI(UI):
                 self.resolve_input(request.id, None)
             elif deadline is not None and time.monotonic() >= deadline:
                 # Withdraws the form; an answer that won the race is kept instead.
-                timed_out = self.resolve_input(request.id, None)
+                with self._lock:
+                    if not waiting.timeout_cancelled.is_set():
+                        timed_out = self.resolve_input(request.id, None)
         return TIMED_OUT if timed_out else waiting.answer
+
+    def cancel_input_timeouts(self) -> None:
+        with self._lock:
+            for waiting in self._inputs.values():
+                waiting.timeout_cancelled.set()
 
     def is_input_pending(self, request_id: int) -> bool:
         with self._lock:

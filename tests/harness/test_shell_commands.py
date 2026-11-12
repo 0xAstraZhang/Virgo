@@ -39,8 +39,8 @@ def test_select_execute_and_model_metadata_survive_restart(make_session, project
     session = make_session()
     session.settings.save_user({"effort": "high", "search": {"timeout": 21}})
     session.prompt(f"/shell {name}")
+    assert selected(session) is not None and selected(session).kind == name, session.ui.text
     shell = selected(session)
-    assert shell.kind == name
     assert Path(shell.executable).is_absolute()
     assert shell.version
     assert not session.main.messages
@@ -178,6 +178,7 @@ def test_environment_and_project_precedence_on_restart(make_session, project, mo
     session = make_session()
     assert selected(session).kind == name
     session.prompt(f"/shell {name}")
+    assert selected(session) is not None and selected(session).kind == name, session.ui.text
     assert "precedence" in session.ui.text
     monkeypatch.delenv("VIRGO_SHELL")
     restarted = make_session()
@@ -190,6 +191,7 @@ def test_environment_and_project_precedence_on_restart(make_session, project, mo
 def test_error_timeout_and_truncation_through_agent_loop(make_session, name):
     session = make_session()
     session.prompt(f"/shell {name}")
+    assert selected(session) is not None and selected(session).kind == name, session.ui.text
     shell = selected(session)
     failed = invoke(session, "exit 7")
     assert failed.is_error and failed.details["exit_code"] == 7
@@ -206,6 +208,7 @@ def test_error_timeout_and_truncation_through_agent_loop(make_session, name):
 def test_powershell_failure_and_permission_boundaries(make_session, monkeypatch, name):
     session = make_session()
     session.prompt(f"/shell {name}")
+    assert selected(session) is not None and selected(session).kind == name, session.ui.text
     res = invoke(session, "Write-Error 'failure'; Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()
     reviews = []
@@ -231,6 +234,7 @@ def test_powershell_native_exit_and_background(make_session, name):
     exe = sys.executable.replace("'", "''")
     session = make_session()
     session.prompt(f"/shell {name}")
+    assert selected(session) is not None and selected(session).kind == name, session.ui.text
     assert invoke(session, f"& '{exe}' -c 'import sys; sys.exit(9)'").is_error
     invoke(session, "Start-Sleep -Milliseconds 100; Write-Output '后台完成'", background=True)
     job = next(iter(session.services["jobs"].jobs.values()))
@@ -260,6 +264,7 @@ def test_background_kill_stops_descendant_processes(make_session, name):
 
     session = make_session()
     session.prompt(f"/shell {name}")
+    assert selected(session) is not None and selected(session).kind == name, session.ui.text
     shell = selected(session)
     # A real child writes a delayed sentinel if killing only the interpreter leaves it behind.
     child = "import time; from pathlib import Path; time.sleep(2); Path('orphan').write_text('alive')"
@@ -296,6 +301,7 @@ def test_modern_powershell_native_failure_stops_following_write(make_session, na
     import sys
     session = make_session()
     session.prompt(f"/shell {name}")
+    assert selected(session) is not None and selected(session).kind == name, session.ui.text
     if not selected(session).native_errors:
         pytest.skip("native fail-fast requires 7.4+")
     exe = sys.executable.replace("'", "''")
@@ -310,6 +316,7 @@ def test_foreground_abort_uses_bound_shell_and_rejects_midrun_switch(make_sessio
 
     session = make_session()
     session.prompt(f"/shell {name}")
+    assert selected(session) is not None and selected(session).kind == name, session.ui.text
     shell = selected(session)
     command = ("Set-Content -LiteralPath started -Value ready; Start-Sleep -Seconds 20; Set-Content unexpected bad"
                if shell.tool_name == "powershell" else "echo ready > started; sleep 20; echo bad > unexpected")

@@ -224,6 +224,5 @@ def make_web_search(
         }, "required": ["query"]},
         execute,
         label="Web search",
-        snippet="search the web for current facts and source links",
         read_only=True,
     )

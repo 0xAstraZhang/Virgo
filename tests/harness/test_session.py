@@ -356,7 +356,8 @@ def test_system_prompt_includes_context_files(make_session, project):
     s = make_session(faux.reply("ok"))
     s.prompt("hi")
     system = calls()[0]["system"]
-    assert "Always use tabs." in system and "<tools>" in system and str(project) in system
+    assert "Always use tabs." in system and str(project) in system
+    assert "<tools>" not in system
 
 
 def test_model_errors_are_reported(make_session):

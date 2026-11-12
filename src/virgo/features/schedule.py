@@ -253,7 +253,6 @@ def setup(api: ExtensionAPI) -> None:
                 "required": ["action"],
             },
             execute,
-            snippet="schedule prompts for later or on a cron",
             read_only=True,
         ),
         roles=("main",),

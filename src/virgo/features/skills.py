@@ -61,8 +61,8 @@ def setup(api: ExtensionAPI) -> None:
             for s in skills.values()
         )
         return (
-            "<skills>\nSkills provide specialized instructions for specific tasks. When a task matches a skill's "
-            "description, read its SKILL.md with the read tool before acting. Paths mentioned inside a skill are "
+            "<skills>\nSkills provide optional specialized instructions. Read a skill's SKILL.md before using it. "
+            "Paths mentioned inside a skill are "
             "relative to the skill's directory.\n"
             f"<available_skills>\n{items}\n</available_skills>\n</skills>"
         )

@@ -245,10 +245,8 @@ class Runtime:
         if mode == "plan":
             system += (
                 "\n\n<permission_mode>\n"
-                "Plan mode is active. Investigate with read-only tools, then provide a concrete plan "
-                "for the user. Do not implement changes, modify project files, install dependencies, "
-                "or execute commands with side effects. Planning task records are allowed. "
-                "Only tools offered in this request are available.\n</permission_mode>"
+                "Plan mode is active: investigate and plan; file and system changes are not permitted. "
+                "Planning task records are allowed.\n</permission_mode>"
             )
             for tool in tools:
                 if tool.name == "bash":
