@@ -149,20 +149,28 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session',
         terminal.assert_restored()
 
 
-def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_path):
+def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_path, monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
     home = tmp_path / "pty-session-home"
     argv = [sys.executable, "-m", "virgo", "--ui", "fullscreen", "--no-extensions", "--model", "faux/demo"]
     with PtyClient(project, home, argv) as terminal:
         terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
         before_browser = len(terminal.output)
         terminal.send(b"/sessions\r")
-        terminal.wait_for(
-            lambda data: "Group: Workspace" in plain(data) and "Untitled session" in plain(data),
+        browser = terminal.wait_for(
+            lambda data: "G Ungroup" in plain(data) and "Untitled session" in plain(data),
             start=before_browser,
         )
+        text = plain(browser)
+        assert "Sessions" not in text and "Group:" not in text and "All 1" not in text
+        # The initial input submission can repaint the editor border before the modal.
+        assert "─" not in text[text.index("Session ") :]
+        assert "Esc Back" in text and "↑/↓ Select" in text and "Enter Open" in text
+        assert "N New session" in text and "Ctrl+X Move to trash" in text
+        assert b"38;2;37;99;235" in browser  # Workspace path is blue (#2563EB).
         before_group = len(terminal.output)
         terminal.send(b"g")
-        terminal.wait_for(lambda data: "Group: None" in plain(data), start=before_group)
+        terminal.wait_for(lambda data: "G Group by workspace" in plain(data), start=before_group)
 
         before_new = len(terminal.output)
         terminal.send(b"n")
@@ -182,7 +190,7 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
     with PtyClient(project, home, argv) as terminal:
         terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
         terminal.send(b"/sessions\r")
-        terminal.wait_for(lambda data: "Group: None" in plain(data))
+        terminal.wait_for(lambda data: "G Group by workspace" in plain(data))
         terminal.send(b"\x04")
         assert terminal.finish() == 0
         terminal.assert_restored()

@@ -106,20 +106,18 @@ class SessionPicker(ModalScreen[Path | str | None]):
     CSS = """
     SessionPicker { align: left top; background: $background; color: $foreground; }
     SessionPicker #session-browser { width: 100%; height: 100%; padding: 1 2; }
-    SessionPicker #session-heading { height: 1; }
-    SessionPicker #session-summary { height: 2; border-bottom: solid $foreground; }
-    SessionPicker #session-columns { height: 1; margin-top: 1; text-style: dim; }
+    SessionPicker #session-columns { height: 1; text-style: dim; }
     SessionPicker #session-list { height: 1fr; max-height: 100%; border: none; padding: 0;
         margin: 0; background: $background; scrollbar-size: 0 0; }
     SessionPicker #session-list:focus { border: none; background-tint: transparent; }
     SessionPicker #session-list > .option-list--option { padding: 0; text-style: dim; }
-    SessionPicker #session-list > .option-list--option-disabled { color: $foreground; text-style: dim; }
+    SessionPicker #session-list > .option-list--option-disabled { color: #2563EB; text-style: not dim; }
     SessionPicker #session-list > .option-list--option-highlighted,
     SessionPicker #session-list:focus > .option-list--option-highlighted {
         background: #7C3AED; color: #FFFFFF; text-style: bold not dim;
     }
     SessionPicker #session-empty { height: 1fr; padding-top: 1; text-style: dim; }
-    SessionPicker #session-footer { height: auto; max-height: 2; margin-top: 1; }
+    SessionPicker #session-footer { height: auto; margin-top: 1; }
     """
     BINDINGS = [
         Binding("escape", "cancel", show=False),
@@ -148,19 +146,10 @@ class SessionPicker(ModalScreen[Path | str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-browser"):
-            yield Static(id="session-heading")
-            yield Static(Text.assemble((f"All {len(self.sessions)}", "bold")), id="session-summary")
             yield Static(SessionRow("Session", "Status", "Updated", heading=True), id="session-columns")
             yield SessionList(id="session-list")
             yield Static("No saved sessions. Press n to start a new session.", id="session-empty", markup=False)
-            yield Static(
-                Text.assemble(
-                    ("Esc", "bold"), " back  ", ("↑/↓", "bold"), " move  ",
-                    ("Enter", "bold"), " open  ", ("g", "bold"), " group  ", ("n", "bold"), " new  ",
-                    ("Ctrl+X", "bold"), " trash",
-                ),
-                id="session-footer",
-            )
+            yield Static(id="session-footer")
 
     def on_mount(self) -> None:
         self._rebuild()
@@ -196,7 +185,7 @@ class SessionPicker(ModalScreen[Path | str | None]):
             if self.grouped:
                 if number:
                     options.append(Option(Text(""), disabled=True))
-                options.append(Option(Text(f"{workspace_name(cwd)}  {len(items)}", no_wrap=True, overflow="ellipsis"), disabled=True))
+                options.append(Option(Text(workspace_name(cwd), no_wrap=True, overflow="ellipsis"), disabled=True))
             for item in items:
                 key = str(item["path"])
                 self._rows[key] = item
@@ -205,9 +194,12 @@ class SessionPicker(ModalScreen[Path | str | None]):
         choices.display = bool(rows)
         self.query_one("#session-empty").display = not rows
         self.query_one("#session-columns").display = bool(rows)
-        self.query_one("#session-summary", Static).update(Text.assemble((f"All {len(rows)}", "bold")))
-        self.query_one("#session-heading", Static).update(
-            Text.assemble(("Sessions", "bold"), (f"    Group: {'Workspace' if self.grouped else 'None'}  ", "dim"), ("g", "bold"))
+        self.query_one("#session-footer", Static).update(
+            Text.assemble(
+                ("Esc", "bold"), " Back   ", ("↑/↓", "bold"), " Select   ", ("Enter", "bold"), " Open\n",
+                ("G", "bold"), " Ungroup   " if self.grouped else " Group by workspace   ",
+                ("N", "bold"), " New session   ", ("Ctrl+X", "bold"), " Move to trash",
+            )
         )
         if selected_path is not None and str(selected_path) in self._rows:
             choices.highlighted = choices.get_option_index(str(selected_path))

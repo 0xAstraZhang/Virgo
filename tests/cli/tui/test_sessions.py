@@ -7,7 +7,7 @@ import json
 import threading
 
 import pytest
-from textual.widgets import Input, OptionList
+from textual.widgets import Input, OptionList, Static
 
 from virgo.ai.providers import faux
 from virgo.cli.tui.app import VirgoApp
@@ -35,7 +35,26 @@ def test_browser_entry_cancel_preserves_session_and_remembers_grouping(make_sess
             await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
             assert len(app.screen.sessions) == 1
             assert app.screen.sessions[0]["path"] == original.path
-            await pilot.press("g", "escape")
+            picker = app.screen
+            assert not picker.query("#session-heading, #session-summary")
+            columns = picker.query_one("#session-columns")
+            assert columns.region.y == 1
+            choices = picker.query_one(OptionList)
+            headers = [option for option in choices.options if option.disabled]
+            assert len(headers) == 1
+            assert str(headers[0].prompt) == str(session.cwd)
+            style = choices.get_component_rich_style("option-list--option-disabled")
+            assert style.color.triplet == (37, 99, 235) and not style.dim
+            footer = picker.query_one("#session-footer", Static)
+            assert str(footer.content) == (
+                "Esc Back   ↑/↓ Select   Enter Open\n"
+                "G Ungroup   N New session   Ctrl+X Move to trash"
+            )
+            assert footer.content_region.height == 2
+            await pilot.press("g")
+            assert "G Group by workspace" in str(footer.content)
+            assert not any(option.disabled for option in choices.options)
+            await pilot.press("escape")
             assert session.store is original and not app.controller.closing
             assert app.editor.text == ("draft stays here" if entry == "ctrl+r" else "")
             await pilot.press("ctrl+r")
