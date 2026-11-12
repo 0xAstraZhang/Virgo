@@ -58,3 +58,16 @@ PowerShell 在 `auto-review` 中按独立规则处理，其余脚本交给审批
 参考：[PowerShell 启动参数](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh?view=powershell-7.5)、[错误偏好变量](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_preference_variables?view=powershell-7.5)。
 
 Windows API 参考：[启动属性与 JOB_LIST](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)、[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。
+
+### 已完成的验收（2026-11-12）
+
+执行代码提交：`932159185fe463645e6fac2658f97ae01e552ca1`。
+[三平台 GitHub Actions 运行与 JUnit 报告](https://github.com/0xAstraZhang/Virgo/actions/runs/43155347876) 全部成功：
+
+| 环境 | 端到端结果 | 范围 |
+|---|---|---|
+| Windows runner | 40 通过、2 跳过 | PowerShell 7 与 5.1；Job 原子绑定、正常退出/取消/超时/关闭/崩溃清理、句柄释放、并行隔离、输出内存上限 |
+| macOS runner | 42 通过、6 跳过 | Shell 选择、PowerShell 7 别名、前后台输出；跳过 Windows 专属验收 |
+| Linux runner | 31 通过、7 跳过 | 可用 Shell 的选择与执行、前后台输出；跳过 Windows 专属及未安装解释器场景 |
+
+本地完整回归：1166 通过、9 跳过；使用当前 worktree 的绝对 `PYTHONPATH`，确保测试启动的子进程也加载本次代码。三平台静态检查通过。32 MiB 单行输出测试验证命令结束前日志已落盘，且 Virgo 的 Python 分配峰值增量低于 8 MiB；此上限不约束被执行程序自身的内存。

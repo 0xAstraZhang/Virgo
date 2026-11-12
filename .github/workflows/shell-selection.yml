@@ -1,7 +1,7 @@
 name: Shell selection E2E
 on:
   push:
-    branches: [main, codex/shell-runtime-complete]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
