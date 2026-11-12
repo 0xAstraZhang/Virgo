@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from ..agent.types import AgentTool, Block, ToolCallEvent
 from ..tools.fs import IGNORE_DIRS, glob_match
+from ..tools.shell import SHELL_TOOLS
 from .permission_context import (
     build_review_input,
     review_context_key,
@@ -161,7 +162,7 @@ def parse_rule(rule: str) -> tuple[str, str | None]:
 
 def _subjects(ev: ToolCallEvent) -> list[str]:
     a = ev.args
-    if ev.tool_name == "bash":
+    if ev.tool_name in SHELL_TOOLS:
         return [a.get("command", "")]
     if ev.tool_name == "web_search" and isinstance(a.get("query"), str):
         return [a["query"]]
@@ -213,8 +214,10 @@ class Permissions:
         target = str((ev.cwd / os.path.expanduser(path)).resolve()) if isinstance(path, str) else None
         if ev.tool_name == "bash":
             target = command_path_targets(ev.args.get("command", ""), ev.cwd)
+        shell = getattr(ev.tool, "shell", None)
         return json.dumps(
-            [review_context_key(self.session, ev), ev.tool_name, str(ev.cwd.resolve()), ev.args, target],
+            [review_context_key(self.session, ev), ev.tool_name, str(ev.cwd.resolve()), ev.args, target,
+             shell.environment() if shell else None],
             sort_keys=True, ensure_ascii=False,
         )
 
@@ -244,6 +247,8 @@ class Permissions:
 
     def _boundary_reason(self, ev: ToolCallEvent) -> str:
         workspace = review_workspace(self.session, ev)
+        if ev.tool_name == "powershell":
+            return "PowerShell scripts require review; POSIX command boundary checks do not apply"
         if ev.tool_name == "bash":
             return command_review_reason(ev.args.get("command", ""), ev.cwd, workspace)
         if ev.tool_name in {"read", "write", "edit", "glob", "grep"}:
@@ -370,7 +375,9 @@ class Permissions:
         })
 
     def remember(self, ev: ToolCallEvent) -> str:
-        if ev.tool_name == "bash" and command_path_targets(ev.args.get("command", ""), ev.cwd) is None:
+        if ev.tool_name == "powershell" or (
+            ev.tool_name == "bash" and command_path_targets(ev.args.get("command", ""), ev.cwd) is None
+        ):
             self.session.ui.print("Allowed once; dynamic shell paths cannot be remembered for this session.", "warn")
             return ""
         self.session_approvals.add(self._approval_key(ev))
@@ -438,8 +445,8 @@ class Permissions:
 
 def describe(ev: ToolCallEvent) -> str:
     a = ev.args
-    if ev.tool_name == "bash":
-        return f"bash: {a.get('command', '')}"
+    if ev.tool_name in SHELL_TOOLS:
+        return f"{ev.tool_name}: {a.get('command', '')}"
     if "path" in a:
         return f"{ev.tool_name}: {a['path']}"
     text = json.dumps(a, ensure_ascii=False, default=str)

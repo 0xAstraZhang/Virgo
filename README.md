@@ -9,7 +9,7 @@ Virgo 是一个轻量、可扩展的 Coding Agent。
 virgo.ai                          统一流式模型、账号认证 + Anthropic / OpenAI / Google / faux 适配器
 virgo.agent                       事件驱动的工具调用循环（steer / follow-up 队列、并行工具、abort）
 virgo.harness                     会话树、system prompt、扩展总线、命令、压缩、集成运行时
-virgo.tools                       read / write / edit / bash / glob / grep / web_search
+virgo.tools                       read / write / edit / bash 或 powershell / glob / grep / web_search
 virgo.features                    内置扩展：权限、todo、子 agent、技能、记忆、任务、后台、定时、团队、MCP、workflow、goal
 virgo.cli                         全屏 TUI / plain REPL、-p 打印模式、--mode json 事件流
 ```
@@ -126,6 +126,7 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | `/login [auth\|api] [provider]` | 账号登录或配置 API；无参数进入选择器 |
 | `/logout [provider\|all]` | 选择并删除已保存的登录，或退出全部账号 |
 | `/model [p/id]` `/effort [lvl]` | 查看或切换模型、推理强度 |
+| `/shell [name\|path\|auto]` | 探测并选择命令解释器，保存用户默认值，并同步模型可见的 shell 信息 |
 | `/search [auto\|duckduckgo\|deepseek\|off]` | 选择并保存搜索后端；无参数进入选择器，支持 `ddg`、`ds` 简写 |
 | `/permissions [mode]` | 查看规则 / 切换权限模式 |
 | `/compact [focus]` | 立即压缩上下文 |
@@ -183,12 +184,15 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 
 `VIRGO_HOME` 可指定用户配置目录，`VIRGO_MODEL` 可覆盖配置中的模型，`VIRGO_SHELL` 可指定工具使用的 shell。设置 `VIRGO_DEBUG` 会显示扩展事件异常；工具启动的子进程带有 `VIRGO=1` 标记。
 
-默认 Bash 和通过 `VIRGO_SHELL` 选择的 Bash/Zsh 均启用 `errexit`、`pipefail`，前台与后台命令一致：未处理的命令或管道失败会立即停止，后续 `ls`、`head` 等不能掩盖下载失败。预期的非零退出状态需要用 `if` 等显式处理；其他自定义解释器保持原有行为。下载指引要求使用 `curl -fS`、超时限制和独立临时文件，确认传输成功并校验内容后再替换目标；已有文件不能作为本次下载成功的依据。
+使用 `/shell` 探测并选择 Bash、Zsh、sh/dash、PowerShell 7 或 Windows PowerShell 5.1；列表显示版本、路径和当前选择。也可用 `/shell pwsh`、`/shell zsh`、`/shell "C:\Program Files\PowerShell\7\pwsh.exe"` 或 `/shell auto`。选择立即生效并保存用户默认值；重启时项目、Runtime 配置及 `VIRGO_SHELL` 仍有更高优先级。Windows 自动优先 PowerShell，macOS/Linux 优先 Bash。显式配置失效时提示重新选择，不静默更换解释器。模型会收到实际 shell 类型、版本、路径和语法信息；已运行的后台任务保留启动时的 shell。
+
+Bash/Zsh 开启 `errexit` 和 `pipefail`；PowerShell 7.4+ 对 cmdlet 和原生命令启用失败即停止。Windows PowerShell 5.1 / PowerShell 7.0–7.3 仅自动传播最后一个原生命令退出码，需逐条检查 `$LASTEXITCODE`；工具描述会提醒模型。PowerShell 使用独立 `powershell(...)` 权限规则，`plan` 模式不提供该工具。完整行为、探测范围及兼容性见 [Shell 选择与执行](docs/SHELLS.md)。
 
 ```json
 {
   "model": "anthropic/claude-opus-5-5",
   "effort": "medium",
+  "shell": {"executable": "auto"},
   "permissions": {"mode": "auto-review", "allow": ["bash(uv run pytest*)", "edit(src/**)"], "deny": ["bash(git push*)"]},
   "providers": {
     "deepseek": {"api": "openai", "baseUrl": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY",
@@ -319,7 +323,7 @@ def setup(api):
 ## 设计取舍
 
 - **发送给 API 的历史只追加。** 
-  - system prompt 和工具集合在同一权限模式内保持稳定；切换到或离开 plan 时更新规划提示和可用工具；通用摘要压缩后重建基础上下文，原生压缩保持前缀配置稳定；
+  - system prompt 和工具集合在同一权限模式及 shell 选择内保持稳定；`/shell` 显式切换时更新工具与环境信息；切换到或离开 plan 时更新规划提示和可用工具；通用摘要压缩后重建基础上下文，原生压缩保持前缀配置稳定；
   - 通知、提醒、队友消息都以追加消息的形式进入；
   - 不改写、不删除旧轮次，所以**不做 micro-compaction**，也不做中段 snip；
   - 完整历史始终保存在会话文件中。

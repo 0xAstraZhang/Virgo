@@ -274,6 +274,8 @@ def build_review_input(session, ev, boundary_reason: str, limit: int = REVIEW_IN
     action = {"id": f"action:{ev.call_id}", "workspace": str(source.workspace if source else session.cwd),
               "cwd": str(ev.cwd), "agent": ev.agent, "tool": ev.tool_name,
               "arguments": copy.deepcopy(ev.args), "review_reason": boundary_reason}
+    if shell := getattr(ev.tool, "shell", None):
+        action["shell"] = {"kind": shell.kind, "executable": shell.executable, "version": shell.version}
     records = source.records() if source else []
     original_count = len(records)
     truncated: set[str] = set()

@@ -53,6 +53,7 @@ from .extensions import (
 )
 from .prompt import build_system
 from .settings import Paths, Settings
+from .shell_commands import ShellSelection
 from .store import SessionStore
 from .telemetry import record_call
 from .ui import UI
@@ -384,7 +385,10 @@ class AgentSession:
         self.small_model = self._small_model(self.model)
 
         for t in BASE_TOOLS:
-            self.register_tool(t, ROLES_ALL)
+            if t.name != "bash":
+                self.register_tool(t, ROLES_ALL)
+        self.services["shell"] = ShellSelection(self)
+        self.services["shell"].install_tools()
         register_builtins(self)
         self.store = self._open_store(session)
         self._visited_stores = [self.store]

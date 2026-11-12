@@ -17,9 +17,13 @@ MAX_TIMEOUT = 3600
 SHELL = os.environ.get("VIRGO_SHELL") or ("bash" if os.name != "nt" else None)
 
 
-def spawn(command: str, cwd: Path, stdout=subprocess.PIPE) -> subprocess.Popen:
-    env = dict(os.environ, VIRGO="1")
-    if SHELL:
+def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None) -> subprocess.Popen:
+    from .shell import shell_environment
+
+    env = shell_environment()
+    if interpreter is not None:
+        argv, shell = interpreter.argv(command), False
+    elif SHELL:
         # Do not let a later ls/head/cat hide a failed download or pipeline.
         # Only add flags for known shells; VIRGO_SHELL may be another interpreter.
         options = ["-e", "-o", "pipefail"] if Path(SHELL).name in {"bash", "zsh"} else []
@@ -36,6 +40,7 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE) -> subprocess.Popen:
         stderr=subprocess.STDOUT,
         env=env,
         start_new_session=os.name != "nt",
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 
 
@@ -51,16 +56,26 @@ def kill_tree(proc: subprocess.Popen) -> None:
                 time.sleep(0.05)
             os.killpg(proc.pid, _signal.SIGKILL)
         else:
-            proc.kill()
-    except (ProcessLookupError, PermissionError, OSError):
+            # Terminate descendants too (build tools and servers often spawn children).
+            taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+            try:
+                subprocess.run([str(taskkill), "/PID", str(proc.pid), "/T", "/F"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=5, creationflags=subprocess.CREATE_NO_WINDOW, check=False)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+    except (OSError, subprocess.TimeoutExpired):
         pass
 
 
 def run_command(
-    command: str, cwd: Path, timeout: float, signal: threading.Event
+    command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter=None
 ) -> tuple[str, int | None, str]:
     """Run to completion. Returns (output, exit_code, status) with status in ok|timeout|aborted."""
-    proc = spawn(command, cwd)
+    if signal.is_set():
+        return "", None, "aborted"
+    proc = spawn(command, cwd, interpreter=interpreter)
     chunks: list[bytes] = []
 
     def pump():
@@ -70,27 +85,28 @@ def run_command(
 
     reader = threading.Thread(target=pump, daemon=True)
     reader.start()
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     status = "ok"
     while proc.poll() is None:
         if signal.is_set():
             status = "aborted"
             kill_tree(proc)
             break
-        if time.time() > deadline:
+        if time.monotonic() > deadline:
             status = "timeout"
             kill_tree(proc)
             break
         time.sleep(0.05)
+    proc.wait(timeout=5)
     reader.join(timeout=2)
     out = b"".join(chunks).decode("utf-8", errors="replace")
     return out, proc.poll(), status
 
 
-def format_output(output: str, code: int | None, status: str, cwd: Path, timeout: float) -> ToolResult:
+def format_output(output: str, code: int | None, status: str, cwd: Path, timeout: float, *, prefix="bash") -> ToolResult:
     text, cut = truncate_tail(output)
     if cut:
-        path = save_output(output, cwd, "bash")
+        path = save_output(output, cwd, prefix)
         text = (
             f"[Output truncated: showing the last {len(text.splitlines())} of {len(output.splitlines())} lines "
             f"(limit {MAX_LINES} lines / {MAX_BYTES // 1024}KB). Full output: {path}]\n{text}"

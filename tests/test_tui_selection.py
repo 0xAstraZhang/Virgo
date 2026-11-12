@@ -48,7 +48,10 @@ def mock_mac_clipboard(monkeypatch):
         assert kwargs["stderr"] == subprocess.DEVNULL
         copied.append(kwargs["input"].decode("utf-8"))
 
-    monkeypatch.setattr(selection_module.subprocess, "run", run)
+    # Replace only the clipboard module adapter; shell discovery also uses subprocess.run.
+    monkeypatch.setattr(selection_module, "subprocess", SimpleNamespace(
+        run=run, DEVNULL=subprocess.DEVNULL, SubprocessError=subprocess.SubprocessError,
+    ))
     return copied
 
 

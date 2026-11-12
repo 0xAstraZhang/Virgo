@@ -16,6 +16,7 @@ DEFAULTS: dict[str, Any] = {
     "providers": {},
     "permissions": {"mode": "auto-review", "allow": [], "deny": [], "readOnlyCommands": []},
     "hooks": {},
+    "shell": {"executable": "auto"},
     "features": {},
     "compaction": {"enabled": True, "triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": None},
     "retry": {"maxRetries": 3, "fallbackModel": None},
