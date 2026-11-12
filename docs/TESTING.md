@@ -19,7 +19,10 @@ new/open succeeds while the old work continues.
 The PTY scenario in `test_pty.py` starts a delayed model reply, creates another
 conversation with real Ctrl+R/n keystrokes, receives its answer while the first
 still runs, checks the session list and separate JSONL histories, and verifies
-terminal restoration on exit. All providers are local faux providers.
+terminal restoration on exit. A test-only observer marks completion of the real
+asynchronous conversation switch before sending the second prompt: the old pane's
+status can repaint immediately after the picker closes, before the new pane is
+ready. All providers are local faux providers.
 
 Local macOS validation covered all 220 TUI cases: the complete run passed 219,
 with the new PTY case initially waiting for the wrong activity label; after
