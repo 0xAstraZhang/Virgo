@@ -135,7 +135,7 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | `/login [auth\|api] [provider]` | 账号登录或配置 API；无参数进入选择器 |
 | `/logout [provider\|all]` | 选择并删除已保存的登录，或退出全部账号 |
 | `/model [p/id]` `/effort [lvl]` | 查看或切换模型、推理强度 |
-| `/shell [name\|path\|auto]` | 探测并选择命令解释器，保存用户默认值，并同步模型可见的 shell 信息 |
+| `/shell [name\|path\|auto]` | 从启动缓存选择命令解释器，验证选中项并保存用户默认值，同步模型可见的 shell 信息 |
 | `/search [auto\|duckduckgo\|deepseek\|off]` | 选择并保存搜索后端；无参数进入选择器，支持 `ddg`、`ds` 简写 |
 | `/permissions [mode]` | 查看规则 / 切换权限模式 |
 | `/compact [focus]` | 立即压缩上下文 |
@@ -334,6 +334,8 @@ def setup(api):
 - **Prompt 模板**：`prompts/<name>.md` 会变成 `/name` 命令，支持 `$1`、`$@`、`${1:-默认值}`。
 - **Workflow**：`workflows/<name>.py`，导出 `META` 和 `run(ctx, args)`。可用原语有 `ctx.agent(prompt, schema=, tools=)`、`ctx.parallel`、`ctx.map`、`ctx.phase`、`ctx.log`。
 - **MCP**：`mcp.json`，格式为 `{"mcpServers": {name: {command, args, env}}}`。
+
+Workflow 名称、路径和描述在工作区的 `AgentSession` 初始化时读取一次；列表、工具执行及系统提示重建复用同一份索引和描述。新增、重命名或修改描述后需重新初始化工作区会话或重启 Virgo。执行时仍重新加载选中的脚本，最近运行记录和恢复日志实时读取。Shell 启动快照及刷新边界见 [Shell 选择与执行](docs/SHELLS.md)。会话、记忆和任务等动态数据继续实时读取。
 
 ## 功能与实现
 

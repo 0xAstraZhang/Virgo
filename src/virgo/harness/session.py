@@ -41,6 +41,7 @@ from ..ai.types import (
 from ..features.permission import normalize_permission_mode, plan_tool_allowed
 from ..features.permission_context import ReviewSource
 from ..tools import BASE_TOOLS
+from ..tools.shell import Shell
 from ..tools.truncate import MAX_BYTES, budget
 from . import compaction
 from .commands import Commands, expand_template, load_templates, register_builtins
@@ -356,6 +357,7 @@ class AgentSession:
         extensions: bool = True,
         home: str | Path | None = None,
         refresh_models: bool = True,
+        shell_catalog: tuple[Shell, ...] | None = None,
     ):
         self.session_options = {
             "model": model,
@@ -394,7 +396,8 @@ class AgentSession:
         for t in BASE_TOOLS:
             if t.name != "bash":
                 self.register_tool(t, ROLES_ALL)
-        self.services["shell"] = ShellSelection(self)
+        self.services["shell"] = ShellSelection(self, shell_catalog)
+        self.session_options["shell_catalog"] = self.services["shell"].catalog
         self.services["shell"].install_tools()
         register_builtins(self)
         self.store = self._open_store(session)

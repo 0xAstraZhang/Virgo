@@ -219,7 +219,7 @@ def run_workflow(
     api: ExtensionAPI, name: str | None, args: dict | None, resume: str | None, signal: threading.Event
 ) -> dict:
     runs = api.paths.project / "runs"
-    flows = discover(api)
+    flows = api.services["workflows"]
 
     def check(workflow) -> None:
         if workflow not in flows:
@@ -268,22 +268,23 @@ def setup(api: ExtensionAPI) -> None:
         return ToolResult.text(head + budget(text, tctx.cwd, out["run_id"]), details=out | {"result": None})
 
     flows = discover(api)
+    api.services["workflows"] = flows
+    lines = []
+    for name, path in flows.items():
+        try:
+            meta = getattr(load_module(path), "META", {})
+            description = meta.get("description", "")
+        except Exception:  # noqa: BLE001 - a broken script must not prevent startup.
+            description = ""
+        lines.append(f"- {name}: {description}")
+    summary = (
+        "<workflows>\nScripted workflows you can launch with the workflow tool:\n"
+        + "\n".join(lines)
+        + "\n</workflows>"
+    ) if flows else None
 
     def section(role: str):
-        if role != "main" or not flows:
-            return None
-        lines = []
-        for name, path in flows.items():
-            try:
-                meta = getattr(load_module(path), "META", {})
-            except Exception:  # noqa: BLE001
-                meta = {}
-            lines.append(f"- {name}: {meta.get('description', '')}")
-        return (
-            "<workflows>\nScripted workflows you can launch with the workflow tool:\n"
-            + "\n".join(lines)
-            + "\n</workflows>"
-        )
+        return summary if role == "main" else None
 
     api.add_system_section("workflows", section, order=35)
     api.register_tool(

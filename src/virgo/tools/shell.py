@@ -176,9 +176,9 @@ def discover_shells(extra: str | None = None) -> list[Shell]:
     return found
 
 
-def default_shell() -> Shell:
+def default_shell(found: list[Shell] | tuple[Shell, ...]) -> Shell:
+    """Choose from an existing catalog without probing the machine again."""
     preferred = ("pwsh", "powershell", "bash", "sh") if os.name == "nt" else ("bash", "zsh", "sh")
-    found = discover_shells()
     for name in preferred:
         if shell := next((s for s in found if s.kind == name), None):
             return shell
