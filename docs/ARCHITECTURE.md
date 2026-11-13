@@ -3,6 +3,11 @@
 ## 专题设计
 
 - [web_fetch：原生优先的网页读取](designs/web-fetch.md)：原生能力声明、统一路由与去重、工具契约、权限、回退和端到端测试。
+- [会话保存失败处理计划](designs/session-save-failure.md)：失败状态、停止调度、UI 提示和 JSONL 兼容。
+- [工具权限显式接口计划](designs/permission-policy-interface.md)：两阶段检查、钩子顺序兼容和异常拦截。
+- [Runtime 创建与会话归属计划](designs/runtime-construction.md)：目标存储、记账归属、子任务审查来源和构造期间的扩展上下文。
+
+以上三份修改计划均待实施，分别交付实现 PR。先修复保存失败；另外两项可独立准备，不把结构重构作为故障修复的前置条件。
 
 ## 分层
 
