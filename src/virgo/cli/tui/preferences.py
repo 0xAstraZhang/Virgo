@@ -153,12 +153,12 @@ class PreferencePicker(Vertical, can_focus=True):
         self.query_one("#preference-more").display = bool(
             self.request is not None and self.request.kind == "model" and not compact
         )
-        root = self.app.screen_stack[0]
+        root = self.parent.parent
         pending = root.query_one_optional("#pending")  # runs every frame while open: no full DOM walk
         pending_lines = 0
         if pending is not None and pending.display:
             pending_lines = min(3, len(str(pending.content).splitlines()))
-        header_height = sum(root.query_one(selector).region.height for selector in ("#brand", "#cwd", "#hints"))
+        header_height = 1 + sum(root.query_one(selector).region.height for selector in ("#cwd", "#hints"))
         reserved = (12 if compact else 17) + max(0, header_height - 3)
         self.query_one("#preference-models").styles.height = min(
             3 if compact else 5,

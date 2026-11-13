@@ -6,6 +6,7 @@ signals, and terminal restoration. No user Terminal window is opened or changed.
 
 from __future__ import annotations
 
+import json
 import re
 import struct
 import sys
@@ -15,6 +16,43 @@ import pytest
 from tests.support.terminal import ENTER_SCREEN, PtyClient, fcntl, plain, termios
 
 pytestmark = pytest.mark.pty
+
+
+@pytest.mark.parametrize("draft", ["", "unfinished draft "])
+def test_fullscreen_pty_history_round_trip_past_slash_command(project, tmp_path, draft):
+    home = tmp_path / "pty-history-home"
+    home.mkdir()
+    entries = ["older input", "/login", "newer input"]
+    (home / "tui-history.jsonl").write_text(
+        "".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8"
+    )
+    with PtyClient(project, home) as terminal:
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
+        if draft:
+            terminal.send(draft.encode())
+            terminal.wait_for(lambda data: draft in plain(data))
+        # Both directions must cross a slash command without its menu stealing arrows.
+        for key, expected in [
+            (b"\x1b[A", "newer input"),
+            (b"\x1b[A", "/login"),
+            (b"\x1b[A", "older input"),
+            (b"\x1b[B", "/login"),
+            (b"\x1b[B", "newer input"),
+        ]:
+            start = len(terminal.output)
+            terminal.send(key)
+            terminal.wait_for(lambda data, expected=expected: expected in plain(data), start=start)
+        terminal.send(b"\x1b[B")
+        terminal.pump(0.2)
+        # Submitting a suffix proves we restored exactly the draft (including blank).
+        start = len(terminal.output)
+        terminal.send(b"history-sentinel\r")
+        terminal.wait_for(
+            lambda data: f"(faux) You said: {draft}history-sentinel" in plain(data), start=start
+        )
+        terminal.send(b"\x04")
+        assert terminal.finish() == 0
+        terminal.assert_restored()
 
 
 def test_fullscreen_pty_paste_resize_and_clean_exit(project, tmp_path):
@@ -111,20 +149,28 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session',
         terminal.assert_restored()
 
 
-def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_path):
+def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_path, monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
     home = tmp_path / "pty-session-home"
     argv = [sys.executable, "-m", "virgo", "--ui", "fullscreen", "--no-extensions", "--model", "faux/demo"]
     with PtyClient(project, home, argv) as terminal:
         terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
         before_browser = len(terminal.output)
         terminal.send(b"/sessions\r")
-        terminal.wait_for(
-            lambda data: "Group: Workspace" in plain(data) and "Untitled session" in plain(data),
+        browser = terminal.wait_for(
+            lambda data: "G Ungroup" in plain(data) and "Untitled session" in plain(data),
             start=before_browser,
         )
+        text = plain(browser)
+        assert "Sessions" not in text and "Group:" not in text and "All 1" not in text
+        # The initial input submission can repaint the editor border before the modal.
+        assert "─" not in text[text.index("Session ") :]
+        assert "Esc Back" in text and "↑/↓ Select" in text and "Enter Open" in text
+        assert "N New session" in text and "Ctrl+X Move to trash" in text
+        assert b"38;2;37;99;235" in browser  # Workspace path is blue (#2563EB).
         before_group = len(terminal.output)
         terminal.send(b"g")
-        terminal.wait_for(lambda data: "Group: None" in plain(data), start=before_group)
+        terminal.wait_for(lambda data: "G Group by workspace" in plain(data), start=before_group)
 
         before_new = len(terminal.output)
         terminal.send(b"n")
@@ -144,7 +190,61 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
     with PtyClient(project, home, argv) as terminal:
         terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
         terminal.send(b"/sessions\r")
-        terminal.wait_for(lambda data: "Group: None" in plain(data))
+        terminal.wait_for(lambda data: "G Group by workspace" in plain(data))
         terminal.send(b"\x04")
         assert terminal.finish() == 0
         terminal.assert_restored()
+
+
+def test_fullscreen_pty_new_session_while_first_reply_is_running(project, tmp_path):
+    home = tmp_path / "pty-concurrent-home"
+    script = """
+from pathlib import Path
+from virgo.ai.providers import faux
+from virgo.cli.main import main
+from virgo.cli.tui.app import VirgoApp
+
+change_conversation = VirgoApp.change_conversation
+
+async def observe_switch(self, *args, **kwargs):
+    previous = self.session
+    await change_conversation(self, *args, **kwargs)
+    if self.session is not previous:
+        Path('conversation-ready').write_text(self.session.store.id)
+
+VirgoApp.change_conversation = observe_switch
+faux.script('concurrent', faux.reply('old-terminal-answer', delay=30), faux.reply('new-terminal-answer'))
+raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--model', 'faux/concurrent', 'old-terminal-question']))
+"""
+    with PtyClient(project, home, [sys.executable, "-c", script]) as terminal:
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and "Thinking" in plain(data))
+        before_browser = len(terminal.output)
+        terminal.send(b"\x12")
+        terminal.wait_for(lambda data: "Session" in plain(data) and "Updated" in plain(data) and "Running" in plain(data), start=before_browser)
+        before_new = len(terminal.output)
+        terminal.send(b"n")
+        # Dismissing the picker repaints the old status before asynchronous
+        # construction finishes. Observe completion without changing its timing.
+        terminal.wait_for(
+            lambda data: (project / "conversation-ready").exists() and "auto review" in plain(data),
+            start=before_new,
+        )
+        before_reply = len(terminal.output)
+        terminal.send(b"new-terminal-question\r")
+        terminal.wait_for(lambda data: "new-terminal-answer" in plain(data), start=before_reply)
+        assert "old-terminal-answer" not in plain(bytes(terminal.output))
+        before_browser = len(terminal.output)
+        terminal.send(b"\x12")
+        terminal.wait_for(
+            lambda data: "old-terminal-question" in plain(data) and "Running" in plain(data), start=before_browser,
+        )
+        terminal.send(b"\x04")
+        assert terminal.finish() == 0
+        terminal.assert_restored()
+        files = list(home.glob("sessions/**/*.jsonl"))
+        assert len(files) == 2
+        texts = [path.read_text(encoding="utf-8") for path in files]
+        old = next(text for text in texts if 'old-terminal-question' in text)
+        new = next(text for text in texts if 'new-terminal-question' in text)
+        assert 'new-terminal-answer' in new and 'old-terminal-question' not in new
+        assert 'new-terminal-question' not in old and 'new-terminal-answer' not in old

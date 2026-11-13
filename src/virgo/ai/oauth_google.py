@@ -36,6 +36,41 @@ ONBOARD_TIMEOUT = 120.0
 METADATA = {"ideType": "IDE_UNSPECIFIED", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}
 
 
+def _error_detail(body, request_options: dict) -> str:
+    """Extract public Google error fields without dumping response credentials."""
+    if not isinstance(body, dict):
+        return ""
+    error = body.get("error")
+    if isinstance(error, dict):
+        fields = [error.get("status"), error.get("message")]
+        details = error.get("details")
+        if isinstance(details, list):
+            fields.extend(item.get("reason") for item in details if isinstance(item, dict))
+    elif isinstance(error, str):
+        fields = [error, body.get("error_description")]
+    else:
+        return ""
+    message = ": ".join(dict.fromkeys(value for value in fields if isinstance(value, str) and value))
+    sensitive = {"access_token", "refresh_token", "id_token", "client_secret", "code", "code_verifier"}
+    secrets_to_hide = []
+    for container in (body, request_options.get("data"), request_options.get("json")):
+        if isinstance(container, dict):
+            secrets_to_hide.extend(
+                value
+                for key, value in container.items()
+                if key in sensitive and isinstance(value, str) and value
+            )
+    headers = request_options.get("headers") or {}
+    for key, value in headers.items():
+        if key.lower() == "authorization" and isinstance(value, str):
+            secrets_to_hide.append(value.split(" ", 1)[-1])
+    for secret in sorted(set(secrets_to_hide), key=len, reverse=True):
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+    message = " ".join("".join(char if char.isprintable() else " " for char in message).split())
+    return message[:1000] + ("…" if len(message) > 1000 else "")
+
+
 def _request(method: str, url: str, signal=None, **kwargs) -> dict:
     _check_cancelled(signal)
     try:
@@ -47,7 +82,12 @@ def _request(method: str, url: str, signal=None, **kwargs) -> dict:
         ) from None
     _check_cancelled(signal)
     if not response.is_success:
-        raise GoogleOAuthError(f"Google authentication request failed (HTTP {response.status_code})")
+        message = f"Google authentication request failed (HTTP {response.status_code})"
+        try:
+            detail = _error_detail(response.json(), kwargs)
+        except ValueError:
+            detail = ""
+        raise GoogleOAuthError(message + (f": {detail}" if detail else ""))
     try:
         data = response.json()
     except ValueError:

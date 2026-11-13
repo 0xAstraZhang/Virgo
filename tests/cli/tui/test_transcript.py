@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from rich.text import Text
 from textual.widgets import Static
 
@@ -20,7 +21,15 @@ from virgo.ai.types import (
 )
 from virgo.cli.tui.transcript import AssistantView, ToolView, Transcript
 
-from tests.support.tui import TranscriptApp
+from tests.support.tui import TranscriptApp, wait_for
+
+
+async def refresh_transcript(view, pilot):
+    """Wait for already queued refresh callbacks, then process their updates."""
+    refreshed = asyncio.Event()
+    view.call_after_refresh(refreshed.set)
+    await asyncio.wait_for(refreshed.wait(), 4)
+    await pilot.pause()
 
 
 def test_stream_and_final_share_one_card_with_folded_thinking():
@@ -194,7 +203,7 @@ def test_streaming_preserves_manual_scroll_and_jump_resumes_following():
                 for i in range(35)
             ]
             await view.load_history(entries)
-            await pilot.pause()
+            await wait_for(pilot, lambda: view.max_scroll_y > view.scrollable_content_region.height > 0)
             assert view.follow_latest
             assert view.scroll_y == view.max_scroll_y
             view.action_page_up()
@@ -213,6 +222,53 @@ def test_streaming_preserves_manual_scroll_and_jump_resumes_following():
             await pilot.resize_terminal(120, 40)
             await pilot.pause()
             assert view.follow_latest
+            assert view.scroll_y == view.max_scroll_y
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("action", ["page_up", "scroll_home"])
+def test_jump_then_manual_scroll_survives_refresh_and_new_messages(action):
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one(Transcript)
+            await view.load_history([
+                {"type": "message", "message": message_to_dict(UserMessage(f"message {i}"))}
+                for i in range(35)
+            ])
+            await refresh_transcript(view, pilot)
+            assert view.max_scroll_y > view.scrollable_content_region.height > 0
+            assert view.scroll_y == view.max_scroll_y
+
+            # No yield between these actions: user input must take precedence
+            # over any scroll-to-bottom callback left by the earlier jump.
+            view.go_latest()
+            getattr(view, f"action_{action}")()
+            manual_y = 0 if action == "scroll_home" else view.scroll_y
+            assert manual_y < view.max_scroll_y
+            assert not view.follow_latest
+            await refresh_transcript(view, pilot)
+            assert view.scroll_y == manual_y
+            assert not view.follow_latest
+
+            old_max = view.max_scroll_y
+            await view.consume(
+                AgentEvent("message_end", message=AssistantMessage([TextContent("new reply\n" * 10)]))
+            )
+            await refresh_transcript(view, pilot)
+            assert view.max_scroll_y > old_max
+            assert view.scroll_y == manual_y
+            assert not view.follow_latest
+
+            view.go_latest()
+            await refresh_transcript(view, pilot)
+            assert view.follow_latest
+            assert view.scroll_y == view.max_scroll_y
+            await pilot.resize_terminal(100, 30)
+            await refresh_transcript(view, pilot)
+            assert view.follow_latest
+            assert view.scroll_y == view.max_scroll_y
 
     asyncio.run(scenario())
 

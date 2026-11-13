@@ -345,8 +345,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self.anchor()
 
     def go_latest(self) -> None:
+        # Anchor scrolls immediately and follows subsequent layout changes.
+        # A separate deferred scroll_end would override later manual scrolling.
         self.anchor()
-        self.scroll_end(animate=False, x_axis=False)
 
     def action_page_up(self) -> None:
         self.release_anchor()

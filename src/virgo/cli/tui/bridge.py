@@ -133,6 +133,11 @@ class FullscreenUI(UI):
                 self.resolve_confirmation(request.id, None)
         return waiting.answer
 
+    @property
+    def has_pending_requests(self) -> bool:
+        with self._lock:
+            return bool(self._waiting or self._inputs)
+
     def is_confirmation_pending(self, request_id: int) -> bool:
         with self._lock:
             return request_id in self._waiting
