@@ -6,7 +6,7 @@ import re
 from dataclasses import replace
 from datetime import datetime
 
-from ..harness.ui import UI
+from ..harness.ui import UI, ScheduleChoice
 from .schedule import Cron, Schedule, Scheduler, parse_at, prepare_schedule
 
 KINDS = ["单次", "每 n 分钟", "每 n 小时", "每天", "每周", "自定义 cron"]
@@ -87,7 +87,25 @@ def _timing(ui, old: Schedule | None):
     return {"cron": _input(ui, "Cron（分 时 日 月 星期；系统本地时间）", validate=cron)}
 
 
-def _wizard(ui: UI, sched: Scheduler, old: Schedule | None = None) -> None:
+def _details(schedule: Schedule) -> str:
+    """Keep storage IDs out of the presentation while retaining full task content."""
+    number = schedule.id.removeprefix("s")
+    return schedule.details().replace(f"{schedule.id} · ", f"{number} · ", 1)
+
+
+def _choice(schedule: Schedule) -> ScheduleChoice:
+    kind, when = schedule.timing()
+    frequency = kind if schedule.interval_minutes is not None or schedule.at else f"{kind} {when}"
+    next_run = schedule.next_time()
+    try:
+        date = datetime.fromisoformat(next_run)
+        next_run = date.strftime("%m/%d %H:%M" if date.year == datetime.now().year else "%Y/%m/%d %H:%M")
+    except ValueError:
+        next_run = "未来一年无匹配时间"
+    return ScheduleChoice(schedule.id, schedule.display_title, frequency, next_run)
+
+
+def _wizard(ui: UI, sched: Scheduler, old: Schedule | None = None) -> Schedule:
     title = _input(ui, "任务标题", default=old.display_title if old else "", validate=_required)
     prompt = old.prompt if old else ""
     while True:
@@ -106,7 +124,7 @@ def _wizard(ui: UI, sched: Scheduler, old: Schedule | None = None) -> None:
             break
         except (ValueError, OverflowError, OSError) as error:
             ui.print(str(error), "error")
-    info = preview.details() + "\n\n仅在 Virgo 运行时执行。"
+    info = _details(preview)
     if timing.get("interval_minutes") and not timing.get("start_at"):
         info += "\n首次时间为预估，实际从保存时开始计时。"
     if _answer(ui.select_details("保存定时任务？", ["保存", "取消"], info)) != "保存":
@@ -117,15 +135,17 @@ def _wizard(ui: UI, sched: Scheduler, old: Schedule | None = None) -> None:
         saved = sched.edit(old.id, expected=old, title=title, prompt=prompt, **timing)
     else:
         saved = sched.add(prompt, title=title, persist=True, **timing)
-    ui.print(f"已保存 {saved.describe()}\n下次执行: {saved.next_time()} · /schedules 查看完整内容。", "ok")
+    ui.print(f"已保存 {saved.display_title}\n下次执行: {saved.next_time()}", "ok")
+    return saved
 
 
-def create_schedule(ui: UI, sched: Scheduler, args: str) -> None:
+def create_schedule(ui: UI, sched: Scheduler, args: str) -> str | None:
     if args.strip() or not ui.interactive:
         ui.command_result(USAGE)
         return
     try:
-        _wizard(ui, sched)
+        with ui.schedule_workspace():
+            return _wizard(ui, sched).id
     except _Cancelled:
         ui.print("已取消，未保存变更。", "dim")
     except (ValueError, TypeError, OverflowError, OSError) as error:
@@ -139,25 +159,30 @@ def manage_schedules(ui: UI, sched: Scheduler, args: str) -> None:
     if not ui.interactive:
         ui.command_result("ID │ 类别 │ 时间 │ 标题\n" + ("\n".join(s.describe() for s in sched.items.values()) or "暂无任务。") + "\n" + USAGE)
         return
+    with ui.schedule_workspace():
+        _manage_schedules(ui, sched)
+
+
+def _manage_schedules(ui: UI, sched: Scheduler) -> None:
+    selected = None
     while True:
         items = list(sched.items.values())
-        rows = [s.describe() for s in items]
-        choice = ui.select("定时任务 · ID │ 类别 │ 时间 │ 标题", rows + ["＋ 新建任务", "返回"])
-        if choice in (None, "返回"):
+        choice = ui.select_schedule([_choice(s) for s in items], selected=selected)
+        if choice is None:
             return
-        if choice == "＋ 新建任务":
-            create_schedule(ui, sched, "")
+        if choice == "new":
+            selected = create_schedule(ui, sched, "") or selected
             continue
-        sid = items[rows.index(choice)].id
+        sid = selected = choice
         try:
             while True:
                 current = sched.get(sid)
-                action = ui.select_details("任务详情", ["编辑", "删除", "返回列表"], current.details())
+                action = ui.select_details("任务详情", ["编辑", "删除", "返回列表"], _details(current))
                 if action in (None, "返回列表"):
                     break
                 if action == "编辑":
                     _wizard(ui, sched, current)
-                elif ui.select_details("确认删除此任务？", ["取消", "删除"], current.details()) == "删除":
+                elif ui.select_details("确认删除此任务？", ["取消", "删除"], _details(current)) == "删除":
                     ui.print("已删除。" if sched.cancel(sid) else "任务已不存在。")
                     break
         except _Cancelled:
