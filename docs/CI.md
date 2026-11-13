@@ -34,7 +34,12 @@ previous names. The Harness simplification's four renamed Todo, question and
 sub-agent cases also map to their previous names so changed expectations remain
 comparable; other renames are reported as added/removed tests.
 PR #18's unreadable-thought and inline-activity replacement cases are also mapped
-to their original names. An approved replacement can still fail as a regression;
+to their original names. PR #16's startup refresh, picker cancellation, and two
+parameterized metadata-precedence replacements are mapped likewise. Their new
+expectations reflect the feature change: refresh on restart with cached fallback,
+Esc closing only the picker, and explicit configuration overriding fetched fields.
+The comparison CLI check covers passing and failing replacements, unknown names,
+and collisions between old and new names. An approved replacement can still fail as a regression;
 an unknown rename or an alias collision still fails the comparison.
 
 A failed PR test is classified as a regression only if the baseline passed it.

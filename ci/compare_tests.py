@@ -32,6 +32,14 @@ PARAMETER_ALIASES = {
         "test_encrypted_thought_label_is_display_only_live_and_in_history",
     "test_inline_activity_is_separate_from_thought_folding_and_follows_prompt":
         "test_inline_activity_reuses_thought_header_and_keeps_prompt_before_reply",
+    "test_catalog_refreshes_on_restart_and_keeps_cache_after_failure":
+        "test_catalog_refreshes_on_each_open_and_does_not_fallback_after_failure",
+    "test_picker_escape_does_not_cancel_background_startup_refresh":
+        "test_escape_cancels_live_catalog_loading_without_opening_stale_picker",
+    "test_configured_luna_reasoning_metadata_overrides_live_defaults[None]":
+        "test_live_luna_reasoning_metadata_overrides_builtin_and_configured_defaults[None]",
+    "test_configured_luna_reasoning_metadata_overrides_live_defaults[max]":
+        "test_live_luna_reasoning_metadata_overrides_builtin_and_configured_defaults[max]",
 }
 
 

@@ -22,10 +22,17 @@ def no_real_search_key(monkeypatch):
 
 @pytest.fixture
 def search_http(monkeypatch):
-    state = {"requests": [], "status": 200}
+    state = {"requests": [], "catalog_requests": [], "status": 200}
     original = httpx.Client
 
     def handler(request):
+        # httpx is a shared module: patching the web tool's Client also catches
+        # startup catalog discovery. Keep its traffic out of search assertions.
+        if request.method == "GET" and request.url.path.endswith("/models"):
+            state["catalog_requests"].append(request)
+            return httpx.Response(200, json={"data": [
+                {"id": "deepseek-flash", "context_window": 123456},
+            ]})
         state["requests"].append(request)
         if request.url.host == "api.deepseek.com":
             return httpx.Response(state["status"], json={"results": [
