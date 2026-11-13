@@ -121,6 +121,7 @@ class AssistantMessage:
     error_kind: str | None = None  # "retryable" | "overflow" | "search_unsupported" | "fatal"
     timestamp: float = field(default_factory=time.time)
     role: Literal["assistant"] = "assistant"
+    native_started: bool = False  # any hosted web operation; old search_started remains readable
     search_started: bool = False  # server-side work may have incurred costs; do not blindly replay
 
     def text(self) -> str:
@@ -211,7 +212,9 @@ class Context:
     system: str
     messages: list
     tools: list[ToolSpec] = field(default_factory=list)
-    web_search: dict | None = None  # provider-native declaration, separate from client functions
+    web_search: dict | None = None  # legacy search declaration
+    web_tools: list[dict] = field(default_factory=list)
+    web_offers: list = field(default_factory=list)  # request-local routing metadata, not sent
 
 
 @dataclass

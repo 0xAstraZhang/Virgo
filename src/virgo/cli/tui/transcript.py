@@ -28,6 +28,7 @@ from ...ai.types import (
     block_from_dict,
     message_from_dict,
 )
+from ...ai.web import native_event
 from .folding import Foldable, FoldHeader
 
 # Saved runs replayed at a time: when a session opens, then whenever the
@@ -556,10 +557,12 @@ class Transcript(VerticalScroll, inherit_bindings=False):
     async def _native(self, agent: str, block: RawContent, row: EventView | None, index: int):
         data, kind = block.data, block.data.get("type", "")
         if kind in ("server_tool_use", "web_search_call"):
-            name, call_id = data.get("name") or "web_search", data.get("id") or f"native-{index}"
+            info = native_event(data)
+            name, call_id = info["name"], data.get("id") or f"native-{index}"
             args = data.get("input", {}) if kind == "server_tool_use" else data.get("action", {})
             if row is None:
                 row = await self._append(ToolView(agent, call_id, name, args))
+            row.tool_name = name
             row.set_text(_json(args))
             if kind == "web_search_call" and data.get("status") in ("completed", "failed", "incomplete"):
                 key = (agent, call_id)
@@ -572,7 +575,8 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         elif kind.endswith("_tool_result"):
             if row is None:
                 row = await self._append(ToolView(agent, data.get("tool_use_id", ""), kind.removesuffix("_tool_result"), result=True))
-            content = data.get("content", {})
+            info = native_event(data)
+            content = info["result"] if info else data.get("content", {})
             row.set_result(_json(content), is_error=isinstance(content, dict) and "error" in content.get("type", ""))
         elif row is None:
             row = await self._append(EventView("context", _json(data), agent=agent))

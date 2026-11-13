@@ -259,8 +259,9 @@ class Runtime:
         s = self.session
         view = s.bus.chain("context", list(messages), self)
         context = self._base_context(view)
-        if search := s.services.get("search"):
-            search.prepare(self, context, model or self.model)
+        from ..features.web import web_service
+
+        web_service(s).prepare(self, context, model or self.model)
         if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):
             context.messages = strip_thinking(view)
         return context
@@ -279,7 +280,7 @@ class Runtime:
         max_retries = int(s.settings.get("retry.maxRetries", 3))
         retries = overloaded = 0
         overflow_done = False
-        search_fallback_done = False
+        web_fallbacks = 0
         model = self.model
         while True:
             if self.restore_native_context(model) and self._compaction_due(model):
@@ -297,15 +298,15 @@ class Runtime:
             if failed is None:
                 return
             duration = time.monotonic() - self._call_started
-            search = s.services.get("search")
-            if (not search_fallback_done and not signal.is_set() and search
-                    and search.fallback(request_model, ctx, failed)):
-                search_fallback_done = True
-                record_call(self.accounting_store, request_model, failed, purpose="search-fallback",
+            web = s.services.get("web")
+            if (web_fallbacks < 2 and not signal.is_set() and web
+                    and web.fallback(request_model, ctx, failed)):
+                web_fallbacks += 1
+                record_call(self.accounting_store, request_model, failed, purpose="fetch-fallback" if failed.error_kind == "fetch_unsupported" else "search-fallback",
                             started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
                 yield StreamEvent("retry", failed)
                 continue
-            if failed.search_started:
+            if failed.search_started or failed.native_started:
                 # Hosted work may already have been billed. Preserve its evidence
                 # and let the user resume rather than silently replaying the turn.
                 yield StreamEvent("error", failed)

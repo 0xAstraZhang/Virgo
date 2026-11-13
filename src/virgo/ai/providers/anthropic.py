@@ -16,7 +16,7 @@ import re
 import threading
 from dataclasses import replace
 
-from ..search import is_search_unsupported
+from ..search import is_search_unsupported, is_web_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import (
     AssistantMessage,
@@ -33,6 +33,7 @@ from ..types import (
     UserMessage,
 )
 from ..validate import parse_tool_arguments
+from ..web import declarations
 from ._http import ProviderError, run_cancellable
 
 BETA_FALLBACK = "server-side-fallback-2026-07-01"
@@ -198,8 +199,8 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
             }
             for t in ctx.tools
         ]
-    if ctx.web_search:
-        params.setdefault("tools", []).append(copy.deepcopy(ctx.web_search))
+    for declaration in declarations(ctx):
+        params.setdefault("tools", []).append(declaration)
     betas: list[str] = list(BETA_OAUTH) if oauth else []
     if any(
         isinstance(b, RawContent) and b.api == "anthropic" and b.data.get("type") == "compaction"
@@ -229,7 +230,7 @@ def compact(
     """Summarize the submitted history into an unmodified, signed API block."""
     out = AssistantMessage(api="anthropic", provider=model.provider, model=model.id)
     try:
-        params = build_params(model, replace(ctx, web_search=None), opts)
+        params = build_params(model, replace(ctx, web_search=None, web_tools=[], web_offers=[]), opts)
         params["max_tokens"] = opts.max_tokens or min(model.max_tokens, 8000)
         betas = params.setdefault("betas", [])
         if BETA_COMPACTION not in betas:
@@ -364,10 +365,12 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                     if b.type == "server_tool_use":
                         json_bufs[ev.index] = ""
                         kind = "native_tool_start"
+                        out.native_started = True
                         if b.name == "web_search":
                             out.search_started = True
-                    elif b.type == "web_search_tool_result":
-                        out.search_started = True
+                    elif b.type in {"web_search_tool_result", "web_fetch_tool_result"}:
+                        out.native_started = True
+                        out.search_started |= b.type == "web_search_tool_result"
                         kind = "native_tool_start"
                 index_map[ev.index] = len(out.content) - 1
                 if kind:
@@ -412,7 +415,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                         # Server calls belong to the API history; never turn them into client calls.
                         blk.data["input"] = json.loads(raw)
                     yield StreamEvent("native_tool_end", out, i)
-                elif isinstance(blk, RawContent) and blk.data.get("type") == "web_search_tool_result":
+                elif isinstance(blk, RawContent) and blk.data.get("type") in {"web_search_tool_result", "web_fetch_tool_result"}:
                     yield StreamEvent("native_tool_end", out, i)
                 elif isinstance(blk, TextContent):
                     yield StreamEvent("text_end", out, i)
@@ -436,8 +439,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                         out.usage.input = ev.usage.input_tokens
             elif t == "message_stop":
                 completed = True
-        if ctx.web_search and not completed:
-            raise ProviderError("Anthropic search stream ended before message_stop.", "retryable")
+        if declarations(ctx) and not completed:
+            raise ProviderError("Anthropic web tool stream ended before message_stop.", "retryable")
         if out.stop_reason == "refusal":
             yield StreamEvent("error", out)
         else:
@@ -446,6 +449,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         kind, text = classify_error(e)
         if ctx.web_search and is_search_unsupported(e):
             kind = "search_unsupported"
+        if any(d.get("name") == "web_fetch" for d in declarations(ctx)) and is_web_unsupported(e, "fetch"):
+            kind = "fetch_unsupported"
         out.stop_reason = "error"
         out.error_kind = kind
         out.error_message = text

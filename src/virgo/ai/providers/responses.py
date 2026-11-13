@@ -27,6 +27,7 @@ from ..types import (
     UserMessage,
 )
 from ..validate import parse_tool_arguments
+from ..web import declarations
 from ._http import ProviderError, cancelled, run_cancellable
 from .openai import _client, _reasoning_effort, classify_error
 
@@ -126,8 +127,8 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
         params["instructions"] = ctx.system
     if ctx.tools:
         params["tools"] = convert_tools(ctx.tools)
-    if ctx.web_search:
-        params.setdefault("tools", []).append(copy.deepcopy(ctx.web_search))
+    for declaration in declarations(ctx):
+        params.setdefault("tools", []).append(declaration)
     if model.reasoning:
         params["include"] = ["reasoning.encrypted_content"]
         if opts.effort:
@@ -261,7 +262,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
         elif kind in ("compaction", "web_search_call"):
             block, event_kind = RawContent(model.api, copy.deepcopy(item)), None
             if kind == "web_search_call":
-                out.search_started = True
+                out.search_started = out.native_started = True
                 event_kind = "native_tool_start"
         else:
             return
@@ -320,7 +321,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             yield from start(index, event["item"])
         elif kind.startswith("response.web_search_call."):
             # A disconnect from this point must not silently repeat a potentially billed search.
-            out.search_started = True
+            out.search_started = out.native_started = True
             status = kind.removeprefix("response.web_search_call.")
             yield from start(index, {"type": "web_search_call", "id": event.get("item_id"), "status": status})
             ci = slots.get(index)

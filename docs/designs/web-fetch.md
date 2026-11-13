@@ -1,6 +1,8 @@
 # web_fetch：原生优先的网页读取方案
 
-状态：设计提案，尚未实现。核对日期：2026-11-13。
+状态：已实现，随 PR #27 提交。核对日期：2026-11-13。
+
+使用入口见 [README 网页读取](../../README.md#网页读取)，验证入口见 [测试说明](../TESTING.md#web-reading-capabilities)。本文保留能力组合、权限及回退的设计依据；HTTP 的 PDF/JavaScript 支持仍为后续范围。
 
 增加网页读取能力，让 agent 在搜索得到链接后读取网页，再基于实际读取内容回答。以能力抽象统一路由：优先使用当前连接已适配的原生能力；原生工具已覆盖读取时，不再同时提供冗余的 HTTP `web_fetch`。没有可用原生路径时才提供客户端后端。搜索与读取分别表达配置和授权，组合原生工具必须同时满足它覆盖的能力约束。
 
@@ -43,24 +45,20 @@ OpenAI 的 `open_page` / `find_in_page` 是 `web_search_call` 的 action；xAI �
 WebOffer(
     id="<adapter-specific stable id>",
     native=True,
-    execution="hosted",              # hosted | client
-    covers={"search", "fetch", "find"},
-    bundled=True,                    # 启用后这些能力不可分别关闭
-    constraints=...,
+    covers=frozenset({"search", "fetch", "find"}),
+    declaration={"type": "<wire tool type>"},  # 与 backend 二选一
+    controls={},                     # 原生参数 -> (逻辑能力, 配置项)
     evidence="actions_and_citations", # 或 document_content
 )
 
-plan = plan_web_tools(
-    offers=adapter.web_offers(connection, model),
-    requested=runtime_web_capabilities,
-    policy=web_policy,
-    unavailable=session_capability_cache,
-)
+# 将 resolver 注册到 virgo.ai.web.ADAPTERS。
+# resolver(model) 返回当前端点、协议、模型实际支持的 WebOffer 列表。
+# Runtime.request_context 调用 features.web.Web.prepare 统一规划。
 ```
 
 - `covers` 表示实际已验证的操作能力，不能根据工具名字或“支持搜索”自动补上 fetch/find。模型、协议、端点、账号或凭据影响支持范围时，由适配器据此生成 offer；未知能力按不可用处理，显式兼容配置也须匹配已有适配。
-- `native` 与 `execution` 独立：DeepSeek 原生独立 API 是 native + client，Anthropic 服务端 fetch 和支持浏览的组合工具是 native + hosted，内置 HTTP 是非 native + client。
-- `constraints` 声明 URL/域名限制、可表达的权限粒度、调用预算、内容类型等已知约束。`evidence` 描述宿主能取得正文还是只有动作与引用；它不决定是否提供重复工具。
+- `native` 与执行方式独立：DeepSeek 原生独立 API 是 native + client，Anthropic 服务端 fetch 和支持浏览的组合工具是 native + hosted，内置 HTTP 是非 native + client。
+- `declaration` 表示 hosted，`backend` 表示 client；`covers` 中的能力作为不可拆分集合处理。`controls` 声明可映射的预算参数，精确 URL 规则和钩子由统一权限逻辑过滤。`evidence` 描述宿主能取得正文还是只有动作与引用；它不决定是否提供重复工具。
 - 协议适配器负责 offer 对应的请求声明或执行器、事件归一化及错误分类。规划器只读取描述，生成声明集合、客户端工具集合与禁用原因。
 - 逻辑能力与模型工具名分开：角色的 `web_fetch` 授权映射为 fetch 能力，`web_search` 授权映射为 search 能力。组合工具需要它可执行的全部能力均获授权；不通过改名扩大子 agent 的权限。
 
@@ -117,7 +115,7 @@ Anthropic 服务端结果保留原始块供同 provider 回放，同时建立来
 
 ### 内置读取范围
 
-首版支持 HTML、纯文本、Markdown；HTML 去除脚本、样式和明显导航噪声，保留标题、段落、列表、代码和链接。正文提取选用小型维护中的解析依赖，实施时先用文档页、论文摘要页和代码页面的端到端样本验证，再确定依赖。
+首版支持 HTML、纯文本、Markdown；HTML 去除脚本、样式和明显导航噪声，保留标题、段落、列表、代码和链接。正文提取使用标准库 HTMLParser，无新增依赖；通过 HTML、中文编码、代码段、相对链接及畸形链接的工具循环验证。它是保守的文本提取器，不承诺浏览器级排版或全文识别。
 
 首版不执行 JavaScript、不读取浏览器 cookie、不处理登录网页；内置 PDF 解析留待后续。收到 PDF、图片或其他二进制时返回明确的不支持错误。Anthropic 原生 PDF 能力按其实际结果保留；DeepSeek 不额外承诺文档未说明的 PDF 支持。
 
@@ -147,9 +145,9 @@ Anthropic 服务端结果保留原始块供同 provider 回放，同时建立来
 | `providers.<名称>.nativeFetch: false` | 禁用该连接的原生读取；含读取且不可拆分的原生工具也被排除，搜索重新选择合规路径 |
 | `fetch.apiKeyEnv` | 可选的独立 DeepSeek 官方 key 环境变量；不沿用 `search.apiKeyEnv` |
 
-`timeout`、`maxBytes` 是客户端执行限制；`maxContentTokens` 仅映射给声明支持文本内容预算的适配，不能作为 PDF 硬上限。`maxUses` 由 Runtime 限制客户端本轮 fetch 次数，并传给支持该字段的原生工具；客户端失败尝试也计数，工具结果续轮与 `pause_turn` 不重置预算。对无法分别限制读取次数的组合原生工具，展示 provider 自身限制，不把事后观察计数宣称为可执行的硬上限。若用户要求严格读取预算而适配无法表达，按约束不满足重新规划。
+`timeout`、`maxBytes` 是客户端执行限制；`maxContentTokens` 仅映射给声明支持文本内容预算的适配，不能作为 PDF 硬上限。`maxUses` 由 Runtime 限制客户端本轮 fetch 次数，并传给支持该字段的原生工具；客户端失败尝试也计数，工具结果续轮与 `pause_turn` 不重置预算。对无法分别限制读取次数的组合原生工具，展示 provider 自身限制，不把事后观察计数宣称为可执行的硬上限。需要严格读取次数限制时使用 `/fetch http` 或可表达该预算的独立原生工具；组合工具不会伪称实现同样限制。
 
-新增 `/fetch [auto|http|deepseek|off]`，交互选择与持久化方式沿用 `/search`。`native` 保留为高级配置。搜索和读取开关分别表达意图：`/search off` 不等于关闭全部网络能力。不可拆分的组合工具由统一规划器处理冲突；命令状态同时显示两项的实际路径及降级原因。
+新增 `/fetch [auto|http|deepseek|off]`，交互选择与持久化方式沿用 `/search`。`native` 保留为高级配置。搜索和读取开关分别表达意图：`/search off` 不等于关闭全部网络能力。不可拆分的组合工具由统一规划器处理冲突；`/fetch` 在非交互状态中显示上次请求的两项路径及已知降级原因；配置变化在下一次请求重新计算。
 
 ### 权限
 
@@ -176,12 +174,12 @@ Anthropic 服务端结果保留原始块供同 provider 回放，同时建立来
 
 采用现有分层，在联网工具范围内引入能力描述和统一规划器；端点、凭据与协议差异封装在适配器，不散落在 search/fetch 服务和 UI 中。
 
-| 位置 | 计划变更 |
+| 位置 | 职责 |
 |---|---|
 | `tools/web_fetch.py`（新增） | 客户端工具、DeepSeek 请求、内置 HTTP 读取、正文解析与限制 |
 | `ai/web.py`（新增）及 provider 适配器 | `WebOffer`、能力/约束描述、原生声明与事件归一化；不依赖 agent/harness |
 | `features/web.py`（新增） | 统一规划 search/fetch 路径、组合能力去重、权限约束及 offer 不可用缓存 |
-| `features/fetch.py`（新增）、`features/search.py` | 注册逻辑工具与配置，交给统一规划器选择；共享官方端点和 DeepSeek 凭据解析 |
+| `features/fetch.py`、`features/search.py`、`features/web_access.py` | 注册逻辑工具与配置，交给统一规划器选择；共享权限、调用 Runtime 绑定和 DeepSeek 凭据解析 |
 | `ai/types.py` | 增加规划后的原生联网声明集合，每个 offer 只出现一次；兼容现有 `Context.web_search` 入口；增加覆盖所有服务端工具的 started 状态，旧历史 `search_started` 仍可读取 |
 | `ai/providers/*` 的已支持适配器 | 声明自身已验证的能力组合；Anthropic fetch 块、OpenAI/xAI 浏览动作等映射为统一事件，保留原始协议对象 |
 | `ai/transform.py`、来源 helper | 同 provider 原样回放；跨 provider 保留可读来源和正文，剥离不兼容内部块 |
@@ -190,13 +188,13 @@ Anthropic 服务端结果保留原始块供同 provider 回放，同时建立来
 | TUI / plain / JSON 事件层 | 区分搜索、读取和页内查找；展示 URL、backend、成功/失败、正文摘要和截断标记 |
 | README、架构与测试文档 | 使用方法、内容范围、费用来源和验证入口 |
 
-当前 `AssistantMessage.search_started`、`search_unsupported`、`add_source_links` 和 Anthropic 结果配对均带有搜索专属判断，不能只注册工具而漏掉回放、重试和 UI。跨 provider 转换也必须处理 fetch 文档引用：仅有字符/页码引用时，根据实际文档来源映射 URL，不能假设 citation 自带 URL。
+保留旧的 `AssistantMessage.search_started` 与 `search_unsupported` 兼容入口，新增 `native_started` 和 `fetch_unsupported`，统一服务端重放保护。跨 provider 转换也必须处理 fetch 文档引用：仅有字符/页码引用时，根据实际文档来源映射 URL，不能假设 citation 自带 URL。
 
 去重不变量：当选中的原生 offer 覆盖 fetch 时，请求中没有内置客户端 `web_fetch`；同一原生声明不会因同时覆盖 search 和 fetch 被重复注入。回退后的新请求可以改用客户端工具，但不会与失效的原生声明并存。无法观察到原生正文时，只保留实际动作与引用，不声称已经取得可再次读取的完整副本。
 
 ## 先行端到端测试
 
-按照项目约定，实施时先写失败测试，再写代码。首选从真实 Virgo Session/CLI 入口驱动，连接本地假 provider / 网页 HTTP 服务，验证请求、权限、模型收到的结果、持久化和最终 UI。测试服务器使用测试专用传输注入，不引入产品级“允许私网”开关。
+本次实现先编写必要的失败用例，再实现对应行为。测试从真实 Virgo Session/CLI 入口驱动，连接本地假 provider / 网页 HTTP 服务，验证请求、权限、模型收到的结果、持久化和最终 UI。测试服务器使用测试专用传输注入，不引入产品级“允许私网”开关。
 
 | 场景 | 验收结果 |
 |---|---|
@@ -220,9 +218,9 @@ Anthropic 服务端结果保留原始块供同 provider 回放，同时建立来
 
 测试只验证可观察行为，不用假模型的固定回答作为事实核验成功的唯一依据。客户端和返回文档内容的原生路径，断言实际正文与来源进入回放；不暴露正文的组合原生路径，断言原生声明、读取动作、引用及持久化正确，并断言没有冗余 HTTP 工具或请求。假服务测试验证协议集成，不宣称证明真实 provider 的读取质量。
 
-若 DNS 绑定或 HTML 解析确实需要模块测试，先在测试文件中列出该模块所有已识别的失败方式，再补测试和实现；端到端测试仍覆盖关键链路。不要为这份纯设计文档新增占位测试。
+若 DNS 绑定或 HTML 解析确实需要模块测试，先在测试文件中列出该模块所有已识别的失败方式，再补测试和实现；端到端测试仍覆盖关键链路。测试通过真实会话、SDK、假 HTTP 服务和 Textual 入口验证实现，不添加占位测试。
 
-## 交付顺序
+## 实施顺序
 
 1. 先写统一规划器的端到端用例，包括未知厂商假适配、组合能力去重、权限冲突和回退；再实现能力描述及规划器。
 2. 接入 DeepSeek、Anthropic、OpenAI/xAI 已验证能力与内置 HTTP 后端，补齐共享重放保护、引用迁移和持久化。

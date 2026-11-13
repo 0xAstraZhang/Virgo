@@ -9,7 +9,7 @@ Virgo 是一个轻量、可扩展的 Coding Agent。Harness 提供工具能力�
 virgo.ai                          统一流式模型、账号认证 + Anthropic / OpenAI / Google / faux 适配器
 virgo.agent                       事件驱动的工具调用循环（steer / follow-up 队列、并行工具、abort）
 virgo.harness                     会话树、system prompt、扩展总线、命令、压缩、集成运行时
-virgo.tools                       read / write / edit / bash 或 powershell / glob / grep / web_search
+virgo.tools                       read / write / edit / bash 或 powershell / glob / grep / web_search / web_fetch
 virgo.features                    内置扩展：权限、todo、ask_user、子 agent、技能、记忆、任务、后台、定时、团队、MCP、workflow、goal
 virgo.cli                         全屏 TUI / plain REPL、-p 打印模式、--mode json 事件流
 ```
@@ -269,6 +269,29 @@ Bash/Zsh 开启 `errexit` 和 `pipefail`；PowerShell 7.4+ 对 cmdlet 和原生�
 
 接口依据：[OpenAI web search](https://developers.openai.com/api/docs/guides/tools-web-search)、[Codex web search](https://developers.openai.com/codex/web-search)、[Anthropic web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)、[xAI web search](https://docs.x.ai/developers/tools/web-search)、[DeepSeek Search API](https://api-docs.deepseek.com/api/search/)、[DuckDuckGo HTML 搜索](https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript)。
 
+## 网页读取
+
+默认原生优先：DeepSeek 使用官方 Fetch API；Anthropic 使用服务端 web fetch；OpenAI/xAI 已支持浏览的原生搜索工具同时覆盖网页读取，不会再暴露冗余的 HTTP `web_fetch`。其他连接使用内置 HTTP。路由依据适配器声明的能力组合，不按 provider 名称在运行时特判。
+
+```text
+/fetch auto       # 原生读取优先
+/fetch http       # 固定使用内置 HTTP
+/fetch deepseek   # 固定使用 DeepSeek 官方 Fetch API
+/fetch off        # 关闭读取能力
+```
+
+选择会保存为用户默认设置。客户端 `web_fetch` 接收一个 `url`，返回来源、标题、正文、后端、取得结果的 UTC 时间和截断状态。正文预览最多 32 KiB / 2000 行；截断时完整已取得正文保存在 `.virgo/outputs/`，结果包含 `output_path`。`retrieved_at` 不保证上游缓存已刷新；不知道最终重定向地址时 `final_url` 为 `null`。
+
+内置 HTTP 支持 HTML、纯文本和 Markdown；不执行 JavaScript、不使用浏览器登录状态、不解析 PDF。它验证公网地址，将实际连接绑定到已验证 IP，保留原主机名的 TLS 验证；每次重定向复核 URL 和权限。不读取 cookie/netrc，不自动使用环境代理。默认总时限 20 秒、解压前后最多 2 MiB、最多 5 次重定向。取消会立即放弃结果，已发出的读取请求仍可能在服务端结束。
+
+配置位于 `fetch`：`mode` 为 `auto/native/builtin/off`，`backend` 为 `http/deepseek`；`timeout` 为大于 0 且不超过 60 秒的数（支持小数），`maxBytes` 上限 16 MiB，`maxUses` 默认 3、范围 1–10，`maxContentTokens` 默认 8000。调用次数由客户端或声明支持该参数的原生工具限制；无法分别限制读取次数的组合原生工具沿用 provider 的限制。`native` 无合规原生路径会明确报错。`features.fetch: false` 完全停用此功能。
+
+DeepSeek key 复用已保存的官方连接或 `DEEPSEEK_API_KEY`，可用 `fetch.apiKeyEnv` 单独指定；不会复用 `search.apiKeyEnv` 或把代理 key 发给官方接口。401/402/403/404/429、超时和空正文均不触发换后端；仅明确的原生工具能力拒绝可以回退，服务端操作开始后也不自动重放请求。
+
+搜索和读取分别授权。组合原生工具必须同时满足搜索及读取的开关、角色权限和规则：例如 `/fetch off`、固定 HTTP 或 URL 级审批会排除不可拆分的组合工具，并重新选择搜索路径。`/search off` 仍可保留独立读取。`providers.<名称>.nativeFetch: false` 禁用该连接的原生读取，也会排除包含读取的组合工具。通过 `/fetch` 查看上次请求的实际路径；切换配置后下一次请求重新计算。
+
+架构和扩展方式见 [网页能力路由](docs/designs/web-fetch.md)，离线验证入口见 [测试说明](docs/TESTING.md#web-reading-capabilities)。
+
 ## 扩展
 
 ### 运行审计与用量
@@ -330,7 +353,7 @@ def setup(api):
 
 ## 设计取舍
 
-默认主 Agent 保留 24 个工具和现有 `features.*` 开关。工具描述只通过工具定义提供，基础提示不再重复工具目录或规定统一工作流程。技能由模型按需选择、使用前读取；用户 `SYSTEM.md` / `APPEND_SYSTEM.md`、项目指令和资源目录仍保留。用户显式启用的 `/goal`、Workflow、Stop hook 和 `plan_first` 继续生效。扩展接口变更见 [扩展迁移说明](docs/EXTENSION_MIGRATION.md)。
+默认主 Agent 保留 25 个工具和现有 `features.*` 开关。工具描述只通过工具定义提供，基础提示不再重复工具目录或规定统一工作流程。技能由模型按需选择、使用前读取；用户 `SYSTEM.md` / `APPEND_SYSTEM.md`、项目指令和资源目录仍保留。用户显式启用的 `/goal`、Workflow、Stop hook 和 `plan_first` 继续生效。扩展接口变更见 [扩展迁移说明](docs/EXTENSION_MIGRATION.md)。
 
 - **发送给 API 的历史只追加。** 
   - system prompt 和工具集合在同一权限模式及 shell 选择内保持稳定；`/shell` 显式切换时更新工具与环境信息；切换到或离开 plan 时更新规划提示和可用工具；通用摘要压缩后重建基础上下文，原生压缩保持前缀配置稳定；

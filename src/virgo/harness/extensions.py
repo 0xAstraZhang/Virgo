@@ -156,6 +156,7 @@ class ExtensionAPI:
 BUILTIN_FEATURES = [
     "permission",
     "search",
+    "fetch",
     "todo",
     "ask_user",
     "subagent",

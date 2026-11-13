@@ -161,6 +161,8 @@ def _subjects(ev: ToolCallEvent) -> list[str]:
     a = ev.args
     if ev.tool_name in SHELL_TOOLS:
         return [a.get("command", "")]
+    if ev.tool_name == "web_fetch" and isinstance(a.get("url"), str):
+        return [a["url"]]
     if ev.tool_name == "web_search" and isinstance(a.get("query"), str):
         return [a["query"]]
     if isinstance(a.get("path"), str):
@@ -279,6 +281,8 @@ class Permissions:
             return ""
         if ev.tool_name.startswith("mcp__"):
             return "external service access needs review"
+        if ev.tool_name == "web_fetch":
+            return "web fetch sends URLs to external services and retrieves untrusted page content"
         if ev.tool_name == "web_search":
             return "web search sends queries to an external search service"
         if ev.tool_name in {"workflow", "memory"}:

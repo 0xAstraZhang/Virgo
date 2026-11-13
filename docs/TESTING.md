@@ -397,3 +397,31 @@ PR #13's initial comparison at `6fd1442` reported four macOS failures and one ne
 skip, all following unsuccessful PowerShell selection. Its macOS baseline passed
 the same cases. The initial report omitted the selection error, so it does not
 establish why the runner could not launch or validate PowerShell.
+
+## Web reading capabilities
+
+PR #27 adds Session-level capability routing and fetch tests. Start with:
+
+```bash
+uv run python ci/run_pytest.py -q tests/features/test_web_capabilities.py tests/features/test_fetch.py tests/features/test_fetch_http.py tests/features/test_fetch_native.py tests/cli/tui/test_fetch.py tests/cli/test_web_events.py
+```
+
+The unknown-vendor adapter cases prove that independent and combined capabilities
+use the same planner. Combined native reading removes the redundant client fetch
+tool; configuration, role scopes, URL rules and fallback cannot widen the bundle's
+authority. Existing search and provider tests remain part of the regression suite.
+
+HTTP tests drive actual sessions and a loopback server, with a test-only socket
+mapping from the validated public address. Product code has no private-network
+bypass. Tests verify Host/TLS SNI parameters, credential separation, exact URL
+rules on redirects, decompression limits, truncated gzip, cancellation while
+headers stall, output files, quotas, and content in the next model request.
+Native tests use the real Anthropic SDK with local SSE responses, including PDF,
+errors, interrupted streams, persisted history and cross-provider replay.
+Textual, plain-console and JSON event tests verify reading/find labels and sources.
+
+Tests are written before their corresponding implementation. Initial failures
+included missing capability modules, missing native-fetch started/error state,
+unbounded cancellation during HTTP headers, gzip bytes treated as page text,
+and reading actions displayed as search. No live provider credentials or billed
+API calls are needed; protocol fixtures do not establish live provider quality.

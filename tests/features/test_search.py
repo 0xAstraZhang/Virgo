@@ -196,7 +196,7 @@ def test_cache_is_invalidated_by_endpoint_model_and_credential_changes(make_sess
 
 @pytest.mark.parametrize("mode", ["auto-review", "plan"])
 def test_deny_rule_blocks_native_and_builtin_execution(make_session, monkeypatch, mode):
-    session = make_session(mode=mode, settings={"permissions": {"deny": ["web_search"]}})
+    session = make_session(mode=mode, settings={"fetch": {"mode": "off"}, "permissions": {"deny": ["web_search"]}})
     runtime = select(session)
     monkeypatch.setattr("virgo.features.permission.review_tool_call", lambda *a: pytest.fail("deny must precede review"))
     context = runtime.request_context(runtime.messages)
@@ -208,7 +208,7 @@ def test_deny_rule_blocks_native_and_builtin_execution(make_session, monkeypatch
 
 @pytest.mark.parametrize("kind", ["allow", "deny"])
 def test_scoped_rules_keep_search_local_for_exact_query_review(make_session, monkeypatch, kind):
-    session = make_session(mode="auto-review", settings={"permissions": {kind: ["web_search(*private*)"]}})
+    session = make_session(mode="auto-review", settings={"fetch": {"mode": "off"}, "permissions": {kind: ["web_search(*private*)"]}})
     runtime = select(session)
     monkeypatch.setattr("virgo.features.permission.review_tool_call", lambda *a: pytest.fail("native scope cannot satisfy query rules"))
     context = runtime.request_context(runtime.messages)
@@ -217,7 +217,7 @@ def test_scoped_rules_keep_search_local_for_exact_query_review(make_session, mon
 
 
 def test_native_permission_review_is_cached_only_for_current_request(make_session, monkeypatch):
-    session = make_session(mode="auto-review")
+    session = make_session(mode="auto-review", settings={"fetch": {"mode": "off"}})
     runtime = select(session)
     reviewed = []
 
