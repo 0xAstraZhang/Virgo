@@ -8,7 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-RUNNER = Path(__file__).with_name("compare_tests.py")
+RUNNER = Path(__file__).resolve().parents[1] / "compare_tests.py"
 
 
 def main():

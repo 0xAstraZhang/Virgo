@@ -47,9 +47,9 @@ jobs:
       - name: Record environment
         run: uv run --no-sync python -c "import platform, shutil, sys; print(sys.version); print(platform.platform()); print({s:shutil.which(s) for s in ('bash','zsh','pwsh','powershell','curl')})"
       - name: Check PowerShell startup isolation end to end
-        run: uv run --no-sync python ci/check_powershell_cache.py
+        run: uv run --no-sync python ci/checks/powershell_cache.py
       - name: Validate parallel failure diagnostics end to end
-        run: uv run --no-sync python ci/check_parallel.py
+        run: uv run --no-sync python ci/checks/parallel.py
       - name: Benchmark complete suites
         if: inputs.benchmark_suite
         run: uv run --no-sync python ci/benchmark_suite.py

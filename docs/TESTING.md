@@ -258,7 +258,7 @@ a fork's head; a manual PR input overriding event identity; missing or malformed
 event data falling back to live state; and breaking explicit/latest-PR manual
 selection or the target artifact/job outputs.
 
-`python ci/check_resolution.py` exercises the real resolver CLI in subprocesses
+`python ci/checks/resolution.py` exercises the real resolver CLI in subprocesses
 with a local `gh` executable fixture. It checks event A while the API already
 returns B, repeats A to model a rerun, checks same-repository and fork targets,
 and verifies both `target.json` and `GITHUB_OUTPUT`. No GitHub credentials or
