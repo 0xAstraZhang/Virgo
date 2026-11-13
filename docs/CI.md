@@ -187,3 +187,56 @@ For the workflow audit on 2026-11-13, the pre-change reference runs are
 [Shell workflow](https://github.com/0xAstraZhang/Virgo/actions/runs/43378917392)
 (2m46s elapsed). Those workflows ran concurrently; their elapsed times are not
 additive. The optimization PR records its actual acceptance runs and timings.
+
+## Live diagnostics and controlled parallel execution
+
+The suite runner streams each test result and complete failure traceback to the
+Actions log, tagged with its execution group. Every result artifact also contains
+`failures.md` (test name, source file/line, assertion or exception traceback),
+per-group logs/XML, merged JUnit XML, and the existing strict normalized report.
+The source line in JUnit identifies the test definition; the traceback identifies
+the precise failing expression. Locals are not dumped. Each group reports its
+slowest 30 test phases. Collection errors and abnormal exits remain blocking.
+
+`ci/parallel-files.json` explicitly lists two reviewed groups of isolated AI and
+in-process TUI modules. Each group runs serially in its own Python process with
+the existing PowerShell cache isolation. After both finish, normal pytest discovery
+runs with those files excluded: new files, shell/PTY tests and other scenarios
+therefore remain serial by default. There are no retries, new dependencies, or
+changes to test assertions. Missing allowlisted files in older PR bases are ignored;
+duplicate manifest entries are rejected. The merged report retains all test cases
+and the existing comparison still rejects ambiguous identities.
+
+Use `compare_tests.py run --execution serial` to disable parallel execution for
+investigation. Before changing the allowlist, use the manual benchmark:
+
+```bash
+gh workflow run shell-selection.yml --ref <branch> -f benchmark_suite=true
+```
+
+It runs complete serial and parallel suites on the same runner/commit, asserts
+identical individual outcomes, and uploads `benchmark-<os>` artifacts and timings.
+The normal PowerShell isolation acceptance (48 real launches) and shell scenarios
+also execute. `ci/check_parallel.py` exercises the CLI with real passing/failing
+and collection-error projects; it verifies partition completeness and actionable
+failure diagnostics before the production suite runs.
+
+### Cross-platform validation (2026-11-13)
+
+[Manual validation run](https://github.com/0xAstraZhang/Virgo/actions/runs/43390383788)
+compared both modes at commit `cb30ecd` on the same runner per platform:
+
+| Platform | Serial | Parallel | Reduction | Identical outcomes |
+| --- | ---: | ---: | ---: | --- |
+| Ubuntu | 364.08 s | 297.60 s | 18.3% | 1273 passed, 6 skipped |
+| Windows | 429.69 s | 362.88 s | 15.5% | 1252 passed, 27 skipped |
+| macOS | 451.41 s | 356.03 s | 21.1% | 1279 passed, 6 skipped |
+
+These are complete runner command wall times, not total workflow durations.
+Each pair had identical individual normalized test identities/statuses and no
+report-integrity problems. All three platforms also passed the injected-failure
+CLI acceptance and PowerShell cache isolation acceptance with 48 real launches
+per platform. This is one cloud pair per OS; runner load and timing variability
+mean the percentages are measurements, not guarantees. Two earlier local macOS
+trials reduced 155.09 s to 103.95/103.51 s, illustrating why local timings alone
+were insufficient to estimate hosted-runner gains.
