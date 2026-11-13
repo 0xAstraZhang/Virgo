@@ -4,6 +4,70 @@ The suite exercises real tool execution, local HTTP servers, session flows and
 Textual/PTY interactions without live model credentials. See the development
 section in [README](../README.md) for commands and the test layout.
 
+## Transcript scroll ordering (Issue #24)
+
+`Transcript.go_latest()` uses Textual's anchor to scroll immediately and follow
+later layout changes. Do not add an unconditional deferred `scroll_end()` after
+it: that callback can run after page-up, restore the bottom position and silently
+resume following. Manual scrolling must take precedence over an earlier jump.
+
+`test_jump_then_manual_scroll_survives_refresh_and_new_messages` exercises the
+real Textual event loop with page-up and scroll-home. It first confirms overflow,
+then jumps and scrolls manually without yielding, and waits for a refresh callback
+barrier before checking the position and follow state. It also checks new messages,
+an explicit jump back to the bottom, and resizing. The page-up case failed before
+the fix with `scroll_y == 46` instead of `22`. Keep this ordering deterministic;
+fixed sleeps and retries can hide the race. A single `pilot.pause()` or a current
+bottom position does not prove that previously queued refresh callbacks have run.
+
+## Concurrent fullscreen conversations
+
+`test_sessions.py` drives the assembled Textual app through Ctrl+R → n and
+`/new` while a model run, command, helper, queued command, approval or input is
+pending. It verifies independent replies and persisted histories, switching back
+to the same runtime, background queue completion, draft/form restoration,
+cross-workspace loading, invalid-history recovery, isolated approval IDs and
+interrupts, and shutdown of all live conversations. The new-session regression
+failed on the original implementation before the fix. Existing browser test
+identities remain comparable; their former blocking expectations now assert that
+new/open succeeds while the old work continues.
+
+The PTY scenario in `test_pty.py` starts a delayed model reply, creates another
+conversation with real Ctrl+R/n keystrokes, receives its answer while the first
+still runs, checks the session list and separate JSONL histories, and verifies
+terminal restoration on exit. A test-only observer marks completion of the real
+asynchronous conversation switch before sending the second prompt: the old pane's
+status can repaint immediately after the picker closes, before the new pane is
+ready. All providers are local faux providers.
+
+Local macOS validation covered all 220 TUI cases: the complete run passed 219,
+with the new PTY case initially waiting for the wrong activity label; after
+correcting that expectation to `Thinking`, all five PTY cases passed against
+the worktree source. The session scenarios passed all 42 cases, CLI entry
+points passed all 40, and Ruff plus `git diff --check` passed. Subprocess checks
+use an absolute worktree `PYTHONPATH` so changing the child working directory
+does not fall back to another installed checkout. A further end-to-end check
+verifies that creating a conversation during a run preserves `--no-session`
+and writes no session JSONL files.
+
+### PR #22 review regressions
+
+The Textual scenarios cover selecting both live `--no-session` conversations,
+returning to an approval or interrupting only the original task, restoring drafts
+and transcripts, changing grouping, and avoiding both JSONL writes and Trash
+operations for memory-only rows. The schedule scenarios open another conversation
+while approval is pending and tick both real schedulers at the same due time:
+`at` and `cron` must each produce exactly one notification, including a repeated
+tick. All four cases failed before the correction (missing rows or two deliveries).
+
+A real-session/tool scenario additionally covers persisted additions from both
+sessions, shared listing and cancellation, ID uniqueness, preservation of all
+persisted entries on disk, isolation of transient tasks and other workspaces,
+owner shutdown/transfer, `/new` without reloading, and reopening after all members
+close. It failed before shared workspace coordination was added. These tests use
+local faux providers and explicit future ticks, without waiting for wall-clock
+schedule deadlines or invoking external model services.
+
 ## Answer whitespace regression (PR #14)
 
 Answer selection must preserve whitespace-only text blocks: they can separate

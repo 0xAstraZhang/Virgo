@@ -546,19 +546,19 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             app.update_status()
             metrics = app.query_one("#metrics", Static)
             status = app.query_one("#status", Static)
-            assert str(metrics.content).startswith("↑0 ↓0 cache 0.0%  ~")
+            assert str(metrics.content).startswith("↑0 ↓0 cache 0.0%  0.0%/")
             assert session.context_tokens() > 0
-            assert "~0.0%/" not in str(metrics.content)
+            assert "~" not in str(metrics.content)
             session.store.append("custom", kind="model_call", data={
                 "purpose": "permission", "usage": {"input": 12, "output": 3, "cache_read": 45, "cache_write": 3},
             })
             app.update_status()
-            assert str(metrics.content).startswith("↑60 ↓3 cache 75.0%  ~")
+            assert str(metrics.content).startswith("↑60 ↓3 cache 75.0%  0.0%/")
             session.store.append("custom", kind="model_call", data={
                 "purpose": "agent", "usage": {"input": 40, "output": 7},
             })
             app.update_status()
-            assert str(metrics.content).startswith("↑100 ↓10 cache 45.0%  ~")
+            assert str(metrics.content).startswith("↑100 ↓10 cache 45.0%  0.0%/")
             assert metrics.styles.text_align == "right"
             assert metrics.render_line(0).text.endswith(str(metrics.content))
             assert metrics.render_line(0).text.startswith(" ")
@@ -694,5 +694,32 @@ def test_transcript_has_no_scrollbar_gutter_but_still_scrolls(make_session):
             await pilot.pause()
             assert transcript.scrollbar_size_vertical == 0
             assert transcript.scrollable_content_region.width == transcript.content_region.width
+
+    asyncio.run(scenario())
+
+
+def test_context_usage_stays_zero_until_submit_and_resets_on_new(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("done"), ui=ui)
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            metrics = app.query_one("#metrics", Static)
+            assert "  0.0%/" in str(metrics.content)
+            app.editor.load_text("unsent draft")
+            await pilot.pause()
+            assert "  0.0%/" in str(metrics.content)
+            assert not faux.CALLS["test"]
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: has_reply(app, "done") and not app.controller.busy)
+            app.update_status()
+            assert "  ~" in str(metrics.content)
+            assert session.main.messages
+            app.editor.load_text("/new")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: not session.main.messages and not app.controller.busy)
+            app.update_status()
+            assert "  0.0%/" in str(metrics.content)
 
     asyncio.run(scenario())
