@@ -58,7 +58,7 @@ def test_search_status_is_read_only_in_headless_mode(make_session):
 ])
 def test_explicit_selection_persists_and_keeps_model(make_session, monkeypatch, argument, mode, backend):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "search-test-secret")
-    session = make_session()
+    session = make_session(refresh_models=False)
     session.settings.save_user({"effort": "high", "search": {"timeout": 21}})
     original_model = session.model
     session.prompt(f"/search {argument}")

@@ -174,6 +174,6 @@ def test_client_execution_uses_the_selected_offer_not_adapter_order(make_session
         web.WebOffer("z-fetch", frozenset({"fetch"}), backend="deepseek"),
         web.WebOffer("a-fetch", frozenset({"fetch"}), backend="http"),
     ]])
-    result, _ = fetch(make_session(), monkeypatch)
+    result, _ = fetch(make_session(refresh_models=False), monkeypatch)
     assert json.loads(result.text())["backend"] == "http"
     assert http["requests"][0].method == "GET"
