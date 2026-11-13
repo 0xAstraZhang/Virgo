@@ -44,6 +44,7 @@ class ExampleFold(Foldable):
 class FoldingApp(SelectionCopyMixin, App):
     def __init__(self, *, nested: bool = False) -> None:
         super().__init__()
+        self.CLICK_CHAIN_TIME_THRESHOLD = 10
         self.fold = ExampleFold(nested=nested, id="outer")
         self.copied: list[str] = []
 
@@ -55,7 +56,7 @@ class FoldingApp(SelectionCopyMixin, App):
 
 
 @pytest.mark.parametrize("target", ["header", "body", "padding"])
-def test_single_click_anywhere_toggles_only_once(target):
+def test_only_header_click_toggles_immediately(target):
     async def scenario():
         app = FoldingApp()
         async with app.run_test(size=(80, 24)) as pilot:
@@ -64,11 +65,14 @@ def test_single_click_anywhere_toggles_only_once(target):
                 await pilot.click(fold, offset=(0, fold.size.height - 1))
             else:
                 await pilot.click(getattr(fold, target), offset=(3, 0))
-            await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
+            await pilot.pause(0.05)
+            if target != "header":
+                assert fold.expanded and fold.toggles == 0
+                return
             assert not fold.expanded and not fold.body.display
             assert fold.toggles == 1
             await pilot.click(fold.header, offset=(3, 0))
-            await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
+            await pilot.pause(0.05)
             assert fold.expanded and fold.body.display
             assert fold.toggles == 2
 
@@ -80,8 +84,8 @@ def test_nested_block_mouse_and_keyboard_do_not_toggle_parent():
         app = FoldingApp(nested=True)
         async with app.run_test(size=(80, 24)) as pilot:
             outer, inner = app.fold, app.fold.inner
-            await pilot.click(inner.body, offset=(3, 0))
-            await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
+            await pilot.click(inner.header, offset=(3, 0))
+            await pilot.pause(0.05)
             assert not inner.expanded and inner.toggles == 1
             assert outer.expanded and outer.toggles == 0
             inner.header.focus()
@@ -101,7 +105,7 @@ def test_multiclick_selects_and_copies_without_folding(gesture):
         async with app.run_test(size=(80, 24)) as pilot:
             inner = app.fold.inner
             await getattr(pilot, gesture)(inner.body, offset=(3, 0))
-            await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
+            await pilot.pause(0.05)
             assert app.copied
             assert "Selectable body words" in app.copied[-1]
             assert inner.expanded and inner.toggles == 0
@@ -141,7 +145,7 @@ def test_real_drag_click_copies_selection_without_folding():
             send(MouseMove, 15)
             await pilot.pause()
             send(MouseUp, 15)
-            await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
+            await pilot.pause(0.05)
             assert app.copied and "Selectable" in app.copied[-1]
             assert fold.expanded and fold.toggles == 0
 

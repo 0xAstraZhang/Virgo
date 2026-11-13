@@ -489,7 +489,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 else None
             )
             self.activity.tick()
-            self.transcript.show_activity(self.activity.content if self.activity.display else None)
+            self.transcript.show_activity(
+                self.activity.content if self.activity.display else None, waiting=self.activity.waiting
+            )
             # Not query(...): its truthiness matches every widget in the conversation,
             # which made this 30 fps poll cost grow with the transcript length.
             if self._pane.query_one_optional(Transcript) is None:

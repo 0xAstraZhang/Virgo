@@ -1,4 +1,4 @@
-"""Run feedback rendered by the current assistant message's fold header."""
+"""Shared animation clock and run summary; event rows own their active lifetimes."""
 
 from __future__ import annotations
 
