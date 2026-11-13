@@ -10,14 +10,28 @@ USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)
 
 
 class ShellSelection:
-    def __init__(self, session):
+    def __init__(self, session, catalog: tuple[Shell, ...] | None = None):
         self.session = session
+        # Share only the startup snapshot; each session owns its selection and additions.
+        self.catalog = tuple(discover_shells()) if catalog is None else catalog
+        self.available = list(self.catalog)
         self.current: Shell | None = None
         choice = os.environ.get("VIRGO_SHELL") or session.settings.get("shell.executable", "auto")
         try:
-            self.current = default_shell() if choice == "auto" else probe_shell(choice)
+            self.current = default_shell(self.available) if choice == "auto" else probe_shell(choice)
+            if choice == "auto" and catalog is not None:
+                self.current = probe_shell(self.current.executable)
+            self.remember(self.current)
         except (ValueError, TypeError) as error:
+            self.current = None
             session.ui.print(f"Shell unavailable: {error}. Use /shell to select an installed interpreter.", "warn")
+
+    def remember(self, shell: Shell) -> None:
+        for index, item in enumerate(self.available):
+            if item.executable == shell.executable:
+                self.available[index] = shell
+                return
+        self.available.append(shell)
 
     def install_tools(self) -> None:
         s = self.session
@@ -36,6 +50,7 @@ class ShellSelection:
             # Save first so a settings-write failure leaves the live binding and prompt intact.
             s.settings.save_user({"shell": {"executable": "auto" if automatic else shell.executable}})
             self.current = shell
+            self.remember(shell)
             self.install_tools()
             s.main.tools = s.tools_for("main")
             s.main.agent.cfg.tools = s.main.tools
@@ -60,7 +75,7 @@ def configure_shell(session, args: str) -> None:
         automatic = choice == "auto"
         if not choice:
             current = service.current
-            options = discover_shells(current.executable if current else None)
+            options = list(service.available)
             # Keep the selected interpreter first so Enter preserves it.
             options.sort(key=lambda shell: shell != current)
             labels = [("✓ " if shell == current else "") + shell.label for shell in options]
@@ -69,7 +84,7 @@ def configure_shell(session, args: str) -> None:
                 session.ui.print("Available shells:\n" + "\n".join(labels) + "\n" + USAGE)
                 return
             if not options:
-                session.ui.print("No supported shell is available. Install PowerShell 7 or Bash, then retry /shell.", "error")
+                session.ui.print("No supported shell is available. Install PowerShell 7 or Bash, then restart Virgo or use /shell <path>.", "error")
                 return
             label = session.ui.select("Command shell — choose an interpreter (saved as user default)", labels)
             if label is None:
@@ -79,7 +94,7 @@ def configure_shell(session, args: str) -> None:
             # It may have disappeared while the picker was open.
             shell = probe_shell(shell.executable)
         else:
-            shell = default_shell() if automatic else probe_shell(choice)
+            shell = probe_shell(default_shell(service.available).executable) if automatic else probe_shell(choice)
         service.select(shell, automatic=automatic)
     except (ValueError, OSError) as error:
         session.ui.print(f"Shell selection failed: {error}\n{USAGE}", "error")
