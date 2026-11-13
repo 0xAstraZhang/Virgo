@@ -27,11 +27,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import re
 import subprocess
 import sys
-import traceback
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -40,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..agent.types import AgentTool, Block, Continue, ToolResult
 from ..ai.types import TextContent
+from ..diagnostics import capture_error, emergency_write, safe_text
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -55,10 +54,12 @@ class Handled:
 
 
 class EventBus:
-    def __init__(self, on_error: Callable[[str], None] | None = None):
+    def __init__(self, on_error: Callable[[str], None] | None = None, *,
+                 on_diagnostic: Callable[[dict, tuple], None] | None = None):
         self._handlers: dict[str, list] = defaultdict(list)
         self._seq = 0
         self.on_error = on_error or (lambda msg: print(msg, file=sys.stderr))
+        self.on_diagnostic = on_diagnostic
 
     def on(self, event: str, fn: Callable, priority: int = 0) -> Callable[[], None]:
         self._seq += 1
@@ -89,9 +90,19 @@ class EventBus:
         try:
             return fn(*args)
         except Exception as e:  # noqa: BLE001 - one broken extension must not break the session
-            self.on_error(f"[extension error in {event} handler {getattr(fn, '__qualname__', fn)}] {e}")
-            if "VIRGO_DEBUG" in os.environ:
-                traceback.print_exc()
+            handler = getattr(fn, "__qualname__", type(fn).__qualname__)
+            details = capture_error(e, phase="extension.handler", code="EXTENSION_HANDLER_FAILED",
+                                    context={"event": event, "handler": handler})
+            try:
+                if self.on_diagnostic is not None:
+                    # The harness uses the original dispatch arguments to bind
+                    # the error to its runtime, including a background child.
+                    self.on_diagnostic(details, args)
+                else:
+                    self.on_error(f"[extension error in {event} handler {handler}] {details['message']}")
+                    emergency_write(details)
+            except Exception as reporting_error:  # a broken reporter must not interrupt later handlers
+                emergency_write(details, reporting_error)
             return None
 
     def emit(self, event: str, *args) -> list:
@@ -219,7 +230,8 @@ def _load_file(session: AgentSession, path: Path) -> None:
         if hasattr(mod, "setup"):
             mod.setup(ExtensionAPI(session, path.stem))
     except Exception as e:  # noqa: BLE001
-        session.ui.print(f"[extension {path} failed to load: {e}]", "error")
+        session.report_error(e, phase="extension.load", code="EXTENSION_LOAD_FAILED",
+                             context={"extension": str(path)})
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +248,25 @@ def _matches(matcher: str | None, name: str) -> bool:
         return matcher == name
 
 
-def _run_hook(hook: dict, payload: dict, cwd: Path) -> tuple[int, str, str]:
+def _run_hook(hook: dict, payload: dict, cwd: Path, *, on_error=None, hook_index: int = 1) -> tuple[int, str, str]:
+    context = {
+        "event": payload.get("hook_event_name"), "hook_index": hook_index, "cwd": str(cwd),
+        **{key: payload[key] for key in ("session_id", "agent", "tool_name", "tool_call_id") if key in payload},
+    }
+
+    def report(error, *, code, **metadata):
+        details = capture_error(error, phase="extension.command_hook", code=code,
+                                context={**context, **metadata}, secrets=(hook.get("command", ""),))
+        try:
+            if on_error is not None:
+                on_error(details)
+            else:
+                emergency_write(details)
+        except Exception as reporting_error:
+            emergency_write(details, reporting_error)
+
     try:
+        timeout = float(hook.get("timeout", 60))
         p = subprocess.run(
             hook["command"],
             shell=True,
@@ -245,11 +274,22 @@ def _run_hook(hook: dict, payload: dict, cwd: Path) -> tuple[int, str, str]:
             input=json.dumps(payload),
             capture_output=True,
             text=True,
-            timeout=float(hook.get("timeout", 60)),
+            timeout=timeout,
         )
+        if p.returncode not in (0, 2):
+            report(f"Command hook exited with status {p.returncode}.", code="HOOK_EXIT_FAILED",
+                   exit_code=p.returncode, stderr=safe_text(p.stderr.strip())[:2000])
         return p.returncode, p.stdout.strip(), p.stderr.strip()
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        # TimeoutExpired.__str__ embeds the shell command. Preserve its stack,
+        # but never copy a command (which can include credentials) into a log.
+        failure = TimeoutError(f"Command hook timed out after {timeout:g} seconds.")
+        failure.__traceback__ = error.__traceback__
+        report(failure, code="HOOK_TIMEOUT", timeout_seconds=timeout)
         return 1, "", "hook timed out"
+    except Exception as error:
+        report(error, code="HOOK_EXECUTION_FAILED")
+        return 1, "", safe_text(str(error))
 
 
 def _with_feedback(res: ToolResult, note: str) -> ToolResult:
@@ -267,46 +307,59 @@ def install_command_hooks(session: AgentSession) -> None:
     hooks: dict = session.settings.get("hooks", {}) or {}
     cwd = session.cwd
 
-    def base(event: str) -> dict:
-        return {"hook_event_name": event, "cwd": str(cwd), "session_id": session.store.id}
+    def base(event: str, store=None) -> dict:
+        return {"hook_event_name": event, "cwd": str(cwd), "session_id": (store or session.store).id}
 
-    for hook in hooks.get("PreToolUse", []):
+    def run(hook, payload, index, *, store=None):
+        return _run_hook(hook, payload, cwd, hook_index=index,
+                         on_error=lambda details: session.report_error(details, phase="extension.command_hook",
+                                                                        store=store))
 
-        def pre(ev, _s, hook=hook):
+    def source(ev):
+        return ev.review_source.root if ev.review_source is not None else session.store
+
+    for index, hook in enumerate(hooks.get("PreToolUse", []), 1):
+
+        def pre(ev, _s, hook=hook, index=index):
             if not _matches(hook.get("matcher"), ev.tool_name):
                 return None
-            code, out, err = _run_hook(
+            store = source(ev)
+            code, out, err = run(
                 hook,
-                {**base("PreToolUse"), "tool_name": ev.tool_name, "tool_input": ev.args, "agent": ev.agent},
-                cwd,
+                {**base("PreToolUse", store), "tool_name": ev.tool_name, "tool_call_id": ev.call_id,
+                 "tool_input": ev.args, "agent": ev.agent},
+                index, store=store,
             )
-            return Block(err or out or f"Blocked by hook: {hook['command']}") if code == 2 else None
+            return Block(err or out or f"Blocked by PreToolUse hook #{index}.") if code == 2 else None
 
         session.bus.on("tool_call", pre, priority=50)
 
-    for hook in hooks.get("PostToolUse", []):
+    for index, hook in enumerate(hooks.get("PostToolUse", []), 1):
 
-        def post(res: ToolResult, ev, _s, hook=hook):
+        def post(res: ToolResult, ev, _s, hook=hook, index=index):
             if not _matches(hook.get("matcher"), ev.tool_name):
                 return None
+            store = source(ev)
             payload = {
-                **base("PostToolUse"),
+                **base("PostToolUse", store),
                 "tool_name": ev.tool_name,
+                "tool_call_id": ev.call_id,
+                "agent": ev.agent,
                 "tool_input": ev.args,
                 "tool_response": res.as_text(),
                 "is_error": res.is_error,
             }
-            code, out, err = _run_hook(hook, payload, cwd)
+            code, out, err = run(hook, payload, index, store=store)
             if code == 2 and (err or out):
                 return _with_feedback(res, f"[hook feedback] {err or out}")
             return None
 
         session.bus.on("tool_result", post)
 
-    for hook in hooks.get("UserPromptSubmit", []):
+    for index, hook in enumerate(hooks.get("UserPromptSubmit", []), 1):
 
-        def submit(text: str, _s, hook=hook):
-            code, out, err = _run_hook(hook, {**base("UserPromptSubmit"), "prompt": text}, cwd)
+        def submit(text: str, _s, hook=hook, index=index):
+            code, out, err = run(hook, {**base("UserPromptSubmit"), "prompt": text}, index)
             if code == 2:
                 return Handled(f"Prompt blocked by hook: {err or out}")
             if code == 0 and out:
@@ -315,12 +368,13 @@ def install_command_hooks(session: AgentSession) -> None:
 
         session.bus.on("input", submit)
 
-    for hook in hooks.get("Stop", []):
+    for index, hook in enumerate(hooks.get("Stop", []), 1):
 
-        def stop(rt, hook=hook):
+        def stop(rt, hook=hook, index=index):
             if rt.role != "main":
                 return None
-            code, out, err = _run_hook(hook, {**base("Stop"), "last_message": rt.agent.last_text}, cwd)
+            code, out, err = run(hook, {**base("Stop", rt.accounting_store), "last_message": rt.agent.last_text},
+                                 index, store=rt.accounting_store)
             return Continue(err or out) if code == 2 and (err or out) else None
 
         session.bus.on("agent_stop", stop, priority=20)

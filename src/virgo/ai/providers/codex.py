@@ -9,6 +9,7 @@ from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import AssistantMessage, Context, Model, RawContent, StreamOptions
 from . import responses
+from ._errors import attach_error
 from ._http import ProviderError, cancelled, classify_error, json_events
 from .openai import _reasoning_effort
 
@@ -90,6 +91,7 @@ def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | Non
         kind, message = classify_error(error, model.options.get("apiKey", ""))
         out.stop_reason = "aborted" if kind == "aborted" or cancelled(opts.signal) else "error"
         out.error_kind, out.error_message = kind, message
+        attach_error(out, error, model, phase="provider.compact", token=model.options.get("apiKey", ""))
     return out
 
 
@@ -121,7 +123,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             web_search=bool(ctx.web_search) and params is None,
         ):
             if out.error_message:
-                out.error_message = out.error_message.replace(token, "[redacted]")
+                attach_error(out, None, model, token=token)
             if event.type in ("done", "error"):
                 events.close()
             yield event
@@ -134,6 +136,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         out.stop_reason = "aborted" if kind == "aborted" or cancelled(opts.signal) else "error"
         out.error_kind = kind
         out.error_message = message
+        attach_error(out, error, model, token=token)
         yield StreamEvent("error", out)
     finally:
         if events is not None:

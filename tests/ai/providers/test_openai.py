@@ -32,6 +32,7 @@ def test_openai_chat_stream_closes_thinking_block(monkeypatch):
         chunk(reasoning_content="think", content=None),
         chunk(reasoning_content=None, content="answer"),
     ]
+    pieces[-1].choices[0].finish_reason = "stop"
     fake = types.SimpleNamespace(
         chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **kw: iter(pieces)))
     )

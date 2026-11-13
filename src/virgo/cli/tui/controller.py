@@ -155,7 +155,7 @@ class RunController:
         if initial:
             self.submit(initial)
 
-    def _launch(self, fn: Callable[[], object], *, concurrent: bool = False) -> None:
+    def _launch(self, fn: Callable[[], object], *, concurrent: bool = False, command: str | None = None) -> None:
         if self.closing:
             return
         ticket = next(self._ids)
@@ -171,7 +171,8 @@ class RunController:
                 fn()
             except Exception as error:  # noqa: BLE001 - errors become transcript entries
                 failed = True
-                self.ui.print(f"{type(error).__name__}: {error}", "error")
+                self.session.report_error(error, phase="cli.command" if concurrent else "cli.tui_worker",
+                                          context={"ticket": ticket, **({"command": command} if command else {})})
             finally:
                 if concurrent:
                     self.ui.push("helper_done", ticket)
@@ -201,7 +202,7 @@ class RunController:
             return
         cmd = self.session.commands.get(text[1:].split(" ", 1)[0]) if text.startswith("/") else None
         if cmd is not None and cmd.concurrent:
-            self._launch(lambda: cmd.fn(self.session, text.partition(" ")[2]), concurrent=True)
+            self._launch(lambda: cmd.fn(self.session, text.partition(" ")[2]), concurrent=True, command=cmd.name)
         elif self.busy:
             if text.startswith("/") and not text.startswith("//"):
                 self._deferred.append(text)
@@ -297,7 +298,7 @@ class RunController:
                 for session in sessions:
                     session.cleanup_empty_stores()
             except Exception as error:  # noqa: BLE001
-                self.ui.print(f"Shutdown failed: {error}", "error")
+                session.report_error(error, phase="session.shutdown")
             finally:
                 with self._lifecycle_lock:
                     unsubscribers = self._unsubscribers

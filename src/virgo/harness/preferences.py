@@ -101,6 +101,7 @@ def start_model_refresh(session: AgentSession) -> None:
         session._catalog_refresh_done.set()
         return
     slots = threading.Semaphore(4)
+    owner = session.store
 
     def refresh(connection):
         with slots:
@@ -115,17 +116,20 @@ def start_model_refresh(session: AgentSession) -> None:
                     current = session.resolve(f"{connection.provider}/_catalog")
                     if current.api != connection.api or base_url(current) != base_url(connection):
                         return
-                    session.remember_model_metadata(connection, models)
+                    session.remember_model_metadata(connection, models, diagnostic_store=owner)
                     if not models:
                         session.ui.print(f"{provider_name(connection.provider)}: the live directory returned no selectable models.", "warn")
             except CatalogCancelled:
                 pass
             except CatalogError as error:
                 if not session._catalog_stop.is_set():
+                    session.report_error(error, phase="catalog.refresh", store=owner,
+                                         context={"provider": connection.provider, "api": connection.api}, notify=False)
                     session.ui.print(f"{provider_name(connection.provider)}: {error} Keeping the saved directory.", "warn")
-            except Exception:
-                # Never print transport exceptions which can contain credentials or URLs.
+            except Exception as error:
                 if not session._catalog_stop.is_set():
+                    session.report_error(error, phase="catalog.refresh", store=owner,
+                                         context={"provider": connection.provider, "api": connection.api}, notify=False)
                     session.ui.print(f"{provider_name(connection.provider)}: model refresh failed; keeping the saved directory.", "warn")
 
     def run():

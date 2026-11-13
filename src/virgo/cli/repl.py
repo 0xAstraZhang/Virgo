@@ -67,7 +67,7 @@ def run_repl(
             try:
                 fn()
             except Exception as e:  # noqa: BLE001
-                ui.print(f"✗ {type(e).__name__}: {e}", "error")
+                session.report_error(e, phase="cli.repl_worker")
             finally:
                 broker.push("done")
 
@@ -122,7 +122,7 @@ def run_repl(
                 try:
                     cmd.fn(session, line.partition(" ")[2])  # read-only: run inline, even while busy
                 except Exception as e:  # noqa: BLE001 - a failing command must not end the REPL
-                    ui.print(f"✗ {type(e).__name__}: {e}", "error")
+                    session.report_error(e, phase="cli.command", context={"command": cmd.name})
                 if not busy():
                     ui.prompt()
                 else:

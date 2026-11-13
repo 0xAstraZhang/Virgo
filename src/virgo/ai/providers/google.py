@@ -21,6 +21,7 @@ from ..types import (
     Usage,
     UserMessage,
 )
+from ._errors import attach_error
 from ._http import ProviderError, cancelled, classify_error, json_events
 
 _API = "google-gemini-cli"
@@ -179,7 +180,10 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                 error = chunk["error"]
                 message = error.get("message", "Google request failed") if isinstance(error, dict) else str(error)
                 code = error.get("code") if isinstance(error, dict) else None
-                raise ProviderError(message, "retryable" if code in (429, 500, 502, 503, 504) else "fatal")
+                raise ProviderError(
+                    message, "retryable" if code in (429, 500, 502, 503, 504) else "fatal",
+                    status_code=code, body=error,
+                )
             response = chunk.get("response", {})
             usage = response.get("usageMetadata")
             if usage:
@@ -253,6 +257,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
     except Exception as error:  # noqa: BLE001 - provider errors follow the EventStream contract
         out.stop_reason = "aborted" if cancelled(opts.signal) else "error"
         out.error_kind, out.error_message = classify_error(error, token)
+        attach_error(out, error, model, token=token)
         if network is not None:
             close = getattr(network, "close", None)
             if close is not None:

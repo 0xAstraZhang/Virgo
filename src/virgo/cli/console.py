@@ -17,6 +17,7 @@ import time
 
 from ..agent.types import AgentEvent
 from ..ai.web import native_event
+from ..diagnostics import sanitize
 from ..harness.ui import TIMED_OUT, UI
 
 STYLES = {
@@ -437,6 +438,8 @@ def event_json(ev: AgentEvent) -> dict:
         if ev.stream_event.delta:
             d["delta"] = ev.stream_event.delta
         se = ev.stream_event
+        if se.type == "retry" and se.partial.error_details is not None:
+            d["error_details"] = sanitize(se.partial.error_details)
         if se.type.startswith("native_tool_") and 0 <= se.index < len(se.partial.content):
             info = native_event(getattr(se.partial.content[se.index], "data", {}))
             if info:
@@ -447,4 +450,9 @@ def event_json(ev: AgentEvent) -> dict:
         d.update(tool_call_id=ev.tool_call_id, tool_name=ev.tool_name, args=ev.args)
         if ev.result is not None:
             d.update(result=ev.result.as_text(), is_error=ev.is_error)
+            if isinstance(ev.result.details, dict):
+                if ev.result.details.get("error") is not None:
+                    d["error_details"] = sanitize(ev.result.details["error"])
+                if ev.result.details.get("related_errors"):
+                    d["related_errors"] = sanitize(ev.result.details["related_errors"])
     return d

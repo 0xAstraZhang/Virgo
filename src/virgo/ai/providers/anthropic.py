@@ -34,6 +34,7 @@ from ..types import (
 )
 from ..validate import parse_tool_arguments
 from ..web import declarations
+from ._errors import attach_error
 from ._http import ProviderError, run_cancellable
 
 BETA_FALLBACK = "server-side-fallback-2026-07-01"
@@ -229,6 +230,8 @@ def compact(
 ) -> AssistantMessage:
     """Summarize the submitted history into an unmodified, signed API block."""
     out = AssistantMessage(api="anthropic", provider=model.provider, model=model.id)
+    response = None
+    key = _api_key(model)
     try:
         params = build_params(model, replace(ctx, web_search=None, web_tools=[], web_offers=[]), opts)
         params["max_tokens"] = opts.max_tokens or min(model.max_tokens, 8000)
@@ -276,12 +279,11 @@ def compact(
         else:
             out.stop_reason, out.error_kind = "error", "fatal"
             out.error_message = "The provider did not return a complete signed compaction block."
+            attach_error(out, None, model, phase="provider.compact", token=key, response=response)
     except Exception as error:  # noqa: BLE001 - leave the caller's history intact on failure
         out.error_kind, out.error_message = classify_error(error)
         out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
-        key = _api_key(model)
-        if key and out.error_message:
-            out.error_message = out.error_message.replace(key, "[redacted]")
+        attach_error(out, error, model, phase="provider.compact", token=key)
     return out
 
 
@@ -314,13 +316,13 @@ def stream(model: Model, ctx: Context, opts: StreamOptions) -> EventStream:
 
 
 def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessage):
-    params = build_params(model, ctx, opts)
     yield StreamEvent("start", out)
     json_bufs: dict[int, str] = {}
     index_map: dict[int, int] = {}  # api block index -> out.content index
     resp = None
     completed = False
     try:
+        params = build_params(model, ctx, opts)
         if opts.signal is not None and opts.signal.is_set():
             out.stop_reason = "aborted"
             out.error_message = "aborted by user"
@@ -439,8 +441,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                         out.usage.input = ev.usage.input_tokens
             elif t == "message_stop":
                 completed = True
-        if declarations(ctx) and not completed:
-            raise ProviderError("Anthropic web tool stream ended before message_stop.", "retryable")
+        if not completed:
+            raise ProviderError("Anthropic stream ended before message_stop.", "retryable")
         if out.stop_reason == "refusal":
             yield StreamEvent("error", out)
         else:
@@ -451,9 +453,10 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             kind = "search_unsupported"
         if any(d.get("name") == "web_fetch" for d in declarations(ctx)) and is_web_unsupported(e, "fetch"):
             kind = "fetch_unsupported"
-        out.stop_reason = "error"
+        out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
         out.error_kind = kind
         out.error_message = text
+        attach_error(out, e, model, token=_api_key(model), response=getattr(resp, "response", None))
         yield StreamEvent("error", out)
     finally:
         if resp is not None:

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..ai.types import AssistantMessage, UserMessage
+from ..diagnostics import safe_text
 from ..harness.commands import parse_frontmatter
 from ..harness.extensions import ExtensionAPI
 
@@ -86,6 +87,8 @@ class Subagents:
     ) -> ToolResult:
         """Run ``agent_type``: a registered type name, or an ad-hoc AgentType (e.g. a workflow step)."""
         session = self.api.session
+        review_parent = review_parent or session.main.review_source
+        owner = review_parent.root
         at = agent_type if isinstance(agent_type, AgentType) else self.types.get(agent_type)
         if at is None:
             return ToolResult.error(f"Unknown agent type {agent_type!r}. Available: {', '.join(self.types)}")
@@ -95,8 +98,10 @@ class Subagents:
         perms = session.services.get("permissions")
         if perms and at.permission:
             perms.set_agent_mode(name, at.permission)
-        session.ui.print(f"[{name}] {description}", "agent")
+        rt = None
+        failure = cleanup_error = None
         try:
+            session.ui.print(f"[{name}] {description}", "agent")
             rt = session.create_runtime(
                 name,
                 "subagent",
@@ -110,16 +115,40 @@ class Subagents:
                 review_parent=review_parent,
             )
             rt.agent.prompt([UserMessage(prompt)])
+        except Exception as error:
+            failure = session.report_error(error, phase="subagent.run", store=owner,
+                                           context={"agent": name, "role": "subagent"})
         finally:
             if perms and at.permission:
-                perms.set_agent_mode(name, None)
-        last = next((m for m in reversed(rt.messages) if isinstance(m, AssistantMessage)), None)
+                try:
+                    perms.set_agent_mode(name, None)
+                except Exception as error:
+                    cleanup_error = session.report_error(error, phase="subagent.cleanup", store=owner,
+                                                         context={"agent": name, "role": "subagent"})
+        last = next((m for m in reversed(rt.messages) if isinstance(m, AssistantMessage)), None) if rt else None
+        details = {"agent": name}
+        if failure is not None:
+            details["error"] = failure
+        elif last is not None and last.error_details is not None:
+            details["error"] = last.error_details
+        elif cleanup_error is not None:
+            details["error"] = cleanup_error
+        if cleanup_error is not None and cleanup_error != details.get("error"):
+            details["related_errors"] = [cleanup_error]
+        if failure is not None or cleanup_error is not None:
+            return ToolResult.error(f"Sub-agent failed: {details['error']['message']}", details=details)
+        cancelled = (signal is not None and signal.is_set()) or (rt is not None and rt.agent.signal.is_set())
+        if cancelled and (last is None or last.stop_reason not in ("error", "refusal")):
+            return ToolResult.error("Sub-agent was aborted.", details={**details, "status": "aborted"})
         if last is None:
-            return ToolResult.error("The sub-agent produced no answer.")
+            details["error"] = session.report_error("The sub-agent produced no answer.", phase="subagent.result",
+                                                   store=owner, context={"agent": name, "role": "subagent"})
+            return ToolResult.error("The sub-agent produced no answer.", details=details)
         if last.stop_reason in ("error", "refusal"):
-            return ToolResult.error(f"Sub-agent failed: {last.error_message}")
+            return ToolResult.error(f"Sub-agent failed: {safe_text(last.error_message or last.text() or last.stop_reason)}",
+                                    details=details)
         if last.stop_reason == "aborted":
-            return ToolResult.error("Sub-agent was aborted.")
+            return ToolResult.error("Sub-agent was aborted.", details={**details, "status": "aborted"})
         turns = sum(isinstance(m, AssistantMessage) for m in rt.messages)
         return ToolResult.text(
             last.text() or "(no text in final answer)", details={"agent": name, "turns": turns}
@@ -138,7 +167,8 @@ def setup(api: ExtensionAPI) -> None:
         review_parent.root.entries()
         if args.get("background") and jobs is not None:
             job = jobs.start_callable(
-                f"agent: {desc}", lambda signal: subs.run(prompt, type_name, desc, signal, ctx.cwd, review_parent)
+                f"agent: {desc}", lambda signal: subs.run(prompt, type_name, desc, signal, ctx.cwd, review_parent),
+                store=review_parent.root, agent=ctx.agent, tool_call_id=ctx.call_id, cwd=ctx.cwd,
             )
             return ToolResult.text(
                 f"Started background agent {job.id} ({desc}). You will be notified when it finishes; "

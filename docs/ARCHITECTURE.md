@@ -6,6 +6,7 @@
 - [会话保存失败处理计划](designs/session-save-failure.md)：失败状态、停止调度、UI 提示和 JSONL 兼容。
 - [工具权限显式接口计划](designs/permission-policy-interface.md)：两阶段检查、钩子顺序兼容和异常拦截。
 - [Runtime 创建与会话归属计划](designs/runtime-construction.md)：目标存储、记账归属、子任务审查来源和构造期间的扩展上下文。
+- [错误诊断](ERRORS.md)：异常采集、错误关联、独立日志、失败回退与扩展接入。
 
 以上三项已在 PR #36 实施。设计文档保留原问题和验收边界；扩展接入方式见 [扩展迁移](EXTENSION_MIGRATION.md#持久化故障权限策略与-runtime-构造)。
 
@@ -71,11 +72,15 @@ tool/thought 标题是不可选中文字的折叠按钮，鼠标点击或 Enter/
 - 内容块：`TextContent`、`ThinkingContent(signature, redacted)`、`ImageContent`、`ToolCall`、`RawContent`（provider 专有的块，原样回传，例如 Anthropic 的 `fallback`）。
 - 消息：
   - `UserMessage(content, kind)`：`kind` 是内部标签，不发给模型，取值有 `summary`、`notification`、`continue`；
-  - `AssistantMessage(content, api, provider, model, usage, stop_reason, error_message, error_kind)`；
+  - `AssistantMessage(content, api, provider, model, usage, stop_reason, error_message, error_kind, error_details)`；
   - `ToolResultMessage(tool_call_id, tool_name, content, details, is_error)`。
 - `stop_reason` 取值：`stop | length | tool_use | refusal | error | aborted`。
 - `error_kind` 取值：`retryable | overflow | fatal`，由适配器分类，harness 据此决定是重试、压缩还是放弃。
 - 流事件：`start`、`text_*`、`thinking_*`、`toolcall_*`、`retry`、`done`、`error`。`EventStream` 的约定是迭代过程永不抛出异常。
+
+`virgo.diagnostics` 只采集可序列化、脱敏的错误数据，不依赖 Harness 或写文件。AI 适配器在异常发生处保留原始堆栈和安全 HTTP 元数据；Agent 将工具错误放入 `ToolResult.details["error"]`，用 `AgentConfig.on_error` 上报监听器故障。Harness 的 `DiagnosticLog` 负责有界 JSONL 写入，`AgentSession.report_error()` 负责绑定会话、去重和 UI 提示。诊断文件独立于 `SessionStore`，保存错误不会递归向故障会话追加记录。
+
+流在缺少终止事件时不再被补成成功；保留 partial 并产生明确错误。OpenAI Chat 和 Anthropic 适配器分别检查 `finish_reason`、`message_stop`，不完整传输按现有重试策略处理；已开始原生收费操作的失败仍保留证据并停止自动重放。
 
 ## Agent 循环（`virgo.agent.loop`）
 

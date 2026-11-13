@@ -61,6 +61,8 @@ def fake_api(**overrides) -> Iterator[dict]:
         The reply.
     ``content_type``
         ``None`` sends SSE for status 200 and JSON otherwise.
+    ``response_headers``
+        Extra HTTP response headers, such as a provider request ID or Retry-After.
     ``stall`` / ``stall_at``
         Hold the reply before its headers (``"headers"``) or before its body (``"body"``) until
         teardown; ``started`` is set once the server is holding it.
@@ -96,6 +98,8 @@ def fake_api(**overrides) -> Iterator[dict]:
                 "text/event-stream" if state["status"] == 200 else "application/json"
             )
             self.send_header("Content-Type", content_type)
+            for name, value in state.get("response_headers", {}).items():
+                self.send_header(name, value)
             self.end_headers()
             started.set()
             if stall == "body":

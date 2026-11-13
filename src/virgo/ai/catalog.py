@@ -266,8 +266,10 @@ def fetch_model_catalog(model: Model, signal=None) -> list[CatalogModel]:
             result.put((_fetch(model, signal, stopped), None))
         except CatalogError as error:
             result.put((None, error))
-        except Exception:
-            result.put((None, CatalogError("Could not read the model directory. Check the connection and login, then retry /model.")))
+        except Exception as cause:
+            error = CatalogError("Could not read the model directory. Check the connection and login, then retry /model.")
+            error.__cause__ = cause
+            result.put((None, error))
 
     threading.Thread(target=fetch, name="virgo-model-catalog", daemon=True).start()
     deadline = time.monotonic() + CATALOG_TIMEOUT

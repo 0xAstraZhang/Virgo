@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
@@ -249,6 +250,12 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
         StreamOptions(signal=rt.agent.signal, max_tokens=min(8000, model.max_tokens), effort=session.effort),
         focus=focus,
     )
+    rt.record_model_error(result, purpose="compaction", notify=True, context={
+        "model": model.spec, "api": result.api or api,
+        "model_call_id": uuid.uuid4().hex, "attempt": 1,
+        "run_id": rt.run_id if rt.agent.running else None,
+        "duration": round(time.monotonic() - started, 6),
+    })
     record_call(rt.accounting_store, model, result, purpose="compaction", started=started,
                 effort=session.effort, agent=rt.name)
     if rt.agent.signal.is_set() or not is_native_context(result):

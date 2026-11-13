@@ -74,3 +74,13 @@ def setup(api):
 `RuntimeContext` 包含 `role`、`cwd`、`store`、`accounting_store` 和 `review_parent`；字段不可重新赋值，存储引用只供读取，不得在准备阶段写入活动会话或候选记录。新回调异常会使准备失败，原活动会话保持不变。旧、新回调按 `order` 排序。
 
 内置主 Agent、队友和子 Agent 统一通过 `session.create_runtime(name, role, **kwargs)` 创建。扩展排队后台任务前应捕获 `ctx.review_source`，传作 `review_parent`；不要在后台启动时重新读取活动主 Agent。子 Agent 的 `store=None` 仍表示不创建独立消息 JSONL，辅助请求必须传入 Runtime 的 `accounting_store`。
+
+## 结构化错误诊断
+
+`AssistantMessage.error_details`、`Block.details` 和 `AgentConfig.on_error` 均为新增可选字段；旧会话无需迁移。Provider 的 `stop_reason`、`error_kind` 和工具的 `is_error` 继续决定执行行为，消费者不要用错误消息文本推断重试策略。
+
+自定义工具直接抛异常即可由 Agent 记录阶段、堆栈和调用 ID。若工具必须自行捕获异常，应在捕获点使用 `virgo.diagnostics.capture_error()` 并返回 `ToolResult.error(..., details={"error": details})`；只返回字符串会失去原始堆栈。不要把整个异常 `__dict__`、请求对象、headers 或工具参数作为诊断上下文。`message=` 可替换嵌入完整响应正文的 SDK 异常文本。
+
+后台扩展使用 `session.report_error(error, phase="extension.operation", store=original_store, context={...})`。在排队时捕获 `original_store`；切换会话后仍将错误绑定到原任务。报告入口复用 `_virgo_error_details`，被多个边界捕获的同一错误不会重复写入。错误恢复钩子可返回成功结果，原错误会保留在 `details["related_errors"]`。
+
+独立使用 `EventBus` 的调用方可传 `on_diagnostic(details, args)`；旧 `on_error(str)` 继续兼容。独立使用 `Agent` 时可传 `AgentConfig(on_error=...)`。没有接入持久化回调或回调本身失败时，诊断会回退到 stderr。扩展失败的详情默认可用，不再依赖 `VIRGO_DEBUG`。

@@ -116,6 +116,7 @@ def expand_template(body: str, args: str) -> str:
 
 
 def register_builtins(session: AgentSession) -> None:
+    from ..diagnostics import error_summary
     from .auth_commands import login, logout
     from .preferences import configure_preference
     from .shell_commands import configure_shell
@@ -168,6 +169,25 @@ def register_builtins(session: AgentSession) -> None:
             f"\nestimated context tokens: {s.context_tokens()}"
         )
 
+    def diagnostics(s, args):
+        records = s.diagnostics.recent()
+        query = args.strip()
+        if query:
+            matches = [record for record in records if record["error_id"].startswith(query)]
+            if len(matches) != 1:
+                s.ui.command_result("Error ID is unknown or ambiguous. Use /diagnostics to list recent errors.")
+                return
+            import json
+
+            s.ui.command_result(json.dumps(matches[0], ensure_ascii=False, indent=2))
+        else:
+            lines = [f"Diagnostics: {s.diagnostics.path}"]
+            lines.extend(error_summary(record) for record in records[-10:])
+            if not records:
+                lines.append("No errors recorded in this instance. The log is created on the first error.")
+            lines.append("Use /diagnostics <error-id> for full details (last 100 errors in this instance).")
+            s.ui.command_result("\n".join(lines))
+
     def sessions(s, args):
         items = s.list_sessions()
         if not items:
@@ -197,4 +217,6 @@ def register_builtins(session: AgentSession) -> None:
     c.register("compact", compact, "summarize older context now (/compact [focus])", argument_hint="[focus]")
     c.register("new", new, "start a fresh session")
     c.register("session", session_, "show session info", concurrent=True)
+    c.register("diagnostics", diagnostics, "show diagnostic log and recent errors", concurrent=True,
+               argument_hint="[error-id]")
     c.register("sessions", sessions, "browse saved sessions (g toggles workspace grouping in fullscreen)", argument_hint="[number]")
