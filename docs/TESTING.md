@@ -436,3 +436,13 @@ uv run python ci/run_pytest.py -q tests/harness/test_harness_boundaries.py tests
 ```
 
 权限、压缩、子任务、队友、会话回收以及 CLI/TUI 的兼容行为继续由对应现有场景验证。全套测试需要允许本机 HTTP 服务和终端进程。
+
+### PR #36 会话切换回归
+
+`tests/harness/test_session_recovery.py` 和 `tests/cli/tui/test_session_recovery.py` 在修复前加入，9 个场景均在 PR 原版本 `2e31fa6` 上失败。覆盖离开后后台记账失败、空文件和半行 JSONL 的 `/sessions` 恢复、反复切换后的待处理输入、恢复后的主/子 Agent 模型一致性、回收站清除缓存，以及 TUI 控制器和列表在新会话、跨工作空间、另一会话运行时恢复未保存回答。
+
+这些场景使用真实 Session、后台 JobManager、Textual 事件循环和离线 provider；只在目标文件的追加 I/O 边界注入故障，后台请求用事件同步，不依赖延时碰撞。
+
+```sh
+uv run python ci/run_pytest.py -q tests/harness/test_session_recovery.py tests/cli/tui/test_session_recovery.py
+```

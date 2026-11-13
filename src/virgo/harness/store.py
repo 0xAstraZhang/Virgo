@@ -218,7 +218,9 @@ class SessionStore:
 
     def describe(self) -> dict:
         """Catalog row for the active store, including an unsaved new session."""
-        item = _session_info(self.path) if self.path is not None else None
+        # A readable prefix can still omit unsaved entries. Its catalog must
+        # describe the preserved logical history once persistence has failed.
+        item = _session_info(self.path) if self.path is not None and self.save_error is None else None
         if item is None:
             title, count = _title_and_count(self.entries)
             item = {

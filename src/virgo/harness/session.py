@@ -425,7 +425,7 @@ class AgentSession:
         self._permission_boundary = None
         self._reported_save_errors: set[int] = set()
         self._failed_stores: list = []
-        self._retained_sessions: dict = {}
+        self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
         self._tools: list[tuple[AgentTool, tuple]] = []
         self.templates: dict = {}
         self.permission_mode = permission_mode or self.settings.get("permissions.mode", "auto-review")
@@ -649,18 +649,42 @@ class AgentSession:
     def _prepare_main(self, store: SessionStore) -> Runtime:
         return self._new_main(store)
 
+    def live_store(self, path: str | Path) -> SessionStore | None:
+        """Resolve an owned conversation before consulting its possibly damaged file."""
+        path = Path(path).absolute()
+        with self._lock:
+            if self.store.path == path:
+                return self.store
+            retained = self._retained_sessions.get(path)
+            return retained[0].store if retained is not None else None
+
+    def retained_stores(self) -> tuple[SessionStore, ...]:
+        with self._lock:
+            return tuple(runtime.store for runtime, pending in self._retained_sessions.values()
+                         if runtime.store.entries or pending)
+
+    def list_sessions(self) -> list[dict]:
+        """Merge this workspace's disk catalog with recoverable in-process history."""
+        items = {item["path"]: item for item in SessionStore.list(self.paths.sessions)}
+        with self._lock:
+            stores = self.retained_stores()
+            if self.store.save_error is not None:
+                stores = (*stores, self.store)
+            for store in stores:
+                items[store.path] = store.describe()
+        return sorted(items.values(), key=lambda item: (-item["mtime"], str(item["path"])))
+
     def open_session(self, path: str | Path) -> None:
         path = Path(path).absolute()
         with self._lock:
-            if self.store.path == path and self.store.save_error is not None:
+            if self.store.path == path:
                 return
             retained = self._retained_sessions.get(path)
             if retained is not None:
                 runtime, pending = retained
-                self._activate_store(runtime.store, runtime=runtime)
-                self.wakeups = pending
+                self._activate_store(runtime.store, runtime=runtime, pending=pending)
                 return
-        self._activate_store(SessionStore.load(path))
+            self._activate_store(SessionStore.load(path))
 
     def new_session(self) -> None:
         self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd))
@@ -686,10 +710,12 @@ class AgentSession:
                 stores[0].trash()
                 for store in stores[1:]:
                     store.path = None
+            self._retained_sessions.pop(path, None)
             if current:
                 self._activate_store(replacement, runtime=runtime)
 
-    def _activate_store(self, store: SessionStore, *, runtime: Runtime | None = None) -> None:
+    def _activate_store(self, store: SessionStore, *, runtime: Runtime | None = None,
+                        pending: deque | None = None) -> None:
         with self._lock:
             if self._shutdown_started:
                 return
@@ -697,12 +723,17 @@ class AgentSession:
             if self._shutdown_started:
                 return
             old = self.main
-            if old.store.save_error is not None or self.wakeups:
-                self._retained_sessions[old.store.path or old.store.id] = (old, self.wakeups)
-            self.wakeups = deque()
+            # Background accounting can fail after we leave, even when there
+            # were no queued wakeups. Keep the original owner, not a fresh disk copy.
+            if old.store.path is not None:
+                self._retained_sessions[old.store.path] = (old, self.wakeups)
+            self._retained_sessions.pop(store.path, None)
+            self.wakeups = pending if pending is not None else deque()
+            runtime.model = self.model
             self.store = store
             self.main = runtime
-            self._visited_stores.append(store)
+            if store not in self._visited_stores:
+                self._visited_stores.append(store)
             self.bus.emit("session_start", self)
 
     def set_model(self, spec: str) -> None:

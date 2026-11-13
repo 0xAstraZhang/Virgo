@@ -60,8 +60,10 @@ class RunController:
 
         def open_saved() -> None:
             previous = self.session
-            target = SessionStore.load(Path(path))
-            target.build_context()  # Validate history before starting another workspace's services.
+            target = previous.live_store(path)
+            if target is None:
+                target = SessionStore.load(Path(path))
+                target.build_context()  # Validate before starting another workspace's services.
             if target.cwd.resolve() == previous.cwd:
                 if self.closing:
                     return
