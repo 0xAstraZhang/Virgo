@@ -62,6 +62,10 @@ class Agent:
         if isinstance(msgs, (str, UserMessage)):
             msgs = [msgs]
         prompts = [_as_message(m) for m in msgs]
+        if self.cfg.can_run is not None and not self.cfg.can_run():
+            with self._lock:
+                self._steer.extend(prompts)
+            return
         with self._lock:
             if self.running:
                 raise RuntimeError("agent is already running; use steer() or follow_up()")

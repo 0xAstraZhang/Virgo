@@ -400,6 +400,9 @@ class Permissions:
             return None
         return self.on_tool_call(ev, self.session)
 
+    def preflight(self, ev: ToolCallEvent):
+        return self.on_tool_call(ev, self.session)
+
     def on_tool_call(self, ev: ToolCallEvent, _session):
         try:
             return self._on_tool_call(ev)
@@ -456,8 +459,7 @@ def describe(ev: ToolCallEvent) -> str:
 
 def setup(api: ExtensionAPI) -> None:
     perms = Permissions(api)
-    api.services["permissions"] = perms
-    api.on("tool_call", perms.on_tool_call, priority=100)
+    api.register_permission_policy(perms)
 
     def cmd(session, args):
         a = args.strip()

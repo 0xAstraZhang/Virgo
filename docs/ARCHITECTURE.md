@@ -3,6 +3,13 @@
 ## 专题设计
 
 - [web_fetch：原生优先的网页读取](designs/web-fetch.md)：原生能力声明、统一路由与去重、工具契约、权限、回退和端到端测试。
+- [会话保存失败处理计划](designs/session-save-failure.md)：失败状态、停止调度、UI 提示和 JSONL 兼容。
+- [工具权限显式接口计划](designs/permission-policy-interface.md)：两阶段检查、钩子顺序兼容和异常拦截。
+- [Runtime 创建与会话归属计划](designs/runtime-construction.md)：目标存储、记账归属、子任务审查来源和构造期间的扩展上下文。
+
+以上三项已在 PR #36 实施。设计文档保留原问题和验收边界；扩展接入方式见 [扩展迁移](EXTENSION_MIGRATION.md#持久化故障权限策略与-runtime-构造)。
+
+保存失败会保留逻辑历史、设置不可自动恢复的 `SessionStore.save_error` 并取消依赖该存储的任务。通知在存储锁外送达；故障文件不再追加，UI 保留未保存提示。权限通过 Harness 的显式策略接口执行两次检查，同时保留扩展优先级和单次派发快照。主、子 Agent 和队友通过 `create_runtime()` 绑定消息、记账与审查来源；候选构造不修改活动 store。
 
 ## 分层
 
@@ -107,7 +114,7 @@ while True:
 
 每次工具调用依次经过：
 
-1. `tool_call` 钩子，按优先级：权限（100）→ 命令钩子（50）→ 用户扩展；
+1. Harness 在原优先级 100 的位置显式调用权限预检，再继续派发命令钩子（50）和默认用户扩展（0）；任意优先级及同优先级注册顺序保持不变；
 2. 执行前复核权限快照，再执行工具；审批使用当前 Runtime 的取消信号；
 3. `tool_result` 钩子；
 4. 输出预算：超过 50KB 的文本截断并落盘。
@@ -187,6 +194,8 @@ Todo 支持并行进行项及整表替换，不驱动下一次模型调用。团
 - 有 compaction 条目时，依次输出：原生 `context`（没有此字段的旧记录使用 `summary`）、`kept_ids` 指向的消息、compaction 之后的所有消息。`preserve_thinking` 控制保留消息是否剥离 thinking，`context_binding` 记录原生压缩时的模型/system/tools 指纹。恢复时清除压缩前 usage，压缩后的新消息 usage 保留。
 
 队友的会话存放在 `<会话 id>-team/<name>.jsonl`。
+
+同一 AgentSession 切走的文件会话保留原 Runtime 和输入队列，避免迟到的后台保存故障被磁盘重载绕过。会话列表包含仍在内存中的故障历史；重新打开优先复用该实例，并同步当前模型选择。TUI 保留故障会话所在的面板。恢复边界与缓存生命周期见[保存失败处理](designs/session-save-failure.md#切换后的恢复)。
 
 ## 项目状态目录 `.virgo/`
 

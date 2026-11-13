@@ -85,8 +85,6 @@ class Subagents:
         self, prompt: str, agent_type: str | AgentType, description: str, signal, cwd=None, review_parent=None
     ) -> ToolResult:
         """Run ``agent_type``: a registered type name, or an ad-hoc AgentType (e.g. a workflow step)."""
-        from ..harness.session import Runtime
-
         session = self.api.session
         at = agent_type if isinstance(agent_type, AgentType) else self.types.get(agent_type)
         if at is None:
@@ -99,8 +97,7 @@ class Subagents:
             perms.set_agent_mode(name, at.permission)
         session.ui.print(f"[{name}] {description}", "agent")
         try:
-            rt = Runtime(
-                session,
+            rt = session.create_runtime(
                 name,
                 "subagent",
                 cwd=cwd,

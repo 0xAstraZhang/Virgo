@@ -60,8 +60,10 @@ class RunController:
 
         def open_saved() -> None:
             previous = self.session
-            target = SessionStore.load(Path(path))
-            target.build_context()  # Validate history before starting another workspace's services.
+            target = previous.live_store(path)
+            if target is None:
+                target = SessionStore.load(Path(path))
+                target.build_context()  # Validate before starting another workspace's services.
             if target.cwd.resolve() == previous.cwd:
                 if self.closing:
                     return
@@ -128,7 +130,9 @@ class RunController:
 
     @property
     def pending(self) -> list[str]:
-        return [*[f"steering: {text}" for text in self._steering], *self._deferred]
+        unsaved = ([f"unprocessed: {message.text()}" for message in self.session.wakeups]
+                   if self.session.store.save_error is not None else [])
+        return [*[f"steering: {text}" for text in self._steering], *self._deferred, *unsaved]
 
     def _session_reset(self, session: AgentSession) -> None:
         self.ui.bind_signal("main", session.main.agent.signal)
@@ -250,7 +254,7 @@ class RunController:
                 # Browsing must not strand work that was queued before it opened.
                 text = self._deferred.popleft()
                 self._launch(lambda: self.session.prompt(text))
-            elif self.session.wakeups and not self.browsing:
+            elif self.session.wakeups and not self.browsing and self.session.main.can_run():
                 self._launch(self.session.run_pending)
         return out
 

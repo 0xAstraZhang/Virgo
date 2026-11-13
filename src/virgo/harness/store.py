@@ -138,6 +138,15 @@ def _register_workspace(directory: Path, cwd: Path) -> None:
         pass
 
 
+class SessionSaveError(OSError):
+    """The logical entry exists, but its disk write was not confirmed."""
+
+    def __init__(self, store, entry, cause):
+        self.store, self.entry, self.cause = store, entry, cause
+        super().__init__(f"Session {store.id}: unsaved history at {store.path}: {cause}. "
+                         "Work is paused; unsaved content exists only in this process.")
+
+
 class SessionStore:
     VERSION = 1
 
@@ -154,6 +163,10 @@ class SessionStore:
         self.updated_at = self.created_at
         self._header_written = self.path is not None and self.path.exists()
         self._lock = threading.RLock()
+        self.save_error: SessionSaveError | None = None
+        self.last_saved_id = self.leaf
+        self.failure_signals: list[threading.Event] = []
+        self.failure_listeners: list = []
         self._usage: tuple[str | None, dict[str, int]] = (None, dict.fromkeys(_USAGE_KEYS, 0))
 
     # -- construction ---------------------------------------------------------
@@ -205,7 +218,9 @@ class SessionStore:
 
     def describe(self) -> dict:
         """Catalog row for the active store, including an unsaved new session."""
-        item = _session_info(self.path) if self.path is not None else None
+        # A readable prefix can still omit unsaved entries. Its catalog must
+        # describe the preserved logical history once persistence has failed.
+        item = _session_info(self.path) if self.path is not None and self.save_error is None else None
         if item is None:
             title, count = _title_and_count(self.entries)
             item = {
@@ -230,7 +245,7 @@ class SessionStore:
         the file so another instance's already-written messages are retained.
         """
         with self._lock:
-            if self.path is None or any(entry.get("type") not in {"model_change", "leaf"} for entry in self.entries):
+            if self.save_error is not None or self.path is None or any(entry.get("type") not in {"model_change", "leaf"} for entry in self.entries):
                 return False
             try:
                 saved = self.load(self.path)
@@ -261,22 +276,35 @@ class SessionStore:
     def _write(self, obj: dict) -> None:
         if self.path is None:
             return
+        line = json.dumps(obj, ensure_ascii=False, default=str) + "\n"
+        header = "" if self._header_written else json.dumps({
+            "type": "session", "version": self.VERSION, "id": self.id,
+            "cwd": str(self.cwd), "timestamp": _now(),
+        }, ensure_ascii=False) + "\n"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _register_workspace(self.path.parent, self.cwd)
         with open(self.path, "a", encoding="utf-8") as f:
-            if not self._header_written:
-                header = {
-                    "type": "session",
-                    "version": self.VERSION,
-                    "id": self.id,
-                    "cwd": str(self.cwd),
-                    "timestamp": _now(),
-                }
-                f.write(json.dumps(header, ensure_ascii=False) + "\n")
-                self._header_written = True
-            f.write(json.dumps(obj, ensure_ascii=False, default=str) + "\n")
+            f.write(header + line)
+        self._header_written = True
+
+    def notify_save_failure(self) -> None:
+        if self.save_error is not None:
+            for callback in tuple(self.failure_listeners):
+                try:
+                    callback(self.save_error)
+                except Exception:
+                    pass  # Notification failure cannot erase the persistence fault.
 
     def append(self, type: str, **data) -> dict:
+        try:
+            with self._lock:
+                return self._append_locked(type, **data)
+        except SessionSaveError:
+            self.notify_save_failure()
+            raise
+
+    def _append_locked(self, type: str, **data) -> dict:
+        """Caller holds _lock and must notify after releasing it on failure."""
         with self._lock:
             entry = {
                 "type": type,
@@ -291,7 +319,18 @@ class SessionStore:
             self.by_id[entry["id"]] = entry
             self.leaf = entry["id"]
             self.updated_at = time.time()
-            self._write(entry)
+            if self.save_error is not None:
+                raise SessionSaveError(self, entry, self.save_error.cause)
+            try:
+                self._write(entry)
+            except Exception as cause:
+                self.save_error = SessionSaveError(self, entry, cause)
+                # Cancellation only: never invoke UI, extensions or Session locks
+                # while a writer (including BranchSource) holds the store lock.
+                for signal in self.failure_signals:
+                    signal.set()
+                raise self.save_error from cause
+            self.last_saved_id = entry["id"]
             return entry
 
     def append_message(self, msg: Message) -> str:

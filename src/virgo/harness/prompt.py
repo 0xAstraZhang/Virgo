@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import platform
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..agent.types import AgentTool
     from .session import AgentSession
+
+
+@dataclass(frozen=True)
+class RuntimeContext:
+    role: str
+    cwd: Path
+    store: object
+    accounting_store: object
+    review_parent: object
+
 
 IDENTITY = {
     "main": (
@@ -58,7 +69,7 @@ def _first_file(paths: list[Path]) -> str | None:
 
 def build_system(
     session: AgentSession, role: str = "main", extra: str | None = None, cwd: Path | None = None,
-    tools: list[AgentTool] | None = None,
+    tools: list[AgentTool] | None = None, context: RuntimeContext | None = None,
 ) -> str:
     """``tools`` supplies the actual shell environment (default: every tool of ``role``)."""
     cwd = Path(cwd or session.cwd)
@@ -70,12 +81,18 @@ def build_system(
     parts.append(GUIDELINES)
     if extra:
         parts.append(extra.strip())
-    for _order, _name, fn in sorted(session.sections, key=lambda s: s[0]):
-        try:
-            text = fn(role)
-        except Exception as e:  # noqa: BLE001
-            text = None
-            session.ui.print(f"[system section {_name} failed: {e}]", "error")
+    sections = [(order, name, fn, False) for order, name, fn in session.sections]
+    if context is not None:
+        sections.extend((order, name, fn, True) for order, name, fn in session.runtime_sections)
+    for _order, _name, fn, contextual in sorted(sections, key=lambda item: item[0]):
+        if contextual:
+            text = fn(context)
+        else:
+            try:
+                text = fn(role)
+            except Exception as e:  # noqa: BLE001
+                text = None
+                session.ui.print(f"[system section {_name} failed: {e}]", "error")
         if text:
             parts.append(text.strip())
     files = context_files(cwd, session.paths.user)

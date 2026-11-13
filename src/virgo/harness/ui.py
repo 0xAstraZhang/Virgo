@@ -42,6 +42,9 @@ class UI:
     def print(self, text: str, style: str | None = None) -> None:
         pass
 
+    def save_failed(self, session_id: str, path: str, message: str) -> None:
+        self.print(message, "error")
+
     def command_result(self, text: str) -> None:
         """Explicit command output, also visible in noninteractive clients."""
         self.print(text)

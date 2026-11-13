@@ -6,7 +6,7 @@ Per model call, in order:
   2. auto-compaction check (at a turn boundary)
   3. `context` handlers build the request view; plan mode restricts instructions and tools
   4. stream with retries (backoff, optional fallback model) and one reactive compaction on overflow
-Per tool call: `tool_call` handlers (permission first) -> execute -> `tool_result` handlers -> budget.
+Per tool call: ordered extensions and explicit permission preflight -> execution recheck -> tool -> results.
 When the agent would stop: follow-ups (schedules), then `agent_stop` handlers (todo, goal, hooks).
 """
 
@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .. import ai
-from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, ToolResult
+from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, Block, ToolCallEvent, ToolResult
 from ..ai.auth import AuthStore
 from ..ai.compaction import compatible_context, context_binding, is_native_context
 from ..ai.model_metadata import cache_path, clean_metadata, read_catalog, write_metadata
@@ -53,10 +53,11 @@ from .extensions import (
     load_builtin_features,
     load_user_extensions,
 )
-from .prompt import build_system
+from .permissions import NoPermissions, PermissionPolicy
+from .prompt import RuntimeContext, build_system
 from .settings import Paths, Settings
 from .shell_commands import ShellSelection
-from .store import SessionStore
+from .store import SessionSaveError, SessionStore
 from .telemetry import record_call
 from .ui import UI
 
@@ -87,18 +88,20 @@ class Runtime:
         signal: threading.Event | None = None,
         compaction: bool = True,
         review_parent: ReviewSource | None = None,
+        accounting_store=None,
     ):
         self.session = session
         self.name = name
         self.role = role
         self.cwd = Path(cwd or session.cwd)
         self.store = store
-        self.accounting_store = session.store
+        self.accounting_store = accounting_store if accounting_store is not None else (store if role == "main" and store is not None else session.store)
         if role != "main" and review_parent is None:
             review_parent = getattr(getattr(session, "main", None), "review_source", None)
         if review_parent is not None:
             review_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
             self.accounting_store = review_parent.root
+        self.construction_context = RuntimeContext(role, self.cwd, store, self.accounting_store, review_parent)
         self.ids: list = list(ids or [])
         self.model = model or session.model
         self.system_extra = system_extra
@@ -122,25 +125,54 @@ class Runtime:
             after_tool_call=session._after_tool,
             should_stop=lambda _msgs: session.bus.first("agent_stop", self),
             max_turns=max_turns,
+            can_run=self.can_run,
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
         self.review_source = ReviewSource(self, review_parent)
         for message in self.agent.messages:
             self.review_source.remember(message)
         self.agent.subscribe(self._on_event)
+        for bound in (self.store, self.accounting_store):
+            if bound is not None:
+                with bound._lock:
+                    if self.agent.signal not in bound.failure_signals:
+                        bound.failure_signals.append(self.agent.signal)
+                    if session.report_save_error not in bound.failure_listeners:
+                        bound.failure_listeners.append(session.report_save_error)
+                    if bound.save_error is not None:
+                        self.agent.signal.set()
 
     @property
     def messages(self) -> list:
         return self.agent.messages
 
     def rebuild_system(self) -> None:
-        self.system = build_system(self.session, self.role, self.system_extra, self.cwd, tools=self.tools)
+        self.system = build_system(self.session, self.role, self.system_extra, self.cwd,
+                                   tools=self.tools, context=self.construction_context)
+
+    def can_run(self) -> bool:
+        errors = [bound.save_error for bound in (self.store, self.accounting_store)
+                  if bound is not None and bound.save_error is not None]
+        for error in errors:
+            self.session.report_save_error(error)
+        return not errors
 
     def _before_tool(self, ev: ToolCallEvent):
         ev.review_source = self.review_source
         return self.session._before_tool(ev)
 
     def _on_event(self, ev: AgentEvent) -> None:
+        try:
+            self._record_event(ev)
+        except SessionSaveError as error:
+            self.session.report_save_error(error)
+        self.can_run()
+        self.session.bus.emit("agent_event", ev, self)
+        if ev.type == "turn_end":
+            self.session.bus.emit("turn_end", ev, self)
+        self.session.ui.on_event(ev)
+
+    def _record_event(self, ev: AgentEvent) -> None:
         if ev.type in ("agent_start", "agent_end") and self.role == "main" and self.store is not None:
             self.store.append(
                 "custom",
@@ -185,8 +217,15 @@ class Runtime:
                 },
             )
         elif ev.type == "message_end":
-            self.ids.append(self.store.append_message(ev.message) if self.store else None)
+            try:
+                entry_id = self.store.append_message(ev.message) if self.store else None
+            except SessionSaveError as error:
+                entry_id = error.entry["id"]
+                self.session.report_save_error(error)
+            self.ids.append(entry_id)
             self.review_source.remember(ev.message, self.ids[-1])
+            if self._native_source is not None:
+                self._native_source.append(ev.message)
             if self.role != "main" and isinstance(ev.message, AssistantMessage) and self._call_started is not None:
                 # Loop notices (turn limit, paused search) are not model calls.
                 record_call(
@@ -194,14 +233,10 @@ class Runtime:
                     started=self._call_started, effort=self.session.effort, agent=self.name,
                 )
                 self._call_started = None
-            if self._native_source is not None:
-                self._native_source.append(ev.message)
-        self.session.bus.emit("agent_event", ev, self)
-        if ev.type == "turn_end":
-            self.session.bus.emit("turn_end", ev, self)
-        self.session.ui.on_event(ev)
 
     def compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
+        if not self.can_run():
+            return None
         return compaction.compact(self, focus=focus, reason=reason, model=model)
 
     def restore_native_context(self, model=None) -> bool:
@@ -241,7 +276,7 @@ class Runtime:
         """Assemble instructions and permitted tool schemas without request side effects."""
         s = self.session
         permissions = s.services.get("permissions")
-        mode = permissions.mode_for(self.name) if permissions else s.permission_mode
+        mode = permissions.mode_for(self.name) if hasattr(permissions, "mode_for") else s.permission_mode
         system = self.system
         tools = [t.spec() for t in self.tools if mode != "plan" or plan_tool_allowed(t)]
         if mode == "plan":
@@ -275,6 +310,9 @@ class Runtime:
 
     def _attempts(self, messages: list, signal: threading.Event):
         s = self.session
+        if not self.can_run() or signal.is_set():
+            yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
+            return
         self.restore_native_context()
         if self._compaction_due():
             self.compact(reason="auto")
@@ -284,10 +322,18 @@ class Runtime:
         web_fallbacks = 0
         model = self.model
         while True:
+            if not self.can_run() or signal.is_set():
+                stopped = AssistantMessage(stop_reason="aborted")
+                yield StreamEvent("error", stopped)
+                return
             if self.restore_native_context(model) and self._compaction_due(model):
                 self.compact(reason="auto", model=model)
             ctx = self.request_context(messages, model)
             opts = StreamOptions(signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort)
+            if not self.can_run() or signal.is_set():
+                stopped = AssistantMessage(stop_reason="aborted")
+                yield StreamEvent("error", stopped)
+                return
             request_model = model
             self._call_started = time.monotonic()
             failed: AssistantMessage | None = None
@@ -376,6 +422,12 @@ class AgentSession:
         self.commands = Commands()
         self.services: dict = {}
         self.sections: list = []
+        self.runtime_sections: list = []
+        self.permission_policy: PermissionPolicy | None = None
+        self._permission_boundary = None
+        self._reported_save_errors: set[int] = set()
+        self._failed_stores: list = []
+        self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
         self._tools: list[tuple[AgentTool, tuple]] = []
         self.templates: dict = {}
         self.permission_mode = permission_mode or self.settings.get("permissions.mode", "auto-review")
@@ -405,9 +457,13 @@ class AgentSession:
         load_builtin_features(self)
         if extensions:
             load_user_extensions(self)
+        if self.settings.feature_enabled("permission") and self.permission_policy is None:
+            raise RuntimeError("Permission feature enabled but no policy was registered")
+        if self.permission_policy is None:
+            self.permission_policy = NoPermissions()
         install_command_hooks(self)
         self.templates = load_templates(self.paths.both("prompts"))
-        self.main = self._new_main()
+        self.main = self._new_main(self.store)
         self.bus.emit("session_start", self)
         if refresh_models:
             from .preferences import start_model_refresh
@@ -543,6 +599,9 @@ class AgentSession:
         model = model or self.small_model
         # A caller may bind a background request to its original conversation before a session switch.
         store = accounting_store if accounting_store is not None else self.store
+        if store.save_error is not None:
+            self.report_save_error(store.save_error)
+            raise store.save_error
         started = time.monotonic()
         message = ai.complete(model, system, prompt, max_tokens=max_tokens, total_max_tokens=total_max_tokens,
                               effort=effort, signal=signal)
@@ -575,20 +634,60 @@ class AgentSession:
             return SessionStore.new(self.paths.sessions, self.cwd)
         return SessionStore.load(Path(session))
 
-    def _new_main(self) -> Runtime:
-        messages, ids = self.store.build_context()
-        return Runtime(self, "main", "main", store=self.store, messages=messages, ids=ids)
+    def create_runtime(self, name: str, role: str, **kwargs) -> Runtime:
+        with self._lock:
+            parent = kwargs.get("review_parent")
+            if role != "main" and parent is None:
+                parent = self.main.review_source
+                kwargs["review_parent"] = parent
+            if parent is not None:
+                parent.root.entries()
+            kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else parent.root)
+            return Runtime(self, name, role, **kwargs)
+
+    def _new_main(self, store: SessionStore) -> Runtime:
+        messages, ids = store.build_context()
+        return self.create_runtime("main", "main", store=store, messages=messages, ids=ids)
 
     def _prepare_main(self, store: SessionStore) -> Runtime:
-        previous = self.store
-        self.store = store
-        try:
-            return self._new_main()
-        finally:
-            self.store = previous
+        return self._new_main(store)
+
+    def live_store(self, path: str | Path) -> SessionStore | None:
+        """Resolve an owned conversation before consulting its possibly damaged file."""
+        path = Path(path).absolute()
+        with self._lock:
+            if self.store.path == path:
+                return self.store
+            retained = self._retained_sessions.get(path)
+            return retained[0].store if retained is not None else None
+
+    def retained_stores(self) -> tuple[SessionStore, ...]:
+        with self._lock:
+            return tuple(runtime.store for runtime, pending in self._retained_sessions.values()
+                         if runtime.store.entries or pending)
+
+    def list_sessions(self) -> list[dict]:
+        """Merge this workspace's disk catalog with recoverable in-process history."""
+        items = {item["path"]: item for item in SessionStore.list(self.paths.sessions)}
+        with self._lock:
+            stores = self.retained_stores()
+            if self.store.save_error is not None:
+                stores = (*stores, self.store)
+            for store in stores:
+                items[store.path] = store.describe()
+        return sorted(items.values(), key=lambda item: (-item["mtime"], str(item["path"])))
 
     def open_session(self, path: str | Path) -> None:
-        self._activate_store(SessionStore.load(Path(path)))
+        path = Path(path).absolute()
+        with self._lock:
+            if self.store.path == path:
+                return
+            retained = self._retained_sessions.get(path)
+            if retained is not None:
+                runtime, pending = retained
+                self._activate_store(runtime.store, runtime=runtime, pending=pending)
+                return
+            self._activate_store(SessionStore.load(path))
 
     def new_session(self) -> None:
         self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd))
@@ -614,17 +713,30 @@ class AgentSession:
                 stores[0].trash()
                 for store in stores[1:]:
                     store.path = None
+            self._retained_sessions.pop(path, None)
             if current:
                 self._activate_store(replacement, runtime=runtime)
 
-    def _activate_store(self, store: SessionStore, *, runtime: Runtime | None = None) -> None:
+    def _activate_store(self, store: SessionStore, *, runtime: Runtime | None = None,
+                        pending: deque | None = None) -> None:
         with self._lock:
             if self._shutdown_started:
                 return
             runtime = runtime if runtime is not None else self._prepare_main(store)
+            if self._shutdown_started:
+                return
+            old = self.main
+            # Background accounting can fail after we leave, even when there
+            # were no queued wakeups. Keep the original owner, not a fresh disk copy.
+            if old.store.path is not None:
+                self._retained_sessions[old.store.path] = (old, self.wakeups)
+            self._retained_sessions.pop(store.path, None)
+            self.wakeups = pending if pending is not None else deque()
+            runtime.model = self.model
             self.store = store
             self.main = runtime
-            self._visited_stores.append(store)
+            if store not in self._visited_stores:
+                self._visited_stores.append(store)
             self.bus.emit("session_start", self)
 
     def set_model(self, spec: str) -> None:
@@ -656,12 +768,46 @@ class AgentSession:
     def tool(self, name: str, role: str = "main") -> AgentTool | None:
         return next((t for t in self.tools_for(role) if t.name == name), None)
 
+    def register_permission_policy(self, policy: PermissionPolicy) -> None:
+        if not callable(getattr(policy, "preflight", None)) or not callable(getattr(policy, "before_execute", None)):
+            raise TypeError("Policy requires preflight(event) and before_execute(event)")
+        if self._permission_boundary is None:
+            self._permission_boundary = self.bus.boundary(100)
+        self.permission_policy = policy
+        self.services["permissions"] = policy
+
+    def _persistence_block(self, ev):
+        runtime = ev.review_source.runtime if ev.review_source is not None else self.main
+        return None if runtime.can_run() else Block("Session history is unsaved; work is paused.")
+
+    def _check_policy(self, method, ev):
+        if block := self._persistence_block(ev):
+            return block
+        try:
+            policy = getattr(ev, "_permission_policy", self.permission_policy)
+            result = getattr(policy, method)(ev)
+            return result or self._persistence_block(ev)
+        except Exception as error:
+            return Block(f"Permission check failed: {error}")
+
     def _before_tool(self, ev: ToolCallEvent):
-        return self.bus.first("tool_call", ev, self)
+        if block := self._persistence_block(ev):
+            return block
+        ev._permission_policy = self.permission_policy
+        snapshot = self.bus.snapshot("tool_call")
+        boundary = self._permission_boundary
+        if boundary is None:
+            return self.bus.first_snapshot("tool_call", snapshot, ev, self)
+        before = tuple(item for item in snapshot if item[:2] < boundary)
+        after = tuple(item for item in snapshot if item[:2] > boundary)
+        result = self.bus.first_snapshot("tool_call", before, ev, self)
+        if result is not None:
+            return result
+        result = self._check_policy("preflight", ev)
+        return result if result is not None else self.bus.first_snapshot("tool_call", after, ev, self)
 
     def _before_tool_execute(self, ev: ToolCallEvent):
-        permissions = self.services.get("permissions")
-        return permissions.before_execute(ev) if permissions is not None else None
+        return self._check_policy("before_execute", ev)
 
     def _after_tool(self, ev: ToolCallEvent, res: ToolResult) -> ToolResult:
         res = self.bus.chain("tool_result", res, ev, self)
@@ -675,7 +821,13 @@ class AgentSession:
 
     # -- running -----------------------------------------------------------------
     def prompt(self, text: str) -> None:
-        """Handle one line of user input: hooks, commands, templates, then a run."""
+        """Handle one line of user input without disguising persistence failures."""
+        try:
+            self._prompt(text)
+        except SessionSaveError as error:
+            self.report_save_error(error)
+
+    def _prompt(self, text: str) -> None:
         result = self.bus.chain("input", text, self)
         if isinstance(result, Handled):
             if result.message:
@@ -695,10 +847,30 @@ class AgentSession:
                 return
         self.run([UserMessage(text)])
 
+    def report_save_error(self, error: SessionSaveError) -> None:
+        key = id(error.store)
+        with self._lock:
+            if key in self._reported_save_errors:
+                return
+            self._reported_save_errors.add(key)
+            self._failed_stores.append(error.store)
+        callback = getattr(self.ui, "save_failed", None)
+        if callback is not None:
+            callback(error.store.id, str(error.store.path), str(error))
+        else:
+            self.ui.print(str(error), "error")
+
+    @property
+    def has_save_failure(self) -> bool:
+        return bool(self._failed_stores) or any(store.save_error for store in self._visited_stores)
+
     def run(self, prompts: list) -> None:
-        rt = self.main
         with self._lock:
             if self._shutdown_started:
+                return
+            rt = self.main
+            if not rt.can_run():
+                self.wakeups.extend(prompts)
                 return
             self.busy = True
         wake = False
@@ -712,7 +884,7 @@ class AgentSession:
                 left = rt.agent.drain_queues()
                 if left and not self._shutdown_started:
                     self.wakeups.extend(left)
-                    wake = True
+                    wake = rt.can_run()
             self.bus.emit("agent_end", rt)
         if wake:
             self.ui.wake()
@@ -720,7 +892,7 @@ class AgentSession:
     def run_pending(self) -> bool:
         """Run queued notifications, if any. Returns True if a run happened."""
         with self._lock:
-            if self._shutdown_started or self.busy or not self.wakeups:
+            if self._shutdown_started or self.busy or not self.wakeups or not self.main.can_run():
                 return False
             msgs = list(self.wakeups)
             self.wakeups.clear()
@@ -735,7 +907,7 @@ class AgentSession:
         already have drained its queues, or the worker may be running a command.
         """
         with self._lock:
-            if self._shutdown_started or not self.busy:
+            if self._shutdown_started or not self.busy or not self.main.can_run():
                 return False
             self.main.agent.steer(UserMessage(text))
         # Queued messages reach the model only after the current tool batch; this tells
@@ -769,6 +941,8 @@ class AgentSession:
         """Process notifications until nothing is pending (used by print mode)."""
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if not self.main.can_run():
+                return
             if self.run_pending():
                 continue
             busy = [b for b in self.bus.emit("pending_work", self) if b]

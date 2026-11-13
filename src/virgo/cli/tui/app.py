@@ -279,6 +279,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def session_browser_items(self) -> list[dict]:
         items = SessionStore.list_all(self.session.paths.user / "sessions")
+        retained = {
+            store.path: store.describe()
+            for pane in self._panes for store in pane.controller.session.retained_stores()
+        }
+        items = [item for item in items if item["path"] not in retained] + list(retained.values())
         for pane in self._panes:
             controller = pane.controller
             path = controller.session.store.path
@@ -288,22 +293,41 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             if item is None:
                 item = controller.session.store.describe()
                 items.append(item)
+            elif controller.session.store.save_error is not None:
+                item.update(controller.session.store.describe())
             item["status"] = self.pane_status(pane)
+        statuses = self.session_browser_statuses()
+        for item in items:
+            item["status"] = statuses.get(str(item["path"]), item.get("status", "Saved"))
         return items
+
+    def session_browser_statuses(self) -> dict[str, str]:
+        statuses = {
+            str(store.path): "Unsaved — paused" if store.save_error is not None else "Saved"
+            for pane in self._panes for store in pane.controller.session.retained_stores()
+        }
+        statuses.update({str(pane.key): self.pane_status(pane) for pane in self._panes})
+        return statuses
 
     def can_change_session(self) -> bool:
         return (
             self.controller.can_switch and not self.ui.has_pending_requests
             and self.active_input is None and self.active_confirmation is None
             and not self.input_requests and not self.confirmations
+            and not self.session.has_save_failure
+            and not any(self.session.bus.emit("pending_work", self.session))
         )
 
     def session_browser_status(self) -> str:
+        if self.session.store.save_error is not None:
+            return "Unsaved — paused"
         if self.active_input is not None or self.active_confirmation is not None or self.input_requests or self.confirmations:
             return "Waiting"
         return "Ready" if self.controller.can_switch else "Running"
 
     def pane_status(self, pane: ConversationPane) -> str:
+        if pane.controller.session.store.save_error is not None:
+            return "Unsaved — paused"
         if pane is self._pane:
             return self.session_browser_status()
         if pane.controller.ui.has_pending_requests:
@@ -323,7 +347,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         picker = self._session_picker
         if picker is None:
             return
-        owner = next((pane for pane in self._panes if pane.controller.session.store.path == event.path), None)
+        owner = next((pane for pane in self._panes if pane.controller.session.live_store(event.path) is not None), None)
         if owner is not None and (not owner.controller.can_switch or owner.controller.ui.has_pending_requests):
             self.notify("This session is still active. Finish or interrupt it before moving it to Trash.")
             return
@@ -361,6 +385,18 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     async def change_conversation(self, path, initial=None) -> None:
         target = next((pane for pane in self._panes if pane.key == path), None)
+        if target is None and path != "new":
+            owner = next((pane for pane in self._panes
+                          if pane.controller.session.live_store(path) is not None), None)
+            if owner is not None:
+                # Never create a disk-backed duplicate of a retained conversation.
+                if owner.controller.ui.has_pending_requests or not owner.controller.open_session(path, initial=initial):
+                    self.notify("Another conversation is running here. Finish or interrupt it before reopening this history.",
+                                severity="warning")
+                    return
+                owner.query_one(ChatEditor).clear()
+                owner.history.reset()
+                target = owner
         if target is None and not self.can_change_session():
             ui = FullscreenUI()
             previous = self.session
@@ -484,9 +520,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 if self._session_picker.current_path != self._pane.key:
                     self._session_picker.refresh_sessions(self.session_browser_items(), self._pane.key)
                 self._session_picker.set_current_status(self.session_browser_status())
-                self._session_picker.set_statuses({
-                    str(pane.key): self.pane_status(pane) for pane in self._panes
-                })
+                self._session_picker.set_statuses(self.session_browser_statuses())
             self.activity.waiting = (
                 "Closing"
                 if self.controller.closing
@@ -770,6 +804,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         update_static(root.query_one("#metrics", Static), metrics)
         mode = normalize_permission_mode(self.session.permission_mode)
         footer = Text(no_wrap=True, overflow="ellipsis")
+        if self.session.store.save_error is not None:
+            footer.append("UNSAVED · paused · memory only  ", style="bold red")
         footer.append(permission_mode_label(mode), style=PERMISSION_COLORS[mode])
         effort = f" · {self.session.effort}"
         available = max(1, width - footer.cell_len - 2)

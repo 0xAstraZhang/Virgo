@@ -169,7 +169,7 @@ def register_builtins(session: AgentSession) -> None:
         )
 
     def sessions(s, args):
-        items = type(s.store).list(s.paths.sessions)
+        items = s.list_sessions()
         if not items:
             s.ui.print("No saved sessions for this directory.")
             return

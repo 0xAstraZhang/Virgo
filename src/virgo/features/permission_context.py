@@ -101,20 +101,23 @@ class BranchSource:
 
     def append(self, type: str, **data) -> dict:
         """Write review accounting to its task even when another branch is active."""
-        with self.lock, self.store._lock:
-            self.entries()
-            active = self.store.leaf
-            detached = self.anchor != active
-            self.store.leaf = self.anchor
-            try:
-                if detached:
-                    data["active_leaf"] = active
-                entry = self.store.append(type, **data)
-                self.anchor = entry["id"]
-                return entry
-            finally:
-                if detached:
-                    self.store.leaf = active
+        try:
+            with self.lock, self.store._lock:
+                self.entries()
+                active = self.store.leaf
+                detached = self.anchor != active
+                self.store.leaf = self.anchor
+                try:
+                    if detached:
+                        data["active_leaf"] = active
+                    return self.store._append_locked(type, **data)
+                finally:
+                    # Failed writes still allocated a logical entry on this branch.
+                    self.anchor = self.store.leaf
+                    if detached:
+                        self.store.leaf = active
+        finally:
+            self.store.notify_save_failure()
 
 
 class ReviewSource:

@@ -181,7 +181,8 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, mo
         prompt += f"Pay special attention to: {focus}\n\n"
     prompt += SUMMARY_FORMAT
     msg = session.complete("compaction", SUMMARY_SYSTEM, prompt, max_tokens=8000,
-                           effort=session.small_model_effort, signal=rt.agent.signal, agent=rt.name)
+                           effort=session.small_model_effort, signal=rt.agent.signal, agent=rt.name,
+                           accounting_store=rt.accounting_store)
     if msg.stop_reason != "stop" or rt.agent.signal.is_set() or not msg.text().strip():
         session.ui.print(f"[compaction failed: {msg.error_message or 'empty summary'}]", "error")
         return None
