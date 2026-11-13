@@ -168,10 +168,12 @@ def _manage_schedules(ui: UI, sched: Scheduler) -> None:
     while True:
         items = list(sched.items.values())
         choice = ui.select_schedule([_choice(s) for s in items], selected=selected)
+        # Explicit focus is a one-shot hint; subsequent navigation belongs to the UI.
+        selected = None
         if choice is None:
             return
         if choice == "new":
-            selected = create_schedule(ui, sched, "") or selected
+            selected = create_schedule(ui, sched, "")
             continue
         sid = selected = choice
         try:

@@ -524,6 +524,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def show_next_confirmation(self) -> None:
         if self.controller.closing or self.has_modal or self.active_confirmation is not None or self.active_input is not None:
             return
+        # The workspace hides the approval dock, including between input steps.
+        if self._pane.query_one(ScheduleWorkspace).display:
+            return
         while self.confirmations:
             confirmation = self.confirmations.popleft()
             if self.ui.is_confirmation_pending(confirmation.id):
