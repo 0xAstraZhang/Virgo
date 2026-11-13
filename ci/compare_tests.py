@@ -43,6 +43,14 @@ PARAMETER_ALIASES = {
         "test_live_luna_reasoning_metadata_overrides_builtin_and_configured_defaults[None]",
     "test_configured_luna_reasoning_metadata_overrides_live_defaults[max]":
         "test_live_luna_reasoning_metadata_overrides_builtin_and_configured_defaults[max]",
+    "test_only_header_click_toggles_immediately[header]":
+        "test_single_click_anywhere_toggles_only_once[header]",
+    "test_only_header_click_toggles_immediately[body]":
+        "test_single_click_anywhere_toggles_only_once[body]",
+    "test_only_header_click_toggles_immediately[padding]":
+        "test_single_click_anywhere_toggles_only_once[padding]",
+    "test_web_search_result_header_toggles_and_body_keeps_details_open":
+        "test_web_search_result_body_click_collapses_only_result",
 }
 
 
