@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 
 import httpx
@@ -22,10 +23,17 @@ def no_real_search_key(monkeypatch):
 
 @pytest.fixture
 def search_http(monkeypatch):
-    state = {"requests": [], "status": 200}
+    state = {"requests": [], "catalog_requests": [], "status": 200}
     original = httpx.Client
 
     def handler(request):
+        # httpx is a shared module: patching the web tool's Client also catches
+        # startup catalog discovery. Keep its traffic out of search assertions.
+        if request.method == "GET" and request.url.path.endswith("/models"):
+            state["catalog_requests"].append(request)
+            return httpx.Response(200, json={"data": [
+                {"id": "deepseek-flash", "context_window": 123456},
+            ]})
         state["requests"].append(request)
         if request.url.host == "api.deepseek.com":
             return httpx.Response(state["status"], json={"results": [
@@ -43,6 +51,34 @@ def execute_search(session, runtime=None):
     runtime = runtime or session.main
     ctx = ToolContext("search", runtime.cwd, runtime.agent.signal, runtime.name, review_source=runtime.review_source)
     return session.tool("web_search").execute({"query": "Python docs"}, ctx)
+
+
+@pytest.mark.parametrize("denied", [False, True], ids=["allowed", "denied"])
+def test_startup_catalog_refresh_does_not_count_as_search(make_session, search_http, monkeypatch, denied):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
+    session = make_session(mode="auto-review" if denied else "accept-all", settings={
+        "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
+    })
+    session.set_model("deepseek/deepseek-flash")
+    # Force the background request to finish before any search assertion. This
+    # must exercise startup discovery, rather than win a race against its thread.
+    assert session._catalog_refresh_done.wait(3)
+    assert not search_http["requests"]
+    assert session.model.context_window == 123456
+    query = "private information" if denied else "Python docs"
+    install_responses(monkeypatch,
+        AssistantMessage(content=[ToolCall("s", "web_search", {"query": query})], stop_reason="tool_use"),
+        AssistantMessage(content=[TextContent("Handled")]),
+    )
+    session.prompt("Search for documentation")
+    assert [str(request.url) for request in search_http["catalog_requests"]] == [
+        "https://api.deepseek.com/models",
+    ]
+    assert [str(request.url) for request in search_http["requests"]] == (
+        [] if denied else ["https://api.deepseek.com/v1/tools/search"]
+    )
+    result = next(m for m in session.main.messages if isinstance(m, ToolResultMessage))
+    assert result.is_error is denied
 
 
 @pytest.mark.parametrize("mode", ["auto", "native"])
@@ -177,22 +213,42 @@ def test_official_alias_reuses_its_own_key_and_respects_key_rotation(make_sessio
 
 
 def test_interleaved_agents_use_their_own_request_model(make_session, search_http, monkeypatch):
+    from virgo.harness import preferences
+
+    catalog_ready = threading.Event()
+    release_catalog = threading.Event()
+    original_fetch = preferences.fetch_model_catalog
+
+    def delayed_catalog(model, signal):
+        catalog_ready.set()
+        assert release_catalog.wait(3)
+        return original_fetch(model, signal)
+
+    monkeypatch.setattr(preferences, "fetch_model_catalog", delayed_catalog)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
     session = make_session()
-    ds = session.resolve("deepseek/deepseek-flash")
-    worker = Runtime(session, "researcher", "subagent", model=ds, compaction=False)
-    worker.request_context([])
-    session.main.request_context([])
-    assert json.loads(execute_search(session, worker).as_text())["backend"] == "deepseek"
-    assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
-    # A retry's model may differ from the main runtime's configured model.
-    session.main.request_context([], ds)
-    assert json.loads(execute_search(session).as_text())["backend"] == "deepseek"
-    session.set_model("faux/other")
-    session.main.request_context([])
-    assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
-    assert next(t for t in worker.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 128
-    assert next(t for t in session.main.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 2000
+    try:
+        assert catalog_ready.wait(3)
+        ds = session.resolve("deepseek/deepseek-flash")
+        worker = Runtime(session, "researcher", "subagent", model=ds, compaction=False)
+        worker.request_context([])
+        session.main.request_context([])
+        assert json.loads(execute_search(session, worker).as_text())["backend"] == "deepseek"
+        assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
+        # Finish an unrelated provider refresh after preparing a retry's model.
+        # It must not invalidate the request binding of the unchanged main model.
+        session.main.request_context([], ds)
+        release_catalog.set()
+        assert session._catalog_refresh_done.wait(3)
+        assert json.loads(execute_search(session).as_text())["backend"] == "deepseek"
+        session.set_model("faux/other")
+        session.main.request_context([])
+        assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
+        assert next(t for t in worker.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 128
+        assert next(t for t in session.main.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 2000
+    finally:
+        release_catalog.set()
+        assert session._catalog_refresh_done.wait(3)
 
 
 @pytest.mark.parametrize("status", [200, 401, 429, 503])

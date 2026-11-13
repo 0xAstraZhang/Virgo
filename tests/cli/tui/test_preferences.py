@@ -21,13 +21,13 @@ from tests.support.terminal import PtyClient, plain
 from tests.support.tui import wait_for
 
 
-def test_escape_cancels_live_catalog_loading_without_opening_stale_picker(make_session, monkeypatch):
+def test_picker_escape_does_not_cancel_background_startup_refresh(make_session, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     entered = threading.Event()
 
     def stalled(_model, signal):
         entered.set()
-        assert signal.wait(2)
+        assert signal.wait(5)
         raise CatalogCancelled("Model discovery cancelled.")
 
     monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", stalled)
@@ -42,6 +42,8 @@ def test_escape_cancels_live_catalog_loading_without_opening_stale_picker(make_s
             await wait_for(pilot, lambda: not app.controller.busy)
             assert not app.query_one(PreferencePicker).display
             assert app.editor.display and app.active_input is None
+            assert not app.session._catalog_refresh_done.is_set()
+            app.session.shutdown()
 
     asyncio.run(scenario())
 
@@ -127,6 +129,8 @@ def test_provider_group_combines_api_and_account_models_and_back_keeps_selection
             "type": "oauth", "access": "test-access", "expires": time.time() + 3600,
             "accountId": "test-account",
         })
+        session = make_session(ui=ui, settings={"providers": {"openai": {"models": {"configured-chat": {}}}}})
+        assert await asyncio.to_thread(session._catalog_refresh_done.wait, 3)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             app.controller.submit("/model")

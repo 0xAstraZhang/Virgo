@@ -5,8 +5,8 @@ from __future__ import annotations
 import ipaddress
 import math
 import os
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -46,10 +46,9 @@ class PreferenceChoice:
 
 
 def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
-    """Refresh connected providers; only their returned IDs enter the real-model picker."""
+    """Read the latest local directory snapshot without a network request."""
     configured = session.settings.get("providers", {})
     credentials = session.auth.all()
-    signal = session.main.agent.signal
     choices: dict[str, ModelChoice] = {}
     connections = []
     for provider in sorted(set(BUILTIN_PROVIDERS) | set(configured) | set(credentials)):
@@ -74,37 +73,72 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
         if not _model_available(model, credentials):
             continue
         connections.append(model)
-    if connections:
-        session.ui.print("Fetching live model lists…", "dim")
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="virgo-discovery") as pool:
-        pending = {pool.submit(fetch_model_catalog, model, signal): model for model in connections}
-        for future in as_completed(pending):
-            provider = pending[future].provider
-            # Never retain a failed provider's previous directory or stale metadata.
-            session.discovered_models = {
-                spec: meta for spec, meta in session.discovered_models.items() if not spec.startswith(provider + "/")
-            }
-            try:
-                models = future.result()
-            except CatalogCancelled:
-                return ()
-            except CatalogError as error:
-                session.ui.print(f"{provider_name(provider)}: {error}", "warn")
-                continue
-            if signal.is_set():
-                return ()
-            if not models:
-                session.ui.print(f"{provider_name(provider)}: the live directory returned no selectable models.", "warn")
-            for item in models:
-                spec = f"{provider}/{item.id}"
-                session.discovered_models[spec] = item.metadata
-                context = item.metadata.get("context_window")
-                description = f"{provider} · {context:,} context" if context else provider
-                choices[spec] = ModelChoice(spec, item.id, description, item.released_at)
+    for connection in connections:
+        for item in session.cached_model_catalog(connection):
+            context = item.metadata.get("context_window")
+            description = f"{connection.provider} · {context:,} context" if context else connection.provider
+            spec = f"{connection.provider}/{item.id}"
+            choices[spec] = ModelChoice(spec, item.id, description, item.released_at)
     # Keep each connection's server order independent of parallel fetch completion.
     ordered = sorted(choices.values(), key=lambda choice: choice.spec.split("/", 1)[0])
     # Stable ties preserve server order; undated models follow dated models.
     return tuple(sorted(ordered, key=lambda choice: (choice.released_at is None, -(choice.released_at or 0))))
+
+
+def start_model_refresh(session: AgentSession) -> None:
+    """One bounded, background lookup per connected provider at process startup."""
+    configured = session.settings.get("providers", {})
+    credentials = session.auth.all()
+    connections = []
+    for provider in sorted(set(BUILTIN_PROVIDERS) | set(configured) | set(credentials)):
+        try:
+            model = session.resolve(f"{provider}/_catalog")
+        except (TypeError, ValueError):
+            continue
+        if model.api not in {"faux", "google-gemini-cli"} and _model_available(model, credentials):
+            connections.append(model)
+    if not connections:
+        session._catalog_refresh_done.set()
+        return
+    slots = threading.Semaphore(4)
+
+    def refresh(connection):
+        with slots:
+            if session._catalog_stop.is_set():
+                return
+            try:
+                models = fetch_model_catalog(connection, session._catalog_stop)
+                with session._lock:
+                    if session._catalog_stop.is_set():
+                        return
+                    # A settings/login change during the request must not publish into a different endpoint.
+                    current = session.resolve(f"{connection.provider}/_catalog")
+                    if current.api != connection.api or base_url(current) != base_url(connection):
+                        return
+                    session.remember_model_metadata(connection, models)
+                    if not models:
+                        session.ui.print(f"{provider_name(connection.provider)}: the live directory returned no selectable models.", "warn")
+            except CatalogCancelled:
+                pass
+            except CatalogError as error:
+                if not session._catalog_stop.is_set():
+                    session.ui.print(f"{provider_name(connection.provider)}: {error} Keeping the saved directory.", "warn")
+            except Exception:
+                # Never print transport exceptions which can contain credentials or URLs.
+                if not session._catalog_stop.is_set():
+                    session.ui.print(f"{provider_name(connection.provider)}: model refresh failed; keeping the saved directory.", "warn")
+
+    def run():
+        try:
+            workers = [threading.Thread(target=refresh, args=(model,), daemon=True, name="virgo-startup-provider") for model in connections]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+        finally:
+            session._catalog_refresh_done.set()
+
+    threading.Thread(target=run, daemon=True, name="virgo-startup-catalog").start()
 
 
 def provider_name(provider: str) -> str:
@@ -205,7 +239,7 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if session.main.agent.signal.is_set():
         return
     if kind == "model" and not models:
-        session.ui.print("No live models available. Check /login, retry /model, or use /model provider/model-id.", "warn")
+        session.ui.print("No saved models available. Startup refresh may still be running; reopen /model after it finishes. Check /login and restart, or use /model provider/model-id.", "warn")
         return
     request = PreferenceRequest(kind, models, session.model.spec, effort)
     choice = session.ui.choose_preferences(request)

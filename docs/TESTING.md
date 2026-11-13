@@ -4,6 +4,31 @@ The suite exercises real tool execution, local HTTP servers, session flows and
 Textual/PTY interactions without live model credentials. See the development
 section in [README](../README.md) for commands and the test layout.
 
+## Startup catalog traffic in search tests
+
+Creating an `AgentSession` starts model discovery for connected providers. The
+search tests replace `httpx.Client` through the web tool's module, which also
+affects catalog discovery because both import the same `httpx` module. Their
+transport must route `GET .../models` to a valid directory response and record
+it separately from search traffic. Search-count, credential, routing, and denied
+query assertions continue to apply to actual search requests.
+
+`test_startup_catalog_refresh_does_not_count_as_search` waits for real session
+startup discovery, verifies the returned model metadata, and then drives allowed
+and denied searches through the agent tool loop. Both cases failed before the
+transport correction because `/models` appeared in the search request list.
+Keep discovery enabled and use the completion event, rather than sleeps or
+retries. Real HTTP-to-TUI startup, cache, restart, and cancellation coverage lives
+in `tests/cli/tui/test_model_metadata.py` and `test_preferences.py`.
+
+The interleaved-agent search case also gates catalog completion until after a
+retry's request context is prepared. An unrelated provider refresh previously
+replaced the unchanged main model object, invalidating that binding and routing
+the request to DuckDuckGo instead of DeepSeek. This ordered scenario reproduced
+the Windows CI failure locally before the runtime correction. Metadata refreshes
+now retain an equal model object; actual metadata changes still update the model,
+as covered by the HTTP-to-TUI scenarios.
+
 ## Transcript scroll ordering (Issue #24)
 
 `Transcript.go_latest()` uses Textual's anchor to scroll immediately and follow

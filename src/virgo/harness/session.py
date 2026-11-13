@@ -25,6 +25,7 @@ from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent, ToolResult
 from ..ai.auth import AuthStore
 from ..ai.compaction import compatible_context, context_binding, is_native_context
+from ..ai.model_metadata import cache_path, clean_metadata, read_catalog, write_metadata
 from ..ai.models import base_url
 from ..ai.stream import EventStream, StreamEvent
 from ..ai.transform import strip_thinking
@@ -353,6 +354,7 @@ class AgentSession:
         settings: dict | None = None,
         extensions: bool = True,
         home: str | Path | None = None,
+        refresh_models: bool = True,
     ):
         self.session_options = {
             "model": model,
@@ -360,6 +362,7 @@ class AgentSession:
             "settings": settings,
             "extensions": extensions,
             "home": home,
+            "refresh_models": False,
         }
         self.paths = Paths(Path(cwd), Path(home) if home else None)
         self.cwd = self.paths.cwd
@@ -379,6 +382,11 @@ class AgentSession:
         self.busy = False
         self.wakeups: deque = deque()
         self.discovered_models: dict[str, dict] = {}
+        self._metadata_paths: dict[str, Path] = {}
+        self._model_catalogs: dict[Path, list] = {}
+        self._catalog_stop = threading.Event()
+        self._catalog_refresh_done = threading.Event()
+        self._metadata_pending = False
         self.model = self.resolve(model or self.settings.get("model"))
         self.small_model = self._small_model(self.model)
 
@@ -397,6 +405,12 @@ class AgentSession:
         self.templates = load_templates(self.paths.both("prompts"))
         self.main = self._new_main()
         self.bus.emit("session_start", self)
+        if refresh_models:
+            from .preferences import start_model_refresh
+
+            start_model_refresh(self)
+        else:
+            self._catalog_refresh_done.set()
 
     # -- setup helpers ---------------------------------------------------------
     @property
@@ -408,9 +422,18 @@ class AgentSession:
         self._permission_mode = normalize_permission_mode(mode)
 
     def resolve(self, spec: str) -> ai.Model:
+        with self._lock:
+            return self._resolve(spec)
+
+    def _resolve(self, spec: str) -> ai.Model:
         providers = self.settings.get("providers", {})
-        if metadata := self.discovered_models.get(spec):
-            provider, model_id = spec.split("/", 1)
+        candidate = ai.resolve_model(spec, providers)
+        path = cache_path(self.paths.user, candidate)
+        if self._metadata_paths.get(candidate.provider) != path:
+            self._replace_metadata(candidate.provider, {item.id: item.metadata for item in self.cached_model_catalog(candidate)})
+            self._metadata_paths[candidate.provider] = path
+        if metadata := self.discovered_models.get(candidate.spec):
+            provider, model_id = candidate.provider, candidate.id
             config = providers.get(provider, {})
             models = config.get("models") or {}
             names = {
@@ -419,13 +442,51 @@ class AgentSession:
                 "default_reasoning_level": "defaultReasoningLevel",
             }
             live = {names[key]: value for key, value in metadata.items() if key in names}
-            providers = {**providers, provider: {**config, "models": {**models, model_id: {**models.get(model_id, {}), **live}}}}
+            providers = {**providers, provider: {**config, "models": {**models, model_id: {**live, **models.get(model_id, {})}}}}
         m = ai.resolve_model(spec, providers)
         m.auth_path = str(self.auth.path)
         if m.api == "anthropic":
             for k in ("fallbacks", "thinkingDisplay", "thinkingBinding"):
                 m.options.setdefault(k, self.settings.get(f"anthropic.{k}"))
         return m
+
+    def _replace_metadata(self, provider: str, models: dict) -> None:
+        self.discovered_models = {
+            spec: meta for spec, meta in self.discovered_models.items() if not spec.startswith(provider + "/")
+        }
+        self.discovered_models.update({f"{provider}/{key}": clean_metadata(value) for key, value in models.items()})
+
+    def cached_model_catalog(self, connection: ai.Model) -> list:
+        with self._lock:
+            path = cache_path(self.paths.user, connection)
+            if path not in self._model_catalogs:
+                self._model_catalogs[path] = read_catalog(path)
+            return list(self._model_catalogs[path])
+
+    def remember_model_metadata(self, connection: ai.Model, models: list) -> None:
+        with self._lock:
+            path = cache_path(self.paths.user, connection)
+            self._model_catalogs[path] = list(models)
+            self._replace_metadata(connection.provider, {item.id: item.metadata for item in models})
+            self._metadata_paths[connection.provider] = path
+            try:
+                write_metadata(path, models)
+            except OSError:
+                self.ui.print("Could not save model metadata; refreshed parameters remain available in this session.", "warn")
+            self._metadata_pending = True
+            if not self.busy:
+                self._apply_model_metadata()
+
+    def _apply_model_metadata(self) -> None:
+        if not self._metadata_pending:
+            return
+        model = self.resolve(self.model.spec)
+        # An unrelated catalog refresh must not invalidate prepared request
+        # bindings by replacing an otherwise unchanged runtime model object.
+        if model != self.model:
+            self.model = self.main.model = model
+        self.small_model = self.model if self.small_model.spec == self.model.spec else self.resolve(self.small_model.spec)
+        self._metadata_pending = False
 
     def _small_model(self, model: ai.Model) -> ai.Model:
         host = urlsplit(base_url(model)).hostname
@@ -563,11 +624,12 @@ class AgentSession:
             self.bus.emit("session_start", self)
 
     def set_model(self, spec: str) -> None:
-        model = self.resolve(spec)
-        small_model = self._small_model(model)
-        self.model = self.main.model = model
-        self.small_model = small_model
-        self.store.append("model_change", model=self.model.spec)
+        with self._lock:
+            model = self.resolve(spec)
+            small_model = self._small_model(model)
+            self.model = self.main.model = model
+            self.small_model = small_model
+            self.store.append("model_change", model=self.model.spec)
 
     # -- tools -------------------------------------------------------------------
     def register_tool(self, tool: AgentTool, roles: tuple = ("main",)) -> None:
@@ -642,6 +704,7 @@ class AgentSession:
         finally:
             with self._lock:
                 self.busy = False
+                self._apply_model_metadata()
                 left = rt.agent.drain_queues()
                 if left and not self._shutdown_started:
                     self.wakeups.extend(left)
@@ -714,6 +777,7 @@ class AgentSession:
             if self._shutdown_started:
                 return
             self._shutdown_started = True
+            self._catalog_stop.set()
             self.wakeups.clear()
         self.abort()
         try:
