@@ -88,6 +88,12 @@ class EventView(Foldable):
         self.kind, self.agent, self.tool_name = kind, agent, name
         self.text = text
         self.expanded = False
+        self.activity_phase = ""
+        self.activity_frame = "·"
+        self._preview_text: str | None = None
+        self._preview = ""
+        self._preview_width = -1
+        self._visible_preview = Text()
         self.header = FoldHeader("", markup=False)
         self.output = (Markdown(text, classes="output", open_links=False) if kind == "text"
                        else Static("", classes="output", markup=False))
@@ -115,31 +121,51 @@ class EventView(Foldable):
             title.append({"thinking": "Thought", "text": "Message", "sources": "Sources"}.get(
                 self.kind, self.kind.title()
             ))
+        if self.activity_phase:
+            title.append(f" · {self.activity_frame} {self.activity_phase}…", style="bold")
         if not (self.expanded and self.kind in TOOL_KINDS):
             title.append(" → " if self.tool_name and self.kind == "tool_result" else " · ")
-            title.append(" ".join(self.text.split()) or "…")
+            if self._preview_text != self.text:
+                self._preview_text = self.text
+                self._preview = " ".join(self.text.split()) or "…"
+                self._preview_width = -1
+            width = self.header.size.width or 80
+            if self._preview_width != width:
+                self._preview_width = width
+                self._visible_preview = Text(self._preview, no_wrap=True)
+                self._visible_preview.truncate(width, overflow="ellipsis")
+            title.append(self._visible_preview)
         return title
 
     def render_state(self) -> None:
         if self.kind == "text":
-            self.header.display = self.agent != "main"
-            update_static(self.header, Text(f"[{self.agent}]"), layout=False)
+            self.render_header()
             self.output.display = True
             if self._rendered_text != self.text:
                 self._rendered_text = self.text
                 self.output.update(self.text)
             return
         if self.kind == "thinking":
-            self.display = bool(self.text.strip())
-        title = self.summary()
+            self.display = bool(self.text.strip()) or bool(self.activity_phase)
+        self.render_header()
+        if self.expanded:
+            update_static(self.output, self.text or "(no output)")
+        self.output.display = self.expanded
+
+    def render_header(self) -> None:
+        if self.kind == "text":
+            self.header.display = self.agent != "main" or bool(self.activity_phase)
+            title = Text(f"[{self.agent}] " if self.agent != "main" else "")
+            if self.activity_phase:
+                title.append(f"{self.activity_frame} {self.activity_phase}…")
+        else:
+            title = self.summary()
         width = self.header.size.width
         if width and title.cell_len > width:
             title.truncate(max(0, width - 3), overflow="crop")
             title.append("." * min(3, width))
         # Headers are one fixed line, so new text never needs a layout pass.
         update_static(self.header, title, layout=False)
-        update_static(self.output, self.text or "(no output)")
-        self.output.display = self.expanded
 
     def set_text(self, text: str) -> None:
         self.text = text
@@ -210,6 +236,8 @@ class AssistantView(Vertical):
         self.text, self.thinking = "", ""
         self.message: AssistantMessage | None = None
         self.activity: Text | None = None
+        self.active_events: set[EventView] = set()
+        self.waiting: str | None = None
         self.events: list[EventView] = []
         self.answer_events: list[EventView] = []
         self.thought_header = Static("", classes="thought-header", markup=False)
@@ -222,10 +250,10 @@ class AssistantView(Vertical):
     def compose(self) -> ComposeResult:
         # A replayed run is built before it is mounted; compose its events in
         # one pass. Live runs are mounted empty and receive events afterwards.
-        yield self.thought_header
         with self.thought_body:
             yield from self.events
         yield self.body
+        yield self.thought_header
         yield self.error
 
     def on_mount(self) -> None:
@@ -276,13 +304,39 @@ class AssistantView(Vertical):
         self._render_thinking()
 
     def _render_thinking(self) -> None:
-        self.thought_header.display = self.activity is not None
+        visible = self.activity is not None and (not self.active_events or self.waiting is not None)
+        self.thought_header.display = visible
         update_static(self.thought_header, self.activity or Text(""), layout=False)
-        self.thought_header.set_class(self.activity is not None, "active")
+        self.thought_header.set_class(visible, "active")
         self.thought_body.display = True
 
-    def set_activity(self, label: Text | None) -> None:
+    def set_event_activity(self, event: EventView, phase: str) -> None:
+        if event.activity_phase == phase:
+            return
+        event.activity_phase = phase
+        if phase:
+            self.active_events.add(event)
+            if self.activity is not None and self.activity.plain:
+                event.activity_frame = self.activity.plain[0]
+        else:
+            self.active_events.discard(event)
+        event.render_state()
+        self._render_thinking()
+
+    def clear_event_activity(self, agent: str | None = None) -> None:
+        for event in tuple(self.active_events):
+            if agent is None or event.agent == agent:
+                self.set_event_activity(event, "")
+
+    def set_activity(self, label: Text | None, *, waiting: str | None = None) -> None:
         self.activity = label.copy() if label is not None else None
+        self.waiting = waiting
+        if label is not None and label.plain:
+            frame = label.plain[0]
+            for event in self.active_events:
+                if event.activity_frame != frame:
+                    event.activity_frame = frame
+                    event.render_header()
         self._render_thinking()
 
     def set_thinking(self, expanded: bool) -> None:
@@ -321,6 +375,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self._blocks: dict[str, dict[int, EventView]] = {}
         self._native_results: dict[tuple[str, str], ToolView] = {}
         self._message_open: set[str] = set()
+        self._streaming: dict[str, EventView] = {}
         self._run: AssistantView | None = None
         self._running = False
         # Top-level widgets built by history replay, mounted together at the end.
@@ -447,11 +502,14 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         else:
             self._staged.insert(self._staged.index(before), widget)
 
-    def show_activity(self, label: Text | None) -> None:
+    def show_activity(self, label: Text | None, *, waiting: str | None = None) -> None:
         if self.activity_card is not None:
-            self.activity_card.set_activity(label)
+            self.activity_card.set_activity(label, waiting=waiting)
 
     def finish_activity(self) -> None:
+        if self.activity_card is not None:
+            self.activity_card.clear_event_activity()
+        self._streaming.clear()
         self.show_activity(None)
         self.activity_card = self._run = None
         self.active.clear()
@@ -495,10 +553,13 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         row.set_result(text, is_error=message.is_error, details=message.details)
         if call := self._current_calls.get(key):
             call.status = row.status
+            self._set_event_activity(call, "")
         return row
 
     async def _start_message(self, agent: str) -> AssistantView:
         card = await self._assistant(agent)
+        card.clear_event_activity(agent)
+        self._streaming.pop(agent, None)
         if agent == "main":
             await card.clear_answer()
         # IDs belong to one model message. Providers may reuse them later in
@@ -542,6 +603,8 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         card.thinking = "\n\n".join(e.text for e in card.events if e.kind == "thinking")
         card.message = message
         if final:
+            card.clear_event_activity(agent)
+            self._streaming.pop(agent, None)
             terminal_error = message.stop_reason in ("error", "refusal", "aborted", "length")
             if agent == "main" and (terminal_error or (not message.tool_calls() and message.stop_reason != "pause_turn")):
                 last_tool = max((i for i, row in blocks.items() if row.kind in ("tool_call", "tool_result")), default=-1)
@@ -563,8 +626,13 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             args = data.get("input", {}) if kind == "server_tool_use" else data.get("action", {})
             if row is None:
                 row = await self._append(ToolView(agent, call_id, name, args))
+            self._current_calls[(agent, call_id)] = row
             row.tool_name = name
             row.set_text(_json(args))
+            terminal = data.get("status") in ("completed", "failed", "incomplete")
+            if row.status not in ("done", "error"):
+                row.status = "done" if terminal else "running"
+                self._set_event_activity(row, "" if terminal else "Running")
             if kind == "web_search_call" and data.get("status") in ("completed", "failed", "incomplete"):
                 key = (agent, call_id)
                 result = self._native_results.get(key)
@@ -573,15 +641,40 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     self._native_results[key] = result
                     await self._append(result)
                 result.set_result(_json(args), is_error=data.get("status") != "completed")
+                row.status = result.status
+                self._set_event_activity(row, "")
         elif kind.endswith("_tool_result"):
             if row is None:
                 row = await self._append(ToolView(agent, data.get("tool_use_id", ""), kind.removesuffix("_tool_result"), result=True))
             info = native_event(data)
             content = info["result"] if info else data.get("content", {})
             row.set_result(_json(content), is_error=isinstance(content, dict) and "error" in content.get("type", ""))
+            if call := self._current_calls.get((agent, data.get("tool_use_id", ""))):
+                call.status = row.status
+                self._set_event_activity(call, "")
         elif row is None:
             row = await self._append(EventView("context", _json(data), agent=agent))
         return row
+
+    def _set_event_activity(self, row: EventView, phase: str) -> None:
+        if self.activity_card is not None and self._staged is None:
+            self.activity_card.set_event_activity(row, phase)
+
+    def _stream_activity(self, agent: str, stream: StreamEvent) -> None:
+        # Native tools can overlap text and each other; their snapshots own
+        # their lifetimes. Only model content blocks replace one another.
+        if stream.type.startswith("native_tool_"):
+            return
+        row = self._blocks.get(agent, {}).get(stream.index)
+        previous = self._streaming.get(agent)
+        if previous is not None and (previous is not row or stream.type.endswith("_end") or stream.type in ("done", "error")):
+            self._set_event_activity(previous, "")
+            self._streaming.pop(agent, None)
+        if row is not None and stream.type.endswith(("_start", "_delta")):
+            phase = {"thinking": "Thinking", "text": "Responding", "tool_call": "Preparing"}.get(row.kind)
+            if phase:
+                self._streaming[agent] = row
+                self._set_event_activity(row, phase)
 
     async def consume(self, ev: AgentEvent) -> None:
         message = ev.message
@@ -599,6 +692,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 await self._start_message(ev.agent)
             else:
                 await self._snapshot(ev.agent, ev.stream_event.partial)
+                self._stream_activity(ev.agent, ev.stream_event)
         elif ev.type == "message_end":
             if isinstance(message, UserMessage):
                 await self._user_message(ev.agent, message)
@@ -609,6 +703,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         elif ev.type == "tool_execution_start" and ev.tool_call_id:
             row = await self._tool(ev.agent, ev.tool_call_id, ev.tool_name or "tool", ev.args)
             row.status = "running"
+            self._set_event_activity(row, "Running")
         elif ev.type == "tool_execution_end" and ev.tool_call_id:
             await self._result(ev.agent, ToolResultMessage(
                 ev.tool_call_id, ev.tool_name or "tool", ev.result.content if ev.result else [],

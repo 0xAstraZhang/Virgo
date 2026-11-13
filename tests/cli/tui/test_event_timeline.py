@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+from rich.text import Text
+
 from virgo.agent.types import AgentEvent, ToolResult
 from virgo.ai.stream import StreamEvent
 from virgo.ai.types import (
@@ -49,9 +51,14 @@ def test_parallel_results_notifications_and_agents_share_arrival_order():
             ], stop_reason="tool_use")))
             for call_id in ("a", "b"):
                 await view.consume(AgentEvent("tool_execution_start", tool_call_id=call_id, tool_name="bash"))
+            view.show_activity(Text("✻ Running 2 tools… (1s)"))
+            assert all("Running" in str(view.tools[("main", key)].header.content) for key in ("a", "b"))
+            assert not view.activity_card.thought_header.display
             await view.consume(AgentEvent(
                 "tool_execution_end", tool_call_id="b", tool_name="bash", result=ToolResult.text("B finished")
             ))
+            assert "Running" not in str(view.tools[("main", "b")].header.content)
+            assert "Running" in str(view.tools[("main", "a")].header.content)
             await view.consume(AgentEvent(
                 "message_end", message=UserMessage("Background news", kind="notification")
             ))
@@ -208,7 +215,7 @@ def test_collapsed_events_fit_one_line_and_keep_bold_names_after_resizing():
     asyncio.run(scenario())
 
 
-def test_web_search_result_body_click_collapses_only_result():
+def test_web_search_result_header_toggles_and_body_keeps_details_open():
     async def scenario():
         app = TranscriptApp()
         async with app.run_test(size=(80, 30)) as pilot:
@@ -229,6 +236,9 @@ def test_web_search_result_body_click_collapses_only_result():
             assert run.show_thinking and run.thought_body.display
             await pilot.click(result.output, offset=(6, 1))
             await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
+            assert result.expanded and result.output.display
+            await pilot.click(result.header, offset=(5, 0))
+            await pilot.pause()
             assert not result.expanded and not result.output.display
             assert run.show_thinking and run.thought_body.display
             assert result.size.height == 1

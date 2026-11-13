@@ -92,6 +92,10 @@ to their original names. PR #16's startup refresh, picker cancellation, and two
 parameterized metadata-precedence replacements are mapped likewise. Their new
 expectations reflect the feature change: refresh on restart with cached fallback,
 Esc closing only the picker, and explicit configuration overriding fetched fields.
+PR #34's three parameterized folding cases and web-search result case map to their
+previous names: headers now toggle immediately, while body and padding clicks
+keep details open for text selection. These replacements retain their baseline
+identities for failure, skip, and missing-test comparisons.
 The comparison CLI check covers passing and failing replacements, unknown names,
 and collisions between old and new names. An approved replacement can still fail as a regression;
 an unknown rename or an alias collision still fails the comparison.

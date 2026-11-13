@@ -311,12 +311,15 @@ def test_inline_activity_is_separate_from_thought_folding_and_follows_prompt():
             await view.consume(AgentEvent("message_start", message=message))
             assert view.activity_card is card
             assert len(view.query(".thought-header")) == 1
+            await view.consume(AgentEvent("message_update", stream_event=StreamEvent("thinking_delta", message, index=0)))
             card.events[0].header.focus()
             await pilot.press("enter")
             assert card.thought_body.display
-            assert str(card.thought_header.content).startswith("✻ Thinking…")
+            assert not card.thought_header.display
+            assert "Thinking" in str(card.events[0].header.content)
             view.show_activity(Text("✽ Thinking… (4s · thinking with high effort)"))
-            assert str(card.thought_header.content).startswith("✽ Thinking…")
+            assert "✽" in str(card.events[0].header.content)
+            assert not card.thought_header.display
 
             await view.consume(AgentEvent("message_end", message=message))
             await view.consume(AgentEvent("turn_start"))
