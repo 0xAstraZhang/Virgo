@@ -68,7 +68,7 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
                     local = session.resolve(f"{provider}/{model_id}")
                 except (TypeError, ValueError):
                     continue
-                choices[local.spec] = ModelChoice(local.spec, local.id, f"{provider} · {local.context_window:,} context")
+                choices[local.spec] = ModelChoice(local.spec, local.id, session.t("harness.models.context", provider=provider, tokens=local.context_window))
             continue
         if not _model_available(model, credentials):
             continue
@@ -76,7 +76,7 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
     for connection in connections:
         for item in session.cached_model_catalog(connection):
             context = item.metadata.get("context_window")
-            description = f"{connection.provider} · {context:,} context" if context else connection.provider
+            description = session.t("harness.models.context", provider=connection.provider, tokens=context) if context else connection.provider
             spec = f"{connection.provider}/{item.id}"
             choices[spec] = ModelChoice(spec, item.id, description, item.released_at)
     # Keep each connection's server order independent of parallel fetch completion.
@@ -118,19 +118,19 @@ def start_model_refresh(session: AgentSession) -> None:
                         return
                     session.remember_model_metadata(connection, models, diagnostic_store=owner)
                     if not models:
-                        session.ui.print(f"{provider_name(connection.provider)}: the live directory returned no selectable models.", "warn")
+                        session.ui.print(session.t("harness.models.empty_live", provider=provider_name(connection.provider)), "warn")
             except CatalogCancelled:
                 pass
             except CatalogError as error:
                 if not session._catalog_stop.is_set():
                     session.report_error(error, phase="catalog.refresh", store=owner,
                                          context={"provider": connection.provider, "api": connection.api}, notify=False)
-                    session.ui.print(f"{provider_name(connection.provider)}: {error} Keeping the saved directory.", "warn")
+                    session.ui.print(session.t("harness.models.keep", provider=provider_name(connection.provider), error=error), "warn")
             except Exception as error:
                 if not session._catalog_stop.is_set():
                     session.report_error(error, phase="catalog.refresh", store=owner,
                                          context={"provider": connection.provider, "api": connection.api}, notify=False)
-                    session.ui.print(f"{provider_name(connection.provider)}: model refresh failed; keeping the saved directory.", "warn")
+                    session.ui.print(session.t("harness.models.refresh_failed", provider=provider_name(connection.provider)), "warn")
 
     def run():
         try:
@@ -243,20 +243,20 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if session.main.agent.signal.is_set():
         return
     if kind == "model" and not models:
-        session.ui.print("No saved models available. Startup refresh may still be running; reopen /model after it finishes. Check /login and restart, or use /model provider/model-id.", "warn")
+        session.ui.print(session.t("harness.preferences.none"), "warn")
         return
     request = PreferenceRequest(kind, models, session.model.spec, effort)
     choice = session.ui.choose_preferences(request)
     if choice is None:
         kept = session.model.id if kind == "model" else session.effort
-        session.ui.print(f"Kept {kind} as {kept}")
+        session.ui.print(session.t("harness.models.kept", kind=session.t("harness.preferences." + kind), value=kept))
         return
     if not isinstance(choice, PreferenceChoice) or choice.effort not in EFFORT_LEVELS:
-        raise ValueError("invalid model or effort selection")
+        raise ValueError(session.t("harness.preferences.invalid"))
     if kind == "model" and choice.model not in {model.spec for model in request.models}:
-        raise ValueError("selected model was not offered")
+        raise ValueError(session.t("harness.preferences.not_offered"))
     if kind == "effort" and choice.model != request.model:
-        raise ValueError("the effort picker cannot change the model")
+        raise ValueError(session.t("harness.preferences.effort_only"))
     if kind == "model":
         # Validate before saving defaults so a bad model cannot corrupt settings.
         session.resolve(choice.model)
@@ -268,8 +268,8 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if kind == "model":
         session.set_model(choice.model)
     session.effort = choice.effort
-    scope = "saved as default" if choice.persist else "this session only"
+    scope = session.t("harness.preferences.persisted") if choice.persist else session.t("harness.preferences.session_only")
     if kind == "model":
-        session.ui.print(f"Model: {session.model.id} · {session.effort} effort · {scope}", "ok")
+        session.ui.print(session.t("harness.models.selected", model=session.model.id, effort=session.effort, scope=scope), "ok")
     else:
-        session.ui.print(f"Effort: {session.effort} · {scope}", "ok")
+        session.ui.print(session.t("harness.models.effort", effort=session.effort, scope=scope), "ok")

@@ -14,14 +14,27 @@ from textual.message import Message
 from textual.strip import Strip
 from textual.widgets import TextArea
 
+from ..i18n import tr
 from .choices import ChoiceList
 
 LIBEDIT_HEADER = b"_HiStOrY_V2_"
 # vis(3) escapes written by libedit (macOS, many standalone Python builds): \ooo octal,
 # \M-x / \M^x meta, \^x control, and C-style escapes; \$ is an empty marker.
 _VIS = re.compile(rb"\\(?:([0-7]{3})|M\^(.)|M-(.)|\^(.)|([\\nrtbafvs0E$]))")
-_VIS_C = {b"\\": b"\\", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b", b"a": b"\a", b"f": b"\f",
-          b"v": b"\v", b"s": b" ", b"0": b"\0", b"E": b"\x1b", b"$": b""}
+_VIS_C = {
+    b"\\": b"\\",
+    b"n": b"\n",
+    b"r": b"\r",
+    b"t": b"\t",
+    b"b": b"\b",
+    b"a": b"\a",
+    b"f": b"\f",
+    b"v": b"\v",
+    b"s": b" ",
+    b"0": b"\0",
+    b"E": b"\x1b",
+    b"$": b"",
+}
 
 
 def _control(char: bytes) -> int:
@@ -194,9 +207,14 @@ class ChatEditor(TextArea):
     def render_line(self, y: int) -> Strip:
         strip = super().render_line(y)
         # Overlay only; never populate TextArea.suggestion (Right accepts it).
-        if (y != 0 or not self.has_focus or not self.selection.is_empty
-                or self.cursor_location != self.document.end
-                or self.document.line_count != 1 or self.wrapped_document.height != 1):
+        if (
+            y != 0
+            or not self.has_focus
+            or not self.selection.is_empty
+            or self.cursor_location != self.document.end
+            or self.document.line_count != 1
+            or self.wrapped_document.height != 1
+        ):
             return strip
         match = re.fullmatch(r"/([^ \t\r\n]+)( *)", self.text)
         if match is None:
@@ -206,8 +224,10 @@ class ChatEditor(TextArea):
             return strip
         name = match.group(1)
         command = session.commands.get(name)
-        hint = command.argument_hint if command is not None else (
-            "[arguments]" if name in session.templates else ""
+        hint = (
+            command.argument_hint
+            if command is not None
+            else (tr(self, "ui.editor.arguments") if name in session.templates else "")
         )
         if not hint:
             return strip
@@ -216,5 +236,11 @@ class ChatEditor(TextArea):
         width = self.content_size.width
         if x >= width:
             return strip
-        overlay = Strip([Segment(hint.replace("\n", " ").replace("\r", " ").replace("\t", " "), Style(color="bright_black"))])
+        overlay = Strip(
+            [
+                Segment(
+                    hint.replace("\n", " ").replace("\r", " ").replace("\t", " "), Style(color="bright_black")
+                )
+            ]
+        )
         return Strip.join([strip.crop(0, x), overlay]).adjust_cell_length(width).crop(0, width)

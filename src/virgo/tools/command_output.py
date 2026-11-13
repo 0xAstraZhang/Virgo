@@ -1,4 +1,5 @@
 """Command output lives on disk; only a bounded tail is decoded for the conversation."""
+
 from __future__ import annotations
 
 import os
@@ -6,6 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..i18n import Translator
 from .truncate import MAX_BYTES, MAX_LINES, outputs_dir, truncate_tail
 
 
@@ -32,16 +34,24 @@ def read_output(path: Path, *, max_bytes: int = MAX_BYTES, max_lines: int = MAX_
     if start:
         while data and data[0] & 0xC0 == 0x80:
             data = data[1:]
-    text, cut = truncate_tail(data.decode("utf-8", errors="replace"), max_bytes=max_bytes, max_lines=max_lines)
+    text, cut = truncate_tail(
+        data.decode("utf-8", errors="replace"), max_bytes=max_bytes, max_lines=max_lines
+    )
     return CommandOutput(text, path, start > 0 or cut, total)
 
 
-def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES) -> str:
-    text = output.text.rstrip() or "(no output)"
+def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, t=None) -> str:
+    t = t or Translator()
+    text = output.text.rstrip() or t("tools.output.empty")
     if not output.truncated and len(text.encode("utf-8")) <= max_bytes:
         return text
-    header = (f"[Output truncated: showing the tail (limit {MAX_LINES} lines / {MAX_BYTES // 1024}KB; "
-              f"{output.total_bytes} bytes total). Full output: {output.path}]\n")
+    header = t(
+        "tools.output.truncated",
+        max_lines=MAX_LINES,
+        max_kb=MAX_BYTES // 1024,
+        total=output.total_bytes,
+        path=output.path,
+    )
     # Include the pointer in the budget so the harness won't truncate the tail again.
     available = max_bytes - len(header.encode("utf-8"))
     if available <= 0:

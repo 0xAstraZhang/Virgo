@@ -55,27 +55,30 @@ class Web:
             caps = offer.capabilities
             if not caps <= services.keys():
                 for c in caps & services.keys():
-                    reasons[c] = "combined native tool requires disabled or unassigned capabilities"
+                    reasons[c] = self.session.t('features.web.requires_capabilities')
                 continue
             if caps & chosen:
                 continue
             if not offer.native and any(services[c].mode == "native" for c in caps):
                 continue
-            if any(services[c].mode == "builtin" or model.options.get("native" + c.title()) is False for c in caps):
+            if any(
+                services[c].mode == "builtin" or model.options.get("native" + c.title()) is False
+                for c in caps
+            ):
                 for c in caps:
-                    reasons[c] = "combined capability disabled or explicitly assigned to a client backend"
+                    reasons[c] = self.session.t("features.web.combined")
                 continue
             cache_key = (next(iter(services.values())).key(model), offer.id)
             with self.lock:
                 unavailable = cache_key in self.unavailable
             if unavailable:
                 for c in caps:
-                    reasons[c] = "provider rejected this capability"
+                    reasons[c] = self.session.t("features.web.rejected")
                 continue
             if not offer.hosted:
                 if any(not services[c].client_available(offer.backend, model) for c in caps):
                     for c in caps:
-                        reasons[c] = f"{offer.backend} credentials unavailable; configure /login api {offer.backend}"
+                        reasons[c] = self.session.t("features.web.credentials", backend=offer.backend)
                     continue
                 for c in caps:
                     services[c]._prepare_client(context, model, offer.backend)
@@ -84,7 +87,7 @@ class Web:
             else:
                 if not all(services[c]._permitted(runtime, model, cache_key) for c in sorted(caps)):
                     for c in caps:
-                        reasons[c] = "native scope cannot satisfy permissions or tool hooks"
+                        reasons[c] = self.session.t("features.web.permissions")
                     continue
                 declaration = copy.deepcopy(offer.declaration)
                 for param, (cap, setting) in offer.controls.items():
@@ -101,9 +104,14 @@ class Web:
             if capability in chosen:
                 continue
             if service.mode == "native":
-                raise ValueError(f"Native web {capability} is unavailable for {model.spec}: "
-                                 f"{reasons.get(capability, 'no eligible capability adapter or credentials')}; "
-                                 f"use {capability}.mode=auto or builtin.")
+                raise ValueError(
+                    self.session.t(
+                        "features.web.native_unavailable",
+                        capability=capability,
+                        model=model.spec,
+                        reason=reasons.get(capability, self.session.t("features.web.no_adapter")),
+                    )
+                )
             backend = service.config.get("backend", "http" if capability == "fetch" else "duckduckgo")
             service._prepare_client(context, model, backend)
             backends[capability] = backend
@@ -126,5 +134,7 @@ class Web:
         service = self.session.services[capability]
         with self.lock:
             self.unavailable.update((service.key(model), o.id) for o in rejected)
-        self.session.ui.print(f"[native {capability} unavailable for {model.spec}; using builtin web_{capability}]", "warn")
+        self.session.ui.print(
+            f"[native {capability} unavailable for {model.spec}; using builtin web_{capability}]", "warn"
+        )
         return True

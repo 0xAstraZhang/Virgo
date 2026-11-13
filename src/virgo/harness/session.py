@@ -42,6 +42,7 @@ from ..ai.types import (
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
 from ..features.permission import normalize_permission_mode, plan_tool_allowed
 from ..features.permission_context import ReviewSource
+from ..i18n import Translator, normalize_language
 from ..tools import BASE_TOOLS
 from ..tools.shell import Shell
 from ..tools.truncate import MAX_BYTES, budget
@@ -144,6 +145,7 @@ class Runtime:
             can_run=self.can_run,
             on_error=lambda details: self.report_error(details, phase="agent.listener"),
             project_tool_result=self._project_tool_result if session.settings.feature_enabled("diagnostics") else None,
+            translator=session.translator,
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
         self.review_source = ReviewSource(self, review_parent)
@@ -389,8 +391,18 @@ class Runtime:
         s = self.session
         permissions = s.services.get("permissions")
         mode = permissions.mode_for(self.name) if hasattr(permissions, "mode_for") else s.permission_mode
-        system = self.system
-        tools = [t.spec() for t in self.tools if mode != "plan" or plan_tool_allowed(t)]
+        system = self.system + "\n\n<language>\n" + s.t("harness.response_language") + "\n</language>"
+        tools = []
+        for tool in self.tools:
+            if mode == "plan" and not plan_tool_allowed(tool):
+                continue
+            try:
+                tools.append(tool.spec(s.translator))
+            except Exception as error:
+                # Extension-provided translation values are presentation data;
+                # a broken formatter must not disable an otherwise usable tool.
+                self.report_error(error, phase="i18n.tool", context={"tool_name": tool.name})
+                tools.append(tool.spec())
         if mode == "plan":
             system += (
                 "\n\n<permission_mode>\n"
@@ -399,7 +411,7 @@ class Runtime:
             )
             for tool in tools:
                 if tool.name == "bash":
-                    tool.description = "Run a read-only shell command to inspect the project. Do not modify files or system state."
+                    tool.description = s.t("harness.plan_shell_description")
         return Context(system, messages, tools)
 
     def request_context(self, messages: list, model=None) -> Context:
@@ -506,24 +518,24 @@ class Runtime:
                     fb = s.settings.get("retry.fallbackModel")
                     if overloaded >= 2 and fb and model.spec != fb:
                         model = s.resolve(fb)
-                        s.ui.print(f"[switching to fallback model {model.spec}]", "warn")
+                        s.ui.print(s.t("harness.retry.fallback", model=model.spec), "warn")
                 delay = min(32.0, 0.5 * 2**retries) * (1 + random.random() * 0.25)
                 details = failed.error_details or {}
                 minimum_delay = retry_after_seconds(details)
                 if minimum_delay is not None:
                     delay = max(delay, minimum_delay)
                 if delay > wait_budget:
-                    s.ui.print("[Provider retry wait exceeds the remaining retry.maxWaitSeconds budget.]", "warn")
+                    s.ui.print(s.t("harness.retry.budget"), "warn")
                     yield StreamEvent("error", failed)
                     return
                 wait_budget -= delay
-                reference = f"Error ID: {details.get('error_id', 'unavailable')}"
+                reference = s.t("harness.error.id", id=details.get("error_id", s.t("common.unavailable")))
                 if details.get("log_path"):
-                    reference += f"\nDiagnostics: {details['log_path']}"
+                    reference += "\n" + s.t("harness.diagnostics.path", path=details["log_path"])
                 elif details.get("logging_error"):
-                    reference += "\nDiagnostics could not be saved; details were sent to stderr."
+                    reference += "\n" + s.t("harness.diagnostics.unsaved")
                 s.ui.print(
-                    f"[{failed.error_message} — retrying in {delay:.1f}s ({retries}/{max_retries})]\n"
+                    s.t("harness.retry.wait", error=failed.error_message, delay=delay, retries=retries, maximum=max_retries) + "\n"
                     + safe_text(reference), "warn",
                 )
                 yield StreamEvent("retry", failed)
@@ -568,9 +580,11 @@ class AgentSession:
         self._diagnostic_lock = threading.RLock()
         self._notified_errors: set[str] = set()
         self.settings = Settings.load(self.paths, settings)
+        self.translator = Translator(self.settings.get("language", "en"))
+        self.ui.set_translator(self.translator)
         self.auth = AuthStore(self.paths.user / "auth.json")
         self.bus = EventBus(on_error=lambda m: self.ui.print(m, "error"), on_diagnostic=self._extension_error)
-        self.commands = Commands()
+        self.commands = Commands(self.translator)
         self.services: dict = {}
         self.sections: list = []
         self.runtime_sections: list = []
@@ -666,7 +680,7 @@ class AgentSession:
                     self._notified_errors.add(details["error_id"])
                 if fresh:
                     try:
-                        self.ui.print(error_summary(details), "error")
+                        self.ui.print(error_summary(details, t=self.t), "error")
                     except Exception as reporting_error:
                         emergency_write(details, reporting_error)
             return details
@@ -758,7 +772,7 @@ class AgentSession:
                 write_metadata(path, models)
             except OSError as error:
                 self.report_error(error, phase="catalog.save", store=diagnostic_store, context={"path": str(path)})
-                self.ui.print("Could not save model metadata; refreshed parameters remain available in this session.", "warn")
+                self.ui.print(self.t("harness.models.save_failed"), "warn")
             self._metadata_pending = True
             if not self.busy:
                 self._apply_model_metadata()
@@ -1010,6 +1024,28 @@ class AgentSession:
             self.small_model = small_model
             self.store.append("model_change", model=self.model.spec)
 
+    def t(self, key: str, /, **values: object) -> str:
+        return self.translator(key, **values)
+
+    def set_language(self, language: str, *, persist: bool = True) -> None:
+        """Apply a session language only after its requested preference is saved."""
+        code = normalize_language(language)
+        with self._lock:
+            if self.busy:
+                raise ValueError(self.t("language.busy"))
+            if persist:
+                self.settings.save_user({"language": code})
+            else:
+                self.settings.set("language", code)
+            self.translator.set_language(code)
+            self.session_options["settings"] = {**(self.session_options.get("settings") or {}), "language": code}
+        try:
+            self.ui.language_changed()
+        except Exception as error:
+            # The preference is already committed. A custom client's refresh
+            # failure must not be reported as a failed save or undo the choice.
+            self.report_error(error, phase="ui.language_changed")
+
     # -- tools -------------------------------------------------------------------
     def register_tool(self, tool: AgentTool, roles: tuple = ("main",)) -> None:
         """Register a tool for the given roles; replaces a same-named tool for those roles only."""
@@ -1026,6 +1062,8 @@ class AgentSession:
         self._tools = [(t, r) for t, r in self._tools if t.name != name]
 
     def tools_for(self, role: str) -> list[AgentTool]:
+        # Features use object identity to distinguish builtin tools from overrides.
+        # Localize copies only when projecting ToolSpec for a model request.
         return [t for t, roles in self._tools if role in roles]
 
     def tool(self, name: str, role: str = "main") -> AgentTool | None:
@@ -1041,7 +1079,7 @@ class AgentSession:
 
     def _persistence_block(self, ev):
         runtime = ev.review_source.runtime if ev.review_source is not None else self.main
-        return None if runtime.can_run() else Block("Session history is unsaved; work is paused.")
+        return None if runtime.can_run() else Block(self.t("harness.session.unsaved"))
 
     def _check_policy(self, method, ev):
         if block := self._persistence_block(ev):
@@ -1056,7 +1094,7 @@ class AgentSession:
                 "tool_name": ev.tool_name, "tool_call_id": ev.call_id,
                 "policy": type(policy).__qualname__,
             })
-            return Block(f"Permission check failed: {safe_text(error)}", details={"error": details})
+            return Block(self.t("harness.permission.failed", error=safe_text(error)), details={"error": details})
 
     def _before_tool(self, ev: ToolCallEvent):
         if block := self._persistence_block(ev):
@@ -1082,7 +1120,7 @@ class AgentSession:
         bounded = []
         for b in res.content:
             if isinstance(b, TextContent) and len(b.text.encode("utf-8")) > MAX_BYTES:
-                b = TextContent(budget(b.text, ev.cwd, ev.tool_name))
+                b = TextContent(budget(b.text, ev.cwd, ev.tool_name, t=self.t))
             bounded.append(b)
         res.content = bounded
         return res
@@ -1116,7 +1154,7 @@ class AgentSession:
             if name in self.templates:
                 text = expand_template(self.templates[name][1], args)
             else:
-                self.ui.print(f"Unknown command /{name}. Type /help.", "error")
+                self.ui.print(self.t("harness.commands.unknown", name=name), "error")
                 return
         self.run([UserMessage(text)])
 
@@ -1132,9 +1170,9 @@ class AgentSession:
         callback = getattr(self.ui, "save_failed", None)
         try:
             if callback is not None:
-                callback(error.store.id, str(error.store.path), error_summary(details))
+                callback(error.store.id, str(error.store.path), error_summary(details, t=self.t))
             else:
-                self.ui.print(error_summary(details), "error")
+                self.ui.print(error_summary(details, t=self.t), "error")
         except Exception as reporting_error:
             emergency_write(details, reporting_error)
 

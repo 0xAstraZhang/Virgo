@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
+from ..i18n import Translator
 from .command_output import CommandOutput, display_output, open_output, read_output
 from .truncate import MAX_BYTES, MAX_LINES, save_output, truncate_tail
 
@@ -37,7 +38,9 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None) 
         from .windows_process import WindowsProcess
 
         if shell:
-            comspec = os.environ.get("ComSpec") or str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe")
+            comspec = os.environ.get("ComSpec") or str(
+                Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
+            )
             argv = f'"{comspec}" /d /s /c "{command}"'
         return WindowsProcess(argv, cwd=cwd, env=env, stdout=stdout)
     return subprocess.Popen(
@@ -102,28 +105,45 @@ def run_command(
     return read_output(path), proc.returncode, status
 
 
-def format_output(output: CommandOutput | str, code: int | None, status: str, cwd: Path, timeout: float, *, prefix="bash") -> ToolResult:
+def format_output(
+    output: CommandOutput | str,
+    code: int | None,
+    status: str,
+    cwd: Path,
+    timeout: float,
+    *,
+    prefix="bash",
+    t=None,
+) -> ToolResult:
+    t = t or Translator()
     if isinstance(output, str):
         # Compatibility for extensions that format a pre-existing in-memory result.
         text, cut = truncate_tail(output)
         path = save_output(output, cwd, prefix) if cut else None
         output = CommandOutput(text, path, cut, len(output.encode("utf-8")))
-    text = display_output(output, max_bytes=MAX_BYTES - 256)
-    details = {"exit_code": code, "status": status, "truncated": text.startswith("[Output truncated:"),
-               "output_bytes": output.total_bytes, "output_path": str(output.path) if output.path else None}
+    text = display_output(output, max_bytes=MAX_BYTES - 256, t=t)
+    details = {
+        "exit_code": code,
+        "status": status,
+        "truncated": output.truncated
+        or len((output.text.rstrip() or t("tools.output.empty")).encode("utf-8")) > MAX_BYTES - 256,
+        "output_bytes": output.total_bytes,
+        "output_path": str(output.path) if output.path else None,
+    }
     if status == "timeout":
-        return ToolResult.error(f"{text}\n\n[Command timed out after {timeout:g}s]", details)
+        return ToolResult.error(t("tools.output.timeout", text=text, timeout=timeout), details)
     if status == "aborted":
-        return ToolResult.error(f"{text}\n\n[Command aborted]", details)
+        details["cancelled"] = True
+        return ToolResult.error(t("tools.output.aborted", text=text), details)
     if code:
-        return ToolResult.error(f"{text}\n\n[Exit code {code}]", details)
+        return ToolResult.error(t("tools.output.exit", text=text, code=code), details)
     return ToolResult.text(text, details)
 
 
 def _bash(args: dict, ctx: ToolContext) -> ToolResult:
     timeout = min(float(args.get("timeout") or DEFAULT_TIMEOUT), MAX_TIMEOUT)
     out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal)
-    return format_output(out, code, status, ctx.cwd, timeout)
+    return format_output(out, code, status, ctx.cwd, timeout, t=ctx.t)
 
 
 BASH_PARAMS = {
@@ -148,4 +168,5 @@ BASH = AgentTool(
     ),
     parameters=BASH_PARAMS,
     execute=_bash,
+    i18n_key="tools.bash",
 )

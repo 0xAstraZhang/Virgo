@@ -94,7 +94,7 @@ def test_account_login_dispatches_provider_and_uses_request_only_token(project, 
 
 
 def test_custom_api_wizard_preserves_other_settings(project):
-    ui = LoginUI("API — API 接入", "自定义", "local", "OpenAI compatible", "http://localhost:1234/v1", "model/name", "secret")
+    ui = LoginUI("API — Connect with an API key", "Custom", "local", "OpenAI compatible", "http://localhost:1234/v1", "model/name", "secret")
     s = AgentSession(project, ui=ui, session=None, extensions=False)
     try:
         s.settings.save_user({"effort": "high", "providers": {"other": {"baseUrl": "https://other.test"}}})

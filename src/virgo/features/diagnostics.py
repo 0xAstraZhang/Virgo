@@ -17,18 +17,23 @@ def setup(api: ExtensionAPI) -> None:
 
         source = ctx.review_source
         runtime = source.runtime if isinstance(source, ReviewSource) else None
-        if (not isinstance(runtime, Runtime) or runtime.session is not api.session
-                or source is not runtime.review_source or ctx.agent != runtime.name):
-            result = {"status": "denied", "message": "Diagnostic lookup requires a trusted calling runtime."}
+        if (
+            not isinstance(runtime, Runtime)
+            or runtime.session is not api.session
+            or source is not runtime.review_source
+            or ctx.agent != runtime.name
+        ):
+            result = {"status": "denied", "message": ctx.t("features.diagnostics.runtime")}
         elif not isinstance(getattr(runtime, "diagnostic_access", None), DiagnosticAccess):
-            result = {"status": "unavailable", "message": "This runtime has no diagnostic evidence collection."}
+            result = {"status": "unavailable", "message": ctx.t("features.diagnostics.unavailable")}
         else:
             try:
-                result = runtime.diagnostic_access.read(args.get("error_id"), args.get("section", "summary"),
-                                                        args.get("cursor"))
+                result = runtime.diagnostic_access.read(
+                    args.get("error_id"), args.get("section", "summary"), args.get("cursor")
+                )
             except Exception as error:  # The evidence reader must not recursively diagnose itself.
                 emergency_write(capture_error(error, phase="diagnostics.lookup"))
-                result = {"status": "unavailable", "message": "Diagnostic lookup failed; the original result is unchanged."}
+                result = {"status": "unavailable", "message": ctx.t("features.diagnostics.failed")}
         # Missing/expired evidence is a normal lookup outcome. Turning it into a
         # tool failure would manufacture a new diagnostic for each query miss.
         return ToolResult.text(json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
@@ -56,6 +61,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             execute=execute,
             read_only=True,
+            i18n_key="tools.diagnostic_get",
         ),
         roles=ROLES_ALL,
     )

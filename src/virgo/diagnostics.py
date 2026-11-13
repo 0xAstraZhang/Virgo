@@ -282,16 +282,19 @@ def capture_error(
     return sanitize(record, secrets=sensitive)
 
 
-def error_summary(details: dict) -> str:
+def error_summary(details: dict, *, t=None) -> str:
     """One readable message with a stable reference to the complete record."""
+    from .i18n import Translator
+
+    t = t or Translator()
     details = sanitize(details)
     if not isinstance(details, dict):
-        return "[ERROR] Diagnostic metadata is unavailable."
+        return t("harness.diagnostics.unavailable")
     context = details.get("context")
     context = context if isinstance(context, dict) else {}
     location = " / ".join(str(context[key]) for key in ("agent", "model", "tool_name") if context.get(key))
     label = f"[{details.get('code', 'ERROR')} {details.get('error_id', 'unknown')}]"
-    text = safe_text(details.get("message") or details.get("exception_type") or "Unknown error")
+    text = safe_text(details.get("message") or details.get("exception_type") or t("harness.diagnostics.unknown_error"))
     text = " ".join(text.split())
     exception_type = details.get("exception_type")
     if exception_type and not text.startswith(str(exception_type) + ":"):
@@ -303,11 +306,11 @@ def error_summary(details: dict) -> str:
         summary += f" ({location})"
     summary += f": {text}"
     if details.get("log_path"):
-        summary += f"\nDiagnostics: {details['log_path']}"
+        summary += "\n" + t("harness.diagnostics.path", path=details["log_path"])
     elif details.get("log_expired"):
-        summary += f"\nThe saved log rotated out; use /diagnostics {details.get('error_id', '')} in this process."
+        summary += "\n" + t("harness.diagnostics.rotated", id=details.get("error_id", ""))
     elif details.get("logging_error"):
-        summary += "\nDiagnostics could not be saved; details were sent to stderr."
+        summary += "\n" + t("harness.diagnostics.unsaved")
     return safe_text(summary)
 
 

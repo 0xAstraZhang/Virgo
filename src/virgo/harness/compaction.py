@@ -185,7 +185,7 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, mo
                            effort=session.small_model_effort, signal=rt.agent.signal, agent=rt.name,
                            accounting_store=rt.accounting_store)
     if msg.stop_reason != "stop" or rt.agent.signal.is_set() or not msg.text().strip():
-        session.ui.print(f"[compaction failed: {msg.error_message or 'empty summary'}]", "error")
+        session.ui.print(session.t("harness.compact.failed", error=msg.error_message or session.t("harness.compact.empty_summary")), "error")
         return None
     summary = msg.text().strip()
     if read - modified:
@@ -240,7 +240,7 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     session.bus.emit("before_compact", rt)
     tokens_before = rt.context_tokens()
     if focus and api != "anthropic":
-        session.ui.print("[OpenAI native compaction uses the provider's summary instructions; focus is not applied.]", "warn")
+        session.ui.print(session.t("harness.compact.native_focus"), "warn")
     context = rt.request_context(messages[:cut], model)
     binding = context_binding(model, context)
     started = time.monotonic()
@@ -259,7 +259,7 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     record_call(rt.accounting_store, model, result, purpose="compaction", started=started,
                 effort=session.effort, agent=rt.name)
     if rt.agent.signal.is_set() or not is_native_context(result):
-        session.ui.print(f"[compaction failed: {result.error_message or result.stop_reason}]", "error")
+        session.ui.print(session.t("harness.compact.failed", error=result.error_message or result.stop_reason), "error")
         return None
     kept = list(range(cut, len(messages)))
     preserve_thinking = bool(kept) and is_user_like(messages[cut - 1]) != is_user_like(messages[cut])

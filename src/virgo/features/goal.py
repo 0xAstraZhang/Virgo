@@ -49,7 +49,9 @@ def transcript(messages: list) -> str:
             for c in m.tool_calls():
                 parts.append(f"TOOL CALL {c.name} id={c.id}: {json.dumps(c.arguments, ensure_ascii=False)}")
         elif isinstance(m, ToolResultMessage):
-            parts.append(f"TOOL RESULT {m.tool_name} id={m.tool_call_id}{' (error)' if m.is_error else ''}: {m.text()}")
+            parts.append(
+                f"TOOL RESULT {m.tool_name} id={m.tool_call_id}{' (error)' if m.is_error else ''}: {m.text()}"
+            )
     parts = [_clip(p, PART_CHARS) for p in parts]
     out, size = [], 0
     marker = "[TRUNCATED: earlier conversation omitted; request a focused check]\n\n"
@@ -64,9 +66,7 @@ def transcript(messages: list) -> str:
 
 def evaluate(session, condition: str, messages: list) -> dict:
     evidence = transcript(messages)
-    payload = json.dumps(
-        {"completion_condition": condition, "conversation": evidence}, ensure_ascii=False
-    )
+    payload = json.dumps({"completion_condition": condition, "conversation": evidence}, ensure_ascii=False)
     msg = session.complete(
         "goal",
         EVAL_SYSTEM,
@@ -95,12 +95,18 @@ def evaluate(session, condition: str, messages: list) -> dict:
         "reason": str(data["reason"]).strip(),
         "impossible": bool(data.get("impossible")),
     }
-    session.store.append("custom", kind="goal_evaluation", data={
-        "condition": condition, "verdict": verdict,
-        "evidence_sha256": hashlib.sha256(evidence.encode()).hexdigest(),
-        "evidence_chars": len(evidence), "evidence_truncated": "[TRUNCATED:" in evidence,
-        "model": session.small_model.spec,
-    })
+    session.store.append(
+        "custom",
+        kind="goal_evaluation",
+        data={
+            "condition": condition,
+            "verdict": verdict,
+            "evidence_sha256": hashlib.sha256(evidence.encode()).hexdigest(),
+            "evidence_chars": len(evidence),
+            "evidence_truncated": "[TRUNCATED:" in evidence,
+            "model": session.small_model.spec,
+        },
+    )
     return verdict
 
 
@@ -133,12 +139,12 @@ def setup(api: ExtensionAPI) -> None:
             return None
         jobs = api.services.get("jobs")
         if jobs is not None and jobs.active():
-            api.ui.print("[goal] waiting for background jobs before evaluating", "agent")
+            api.ui.print(api.session.t("features.goal.waiting"), "agent")
             return None
         try:
             verdict = evaluate(api.session, g["condition"], rt.messages)
         except Exception as e:  # noqa: BLE001
-            api.ui.print(f"[goal] evaluation failed ({e}); goal kept, back to you", "warn")
+            api.ui.print(api.session.t("features.goal.failed", error=e), "warn")
             return None
         if rt.agent.signal.is_set():
             return None
@@ -146,22 +152,21 @@ def setup(api: ExtensionAPI) -> None:
         g["last"] = verdict["reason"]
         if verdict["met"]:
             set_goal(None, "met", verdict["reason"])
-            api.ui.print(f"[goal] met: {verdict['reason']}", "agent")
+            api.ui.print(api.session.t("features.goal.met", reason=verdict["reason"]), "agent")
             return None
         if verdict["impossible"]:
             set_goal(None, "failed", verdict["reason"])
-            api.ui.print(f"[goal] cannot be achieved: {verdict['reason']}", "warn")
+            api.ui.print(api.session.t("features.goal.impossible", reason=verdict["reason"]), "warn")
             return None
         g["misses"] += 1
         cap = int(api.settings.get("goal.maxContinues", 8))
         if g["misses"] > cap:
-            api.ui.print(f"[goal] still not met after {cap} continuations; goal kept, back to you", "warn")
+            api.ui.print(api.session.t("features.goal.limit", count=cap), "warn")
             g["misses"] = 0
             return None
-        api.ui.print(f"[goal] not met yet: {verdict['reason']}", "agent")
+        api.ui.print(api.session.t("features.goal.not_met", reason=verdict["reason"]), "agent")
         return Continue(
-            f"[Goal still active] Condition: {g['condition']}\nEvaluator: {verdict['reason']}\n"
-            "Continue working, and make the missing evidence visible (e.g. run the check that proves it)."
+            api.session.t("features.goal.continue", condition=g["condition"], reason=verdict["reason"])
         )
 
     api.on("agent_stop", on_stop, priority=0)
@@ -178,20 +183,31 @@ def setup(api: ExtensionAPI) -> None:
         a = args.strip()
         if a in ("clear", "stop", "off", "cancel"):
             set_goal(None, "cleared")
-            api.ui.print("Goal cleared.")
+            api.ui.print(api.session.t("features.goal.cleared"))
             return
         if not a:
             g = state["goal"]
             if g is None:
-                api.ui.print("No active goal. Set one with /goal <completion condition>.")
+                api.ui.print(api.session.t("features.goal.none"))
             else:
                 api.ui.print(
-                    f"goal: {g['condition']}\nactive for {time.time() - g['since']:.0f}s, "
-                    f"{g['evaluations']} evaluation(s); last: {g['last'] or '-'}"
+                    api.session.t(
+                        "features.goal.status",
+                        condition=g["condition"],
+                        elapsed=time.time() - g["since"],
+                        count=g["evaluations"],
+                        last=g["last"] or "-",
+                    )
                 )
             return
         set_goal(a)
-        session.run([UserMessage(f"Goal: {a}\n\nWork until this is achieved and the evidence is visible.")])
+        session.run([UserMessage(api.session.t("features.goal.start", condition=a))])
 
-    api.register_command("goal", cmd, "set a completion goal (/goal <condition> | /goal | /goal clear)", argument_hint="[condition|clear]")
+    api.register_command(
+        "goal",
+        cmd,
+        "set a completion goal (/goal <condition> | /goal | /goal clear)",
+        argument_hint="[condition|clear]",
+        description_key="features.commands.goal",
+    )
     api.services["goal"] = state

@@ -9,6 +9,8 @@ import sys
 from textual.events import Click, TextSelected
 from textual.widgets import Input, TextArea
 
+from ..i18n import tr
+
 
 class SelectionCopyMixin:
     """Add to a Textual App before App in the inheritance list."""
@@ -62,7 +64,7 @@ class SelectionCopyMixin:
                     timeout=1,
                     check=True,
                 )
-                self.notify("Copied", timeout=1.2, markup=False)
+                self.notify(tr(self, "ui.copied"), timeout=1.2, markup=False)
                 return
             except (OSError, subprocess.SubprocessError):
                 # Keep the existing fallback, but don't report a successful
@@ -72,4 +74,4 @@ class SelectionCopyMixin:
         # Keep Textual's internal clipboard and OSC52 support on other hosts.
         super().copy_to_clipboard(text)
         if self._driver is not None:
-            self.notify("Copied", timeout=1.2, markup=False)
+            self.notify(tr(self, "ui.copied"), timeout=1.2, markup=False)

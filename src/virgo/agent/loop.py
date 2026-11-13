@@ -57,7 +57,7 @@ def run_loop(
                 if cfg.max_turns is not None and turns >= cfg.max_turns:
                     push(
                         AssistantMessage(
-                            content=[TextContent(f"[Stopped: reached the {cfg.max_turns}-turn limit.]")],
+                            content=[TextContent(cfg.t("harness.agent.turn_limit", turns=cfg.max_turns))],
                             stop_reason="stop",
                         )
                     )
@@ -86,7 +86,7 @@ def run_loop(
                     native_continues += 1
                     if native_continues > 3:
                         push(AssistantMessage(
-                            content=[TextContent("[Search paused after three continuations. Send another message to resume.]")],
+                            content=[TextContent(cfg.t("harness.agent.search_paused"))],
                             stop_reason="stop",
                         ))
                         emit(AgentEvent("turn_end", cfg.name))
@@ -129,7 +129,7 @@ def _stream_assistant(
     except Exception as error:  # noqa: BLE001 - custom model callbacks follow the stream contract
         if signal.is_set():
             msg.stop_reason = "aborted"
-            msg.error_message = "aborted by user"
+            msg.error_message = cfg.t("harness.agent.aborted")
         else:
             msg.stop_reason = "error"
             msg.error_kind = "fatal"
@@ -151,7 +151,8 @@ def _tool_details(res: ToolResult) -> dict:
 
 def _annotate_error(res: ToolResult, call: ToolCall, cfg: AgentConfig, *, phase: str,
                     error: Exception | str | None = None, kind: str = "fatal", code=None) -> ToolResult:
-    if res.is_error and res.as_text().strip().lower() not in {
+    cancelled = isinstance(res.details, dict) and res.details.get("cancelled") is True
+    if res.is_error and not cancelled and res.as_text().strip().lower() not in {
         "operation aborted.", "aborted by user", "aborted", "sub-agent was aborted.",
     }:
         details = _tool_details(res)
@@ -276,21 +277,20 @@ def _execute(
             )
         )
         if signal.is_set():
-            reject(i, "Operation aborted.")
+            reject(i, cfg.t("harness.agent.operation_aborted"), details={"cancelled": True})
             continue
         if msg.stop_reason == "length":
             reject(
                 i,
-                "The response hit the output token limit, so these tool arguments may be truncated. "
-                "Re-issue the call (split large content into smaller steps).",
+                cfg.t("harness.agent.truncated_arguments"),
             )
             continue
         tool = tools.get(call.name)
         if tool is None:
-            reject(i, f"Unknown tool: {call.name}. Available: {', '.join(sorted(tools))}")
+            reject(i, cfg.t("harness.agent.unknown_tool", name=call.name, tools=", ".join(sorted(tools))))
             continue
         if not isinstance(call.arguments, dict) or INVALID_ARGUMENTS in call.arguments:
-            reject(i, "Tool arguments were not a valid JSON object. Re-issue the call.")
+            reject(i, cfg.t("harness.agent.invalid_json"))
             continue
         args = dict(call.arguments)
         try:
@@ -298,17 +298,17 @@ def _execute(
                 args = tool.prepare_arguments(args)
             args, errs = validate(args, tool.parameters)
         except Exception as e:  # noqa: BLE001
-            reject(i, f"Invalid arguments:\n- {type(e).__name__}: {safe_text(e)}", phase="tool.prepare", error=e)
+            reject(i, cfg.t("harness.agent.invalid_args", errors=f"- {type(e).__name__}: {safe_text(e)}"), phase="tool.prepare", error=e)
             continue
         if errs:
-            reject(i, "Invalid arguments:\n" + "\n".join(f"- {e}" for e in errs), phase="tool.prepare")
+            reject(i, cfg.t("harness.agent.invalid_args", errors="\n".join(f"- {e}" for e in errs)), phase="tool.prepare")
             continue
         ev = ToolCallEvent(call.id, call.name, args, tool, cfg.name, cfg.cwd, signal=signal)
         if cfg.before_tool_call:
             try:
                 block = cfg.before_tool_call(ev)
             except Exception as e:  # noqa: BLE001
-                reject(i, f"Tool call hook failed: {safe_text(e)}", error=e)
+                reject(i, cfg.t("harness.agent.hook_failed", error=safe_text(e)), error=e)
                 continue
             if block is not None:
                 reject(i, block.reason, details=block.details, kind="blocked")
@@ -319,13 +319,13 @@ def _execute(
     def run(i: int) -> None:
         ev = events[i]
         if signal.is_set():
-            results[i] = _execution_facts(ToolResult.error("Operation aborted."))
+            results[i] = _execution_facts(ToolResult.error(cfg.t("harness.agent.operation_aborted"), details={"cancelled": True}))
             return
         if cfg.before_tool_execute:
             try:
                 block = cfg.before_tool_execute(ev)
             except Exception as e:  # noqa: BLE001
-                results[i] = _tool_error(calls[i], cfg, f"Execution permission check failed: {safe_text(e)}",
+                results[i] = _tool_error(calls[i], cfg, cfg.t("harness.agent.permission_failed", error=safe_text(e)),
                                          phase="tool.permission", error=e)
                 _execution_facts(results[i])
                 return
@@ -335,9 +335,10 @@ def _execute(
                 _execution_facts(results[i])
                 return
             if signal.is_set():
-                results[i] = _execution_facts(ToolResult.error("Operation aborted."))
+                results[i] = _execution_facts(ToolResult.error(cfg.t("harness.agent.operation_aborted"), details={"cancelled": True}))
                 return
-        ctx = ToolContext(ev.call_id, ev.cwd, signal, cfg.name, review_source=ev.review_source)
+        ctx = ToolContext(ev.call_id, ev.cwd, signal, cfg.name, review_source=ev.review_source,
+                          translator=cfg.translator)
         start = time.monotonic()
         outcome = "unknown"
         try:
@@ -365,7 +366,7 @@ def _execute(
                 result_hook = "returned"
             except Exception as e:  # noqa: BLE001
                 result_hook = "failed"
-                res = _tool_error(calls[i], cfg, f"Tool result hook failed: {safe_text(e)}",
+                res = _tool_error(calls[i], cfg, cfg.t("harness.agent.result_hook_failed", error=safe_text(e)),
                                   phase="tool.result_hook", error=e)
             if not signal.is_set():
                 res = _annotate_error(res, calls[i], cfg, phase="tool.result_hook")

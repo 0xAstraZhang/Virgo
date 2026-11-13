@@ -63,8 +63,15 @@ class JobManager:
             with self.api.session._lock:
                 store = self.api.session.store
         with self._lock:
-            job = Job(f"job{next(self._ids)}", kind, label, accounting_store=store,
-                      agent=agent, tool_call_id=tool_call_id, cwd=cwd or store.cwd)
+            job = Job(
+                f"job{next(self._ids)}",
+                kind,
+                label,
+                accounting_store=store,
+                agent=agent,
+                tool_call_id=tool_call_id,
+                cwd=cwd or store.cwd,
+            )
             self.jobs[job.id] = job
             return job
 
@@ -82,18 +89,35 @@ class JobManager:
         except Exception:
             details = None
         if not isinstance(details, dict) or not isinstance(details.get("error_id"), str):
-            details = capture_error(error.get("message", "Background operation failed.") if isinstance(error, dict) else error,
-                                    phase=phase, kind=kind, code=code, secrets=(job.label,),
-                                    message=f"Background process did not exit within {error.timeout} seconds."
-                                    if isinstance(error, subprocess.TimeoutExpired) else None)
+            details = capture_error(
+                error.get("message", "Background operation failed.") if isinstance(error, dict) else error,
+                phase=phase,
+                kind=kind,
+                code=code,
+                secrets=(job.label,),
+                message=f"Background process did not exit within {error.timeout} seconds."
+                if isinstance(error, subprocess.TimeoutExpired)
+                else None,
+            )
         metadata = {
-            "job_id": job.id, "job_kind": job.kind, "agent": job.agent, "tool_call_id": job.tool_call_id,
-            "status": ("killed" if kind == "aborted" else "failed") if job.status == "running" else job.status,
-            "exit_code": job.exit_code, "cwd": str(job.cwd), "output_path": str(job.log) if job.log else None,
-            "duration": round((job.ended or time.time()) - job.started, 6), **(context or {}),
+            "job_id": job.id,
+            "job_kind": job.kind,
+            "agent": job.agent,
+            "tool_call_id": job.tool_call_id,
+            "status": ("killed" if kind == "aborted" else "failed")
+            if job.status == "running"
+            else job.status,
+            "exit_code": job.exit_code,
+            "cwd": str(job.cwd),
+            "output_path": str(job.log) if job.log else None,
+            "duration": round((job.ended or time.time()) - job.started, 6),
+            **(context or {}),
         }
         details = self.api.session.report_error(
-            details, phase=phase, store=job.accounting_store, notify=kind != "aborted",
+            details,
+            phase=phase,
+            store=job.accounting_store,
+            notify=kind != "aborted",
             context=metadata,
         )
         if isinstance(error, BaseException):
@@ -108,18 +132,27 @@ class JobManager:
         ):
             job.related_errors.append(details)
         if details.get("context", {}).get("job_id") != job.id and not any(
-            item.get("code") == "BACKGROUND_ERROR_LINK" and
-            item.get("context", {}).get("related_error_id") == details["error_id"] for item in job.related_errors
+            item.get("code") == "BACKGROUND_ERROR_LINK"
+            and item.get("context", {}).get("related_error_id") == details["error_id"]
+            for item in job.related_errors
         ):
             # A child runtime may already have persisted this error ID. Keep
             # that cause intact and record the job association independently.
-            link = capture_error(f"Background job {job.id} failed; see error {details['error_id']}.",
-                                 phase="background.result", code="BACKGROUND_ERROR_LINK",
-                                 kind=details.get("kind", kind),
-                                 context={**metadata, "related_error_id": details["error_id"]})
-            job.related_errors.append(self.api.session.report_error(
-                link, phase="background.result", store=job.accounting_store, notify=False,
-            ))
+            link = capture_error(
+                f"Background job {job.id} failed; see error {details['error_id']}.",
+                phase="background.result",
+                code="BACKGROUND_ERROR_LINK",
+                kind=details.get("kind", kind),
+                context={**metadata, "related_error_id": details["error_id"]},
+            )
+            job.related_errors.append(
+                self.api.session.report_error(
+                    link,
+                    phase="background.result",
+                    store=job.accounting_store,
+                    notify=False,
+                )
+            )
         return details
 
     def _stop_process(self, job: Job) -> bool:
@@ -154,12 +187,23 @@ class JobManager:
         job.reported = True
         job.done.set()
 
-    def start_command(self, command: str, cwd: Path, timeout: float | None = None, *, shell=None,
-                      store=None, agent="main", tool_call_id=None) -> Job:
+    def start_command(
+        self,
+        command: str,
+        cwd: Path,
+        timeout: float | None = None,
+        *,
+        shell=None,
+        store=None,
+        agent="main",
+        tool_call_id=None,
+    ) -> Job:
         shell = shell or self.api.services["shell"].current
         if shell is None:
-            raise ValueError("No shell is available; use /shell to select one.")
-        job = self._new(shell.tool_name, command, store=store, agent=agent, tool_call_id=tool_call_id, cwd=cwd)
+            raise ValueError(self.api.session.t('features.jobs.no_shell'))
+        job = self._new(
+            shell.tool_name, command, store=store, agent=agent, tool_call_id=tool_call_id, cwd=cwd
+        )
         fh = None
         try:
             job.log, fh = open_output(cwd, job.id)
@@ -183,18 +227,25 @@ class JobManager:
                     time.sleep(0.1)
                 proc.wait(timeout=5)
                 job.exit_code = proc.returncode
-                status = "killed" if job.signal.is_set() else (
-                    "completed" if proc.returncode == 0 and not timed_out else "failed"
+                status = (
+                    "killed"
+                    if job.signal.is_set()
+                    else ("completed" if proc.returncode == 0 and not timed_out else "failed")
                 )
                 if status == "failed":
-                    self._report(job, f"Background job {job.id} timed out." if timed_out else
-                                 f"Background job {job.id} exited with status {job.exit_code}.",
-                                 phase="background.command", code="BACKGROUND_TIMEOUT" if timed_out else "BACKGROUND_EXIT_FAILED",
-                                 context={"timeout_seconds": timeout} if timed_out else None)
+                    self._report(
+                        job,
+                        f"Background job {job.id} timed out."
+                        if timed_out
+                        else f"Background job {job.id} exited with status {job.exit_code}.",
+                        phase="background.command",
+                        code="BACKGROUND_TIMEOUT" if timed_out else "BACKGROUND_EXIT_FAILED",
+                        context={"timeout_seconds": timeout} if timed_out else None,
+                    )
             except Exception as error:
                 status = "killed" if job.signal.is_set() else "failed"
                 details = self._report(job, error, phase="background.watch")
-                job.result = error_summary(details)
+                job.result = error_summary(details, t=self.api.session.t)
             finally:
                 if not self._stop_process(job) and status != "killed":
                     status = "failed"
@@ -213,8 +264,16 @@ class JobManager:
             raise
         return job
 
-    def start_callable(self, label: str, fn: Callable[[threading.Event], ToolResult | str], *,
-                       store=None, agent="main", tool_call_id=None, cwd=None) -> Job:
+    def start_callable(
+        self,
+        label: str,
+        fn: Callable[[threading.Event], ToolResult | str],
+        *,
+        store=None,
+        agent="main",
+        tool_call_id=None,
+        cwd=None,
+    ) -> Job:
         job = self._new("agent", label, store=store, agent=agent, tool_call_id=tool_call_id, cwd=cwd)
 
         def run():
@@ -228,14 +287,17 @@ class JobManager:
                 if details.get("status") == "aborted":
                     status = "killed"
                 if status == "failed":
-                    self._report(job, details.get("error") or f"Background job {job.id} reported a failed result.",
-                                 phase="background.callable")
+                    self._report(
+                        job,
+                        details.get("error") or f"Background job {job.id} reported a failed result.",
+                        phase="background.callable",
+                    )
                 for related in details.get("related_errors") or []:
                     if isinstance(related, dict):
                         self._report(job, related, phase="background.callable")
             except Exception as e:  # noqa: BLE001
                 details = self._report(job, e, phase="background.callable")
-                job.result = error_summary(details)
+                job.result = error_summary(details, t=self.api.session.t)
                 status = "killed" if job.signal.is_set() else "failed"
             self._finish(job, status)
 
@@ -279,18 +341,36 @@ class JobManager:
                 if job.status != "killed":
                     job.status = "failed"
                 details = self._report(job, error, phase="background.output")
-                out = job.result or error_summary(details)
+                out = job.result or error_summary(details, t=self.api.session.t)
                 total, unit = len(out), "chars"
             tail = out[-1200:] if len(out) > 1200 else out
-            code = f", exit code {job.exit_code}" if job.exit_code is not None else ""
-            text = (
-                f"Background job {job.id} ({job.kind}: {job.label[:80]}) {job.status}{code} after {job.elapsed()}.\n"
-                f"{'Result' if job.kind == 'agent' else 'Last output'}:\n{tail or '(no output)'}"
+            code = (
+                self.api.session.t("features.jobs.exit_code", code=job.exit_code)
+                if job.exit_code is not None
+                else ""
+            )
+            text = self.api.session.t(
+                "features.jobs.notification",
+                id=job.id,
+                kind=self.api.session.t("features.jobs.kind." + job.kind),
+                label=job.label[:80],
+                status=self.api.session.t("features.jobs.state." + job.status),
+                code=code,
+                elapsed=job.elapsed(),
+                heading=self.api.session.t(
+                    "features.jobs.result" if job.kind == "agent" else "features.jobs.last_output"
+                ),
+                output=tail or self.api.session.t("tools.output.empty"),
             )
             if total > 1200:
-                text += f"\n[{total} {unit} total — use job_output id={job.id} for the log path and bounded output]"
+                text += self.api.session.t(
+                    "features.jobs.more",
+                    total=total,
+                    unit=self.api.session.t("features.jobs.unit." + unit),
+                    id=job.id,
+                )
             if job.error_details is not None:
-                text += "\n" + error_summary(job.error_details)
+                text += "\n" + error_summary(job.error_details, t=self.api.session.t)
             evidence = ([job.error_details] if job.error_details is not None else []) + job.related_errors
             # Retain evidence before delivery, so a broken UI/notification path
             # cannot prevent the original lead from querying it on its next run.
@@ -299,10 +379,13 @@ class JobManager:
         except Exception as e:  # noqa: BLE001
             # Leaving the job unreported would hold print mode until its idle timeout;
             # surface the lost notification instead so the user still learns the outcome.
-            details = capture_error(e, phase="background.notify", message=(
-                f"could not deliver the notification for {job.id} ({job.status}): {safe_text(e)}"
-            ), context={"related_error_id": job.error_details["error_id"] if job.error_details else None},
-                secrets=(job.label,))
+            details = capture_error(
+                e,
+                phase="background.notify",
+                message=(f"could not deliver the notification for {job.id} ({job.status}): {safe_text(e)}"),
+                context={"related_error_id": job.error_details["error_id"] if job.error_details else None},
+                secrets=(job.label,),
+            )
             self._report(job, details, phase="background.notify")
         finally:
             # Idle detection waits for this flag, not the status: the notification
@@ -320,7 +403,15 @@ def setup(api: ExtensionAPI) -> None:
     def find(args: dict) -> Job | ToolResult:
         job = jobs.jobs.get(args["id"])
         return (
-            job if job else ToolResult.error(f"No job {args['id']}. Known: {', '.join(jobs.jobs) or 'none'}")
+            job
+            if job
+            else ToolResult.error(
+                api.session.t(
+                    "features.jobs.missing",
+                    id=args["id"],
+                    known=", ".join(jobs.jobs) or api.session.t("features.jobs.none"),
+                )
+            )
         )
 
     def output(args: dict, ctx: ToolContext) -> ToolResult:
@@ -332,26 +423,38 @@ def setup(api: ExtensionAPI) -> None:
         while job.status == "running" and time.time() < end and not ctx.signal.is_set():
             time.sleep(0.2)
         label = job.label if len(job.label) <= 300 else job.label[:300] + "…"
-        head = f"{job.id} [{job.status}] {job.kind}: {label} ({job.elapsed()})"
+        head = f"{job.id} [{ctx.t('features.jobs.state.' + job.status)}] {ctx.t('features.jobs.kind.' + job.kind)}: {label} ({job.elapsed()})"
         details = {"job_id": job.id, "status": job.status, "exit_code": job.exit_code}
         if job.error_details is not None:
             details.update(error=job.error_details, related_errors=job.related_errors)
-            head += "\n" + error_summary(job.error_details)
+            head += "\n" + error_summary(job.error_details, t=api.session.t)
         if job.log is not None:
             captured = read_output(job.log)
-            displayed = display_output(captured, max_bytes=MAX_BYTES - len(head.encode("utf-8")) - 1)
-            return ToolResult.text(head + "\n" + displayed, {**details,
-                "output_path": str(job.log), "output_bytes": captured.total_bytes,
-                "truncated": displayed.startswith("[Output truncated:"),
-            })
-        return ToolResult.text(head + "\n" + budget(job.result or "(no output yet)", ctx.cwd, job.id, keep="tail"), details)
+            displayed = display_output(captured, max_bytes=MAX_BYTES - len(head.encode("utf-8")) - 1, t=ctx.t)
+            return ToolResult.text(
+                head + "\n" + displayed,
+                {
+                    **details,
+                    "output_path": str(job.log),
+                    "output_bytes": captured.total_bytes,
+                    "truncated": captured.truncated
+                    or len((captured.text.rstrip() or ctx.t("tools.output.empty")).encode("utf-8"))
+                    > MAX_BYTES - len(head.encode("utf-8")) - 1,
+                },
+            )
+        return ToolResult.text(
+            head
+            + "\n"
+            + budget(job.result or ctx.t("features.jobs.no_output"), ctx.cwd, job.id, keep="tail", t=ctx.t),
+            details,
+        )
 
     def kill(args: dict, ctx: ToolContext) -> ToolResult:
         job = find(args)
         if isinstance(job, ToolResult):
             return job
         jobs.kill(job)
-        return ToolResult.text(f"Stopping {job.id}.")
+        return ToolResult.text(ctx.t("features.jobs.stopping", id=job.id))
 
     api.register_tool(
         AgentTool(
@@ -364,6 +467,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             output,
             read_only=True,
+            i18n_key="tools.job_output",
         ),
         roles=("main",),
     )
@@ -374,21 +478,25 @@ def setup(api: ExtensionAPI) -> None:
             {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
             kill,
             read_only=True,
+            i18n_key="tools.job_kill",
         ),
         roles=("main",),
     )
 
     def cmd(session, args):
         if not jobs.jobs:
-            api.ui.print("No background jobs.")
+            api.ui.print(api.session.t("features.jobs.empty"))
             return
         api.ui.print(
             "\n".join(
-                f"  {j.id} [{j.status}] {j.kind}: {j.label[:70]} ({j.elapsed()})" for j in jobs.jobs.values()
+                f"  {j.id} [{api.session.t('features.jobs.state.' + j.status)}] {api.session.t('features.jobs.kind.' + j.kind)}: {j.label[:70]} ({j.elapsed()})"
+                for j in jobs.jobs.values()
             )
         )
 
-    api.register_command("jobs", cmd, "list background jobs", concurrent=True)
+    api.register_command(
+        "jobs", cmd, "list background jobs", concurrent=True, description_key="features.commands.jobs"
+    )
     api.on("pending_work", lambda s: bool(jobs.unreported()))
 
     def shutdown(session):

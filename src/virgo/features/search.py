@@ -28,13 +28,14 @@ class Search(WebAccess):
             # A removed provider's key must never become a DeepSeek credential.
             self.session.settings.set("search.backend", "duckduckgo")
             self.session.settings.set("search.apiKeyEnv", None)
-            self.session.ui.print("Brave search was removed; the client backend is now DuckDuckGo. Use /search to choose.", "warn")
+            self.session.ui.print(self.session.t("features.search.legacy"), "warn")
         if self.mode not in {"auto", "native", "builtin", "off"}:
-            raise ValueError("search.mode must be auto, native, builtin or off")
+            raise ValueError(self.session.t("features.search.mode"))
         if type(self.max_uses) is not int or not 1 <= self.max_uses <= 10:
-            raise ValueError("search.maxUses must be an integer from 1 to 10")
+            raise ValueError(self.session.t("features.search.max_uses"))
         self.tool = make_web_search(
-            self.config, resolve_backend=self.execution_backend,
+            self.config,
+            resolve_backend=self.execution_backend,
             resolve_api_key=lambda ctx: self.deepseek_key(self._model_for(ctx)),
         )
 
@@ -48,11 +49,13 @@ class Search(WebAccess):
 
     def set_selection(self, choice: str) -> None:
         if choice not in {"auto", "duckduckgo", "deepseek", "off"}:
-            raise ValueError("Search backend must be auto, duckduckgo, deepseek or off.")
+            raise ValueError(self.session.t("features.search.selection"))
         if choice == "deepseek" and not self.deepseek_key(self.session.model):
-            raise ValueError(DEEPSEEK_SETUP)
-        patch = {"mode": choice if choice in {"auto", "off"} else "builtin",
-                 "backend": choice if choice in {"duckduckgo", "deepseek"} else "duckduckgo"}
+            raise ValueError(self.session.t("features.search.key"))
+        patch = {
+            "mode": choice if choice in {"auto", "off"} else "builtin",
+            "backend": choice if choice in {"duckduckgo", "deepseek"} else "duckduckgo",
+        }
         if self._legacy_backend:
             patch["apiKeyEnv"] = None
         self.session.settings.save_user({"search": patch})
@@ -67,13 +70,13 @@ class Search(WebAccess):
     def _prepare_client(self, context, model, backend=None) -> None:
         backend = backend or self.backend_for(model)
         if backend == "deepseek" and not self.deepseek_key(model):
-            raise ValueError(DEEPSEEK_SETUP)
+            raise ValueError(self.session.t("features.search.key"))
         limit = 128 if backend == "deepseek" else 2000
         for tool in context.tools:
             if tool.name == "web_search":
                 tool.parameters = copy.deepcopy(tool.parameters)
                 tool.parameters["properties"]["query"].update(
-                    maxLength=limit, description=f"Search query, at most {limit} characters."
+                    maxLength=limit, description=self.session.t("features.search.query", limit=limit)
                 )
 
     def prepare(self, runtime, context, model) -> None:
@@ -98,4 +101,10 @@ def setup(api) -> None:
     # Keep the tool in runtime registries so /search can enable an initially
     # disabled service; prepare() controls what each model request can see.
     api.register_tool(search.tool, roles=ROLES_ALL)
-    api.register_command("search", configure_search, "choose search backend (/search [auto|duckduckgo|deepseek|off])", argument_hint="[auto|duckduckgo|deepseek|off]")
+    api.register_command(
+        "search",
+        configure_search,
+        "choose search backend (/search [auto|duckduckgo|deepseek|off])",
+        argument_hint="[auto|duckduckgo|deepseek|off]",
+        description_key="features.commands.search",
+    )

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..harness.extensions import ExtensionAPI
+from ..i18n import Translator
 
 STATUSES = ("pending", "in_progress", "completed")
 
@@ -41,8 +42,9 @@ class Task:
 class TaskStore:
     _thread_lock = threading.RLock()
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, t=None):
         self.root = Path(root)
+        self.t = t or Translator()
 
     @contextmanager
     def lock(self):
@@ -60,7 +62,7 @@ class TaskStore:
     def _path(self, tid: str) -> Path:
         # Ids come from tool arguments: never let one name a file outside the task directory.
         if not tid or Path(tid).name != tid or tid.startswith("."):
-            raise ValueError(f"invalid task id {tid!r}")
+            raise ValueError(self.t("features.tasks.invalid_id", id=tid))
         return self.root / f"{tid}.json"
 
     def get(self, tid: str) -> Task | None:
@@ -113,7 +115,7 @@ class TaskStore:
             deps = [str(d) for d in blocked_by or []]
             for d in deps:
                 if self.get(d) is None:
-                    raise ValueError(f"unknown task {d}")
+                    raise ValueError(self.t("features.tasks.unknown", id=d))
             nums = [int(f.stem) for f in self.root.glob("*.json") if f.stem.isdigit()]
             t = Task(str(max(nums, default=0) + 1), subject.strip(), description.strip(), blocked_by=deps)
             self._save(t)
@@ -124,15 +126,15 @@ class TaskStore:
         with self.lock():
             t = self.get(tid)
             if t is None:
-                raise ValueError(f"unknown task {tid}")
+                raise ValueError(self.t("features.tasks.unknown", id=tid))
             for d in changes.get("add_blocked_by") or []:
                 d = str(d)
                 if d == t.id:
-                    raise ValueError("a task cannot depend on itself")
+                    raise ValueError(self.t("features.tasks.self_dependency"))
                 if self.get(d) is None:
-                    raise ValueError(f"unknown task {d}")
+                    raise ValueError(self.t("features.tasks.unknown", id=d))
                 if self._reaches(d, t.id):
-                    raise ValueError(f"adding {d} would create a dependency cycle")
+                    raise ValueError(self.t("features.tasks.cycle", id=d))
                 if d not in t.blocked_by:
                     t.blocked_by.append(d)
             for d in changes.get("remove_blocked_by") or []:
@@ -142,18 +144,18 @@ class TaskStore:
                     setattr(t, k, changes[k])
             status, owner = changes.get("status"), changes.get("owner")
             if status and status not in STATUSES:
-                raise ValueError(f"status must be one of {STATUSES}")
+                raise ValueError(self.t("features.tasks.status_invalid", statuses=STATUSES))
             ready_before = {
                 x.id for x in self.all() if x.status == "pending" and x.blocked_by and not self.blockers(x)
             }
             if status == "in_progress":
                 if self.blockers(t):
                     raise ValueError(
-                        f"task {t.id} is blocked by unfinished task(s) {', '.join(self.blockers(t))}"
+                        self.t("features.tasks.blocked", id=t.id, blockers=", ".join(self.blockers(t)))
                     )
                 new_owner = owner or actor
                 if t.owner and t.owner != new_owner and actor != "main":
-                    raise ValueError(f"task {t.id} belongs to {t.owner}")
+                    raise ValueError(self.t("features.tasks.owned", id=t.id, owner=t.owner))
                 t.owner = new_owner
             elif status == "pending" and owner is None and t.owner == actor:
                 t.owner = None  # releasing your own task
@@ -185,18 +187,23 @@ class TaskStore:
             return out
 
 
-def fmt(store: TaskStore, t: Task) -> str:
+def fmt(store: TaskStore, t: Task, translate=None) -> str:
+    translate = translate or store.t
     if t.status == "pending":
         b = store.blockers(t)
-        state = f"blocked by {', '.join(b)}" if b else "ready"
+        state = (
+            translate("features.tasks.blocked_by", blockers=", ".join(b))
+            if b
+            else translate("features.tasks.state.ready")
+        )
     else:
-        state = t.status
+        state = translate("features.tasks.state." + t.status)
     owner = f" @{t.owner}" if t.owner else ""
     return f"#{t.id} [{state}]{owner} {t.subject}"
 
 
 def setup(api: ExtensionAPI) -> None:
-    store = TaskStore(api.paths.project / "tasks")
+    store = TaskStore(api.paths.project / "tasks", api.session.t)
     api.services["tasks"] = store
 
     def create(args: dict, ctx: ToolContext) -> ToolResult:
@@ -204,7 +211,7 @@ def setup(api: ExtensionAPI) -> None:
             t = store.create(args["subject"], args.get("description", ""), args.get("blocked_by"))
         except ValueError as e:
             return ToolResult.error(str(e))
-        return ToolResult.text(f"Created {fmt(store, t)}", details=asdict(t))
+        return ToolResult.text(ctx.t("features.tasks.created", task=fmt(store, t, ctx.t)), details=asdict(t))
 
     def update(args: dict, ctx: ToolContext) -> ToolResult:
         changes = {k: v for k, v in args.items() if k != "id"}
@@ -212,9 +219,9 @@ def setup(api: ExtensionAPI) -> None:
             t, unblocked = store.update(str(args["id"]), ctx.agent, **changes)
         except ValueError as e:
             return ToolResult.error(str(e))
-        text = f"Updated {fmt(store, t)}"
+        text = ctx.t("features.tasks.updated", task=fmt(store, t, ctx.t))
         if unblocked:
-            text += "\nNow ready: " + ", ".join(fmt(store, u) for u in unblocked)
+            text += ctx.t("features.tasks.ready") + ", ".join(fmt(store, u, ctx.t) for u in unblocked)
         return ToolResult.text(text, details=asdict(t))
 
     def list_(args: dict, ctx: ToolContext) -> ToolResult:
@@ -224,14 +231,21 @@ def setup(api: ExtensionAPI) -> None:
             if (not args.get("status") or t.status == args["status"])
             and (not args.get("owner") or t.owner == args["owner"])
         ]
-        return ToolResult.text("\n".join(fmt(store, t) for t in tasks) or "(no tasks)")
+        return ToolResult.text(
+            "\n".join(fmt(store, t, ctx.t) for t in tasks) or ctx.t("features.tasks.empty_result")
+        )
 
     def get(args: dict, ctx: ToolContext) -> ToolResult:
         t = store.get(str(args["id"]))
         if t is None:
-            return ToolResult.error(f"unknown task {args['id']}")
+            return ToolResult.error(ctx.t("features.tasks.unknown", id=args["id"]))
         return ToolResult.text(
-            f"{fmt(store, t)}\n\n{t.description or '(no description)'}\nblocked_by: {t.blocked_by or '-'}"
+            ctx.t(
+                "features.tasks.details",
+                task=fmt(store, t, ctx.t),
+                description=t.description or ctx.t("features.tasks.no_description"),
+                blockers=t.blocked_by or "-",
+            )
         )
 
     roles = ("main", "teammate")
@@ -251,6 +265,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             create,
             read_only=True,
+            i18n_key="tools.task_create",
         ),
         roles,
     )
@@ -275,6 +290,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             update,
             read_only=True,
+            i18n_key="tools.task_update",
         ),
         roles,
     )
@@ -291,6 +307,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             list_,
             read_only=True,
+            i18n_key="tools.task_list",
         ),
         roles,
     )
@@ -301,6 +318,7 @@ def setup(api: ExtensionAPI) -> None:
             {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
             get,
             read_only=True,
+            i18n_key="tools.task_get",
         ),
         roles,
     )
@@ -313,10 +331,17 @@ def setup(api: ExtensionAPI) -> None:
                     if t.status == "completed":
                         store._path(t.id).unlink(missing_ok=True)
                         n += 1
-            api.ui.print(f"Removed {n} completed task(s).")
+            api.ui.print(session.t("features.tasks.removed", count=n))
             return
-        api.ui.print("\n".join(fmt(store, t) for t in store.all()) or "No tasks.")
+        api.ui.print(
+            "\n".join(fmt(store, t, session.t) for t in store.all()) or session.t("features.tasks.empty")
+        )
 
     api.register_command(
-        "tasks", cmd, "show the task graph (/tasks clear removes completed)", concurrent=True, argument_hint="[clear]",
+        "tasks",
+        cmd,
+        "show the task graph (/tasks clear removes completed)",
+        concurrent=True,
+        argument_hint="[clear]",
+        description_key="features.commands.tasks",
     )

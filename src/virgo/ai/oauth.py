@@ -110,11 +110,17 @@ def _credential(body: dict, previous: dict | None = None, *, default_expiry=None
     }
 
 
+def _t(ui, key: str, /, **values) -> str:
+    from ..i18n import Translator
+
+    return (getattr(ui, "t", None) or Translator())(key, **values)
+
+
 def _open(ui, url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise AuthError("OAuth server returned an invalid verification URL.")
-    ui.print(f"Open this link to sign in:\n{url}")
+    ui.print(_t(ui, "harness.oauth.open", url=url))
     try:
         webbrowser.open(url)
     except (OSError, webbrowser.Error):
@@ -123,13 +129,21 @@ def _open(ui, url: str) -> None:
 
 def _select(ui, question: str, choices: list[str], signal) -> str:
     _check(signal)
-    choice = ui.select(question, choices)
+    keys = {'Browser login': 'harness.oauth.browser',
+     'Choose a login method': 'harness.oauth.method',
+     'Copy code login': 'harness.oauth.copy_code',
+     'Device code login': 'harness.oauth.device',
+     'Google sign-in method': 'harness.oauth.google_method',
+     'Paste redirect URL': 'harness.oauth.redirect'}
+    labels = {(_t(ui, keys[value]) if value in keys else value): value for value in choices}
+    question = _t(ui, keys[question]) if question in keys else question
+    choice = ui.select(question, list(labels))
     _check(signal)
     if choice is None:
-        raise AuthCancelled("Login cancelled.")
-    if choice not in choices:
-        raise AuthError("Invalid login method.")
-    return choice
+        raise AuthCancelled(_t(ui, "harness.auth.cancelled"))
+    if choice not in labels:
+        raise AuthError(_t(ui, "harness.oauth.invalid_method"))
+    return labels[choice]
 
 
 def _pkce() -> tuple[str, str]:
@@ -235,7 +249,7 @@ class _Callback:
 
 
 def _input_code(ui, state: str, signal, redirect_uri=None) -> str:
-    text = ui.input("Paste the complete redirect URL or code#state:", password=True)
+    text = ui.input(_t(ui, "harness.oauth.paste"), password=True)
     _check(signal)
     if text is None:
         raise AuthCancelled("Login cancelled.")
@@ -270,7 +284,7 @@ def _browser_login(provider: str, ui, signal) -> dict:
             )
             redirect_uri = callback.uri
         except OSError:
-            ui.print("The local callback port is unavailable; paste the redirect URL after signing in.")
+            ui.print(_t(ui, "harness.oauth.port"))
     params = {
         "client_id": ANTHROPIC_CLIENT if anthropic else OPENAI_CLIENT,
         "response_type": "code",
@@ -368,7 +382,7 @@ def _device_login(provider: str, ui, signal) -> dict:
     code = _required(body, "device_code")
     user_code = _required(body, "user_code")
     url = body.get("verification_uri_complete") or _required(body, "verification_uri")
-    ui.print(f"Enter this device code when prompted: {user_code}")
+    ui.print(_t(ui, "harness.oauth.device_code", code=user_code))
     _open(ui, url)
     interval = body.get("interval", 5)
     if not isinstance(interval, (int, float)) or not math.isfinite(interval) or interval <= 0:
@@ -402,7 +416,7 @@ def _openai_device(ui, signal) -> dict:
         raise AuthError("OpenAI returned an invalid polling interval.") from None
     if not math.isfinite(interval) or interval < 0:
         raise AuthError("OpenAI returned an invalid polling interval.")
-    ui.print(f"Enter this device code when prompted: {user_code}")
+    ui.print(_t(ui, "harness.oauth.device_code", code=user_code))
     _open(ui, "https://auth.openai.com/codex/device")
     authorization = _poll(
         "https://auth.openai.com/api/accounts/deviceauth/token",

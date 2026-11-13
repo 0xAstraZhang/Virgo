@@ -25,11 +25,13 @@ from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..harness.extensions import ExtensionAPI
+from ..i18n import Translator
 
 _RANGES = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)]
 
 
-def _parse_field(spec: str, lo: int, hi: int) -> set[int]:
+def _parse_field(spec: str, lo: int, hi: int, t=None) -> set[int]:
+    t = t or Translator()
     out: set[int] = set()
     for part in spec.split(","):
         step = 1
@@ -37,7 +39,7 @@ def _parse_field(spec: str, lo: int, hi: int) -> set[int]:
             part, s = part.split("/", 1)
             step = int(s)
             if step <= 0:
-                raise ValueError("step must be positive")
+                raise ValueError(t("features.schedule.cron_step"))
         if part == "*":
             a, b = lo, hi
         elif "-" in part:
@@ -47,20 +49,21 @@ def _parse_field(spec: str, lo: int, hi: int) -> set[int]:
             if step != 1:
                 b = hi
         if not (lo <= a <= hi and lo <= b <= hi and a <= b):
-            raise ValueError(f"{part!r} out of range {lo}-{hi}")
+            raise ValueError(t("features.schedule.cron_range", part=part, lo=lo, hi=hi))
         out.update(range(a, b + 1, step))
     return out
 
 
 class Cron:
-    def __init__(self, expr: str):
+    def __init__(self, expr: str, t=None):
+        t = t or Translator()
         fields = expr.split()
         if len(fields) != 5:
-            raise ValueError("cron needs 5 fields: minute hour day-of-month month day-of-week")
+            raise ValueError(t("features.schedule.cron_fields"))
         try:
-            self.sets = [_parse_field(f, lo, hi) for f, (lo, hi) in zip(fields, _RANGES, strict=True)]
+            self.sets = [_parse_field(f, lo, hi, t) for f, (lo, hi) in zip(fields, _RANGES, strict=True)]
         except ValueError as e:
-            raise ValueError(f"invalid cron {expr!r}: {e}") from e
+            raise ValueError(t("features.schedule.cron_invalid", expression=expr, error=e)) from e
         if 7 in self.sets[4]:
             self.sets[4].add(0)
         self.dom_any = fields[2] == "*"
@@ -91,8 +94,9 @@ def _cron(expr: str) -> Cron:
     return Cron(expr)
 
 
-def parse_at(text: str, now: datetime | None = None) -> datetime:
+def parse_at(text: str, now: datetime | None = None, *, t=None) -> datetime:
     """Return a naive local time, the form the scheduler stores and compares."""
+    t = t or Translator()
     now = now or datetime.now()
     m = re.fullmatch(r"\+?\s*(\d+)\s*([smhd])", text.strip())
     if m:
@@ -101,7 +105,7 @@ def parse_at(text: str, now: datetime | None = None) -> datetime:
     try:
         when = datetime.fromisoformat(text.strip())
     except ValueError as e:
-        raise ValueError(f"invalid time {text!r}: use ISO (2026-01-31T09:00) or +10m / +2h / +1d") from e
+        raise ValueError(t("features.schedule.invalid_time", time=text)) from e
     # A zone or offset ("...Z", "+08:00") names an instant: convert it rather than read it as local time.
     return when.astimezone().replace(tzinfo=None) if when.tzinfo else when
 
@@ -122,40 +126,65 @@ class Schedule:
 
     @property
     def display_title(self) -> str:
-        return self.title or next((line.strip() for line in self.prompt.splitlines() if line.strip()), "Untitled")
+        return self.title or next(
+            (line.strip() for line in self.prompt.splitlines() if line.strip()), "Untitled"
+        )
 
-    def timing(self) -> tuple[str, str]:
+    def timing(self, t=None) -> tuple[str, str]:
+        t = t or Translator()
         if self.interval_minutes is not None:
             n = self.interval_minutes
-            kind = f"每 {n // 60} 小时" if n % 60 == 0 else f"每 {n} 分钟"
+            kind = (
+                t("features.schedule.hours", count=n // 60)
+                if n % 60 == 0
+                else t("features.schedule.minutes", count=n)
+            )
             return kind, datetime.fromtimestamp(self.next_run).isoformat(sep=" ", timespec="seconds")
         if self.at:
-            return "单次", self.at.replace("T", " ")
+            return t("features.schedule.kind.once"), self.at.replace("T", " ")
         minute, hour, dom, month, dow = self.cron.split()
         if minute.isdecimal() and hour.isdecimal() and dom == month == "*":
             clock = f"{int(hour):02}:{int(minute):02}"
             if dow == "*":
-                return "每天", clock
+                return t("features.schedule.kind.daily"), clock
             if dow.isdecimal():
-                return "每周", f"周{'日一二三四五六'[int(dow) % 7]} {clock}"
-        return "自定义 cron", self.cron
+                day = ("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")[
+                    int(dow) % 7
+                ]
+                return t("features.schedule.kind.weekly"), f"{t('features.schedule.weekday.' + day)} {clock}"
+        return t("features.schedule.kind.cron"), self.cron
 
-    def next_time(self) -> str:
+    def next_time(self, t=None) -> str:
+        t = t or Translator()
         if self.interval_minutes is not None:
             return datetime.fromtimestamp(self.next_run).astimezone().isoformat(timespec="seconds")
         if self.at:
             return self.at
         nxt = _cron(self.cron).next_after(datetime.now())
-        return nxt.isoformat(timespec="minutes") if nxt else "No match in the next 366 days"
+        return nxt.isoformat(timespec="minutes") if nxt else t("features.schedule.no_match")
 
-    def details(self) -> str:
-        kind, when = self.timing()
-        anchor = (f"\n首次时间: {datetime.fromtimestamp(self.start_at).astimezone().isoformat(timespec='seconds')}"
-                  if self.interval_minutes is not None else "")
-        return (
-            f"{self.id} · {self.display_title}\n类别: {kind}\n时间: {when}{anchor}"
-            f"\n下次执行: {self.next_time()}\n时区: {datetime.now().astimezone().tzinfo} (system local)"
-            f"\n持久化: {'是' if self.persist else '否'}\n\n{self.prompt}"
+    def details(self, t=None) -> str:
+        t = t or Translator()
+        kind, when = self.timing(t)
+        anchor = (
+            t(
+                "features.schedule.anchor",
+                time=datetime.fromtimestamp(self.start_at).astimezone().isoformat(timespec="seconds"),
+            )
+            if self.interval_minutes is not None
+            else ""
+        )
+        return t(
+            "features.schedule.details",
+            id=self.id,
+            title=self.display_title,
+            kind=kind,
+            when=when,
+            anchor=anchor,
+            next_run=self.next_time(t),
+            timezone=datetime.now().astimezone().tzinfo,
+            persist=t("features.schedule.yes" if self.persist else "features.schedule.no"),
+            prompt=self.prompt,
         )
 
     def advance(self, now: float) -> None:
@@ -163,39 +192,47 @@ class Schedule:
         seconds = self.interval_minutes * 60
         self.next_run = self.start_at + (math.floor((now - self.start_at) / seconds) + 1) * seconds
 
-    def describe(self) -> str:
-        kind, when = self.timing()
+    def describe(self, t=None) -> str:
+        kind, when = self.timing(t)
         return f"{self.id} │ {kind} │ {when} │ {self.display_title}"
 
 
 def prepare_schedule(
-    prompt: str, cron: str | None = None, at: str | None = None, persist: bool = False,
-    *, title: str = "", interval_minutes: int | None = None, start_at: str | None = None,
+    prompt: str,
+    cron: str | None = None,
+    at: str | None = None,
+    persist: bool = False,
+    *,
+    title: str = "",
+    interval_minutes: int | None = None,
+    start_at: str | None = None,
+    t=None,
 ) -> Schedule:
     """Validate an entire draft before changing any shared or persisted state."""
+    t = t or Translator()
     if not isinstance(prompt, str) or not prompt.strip():
-        raise ValueError("Task content must not be empty")
+        raise ValueError(t("features.schedule.content_empty"))
     if not isinstance(title, str) or "\n" in title or "\r" in title:
-        raise ValueError("Title must be a single line")
+        raise ValueError(t("features.schedule.title_single"))
     if sum((bool(cron), bool(at), interval_minutes is not None)) != 1:
-        raise ValueError("give exactly one of cron, at or interval_minutes")
+        raise ValueError(t("features.schedule.one_rule"))
     s = Schedule("", prompt, cron, None, persist, title=title.strip())
     if cron:
-        Cron(cron)
+        Cron(cron, t=t)
     if at:
-        s.at = parse_at(at).isoformat(timespec="seconds")
+        s.at = parse_at(at, t=t).isoformat(timespec="seconds")
     if interval_minutes is not None:
         if type(interval_minutes) is not int or interval_minutes <= 0:
-            raise ValueError("interval_minutes must be a positive integer")
+            raise ValueError(t("features.schedule.interval_positive"))
         s.interval_minutes = interval_minutes
         now = time.time()
-        s.start_at = parse_at(start_at).timestamp() if start_at else now + interval_minutes * 60
+        s.start_at = parse_at(start_at, t=t).timestamp() if start_at else now + interval_minutes * 60
         if s.start_at <= now:
-            raise ValueError("First execution must be in the future")
+            raise ValueError(t("features.schedule.future"))
         s.next_run = s.start_at
         datetime.fromtimestamp(s.next_run)  # reject unrepresentable dates before saving
     elif start_at is not None:
-        raise ValueError("start_at requires interval_minutes")
+        raise ValueError(t("features.schedule.start_interval"))
     return s
 
 
@@ -228,7 +265,8 @@ class Scheduler:
             if self._workspace is None or self._stop.is_set():
                 return {}
             return {
-                sid: s for sid, s in self._workspace.items.items()
+                sid: s
+                for sid, s in self._workspace.items.items()
                 if s.persist or self._workspace.owners[sid] is self
             }
 
@@ -252,29 +290,31 @@ class Scheduler:
         except FileNotFoundError:
             return
         except json.JSONDecodeError as e:
-            self.api.ui.print(f"[schedules: ignoring corrupt {self.file}: {e}]", "error")
+            self.api.ui.print(
+                self.api.session.t("features.schedule.corrupt", path=self.file, error=e), "error"
+            )
             return
         advanced = False
         for d in data:
             try:
                 s = Schedule(**d)
                 if not isinstance(s.prompt, str) or not s.prompt.strip() or not isinstance(s.title, str):
-                    raise ValueError("invalid task content/title")
+                    raise ValueError(self.api.session.t("features.schedule.invalid_content"))
                 if sum((bool(s.cron), bool(s.at), s.interval_minutes is not None)) != 1:
-                    raise ValueError("give exactly one timing rule")
+                    raise ValueError(self.api.session.t("features.schedule.invalid_rule"))
                 if s.cron:
                     Cron(s.cron)
                 if s.at:  # also repairs zone-qualified times saved by earlier versions
                     s.at = parse_at(str(s.at)).isoformat(timespec="seconds")
                 if s.interval_minutes is not None:
                     if type(s.interval_minutes) is not int or s.interval_minutes <= 0:
-                        raise ValueError("invalid interval_minutes")
+                        raise ValueError(self.api.session.t("features.schedule.invalid_interval"))
                     for value in (s.start_at, s.next_run):
                         if not isinstance(value, (float, int)) or not math.isfinite(value):
-                            raise ValueError("invalid interval timestamp")
+                            raise ValueError(self.api.session.t("features.schedule.invalid_timestamp"))
                         datetime.fromtimestamp(value)
                     if s.next_run < s.start_at:
-                        raise ValueError("next_run precedes the interval anchor")
+                        raise ValueError(self.api.session.t("features.schedule.invalid_anchor"))
                     if s.next_run <= time.time():
                         s.advance(time.time())
                         datetime.fromtimestamp(s.next_run)
@@ -282,7 +322,9 @@ class Scheduler:
                 self._workspace.items[s.id] = s
                 self._workspace.owners[s.id] = self
             except (TypeError, ValueError, OverflowError, OSError) as e:
-                self.api.ui.print(f"[schedules: skipping invalid entry {d}: {e}]", "error")
+                self.api.ui.print(
+                    self.api.session.t("features.schedule.invalid_entry", entry=d, error=e), "error"
+                )
         nums = [int(i[1:]) for i in self.items if i[1:].isdigit()]
         self._workspace.ids = itertools.count(max(nums, default=0) + 1)
         if advanced:
@@ -298,14 +340,29 @@ class Scheduler:
         os.replace(tmp, self.file)
 
     def add(
-        self, prompt: str, cron: str | None = None, at: str | None = None, persist: bool = False,
-        *, title: str = "", interval_minutes: int | None = None, start_at: str | None = None,
+        self,
+        prompt: str,
+        cron: str | None = None,
+        at: str | None = None,
+        persist: bool = False,
+        *,
+        title: str = "",
+        interval_minutes: int | None = None,
+        start_at: str | None = None,
     ) -> Schedule:
-        s = prepare_schedule(prompt, cron, at, persist, title=title,
-                             interval_minutes=interval_minutes, start_at=start_at)
+        s = prepare_schedule(
+            prompt,
+            cron,
+            at,
+            persist,
+            title=title,
+            interval_minutes=interval_minutes,
+            start_at=start_at,
+            t=self.api.session.t,
+        )
         with self._lock:
             if self._stop.is_set():
-                raise ValueError("scheduler is closed")
+                raise ValueError(self.api.session.t("features.schedule.closed"))
             s.id = f"s{next(self._workspace.ids)}"
             self._workspace.items[s.id] = s
             self._workspace.owners[s.id] = self
@@ -321,26 +378,32 @@ class Scheduler:
     def get(self, sid: str) -> Schedule:
         with self._lock:
             if sid not in self.items:
-                raise ValueError(f"No schedule {sid} (it may have been deleted or already fired).")
+                raise ValueError(self.api.session.t("features.schedule.missing", id=sid))
             return replace(self.items[sid])
 
     def edit(self, sid: str, *, expected: Schedule | None = None, **changes) -> Schedule:
+        t = self.api.session.t
         with self._lock:
             old = self.get(sid)
             # A poll can advance next_run/last_fired while a form is open. Only
             # reject a conflicting user edit, not ordinary scheduler progress.
             fields = ("prompt", "title", "cron", "at", "persist", "interval_minutes", "start_at")
             if expected is not None and any(getattr(old, k) != getattr(expected, k) for k in fields):
-                raise ValueError("Task changed while editing. Reopen it before saving.")
+                raise ValueError(t("features.schedule.changed"))
             unknown = changes.keys() - set(fields)
             if unknown:
-                raise ValueError(f"Unknown schedule fields: {', '.join(sorted(unknown))}")
+                raise ValueError(t("features.schedule.unknown_fields", fields=", ".join(sorted(unknown))))
             timing = {"cron", "at", "interval_minutes", "start_at"}
             if timing & changes.keys():
                 draft = prepare_schedule(
-                    changes.get("prompt", old.prompt), changes.get("cron"), changes.get("at"),
-                    changes.get("persist", old.persist), title=changes.get("title", old.title),
-                    interval_minutes=changes.get("interval_minutes"), start_at=changes.get("start_at"),
+                    changes.get("prompt", old.prompt),
+                    changes.get("cron"),
+                    changes.get("at"),
+                    changes.get("persist", old.persist),
+                    title=changes.get("title", old.title),
+                    interval_minutes=changes.get("interval_minutes"),
+                    start_at=changes.get("start_at"),
+                    t=t,
                 )
                 draft.id, draft.created = old.id, old.created
                 # Editing an equivalent cron/at rule does not reset duplicate suppression.
@@ -349,9 +412,9 @@ class Scheduler:
             else:
                 draft = replace(old, **changes)
                 if not isinstance(draft.prompt, str) or not draft.prompt.strip():
-                    raise ValueError("Task content must not be empty")
+                    raise ValueError(t("features.schedule.content_empty"))
                 if not isinstance(draft.title, str) or "\n" in draft.title or "\r" in draft.title:
-                    raise ValueError("Title must be a single line")
+                    raise ValueError(t("features.schedule.title_single"))
                 draft.title = draft.title.strip()
             self._workspace.items[sid] = draft
             try:
@@ -396,7 +459,11 @@ class Scheduler:
             if due:
                 self.save()
         for s in due:
-            self.api.notify(f"[Scheduled {s.id}] {s.prompt}", mode="follow_up", source="schedule")
+            self.api.notify(
+                self.api.session.t("features.schedule.notify", id=s.id, prompt=s.prompt),
+                mode="follow_up",
+                source="schedule",
+            )
         return due
 
     def start(self) -> None:
@@ -440,27 +507,36 @@ def setup(api: ExtensionAPI) -> None:
         action = args["action"]
         try:
             if action == "list":
-                rows = "\n".join(s.describe() for s in sched.items.values()) or "(no schedules)"
-                return ToolResult.text(rows + '\nUse action="get" with id for full task content.')
+                rows = "\n".join(s.describe(ctx.t) for s in sched.items.values()) or ctx.t(
+                    "features.schedule.list_empty"
+                )
+                return ToolResult.text(rows + ctx.t("features.schedule.get_hint"))
             if action in {"get", "edit", "cancel"} and not args.get("id"):
-                raise ValueError(f"{action} needs id")
+                raise ValueError(ctx.t("features.schedule.needs_id", action=action))
             if action == "get":
-                return ToolResult.text(sched.get(args["id"]).details())
+                return ToolResult.text(sched.get(args["id"]).details(ctx.t))
             if action == "cancel":
-                return ToolResult.text("Cancelled." if sched.cancel(args["id"]) else f"No schedule {args['id']}.")
+                return ToolResult.text(
+                    ctx.t("features.schedule.cancel_result")
+                    if sched.cancel(args["id"])
+                    else ctx.t("features.schedule.not_found", id=args["id"])
+                )
             changes = {k: v for k, v in args.items() if k not in {"action", "id"}}
             if action == "edit":
                 s = sched.edit(args["id"], **changes)
             elif action == "add":
                 if not args.get("prompt"):
-                    raise ValueError("add needs prompt")
+                    raise ValueError(ctx.t("features.schedule.add_prompt"))
                 s = sched.add(**changes)
             else:
-                raise ValueError(f"Unknown schedule action: {action}")
+                raise ValueError(ctx.t("features.schedule.unknown_action", action=action))
             return ToolResult.text(
-                f"Scheduled {s.describe()}. Next run: {s.next_time()}. "
-                f'Use action="get", id="{s.id}" or /schedules for full details. '
-                "It runs as a new prompt while Virgo is open."
+                ctx.t(
+                    "features.schedule.scheduled",
+                    description=s.describe(ctx.t),
+                    next_run=s.next_time(ctx.t),
+                    id=s.id,
+                )
             )
         except (ValueError, TypeError, OverflowError, OSError) as e:
             return ToolResult.error(str(e))
@@ -480,7 +556,10 @@ def setup(api: ExtensionAPI) -> None:
                     "prompt": {"type": "string"},
                     "title": {"type": "string", "description": "Short, single-line task title"},
                     "interval_minutes": {"type": "integer", "minimum": 1},
-                    "start_at": {"type": "string", "description": "First interval execution (ISO, future); default now + interval"},
+                    "start_at": {
+                        "type": "string",
+                        "description": "First interval execution (ISO, future); default now + interval",
+                    },
                     "cron": {"type": "string"},
                     "at": {"type": "string"},
                     "persist": {"type": "boolean", "description": "Keep across Virgo sessions"},
@@ -490,6 +569,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             execute,
             read_only=True,
+            i18n_key="tools.schedule",
         ),
         roles=("main",),
     )
@@ -503,5 +583,15 @@ def setup(api: ExtensionAPI) -> None:
     api.on("session_shutdown", lambda s: sched.stop())
     from .schedule_commands import create_schedule, manage_schedules
 
-    api.register_command("schedule", lambda s, a: create_schedule(api.ui, sched, a), "create a scheduled task")
-    api.register_command("schedules", lambda s, a: manage_schedules(api.ui, sched, a), "browse and manage scheduled tasks")
+    api.register_command(
+        "schedule",
+        lambda s, a: create_schedule(api.ui, sched, a),
+        "create a scheduled task",
+        description_key="features.commands.schedule",
+    )
+    api.register_command(
+        "schedules",
+        lambda s, a: manage_schedules(api.ui, sched, a),
+        "browse and manage scheduled tasks",
+        description_key="features.commands.schedules",
+    )

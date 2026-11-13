@@ -18,28 +18,35 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
+from ..i18n import tr
+
 
 def session_key(item: dict) -> Path | str:
     """Address live memory stores without pretending they have a filesystem path."""
     return Path(item["path"]) if item["path"] is not None else f"memory:{item['id']}"
 
 
-def relative_time(timestamp: float, *, now: float | None = None) -> str:
+def relative_time(timestamp: float, *, now: float | None = None, owner=None) -> str:
     seconds = max(0, int((time.time() if now is None else now) - timestamp))
     if seconds < 60:
-        return "now"
+        return tr(owner, "ui.sessions.now")
     for duration, unit in ((86400, "d"), (3600, "h"), (60, "m")):
         if seconds >= duration:
-            return f"{seconds // duration}{unit} ago"
-    return "now"
+            return tr(
+                owner,
+                "ui.sessions.time_ago",
+                count=seconds // duration,
+                unit=tr(owner, "ui.sessions.unit." + unit),
+            )
+    return tr(owner, "ui.sessions.now")
 
 
-def workspace_name(cwd: str | Path) -> str:
+def workspace_name(cwd: str | Path, owner=None) -> str:
     value = str(cwd)
     home = str(Path.home())
     if value == home or value.startswith(home + "/"):
         value = "~" + value[len(home) :]
-    return " ".join(value.split()) or "Unknown workspace"
+    return " ".join(value.split()) or tr(owner, "ui.sessions.unknown_workspace")
 
 
 def _columns(width: int) -> tuple[int, int, int]:
@@ -50,7 +57,9 @@ def _columns(width: int) -> tuple[int, int, int]:
 
 
 def _cell(value: str, width: int, *, right: bool = False) -> Text:
-    cell = Text(value.replace("\n", " ").replace("\r", " ").replace("\t", " "), no_wrap=True, overflow="ellipsis")
+    cell = Text(
+        value.replace("\n", " ").replace("\r", " ").replace("\t", " "), no_wrap=True, overflow="ellipsis"
+    )
     cell.truncate(width, overflow="ellipsis", pad=not right)
     if right:
         cell.pad_left(max(0, width - cell.cell_len))
@@ -148,9 +157,17 @@ class SessionPicker(ModalScreen[Path | str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-browser"):
-            yield Static(SessionRow("Session", "Status", "Updated", heading=True), id="session-columns")
+            yield Static(
+                SessionRow(
+                    tr(self, "ui.sessions.column_session"),
+                    tr(self, "ui.sessions.column_status"),
+                    tr(self, "ui.sessions.column_updated"),
+                    heading=True,
+                ),
+                id="session-columns",
+            )
             yield SessionList(id="session-list")
-            yield Static("No saved sessions. Press n to start a new session.", id="session-empty", markup=False)
+            yield Static(tr(self, "ui.sessions.empty"), id="session-empty", markup=False)
             yield Static(id="session-footer")
 
     def on_mount(self) -> None:
@@ -160,9 +177,10 @@ class SessionPicker(ModalScreen[Path | str | None]):
     def _row(self, item: dict, *, selected: bool = False) -> SessionRow:
         current = self.current_path is not None and str(session_key(item)) == str(self.current_path)
         return SessionRow(
-            (item.get("title") if item.get("title") != "(empty)" else None) or "Untitled session",
-            self.current_status if current else item.get("status", "Saved"),
-            relative_time(item.get("mtime", time.time())),
+            (item.get("title") if item.get("title") != "(empty)" else None)
+            or tr(self, "ui.sessions.untitled"),
+            self.current_status if current else item.get("status", tr(self, "ui.state.saved")),
+            relative_time(item.get("mtime", time.time()), owner=self),
             selected=selected,
         )
 
@@ -187,7 +205,9 @@ class SessionPicker(ModalScreen[Path | str | None]):
             if self.grouped:
                 if number:
                     options.append(Option(Text(""), disabled=True))
-                options.append(Option(Text(workspace_name(cwd), no_wrap=True, overflow="ellipsis"), disabled=True))
+                options.append(
+                    Option(Text(workspace_name(cwd, self), no_wrap=True, overflow="ellipsis"), disabled=True)
+                )
             for item in items:
                 key = str(session_key(item))
                 self._rows[key] = item
@@ -198,9 +218,18 @@ class SessionPicker(ModalScreen[Path | str | None]):
         self.query_one("#session-columns").display = bool(rows)
         self.query_one("#session-footer", Static).update(
             Text.assemble(
-                ("Esc", "bold"), " Back   ", ("↑/↓", "bold"), " Select   ", ("Enter", "bold"), " Open\n",
-                ("G", "bold"), " Ungroup   " if self.grouped else " Group by workspace   ",
-                ("N", "bold"), " New session   ", ("Ctrl+X", "bold"), " Move to trash",
+                ("Esc", "bold"),
+                tr(self, "ui.sessions.back"),
+                ("↑/↓", "bold"),
+                tr(self, "ui.sessions.select"),
+                ("Enter", "bold"),
+                tr(self, "ui.sessions.open"),
+                ("G", "bold"),
+                tr(self, "ui.sessions.ungroup") if self.grouped else tr(self, "ui.sessions.group"),
+                ("N", "bold"),
+                tr(self, "ui.sessions.new"),
+                ("Ctrl+X", "bold"),
+                tr(self, "ui.sessions.trash"),
             )
         )
         if selected_path is not None and str(selected_path) in self._rows:
@@ -258,14 +287,15 @@ class SessionPicker(ModalScreen[Path | str | None]):
         key = str(self.current_path)
         if key in self._rows:
             self.query_one("#session-list", OptionList).replace_option_prompt(
-                key, self._row(self._rows[key], selected=key == self._selected_id),
+                key,
+                self._row(self._rows[key], selected=key == self._selected_id),
             )
 
     def set_statuses(self, statuses: dict[str, str]) -> None:
         choices = self.query_one("#session-list", OptionList)
         for key, item in self._rows.items():
-            status = statuses.get(key, "Saved")
-            if item.get("status", "Saved") != status:
+            status = statuses.get(key, tr(self, "ui.state.saved"))
+            if item.get("status", tr(self, "ui.state.saved")) != status:
                 item["status"] = status
                 choices.replace_option_prompt(key, self._row(item, selected=key == self._selected_id))
 

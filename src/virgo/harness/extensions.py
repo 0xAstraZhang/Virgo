@@ -149,6 +149,10 @@ class ExtensionAPI:
     def services(self) -> dict:
         return self.session.services
 
+    def t(self, key: str, /, **values: object) -> str:
+        """Translate an extension-owned key using the current session language."""
+        return self.session.t(key, **values)
+
     def on(self, event: str, fn: Callable, priority: int = 0):
         return self.session.bus.on(event, fn, priority)
 
@@ -156,10 +160,13 @@ class ExtensionAPI:
         self.session.register_tool(tool, roles)
 
     def register_command(
-        self, name: str, fn: Callable, description: str = "", concurrent: bool = False, *, argument_hint: str = ""
+        self, name: str, fn: Callable, description: str = "", concurrent: bool = False, *, argument_hint: str = "",
+        description_key: str = "", argument_hint_key: str = "",
     ) -> None:
         """concurrent=True for commands that only read state (they may run while the agent works)."""
-        self.session.commands.register(name, fn, description, source=self.name, concurrent=concurrent, argument_hint=argument_hint)
+        self.session.commands.register(name, fn, description, source=self.name, concurrent=concurrent,
+                                       argument_hint=argument_hint, description_key=description_key,
+                                       argument_hint_key=argument_hint_key)
 
     def add_system_section(self, name: str, fn: Callable[[str], str | None], order: int = 50) -> None:
         """fn(role) -> text for the system prompt (role: main | subagent | teammate)."""
@@ -332,7 +339,7 @@ def install_command_hooks(session: AgentSession) -> None:
                  "tool_input": ev.args, "agent": ev.agent},
                 index, store=store,
             )
-            return Block(err or out or f"Blocked by PreToolUse hook #{index}.") if code == 2 else None
+            return Block(err or out or session.t("harness.hooks.blocked", index=index)) if code == 2 else None
 
         session.bus.on("tool_call", pre, priority=50)
 
@@ -353,7 +360,7 @@ def install_command_hooks(session: AgentSession) -> None:
             }
             code, out, err = run(hook, payload, index, store=store)
             if code == 2 and (err or out):
-                return _with_feedback(res, f"[hook feedback] {err or out}")
+                return _with_feedback(res, session.t("harness.hooks.feedback", text=err or out))
             return None
 
         session.bus.on("tool_result", post)
@@ -363,7 +370,7 @@ def install_command_hooks(session: AgentSession) -> None:
         def submit(text: str, _s, hook=hook, index=index):
             code, out, err = run(hook, {**base("UserPromptSubmit"), "prompt": text}, index)
             if code == 2:
-                return Handled(f"Prompt blocked by hook: {err or out}")
+                return Handled(session.t("harness.hooks.prompt_blocked", text=err or out))
             if code == 0 and out:
                 return f"{text}\n\n<hook_context>\n{out}\n</hook_context>"
             return None

@@ -21,6 +21,7 @@ from ..ai.types import AssistantMessage, UserMessage
 from ..ai.validate import parse_json_loose
 from ..harness.commands import parse_frontmatter
 from ..harness.extensions import ExtensionAPI
+from ..i18n import Translator
 
 TYPES = {"user": "user", "feedback": "user", "project": "project", "reference": "project"}
 
@@ -47,7 +48,8 @@ class Memory:
 
 
 class MemoryStore:
-    def __init__(self, user_dir: Path, project_dir: Path):
+    def __init__(self, user_dir: Path, project_dir: Path, t=None):
+        self.t = t or Translator()
         self.dirs = {"user": user_dir, "project": project_dir}
 
     def dir_for(self, mtype: str) -> Path:
@@ -102,7 +104,7 @@ class MemoryStore:
                 for m in sorted(items, key=lambda m: m.name.lower())
             ]
             (d / "MEMORY.md").write_text(
-                f"# Memory index ({scope})\n\n" + "\n".join(lines) + "\n", encoding="utf-8"
+                self.t("features.memory.index", scope=scope) + "\n".join(lines) + "\n", encoding="utf-8"
             )
 
     def index_text(self) -> str:
@@ -111,18 +113,18 @@ class MemoryStore:
             items = [m for m in self.all() if m.path.parent == d]
             if items:
                 lines = "\n".join(f"- {m.name} ({m.type}): {m.description} → {m.path}" for m in items)
-                parts.append(f"{scope} memories ({d}):\n{lines}")
+                parts.append(self.t("features.memory.index_section", scope=scope, path=d, items=lines))
         return "\n\n".join(parts)
 
     def save(self, name: str, mtype: str, description: str, body: str) -> str:
         norm = " ".join(body.split()).lower()
         for m in self.all():
             if " ".join(m.body.split()).lower() == norm:
-                return f"Already saved as '{m.name}' ({m.path})."
+                return self.t("features.memory.already_saved", name=m.name, path=m.path)
         if self.find(name):
-            return f"A memory named '{name}' exists; use action=update to change it."
+            return self.t("features.memory.exists", name=name)
         path = self.write(name, mtype, description, body)
-        return f"Saved memory '{name}' → {path}"
+        return self.t("features.memory.saved", name=name, path=path)
 
 
 def _tidy_problem(records) -> str | None:
@@ -130,7 +132,9 @@ def _tidy_problem(records) -> str | None:
     if not isinstance(records, list) or not records:
         return "expected a nonempty JSON array"
     for r in records:
-        if not isinstance(r, dict) or any(not isinstance(r.get(k), str) for k in ("name", "type", "description", "body")):
+        if not isinstance(r, dict) or any(
+            not isinstance(r.get(k), str) for k in ("name", "type", "description", "body")
+        ):
             return "every record needs string name, type, description and body"
         if r["type"] not in TYPES:
             return f"unknown type {r['type']!r}"
@@ -140,7 +144,7 @@ def _tidy_problem(records) -> str | None:
 
 
 def setup(api: ExtensionAPI) -> None:
-    store = MemoryStore(api.paths.user / "memory", api.paths.project / "memory")
+    store = MemoryStore(api.paths.user / "memory", api.paths.project / "memory", api.session.t)
     api.services["memory"] = store
 
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
@@ -148,25 +152,27 @@ def setup(api: ExtensionAPI) -> None:
         if action == "delete":
             m = store.find(name)
             if not m:
-                return ToolResult.error(f"No memory named '{name}'.")
+                return ToolResult.error(ctx.t("features.memory.missing", name=name))
             store.delete(m)
-            return ToolResult.text(f"Deleted memory '{m.name}'.")
+            return ToolResult.text(ctx.t("features.memory.deleted", name=m.name))
         if action == "update":
             m = store.find(name)
             if not m:
-                return ToolResult.error(f"No memory named '{name}'. Use action=save.")
+                return ToolResult.error(ctx.t("features.memory.save_first", name=name))
             mtype = args.get("type") or m.type
             if mtype not in TYPES:
-                return ToolResult.error(f"Memory '{m.name}' has unknown type {mtype!r}; pass one of {list(TYPES)}.")
+                return ToolResult.error(
+                    ctx.t("features.memory.unknown_type", name=m.name, type=mtype, types=list(TYPES))
+                )
             if TYPES[mtype] != TYPES.get(m.type):
                 m.path.unlink(missing_ok=True)
             path = store.write(
                 m.name, mtype, args.get("description") or m.description, args.get("body") or m.body
             )
-            return ToolResult.text(f"Updated memory '{m.name}' → {path}")
+            return ToolResult.text(ctx.t("features.memory.updated", name=m.name, path=path))
         missing = [k for k in ("type", "description", "body") if not args.get(k)]
         if missing:
-            return ToolResult.error(f"save needs: {', '.join(missing)}")
+            return ToolResult.error(ctx.t("features.memory.save_needs", fields=", ".join(missing)))
         return ToolResult.text(store.save(name, args["type"], args["description"], args["body"]))
 
     api.register_tool(
@@ -191,6 +197,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             execute=execute,
             read_only=True,
+            i18n_key="tools.memory",
         ),
         roles=("main",),
     )
@@ -206,7 +213,7 @@ def setup(api: ExtensionAPI) -> None:
     def tidy(session, args):
         mems = store.all()
         if len(mems) < 2:
-            api.ui.print("Nothing to tidy.")
+            api.ui.print(api.session.t("features.memory.nothing"))
             return
         listing = "\n\n".join(
             f"## {m.name}\ntype: {m.type}\ndescription: {m.description}\n\n{m.body}" for m in mems
@@ -226,7 +233,7 @@ def setup(api: ExtensionAPI) -> None:
         except ValueError as e:
             problem = str(e)
         if problem:
-            api.ui.print(f"Tidy skipped: the model returned an invalid result ({problem}).", "error")
+            api.ui.print(api.session.t("features.memory.tidy_invalid", problem=problem), "error")
             return
         backup = Path(tempfile.mkdtemp(prefix="virgo-memory-"))
         for scope, d in store.dirs.items():
@@ -242,18 +249,29 @@ def setup(api: ExtensionAPI) -> None:
                 if (backup / scope).is_dir():
                     shutil.rmtree(d, ignore_errors=True)
                     shutil.copytree(backup / scope, d)
-            api.ui.print(f"Tidy failed and was rolled back: {e}", "error")
+            api.ui.print(api.session.t("features.memory.tidy_failed", error=e), "error")
             return
-        api.ui.print(f"Memories tidied: {len(mems)} → {len(records)} (backup in {backup}).")
+        api.ui.print(
+            api.session.t("features.memory.tidied", before=len(mems), after=len(records), backup=backup)
+        )
 
     def cmd(session, args):
         if args.strip() == "tidy":
             tidy(session, args)
             return
         mems = store.all()
-        api.ui.print("\n".join(f"  [{m.type}] {m.name}: {m.description}" for m in mems) or "No memories yet.")
+        api.ui.print(
+            "\n".join(f"  [{m.type}] {m.name}: {m.description}" for m in mems)
+            or api.session.t("features.memory.empty")
+        )
 
-    api.register_command("memory", cmd, "list memories (/memory tidy to consolidate)", argument_hint="[tidy]")
+    api.register_command(
+        "memory",
+        cmd,
+        "list memories (/memory tidy to consolidate)",
+        argument_hint="[tidy]",
+        description_key="features.commands.memory",
+    )
 
     def extract(session):
         if not session.settings.get("memory.autoExtract"):

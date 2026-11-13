@@ -7,6 +7,8 @@ import re
 import shlex
 from pathlib import Path, PurePosixPath
 
+from ..i18n import Translator
+
 
 def inside(path: str, cwd: Path, workspace: Path | None = None) -> bool:
     try:
@@ -45,18 +47,87 @@ def split_segments(command: str, *, redirects: bool = False) -> list[list[str]] 
 
 
 READ_ONLY_COMMANDS = {
-    "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "grep", "egrep", "rg",
-    "stat", "du", "df", "which", "whereis", "type", "whoami", "id", "uname",
-    "env", "printenv", "sort", "uniq", "cut", "tr", "diff", "cmp", "md5sum", "sha256sum",
-    "basename", "dirname", "realpath", "readlink", "true", "false", "test", "[", "jq", "nl", "column",
-    "seq", "find", "sed",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "pwd",
+    "echo",
+    "printf",
+    "grep",
+    "egrep",
+    "rg",
+    "stat",
+    "du",
+    "df",
+    "which",
+    "whereis",
+    "type",
+    "whoami",
+    "id",
+    "uname",
+    "env",
+    "printenv",
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "diff",
+    "cmp",
+    "md5sum",
+    "sha256sum",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "true",
+    "false",
+    "test",
+    "[",
+    "jq",
+    "nl",
+    "column",
+    "seq",
+    "find",
+    "sed",
 }
 _LOCAL_WRITES = {"touch", "mkdir", "rmdir", "rm", "cp", "mv", "ln", "chmod", "tee", "truncate"}
 _GIT_READ_ONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "describe", "grep"}
-_PATH_OPTIONS = {"cp": "t", "mv": "t", "ln": "t", "touch": "r", "truncate": "r", "sort": "To", "git": "C", "grep": "f", "rg": "f", "sed": "f", "curl": "oKTDd", "wget": "OP"}
+_PATH_OPTIONS = {
+    "cp": "t",
+    "mv": "t",
+    "ln": "t",
+    "touch": "r",
+    "truncate": "r",
+    "sort": "To",
+    "git": "C",
+    "grep": "f",
+    "rg": "f",
+    "sed": "f",
+    "curl": "oKTDd",
+    "wget": "OP",
+}
 _NETWORK = {
-    "curl", "wget", "ssh", "scp", "sftp", "ftp", "rsync", "ping", "dig", "nslookup", "host", "nc",
-    "ncat", "netcat", "telnet", "socat", "http", "https", "fetch",
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "sftp",
+    "ftp",
+    "rsync",
+    "ping",
+    "dig",
+    "nslookup",
+    "host",
+    "nc",
+    "ncat",
+    "netcat",
+    "telnet",
+    "socat",
+    "http",
+    "https",
+    "fetch",
 }
 _OPAQUE_ENV = {"PATH", "CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"}
 
@@ -65,7 +136,12 @@ def _local_check(words: list[str]) -> bool:
     if not words:
         return False
     name, *args = words
-    if any(arg.startswith(("--install-types", "--index-url", "--extra-index-url", "--proxy", "--tx", "--rsyncdir")) for arg in args):
+    if any(
+        arg.startswith(
+            ("--install-types", "--index-url", "--extra-index-url", "--proxy", "--tx", "--rsyncdir")
+        )
+        for arg in args
+    ):
         return False
     if name in {"pytest", "ruff", "mypy"}:
         return True
@@ -140,12 +216,17 @@ def _safe_read_words(words: list[str], extra: set[str]) -> bool:
     if name == "sed":
         # sed programs can write files or execute commands; approve only simple print/delete/substitute forms.
         scripts = [a for a in args if not a.startswith("-")]
-        if any(a.startswith(("-i", "-f", "-e", "--file", "--in-place", "--expression")) for a in args) or not scripts:
+        if (
+            any(a.startswith(("-i", "-f", "-e", "--file", "--in-place", "--expression")) for a in args)
+            or not scripts
+        ):
             return False
         script = scripts[0]
         if not re.fullmatch(r"(?:\d+(?:,\d+)?|\$)?[pdq]|s/[^/\n]*/[^/\n]*/[gIp0-9]*", script):
             return False
-    if name == "sort" and any(a == "-o" or a.startswith(("-o", "--output", "--compress-program")) for a in args):
+    if name == "sort" and any(
+        a == "-o" or a.startswith(("-o", "--output", "--compress-program")) for a in args
+    ):
         return False
     if name == "uniq" and len([a for a in args if not a.startswith("-")]) > 1:
         return False  # second positional argument is an output file
@@ -208,7 +289,12 @@ def command_path_targets(command: str, cwd: Path) -> tuple[str, ...] | None:
                     continue
                 targets.append(str((local_cwd / os.path.expanduser(value)).resolve()))
             if name == "cd":
-                if len(args) != 1 or os.environ.get("CDPATH") or any(token in command for token in (";", "\n", "|")) or re.search(r"(?<!&)&(?!&)", command):
+                if (
+                    len(args) != 1
+                    or os.environ.get("CDPATH")
+                    or any(token in command for token in (";", "\n", "|"))
+                    or re.search(r"(?<!&)&(?!&)", command)
+                ):
                     return None
                 current = (current / os.path.expanduser(args[0])).resolve()
         return tuple(targets)
@@ -216,20 +302,21 @@ def command_path_targets(command: str, cwd: Path) -> tuple[str, ...] | None:
         return None
 
 
-def command_review_reason(command: str, cwd: Path, workspace: Path) -> str:
+def command_review_reason(command: str, cwd: Path, workspace: Path, t=None) -> str:
     """Empty means statically confined to the workspace; anything else goes to the reviewer."""
+    t = t or Translator()
     if not inside(str(cwd), cwd, workspace):
-        return "command runs outside the workspace"
+        return t("features.permission.scope.command_outside")
     segments = split_segments(command, redirects=True)
     if not segments:
-        return "shell expansion or control flow needs review"
+        return t("features.permission.scope.expansion")
     if any(char in command for char in "*?["):
-        return "wildcard paths may follow links outside the workspace"
+        return t("features.permission.scope.wildcard")
     current = cwd.resolve()
     for raw_words in segments:
         words = _strip_assignments(raw_words)
         if not words:
-            return "shell environment changes need review"
+            return t("features.permission.scope.environment")
         executable, *args = words
         name = PurePosixPath(executable).name
         # Inspect assignments too: an output directory can be supplied through an environment variable.
@@ -237,17 +324,29 @@ def command_review_reason(command: str, cwd: Path, workspace: Path) -> str:
         for index, arg in enumerate(raw_words):
             value = _argument_value(name, arg)
             if re.search(r"(?:https?|ftp|ssh)://|^[^/\s]+@[^:\s]+:", value):
-                return "command may use the network"
-            if value.startswith(("/", "~", "..")) and index != command_index and not inside(value, current, workspace):
-                return f"command accesses a path outside the workspace: {(current / os.path.expanduser(value)).resolve()}"
+                return t("features.permission.scope.possible_network")
+            if (
+                value.startswith(("/", "~", ".."))
+                and index != command_index
+                and not inside(value, current, workspace)
+            ):
+                return t(
+                    "features.permission.scope.command_path",
+                    path=(current / os.path.expanduser(value)).resolve(),
+                )
             candidate = current / value
-            if ("/" in value or (not value.startswith("-") and (candidate.exists() or candidate.is_symlink()))) and index != command_index:
+            if (
+                "/" in value or (not value.startswith("-") and (candidate.exists() or candidate.is_symlink()))
+            ) and index != command_index:
                 if not inside(value, current, workspace):
-                    return f"command accesses a path outside the workspace: {(current / os.path.expanduser(value)).resolve()}"
+                    return t(
+                        "features.permission.scope.command_path",
+                        path=(current / os.path.expanduser(value)).resolve(),
+                    )
         if "/" in executable and str(PurePosixPath(executable).parent) not in {"/bin", "/usr/bin"}:
-            return "executing a script or nonstandard executable needs review"
+            return t("features.permission.scope.script")
         if name in _NETWORK:
-            return "command uses the network"
+            return t("features.permission.scope.network")
         # Redirections are allowed only when their targets resolve inside the workspace.
         plain = []
         index = 0
@@ -255,7 +354,7 @@ def command_review_reason(command: str, cwd: Path, workspace: Path) -> str:
             word = words[index]
             if word in {"<", ">", ">>", "<>"}:
                 if index + 1 == len(words) or not inside(words[index + 1], current, workspace):
-                    return "redirection accesses a path outside the workspace"
+                    return t("features.permission.scope.redirection")
                 index += 2
                 continue
             plain.append(word)
@@ -263,28 +362,33 @@ def command_review_reason(command: str, cwd: Path, workspace: Path) -> str:
         args = plain[1:]
         if name == "cd":
             if os.environ.get("CDPATH"):
-                return "CDPATH makes directory changes ambiguous"
+                return t("features.permission.scope.cdpath")
             if any(token in command for token in (";", "\n", "|")) or re.search(r"(?<!&)&(?!&)", command):
-                return "conditional or subshell directory changes need review"
+                return t("features.permission.scope.conditional_cd")
             if len(args) != 1 or args[0].startswith("-") or not inside(args[0], current, workspace):
-                return "directory change leaves or cannot be confined to the workspace"
+                return t("features.permission.scope.outside_cd")
             current = (current / args[0]).resolve()
             continue
         if name == "git":
             git_cwd = current
             while len(args) >= 2 and args[0] == "-C":
                 if not inside(args[1], git_cwd, workspace):
-                    return "git operates outside the workspace"
+                    return t("features.permission.scope.git_outside")
                 git_cwd = (git_cwd / args[1]).resolve()
                 args = args[2:]
             if not args:
-                return "git invocation needs review"
+                return t("features.permission.scope.git_review")
             if args[0] in {"fetch", "pull", "push", "clone", "ls-remote", "submodule"}:
-                return "git command may use the network"
+                return t("features.permission.scope.git_network")
             if _git_read_only(args):
                 continue
-            return "git command may invoke hooks or change configuration"
-        if name in _LOCAL_WRITES or name in {"echo", "printf"} or _safe_read_words(plain, set()) or _local_check(plain):
+            return t("features.permission.scope.git_hooks")
+        if (
+            name in _LOCAL_WRITES
+            or name in {"echo", "printf"}
+            or _safe_read_words(plain, set())
+            or _local_check(plain)
+        ):
             continue
-        return "command behavior cannot be confined to the workspace without review"
+        return t("features.permission.scope.unknown_command")
     return ""

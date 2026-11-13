@@ -54,7 +54,7 @@ class WebAccess:
         runtime = getattr(ctx.review_source, "runtime", None)
         if runtime is None:
             if ctx.agent != "main":
-                raise ValueError(f"Web {self.operation} requires the calling agent's model context.")
+                raise ValueError(self.session.t('features.web.context', operation=self.operation))
             runtime = self.session.main
         # Retries can use a different model without changing runtime.model. Keep
         # that request's choice local to its runtime, including parallel agents.
@@ -117,18 +117,18 @@ class WebAccess:
         if binding and binding[0] is runtime.model and config.get(self.operation) == self.config and self.operation in backends:
             backend = backends[self.operation]
             if backend is None:
-                raise ValueError(f"Web {self.operation} is provided by the selected native tool; client execution is disabled.")
+                raise ValueError(self.session.t('features.web.client_disabled', operation=self.operation))
             return backend
         return self.backend_for(model)
 
     def backend_for(self, model) -> str:
         if self.mode == "off":
-            raise ValueError(f"Web {self.operation} is disabled.")
+            raise ValueError(self.session.t('features.web.disabled', operation=self.operation))
         if self.mode != "builtin" and model.options.get("native" + self.operation.title()) is not False:
             for offer in offers_for(model):
                 if (offer.native and not offer.hosted and offer.capabilities == {self.operation}
                         and self.client_available(offer.backend, model)):
                     return offer.backend
         if self.mode == "native":
-            raise ValueError(f"Native web {self.operation} is unavailable for this client call.")
+            raise ValueError(self.session.t('features.web.native_client', operation=self.operation))
         return self.config.get("backend", self.default_backend)
