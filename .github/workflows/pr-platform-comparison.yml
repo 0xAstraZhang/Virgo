@@ -1,48 +1,105 @@
-name: Cross-platform PR comparison
-run-name: Cross-platform comparison for PR ${{ inputs.pr_number || github.event.pull_request.number || 'latest' }}
+name: Cross-platform CI
+run-name: Cross-platform CI · ${{ github.event_name == 'push' && format('main {0}', github.sha) || format('PR {0}', inputs.pr_number || github.event.pull_request.number || 'latest (manual)') }}
 
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR number (blank selects the newest open PR)
+        description: PR number (blank selects the newest open PR; always runs full tests)
         type: string
         required: false
 
 permissions:
   contents: read
-  pull-requests: read
+
+concurrency:
+  group: cross-platform-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+env:
+  PYTHONUTF8: '1'
+  UV_PYTHON: '3.13'
 
 jobs:
   resolve:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       base_sha: ${{ steps.target.outputs.base_sha }}
       head_sha: ${{ steps.target.outputs.head_sha }}
       base_repository: ${{ steps.target.outputs.base_repository }}
       head_repository: ${{ steps.target.outputs.head_repository }}
+      revisions: ${{ steps.target.outputs.revisions }}
+      run_tests: ${{ steps.changes.outputs.run_tests }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Check revision resolution end to end
-        run: python ci/check_resolution.py
-      - name: Resolve immutable PR revisions
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+          enable-cache: false
+      - name: Resolve immutable event revisions
         id: target
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
-        run: python ci/compare_tests.py resolve
+        run: uv run --no-project python ci/compare_tests.py resolve
+      - name: Classify changes between resolved revisions
+        id: changes
+        run: uv run --no-project python ci/compare_tests.py classify --target target.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: target
           path: target.json
           if-no-files-found: error
+          retention-days: 14
+
+  checks:
+    name: Lint and CI acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - run: uv sync --locked --dev
+      - name: Lint Python
+        run: uv run --no-sync ruff check
+      - name: Validate workflow syntax
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
+      - name: Check revision resolution and change classification end to end
+        run: uv run --no-sync python ci/check_resolution.py
+      - name: Check comparison and strict results end to end
+        run: uv run --no-sync python ci/check_comparison.py
 
   test:
-    needs: resolve
+    needs: [resolve, checks]
+    if: needs.resolve.outputs.run_tests == 'true'
     name: ${{ matrix.os }} / ${{ matrix.revision }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -50,14 +107,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        revision: [base, head]
-    env:
-      PYTHONUTF8: '1'
-      UV_PYTHON: '3.13'
+        revision: ${{ fromJSON(needs.resolve.outputs.revisions) }}
     steps:
       - name: Check out comparison tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           path: ci-config
           persist-credentials: false
       - name: Check out tested revision
@@ -69,15 +124,27 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: '0.13.8'
           python-version: '3.13'
+          working-directory: candidate
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
       - name: Install Linux shell dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh curl
       - name: Install locked project dependencies
         working-directory: candidate
         run: uv sync --locked --dev
+      - name: Record environment
+        working-directory: candidate
+        run: uv run --no-sync python -c "import platform, shutil, sys; print(sys.version); print(platform.platform()); print({s:shutil.which(s) for s in ('bash','zsh','pwsh','powershell','curl')})"
+      - name: Check PowerShell startup isolation end to end
+        if: matrix.revision == 'head'
+        working-directory: candidate
+        run: uv run --no-sync python ../ci-config/ci/check_powershell_cache.py
       - name: Run complete pytest suite
-        # Preserve failures in artifacts; the comparison job decides whether they are new.
+        # Only test failures are deferred; the final job validates reports AND job results.
         continue-on-error: true
         working-directory: candidate
         env:
@@ -87,8 +154,20 @@ jobs:
           uv run --no-sync python ../ci-config/ci/compare_tests.py run
           --project . --output ../result
           --platform '${{ matrix.os }}' --label '${{ matrix.revision }}' --sha "$TEST_SHA"
+      - name: Build and smoke test installed distribution
+        if: runner.os == 'Linux' && matrix.revision == 'head'
+        working-directory: candidate
+        shell: bash
+        run: |
+          uv build --out-dir "$RUNNER_TEMP/dist"
+          uv export --quiet --locked --no-dev --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/locked-requirements.txt"
+          uv venv "$RUNNER_TEMP/wheel-smoke" --python 3.13
+          uv pip install --python "$RUNNER_TEMP/wheel-smoke/bin/python" --require-hashes --requirements "$RUNNER_TEMP/locked-requirements.txt"
+          uv pip install --python "$RUNNER_TEMP/wheel-smoke/bin/python" --no-deps "$RUNNER_TEMP"/dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-smoke/bin/virgo" --help
       - name: Preserve raw and normalized results
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: results-${{ matrix.os }}-${{ matrix.revision }}
@@ -98,26 +177,42 @@ jobs:
 
   compare:
     name: Compare failures and coverage
-    needs: [resolve, test]
-    if: always() && needs.resolve.result == 'success'
+    needs: [resolve, checks, test]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+          enable-cache: false
+      - name: Download test reports
+        if: needs.resolve.outputs.run_tests == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: results-*
           path: reports
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - name: Download resolved target
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: target
           path: .
-      - name: Compare individual test outcomes
-        run: python ci/compare_tests.py compare --reports reports --target target.json --output comparison
+      - name: Summarize and enforce results
+        run: >-
+          uv run --no-project python ci/compare_tests.py compare
+          --reports reports --target target.json --output comparison
+          --resolve-result '${{ needs.resolve.result }}'
+          --checks-result '${{ needs.checks.result }}'
+          --test-result '${{ needs.test.result }}'
       - name: Preserve comparison
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: comparison
