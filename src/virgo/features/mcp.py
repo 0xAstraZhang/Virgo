@@ -287,5 +287,5 @@ def setup(api: ExtensionAPI) -> None:
             state = f"error: {c.error}" if c.error else f"{len(c.tools)} tools"
             api.ui.print(f"  {c.name}: {state}")
 
-    api.register_command("mcp", cmd, "show MCP servers (/mcp reconnect)")
+    api.register_command("mcp", cmd, "show MCP servers (/mcp reconnect)", argument_hint="[reconnect]")
     api.on("session_shutdown", lambda s: [c.close() for c in clients.values()])

@@ -193,5 +193,5 @@ def setup(api: ExtensionAPI) -> None:
         set_goal(a)
         session.run([UserMessage(f"Goal: {a}\n\nWork until this is achieved and the evidence is visible.")])
 
-    api.register_command("goal", cmd, "set a completion goal (/goal <condition> | /goal | /goal clear)")
+    api.register_command("goal", cmd, "set a completion goal (/goal <condition> | /goal | /goal clear)", argument_hint="[condition|clear]")
     api.services["goal"] = state

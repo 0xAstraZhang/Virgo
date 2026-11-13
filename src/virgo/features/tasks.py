@@ -318,5 +318,5 @@ def setup(api: ExtensionAPI) -> None:
         api.ui.print("\n".join(fmt(store, t) for t in store.all()) or "No tasks.")
 
     api.register_command(
-        "tasks", cmd, "show the task graph (/tasks clear removes completed)", concurrent=True
+        "tasks", cmd, "show the task graph (/tasks clear removes completed)", concurrent=True, argument_hint="[clear]",
     )

@@ -6,9 +6,12 @@ import json
 import re
 from pathlib import Path
 
+from rich.segment import Segment
+from rich.style import Style
 from textual.binding import Binding
 from textual.events import Key, MouseUp
 from textual.message import Message
+from textual.strip import Strip
 from textual.widgets import TextArea
 
 from .choices import ChoiceList
@@ -187,3 +190,31 @@ class ChatEditor(TextArea):
             self.action_history(1)
         else:
             super().action_cursor_down(select)
+
+    def render_line(self, y: int) -> Strip:
+        strip = super().render_line(y)
+        # Overlay only; never populate TextArea.suggestion (Right accepts it).
+        if (y != 0 or not self.has_focus or not self.selection.is_empty
+                or self.cursor_location != self.document.end
+                or self.document.line_count != 1 or self.wrapped_document.height != 1):
+            return strip
+        match = re.fullmatch(r"/([^ \t\r\n]+)( *)", self.text)
+        if match is None:
+            return strip
+        session = getattr(self.app, "session", None)
+        if session is None:
+            return strip
+        name = match.group(1)
+        command = session.commands.get(name)
+        hint = command.argument_hint if command is not None else (
+            "[arguments]" if name in session.templates else ""
+        )
+        if not hint:
+            return strip
+        # Reserve the real end-of-document cursor cell, including after spaces.
+        x = self.cursor_screen_offset.x - self.content_region.x + 1
+        width = self.content_size.width
+        if x >= width:
+            return strip
+        overlay = Strip([Segment(hint.replace("\n", " ").replace("\r", " ").replace("\t", " "), Style(color="bright_black"))])
+        return Strip.join([strip.crop(0, x), overlay]).adjust_cell_length(width).crop(0, width)
