@@ -58,7 +58,10 @@ def test_stderr_is_drained_and_keeps_only_a_bounded_tail():
 def test_stdout_eof_wakes_request_even_while_server_is_still_alive():
     # An MCP server may close its protocol pipe while keeping another thread alive.
     # Waiting for process exit used to hold this request until its entire timeout.
-    client = MCPClient("eof", sys.executable, ["-c", "import os,time; os.close(1); time.sleep(20)"])
+    # Windows' venv redirector retains a stdout handle until its child exits.
+    # Launch the base interpreter so closing fd 1 actually produces pipe EOF.
+    python = getattr(sys, "_base_executable", None) or sys.executable
+    client = MCPClient("eof", python, ["-c", "import os,time; os.close(1); time.sleep(20)"])
     client.start()
     try:
         started = time.monotonic()
