@@ -48,6 +48,8 @@ class InputRequest:
     password: bool = False
     default: str = ""
     preferences: PreferenceRequest | None = None
+    details: str | None = None
+    multiline: bool = False
 
 
 @dataclass
@@ -176,6 +178,12 @@ class FullscreenUI(UI):
 
     def choose_preferences(self, request: PreferenceRequest) -> PreferenceChoice | None:
         return self._ask_input("Select model" if request.kind == "model" else "Effort", preferences=request)
+
+    def select_details(self, question: str, options: list[str], details: str) -> str | None:
+        return self._ask_input(question, options=tuple(options), details=details)
+
+    def input_multiline(self, question: str, *, default: str = "") -> str | None:
+        return self._ask_input(question, default=default, multiline=True)
 
     def _ask_input(self, question: str, timeout: float | None = None, **kwargs) -> str | PreferenceChoice | None:
         with self._lock:

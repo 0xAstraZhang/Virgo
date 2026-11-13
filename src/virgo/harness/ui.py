@@ -31,6 +31,10 @@ class UI:
     def print(self, text: str, style: str | None = None) -> None:
         pass
 
+    def command_result(self, text: str) -> None:
+        """Explicit command output, also visible in noninteractive clients."""
+        self.print(text)
+
     def confirm(self, question: str, agent: str = "main") -> str | None:
         """Ask the user. Return 'y', 'n' or 'a' (always), or None when nobody can answer."""
         return None
@@ -55,6 +59,27 @@ class UI:
     def choose_preferences(self, request: PreferenceRequest) -> PreferenceChoice | None:
         """Choose model/effort settings, or cancel when this client has no picker."""
         return None
+
+    def select_details(self, question: str, options: list[str], details: str) -> str | None:
+        """Choose an action alongside complete, scrollable reference text."""
+        self.print(details)
+        return self.select(question, options)
+
+    def input_multiline(self, question: str, *, default: str = "") -> str | None:
+        """Read task content without putting it in conversation/input history."""
+        if not self.interactive:
+            return None
+        if default:
+            self.print(default)
+        self.print(question + "\nFinish with a line containing .; /cancel cancels; . alone keeps existing content.")
+        lines = []
+        while True:
+            line = self.input("│")
+            if line is None or line == "/cancel":
+                return None
+            if line == ".":
+                return "\n".join(lines) if lines else default
+            lines.append(line)
 
     def cancel_input_timeouts(self) -> None:
         """Keep currently displayed questions open after the user joins an unattended run."""

@@ -13,7 +13,7 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.events import Click
 from textual.theme import Theme
 from textual.widgets import Input, OptionList, Static, TextArea
@@ -31,6 +31,7 @@ from .choices import ChoiceList, CommandChoice
 from .controller import RunController
 from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
+from .forms import MultilineInput
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
 from .transcript import Transcript, update_static
@@ -126,8 +127,11 @@ class ConversationPane(Vertical):
             yield ApprovalPicker(id="approval")
             yield PreferencePicker(id="preferences")
             yield Static("", id="auth-question", markup=False)
+            with VerticalScroll(id="input-detail-scroll"):
+                yield Static("", id="input-details", markup=False)
             yield ChoiceList(id="completions")
             yield Input(id="auth-value")
+            yield MultilineInput(id="input-multiline")
             yield Static("", id="metrics", markup=False)
             yield ChatEditor(self.history)
             yield Static("", id="status", markup=False)
@@ -157,6 +161,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #auth-value { height: 3; border: solid #7C3AED; padding: 0;
         background: $background; color: $foreground; }
     #auth-value:focus { border: solid #7C3AED; }
+    #input-detail-scroll { display: none; height: 30vh; min-height: 3; max-height: 12;
+        border: solid #7C3AED; padding: 0 1; scrollbar-size-vertical: 1; }
+    #input-details { height: auto; }
+    #input-multiline { display: none; height: 7; max-height: 35vh; min-height: 3;
+        border: solid #7C3AED; padding: 0; background: $background; color: $foreground;
+        scrollbar-size-vertical: 1; }
     #editor { height: 3; min-height: 3; border: none; border-top: solid #7C3AED;
         border-bottom: solid #7C3AED; padding: 0; background: $background; color: $foreground; }
     #editor:focus { border: none; border-top: solid #7C3AED; border-bottom: solid #7C3AED; }
@@ -562,6 +572,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         question.update(request.question)
         question.display = True
         self.editor.display = False
+        details = root.query_one("#input-detail-scroll", VerticalScroll)
+        details.display = request.details is not None
+        if request.details is not None:
+            root.query_one("#input-details", Static).update(Text(request.details))
+            details.scroll_home(animate=False)
         options = root.query_one("#completions", ChoiceList)
         field = root.query_one("#auth-value", Input)
         if request.options is not None:
@@ -570,6 +585,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             options.highlighted = 0
             options.display = True
             options.styles.max_height = max(3, min(6, self.size.height // 4))
+        elif request.multiline:
+            multiline = root.query_one(MultilineInput)
+            multiline.load_text(request.default)
+            multiline.display = True
         else:
             field.password = request.password
             field.value = request.default
@@ -588,6 +607,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self._pane.query_one(PreferencePicker).focus_control()
         elif self.input_request.options is not None:
             self._pane.query_one("#completions").focus()
+        elif self.input_request.multiline:
+            self._pane.query_one(MultilineInput).focus()
         else:
             self._pane.query_one("#auth-value").focus()
 
@@ -599,6 +620,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.input_request = None
         root = self._pane
         root.query_one(PreferencePicker).close()
+        root.query_one("#input-detail-scroll").display = False
+        root.query_one("#input-details", Static).update("")
+        multiline = root.query_one(MultilineInput)
+        multiline.clear()
+        multiline.display = False
         field = root.query_one("#auth-value", Input)
         field.value = ""
         field.password = False
@@ -618,6 +644,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         if self.input_request is not None and self.input_request.options is None:
+            self.finish_input(event.value)
+
+    @on(MultilineInput.Submitted)
+    def multiline_submitted(self, event: MultilineInput.Submitted) -> None:
+        event.stop()
+        if self.input_request is not None and self.input_request.multiline:
             self.finish_input(event.value)
 
     @on(PreferencePicker.Answered)
@@ -643,6 +675,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     )
                 else:
                     hint = "←→ adjust · Enter default · s session · Esc cancel"
+            elif self.input_request.multiline:
+                hint = "Enter newline · Ctrl+S confirm · Esc cancel"
+            elif self.input_request.details is not None:
+                hint = "↑↓ action · Enter confirm · PageUp/PageDown details · Esc back"
             else:
                 hint = (
                     "↑↓ select · Enter confirm · Esc cancel"
@@ -796,6 +832,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.controller.abort()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if not self.has_modal and self.input_request is not None and self.input_request.details is not None and action in {"page", "top"}:
+            return True
         if (self.has_modal or self.active_input is not None or self.active_confirmation is not None) and action in {"page", "top", "tools", "thinking", "cycle_permissions"}:
             return False
         return True
@@ -845,13 +883,22 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_page(self, direction: int) -> None:
         if self.has_modal:
             return
+        if self.input_request is not None and self.input_request.details is not None:
+            details = self._pane.query_one("#input-detail-scroll", VerticalScroll)
+            if direction < 0:
+                details.action_page_up()
+            else:
+                details.action_page_down()
+            return
         if direction < 0:
             self.transcript.action_page_up()
         else:
             self.transcript.action_page_down()
 
     def action_top(self) -> None:
-        if not self.has_modal:
+        if not self.has_modal and self.input_request is not None and self.input_request.details is not None:
+            self._pane.query_one("#input-detail-scroll", VerticalScroll).scroll_home(animate=False)
+        elif not self.has_modal:
             self.transcript.action_scroll_home()
 
     @on(Click, "#jump")
