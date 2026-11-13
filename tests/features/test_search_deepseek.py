@@ -45,6 +45,34 @@ def execute_search(session, runtime=None):
     return session.tool("web_search").execute({"query": "Python docs"}, ctx)
 
 
+@pytest.mark.parametrize("denied", [False, True], ids=["allowed", "denied"])
+def test_startup_catalog_refresh_does_not_count_as_search(make_session, search_http, monkeypatch, denied):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
+    session = make_session(mode="auto-review" if denied else "accept-all", settings={
+        "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
+    })
+    session.set_model("deepseek/deepseek-flash")
+    # Force the background request to finish before any search assertion. This
+    # must exercise startup discovery, rather than win a race against its thread.
+    assert session._catalog_refresh_done.wait(3)
+    assert not search_http["requests"]
+    assert session.model.context_window == 123456
+    query = "private information" if denied else "Python docs"
+    install_responses(monkeypatch,
+        AssistantMessage(content=[ToolCall("s", "web_search", {"query": query})], stop_reason="tool_use"),
+        AssistantMessage(content=[TextContent("Handled")]),
+    )
+    session.prompt("Search for documentation")
+    assert [str(request.url) for request in search_http["catalog_requests"]] == [
+        "https://api.deepseek.com/models",
+    ]
+    assert [str(request.url) for request in search_http["requests"]] == (
+        [] if denied else ["https://api.deepseek.com/v1/tools/search"]
+    )
+    result = next(m for m in session.main.messages if isinstance(m, ToolResultMessage))
+    assert result.is_error is denied
+
+
 @pytest.mark.parametrize("mode", ["auto", "native"])
 def test_deepseek_native_uses_official_search_and_saved_login(make_session, search_http, mode):
     session = make_session(settings={"search": {"mode": mode}})

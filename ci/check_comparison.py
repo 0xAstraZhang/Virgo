@@ -87,6 +87,39 @@ def main():
                              [*replacements, *replacements.values()]))
         assert any("Ambiguous test name" in problem for problem in compare(1)["problems"])
 
+        # PR #16 replaces startup/cancellation behavior and metadata precedence.
+        # Cover all four collected identities, including both parameter values.
+        catalog_names = {
+            "base": ["test_catalog_refreshes_on_each_open_and_does_not_fallback_after_failure",
+                     "test_escape_cancels_live_catalog_loading_without_opening_stale_picker",
+                     "test_live_luna_reasoning_metadata_overrides_builtin_and_configured_defaults"],
+            "head": ["test_catalog_refreshes_on_restart_and_keeps_cache_after_failure",
+                     "test_picker_escape_does_not_cancel_background_startup_refresh",
+                     "test_configured_luna_reasoning_metadata_overrides_live_defaults"],
+        }
+
+        def catalog_source(label, body="pass"):
+            first, second, parameterized = catalog_names[label]
+            return (f"import pytest\ndef {first}(): {body}\ndef {second}(): {body}\n"
+                    f"@pytest.mark.parametrize('default', [None, 'max'])\n"
+                    f"def {parameterized}(default): {body}\n")
+
+        expected = sorted([*catalog_names["base"][:2], *[
+            f"{catalog_names['base'][2]}[{value}]" for value in ("None", "max")
+        ]])
+        run("base", catalog_source("base"))
+        run("head", catalog_source("head"))
+        report = compare(0)
+        assert not report["added"] and not report["removed"] and not report["problems"]
+        run("head", catalog_source("head", "assert False"))
+        report = compare(1)
+        assert report["regressions"] == expected
+        assert not report["removed"] and not report["newly_exposed_failures"]
+        run("head", "def test_unknown_catalog_replacement(): pass\n")
+        assert compare(1)["removed"] == expected
+        run("head", catalog_source("head") + catalog_source("base"))
+        assert any("Ambiguous test name" in problem for problem in compare(1)["problems"])
+
         run("head", "def test_duplicate(): pass\n", extra="def test_duplicate(): pass\n")
         assert compare(1)["problems"]
         (root / "head" / "test_other.py").unlink()
