@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ai.stream import EventStream, StreamEvent
-from ..ai.types import ImageContent, TextContent, ToolSpec
+from ..ai.types import ImageContent, TextContent, ToolCall, ToolSpec
 
 
 @dataclass
@@ -109,6 +109,8 @@ class AgentConfig:
     before_tool_execute: Callable[[ToolCallEvent], Block | None] | None = None
     can_run: Callable[[], bool] | None = None
     on_error: Callable[[dict], None] | None = None
+    # Pure, optional view applied once before a result enters model history.
+    project_tool_result: Callable[[ToolCall, ToolResult], list] | None = None
 
 
 def image_result(data: str, mime: str, note: str = "") -> ToolResult:
