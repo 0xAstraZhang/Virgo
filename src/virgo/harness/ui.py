@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+from dataclasses import dataclass
+
 from ..agent.types import AgentEvent
 from .preferences import PreferenceChoice, PreferenceRequest
 
@@ -17,6 +20,14 @@ class _TimedOut:
 
 
 TIMED_OUT = _TimedOut()
+
+
+@dataclass(frozen=True)
+class ScheduleChoice:
+    id: str
+    title: str
+    frequency: str
+    next_run: str
 
 
 class UI:
@@ -64,6 +75,17 @@ class UI:
         """Choose an action alongside complete, scrollable reference text."""
         self.print(details)
         return self.select(question, options)
+
+    def schedule_workspace(self):
+        """Group the schedule workflow; plain terminals keep their existing prompts."""
+        return nullcontext()
+
+    def select_schedule(self, choices: list[ScheduleChoice], *, selected: str | None = None) -> str | None:
+        labels = [f"{i}. {row.title} │ {row.frequency} │ {row.next_run}" for i, row in enumerate(choices, 1)]
+        answer = self.select("定时任务 · 标题 │ 执行频率 │ 下次执行时间", labels + ["＋ 新建任务", "返回"])
+        if answer in (None, "返回"):
+            return None
+        return "new" if answer == "＋ 新建任务" else choices[labels.index(answer)].id
 
     def input_multiline(self, question: str, *, default: str = "") -> str | None:
         """Read task content without putting it in conversation/input history."""
