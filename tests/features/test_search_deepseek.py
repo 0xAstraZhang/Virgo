@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 
 import httpx
@@ -212,22 +213,42 @@ def test_official_alias_reuses_its_own_key_and_respects_key_rotation(make_sessio
 
 
 def test_interleaved_agents_use_their_own_request_model(make_session, search_http, monkeypatch):
+    from virgo.harness import preferences
+
+    catalog_ready = threading.Event()
+    release_catalog = threading.Event()
+    original_fetch = preferences.fetch_model_catalog
+
+    def delayed_catalog(model, signal):
+        catalog_ready.set()
+        assert release_catalog.wait(3)
+        return original_fetch(model, signal)
+
+    monkeypatch.setattr(preferences, "fetch_model_catalog", delayed_catalog)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
     session = make_session()
-    ds = session.resolve("deepseek/deepseek-flash")
-    worker = Runtime(session, "researcher", "subagent", model=ds, compaction=False)
-    worker.request_context([])
-    session.main.request_context([])
-    assert json.loads(execute_search(session, worker).as_text())["backend"] == "deepseek"
-    assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
-    # A retry's model may differ from the main runtime's configured model.
-    session.main.request_context([], ds)
-    assert json.loads(execute_search(session).as_text())["backend"] == "deepseek"
-    session.set_model("faux/other")
-    session.main.request_context([])
-    assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
-    assert next(t for t in worker.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 128
-    assert next(t for t in session.main.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 2000
+    try:
+        assert catalog_ready.wait(3)
+        ds = session.resolve("deepseek/deepseek-flash")
+        worker = Runtime(session, "researcher", "subagent", model=ds, compaction=False)
+        worker.request_context([])
+        session.main.request_context([])
+        assert json.loads(execute_search(session, worker).as_text())["backend"] == "deepseek"
+        assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
+        # Finish an unrelated provider refresh after preparing a retry's model.
+        # It must not invalidate the request binding of the unchanged main model.
+        session.main.request_context([], ds)
+        release_catalog.set()
+        assert session._catalog_refresh_done.wait(3)
+        assert json.loads(execute_search(session).as_text())["backend"] == "deepseek"
+        session.set_model("faux/other")
+        session.main.request_context([])
+        assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
+        assert next(t for t in worker.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 128
+        assert next(t for t in session.main.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 2000
+    finally:
+        release_catalog.set()
+        assert session._catalog_refresh_done.wait(3)
 
 
 @pytest.mark.parametrize("status", [200, 401, 429, 503])
