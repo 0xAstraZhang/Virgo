@@ -396,7 +396,13 @@ class PrintUI(UI):
 
     def __init__(self, json_mode: bool = False):
         self.json_mode = json_mode
+        self.command_output = False
         self._lock = threading.Lock()  # sub-agents and teammates emit from other threads
+
+    def command_result(self, text: str) -> None:
+        with self._lock:
+            self.command_output = True
+            print(json.dumps({"type": "command_result", "text": text}, ensure_ascii=False) if self.json_mode else text)
 
     def print(self, text: str, style: str | None = None) -> None:
         if style in ("error", "warn"):

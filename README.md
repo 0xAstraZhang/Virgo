@@ -140,13 +140,18 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | `/permissions [mode]` | 查看规则 / 切换权限模式 |
 | `/compact [focus]` | 立即压缩上下文 |
 | `/new` `/sessions [n]` `/session` | 新建、浏览、恢复会话和查看当前会话信息 |
-| `/todos` `/tasks` `/jobs` `/schedules` `/team` | 查看各功能状态 |
+| `/schedule` | 通过向导手动创建定时任务，无需模型调用 |
+| `/schedules` | 按类别、时间、标题浏览任务，查看全文、编辑或删除 |
+| `/todos` `/tasks` `/jobs` `/team` | 查看各功能状态 |
 | `/skills` `/skill:name args` | 列出技能 / 强制使用某个技能 |
 | `/memory [tidy]` | 列出记忆 / 用小模型整理去重 |
 | `/mcp [reconnect]` | MCP 服务器状态 |
 | `/workflow [resume id]` | 列出 workflow / 续跑 |
 | `/goal <条件>` `/goal` `/goal clear` | 目标循环 |
 | `/exit` | 退出 |
+
+定时任务支持单次、每 n 分钟／小时、每天、每周及自定义 cron；手动创建默认持久化。
+任务只在 Virgo 运行时执行。创建、正文编辑、首次时间和重启行为见 [定时任务指南](docs/SCHEDULES.md)。
 
 ### 登录模型服务
 
