@@ -56,7 +56,10 @@ def test_late_background_save_failure_cannot_be_bypassed(make_session, monkeypat
         s.prompt("unprocessed input")
         s.open_session(healthy.store.path)
         s.open_session(path)
-        assert [message.text() for message in s.wakeups] == ["unprocessed input"]
+        assert s.wakeups[-1].text() == "unprocessed input"
+        notices = [message for message in s.wakeups if message.kind == "notification"]
+        assert len(notices) == 1 and "Background job" in notices[0].text()
+        assert not healthy.wakeups  # The late result belongs to the failed original task.
         assert not s.run_pending() and len(calls()) == count
         assert path.read_bytes() == saved
     finally:

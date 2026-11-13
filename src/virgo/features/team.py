@@ -58,10 +58,14 @@ class Team:
 
     # -- messaging -------------------------------------------------------------
     def to_lead(self, sender: str, text: str) -> None:
+        member = self.members.get(sender)
+        owner = member.accounting_store if member is not None else None
+        if member is not None:
+            evidence = ([member.error_details] if member.error_details is not None else []) + member.related_errors
+            self.session.retain_diagnostics(owner, evidence)
         try:
-            self.session.notify(f"[Team] {sender}: {text}", mode="steer", source="team")
+            self.session.notify(f"[Team] {sender}: {text}", mode="steer", source="team", store=owner)
         except Exception as error:
-            member = self.members.get(sender)
             if member is not None:
                 self._report(member, error, phase="team.notify")
             else:

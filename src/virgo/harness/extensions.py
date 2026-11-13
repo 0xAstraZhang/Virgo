@@ -172,8 +172,9 @@ class ExtensionAPI:
         """fn(RuntimeContext) -> text; construction errors reject the candidate."""
         self.session.runtime_sections.append((order, name, fn))
 
-    def notify(self, text: str, mode: str = "steer", source: str | None = None) -> None:
-        self.session.notify(text, mode=mode, source=source or self.name)
+    def notify(self, text: str, mode: str = "steer", source: str | None = None, *, store=None,
+               diagnostics=()) -> None:
+        self.session.notify(text, mode=mode, source=source or self.name, store=store, diagnostics=diagnostics)
 
     def append_entry(self, kind: str, data: Any) -> None:
         self.session.store.append("custom", kind=kind, data=data)
@@ -188,6 +189,7 @@ class ExtensionAPI:
 
 BUILTIN_FEATURES = [
     "permission",
+    "diagnostics",
     "search",
     "fetch",
     "todo",

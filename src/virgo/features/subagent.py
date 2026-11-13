@@ -19,7 +19,7 @@ import itertools
 from dataclasses import dataclass, field
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
-from ..ai.types import AssistantMessage, UserMessage
+from ..ai.types import AssistantMessage, ToolResultMessage, UserMessage
 from ..diagnostics import safe_text
 from ..harness.commands import parse_frontmatter
 from ..harness.extensions import ExtensionAPI
@@ -93,7 +93,7 @@ class Subagents:
         if at is None:
             return ToolResult.error(f"Unknown agent type {agent_type!r}. Available: {', '.join(self.types)}")
         pool = session.tools_for("subagent")
-        tools = [t for t in pool if at.tools is None or t.name in at.tools]
+        tools = [t for t in pool if t.name in at.tools] if at.tools is not None else None
         name = f"{at.name}#{next(_counter)}"
         perms = session.services.get("permissions")
         if perms and at.permission:
@@ -135,18 +135,35 @@ class Subagents:
             details["error"] = cleanup_error
         if cleanup_error is not None and cleanup_error != details.get("error"):
             details["related_errors"] = [cleanup_error]
+
+        def failed(text):
+            results = [message for message in rt.messages if isinstance(message, ToolResultMessage)] if rt else []
+            if results:
+                recent = [{"tool": message.tool_name, "call_id": message.tool_call_id,
+                           "outcome": "returned_error" if message.is_error else "returned_success"}
+                          for message in results[-8:]]
+                details["child_progress"] = {
+                    "completed_calls": sum(not message.is_error for message in results),
+                    "recent_tools": recent, "side_effects": "unknown",
+                }
+                text += (
+                    f"\nThe child returned {len(results)} tool result(s) before stopping; "
+                    "earlier actions may already have taken effect. Recent results:\n" +
+                    "\n".join(f"- {item['tool']} ({item['call_id']}): {item['outcome']}" for item in recent)
+                )
+            return ToolResult.error(text, details=details)
+
         if failure is not None or cleanup_error is not None:
-            return ToolResult.error(f"Sub-agent failed: {details['error']['message']}", details=details)
+            return failed(f"Sub-agent failed: {details['error']['message']}")
         cancelled = (signal is not None and signal.is_set()) or (rt is not None and rt.agent.signal.is_set())
         if cancelled and (last is None or last.stop_reason not in ("error", "refusal")):
             return ToolResult.error("Sub-agent was aborted.", details={**details, "status": "aborted"})
         if last is None:
             details["error"] = session.report_error("The sub-agent produced no answer.", phase="subagent.result",
                                                    store=owner, context={"agent": name, "role": "subagent"})
-            return ToolResult.error("The sub-agent produced no answer.", details=details)
+            return failed("The sub-agent produced no answer.")
         if last.stop_reason in ("error", "refusal"):
-            return ToolResult.error(f"Sub-agent failed: {safe_text(last.error_message or last.text() or last.stop_reason)}",
-                                    details=details)
+            return failed(f"Sub-agent failed: {safe_text(last.error_message or last.text() or last.stop_reason)}")
         if last.stop_reason == "aborted":
             return ToolResult.error("Sub-agent was aborted.", details={**details, "status": "aborted"})
         turns = sum(isinstance(m, AssistantMessage) for m in rt.messages)
