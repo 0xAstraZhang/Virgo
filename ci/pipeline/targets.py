@@ -77,7 +77,7 @@ def classify(args):
             ], capture_output=True, check=True, timeout=30)
             paths = result.stdout.decode("utf-8").rstrip("\0").split("\0") if result.stdout else []
             if paths:
-                run_tests = not all(path == "README.md" or (path.startswith("docs/") and path.endswith(".md"))
+                run_tests = not all(path in {"README.md", "README.zh-CN.md"} or (path.startswith("docs/") and path.endswith(".md"))
                                     for path in paths)
                 reason = "Code or configuration changed" if run_tests else "Only documentation changed"
         except (OSError, UnicodeError, subprocess.SubprocessError):

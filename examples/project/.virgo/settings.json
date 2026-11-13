@@ -1,0 +1,37 @@
+{
+  "language": "en",
+  "effort": "medium",
+  "shell": {
+    "executable": "auto"
+  },
+  "permissions": {
+    "mode": "auto-review",
+    "allow": [
+      "bash(uv run pytest*)",
+      "edit(src/**)"
+    ],
+    "deny": [
+      "read(~/.ssh/*)",
+      "bash(git push*)"
+    ]
+  },
+  "providers": {
+    "local": {
+      "api": "openai",
+      "baseUrl": "http://localhost:11434/v1",
+      "models": {
+        "your-installed-model": {
+          "contextWindow": 32768
+        }
+      }
+    }
+  },
+  "compaction": {
+    "triggerRatio": 0.8,
+    "keepRecentTokens": 20000
+  },
+  "features": {
+    "schedule": true,
+    "team": true
+  }
+}

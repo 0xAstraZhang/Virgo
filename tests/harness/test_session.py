@@ -372,7 +372,7 @@ def test_model_errors_are_reported(make_session):
 
 
 def test_examples_directory_loads(make_session):
-    examples = REPO_ROOT / "examples"
+    examples = REPO_ROOT / "examples" / "project"
     ui = RecordingUI()
     s = make_session(faux.reply("ok"), cwd=examples, ui=ui)
     assert "stats" in s.commands.names() and "review" in s.templates
