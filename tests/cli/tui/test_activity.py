@@ -124,7 +124,8 @@ def test_waiting_for_first_token_animates_and_concurrent_command_does_not_restar
                 card = app.transcript.activity_card
                 await wait_for(pilot, lambda: card.activity is not None)
                 assert card.thought_header.display
-                assert str(card.thought_header.content).startswith("▸ ")
+                assert "Thinking…" in str(card.thought_header.content)
+                assert not card.thought_header.can_focus
                 assert not app.transcript.query(".speaker")
                 assert not app.query("#activity")
                 started_at = app.activity.started_at

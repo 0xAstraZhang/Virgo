@@ -111,7 +111,7 @@ def test_native_search_completion_stays_after_preceding_message_in_one_frame():
     asyncio.run(scenario())
 
 
-def test_encrypted_thought_label_is_display_only_live_and_in_history():
+def test_unreadable_thoughts_are_hidden_live_and_in_history():
     encrypted = json.dumps({"type": "reasoning", "summary": [], "encrypted_content": "opaque-secret"})
     message = AssistantMessage([
         ThinkingContent("", signature=encrypted),
@@ -134,14 +134,15 @@ def test_encrypted_thought_label_is_display_only_live_and_in_history():
                 await pilot.pause()
                 card = view.query_one(AssistantView)
                 thoughts = [e for e in card.events if e.kind == "thinking"]
-                assert thoughts[0].text == "内容已加密"
-                assert "内容已加密" in thoughts[0].summary().plain
-                card.set_thinking(True)
-                thoughts[0].set_expanded(True)
-                await pilot.pause()
-                assert str(thoughts[0].output.content) == "内容已加密"
+                assert not thoughts[0].display
                 assert thoughts[1].text == "Readable summary"
-                assert all(e.text == "" for e in thoughts[2:])
+                assert thoughts[1].display and not thoughts[1].output.display
+                assert all(not e.display for e in thoughts[2:])
+                card.set_thinking(True)
+                await pilot.pause()
+                assert thoughts[1].output.display
+                assert not thoughts[0].display
+                assert all(not e.display for e in thoughts[2:])
                 assert card.text == "Answer" and card.body.display
                 assert message_to_dict(card.message) == original
                 assert "opaque-secret" not in "".join(e.text for e in card.events)
@@ -270,7 +271,7 @@ def test_reused_text_block_before_native_search_remains_visible_live_and_in_hist
                 card = view.query_one(AssistantView)
                 assert card.body.display
                 assert card.body._markdown == "Checking. The complete answer."
-                assert not card.thought_body.display
+                assert card.thought_body.display
                 assert len(card.answer_events) == 1
                 assert not card.answer_events[0].display
                 card.set_thinking(True)

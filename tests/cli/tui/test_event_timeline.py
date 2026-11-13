@@ -83,8 +83,8 @@ def test_parallel_results_notifications_and_agents_share_arrival_order():
             assert run.events[8] is view.results[("main", "a")]
             assert view.tools[("main", "a")] is not view.results[("main", "a")]
             assert all(event.parent is run.thought_body for event in run.events)
-            assert not run.thought_body.display
-            assert all(not event.expanded and not event.output.display for event in run.events)
+            assert run.thought_body.display
+            assert all(not event.expanded and not event.output.display for event in run.events if event.kind != "text")
             assert run.body.display and run.body._markdown == "Both checks passed"
             assert not run.events[-1].display
             assert all(event.display for event in run.events[:-1])
@@ -138,8 +138,8 @@ def test_anthropic_native_search_and_sources_are_folded_events():
             assert [event.kind for event in run.events] == ["tool_call", "tool_result", "text", "sources"]
             assert run.events[0].tool_name == run.events[1].tool_name == "web_search"
             assert "https://example.com" in run.events[1].text
-            assert not run.thought_body.display
-            assert all(not event.output.display for event in run.events)
+            assert run.thought_body.display
+            assert all(not event.output.display for event in run.events if event.kind != "text")
             assert run.body._markdown == "A new release is available."
             run.set_thinking(True)
             await pilot.pause()
@@ -188,8 +188,13 @@ def test_collapsed_events_fit_one_line_and_keep_bold_names_after_resizing():
             for width in (80, 32, 120):
                 await pilot.resize_terminal(width, 24)
                 await pilot.pause()
-                assert run.thought_header.size.height == 1
+                assert not run.thought_header.display
                 for event in run.events:
+                    if event.kind == "text":
+                        assert not event.header.display
+                        assert event.output.display
+                        assert event.size.height > 1
+                        continue
                     assert isinstance(event, EventView)
                     assert event.size.height == event.header.size.height == 1
                     assert not event.output.display
@@ -262,4 +267,43 @@ def test_history_custom_results_preserve_completion_order_without_duplicates():
             assert len(view.query(AssistantView)) == 1
             assert len(view.query(ToolView)) == 4
 
+    asyncio.run(scenario())
+
+
+def test_live_messages_are_visible_and_folds_are_independent():
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(80, 30)) as pilot:
+            view = app.query_one(Transcript)
+            message = AssistantMessage([
+                ThinkingContent(""),
+                TextContent("Checking **sources**.\n\nPlease wait."),
+                ToolCall("search", "web_search", {"query": "release"}),
+            ], stop_reason="tool_use")
+            await view.consume(AgentEvent("message_start", message=message))
+            await pilot.pause()
+            run = view.query_one(AssistantView)
+            thought, progress, tool = run.events
+            assert not thought.display
+            assert progress.display and progress.output.display
+            assert not progress.header.display
+            assert progress.output._markdown == message.content[1].text
+            assert tool.display and not tool.output.display
+            message.content[0].thinking = "Compare official sources"
+            await view.consume(AgentEvent("message_update", stream_event=StreamEvent("thinking_delta", message, 0)))
+            await pilot.pause()
+            assert thought.display and not thought.output.display
+            thought.header.focus()
+            await pilot.press("enter")
+            assert thought.output.display and not tool.output.display
+            tool.header.focus()
+            await pilot.press("enter")
+            assert thought.output.display and tool.output.display
+            view.toggle_thinking()
+            view.toggle_thinking()
+            assert not thought.output.display and tool.output.display
+            assert progress.output.display and run.thought_body.display
+            await view.consume(AgentEvent("message_end", message=message))
+            await view.consume(AgentEvent("message_start", message=AssistantMessage([TextContent("Done")])))
+            assert progress.display and progress.output.display
     asyncio.run(scenario())

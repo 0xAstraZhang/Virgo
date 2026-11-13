@@ -51,13 +51,15 @@ def test_stream_and_final_share_one_card_with_folded_thinking():
             assert card.text == message.text()
             assert card.body._markdown == message.text()
             assert card.thinking == "Check carefully"
-            assert not card.thought_body.display
-            assert card.thought_header.display
-            view.toggle_thinking()
             assert card.thought_body.display
-            card.thought_header.focus()
+            assert not card.thought_header.display
+            view.toggle_thinking()
+            assert card.events[0].output.display
+            assert card.thought_body.display
+            card.events[0].header.focus()
             await pilot.press("enter")
-            assert not card.thought_body.display
+            assert not card.events[0].output.display
+            assert card.thought_body.display
 
     asyncio.run(scenario())
 
@@ -102,7 +104,7 @@ def test_failed_stream_with_partial_tool_call_keeps_failure_visible():
                 run = view.query_one(AssistantView)
                 assert run.error.display
                 assert "Stream disconnected" in str(run.error.content)
-                assert not run.thought_body.display
+                assert run.thought_body.display
                 assert [event.kind for event in run.events] == ["text", "tool_call"]
 
     asyncio.run(scenario())
@@ -289,7 +291,7 @@ def test_user_start_and_end_do_not_duplicate_text():
     asyncio.run(scenario())
 
 
-def test_inline_activity_reuses_thought_header_and_keeps_prompt_before_reply():
+def test_inline_activity_is_separate_from_thought_folding_and_follows_prompt():
     async def scenario():
         app = TranscriptApp()
         async with app.run_test() as pilot:
@@ -302,30 +304,30 @@ def test_inline_activity_reuses_thought_header_and_keeps_prompt_before_reply():
             assert view.children[1] is card
             assert len(view.query(AssistantView)) == 1
             assert not view.query(".speaker")
-            assert str(card.thought_header.content).startswith("▸ ✻ Thinking…")
+            assert str(card.thought_header.content).startswith("✻ Thinking…")
             assert card.thought_header.has_class("active")
 
             message = AssistantMessage([ThinkingContent("Consider this carefully.")])
             await view.consume(AgentEvent("message_start", message=message))
             assert view.activity_card is card
             assert len(view.query(".thought-header")) == 1
-            card.thought_header.focus()
+            card.events[0].header.focus()
             await pilot.press("enter")
             assert card.thought_body.display
-            assert str(card.thought_header.content).startswith("▾ ✻ Thinking…")
+            assert str(card.thought_header.content).startswith("✻ Thinking…")
             view.show_activity(Text("✽ Thinking… (4s · thinking with high effort)"))
-            assert str(card.thought_header.content).startswith("▾ ✽ Thinking…")
+            assert str(card.thought_header.content).startswith("✽ Thinking…")
 
             await view.consume(AgentEvent("message_end", message=message))
             await view.consume(AgentEvent("turn_start"))
             view.show_activity(Text("✳ Thinking… (5s · thinking with high effort)"))
-            assert str(card.thought_header.content).startswith("▾ ✳ Thinking…")
+            assert str(card.thought_header.content).startswith("✳ Thinking…")
             assert card.thought_header.has_class("active")
             assert view.activity_card is card
             assert len(view.query(".thought-header.active")) == 1
             view.finish_activity()
             assert not view.query(".thought-header.active")
-            assert str(card.thought_header.content) == "▾ Thinking · 1 events"
+            assert not card.thought_header.display
 
     asyncio.run(scenario())
 
