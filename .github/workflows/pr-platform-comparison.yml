@@ -94,6 +94,8 @@ jobs:
           "$RUNNER_TEMP/actionlint"
       - name: Check revision resolution and change classification end to end
         run: uv run --no-sync python ci/check_resolution.py
+      - name: Check parallel execution and failure diagnostics end to end
+        run: uv run --no-sync python ci/check_parallel.py
       - name: Check comparison and strict results end to end
         run: uv run --no-sync python ci/check_comparison.py
 

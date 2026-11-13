@@ -4,6 +4,10 @@ run-name: Shell diagnostics · ${{ github.ref_name }} · ${{ inputs.powershell_d
 on:
   workflow_dispatch:
     inputs:
+      benchmark_suite:
+        description: Compare full serial and parallel suites on all platforms
+        type: boolean
+        default: false
       powershell_diagnostics:
         description: Run only PowerShell selection regressions on Ubuntu
         type: boolean
@@ -18,7 +22,7 @@ env:
 
 jobs:
   shell-selection:
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +48,19 @@ jobs:
         run: uv run --no-sync python -c "import platform, shutil, sys; print(sys.version); print(platform.platform()); print({s:shutil.which(s) for s in ('bash','zsh','pwsh','powershell','curl')})"
       - name: Check PowerShell startup isolation end to end
         run: uv run --no-sync python ci/check_powershell_cache.py
+      - name: Validate parallel failure diagnostics end to end
+        run: uv run --no-sync python ci/check_parallel.py
+      - name: Benchmark complete suites
+        if: inputs.benchmark_suite
+        run: uv run --no-sync python ci/benchmark_suite.py
+      - name: Preserve benchmark reports
+        if: ${{ !cancelled() && inputs.benchmark_suite }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark-${{ matrix.os }}
+          path: benchmark/
+          if-no-files-found: error
+          retention-days: 14
       - name: Run shell selection and runtime scenarios
         if: ${{ !inputs.powershell_diagnostics }}
         run: uv run --no-sync python ci/run_pytest.py tests/harness/test_shell_commands.py tests/tools/test_shell_runtime.py -q --junitxml=shell-results.xml

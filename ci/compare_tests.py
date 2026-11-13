@@ -158,11 +158,17 @@ def run(args):
     (output / "results.json").unlink(missing_ok=True)
     started = time.monotonic()
     with (output / "pytest.log").open("w", encoding="utf-8") as log:
-        result = subprocess.run([
-            sys.executable, str(Path(__file__).with_name("run_pytest.py").resolve()),
-            "-q", "-ra", "--color=no",
-            f"--junitxml={junit}",
-        ], cwd=project, stdout=log, stderr=subprocess.STDOUT, check=False)
+        with subprocess.Popen([
+            sys.executable, "-u", str(Path(__file__).with_name("run_suite.py").resolve()),
+            "--execution", args.execution, "--output", str(output),
+        ], cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"}) as result:
+            for line in result.stdout:
+                log.write(line)
+                log.flush()
+                print(line, end="", flush=True)
+            result.wait()
     report = {
         "platform": args.platform, "label": args.label, "sha": args.sha,
         "python": sys.version, "system": platform.platform(),
@@ -171,11 +177,18 @@ def run(args):
         "collection_skips": [], "problems": [],
     }
     counts = Counter()
+    failures = ["# Test failure diagnostics", ""]
     try:
         for case in ET.parse(junit).iter("testcase"):
             name = case.attrib["name"]
             status = next((tag for tag in ("error", "failure", "skipped") if case.find(tag) is not None), "passed")
             status = "failed" if status == "failure" else status
+            if status in {"failed", "error"}:
+                detail = case.find("failure") if status == "failed" else case.find("error")
+                location = case.get("file", case.get("classname", ""))
+                line = int(case.get("line", "0")) + 1
+                failures.extend([f"## {name}", f"Location: {location}:{line}", "",
+                                 "```text", detail.text or detail.get("message", ""), "```", ""])
             counts[status] += 1
             key = PARAMETER_ALIASES.get(name, name)
             if not name.startswith("test_"):
@@ -194,7 +207,7 @@ def run(args):
         report["problems"].append(f"pytest did not complete normally (exit {result.returncode})")
     report["counts"] = dict(counts)
     write_json(output / "results.json", report)
-    print((output / "pytest.log").read_text(encoding="utf-8", errors="replace"))
+    (output / "failures.md").write_text("\n".join(failures), encoding="utf-8")
     return result.returncode if result.returncode else int(bool(report["problems"]))
 
 
@@ -390,6 +403,7 @@ def main():
     runner.add_argument("--platform", required=True)
     runner.add_argument("--label", choices=("base", "head"), required=True)
     runner.add_argument("--sha", required=True)
+    runner.add_argument("--execution", choices=("serial", "parallel"), default="parallel")
     comparer = subparsers.add_parser("compare")
     comparer.add_argument("--reports", type=Path, required=True)
     comparer.add_argument("--output", type=Path, required=True)

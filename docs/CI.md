@@ -187,3 +187,36 @@ For the workflow audit on 2026-11-13, the pre-change reference runs are
 [Shell workflow](https://github.com/0xAstraZhang/Virgo/actions/runs/43378917392)
 (2m46s elapsed). Those workflows ran concurrently; their elapsed times are not
 additive. The optimization PR records its actual acceptance runs and timings.
+
+## Live diagnostics and controlled parallel execution
+
+The suite runner streams each test result and complete failure traceback to the
+Actions log, tagged with its execution group. Every result artifact also contains
+`failures.md` (test name, source file/line, assertion or exception traceback),
+per-group logs/XML, merged JUnit XML, and the existing strict normalized report.
+The source line in JUnit identifies the test definition; the traceback identifies
+the precise failing expression. Locals are not dumped. Each group reports its
+slowest 30 test phases. Collection errors and abnormal exits remain blocking.
+
+`ci/parallel-files.json` explicitly lists two reviewed groups of isolated AI and
+in-process TUI modules. Each group runs serially in its own Python process with
+the existing PowerShell cache isolation. After both finish, normal pytest discovery
+runs with those files excluded: new files, shell/PTY tests and other scenarios
+therefore remain serial by default. There are no retries, new dependencies, or
+changes to test assertions. Missing allowlisted files in older PR bases are ignored;
+duplicate manifest entries are rejected. The merged report retains all test cases
+and the existing comparison still rejects ambiguous identities.
+
+Use `compare_tests.py run --execution serial` to disable parallel execution for
+investigation. Before changing the allowlist, use the manual benchmark:
+
+```bash
+gh workflow run shell-selection.yml --ref <branch> -f benchmark_suite=true
+```
+
+It runs complete serial and parallel suites on the same runner/commit, asserts
+identical individual outcomes, and uploads `benchmark-<os>` artifacts and timings.
+The normal PowerShell isolation acceptance (48 real launches) and shell scenarios
+also execute. `ci/check_parallel.py` exercises the CLI with real passing/failing
+and collection-error projects; it verifies partition completeness and actionable
+failure diagnostics before the production suite runs.
