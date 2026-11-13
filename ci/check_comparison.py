@@ -27,13 +27,16 @@ def main():
                 "--label", label, "--sha", label,
             ], check=False, stdout=subprocess.DEVNULL)
 
-        def compare(expected):
+        def compare(expected, *options):
+            for suffix in (".md", ".json"):
+                (root / "comparison").with_suffix(suffix).unlink(missing_ok=True)
             result = subprocess.run([
                 sys.executable, str(RUNNER), "compare", "--reports", str(root / "reports"),
-                "--output", str(root / "comparison"), "--platforms", "local",
+                "--output", str(root / "comparison"), "--platforms", "local", *options,
             ], check=False, stdout=subprocess.DEVNULL)
+            assert (root / "comparison.md").exists(), "Missing readable failure summary"
             assert result.returncode == expected, (root / "comparison.md").read_text()
-            return json.loads((root / "comparison.json").read_text())["platforms"]["local"]
+            return json.loads((root / "comparison.json").read_text())["platforms"].get("local", {})
 
         common = "import pytest\ndef test_same(): assert False\n"
         run("base", common + "def test_fixed(): assert False\ndef test_moved(): pass\n")
@@ -127,6 +130,84 @@ def main():
         assert compare(1)["problems"]
         (root / "reports" / "head" / "results.json").unlink()
         assert compare(1)["problems"]
+        # Failure modes specified before implementation: incomplete or empty
+        # reports accepted as green; malformed/duplicate JSON losing the summary;
+        # wrong SHA, counts, statuses or unexpected matrix results being trusted;
+        # main inheriting PR's existing-failure allowance; skipped/failed upstream
+        # jobs being hidden by docs-only mode; collection skips counted twice.
+        run("base", "def test_ok(): pass\n")
+        run("head", "def test_ok(): pass\n")
+        head_path = root / "reports" / "head" / "results.json"
+        valid = json.loads(head_path.read_text())
+        target_path = root / "target.json"
+        target = {"pr": 10, "url": "https://github.com/owner/project/pull/10",
+                  "base_sha": "base", "head_sha": "head", "mode": "comparison", "run_tests": True}
+        target_path.write_text(json.dumps(target))
+        compare(0, "--target", str(target_path))
+        bad_reports = [
+            {**valid, "complete": False, "exit_code": 2, "problems": []},
+            {**valid, "complete": False},
+            {**valid, "exit_code": 2},
+            {**valid, "exit_code": 1},
+            {**valid, "exit_code": True},
+            {**valid, "tests": {}, "counts": {}},
+            {**valid, "counts": {"passed": 99}},
+            {**valid, "counts": {"passed": True}},
+            {**valid, "tests": {"test_ok": {"status": "unknown"}}},
+            {**valid, "sha": "wrong"},
+            {**valid, "platform": "unexpected"},
+            {**valid, "label": "unexpected"},
+            {**valid, "duration": -1},
+            {**valid, "collection_skips": "wrong"},
+            {**valid, "problems": "wrong"},
+            {}, [],
+        ]
+        for bad in bad_reports:
+            head_path.write_text(json.dumps(bad))
+            compare(1, "--target", str(target_path))
+        for invalid in ('{', '{"platform":"local","platform":"other"}'):
+            head_path.write_text(invalid)
+            compare(1, "--target", str(target_path))
+        head_path.write_text(json.dumps(valid))
+        duplicate = root / "reports" / "duplicate" / "results.json"
+        duplicate.parent.mkdir()
+        duplicate.write_text(json.dumps(valid))
+        compare(1, "--target", str(target_path))
+        duplicate.unlink()
+        for invalid in ('{', '{}', '[]'):
+            target_path.write_text(invalid)
+            compare(1, "--target", str(target_path))
+        target_path.unlink()
+        compare(1, "--target", str(target_path))
+        for job in ("resolve", "checks", "test"):
+            for status in ("failure", "cancelled", "skipped"):
+                compare(1, f"--{job}-result", status)
+
+        # A module-level skip remains a separate outcome, not a missing case.
+        run("head", "def test_ok(): pass\n", extra="import pytest\npytest.skip('module', allow_module_level=True)\n")
+        compare(0)
+        (root / "head" / "test_other.py").unlink()
+        (root / "reports" / "base" / "results.json").unlink()
+        compare(0, "--mode", "head")
+        run("head", "def test_failure(): assert False\n")
+        report = compare(1, "--mode", "head")
+        assert report["failures"] == ["test_failure"]
+        run("head", "import pytest\n@pytest.mark.skip(reason='platform')\ndef test_skip(): pass\n")
+        compare(0, "--mode", "head")
+
+        # Documentation skips still require a valid target and successful checks.
+        head_path.unlink()
+        target.update(run_tests=False, skip_reason="Only documentation changed")
+        target_path.write_text(json.dumps(target))
+        compare(0, "--target", str(target_path), "--resolve-result", "success",
+                "--checks-result", "success", "--test-result", "skipped")
+        summary = json.loads((root / "comparison.json").read_text())
+        assert summary["skipped"] and not summary["needs_attention"]
+        assert "Only documentation changed" in (root / "comparison.md").read_text()
+        compare(1, "--target", str(target_path), "--checks-result", "failure", "--test-result", "skipped")
+        target["run_tests"] = "false"
+        target_path.write_text(json.dumps(target))
+        compare(1, "--target", str(target_path))
     print("CLI end-to-end checks passed")
 
 

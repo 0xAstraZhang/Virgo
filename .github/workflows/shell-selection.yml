@@ -1,40 +1,59 @@
-name: Shell selection E2E
+name: Shell diagnostics
+run-name: Shell diagnostics · ${{ github.ref_name }} · ${{ inputs.powershell_diagnostics && 'PowerShell on Ubuntu' || 'all platforms' }}
+
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
     inputs:
       powershell_diagnostics:
         description: Run only PowerShell selection regressions on Ubuntu
         type: boolean
         default: false
+
 permissions:
   contents: read
+
+env:
+  PYTHONUTF8: '1'
+  UV_PYTHON: '3.13'
+
 jobs:
   shell-selection:
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(inputs.powershell_diagnostics && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync --locked
-      - name: Check CI runner end to end
-        run: |
-          uv run python ci/check_comparison.py
-          uv run python ci/check_powershell_cache.py
-      - if: ${{ !inputs.powershell_diagnostics }}
-        run: uv run python ci/run_pytest.py tests/harness/test_shell_commands.py tests/tools/test_shell_runtime.py -q --junitxml=shell-results.xml
-      - if: ${{ inputs.powershell_diagnostics }}
-        run: |
-          command -v pwsh
-          uv run python ci/run_pytest.py tests/harness/test_shell_commands.py -k 'pwsh or failed_shell_probe_reports' -v --junitxml=shell-results.xml
-      - run: uv run ruff check
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Install Linux shell dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh curl
+      - run: uv sync --locked --dev
+      - name: Record environment
+        run: uv run --no-sync python -c "import platform, shutil, sys; print(sys.version); print(platform.platform()); print({s:shutil.which(s) for s in ('bash','zsh','pwsh','powershell','curl')})"
+      - name: Check PowerShell startup isolation end to end
+        run: uv run --no-sync python ci/check_powershell_cache.py
+      - name: Run shell selection and runtime scenarios
+        if: ${{ !inputs.powershell_diagnostics }}
+        run: uv run --no-sync python ci/run_pytest.py tests/harness/test_shell_commands.py tests/tools/test_shell_runtime.py -q --junitxml=shell-results.xml
+      - name: Run focused PowerShell scenarios
+        if: inputs.powershell_diagnostics
+        run: uv run --no-sync python ci/run_pytest.py tests/harness/test_shell_commands.py -k 'pwsh or failed_shell_probe_reports' -v --junitxml=shell-results.xml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
         with:
           name: shell-results-${{ matrix.os }}
           path: shell-results.xml
+          if-no-files-found: error
+          retention-days: 14

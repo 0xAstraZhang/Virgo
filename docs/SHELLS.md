@@ -53,7 +53,7 @@ PowerShell 在 `auto-review` 中按独立规则处理，其余脚本交给审批
 
 `tests/tools/test_shell_runtime.py` 补充 32 MiB 输出的实时日志与内存上限、原始字节保留、日志创建失败、后台读取预算，以及 Windows 的根进程退出、超时、取消、会话关闭、监督进程崩溃、句柄释放和并行 Job 隔离验收。
 
-`.github/workflows/shell-selection.yml` 在 Windows、macOS、Linux 执行上述两份端到端测试并上传 JUnit 结果；Windows 测试分别运行 PowerShell 7 和系统 PowerShell 5.1。本机通过不等价于 Windows CI 已通过。
+自动化 [跨平台 CI](CI.md) 的完整套件覆盖上述场景；手动诊断入口 `.github/workflows/shell-selection.yml` 在 Windows、macOS、Linux 执行上述两份端到端测试并上传 JUnit 结果；Windows 测试分别运行 PowerShell 7 和系统 PowerShell 5.1。本机通过不等价于 Windows CI 已通过。
 
 参考：[PowerShell 启动参数](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh?view=powershell-7.5)、[错误偏好变量](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_preference_variables?view=powershell-7.5)。
 
