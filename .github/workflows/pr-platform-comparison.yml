@@ -93,11 +93,11 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint"
       - name: Check revision resolution and change classification end to end
-        run: uv run --no-sync python ci/check_resolution.py
+        run: uv run --no-sync python ci/checks/resolution.py
       - name: Check parallel execution and failure diagnostics end to end
-        run: uv run --no-sync python ci/check_parallel.py
+        run: uv run --no-sync python ci/checks/parallel.py
       - name: Check comparison and strict results end to end
-        run: uv run --no-sync python ci/check_comparison.py
+        run: uv run --no-sync python ci/checks/comparison.py
 
   test:
     needs: [resolve, checks]
@@ -144,7 +144,7 @@ jobs:
       - name: Check PowerShell startup isolation end to end
         if: matrix.revision == 'head'
         working-directory: candidate
-        run: uv run --no-sync python ../ci-config/ci/check_powershell_cache.py
+        run: uv run --no-sync python ../ci-config/ci/checks/powershell_cache.py
       - name: Run complete pytest suite
         # Only test failures are deferred; the final job validates reports AND job results.
         continue-on-error: true

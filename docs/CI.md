@@ -15,11 +15,11 @@ for a focused manual investigation. These filenames are stable. The old
 | Manual PR comparison | Complete base/head suites, including documentation-only PRs | Same regression policy as automatic PR checks |
 | Manual Shell diagnostics | Two shell modules on all platforms, or focused PowerShell cases on Ubuntu | All selected cases pass |
 
-Every automatic run performs Ruff, pinned actionlint validation, and the resolution
-and comparison CLI acceptance checks on Linux. There are nine jobs for a full PR,
+Every automatic run performs Ruff, pinned actionlint validation, and the resolution,
+parallel-execution and comparison CLI acceptance checks on Linux. There are nine
+jobs for a full PR,
 six for a full main run, and three executing jobs for documentation-only changes.
-The skipped test matrix is visible in the latter. Previously each PR ran eleven
-jobs, including redundant Shell tests and three copies of the comparison self-check.
+The skipped test matrix is visible in the latter.
 
 Only `README.md` and Markdown files under `docs/` qualify for the lightweight path.
 Classification uses the exact resolved base/head commits, with rename detection
@@ -50,6 +50,39 @@ head platform. Every native command whose exit status matters has its own workfl
 step, or runs in Bash with fail-fast behavior, so a later successful command cannot
 hide an earlier Windows PowerShell failure.
 
+## Where to make changes
+
+| Location | Responsibility |
+| --- | --- |
+| `.github/workflows/pr-platform-comparison.yml` | Automatic checks and manual PR comparison: resolve + checks → test → compare |
+| `.github/workflows/shell-selection.yml` | Manual shell diagnostics and optional serial/parallel benchmark |
+| `ci/compare_tests.py` | Stable CLI entry point and argument parsing |
+| `ci/pipeline/targets.py` | Event revision resolution and documentation-only classification |
+| `ci/pipeline/execution.py` | Suite invocation, normalized reports and failure diagnostics |
+| `ci/pipeline/reports.py` | Report validation and approved test-name aliases |
+| `ci/pipeline/comparison.py` | Regression policy, upstream-job validation and final summary |
+| `ci/pipeline/io.py` | Strict JSON artifacts and workflow outputs |
+| `ci/run_suite.py`, `ci/run_pytest.py` | Process partitioning and PowerShell cache isolation |
+| `ci/parallel-files.json` | Reviewed parallel test groups |
+| `ci/checks/` | CLI end-to-end acceptance checks for CI itself |
+| `ci/benchmark_suite.py` | Same-runner serial/parallel comparison |
+
+Workflow files handle orchestration; the Python CLI owns decisions and reports.
+The pipeline uses only the standard library, so resolution and comparison do not
+install the tested project's dependencies. Runner paths are resolved relative to
+the CI tools checkout, including when the working directory is a different base or
+head checkout. Keep the CLI options, artifact names, workflow filenames and job IDs
+stable when reorganizing internals.
+
+## Details and maintenance
+
+- [Reading results and comparison policy](ci/results.md): artifacts, identity aliases,
+  regression rules, report validation and CLI options.
+- [Runner maintenance](ci/runner.md): PowerShell isolation, parallel execution,
+  local acceptance commands and the failure modes they cover.
+- [Serial/parallel benchmark](ci-results/parallel-benchmark-2026-11-13.md): measured
+  cross-platform outcomes and timings.
+
 ## Environment and resource limits
 
 All workflows use Python 3.13, uv 0.13.8, UTF-8 mode, and locked development
@@ -68,114 +101,10 @@ are blocking even if a pytest report happens to be green.
 
 New automatic runs cancel superseded runs of the same PR or main branch. Manual
 runs use separate concurrency groups and do not cancel one another. Resolution and
-summary jobs have five-minute limits, lightweight checks ten minutes, and test or
-Shell jobs twenty minutes. Failure summaries and uploads use `!cancelled()` so
+summary jobs have five-minute limits, lightweight checks ten minutes, test jobs
+twenty minutes, and manual Shell jobs thirty-five minutes. Failure summaries and uploads use `!cancelled()` so
 failures remain observable without starting new work after cancellation. All
 artifacts expire after fourteen days. No repository protection rules are modified.
-
-## Reading results
-
-The comparison job's summary and `comparison` artifact contain the outcome table,
-new failures, existing failures, fixed failures, changed skips, and missing/new tests.
-Each `results-<platform>-<revision>` artifact contains pytest output, JUnit XML,
-normalized results, interpreter information, and the tested SHA.
-
-Comparison identifies tests by function/method name and parameter ID, ignoring the
-module path so moving a test does not manufacture a new failure. Duplicate keys
-are rejected as ambiguous. The two renamed parameter IDs in PR #9's
-`test_compaction_does_not_enable_native_search` are explicitly mapped to their
-previous names. The Harness simplification's four renamed Todo, question and
-sub-agent cases also map to their previous names so changed expectations remain
-comparable; other renames are reported as added/removed tests.
-PR #18's unreadable-thought and inline-activity replacement cases are also mapped
-to their original names. PR #16's startup refresh, picker cancellation, and two
-parameterized metadata-precedence replacements are mapped likewise. Their new
-expectations reflect the feature change: refresh on restart with cached fallback,
-Esc closing only the picker, and explicit configuration overriding fetched fields.
-PR #34's three parameterized folding cases and web-search result case map to their
-previous names: headers now toggle immediately, while body and padding clicks
-keep details open for text selection. These replacements retain their baseline
-identities for failure, skip, and missing-test comparisons.
-The comparison CLI check covers passing and failing replacements, unknown names,
-and collisions between old and new names. An approved replacement can still fail as a regression;
-an unknown rename or an alias collision still fails the comparison.
-
-A failed PR test is classified as a regression only if the baseline passed it.
-Failures that were skipped or absent in the baseline are listed separately as
-newly exposed failures, and also fail the comparison. Existing failures remain
-visible but do not fail the comparison. A disappearing executed baseline test,
-an ambiguous result, an incomplete run, or a missing artifact fails the comparison.
-A previously executed baseline case becoming skipped also fails the comparison.
-A newly added test that is platform-skipped is listed as added, not a regression.
-Module-level collection skips are reported separately from individual test skips.
-Main's single-revision mode fails on every failed/error test; it does not apply the
-PR allowance for existing failures.
-
-The summary validates upstream job outcomes and every expected report. Invalid
-JSON (including duplicate keys), unexpected/duplicate matrix records, empty test
-sets, incomplete execution, invalid statuses/counts, mismatched exit codes and
-wrong SHAs fail with a readable summary. Missing or invalid targets also fail.
-The producer's diagnostics remain visible even when its report is rejected.
-
-`ci/compare_tests.py` exposes `resolve`, `classify`, `run`, and `compare` commands.
-`classify --target target.json [--project .]` adds the full-test decision and reason.
-`compare` retains the default base/head behavior and accepts `--mode head` for a
-single strict revision; workflow targets select the mode automatically. Workflow
-calls also pass `--resolve-result`, `--checks-result`, and `--test-result`, so
-skipped/failed prerequisites cannot produce a successful final check.
-
-## PowerShell startup isolation
-
-Both revisions use `ci/run_pytest.py`, from the same comparison-tools checkout.
-On Unix it gives pytest a fresh `XDG_CACHE_HOME` and pre-creates empty, read-only
-`powershell/StartupProfileData-Interactive` and `StartupProfileData-NonInteractive`
-files. This avoids inheriting corrupt profiles and prevents concurrent probes or
-commands in one job from overwriting them. It also sets
-`POWERSHELL_TELEMETRY_OPTOUT=true` for the Unix pytest child: a fresh cache would
-otherwise make concurrent shells initialize a telemetry UUID through a named
-mutex that can crash inside .NET. See the
-[macOS native-crash investigation](ci-results/powershell-macos-2026-11-12.md)
-for the captured fault and validation. Other caches remain writable, `HOME`
-is unchanged, and the temporary directory is removed when pytest exits, including
-test failures and collection errors. Run this wrapper as an unprivileged user;
-it fails explicitly if the startup files remain writable. Windows keeps its
-existing environment and process behavior.
-
-This is a CI environment mitigation for
-[PowerShell's startup-profile race](https://github.com/PowerShell/PowerShell/issues/26528),
-not a retry or skip policy. It applies equally to the complete baseline/head
-comparison, main validation and manual `Shell diagnostics`. Each head platform
-and manual Shell job runs `python ci/check_powershell_cache.py`, which requires real PowerShell 7
-and exercises 48 launches with up to eight concurrent processes. Normal local
-Virgo sessions are not changed by this CI-only wrapper.
-
-## Validation before changing the runner
-
-The end-to-end check uses temporary pytest projects and invokes both CLI commands.
-It must cover these failure modes before runner changes are made:
-
-- A malformed, empty, incomplete, duplicate or wrong-SHA report is accepted as green.
-- A main failure is incorrectly allowed as an existing PR failure.
-- A failed/skipped prerequisite is hidden by the documentation-only decision.
-- A rename into docs, a root configuration file, missing history or a manual run
-  is incorrectly classified as documentation-only.
-- Event SHAs drift to live API values, or fork/manual targets resolve incorrectly.
-- A test moved between modules is incorrectly treated as added or removed.
-- Existing failures hide a new failure, or a fixed failure remains marked failing.
-- A skipped/uncollected baseline case becomes a failure and is mislabeled a regression.
-- A parameter rename or duplicate function name silently mismatches test cases.
-- Collection errors, missing reports, and runner failures produce a false green result.
-- A previously executed test disappears or starts being skipped without being reported.
-- An approved test replacement hides a regression or collides with its old name.
-- A corrupt inherited PowerShell startup cache or concurrent writers crash probes.
-- Cold-cache PowerShell processes initialize telemetry and enter its named-mutex
-  path, including when the parent explicitly enables telemetry.
-- Cache protection prevents real shell execution, changes HOME, leaks directories,
-  swallows pytest failures, or differs between base and head.
-
-Run `python ci/check_resolution.py` and `python ci/check_comparison.py` in an environment with pytest installed.
-This is a CLI end-to-end check; it does not import or mock the comparison runner.
-With `pwsh` on PATH, also run `python ci/check_powershell_cache.py`.
 
 ## Historical investigations
 
@@ -191,56 +120,3 @@ For the workflow audit on 2026-11-13, the pre-change reference runs are
 [Shell workflow](https://github.com/0xAstraZhang/Virgo/actions/runs/43378917392)
 (2m46s elapsed). Those workflows ran concurrently; their elapsed times are not
 additive. The optimization PR records its actual acceptance runs and timings.
-
-## Live diagnostics and controlled parallel execution
-
-The suite runner streams each test result and complete failure traceback to the
-Actions log, tagged with its execution group. Every result artifact also contains
-`failures.md` (test name, source file/line, assertion or exception traceback),
-per-group logs/XML, merged JUnit XML, and the existing strict normalized report.
-The source line in JUnit identifies the test definition; the traceback identifies
-the precise failing expression. Locals are not dumped. Each group reports its
-slowest 30 test phases. Collection errors and abnormal exits remain blocking.
-
-`ci/parallel-files.json` explicitly lists two reviewed groups of isolated AI and
-in-process TUI modules. Each group runs serially in its own Python process with
-the existing PowerShell cache isolation. After both finish, normal pytest discovery
-runs with those files excluded: new files, shell/PTY tests and other scenarios
-therefore remain serial by default. There are no retries, new dependencies, or
-changes to test assertions. Missing allowlisted files in older PR bases are ignored;
-duplicate manifest entries are rejected. The merged report retains all test cases
-and the existing comparison still rejects ambiguous identities.
-
-Use `compare_tests.py run --execution serial` to disable parallel execution for
-investigation. Before changing the allowlist, use the manual benchmark:
-
-```bash
-gh workflow run shell-selection.yml --ref <branch> -f benchmark_suite=true
-```
-
-It runs complete serial and parallel suites on the same runner/commit, asserts
-identical individual outcomes, and uploads `benchmark-<os>` artifacts and timings.
-The normal PowerShell isolation acceptance (48 real launches) and shell scenarios
-also execute. `ci/check_parallel.py` exercises the CLI with real passing/failing
-and collection-error projects; it verifies partition completeness and actionable
-failure diagnostics before the production suite runs.
-
-### Cross-platform validation (2026-11-13)
-
-[Manual validation run](https://github.com/0xAstraZhang/Virgo/actions/runs/43390383788)
-compared both modes at commit `cb30ecd` on the same runner per platform:
-
-| Platform | Serial | Parallel | Reduction | Identical outcomes |
-| --- | ---: | ---: | ---: | --- |
-| Ubuntu | 364.08 s | 297.60 s | 18.3% | 1273 passed, 6 skipped |
-| Windows | 429.69 s | 362.88 s | 15.5% | 1252 passed, 27 skipped |
-| macOS | 451.41 s | 356.03 s | 21.1% | 1279 passed, 6 skipped |
-
-These are complete runner command wall times, not total workflow durations.
-Each pair had identical individual normalized test identities/statuses and no
-report-integrity problems. All three platforms also passed the injected-failure
-CLI acceptance and PowerShell cache isolation acceptance with 48 real launches
-per platform. This is one cloud pair per OS; runner load and timing variability
-mean the percentages are measurements, not guarantees. Two earlier local macOS
-trials reduced 155.09 s to 103.95/103.51 s, illustrating why local timings alone
-were insufficient to estimate hosted-runner gains.
