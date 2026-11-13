@@ -123,6 +123,7 @@ class AssistantMessage:
     role: Literal["assistant"] = "assistant"
     native_started: bool = False  # any hosted web operation; old search_started remains readable
     search_started: bool = False  # server-side work may have incurred costs; do not blindly replay
+    error_details: dict | None = None  # diagnostic metadata, never sent to the model
 
     def text(self) -> str:
         return "".join(b.text for b in self.content if isinstance(b, TextContent))

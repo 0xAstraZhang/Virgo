@@ -140,6 +140,7 @@ plain 模式保留逐行输入和原有行为：`Ctrl-C` 中止运行，空闲�
 | `/permissions [mode]` | 查看规则 / 切换权限模式 |
 | `/compact [focus]` | 立即压缩上下文 |
 | `/new` `/sessions [n]` `/session` | 新建、浏览、恢复会话和查看当前会话信息 |
+| `/diagnostics [error-id]` | 查看诊断日志位置和最近错误；按错误 ID 展开阶段、异常链与堆栈 |
 | `/schedule` | 通过向导手动创建定时任务，无需模型调用 |
 | `/schedules` | 按类别、时间、标题浏览任务，查看全文、编辑或删除 |
 | `/todos` `/tasks` `/jobs` `/team` | 查看各功能状态 |
@@ -196,7 +197,7 @@ API 接入时可以修改预填的地址和模型。GLM 默认使用普通 API �
 
 配置分三层，后者覆盖前者：内置默认值 → `~/.virgo/settings.json` → `<项目>/.virgo/settings.json`（深合并）。完整示例见 [`examples/.virgo/`](examples/.virgo)。
 
-`VIRGO_HOME` 可指定用户配置目录，`VIRGO_MODEL` 可覆盖配置中的模型，`VIRGO_SHELL` 可指定工具使用的 shell。设置 `VIRGO_DEBUG` 会显示扩展事件异常；工具启动的子进程带有 `VIRGO=1` 标记。
+`VIRGO_HOME` 可指定用户配置目录，`VIRGO_MODEL` 可覆盖配置中的模型，`VIRGO_SHELL` 可指定工具使用的 shell。错误详情默认写入 `VIRGO_HOME/logs/`（默认 `~/.virgo/logs/`），无需设置 `VIRGO_DEBUG`；工具启动的子进程带有 `VIRGO=1` 标记。
 
 使用 `/shell` 探测并选择 Bash、Zsh、sh/dash、PowerShell 7 或 Windows PowerShell 5.1；列表显示版本、路径和当前选择。也可用 `/shell pwsh`、`/shell zsh`、`/shell "C:\Program Files\PowerShell\7\pwsh.exe"` 或 `/shell auto`。选择立即生效并保存用户默认值；重启时项目、Runtime 配置及 `VIRGO_SHELL` 仍有更高优先级。Windows 自动优先 PowerShell，macOS/Linux 优先 Bash。显式配置失效时提示重新选择，不静默更换解释器。模型会收到实际 shell 类型、版本、路径和语法信息；已运行的后台任务保留启动时的 shell。
 
@@ -300,6 +301,14 @@ DeepSeek key 复用已保存的官方连接或 `DEEPSEEK_API_KEY`，可用 `fetc
 架构和扩展方式见 [网页能力路由](docs/designs/web-fetch.md)，离线验证入口见 [测试说明](docs/TESTING.md#web-reading-capabilities)。
 
 ## 扩展
+
+### 错误诊断
+
+模型、工具、权限策略、扩展与命令、后台任务、MCP 及会话保存故障统一保留错误 ID、发生阶段、异常类型、异常链和堆栈位置。模型请求还关联会话、运行、调用和重试次数；服务提供时记录 HTTP 状态码、request ID、Retry-After 和安全端点。界面显示简短错误和诊断日志路径，`/diagnostics` 列出最近错误，`/diagnostics <error-id>` 查看详情。
+
+重试后成功仍保留此前失败；辅助请求与子 Agent 的错误归属原会话。错误详情随模型消息、工具结果和 `model_call` 审计保存，不额外进入模型上下文。`--mode json` 输出可直接读取 `error_details`。会话文件无法写入时，独立诊断日志仍会尝试记录；日志也写不了时回退到 stderr，原始错误仍保留。
+
+日志按实例写入，单文件默认最多 5 MiB，保留两份轮转文件。`--no-session` 不保存对话，但发生故障仍产生诊断日志。诊断不采集 frame locals、源代码行、完整请求正文、提示词或工具参数；凭据字段、已知 token 和 URL 查询参数会被脱敏。完整字段、排查流程与扩展接入见 [错误诊断](docs/ERRORS.md)。
 
 ### 运行审计与用量
 

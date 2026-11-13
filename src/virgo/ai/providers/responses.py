@@ -28,6 +28,7 @@ from ..types import (
 )
 from ..validate import parse_tool_arguments
 from ..web import declarations
+from ._errors import attach_error
 from ._http import ProviderError, cancelled, run_cancellable
 from .openai import _client, _reasoning_effort, classify_error
 
@@ -199,9 +200,8 @@ def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | Non
             out.error_kind, out.error_message = error.kind, str(error)
         else:
             out.error_kind, out.error_message = classify_error(error)
-        if token:
-            out.error_message = out.error_message.replace(token, "[redacted]")
         out.stop_reason = "aborted" if cancelled(opts.signal) or out.error_kind == "aborted" else "error"
+        attach_error(out, error, model, phase="provider.compact", token=token)
     return out
 
 
@@ -244,6 +244,10 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             exception = ProviderError(out.error_message, body=error)
             if is_search_unsupported(exception):
                 out.error_kind = "search_unsupported"
+        attach_error(
+            out, ProviderError(out.error_message, out.error_kind, body=error), model,
+            phase="provider.response",
+        )
 
     def start(index: int, item: dict):
         if index in slots:
@@ -386,6 +390,8 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
                     out.error_message = "The provider ended before completing a tool call."
                 else:
                     out.stop_reason = "tool_use" if out.tool_calls() else "stop"
+            if out.stop_reason == "error" and out.error_details is None:
+                attach_error(out, None, model, phase="provider.response")
             yield StreamEvent("error" if out.stop_reason in ("error", "refusal") else "done", out)
             return
         elif kind == "error":
@@ -397,6 +403,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
     else:
         out.stop_reason, out.error_kind = "error", "retryable"
         out.error_message = "Responses stream ended before the final response."
+        attach_error(out, None, model)
     yield StreamEvent("error", out)
 
 
@@ -407,23 +414,25 @@ def stream(model: Model, ctx: Context, opts: StreamOptions) -> EventStream:
 
 def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessage):
     response = None
+    token = ""
     try:
         if opts.signal is not None and opts.signal.is_set():
             out.stop_reason, out.error_message = "aborted", "aborted by user"
             yield StreamEvent("error", out)
             return
-        response = _client(model).responses.create(**build_params(model, ctx, opts))
+        client = _client(model)
+        token = getattr(client, "api_key", "")
+        response = client.responses.create(**build_params(model, ctx, opts))
         for event in parse_events(response, model, out, opts, web_search=bool(ctx.web_search)):
-            if out.error_message and model.options.get("apiKey"):
-                out.error_message = out.error_message.replace(model.options["apiKey"], "[redacted]")
+            if out.error_message:
+                attach_error(out, None, model, token=token, response=getattr(response, "response", None))
             yield event
     except Exception as exc:  # noqa: BLE001 - provider failures are data
         out.error_kind, out.error_message = classify_error(exc)
         if ctx.web_search and is_search_unsupported(exc):
             out.error_kind = "search_unsupported"
-        if model.options.get("apiKey"):
-            out.error_message = out.error_message.replace(model.options["apiKey"], "[redacted]")
         out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
+        attach_error(out, exc, model, token=token, response=getattr(response, "response", None))
         yield StreamEvent("error", out)
     finally:
         if response is not None:

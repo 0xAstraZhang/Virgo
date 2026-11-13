@@ -92,7 +92,9 @@ def build_system(
                 text = fn(role)
             except Exception as e:  # noqa: BLE001
                 text = None
-                session.ui.print(f"[system section {_name} failed: {e}]", "error")
+                owner = (context.store or context.accounting_store) if context is not None else None
+                session.report_error(e, phase="extension.system_section", store=owner,
+                                     context={"section": _name, "role": role})
         if text:
             parts.append(text.strip())
     files = context_files(cwd, session.paths.user)

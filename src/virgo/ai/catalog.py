@@ -13,9 +13,11 @@ from datetime import UTC, datetime
 
 import httpx
 
+from ..diagnostics import capture_error
 from .auth import authenticated_model
 from .catalog_versions import CodexCatalogVersion, VersionCancelled, VersionError
 from .models import base_url
+from .providers._errors import model_secrets
 from .types import Model
 
 CATALOG_TIMEOUT = 12.0
@@ -217,7 +219,6 @@ def _read_catalog(model: Model, signal, stopped: threading.Event, version=None) 
 
 
 def _fetch(model: Model, signal, stopped: threading.Event) -> list[CatalogModel]:
-    model = authenticated_model(model, signal)
     if model.api != "openai-codex":
         return _read_catalog(model, signal, stopped)
     resolver = CodexCatalogVersion(model, signal, stopped)
@@ -262,12 +263,25 @@ def fetch_model_catalog(model: Model, signal=None) -> list[CatalogModel]:
     stopped = threading.Event()
 
     def fetch():
+        request_model = model
         try:
-            result.put((_fetch(model, signal, stopped), None))
-        except CatalogError as error:
+            request_model = authenticated_model(model, signal)
+            result.put((_fetch(request_model, signal, stopped), None))
+        except CatalogCancelled as error:
             result.put((None, error))
-        except Exception:
-            result.put((None, CatalogError("Could not read the model directory. Check the connection and login, then retry /model.")))
+        except Exception as cause:
+            error = cause
+            if not isinstance(error, CatalogError):
+                error = CatalogError("Could not read the model directory. Check the connection and login, then retry /model.")
+                error.__cause__ = cause
+            # Capture before the request-only credentials leave scope. The
+            # Harness must reuse this redacted chain, including for stderr.
+            error._virgo_error_details = capture_error(
+                error, phase="catalog.fetch",
+                context={"provider": request_model.provider, "api": request_model.api},
+                secrets=model_secrets(request_model),
+            )
+            result.put((None, error))
 
     threading.Thread(target=fetch, name="virgo-model-catalog", daemon=True).start()
     deadline = time.monotonic() + CATALOG_TIMEOUT

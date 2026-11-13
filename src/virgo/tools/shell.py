@@ -197,7 +197,11 @@ def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
     def execute(args, ctx):
         timeout = min(float(args.get("timeout") or DEFAULT_TIMEOUT), MAX_TIMEOUT)
         if jobs is not None and args.get("background"):
-            job = jobs.start_command(args["command"], ctx.cwd, timeout if args.get("timeout") else None, shell=shell)
+            job = jobs.start_command(
+                args["command"], ctx.cwd, timeout if args.get("timeout") else None, shell=shell,
+                store=ctx.review_source.root if ctx.review_source is not None else None,
+                agent=ctx.agent, tool_call_id=ctx.call_id,
+            )
             return ToolResult.text(
                 f"Started background job {job.id} using {shell.kind} {shell.version}. "
                 "You will be notified when it finishes; job_output shows progress."

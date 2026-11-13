@@ -71,6 +71,7 @@ class ToolCallEvent:
 @dataclass
 class Block:
     reason: str
+    details: dict | None = None
 
 
 @dataclass
@@ -107,6 +108,7 @@ class AgentConfig:
     max_parallel: int = 8
     before_tool_execute: Callable[[ToolCallEvent], Block | None] | None = None
     can_run: Callable[[], bool] | None = None
+    on_error: Callable[[dict], None] | None = None
 
 
 def image_result(data: str, mime: str, note: str = "") -> ToolResult:

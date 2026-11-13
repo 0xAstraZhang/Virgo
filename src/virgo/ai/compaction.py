@@ -8,6 +8,7 @@ from dataclasses import asdict, replace
 from urllib.parse import urlsplit
 
 from .models import base_url
+from .providers._errors import attach_error
 from .stream import error_message
 from .transform import normalize
 from .types import AssistantMessage, Context, Model, RawContent, StreamOptions
@@ -77,10 +78,8 @@ def compact(model: Model, context: Context, options: StreamOptions | None = None
             from .providers import responses as impl
         return impl.compact(model, context, options, focus=focus)
     except Exception as exc:  # provider setup failures follow the normal message contract
-        text = str(exc)
-        if key := model.options.get("apiKey"):
-            text = text.replace(key, "[redacted]")
-        result = error_message(model.api, model.provider, model.id, text)
+        result = error_message(model.api, model.provider, model.id, str(exc))
         if options.signal is not None and options.signal.is_set():
             result.stop_reason = "aborted"
+        attach_error(result, exc, model, phase="provider.compact.setup")
         return result

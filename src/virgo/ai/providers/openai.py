@@ -26,6 +26,8 @@ from ..types import (
     UserMessage,
 )
 from ..validate import parse_tool_arguments
+from ._errors import attach_error
+from ._http import ProviderError
 
 _STOP = {"stop": "stop", "tool_calls": "tool_use", "function_call": "tool_use", "length": "length"}
 _OVERFLOW = re.compile(
@@ -142,6 +144,8 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
 def classify_error(e: Exception) -> tuple[str, str]:
     import openai
 
+    if isinstance(e, ProviderError):
+        return e.kind, str(e)
     status = getattr(e, "status_code", None)
     text = getattr(e, "message", None) or str(e)
     if status in (400, 413) and _OVERFLOW.search(text):
@@ -163,13 +167,16 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
     calls: dict[int, tuple[int, str]] = {}  # openai index -> (content index, json buffer)
     finish = None
     resp = None
+    token = ""
     try:
         if opts.signal is not None and opts.signal.is_set():
             out.stop_reason = "aborted"
             out.error_message = "aborted by user"
             yield StreamEvent("error", out)
             return
-        resp = _client(model).chat.completions.create(**build_params(model, ctx, opts))
+        client = _client(model)
+        token = getattr(client, "api_key", "")
+        resp = client.chat.completions.create(**build_params(model, ctx, opts))
         for chunk in resp:
             if opts.signal is not None and opts.signal.is_set():
                 out.stop_reason = "aborted"
@@ -228,6 +235,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             yield StreamEvent("toolcall_end", out, ci)
         if text_i is not None:
             yield StreamEvent("text_end", out, text_i)
+        if finish is None:
+            raise ProviderError("Chat Completions stream ended before a finish reason.", "retryable")
         if finish == "content_filter":
             out.stop_reason = "refusal"
             out.error_message = "The response was blocked by the provider's content filter."
@@ -239,9 +248,10 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         yield StreamEvent("done", out)
     except Exception as e:  # noqa: BLE001
         kind, text = classify_error(e)
-        out.stop_reason = "error"
+        out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
         out.error_kind = kind
         out.error_message = text
+        attach_error(out, e, model, token=token, response=getattr(resp, "response", None))
         yield StreamEvent("error", out)
     finally:
         if resp is not None:

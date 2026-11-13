@@ -9,8 +9,11 @@ from pathlib import Path
 
 from .. import __version__
 from ..ai.types import AssistantMessage
+from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
 from ..features.permission import MODES, normalize_permission_mode
+from ..harness.diagnostics import DiagnosticLog
 from ..harness.session import AgentSession
+from ..harness.settings import Paths
 from ..harness.store import SessionStore
 from .console import ConsoleBroker, PrintUI, TerminalUI
 
@@ -79,6 +82,28 @@ def _fullscreen_available() -> bool:
     )
 
 
+def _startup_error(error: Exception, cwd: str) -> None:
+    """Initialization can fail before an AgentSession owns a diagnostic sink."""
+    details = getattr(error, "_virgo_error_details", None)
+    if not isinstance(details, dict):
+        details = capture_error(error, phase="cli.startup", context={"cwd": cwd})
+    try:
+        if not details.get("log_path") and not details.get("logging_error"):
+            details = DiagnosticLog(Paths(Path(cwd)).user / "logs").record(details)
+        print(f"virgo: {error_summary(details)}", file=sys.stderr)
+    except Exception as reporting_error:
+        emergency_write(details, reporting_error)
+
+
+def _shutdown(session: AgentSession) -> bool:
+    try:
+        session.shutdown()
+        return True
+    except Exception as error:
+        session.report_error(error, phase="session.shutdown")
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     fullscreen = False
@@ -96,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
         piped = sys.stdin.read()
         if piped.strip():
             prompt = f"{prompt}\n\n{piped}" if prompt else piped
+    if args.print and not prompt:
+        print("virgo: -p needs a prompt (argument or stdin)", file=sys.stderr)
+        return 2
 
     session_arg: str | Path | None = "new"
     pick_session = False
@@ -109,24 +137,22 @@ def main(argv: list[str] | None = None) -> int:
         elif fullscreen:
             pick_session = True
         else:
-            from ..harness.settings import Paths
-
             picked = _pick_session(Paths(Path(args.cwd)).sessions)
             if picked is None:
                 return 1
             session_arg = picked
 
     overrides = {"effort": args.effort} if args.effort else None
-    if args.print:
-        ui = PrintUI(json_mode=args.mode == "json")
-    elif fullscreen:
-        from .tui.bridge import FullscreenUI
-
-        ui = FullscreenUI()
-    else:
-        broker = ConsoleBroker()
-        ui = TerminalUI(broker)
     try:
+        if args.print:
+            ui = PrintUI(json_mode=args.mode == "json")
+        elif fullscreen:
+            from .tui.bridge import FullscreenUI
+
+            ui = FullscreenUI()
+        else:
+            broker = ConsoleBroker()
+            ui = TerminalUI(broker)
         session = AgentSession(
             args.cwd,
             ui=ui,
@@ -136,32 +162,47 @@ def main(argv: list[str] | None = None) -> int:
             settings=overrides,
             extensions=not args.no_extensions,
         )
-    except (ValueError, FileNotFoundError) as e:
-        print(f"virgo: {e}", file=sys.stderr)
-        return 2
+    except KeyboardInterrupt:
+        return 130
+    except Exception as error:
+        _startup_error(error, args.cwd)
+        return 2 if isinstance(error, (ValueError, OSError)) else 1
 
     if not args.print:
-        if fullscreen:
-            from .tui import run_fullscreen
+        try:
+            if fullscreen:
+                from .tui import run_fullscreen
 
-            return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session)
+                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session)
 
-        from .repl import run_repl
+            from .repl import run_repl
 
-        run_repl(session, ui, broker, prompt or None)
-        return 0
+            run_repl(session, ui, broker, prompt or None)
+            return 0
+        except KeyboardInterrupt:
+            session.abort()
+            _shutdown(session)
+            return 130
+        except Exception as error:
+            session.report_error(error, phase="cli.interactive")
+            _shutdown(session)
+            return 1
 
-    if not prompt:
-        print("virgo: -p needs a prompt (argument or stdin)", file=sys.stderr)
-        return 2
+    exit_code = 0
     try:
         session.prompt(prompt)
         session.wait_idle()
     except KeyboardInterrupt:
         session.abort()
-        return 130
+        exit_code = 130
+    except Exception as error:
+        session.report_error(error, phase="cli.run")
+        exit_code = 1
     finally:
-        session.shutdown()
+        if not _shutdown(session) and not exit_code:
+            exit_code = 1
+    if exit_code:
+        return exit_code
     if session.has_save_failure:
         return 1
     if ui.command_output:
@@ -170,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     if last is None:
         return 1
     if last.stop_reason in ("error", "refusal", "aborted"):
-        print(f"virgo: {last.error_message or last.stop_reason}", file=sys.stderr)
+        print(f"virgo: {safe_text(last.error_message or last.stop_reason)}", file=sys.stderr)
         return 1
     if args.mode == "text":
         print(last.text())

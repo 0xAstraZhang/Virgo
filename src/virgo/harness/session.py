@@ -15,6 +15,7 @@ from __future__ import annotations
 import random
 import threading
 import time
+import uuid
 from collections import deque
 from contextlib import ExitStack
 from dataclasses import asdict
@@ -38,6 +39,7 @@ from ..ai.types import (
     UserMessage,
     message_to_dict,
 )
+from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
 from ..features.permission import normalize_permission_mode, plan_tool_allowed
 from ..features.permission_context import ReviewSource
 from ..tools import BASE_TOOLS
@@ -45,6 +47,7 @@ from ..tools.shell import Shell
 from ..tools.truncate import MAX_BYTES, budget
 from . import compaction
 from .commands import Commands, expand_template, load_templates, register_builtins
+from .diagnostics import DiagnosticLog
 from .extensions import (
     ROLES_ALL,
     EventBus,
@@ -112,6 +115,10 @@ class Runtime:
         ) else 0
         self._native_source: list | None = None
         self._call_started: float | None = None  # set per model call; None for loop-made messages
+        self.run_id: str | None = None
+        self._prepared_run = False
+        self._model_call_id: str | None = None
+        self._attempt_number = 0
         self.native_binding = (store.last_compaction() or {}).get("context_binding") if store else None
         self.system = ""
         self.rebuild_system()
@@ -126,6 +133,7 @@ class Runtime:
             should_stop=lambda _msgs: session.bus.first("agent_stop", self),
             max_turns=max_turns,
             can_run=self.can_run,
+            on_error=lambda details: self.report_error(details, phase="agent.listener"),
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
         self.review_source = ReviewSource(self, review_parent)
@@ -161,7 +169,19 @@ class Runtime:
         ev.review_source = self.review_source
         return self.session._before_tool(ev)
 
+    def prepare_run(self) -> None:
+        """Bind startup hooks to this run before its first model request exists."""
+        self.run_id = uuid.uuid4().hex
+        self._model_call_id = None
+        self._attempt_number = 0
+        self._prepared_run = True
+
     def _on_event(self, ev: AgentEvent) -> None:
+        if ev.type == "agent_start":
+            if not self._prepared_run:
+                self.prepare_run()  # Children can call agent.prompt() without AgentSession.run().
+            self._prepared_run = False
+        self._diagnose_event(ev)
         try:
             self._record_event(ev)
         except SessionSaveError as error:
@@ -171,6 +191,66 @@ class Runtime:
         if ev.type == "turn_end":
             self.session.bus.emit("turn_end", ev, self)
         self.session.ui.on_event(ev)
+
+    def diagnostic_context(self, **extra) -> dict:
+        owner = self.store if self.store is not None else self.accounting_store
+        return {
+            "agent": self.name,
+            "role": self.role,
+            "session_id": owner.id if owner is not None else None,
+            "accounting_session_id": self.accounting_store.id if self.accounting_store is not None else None,
+            "run_id": self.run_id,
+            "model_call_id": self._model_call_id,
+            "model": self.model.spec,
+            "api": self.model.api,
+            **extra,
+        }
+
+    def report_error(self, error, *, phase: str, context=None, notify=True, kind="fatal", code=None) -> dict:
+        return self.session.report_error(
+            error, phase=phase, store=self.store if self.store is not None else self.accounting_store,
+            context=self.diagnostic_context(**(context or {})), notify=notify, kind=kind, code=code,
+        )
+
+    def record_model_error(self, message, *, purpose="agent", notify=False, context=None) -> dict | None:
+        if message.stop_reason != "error":
+            return None
+        details = message.error_details or capture_error(
+            message.error_message or "The model request failed without an error message.",
+            phase="model.request", kind=message.error_kind or "fatal", code="MODEL_REQUEST_FAILED",
+        )
+        message.error_message = safe_text(message.error_message or details["message"])
+        message.error_details = self.report_error(
+            details, phase="model.request", notify=notify,
+            context={
+                "purpose": purpose,
+                "model": f"{message.provider}/{message.model}" if message.provider and message.model else self.model.spec,
+                "api": message.api or self.model.api,
+                "attempt": self._attempt_number,
+                **(context or {}),
+            },
+        )
+        return message.error_details
+
+    def _diagnose_event(self, ev: AgentEvent) -> None:
+        if ev.type == "message_end" and isinstance(ev.message, AssistantMessage):
+            self.record_model_error(ev.message, notify=True)
+        elif ev.type == "tool_execution_end" and ev.result is not None and isinstance(ev.result.details, dict):
+            details = ev.result.details
+            context = {
+                "tool_name": ev.tool_name, "tool_call_id": ev.tool_call_id,
+                **{key: details[key] for key in ("duration", "exit_code", "status", "timeout") if key in details},
+            }
+            if isinstance(details.get("error"), dict):
+                details["error"] = self.report_error(
+                    details["error"], phase="tool.execute", context=context,
+                    notify=details["error"].get("kind") != "blocked",
+                )
+            if details.get("related_errors"):
+                details["related_errors"] = [
+                    self.report_error(error, phase="tool.execute", context=context, notify=False)
+                    for error in details["related_errors"] if isinstance(error, dict)
+                ]
 
     def _record_event(self, ev: AgentEvent) -> None:
         if ev.type in ("agent_start", "agent_end") and self.role == "main" and self.store is not None:
@@ -305,6 +385,8 @@ class Runtime:
     # -- model calls ---------------------------------------------------------
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
         self._call_started = time.monotonic()
+        self._model_call_id = uuid.uuid4().hex
+        self._attempt_number = 0
         fallback = AssistantMessage(api=self.model.api, provider=self.model.provider, model=self.model.id)
         return EventStream(self._attempts(messages, signal), fallback)
 
@@ -335,6 +417,7 @@ class Runtime:
                 yield StreamEvent("error", stopped)
                 return
             request_model = model
+            self._attempt_number += 1
             self._call_started = time.monotonic()
             failed: AssistantMessage | None = None
             for ev in ai.stream(model, ctx, opts):
@@ -345,6 +428,10 @@ class Runtime:
             if failed is None:
                 return
             duration = time.monotonic() - self._call_started
+            self.record_model_error(failed, context={
+                "model": request_model.spec, "api": failed.api or request_model.api,
+                "max_retries": max_retries, "duration": round(duration, 6),
+            })
             web = s.services.get("web")
             if (web_fallbacks < 2 and not signal.is_set() and web
                     and web.fallback(request_model, ctx, failed)):
@@ -375,8 +462,15 @@ class Runtime:
                         model = s.resolve(fb)
                         s.ui.print(f"[switching to fallback model {model.spec}]", "warn")
                 delay = min(32.0, 0.5 * 2**retries) * (1 + random.random() * 0.25)
+                details = failed.error_details or {}
+                reference = f"Error ID: {details.get('error_id', 'unavailable')}"
+                if details.get("log_path"):
+                    reference += f"\nDiagnostics: {details['log_path']}"
+                elif details.get("logging_error"):
+                    reference += "\nDiagnostics could not be saved; details were sent to stderr."
                 s.ui.print(
-                    f"[{failed.error_message} — retrying in {delay:.1f}s ({retries}/{max_retries})]", "warn"
+                    f"[{failed.error_message} — retrying in {delay:.1f}s ({retries}/{max_retries})]\n"
+                    + safe_text(reference), "warn",
                 )
                 yield StreamEvent("retry", failed)
                 if signal.wait(delay):
@@ -415,10 +509,13 @@ class AgentSession:
         }
         self.paths = Paths(Path(cwd), Path(home) if home else None)
         self.cwd = self.paths.cwd
+        self.ui = ui or UI()
+        self.diagnostics = DiagnosticLog(self.paths.user / "logs")
+        self._diagnostic_lock = threading.RLock()
+        self._notified_errors: set[str] = set()
         self.settings = Settings.load(self.paths, settings)
         self.auth = AuthStore(self.paths.user / "auth.json")
-        self.ui = ui or UI()
-        self.bus = EventBus(on_error=lambda m: self.ui.print(m, "error"))
+        self.bus = EventBus(on_error=lambda m: self.ui.print(m, "error"), on_diagnostic=self._extension_error)
         self.commands = Commands()
         self.services: dict = {}
         self.sections: list = []
@@ -472,6 +569,70 @@ class AgentSession:
         else:
             self._catalog_refresh_done.set()
 
+    # -- diagnostics -----------------------------------------------------------
+    def report_error(self, error, *, phase: str, context=None, store=None,
+                     notify=True, kind="fatal", code=None) -> dict:
+        """Record a failure independently of session writes, then show its reference.
+
+        Re-reporting an exception at a CLI boundary keeps its original ID and
+        stack. Explicit owners prevent background work following a session switch.
+        """
+        details = None
+        try:
+            if isinstance(error, dict):
+                details = error
+            else:
+                try:
+                    details = getattr(error, "_virgo_error_details", None)
+                except Exception:
+                    pass
+            details = dict(details) if isinstance(details, dict) else capture_error(
+                error, phase=phase, kind=kind, code=code,
+            )
+            owner = store if store is not None else getattr(self, "store", None)
+            base = {"cwd": str(self.cwd)}
+            if owner is not None:
+                base.update(session_id=owner.id, session_file=str(owner.path) if owner.path else None)
+            details["context"] = {**base, **(details.get("context") or {}), **(context or {})}
+            details = self.diagnostics.record(details)
+            if isinstance(error, BaseException):
+                try:
+                    error._virgo_error_details = details
+                except Exception:
+                    pass
+            if notify:
+                with self._diagnostic_lock:
+                    fresh = details["error_id"] not in self._notified_errors
+                    self._notified_errors.add(details["error_id"])
+                if fresh:
+                    try:
+                        self.ui.print(error_summary(details), "error")
+                    except Exception as reporting_error:
+                        emergency_write(details, reporting_error)
+            return details
+        except Exception as reporting_error:
+            # Do not rely on the failing session store, UI or logger to report
+            # their own failures. Preserve an already captured original error.
+            if not isinstance(details, dict):
+                details = capture_error(error, phase=phase, kind=kind, context=context, code=code)
+            details = {**details, "logging_error": safe_text(reporting_error)}
+            emergency_write(details, reporting_error)
+            return details
+
+    def _extension_error(self, details: dict, args: tuple) -> None:
+        runtime = None
+        for value in args:
+            if isinstance(value, Runtime):
+                runtime = value
+                break
+            if isinstance(value, ToolCallEvent) and value.review_source is not None:
+                runtime = value.review_source.runtime
+                break
+        if runtime is not None:
+            runtime.report_error(details, phase="extension.handler")
+        else:
+            self.report_error(details, phase="extension.handler")
+
     # -- setup helpers ---------------------------------------------------------
     @property
     def permission_mode(self) -> str:
@@ -523,7 +684,7 @@ class AgentSession:
                 self._model_catalogs[path] = read_catalog(path)
             return list(self._model_catalogs[path])
 
-    def remember_model_metadata(self, connection: ai.Model, models: list) -> None:
+    def remember_model_metadata(self, connection: ai.Model, models: list, *, diagnostic_store=None) -> None:
         with self._lock:
             path = cache_path(self.paths.user, connection)
             self._model_catalogs[path] = list(models)
@@ -531,7 +692,8 @@ class AgentSession:
             self._metadata_paths[connection.provider] = path
             try:
                 write_metadata(path, models)
-            except OSError:
+            except OSError as error:
+                self.report_error(error, phase="catalog.save", store=diagnostic_store, context={"path": str(path)})
                 self.ui.print("Could not save model metadata; refreshed parameters remain available in this session.", "warn")
             self._metadata_pending = True
             if not self.busy:
@@ -603,8 +765,26 @@ class AgentSession:
             self.report_save_error(store.save_error)
             raise store.save_error
         started = time.monotonic()
-        message = ai.complete(model, system, prompt, max_tokens=max_tokens, total_max_tokens=total_max_tokens,
-                              effort=effort, signal=signal)
+        diagnostic_context = {
+            "agent": agent, "purpose": purpose, "tool_call_id": tool_call_id,
+            "model": model.spec, "api": model.api, "model_call_id": uuid.uuid4().hex, "attempt": 1,
+        }
+        try:
+            message = ai.complete(model, system, prompt, max_tokens=max_tokens, total_max_tokens=total_max_tokens,
+                                  effort=effort, signal=signal)
+        except Exception as error:
+            self.report_error(error, phase="model.auxiliary", store=store, context=diagnostic_context)
+            raise
+        if message.stop_reason == "error":
+            details = message.error_details or capture_error(
+                message.error_message or "The auxiliary model request failed.", phase="model.auxiliary",
+                kind=message.error_kind or "fatal", code="MODEL_REQUEST_FAILED",
+            )
+            message.error_message = safe_text(message.error_message or details["message"])
+            message.error_details = self.report_error(
+                details, phase="model.auxiliary", store=store,
+                context={**diagnostic_context, "duration": round(time.monotonic() - started, 6)},
+            )
         metadata = getattr(message, "request_metadata", None) or ai.completion_request_metadata(
             model, effort, ai.completion_token_limit(model, max_tokens, total_max_tokens)
         )
@@ -643,7 +823,13 @@ class AgentSession:
             if parent is not None:
                 parent.root.entries()
             kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else parent.root)
-            return Runtime(self, name, role, **kwargs)
+            try:
+                return Runtime(self, name, role, **kwargs)
+            except Exception as error:
+                owner = kwargs.get("store") or kwargs.get("accounting_store")
+                self.report_error(error, phase="runtime.create", store=owner,
+                                  context={"agent": name, "role": role})
+                raise
 
     def _new_main(self, store: SessionStore) -> Runtime:
         messages, ids = store.build_context()
@@ -788,7 +974,12 @@ class AgentSession:
             result = getattr(policy, method)(ev)
             return result or self._persistence_block(ev)
         except Exception as error:
-            return Block(f"Permission check failed: {error}")
+            runtime = ev.review_source.runtime if ev.review_source is not None else self.main
+            details = runtime.report_error(error, phase=f"permission.{method}", context={
+                "tool_name": ev.tool_name, "tool_call_id": ev.call_id,
+                "policy": type(policy).__qualname__,
+            })
+            return Block(f"Permission check failed: {safe_text(error)}", details={"error": details})
 
     def _before_tool(self, ev: ToolCallEvent):
         if block := self._persistence_block(ev):
@@ -826,6 +1017,11 @@ class AgentSession:
             self._prompt(text)
         except SessionSaveError as error:
             self.report_save_error(error)
+        except Exception as error:
+            command = text[1:].split(" ", 1)[0] if text.startswith("/") else None
+            self.report_error(error, phase="command.execute" if command else "session.prompt",
+                              context={"command": command} if command else None)
+            raise
 
     def _prompt(self, text: str) -> None:
         result = self.bus.chain("input", text, self)
@@ -854,11 +1050,16 @@ class AgentSession:
                 return
             self._reported_save_errors.add(key)
             self._failed_stores.append(error.store)
+        details = self.report_error(error, phase="session.save", store=error.store, notify=False,
+                                    context={"entry_id": error.entry.get("id"), "entry_type": error.entry.get("type")})
         callback = getattr(self.ui, "save_failed", None)
-        if callback is not None:
-            callback(error.store.id, str(error.store.path), str(error))
-        else:
-            self.ui.print(str(error), "error")
+        try:
+            if callback is not None:
+                callback(error.store.id, str(error.store.path), error_summary(details))
+            else:
+                self.ui.print(error_summary(details), "error")
+        except Exception as reporting_error:
+            emergency_write(details, reporting_error)
 
     @property
     def has_save_failure(self) -> bool:
@@ -875,8 +1076,12 @@ class AgentSession:
             self.busy = True
         wake = False
         try:
+            rt.prepare_run()
             self.bus.emit("before_agent_start", rt, prompts)
             rt.agent.prompt(prompts)
+        except Exception as error:
+            rt.report_error(error, phase="session.run")
+            raise
         finally:
             with self._lock:
                 self.busy = False
@@ -969,4 +1174,4 @@ class AgentSession:
             try:
                 store.discard_if_empty()
             except OSError as error:
-                self.ui.print(f"Cannot remove empty session: {error}", "error")
+                self.report_error(error, phase="session.cleanup", store=store)

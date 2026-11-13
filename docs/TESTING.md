@@ -429,6 +429,8 @@ API calls are needed; protocol fixtures do not establish live provider quality.
 
 ## Harness 边界回归
 
+统一诊断回归与排查入口见 [错误诊断](ERRORS.md)。测试覆盖错误源头捕获、重试与子任务关联、日志写入失败和脱敏，不依赖真实 Provider 账号。`tests/harness/test_diagnostics.py` 同时检查重载后错误详情、辅助请求内容隔离、会话保存失败及工具恢复后的原始证据；`tests/ai/providers/test_error_diagnostics.py` 使用 loopback HTTP 和本地 SDK 异常验证 request ID、断流与取消。
+
 `tests/harness/test_harness_boundaries.py` 在真实 Session 和离线 provider 上覆盖保存失败后的停止、逻辑历史与结束事件、恢复文件系统后禁止续写、工具副作用保留、权限策略排序与异常、动态注册快照，以及候选构造失败不改变活动会话。故障注入位于文件打开、写入、关闭或 JSON 序列化边界。这些回归在实现之前加入。
 
 ```sh

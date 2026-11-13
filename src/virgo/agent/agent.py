@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Callable
 
 from ..ai.types import UserMessage
+from ..diagnostics import capture_error, emergency_write
 from .loop import run_loop
 from .types import AgentConfig, AgentEvent
 
@@ -34,8 +35,21 @@ class Agent:
             for fn in list(self._listeners):
                 try:
                     fn(ev)
-                except Exception:  # noqa: BLE001 - a broken listener must not kill the run
-                    pass
+                except Exception as error:  # noqa: BLE001 - a broken listener must not kill the run
+                    details = capture_error(error, phase="agent.listener", context={
+                        "agent": ev.agent,
+                        "event": ev.type,
+                        "handler": getattr(fn, "__qualname__", type(fn).__qualname__),
+                        "tool_name": ev.tool_name,
+                        "tool_call_id": ev.tool_call_id,
+                    })
+                    if self.cfg.on_error is None:
+                        emergency_write(details)
+                    else:
+                        try:
+                            self.cfg.on_error(details)
+                        except Exception as reporting_error:  # noqa: BLE001
+                            emergency_write(details, reporting_error=reporting_error)
 
     # -- queues -------------------------------------------------------------
     def steer(self, msg) -> None:

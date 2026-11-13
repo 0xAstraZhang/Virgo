@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
-from ..ai.types import UserMessage
+from ..ai.types import AssistantMessage, UserMessage
+from ..diagnostics import error_summary
 from ..harness.extensions import ExtensionAPI
 from ..harness.store import SessionStore
 
@@ -41,6 +42,9 @@ class Teammate:
     runtime: object = None
     thread: threading.Thread | None = None
     worktree: Path | None = None
+    accounting_store: object = field(default=None, repr=False)
+    error_details: dict | None = None
+    related_errors: list[dict] = field(default_factory=list)
 
 
 class Team:
@@ -54,7 +58,38 @@ class Team:
 
     # -- messaging -------------------------------------------------------------
     def to_lead(self, sender: str, text: str) -> None:
-        self.session.notify(f"[Team] {sender}: {text}", mode="steer", source="team")
+        try:
+            self.session.notify(f"[Team] {sender}: {text}", mode="steer", source="team")
+        except Exception as error:
+            member = self.members.get(sender)
+            if member is not None:
+                self._report(member, error, phase="team.notify")
+            else:
+                self.session.report_error(error, phase="team.notify", context={"agent": sender})
+            raise
+
+    def _report(self, member: Teammate, error, *, phase: str) -> dict:
+        context = {"agent": member.name, "role": "teammate"}
+        if member.error_details is not None:
+            context["related_error_id"] = member.error_details["error_id"]
+        if member.runtime is not None:
+            details = member.runtime.report_error(error, phase=phase, context=context)
+        else:
+            details = self.session.report_error(error, phase=phase, context=context, store=member.accounting_store)
+        if member.error_details is None:
+            member.error_details = details
+        elif details["error_id"] != member.error_details["error_id"] and all(
+            item["error_id"] != details["error_id"] for item in member.related_errors
+        ):
+            member.related_errors.append(details)
+        return details
+
+    def _notify(self, member: Teammate, text: str) -> None:
+        """A failed delivery must not interrupt lifecycle cleanup or lose its cause."""
+        try:
+            self.to_lead(member.name, text)
+        except Exception as error:
+            self._report(member, error, phase="team.notify")
 
     def deliver(self, m: Teammate, item: dict) -> None:
         if m.state == "working" and item.get("type") == "message":
@@ -106,11 +141,10 @@ class Team:
                     self.session.cwd, self.session.paths.project / "worktrees" / name, f"team/{name}"
                 )
                 cwd = wt
-            m = Teammate(name, role, cwd, plan_first=plan_first, worktree=wt)
+            m = Teammate(name, role, cwd, plan_first=plan_first, worktree=wt,
+                         accounting_store=review_parent.root)
             self.members[name] = m
         perms = self.session.services.get("permissions")
-        if plan_first and perms:
-            perms.set_agent_mode(name, "plan")
         lead_store = review_parent.store if review_parent is not None else self.session.store
         store_path = (
             lead_store.path.parent / f"{lead_store.id}-team" / f"{name}.jsonl" if lead_store.path else None
@@ -131,6 +165,8 @@ class Team:
             + "</team>"
         )
         try:
+            if plan_first and perms:
+                perms.set_agent_mode(name, "plan")
             m.runtime = self.session.create_runtime(
                 name,
                 "teammate",
@@ -143,11 +179,16 @@ class Team:
                 target=self._loop, args=(m, prompt), daemon=True, name=f"virgo-team-{name}"
             )
             m.thread.start()
-        except BaseException:
+        except BaseException as error:
             # A teammate that never started must not look busy or keep plan mode.
             m.state = "stopped"
+            if isinstance(error, Exception):
+                self._report(m, error, phase="team.spawn")
             if plan_first and perms:
-                perms.set_agent_mode(name, None)
+                try:
+                    perms.set_agent_mode(name, None)
+                except Exception as cleanup_error:
+                    self._report(m, cleanup_error, phase="team.cleanup")
             raise
         return m
 
@@ -161,7 +202,7 @@ class Team:
             kind = item.get("type")
             if kind == "shutdown_request":
                 m.stop = True
-                self.to_lead(m.name, f"acknowledged shutdown request {item['request_id']} and is stopping.")
+                self._notify(m, f"acknowledged shutdown request {item['request_id']} and is stopping.")
                 self.requests.get(item["request_id"], {})["status"] = "done"
                 return []
             if kind == "plan_response":
@@ -210,22 +251,34 @@ class Team:
                 # Messages steered in after the agent's last queue check would
                 # otherwise wait for an unrelated future turn.
                 pending = m.runtime.agent.drain_queues()
-                text = m.runtime.agent.last_text.strip()
-                if text:
-                    self.to_lead(m.name, f"(turn finished)\n{text[:3000]}")
+                last = next((message for message in reversed(m.runtime.messages)
+                             if isinstance(message, AssistantMessage)), None)
+                if last is not None and last.stop_reason == "error":
+                    details = self._report(m, last.error_details or last.error_message or "Teammate request failed.",
+                                           phase="team.model")
+                    self._notify(m, f"(turn failed)\n{error_summary(details)}")
+                else:
+                    text = m.runtime.agent.last_text.strip()
+                    if text:
+                        self._notify(m, f"(turn finished)\n{text[:3000]}")
         except Exception as e:  # noqa: BLE001
-            self.to_lead(m.name, f"crashed: {type(e).__name__}: {e}")
+            details = self._report(m, e, phase="team.loop")
+            self._notify(m, f"crashed: {error_summary(details)}")
         finally:
             m.state = "stopped"
             if tasks is not None:
-                released = tasks.release(m.name)
-                if released:
-                    self.to_lead(
-                        m.name, "released unfinished task(s) " + ", ".join(f"#{t.id}" for t in released)
-                    )
+                try:
+                    released = tasks.release(m.name)
+                    if released:
+                        self._notify(m, "released unfinished task(s) " + ", ".join(f"#{t.id}" for t in released))
+                except Exception as error:
+                    self._report(m, error, phase="team.cleanup")
             perms = self.session.services.get("permissions")
             if perms:
-                perms.set_agent_mode(m.name, None)
+                try:
+                    perms.set_agent_mode(m.name, None)
+                except Exception as error:
+                    self._report(m, error, phase="team.cleanup")
 
     def request_stop(self, name: str, force: bool = False) -> str:
         m = self.members.get(name)
@@ -276,8 +329,13 @@ class Team:
             lines.append(
                 f"{m.name} [{m.state}]{extra} — {m.role}"
                 + (f" — worktree {m.worktree}" if m.worktree else "")
+                + (f" — error {m.error_details['error_id']}" if m.error_details else "")
             )
         return "\n".join(lines)
+
+    def errors(self) -> list[dict]:
+        return [error for member in self.members.values()
+                for error in ([member.error_details] if member.error_details else []) + member.related_errors]
 
 
 def make_worktree(repo: Path, path: Path, branch: str) -> Path:
@@ -315,7 +373,8 @@ def setup(api: ExtensionAPI) -> None:
                 review_parent=ctx.review_source,
             )
         except ValueError as e:
-            return ToolResult.error(str(e))
+            details = getattr(e, "_virgo_error_details", None)
+            return ToolResult.error(str(e), details={"error": details} if details is not None else None)
         return ToolResult.text(
             f"Spawned teammate {m.name} ({m.role}) in {m.cwd}. It works in the background and reports with "
             "team messages; you will be notified."
@@ -374,7 +433,7 @@ def setup(api: ExtensionAPI) -> None:
             "team_status",
             "List teammates and their state.",
             obj({}, []),
-            lambda a, c: ToolResult.text(team.status()),
+            lambda a, c: ToolResult.text(team.status(), details={"related_errors": team.errors()}),
             read_only=True,
         ),
         roles=("main",),

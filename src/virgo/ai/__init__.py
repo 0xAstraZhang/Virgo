@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 
+from ..diagnostics import capture_error, safe_text
 from .compaction import compact as native_compact
 from .compaction import context_model
 from .models import resolve_model
@@ -51,13 +53,22 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
             from .providers import faux as impl
         else:
             raise ValueError(f"unsupported api {model.api!r}")
+        result = impl.stream(model, context, options)
     except Exception as e:  # noqa: BLE001 - e.g. optional dependency missing
-        msg = error_message(model.api, model.provider, model.id, f"{type(e).__name__}: {e}")
+        msg = AssistantMessage(api=model.api, provider=model.provider, model=model.id, stop_reason="error")
         if options.signal is not None and options.signal.is_set():
             msg.stop_reason = "aborted"
             msg.error_message = "aborted by user"
+        else:
+            secrets = (model.options.get("apiKey"), model.options.get("token"),
+                       os.environ.get(model.api_key_env or ""))
+            msg.error_kind = "fatal"
+            msg.error_details = capture_error(
+                e, phase="model.request", context={"api": model.api, "provider": model.provider, "model": model.id},
+                secrets=secrets,
+            )
+            msg.error_message = safe_text(f"{type(e).__name__}: {msg.error_details['message']}", secrets=secrets)
         return EventStream(iter([StreamEvent("error", msg)]), msg)
-    result = impl.stream(model, context, options)
 
     def events():
         from .search import add_source_links
@@ -171,6 +182,7 @@ __all__ = [
     "Usage",
     "UserMessage",
     "complete",
+    "error_message",
     "native_compact",
     "resolve_model",
     "stream",

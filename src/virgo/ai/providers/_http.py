@@ -12,11 +12,15 @@ import httpx
 
 
 class ProviderError(Exception):
-    def __init__(self, message: str, kind: str = "fatal", *, status_code=None, body=None):
+    def __init__(self, message: str, kind: str = "fatal", *, status_code=None, body=None,
+                 request_id=None, retry_after=None, endpoint=None):
         super().__init__(message)
         self.kind = kind
         self.status_code = status_code
         self.body = body
+        self.request_id = request_id
+        self.retry_after = retry_after
+        self.endpoint = endpoint
 
 
 def cancelled(signal) -> bool:
@@ -81,8 +85,17 @@ def _response_error(response: httpx.Response) -> ProviderError:
         r"context.length|context window|too many tokens|prompt is too long|input token.*exceed", message, re.I
     ):
         kind = "overflow"
-    return ProviderError(f"Provider HTTP {status}" + (f": {message}" if message else ""), kind,
-                         status_code=status, body=body)
+    try:
+        endpoint = str(response.request.url)
+    except RuntimeError:
+        endpoint = None
+    return ProviderError(
+        f"Provider HTTP {status}" + (f": {message}" if message else ""), kind,
+        status_code=status, body=body,
+        request_id=response.headers.get("x-request-id") or response.headers.get("request-id")
+        or response.headers.get("x-goog-request-id"),
+        retry_after=response.headers.get("retry-after"), endpoint=endpoint,
+    )
 
 
 def _parse_events(lines) -> Iterator[dict]:
@@ -149,6 +162,19 @@ def json_events(url: str, headers: dict, body: dict, signal=None) -> Iterator[di
                             return
                         publish("event", event)
         except Exception as error:  # provider contract: failures become error events
+            if response_ready:
+                response = response_ready[-1]
+                # A malformed event or dropped body still belongs to this HTTP
+                # request. Preserve its safe correlation fields across the worker.
+                for name, value in {
+                    "status_code": response.status_code,
+                    "request_id": response.headers.get("x-request-id") or response.headers.get("request-id")
+                    or response.headers.get("x-goog-request-id"),
+                    "retry_after": response.headers.get("retry-after"),
+                    "endpoint": str(response.request.url),
+                }.items():
+                    if getattr(error, name, None) is None:
+                        setattr(error, name, value)
             publish("error", error)
         finally:
             publish("done")
