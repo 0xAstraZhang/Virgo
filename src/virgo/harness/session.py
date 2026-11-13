@@ -429,7 +429,7 @@ class Runtime:
                 return
             duration = time.monotonic() - self._call_started
             self.record_model_error(failed, context={
-                "model": request_model.spec, "api": request_model.api,
+                "model": request_model.spec, "api": failed.api or request_model.api,
                 "max_retries": max_retries, "duration": round(duration, 6),
             })
             web = s.services.get("web")

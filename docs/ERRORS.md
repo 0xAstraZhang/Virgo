@@ -71,7 +71,8 @@ HTTP 状态码、request ID 和 Retry-After 只在服务或 SDK 提供时出现�
 
 | 边界 | 保留的证据与执行行为 |
 |---|---|
-| 模型请求与重试 | 每次失败记录真实模型、调用 ID、尝试序号和耗时；成功不会删除前次失败。原有退避、回退模型及 overflow 压缩策略继续决定恢复行为 |
+| 模型请求与重试 | 每次失败记录真实模型、实际请求 API、调用 ID、尝试序号和耗时；API 优先取失败消息，缺失时才回退配置值，原生网页工具或压缩上下文切换到 Responses 后也如此。成功不会删除前次失败，原有退避、回退模型及 overflow 压缩策略继续决定恢复行为 |
+| 模型目录 | 在认证后的请求边界采集 `catalog.fetch` 异常，使用本次实际 key 和自定义认证 header 值对整条异常链脱敏；后台刷新、日志与 stderr 复用同一份诊断 |
 | 辅助请求与压缩 | `model_call` 增加 `error_kind`、`error_message`、`error_id` 和 `error_details`；内部提示词与回答不复制到诊断 |
 | 子 Agent 与队友 | 记录 Agent 名称、原会话和记账归属；父工具传播已有诊断 ID |
 | 工具 | 区分 `tool.prepare`、`tool.preflight`、`tool.permission`、`tool.execute`、`tool.result_hook`；保留工具名与调用 ID |

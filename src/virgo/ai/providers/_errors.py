@@ -23,7 +23,8 @@ def _header(headers, name):
         return None
 
 
-def _secrets(model, token: str = "") -> tuple[str, ...]:
+def model_secrets(model, token: str = "") -> tuple[str, ...]:
+    """Collect credentials from the authenticated request model for diagnostics."""
     env = model.api_key_env
     if not env and model.provider in {"anthropic", "openai"}:
         env = model.provider.upper() + "_API_KEY"
@@ -118,7 +119,7 @@ def attach_error(out, error, model, *, phase="provider.stream", token="", respon
     The concise UI message may remain generic for network failures; the diagnostic
     retains the actual exception and its cause. Cancellation is an expected stop.
     """
-    secrets = _secrets(model, token)
+    secrets = model_secrets(model, token)
     message = _provider_message(error)
     out.error_message = safe_text(message or out.error_message or error, secrets=secrets)
     if out.stop_reason == "aborted":
