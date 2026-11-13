@@ -47,6 +47,7 @@ from ..tools.shell import Shell
 from ..tools.truncate import MAX_BYTES, budget
 from . import compaction
 from .commands import Commands, expand_template, load_templates, register_builtins
+from .diagnostic_view import project_tool_result
 from .diagnostics import DiagnosticLog
 from .extensions import (
     ROLES_ALL,
@@ -58,6 +59,8 @@ from .extensions import (
 )
 from .permissions import NoPermissions, PermissionPolicy
 from .prompt import RuntimeContext, build_system
+from .recovery import RuntimeDiagnostics, message_diagnostics
+from .retry import retry_after_seconds
 from .settings import Paths, Settings
 from .shell_commands import ShellSelection
 from .store import SessionSaveError, SessionStore
@@ -109,6 +112,8 @@ class Runtime:
         self.model = model or session.model
         self.system_extra = system_extra
         self.tools = tools if tools is not None else session.tools_for(role)
+        self._dynamic_tools = tools is None
+        self._allowed_tool_names = {tool.name for tool in self.tools}
         self.compaction = compaction
         self.compacted_at = 1 if messages and (
             getattr(messages[0], "kind", None) == "summary" or is_native_context(messages[0])
@@ -119,6 +124,10 @@ class Runtime:
         self._prepared_run = False
         self._model_call_id: str | None = None
         self._attempt_number = 0
+        self.wakeups: deque = deque()
+        self.diagnostic_id = uuid.uuid4().hex
+        self.recovery = RuntimeDiagnostics(self, messages or ())
+        self.diagnostic_access = self.recovery.access
         self.native_binding = (store.last_compaction() or {}).get("context_binding") if store else None
         self.system = ""
         self.rebuild_system()
@@ -134,6 +143,7 @@ class Runtime:
             max_turns=max_turns,
             can_run=self.can_run,
             on_error=lambda details: self.report_error(details, phase="agent.listener"),
+            project_tool_result=self._project_tool_result if session.settings.feature_enabled("diagnostics") else None,
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
         self.review_source = ReviewSource(self, review_parent)
@@ -169,6 +179,10 @@ class Runtime:
         ev.review_source = self.review_source
         return self.session._before_tool(ev)
 
+    def _project_tool_result(self, call, result):
+        return project_tool_result(call, result,
+                                   query_available=any(tool.name == "diagnostic_get" for tool in self.tools))
+
     def prepare_run(self) -> None:
         """Bind startup hooks to this run before its first model request exists."""
         self.run_id = uuid.uuid4().hex
@@ -200,6 +214,7 @@ class Runtime:
             "session_id": owner.id if owner is not None else None,
             "accounting_session_id": self.accounting_store.id if self.accounting_store is not None else None,
             "run_id": self.run_id,
+            "runtime_id": self.diagnostic_id,
             "model_call_id": self._model_call_id,
             "model": self.model.spec,
             "api": self.model.api,
@@ -207,10 +222,14 @@ class Runtime:
         }
 
     def report_error(self, error, *, phase: str, context=None, notify=True, kind="fatal", code=None) -> dict:
-        return self.session.report_error(
+        details = self.session.report_error(
             error, phase=phase, store=self.store if self.store is not None else self.accounting_store,
             context=self.diagnostic_context(**(context or {})), notify=notify, kind=kind, code=code,
         )
+        self.recovery.safely("remember", details)
+        if notify and details.get("kind") != "aborted":
+            self.recovery.safely("queue", details)
+        return details
 
     def record_model_error(self, message, *, purpose="agent", notify=False, context=None) -> dict | None:
         if message.stop_reason != "error":
@@ -239,7 +258,9 @@ class Runtime:
             details = ev.result.details
             context = {
                 "tool_name": ev.tool_name, "tool_call_id": ev.tool_call_id,
-                **{key: details[key] for key in ("duration", "exit_code", "status", "timeout") if key in details},
+                **{key: details[key] for key in (
+                    "duration", "exit_code", "status", "timeout", "execution", "transport",
+                ) if key in details},
             }
             if isinstance(details.get("error"), dict):
                 details["error"] = self.report_error(
@@ -251,6 +272,12 @@ class Runtime:
                     self.report_error(error, phase="tool.execute", context=context, notify=False)
                     for error in details["related_errors"] if isinstance(error, dict)
                 ]
+                if isinstance(details.get("error"), dict):
+                    details["error"] = {
+                        **details["error"],
+                        "related_error_ids": [error["error_id"] for error in details["related_errors"]],
+                    }
+                    self.recovery.safely("remember", details["error"])
 
     def _record_event(self, ev: AgentEvent) -> None:
         if ev.type in ("agent_start", "agent_end") and self.role == "main" and self.store is not None:
@@ -304,6 +331,8 @@ class Runtime:
                 self.session.report_save_error(error)
             self.ids.append(entry_id)
             self.review_source.remember(ev.message, self.ids[-1])
+            if isinstance(ev.message, ToolResultMessage):
+                self.recovery.safely("presented", message_diagnostics(ev.message))
             if self._native_source is not None:
                 self._native_source.append(ev.message)
             if self.role != "main" and isinstance(ev.message, AssistantMessage) and self._call_started is not None:
@@ -317,7 +346,10 @@ class Runtime:
     def compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
         if not self.can_run():
             return None
-        return compaction.compact(self, focus=focus, reason=reason, model=model)
+        result = compaction.compact(self, focus=focus, reason=reason, model=model)
+        if result is not None:
+            self.recovery.after_compaction()
+        return result
 
     def restore_native_context(self, model=None) -> bool:
         """Provider-owned state cannot replace portable history after a provider switch."""
@@ -384,6 +416,15 @@ class Runtime:
 
     # -- model calls ---------------------------------------------------------
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
+        refresh = self.session.services.get("mcp_refresh")
+        if refresh is not None and self.can_run() and not signal.is_set() and refresh(self):
+            # Only MCP wrappers changed. Preserve runtime-local extension tools
+            # and explicitly restricted child tool sets, including their objects.
+            tools = [tool for tool in self.session.tools_for(self.role) if tool.name.startswith("mcp__")]
+            if not self._dynamic_tools:
+                tools = [tool for tool in tools if tool.name in self._allowed_tool_names]
+            self.tools[:] = [tool for tool in self.tools if not tool.name.startswith("mcp__")] + tools
+            self.rebuild_system()
         self._call_started = time.monotonic()
         self._model_call_id = uuid.uuid4().hex
         self._attempt_number = 0
@@ -399,6 +440,7 @@ class Runtime:
         if self._compaction_due():
             self.compact(reason="auto")
         max_retries = int(s.settings.get("retry.maxRetries", 3))
+        wait_budget = max(0.0, float(s.settings.get("retry.maxWaitSeconds", 120)))
         retries = overloaded = 0
         overflow_done = False
         web_fallbacks = 0
@@ -410,6 +452,10 @@ class Runtime:
                 return
             if self.restore_native_context(model) and self._compaction_due(model):
                 self.compact(reason="auto", model=model)
+            self.recovery.safely("before_request")
+            if not self.can_run() or signal.is_set():
+                yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
+                return
             ctx = self.request_context(messages, model)
             opts = StreamOptions(signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort)
             if not self.can_run() or signal.is_set():
@@ -463,6 +509,14 @@ class Runtime:
                         s.ui.print(f"[switching to fallback model {model.spec}]", "warn")
                 delay = min(32.0, 0.5 * 2**retries) * (1 + random.random() * 0.25)
                 details = failed.error_details or {}
+                minimum_delay = retry_after_seconds(details)
+                if minimum_delay is not None:
+                    delay = max(delay, minimum_delay)
+                if delay > wait_budget:
+                    s.ui.print("[Provider retry wait exceeds the remaining retry.maxWaitSeconds budget.]", "warn")
+                    yield StreamEvent("error", failed)
+                    return
+                wait_budget -= delay
                 reference = f"Error ID: {details.get('error_id', 'unavailable')}"
                 if details.get("log_path"):
                     reference += f"\nDiagnostics: {details['log_path']}"
@@ -525,6 +579,7 @@ class AgentSession:
         self._reported_save_errors: set[int] = set()
         self._failed_stores: list = []
         self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
+        self._main_runtimes: dict[str, Runtime] = {}
         self._tools: list[tuple[AgentTool, tuple]] = []
         self.templates: dict = {}
         self.permission_mode = permission_mode or self.settings.get("permissions.mode", "auto-review")
@@ -561,6 +616,11 @@ class AgentSession:
         install_command_hooks(self)
         self.templates = load_templates(self.paths.both("prompts"))
         self.main = self._new_main(self.store)
+        self.main.wakeups = self.wakeups
+        for record in self.diagnostics.recent():
+            context = record.get("context", {})
+            if context.get("session_id") == self.store.id and context.get("agent") in (None, "main"):
+                self.main.recovery.safely("queue", record)
         self.bus.emit("session_start", self)
         if refresh_models:
             from .preferences import start_model_refresh
@@ -630,6 +690,10 @@ class AgentSession:
                 break
         if runtime is not None:
             runtime.report_error(details, phase="extension.handler")
+        elif any(value is self for value in args) and getattr(self, "main", None) is not None:
+            # Session lifecycle events carry their owning session, not a child
+            # accounting store. The currently active main owns this dispatch.
+            self.main.report_error(details, phase="extension.handler")
         else:
             self.report_error(details, phase="extension.handler")
 
@@ -824,7 +888,10 @@ class AgentSession:
                 parent.root.entries()
             kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else parent.root)
             try:
-                return Runtime(self, name, role, **kwargs)
+                runtime = Runtime(self, name, role, **kwargs)
+                if role == "main" and runtime.store is not None:
+                    self._main_runtimes[runtime.store.id] = runtime
+                return runtime
             except Exception as error:
                 owner = kwargs.get("store") or kwargs.get("accounting_store")
                 self.report_error(error, phase="runtime.create", store=owner,
@@ -893,13 +960,22 @@ class AgentSession:
                 runtime = self._prepare_main(replacement)
             # A conversation may have been reopened more than once. Stop all
             # retained stores from recreating it, including late extension writes.
-            with ExitStack() as locks:
-                for store in stores:
-                    locks.enter_context(store._lock)
-                stores[0].trash()
-                for store in stores[1:]:
-                    store.path = None
+            try:
+                with ExitStack() as locks:
+                    for store in stores:
+                        locks.enter_context(store._lock)
+                    stores[0].trash()
+                    for store in stores[1:]:
+                        store.path = None
+            except BaseException:
+                if current:
+                    # The prepared replacement was never activated. Do not
+                    # retain a notification destination for a failed deletion.
+                    self._main_runtimes.pop(replacement.id, None)
+                raise
             self._retained_sessions.pop(path, None)
+            for store in stores:
+                self._main_runtimes.pop(store.id, None)
             if current:
                 self._activate_store(replacement, runtime=runtime)
 
@@ -918,6 +994,7 @@ class AgentSession:
                 self._retained_sessions[old.store.path] = (old, self.wakeups)
             self._retained_sessions.pop(store.path, None)
             self.wakeups = pending if pending is not None else deque()
+            runtime.wakeups = self.wakeups
             runtime.model = self.model
             self.store = store
             self.main = runtime
@@ -1120,15 +1197,42 @@ class AgentSession:
         self.bus.emit("user_steer", text, self)
         return True
 
-    def notify(self, text: str, mode: str = "steer", source: str | None = None) -> None:
-        """Deliver harness information to the lead agent; wakes it if idle."""
+    def runtime_for_store(self, store) -> Runtime | None:
+        """Find the originating lead, including an inactive or in-memory session."""
+        return self._main_runtimes.get(store.id) if store is not None else self.main
+
+    def retain_diagnostics(self, store, records) -> None:
+        with self._lock:
+            runtime = self.runtime_for_store(store)
+            if self._shutdown_started or runtime is None:
+                return
+            for record in records:
+                # Deletion uses the same lock. Recheck after obtaining an item,
+                # too: an extension iterable may re-enter lifecycle operations.
+                if self._main_runtimes.get(runtime.store.id) is not runtime:
+                    return
+                if isinstance(record, dict):
+                    runtime.recovery.safely("queue", record)
+
+    def notify(self, text: str, mode: str = "steer", source: str | None = None, *, store=None,
+               diagnostics=()) -> None:
+        """Deliver to the originating lead; never wake a different selected chat."""
         tag = f' source="{source}"' if source else ""
         msg = UserMessage([TextContent(f"<notification{tag}>\n{text}\n</notification>")], kind="notification")
         with self._lock:
             if self._shutdown_started:
                 return
+            runtime = self.runtime_for_store(store)
+            if runtime is None:
+                return
+            self.retain_diagnostics(runtime.store, diagnostics)
+            if self._main_runtimes.get(runtime.store.id) is not runtime:
+                return
+            if runtime is not self.main:
+                runtime.wakeups.append(msg)
+                return
             if self.busy:
-                (self.main.agent.steer if mode == "steer" else self.main.agent.follow_up)(msg)
+                (runtime.agent.steer if mode == "steer" else runtime.agent.follow_up)(msg)
                 return
             self.wakeups.append(msg)
         self.ui.wake()

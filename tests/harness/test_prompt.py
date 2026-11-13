@@ -11,6 +11,7 @@ MAIN_TOOLS = {
     "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "todo_write", "ask_user", "agent", "memory",
     "task_create", "task_update", "task_list", "task_get", "bash", "job_output", "job_kill", "schedule",
     "team_spawn", "team_message", "team_status", "team_stop", "team_review", "workflow",
+    "diagnostic_get", "mcp_status", "mcp_reconnect",
 }
 
 

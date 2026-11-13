@@ -291,7 +291,11 @@ class JobManager:
                 text += f"\n[{total} {unit} total — use job_output id={job.id} for the log path and bounded output]"
             if job.error_details is not None:
                 text += "\n" + error_summary(job.error_details)
-            self.api.notify(text, mode="steer", source="jobs")
+            evidence = ([job.error_details] if job.error_details is not None else []) + job.related_errors
+            # Retain evidence before delivery, so a broken UI/notification path
+            # cannot prevent the original lead from querying it on its next run.
+            self.api.session.retain_diagnostics(job.accounting_store, evidence)
+            self.api.notify(text, mode="steer", source="jobs", store=job.accounting_store)
         except Exception as e:  # noqa: BLE001
             # Leaving the job unreported would hold print mode until its idle timeout;
             # surface the lost notification instead so the user still learns the outcome.

@@ -19,7 +19,7 @@ DEFAULTS: dict[str, Any] = {
     "shell": {"executable": "auto"},
     "features": {},
     "compaction": {"enabled": True, "triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": None},
-    "retry": {"maxRetries": 3, "fallbackModel": None},
+    "retry": {"maxRetries": 3, "fallbackModel": None, "maxWaitSeconds": 120},
     "anthropic": {"fallbacks": True, "thinkingDisplay": "summarized", "thinkingBinding": True},
     "mcpServers": {},
     "fetch": {"mode": "auto", "backend": "http", "timeout": 20, "maxBytes": 2097152, "maxUses": 3, "maxContentTokens": 8000},
