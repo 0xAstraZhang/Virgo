@@ -322,4 +322,4 @@ def setup(api: ExtensionAPI) -> None:
         if runs:
             api.ui.print("recent runs:\n" + "\n".join(f"  {r.stem}" for r in runs))
 
-    api.register_command("workflow", cmd, "list workflows and recent runs (/workflow resume <run_id>)")
+    api.register_command("workflow", cmd, "list workflows and recent runs (/workflow resume <run_id>)", argument_hint="[resume run_id]")

@@ -253,7 +253,7 @@ def setup(api: ExtensionAPI) -> None:
         mems = store.all()
         api.ui.print("\n".join(f"  [{m.type}] {m.name}: {m.description}" for m in mems) or "No memories yet.")
 
-    api.register_command("memory", cmd, "list memories (/memory tidy to consolidate)")
+    api.register_command("memory", cmd, "list memories (/memory tidy to consolidate)", argument_hint="[tidy]")
 
     def extract(session):
         if not session.settings.get("memory.autoExtract"):

@@ -130,10 +130,10 @@ class ExtensionAPI:
         self.session.register_tool(tool, roles)
 
     def register_command(
-        self, name: str, fn: Callable, description: str = "", concurrent: bool = False
+        self, name: str, fn: Callable, description: str = "", concurrent: bool = False, *, argument_hint: str = ""
     ) -> None:
         """concurrent=True for commands that only read state (they may run while the agent works)."""
-        self.session.commands.register(name, fn, description, source=self.name, concurrent=concurrent)
+        self.session.commands.register(name, fn, description, source=self.name, concurrent=concurrent, argument_hint=argument_hint)
 
     def add_system_section(self, name: str, fn: Callable[[str], str | None], order: int = 50) -> None:
         """fn(role) -> text for the system prompt (role: main | subagent | teammate)."""

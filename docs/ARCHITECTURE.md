@@ -192,7 +192,7 @@ Todo 支持并行进行项及整表替换，不驱动下一次模型调用。团
 ```python
 api.on(event, fn, priority=0)
 api.register_tool(AgentTool(...), roles=("main",))   # 可用角色: main / subagent / teammate
-api.register_command(name, fn, description, concurrent=False)
+api.register_command(name, fn, description, concurrent=False, *, argument_hint="")
 api.add_system_section(name, fn(role) -> str | None, order=50)
 api.notify(text, mode="steer" | "follow_up")
 api.append_entry(kind, data); api.entries(kind)
@@ -213,3 +213,5 @@ api.session / api.settings / api.paths / api.ui
 | `agent_stop` | `(runtime)` | 返回 `Continue(text)` 让 agent 继续 |
 | `before_compact` / `compact` | `(runtime)` / `(runtime, summary)` | — |
 | `pending_work` | `(session)` | 返回真值表示还有未完成的工作（print 模式会等待） |
+
+命令参数提示的兼容性、解析优先级及渲染规则见 [ARGUMENT_HINTS.md](ARGUMENT_HINTS.md)。

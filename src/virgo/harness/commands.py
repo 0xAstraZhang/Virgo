@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,6 +26,7 @@ class Command:
     fn: Callable  # fn(session, args: str) -> None
     description: str = ""
     source: str = "builtin"
+    argument_hint: str = field(default="", kw_only=True)
     concurrent: bool = False  # only reads state: may run while the agent is busy
 
 
@@ -40,8 +41,10 @@ class Commands:
         description: str = "",
         source: str = "builtin",
         concurrent: bool = False,
+        *,
+        argument_hint: str = "",
     ) -> None:
-        self._cmds[name.lstrip("/")] = Command(name.lstrip("/"), fn, description, source, concurrent)
+        self._cmds[name.lstrip("/")] = Command(name.lstrip("/"), fn, description, source, concurrent, argument_hint=argument_hint)
 
     def get(self, name: str) -> Command | None:
         return self._cmds.get(name)
@@ -186,12 +189,12 @@ def register_builtins(session: AgentSession) -> None:
         s.ui.print(f"Resumed {it['path'].name} ({len(s.main.messages)} messages).")
 
     c.register("help", help_, "show commands", concurrent=True)
-    c.register("login", login, "sign in to an account or configure an API (/login [auth|api] [provider])")
-    c.register("logout", logout, "remove saved credentials (/logout [provider|all])")
-    c.register("shell", configure_shell, "detect and choose the command shell (/shell [name|path|auto])")
-    c.register("model", model, "show or switch the model (/model provider/id)")
-    c.register("effort", effort, "show or set reasoning effort")
-    c.register("compact", compact, "summarize older context now (/compact [focus])")
+    c.register("login", login, "sign in to an account or configure an API (/login [auth|api] [provider])", argument_hint="[auth|api] [provider]")
+    c.register("logout", logout, "remove saved credentials (/logout [provider|all])", argument_hint="[provider|all]")
+    c.register("shell", configure_shell, "detect and choose the command shell (/shell [name|path|auto])", argument_hint="[name|path|auto]")
+    c.register("model", model, "show or switch the model (/model provider/id)", argument_hint="[provider/id]")
+    c.register("effort", effort, "show or set reasoning effort", argument_hint="[low|medium|high|xhigh|max]")
+    c.register("compact", compact, "summarize older context now (/compact [focus])", argument_hint="[focus]")
     c.register("new", new, "start a fresh session")
     c.register("session", session_, "show session info", concurrent=True)
-    c.register("sessions", sessions, "browse saved sessions (g toggles workspace grouping in fullscreen)")
+    c.register("sessions", sessions, "browse saved sessions (g toggles workspace grouping in fullscreen)", argument_hint="[number]")

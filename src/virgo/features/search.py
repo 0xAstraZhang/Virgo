@@ -288,4 +288,4 @@ def setup(api) -> None:
     # Keep the tool in runtime registries so /search can enable an initially
     # disabled service; prepare() controls what each model request can see.
     api.register_tool(search.tool, roles=ROLES_ALL)
-    api.register_command("search", configure_search, "choose search backend (/search [auto|duckduckgo|deepseek|off])")
+    api.register_command("search", configure_search, "choose search backend (/search [auto|duckduckgo|deepseek|off])", argument_hint="[auto|duckduckgo|deepseek|off]")

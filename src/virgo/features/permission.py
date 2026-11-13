@@ -475,5 +475,5 @@ def setup(api: ExtensionAPI) -> None:
         api.ui.print("\n".join(lines))
 
     api.register_command(
-        "permissions", cmd, "show or set permissions (auto-review|accept-all|plan)"
+        "permissions", cmd, "show or set permissions (auto-review|accept-all|plan)", argument_hint="[auto-review|accept-all|plan]",
     )
