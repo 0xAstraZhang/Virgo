@@ -480,7 +480,11 @@ class AgentSession:
     def _apply_model_metadata(self) -> None:
         if not self._metadata_pending:
             return
-        self.model = self.main.model = self.resolve(self.model.spec)
+        model = self.resolve(self.model.spec)
+        # An unrelated catalog refresh must not invalidate prepared request
+        # bindings by replacing an otherwise unchanged runtime model object.
+        if model != self.model:
+            self.model = self.main.model = model
         self.small_model = self.model if self.small_model.spec == self.model.spec else self.resolve(self.small_model.spec)
         self._metadata_pending = False
 

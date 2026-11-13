@@ -21,6 +21,14 @@ Keep discovery enabled and use the completion event, rather than sleeps or
 retries. Real HTTP-to-TUI startup, cache, restart, and cancellation coverage lives
 in `tests/cli/tui/test_model_metadata.py` and `test_preferences.py`.
 
+The interleaved-agent search case also gates catalog completion until after a
+retry's request context is prepared. An unrelated provider refresh previously
+replaced the unchanged main model object, invalidating that binding and routing
+the request to DuckDuckGo instead of DeepSeek. This ordered scenario reproduced
+the Windows CI failure locally before the runtime correction. Metadata refreshes
+now retain an equal model object; actual metadata changes still update the model,
+as covered by the HTTP-to-TUI scenarios.
+
 ## Transcript scroll ordering (Issue #24)
 
 `Transcript.go_latest()` uses Textual's anchor to scroll immediately and follow
