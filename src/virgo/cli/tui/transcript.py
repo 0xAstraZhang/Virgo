@@ -111,12 +111,13 @@ class EventView(Foldable):
             title.append(f"[{self.agent}] ")
         if self.tool_name:
             title.append(self.tool_name, style="bold")
-            title.append(" → " if self.kind == "tool_result" else " · ")
         else:
             title.append({"thinking": "Thought", "text": "Message", "sources": "Sources"}.get(
                 self.kind, self.kind.title()
-            ) + " · ")
-        title.append(" ".join(self.text.split()) or "…")
+            ))
+        if not (self.expanded and self.kind in TOOL_KINDS):
+            title.append(" → " if self.tool_name and self.kind == "tool_result" else " · ")
+            title.append(" ".join(self.text.split()) or "…")
         return title
 
     def render_state(self) -> None:
