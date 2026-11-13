@@ -46,6 +46,9 @@ def run_loop(
         while True:
             while need_call or pending:
                 if signal.is_set():
+                    # Preserve accepted prompts even if run-start persistence failed.
+                    for m in pending:
+                        push(m)
                     return
                 emit(AgentEvent("turn_start", cfg.name))
                 for m in pending:
@@ -59,6 +62,8 @@ def run_loop(
                         )
                     )
                     emit(AgentEvent("turn_end", cfg.name))
+                    return
+                if signal.is_set() or (cfg.can_run is not None and not cfg.can_run()):
                     return
                 turns += 1
                 msg = _stream_assistant(messages, cfg, emit, signal)
@@ -86,7 +91,11 @@ def run_loop(
                 else:
                     native_continues = 0
                 need_call = bool(calls) or msg.stop_reason == "pause_turn"
+                if signal.is_set():
+                    return
                 pending = steering()
+            if signal.is_set():
+                return
             pending = follow_ups()
             if pending:
                 continue

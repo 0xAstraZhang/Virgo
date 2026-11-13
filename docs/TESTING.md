@@ -425,3 +425,14 @@ included missing capability modules, missing native-fetch started/error state,
 unbounded cancellation during HTTP headers, gzip bytes treated as page text,
 and reading actions displayed as search. No live provider credentials or billed
 API calls are needed; protocol fixtures do not establish live provider quality.
+
+
+## Harness 边界回归
+
+`tests/harness/test_harness_boundaries.py` 在真实 Session 和离线 provider 上覆盖保存失败后的停止、逻辑历史与结束事件、恢复文件系统后禁止续写、工具副作用保留、权限策略排序与异常、动态注册快照，以及候选构造失败不改变活动会话。故障注入位于文件打开、写入、关闭或 JSON 序列化边界。这些回归在实现之前加入。
+
+```sh
+uv run python ci/run_pytest.py -q tests/harness/test_harness_boundaries.py tests/harness/test_session.py
+```
+
+权限、压缩、子任务、队友、会话回收以及 CLI/TUI 的兼容行为继续由对应现有场景验证。全套测试需要允许本机 HTTP 服务和终端进程。

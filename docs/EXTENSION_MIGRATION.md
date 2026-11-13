@@ -40,3 +40,37 @@ UI 新增可选实现 `cancel_input_timeouts()`，用于用户发来 steering �
 ## 摘要
 
 通用摘要不再要求固定 Markdown 标题；读取会话的扩展应把摘要当作续接文本，不按标题解析。已有工具文本先完整序列化，再按总预算保留首尾并标记遗漏。工具调用与结果配对、原生压缩签名和上下文绑定、失败不覆盖历史的机制不变。
+
+
+## 持久化故障、权限策略与 Runtime 构造
+
+### 保存失败
+
+`SessionStore.append()` 在写入失败后仍保留逻辑记录，并抛出 `SessionSaveError`；不要捕获后当作已保存。异常的 `entry` 是本次记录，`store.save_error` 是首次故障。之后所有追加都只进入内存并抛出同类异常，不自动重试磁盘。主动内存会话和已回收 store 的 `path=None` 不触发故障。
+
+自定义 UI 可以实现 `save_failed(session_id, path, message)`；默认回退到 `print(message, "error")`。不要把保存错误提示再写回故障存储。JSON 客户端应处理 `session_save_failed`；即使已收到模型最终答案，也应检查进程退出码。
+
+### 权限策略
+
+自定义策略通过 `api.register_permission_policy(policy)` 绑定，提供 `preflight(event)` 和 `before_execute(event)`，返回 `Block | None`。`api.services["permissions"]` 仍指向绑定实例，但直接赋值该字典不再替换执行策略。需要兼容内置权限命令和队友模式的策略还应保留内置权限服务的模式管理接口；最简单的方式是包装原策略并转发这些属性。
+
+预检保留原优先级 100 的注册位置。高优先级扩展仍先执行，同优先级按注册顺序运行，第一次非空结果短路。一次派发使用同一处理器快照，动态添加或移除回调只影响下一次派发。执行前复核位于实际工具任务内部；任何检查异常都会阻止工具执行。
+
+### 候选 Runtime 的系统提示
+
+旧 `add_system_section(name, fn)` 继续传入角色字符串；`api.entries()` 和 `api.session.store` 始终表示活动会话。读取待激活会话的扩展改用显式上下文：
+
+```python
+def setup(api):
+    def target_notes(context):
+        if context.role != "main" or context.store is None:
+            return None
+        notes = context.store.custom("project_notes")
+        return "\n".join(str(note) for note in notes)
+
+    api.add_runtime_system_section("target_notes", target_notes, order=50)
+```
+
+`RuntimeContext` 包含 `role`、`cwd`、`store`、`accounting_store` 和 `review_parent`；字段不可重新赋值，存储引用只供读取，不得在准备阶段写入活动会话或候选记录。新回调异常会使准备失败，原活动会话保持不变。旧、新回调按 `order` 排序。
+
+内置主 Agent、队友和子 Agent 统一通过 `session.create_runtime(name, role, **kwargs)` 创建。扩展排队后台任务前应捕获 `ctx.review_source`，传作 `review_parent`；不要在后台启动时重新读取活动主 Agent。子 Agent 的 `store=None` 仍表示不创建独立消息 JSONL，辅助请求必须传入 Runtime 的 `accounting_store`。

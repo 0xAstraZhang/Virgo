@@ -1,6 +1,6 @@
 # 会话保存失败处理计划
 
-状态：待实施。核对基线：`76e0213`。本计划只处理会话持久化失败，不依赖另外两项 Harness 重构。
+状态：已在 PR #36 实施。原问题核对基线：`76e0213`。本计划只处理会话持久化失败，不依赖另外两项 Harness 重构。
 
 目标是让保存失败立即可见，并停止继续产生无法可靠保存的工作。保留已经生成的消息和工具结果，维持消息与记录 ID 的对应关系，继续使用现有 JSONL 格式。首版采用失败后暂停的策略，不自动降级为正常的内存会话。
 
@@ -81,6 +81,10 @@ JSONL 的版本、header、记录类型及父子关系表达保持兼容。故�
 
 ## 交付范围
 
-独立 PR，建议标题：`fix: surface session persistence failures and stop affected runs`。
+原计划的独立交付标题（现按用户要求合并在 PR #36 实施）：`fix: surface session persistence failures and stop affected runs`。
 
-完成条件是保存失败可见、后续工作停止、内存历史与 ID 仍一致、旧 JSONL 可读，且不会静默恢复写入。权限接口重构和 Runtime 工厂不混入本次修改。
+完成条件是保存失败可见、后续工作停止、内存历史与 ID 仍一致、旧 JSONL 可读，且不会静默恢复写入。PR #36 同时包含权限接口和 Runtime 创建入口，持久化故障仍由独立状态控制。
+
+## 实现说明
+
+`SessionSaveError.entry` 携带已经进入逻辑历史的记录，`save_error` 保存首次失败，`last_saved_id` 标记最后确认完成的记录。写入期间只设置取消信号；释放存储锁后通知 UI，分支审计写入也遵循同样规则。Runtime 继续完成消息 ID 和 UI 事件；`AgentConfig.can_run` 在启动和模型请求前检查持久化状态。故障后的输入留在原会话队列，plain/TUI 调度器不反复唤醒它。JSON 输出增加 `session_save_failed`，print 模式返回非零退出码。

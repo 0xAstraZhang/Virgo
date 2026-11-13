@@ -1,6 +1,6 @@
 # Runtime 创建与会话归属计划
 
-状态：待实施。核对基线：`76e0213`。本计划先消除构造主 Runtime 时临时替换活动 store 的行为，再收拢内置子任务的创建入口。
+状态：已在 PR #36 实施。原问题核对基线：`76e0213`。本计划先消除构造主 Runtime 时临时替换活动 store 的行为，再收拢内置子任务的创建入口。
 
 目标是沿构造参数确定消息存储、用量记账、工具范围和权限审查来源。会话切换先准备完整候选 Runtime，成功后才提交活动状态；构造失败不改变原会话。保存失败修复无需等待本计划。
 
@@ -94,6 +94,10 @@ TUI 多个 ConversationPane 继续持有各自的 AgentSession，切回运行中
 
 ## 交付范围
 
-独立 PR，建议标题：`refactor: centralize runtime construction and session ownership`。
+原计划的独立交付标题（现按用户要求合并在 PR #36 实施）：`refactor: centralize runtime construction and session ownership`。
 
 完成条件是内置主 Agent、队友和子 Agent 都经过同一创建入口，构造期间不替换活动 store，消息、记账和审查归属可从参数追踪，扩展迁移要求明确。JSONL 格式、工具角色范围和子任务生命周期保持兼容。
+
+## 实现说明
+
+内置创建入口为 `AgentSession.create_runtime()`；主 Runtime 的消息和记账均绑定目标 store，子任务绑定父 `ReviewSource.root`。通用压缩显式传递该记账目标。`add_runtime_system_section()` 接收冻结的 `RuntimeContext`；回调只能读取其中的存储引用，不应在构造期间调用写入方法。此上下文是扩展协作契约，不是针对 Python 扩展的安全沙箱。新回调异常拒绝候选，旧 `fn(role)` 继续按原规则隔离异常。

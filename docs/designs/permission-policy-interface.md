@@ -1,6 +1,6 @@
 # 工具权限显式接口计划
 
-状态：待实施。核对基线：`76e0213`。本计划保留现有权限决策语义，集中表达 Harness 的调用位置。
+状态：已在 PR #36 实施。原问题核对基线：`76e0213`。本计划保留现有权限决策语义，集中表达 Harness 的调用位置。
 
 目标是让一条工具调用的预检、扩展处理、执行前复核及拒绝路径能沿显式接口追踪。现有两道检查已经会在异常时阻止执行；这项修改属于可审查性与维护性重构，不以“当前异常会放行”为前提。
 
@@ -79,6 +79,10 @@
 
 ## 交付范围
 
-独立 PR，建议标题：`refactor: make tool permission checks explicit in the harness`。
+原计划的独立交付标题（现按用户要求合并在 PR #36 实施）：`refactor: make tool permission checks explicit in the harness`。
 
 不修改权限规则语法、模式含义、自动审查模型策略或 JSONL 审计格式。若与保存失败修复衔接，保存故障仍由会话持久化状态阻止调度，不能因权限重构将其降级成普通扩展异常。
+
+## 实现说明
+
+契约位于 `harness/permissions.py`。内置策略通过 `register_permission_policy()` 注册，禁用时使用 `NoPermissions`。`EventBus.boundary()` 预留原优先级位置，Harness 对一次快照分段派发；检查异常直接变为 `Block`。单个工具事件记录预检时的策略，使执行前复核使用同一实例。迁移示例见 [扩展迁移](../EXTENSION_MIGRATION.md#持久化故障权限策略与-runtime-构造)。

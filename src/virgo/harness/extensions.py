@@ -67,6 +67,21 @@ class EventBus:
         self._handlers[event].sort(key=lambda e: (e[0], e[1]))
         return lambda: self._handlers[event].remove(entry)
 
+    def boundary(self, priority: int) -> tuple[int, int]:
+        """Reserve a stable registration position without registering a callback."""
+        self._seq += 1
+        return (-priority, self._seq)
+
+    def snapshot(self, event: str) -> tuple:
+        return tuple(self._handlers[event])
+
+    def first_snapshot(self, event: str, handlers: tuple, *args):
+        for _, _, fn in handlers:
+            result = self._call(event, fn, args)
+            if result is not None:
+                return result
+        return None
+
     def has_handlers(self, event: str, *, exclude=None) -> bool:
         return any(fn != exclude for _, _, fn in self._handlers.get(event, []))
 
@@ -138,6 +153,13 @@ class ExtensionAPI:
     def add_system_section(self, name: str, fn: Callable[[str], str | None], order: int = 50) -> None:
         """fn(role) -> text for the system prompt (role: main | subagent | teammate)."""
         self.session.sections.append((order, name, fn))
+
+    def register_permission_policy(self, policy) -> None:
+        self.session.register_permission_policy(policy)
+
+    def add_runtime_system_section(self, name: str, fn: Callable, order: int = 50) -> None:
+        """fn(RuntimeContext) -> text; construction errors reject the candidate."""
+        self.session.runtime_sections.append((order, name, fn))
 
     def notify(self, text: str, mode: str = "steer", source: str | None = None) -> None:
         self.session.notify(text, mode=mode, source=source or self.name)

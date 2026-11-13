@@ -283,6 +283,10 @@ class TerminalUI(UI):
             self._newline()
             self.write(text + "\n", style)
 
+    def save_failed(self, session_id: str, path: str, message: str) -> None:
+        with self._lock:
+            print(message, file=sys.stderr)
+
     def confirm(self, question: str, agent: str = "main") -> str | None:
         with self._lock:
             self._newline()
@@ -408,6 +412,13 @@ class PrintUI(UI):
         if style in ("error", "warn"):
             with self._lock:
                 print(text, file=sys.stderr)
+
+    def save_failed(self, session_id: str, path: str, message: str) -> None:
+        self.print(message, "error")
+        if self.json_mode:
+            with self._lock:
+                print(json.dumps({"type": "session_save_failed", "session_id": session_id,
+                                  "path": path, "message": message}))
 
     def on_event(self, ev: AgentEvent) -> None:
         if self.json_mode:

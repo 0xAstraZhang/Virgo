@@ -145,12 +145,12 @@ def run_repl(
             if cmd is None:
                 broker.resume_reading()
         elif kind == "wake":
-            if not busy() and session.wakeups:
+            if not busy() and session.wakeups and session.main.can_run():
                 start(session.run_pending)
         elif kind == "done":
             if deferred:
                 start(lambda line=deferred.pop(0): session.prompt(line))
-            elif session.wakeups:
+            elif session.wakeups and session.main.can_run():
                 start(session.run_pending)
             else:
                 ui.prompt()

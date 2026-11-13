@@ -128,7 +128,9 @@ class RunController:
 
     @property
     def pending(self) -> list[str]:
-        return [*[f"steering: {text}" for text in self._steering], *self._deferred]
+        unsaved = ([f"unprocessed: {message.text()}" for message in self.session.wakeups]
+                   if self.session.store.save_error is not None else [])
+        return [*[f"steering: {text}" for text in self._steering], *self._deferred, *unsaved]
 
     def _session_reset(self, session: AgentSession) -> None:
         self.ui.bind_signal("main", session.main.agent.signal)
@@ -250,7 +252,7 @@ class RunController:
                 # Browsing must not strand work that was queued before it opened.
                 text = self._deferred.popleft()
                 self._launch(lambda: self.session.prompt(text))
-            elif self.session.wakeups and not self.browsing:
+            elif self.session.wakeups and not self.browsing and self.session.main.can_run():
                 self._launch(self.session.run_pending)
         return out
 

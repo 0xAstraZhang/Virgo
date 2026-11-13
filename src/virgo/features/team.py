@@ -90,8 +90,10 @@ class Team:
 
     # -- lifecycle ---------------------------------------------------------------
     def spawn(self, name: str, role: str, prompt: str, plan_first: bool, worktree: bool, review_parent=None) -> Teammate:
-        from ..harness.session import Runtime
-
+        if review_parent is None:
+            with self.session._lock:
+                review_parent = self.session.main.review_source
+        review_parent.root.entries()
         if not NAME_RE.match(name) or name.lower() in RESERVED:
             raise ValueError("name must be 1-32 letters/digits/-/_ and not lead/main/all")
         with self._lock:
@@ -129,8 +131,7 @@ class Team:
             + "</team>"
         )
         try:
-            m.runtime = Runtime(
-                self.session,
+            m.runtime = self.session.create_runtime(
                 name,
                 "teammate",
                 cwd=cwd,
@@ -192,6 +193,8 @@ class Team:
         tasks = self.session.services.get("tasks")
         try:
             while not m.stop:
+                if not m.runtime.can_run():
+                    break
                 pending += self._drain(m)
                 if m.stop:
                     break

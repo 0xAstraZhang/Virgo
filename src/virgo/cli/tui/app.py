@@ -296,11 +296,15 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         )
 
     def session_browser_status(self) -> str:
+        if self.session.store.save_error is not None:
+            return "Unsaved — paused"
         if self.active_input is not None or self.active_confirmation is not None or self.input_requests or self.confirmations:
             return "Waiting"
         return "Ready" if self.controller.can_switch else "Running"
 
     def pane_status(self, pane: ConversationPane) -> str:
+        if pane.controller.session.store.save_error is not None:
+            return "Unsaved — paused"
         if pane is self._pane:
             return self.session_browser_status()
         if pane.controller.ui.has_pending_requests:
@@ -714,6 +718,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         update_static(root.query_one("#metrics", Static), metrics)
         mode = normalize_permission_mode(self.session.permission_mode)
         footer = Text(no_wrap=True, overflow="ellipsis")
+        if self.session.store.save_error is not None:
+            footer.append("UNSAVED · paused · memory only  ", style="bold red")
         footer.append(permission_mode_label(mode), style=PERMISSION_COLORS[mode])
         effort = f" · {self.session.effort}"
         available = max(1, width - footer.cell_len - 2)

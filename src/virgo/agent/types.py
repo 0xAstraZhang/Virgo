@@ -106,6 +106,7 @@ class AgentConfig:
     max_turns: int | None = None
     max_parallel: int = 8
     before_tool_execute: Callable[[ToolCallEvent], Block | None] | None = None
+    can_run: Callable[[], bool] | None = None
 
 
 def image_result(data: str, mime: str, note: str = "") -> ToolResult:

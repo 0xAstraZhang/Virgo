@@ -162,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     finally:
         session.shutdown()
+    if session.has_save_failure:
+        return 1
     if ui.command_output:
         return 0
     last = next((m for m in reversed(session.main.messages) if isinstance(m, AssistantMessage)), None)
