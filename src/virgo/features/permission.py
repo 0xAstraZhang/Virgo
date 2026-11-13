@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..agent.types import AgentTool, Block, ToolCallEvent
+from ..agent.types import Block, ToolCallEvent
+from ..harness.permissions import MODES as MODES
+from ..harness.permissions import normalize_permission_mode as normalize_permission_mode
+from ..harness.permissions import permission_mode_label as permission_mode_label
+from ..harness.permissions import plan_tool_allowed as plan_tool_allowed
 from ..tools.fs import IGNORE_DIRS, glob_match
 from ..tools.shell import SHELL_TOOLS
 from .permission_context import (
@@ -31,26 +35,6 @@ from .permission_scope import command_path_targets, command_review_reason, insid
 
 if TYPE_CHECKING:
     from ..harness.extensions import ExtensionAPI
-
-MODES = ("auto-review", "accept-all", "plan")
-_ALIASES = {"default": "auto-review", "accept-edits": "auto-review", "yolo": "accept-all"}
-_PLAN_SIDE_EFFECTS = {"workflow", "schedule", "memory", "team_review", "job_kill"}
-
-
-def normalize_permission_mode(mode: str) -> str:
-    mode = _ALIASES.get(mode, mode)
-    if mode not in MODES:
-        raise ValueError(f"permission mode must be one of {', '.join(MODES)}")
-    return mode
-
-
-def permission_mode_label(mode: str) -> str:
-    return normalize_permission_mode(mode).replace("-", " ")
-
-
-def plan_tool_allowed(tool: AgentTool | None) -> bool:
-    return bool(tool and (tool.name == "bash" or (tool.read_only and tool.name not in _PLAN_SIDE_EFFECTS)))
-
 
 REVIEW_SYSTEM = (
     "You are an independent tool-permission reviewer with no tools. The user permits actions confined to "

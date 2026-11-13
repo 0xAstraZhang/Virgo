@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from virgo import ai
-from virgo.agent import Agent, AgentConfig, AgentTool, Block, Continue, ToolResult
+from virgo.agent import Agent, AgentConfig, AgentTool, Block, Continue
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, ToolResultMessage, UserMessage
 from virgo.ai.validate import INVALID_ARGUMENTS
@@ -40,26 +40,6 @@ def echo_tool(name="echo", delay=0.0, sequential=False, log=None):
     return AgentTool(
         name, "echo", {"type": "object", "properties": {"x": {"type": "string"}}}, run, sequential=sequential
     )
-
-
-def test_tool_calls_and_results_are_paired_in_order():
-    agent, _ = make_agent(
-        [echo_tool("a"), echo_tool("b")],
-        faux.reply(tools=[("a", {"x": "1"}, "c1"), ("b", {"x": "2"}, "c2")]),
-        faux.reply("done"),
-    )
-    agent.prompt("go")
-    kinds = [type(m).__name__ for m in agent.messages]
-    assert kinds == [
-        "UserMessage",
-        "AssistantMessage",
-        "ToolResultMessage",
-        "ToolResultMessage",
-        "AssistantMessage",
-    ]
-    assert [m.tool_call_id for m in agent.messages if isinstance(m, ToolResultMessage)] == ["c1", "c2"]
-    assert agent.messages[2].text() == "a:1"
-    assert agent.last_text == "done"
 
 
 def test_parallel_by_default_and_sequential_flag():
@@ -186,17 +166,6 @@ def test_before_tool_call_can_block_and_mutate():
     res = [m for m in agent.messages if isinstance(m, ToolResultMessage)]
     assert res[0].is_error and res[0].text() == "nope"
     assert res[1].text() == "a:ok!"
-
-
-def test_after_tool_call_overrides_result():
-    agent, _ = make_agent(
-        [echo_tool("a")],
-        faux.reply(tools=[("a", {"x": "1"})]),
-        faux.reply("fin"),
-        after_tool_call=lambda ev, res: ToolResult.text("patched"),
-    )
-    agent.prompt("go")
-    assert next(m for m in agent.messages if isinstance(m, ToolResultMessage)).text() == "patched"
 
 
 def test_steering_is_delivered_before_next_model_call():

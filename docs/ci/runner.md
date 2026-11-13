@@ -78,6 +78,10 @@ It must cover these failure modes before runner changes are made:
 - Collection errors, missing reports, and runner failures produce a false green result.
 - A previously executed test disappears or starts being skipped without being reported.
 - An approved test replacement hides a regression or collides with its old name.
+- An intentional retirement hides an unrelated deletion, a failing baseline case,
+  a new skip, or retained coverage that is missing, skipped or failing.
+- A retirement is reused for another baseline SHA or an unrelated same-name test,
+  or the removed case disappears from the readable/JSON comparison reports.
 - A corrupt inherited PowerShell startup cache or concurrent writers crash probes.
 - Cold-cache PowerShell processes initialize telemetry and enter its named-mutex
   path, including when the parent explicitly enables telemetry.

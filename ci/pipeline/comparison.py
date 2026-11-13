@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from .io import read_json, write_json
-from .reports import BAD, validate_report
+from .reports import BAD, approved_retirements, validate_report
 
 
 def compare(args):
@@ -83,6 +83,7 @@ def compare(args):
             "regressions", "newly_exposed_failures", "existing_failures", "fixed_failures",
             "new_skips", "unskipped", "added", "removed", "problems", "failures",
         )}
+        result["retired"] = {}
         combined["platforms"][operating_system] = result
         result["problems"].extend(report_problems[operating_system])
         for label in labels:
@@ -115,7 +116,9 @@ def compare(args):
                     result["unskipped"].append(name)
             result["added"] = sorted(after.keys() - before.keys())
             result["removed"] = sorted(before.keys() - after.keys())
-            missing_executed = [name for name in result["removed"] if before[name] != "skipped"]
+            result["retired"] = approved_retirements(base, head)
+            missing_executed = [name for name in result["removed"]
+                                if before[name] != "skipped" and name not in result["retired"]]
             if missing_executed:
                 result["problems"].append(f"{len(missing_executed)} previously executed tests disappeared")
             result["counts"] = {"base": base["counts"], "head": head["counts"]}
@@ -136,6 +139,10 @@ def compare(args):
             markdown += [f"### {title}: {len(result[key])}", ""]
             markdown += [f"- `{name}`" for name in result[key]] or ["None."]
             markdown.append("")
+        markdown += [f"### Reviewed duplicate retirements: {len(result['retired'])}", ""]
+        markdown += [f"- `{name}` — covered by " + ", ".join(f"`{case}`" for case in coverage)
+                     for name, coverage in sorted(result["retired"].items())] or ["None."]
+        markdown.append("")
         if base and head:
             markdown += ["Module-level collection skips:", "",
                          f"- Base: {', '.join(base['collection_skips']) or 'none'}",
@@ -145,7 +152,7 @@ def compare(args):
         markdown += ["## Workflow / report problems", "", *(f"- {problem}" for problem in problems), ""]
     success = ("Lightweight checks passed; full tests were intentionally skipped." if skipped else
                "All executed tests passed." if mode == "head" else
-               "No new failures, lost executed tests, or new skips. Existing failures are listed above.")
+               "No new failures, unapproved test removals, or new skips. Existing failures and reviewed retirements are listed above.")
     markdown += ["## Result", "", "Needs attention; see the problems above." if failed else success, ""]
     write_json(args.output.with_suffix(".json"), combined)
     rendered = "\n".join(markdown)

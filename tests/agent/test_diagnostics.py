@@ -49,30 +49,6 @@ def test_tool_failures_capture_stage_cause_and_call_identity(stage):
     assert [ev.tool_call_id for ev in events if ev.type == "tool_execution_end"] == ["call-7"]
 
 
-def test_result_hook_failure_preserves_the_original_tool_failure():
-    def failed_hook(*args):
-        raise LookupError("hook failed")
-
-    tool = AgentTool("failing", "", {"type": "object"}, fail)
-    agent, _ = make_agent([tool], faux.reply(tools=[("failing", {})]), faux.reply("recovered"),
-                          after_tool_call=failed_hook)
-    agent.prompt("go")
-    result = next(m for m in agent.messages if isinstance(m, ToolResultMessage))
-    assert result.details["error"]["exception_type"] == "LookupError"
-    assert result.details["related_errors"][0]["exception_type"] == "RuntimeError"
-    assert result.details["related_errors"][0]["phase"] == "tool.execute"
-
-
-def test_result_hook_recovery_keeps_original_diagnostic_without_marking_success_failed():
-    tool = AgentTool("failing", "", {"type": "object"}, fail)
-    agent, _ = make_agent([tool], faux.reply(tools=[("failing", {})]), faux.reply("done"),
-                          after_tool_call=lambda *args: ToolResult.text("recovered by hook"))
-    agent.prompt("go")
-    result = next(m for m in agent.messages if isinstance(m, ToolResultMessage))
-    assert not result.is_error and result.text() == "recovered by hook"
-    assert result.details["related_errors"][0]["phase"] == "tool.execute"
-
-
 def test_returned_tool_error_keeps_existing_metadata_and_adds_diagnostic():
     tool = AgentTool("failure", "", {"type": "object"},
                      lambda *args: ToolResult.error("command exited 7", details={"exit_code": 7}))

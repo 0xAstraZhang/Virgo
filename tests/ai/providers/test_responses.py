@@ -207,13 +207,6 @@ def test_responses_cancelled_request_does_not_contact_server(server):
     assert not server["requests"]
 
 
-def test_responses_http_error_is_classified(server):
-    server["status"] = 429
-    server["body"] = b'{"error":{"message":"rate limited","type":"rate_limit_error"}}'
-    out = responses.stream(model(server["url"]), Context("", [UserMessage("x")]), StreamOptions()).result()
-    assert out.stop_reason == "error" and out.error_kind == "retryable"
-
-
 def test_responses_stream_error_redacts_access_token(server):
     server["body"] = sse(
         [

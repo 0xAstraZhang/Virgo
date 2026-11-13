@@ -9,7 +9,7 @@ for a focused manual investigation. These filenames are stable. The old
 
 | Event | Product tests | Passing result |
 | --- | --- | --- |
-| Code/configuration PR | Complete base and head suites on Linux, Windows and macOS | No new failures, lost executed tests or newly skipped baseline tests |
+| Code/configuration PR | Complete base and head suites on Linux, Windows and macOS | No new failures, unapproved test removals or newly skipped baseline tests |
 | Code/configuration push to main | Complete current-commit suite on all three platforms | No failing tests |
 | Documentation-only PR or main push | Lightweight checks; explicit full-suite skip summary | All lightweight checks pass |
 | Manual PR comparison | Complete base/head suites, including documentation-only PRs | Same regression policy as automatic PR checks |

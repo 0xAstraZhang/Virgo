@@ -4,6 +4,14 @@ The suite exercises real tool execution, local HTTP servers, session flows and
 Textual/PTY interactions without live model credentials. See the development
 section in [README](../README.md) for commands and the test layout.
 
+## Maintaining useful coverage
+
+Retain cases that protect distinct behavior, failure modes or integration boundaries.
+Delete a weaker duplicate only when existing retained scenarios exercise its behavior;
+do not remove a case merely because it is small or tests one module. The
+[reviewed retirement record](testing/test-retirements.md) lists the nine removed
+duplicates, their retained coverage and the CI conditions for recognizing the deletion.
+
 ## Startup catalog traffic in search tests
 
 Creating an `AgentSession` starts model discovery for connected providers. The

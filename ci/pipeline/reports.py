@@ -1,4 +1,4 @@
-"""Report integrity rules and approved test identity aliases."""
+"""Report integrity, test identity aliases, and reviewed duplicate retirements."""
 
 from __future__ import annotations
 
@@ -41,6 +41,62 @@ PARAMETER_ALIASES = {
     "test_web_search_result_header_toggles_and_body_keeps_details_open":
         "test_web_search_result_body_click_collapses_only_result",
 }
+
+
+# Each retirement is scoped to the reviewed baseline and original module.
+# Coverage and rationale: docs/testing/test-retirements.md. These are not aliases:
+# the removed test stays visible and its retained coverage must pass in both runs.
+APPROVED_RETIREMENTS = {
+    "0ffc23707de6e87a579a46a8f027679c253b78dc": {
+        "test_tool_calls_and_results_are_paired_in_order": ("tests.agent.test_loop", (
+            "test_parallel_results_are_emitted_as_completed_but_history_keeps_call_order",
+            "test_tool_completion_order_survives_reload_without_changing_model_history",
+        )),
+        "test_after_tool_call_overrides_result": ("tests.agent.test_loop", (
+            "test_post_tool_hook_feedback_keeps_image_results",
+            "test_post_tool_hook_feedback_keeps_terminate",
+            "test_hooks_cannot_erase_or_override_execution_and_adapter_facts",
+        )),
+        "test_result_hook_failure_preserves_the_original_tool_failure": ("tests.agent.test_diagnostics", (
+            "test_projection_sees_final_hooks_and_recorded_evidence_once_in_provider_content",
+        )),
+        "test_result_hook_recovery_keeps_original_diagnostic_without_marking_success_failed": (
+            "tests.agent.test_diagnostics", (
+                "test_tool_failure_and_recovered_result_hook_keep_original_evidence",
+            ),
+        ),
+        "test_retry_on_retryable_errors": ("tests.harness.test_session", (
+            "test_recovered_retry_exposes_its_log_reference_in_text_and_json",
+            "test_retry_failure_survives_success_and_reload_without_prompt_contents",
+        )),
+        "test_system_prompt_includes_context_files": ("tests.harness.test_session", (
+            "test_user_system_and_project_context_survive_for_their_roles",
+            "test_default_request_keeps_tool_definitions_without_duplicate_or_empty_sections",
+        )),
+        "test_model_errors_are_reported": ("tests.harness.test_session", (
+            "test_final_model_error_is_written_once_and_exposed_with_its_log_path",
+            "test_provider_error_ends_run_without_crash",
+        )),
+        "test_codex_http_failure_redacts_access_token": ("tests.ai.providers.test_codex", (
+            "test_http_failure_has_correlation_without_response_payload[429-virgo.ai.providers.codex-openai-codex]",
+        )),
+        "test_responses_http_error_is_classified": ("tests.ai.providers.test_responses", (
+            "test_http_failure_has_correlation_without_response_payload[429-virgo.ai.providers.responses-openai-responses]",
+        )),
+    },
+}
+
+
+def approved_retirements(base, head):
+    retired = {}
+    for name, (module, coverage) in APPROVED_RETIREMENTS.get(base["sha"], {}).items():
+        old = base["tests"].get(name, {})
+        if name in head["tests"] or old.get("status") != "passed" or old.get("classname") != module:
+            continue
+        if coverage and all(report["tests"].get(case, {}).get("status") == "passed"
+                            for report in (base, head) for case in coverage):
+            retired[name] = list(coverage)
+    return retired
 
 
 def validate_report(data):

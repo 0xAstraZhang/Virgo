@@ -21,7 +21,7 @@ from textual.widgets.option_list import Option
 
 from ... import __version__
 from ...ai.types import Usage
-from ...features.permission import MODES, normalize_permission_mode, permission_mode_label
+from ...harness.permissions import MODES, normalize_permission_mode, permission_mode_label
 from ...harness.preferences import PreferenceChoice
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
