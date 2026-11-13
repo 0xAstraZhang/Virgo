@@ -324,6 +324,13 @@ also has shorter descriptive text. Tool descriptions account for the remaining
 tool-definition size change. Native search uses provider declarations and a short
 citation reminder, so its size differs from this client-tool measurement.
 
+These are historical measurements for the revisions above. The current empty-project
+default, checked with an actual `AgentSession`, `faux/demo`, default features,
+no user extensions and no catalog refresh, exposes 28 tools: the later 25-tool
+baseline plus `diagnostic_get`, `mcp_status` and `mcp_reconnect`. Configured MCP
+servers, feature flags and native web routing change that count. The old byte
+measurements must not be presented as the current fixed-input cost.
+
 The tool size is `json.dumps([asdict(t) for t in context.tools],
 ensure_ascii=False)` encoded as UTF-8 with Python's default JSON separators. The
 total is that size plus the UTF-8 system size; it excludes messages, provider
@@ -426,6 +433,29 @@ unbounded cancellation during HTTP headers, gzip bytes treated as page text,
 and reading actions displayed as search. No live provider credentials or billed
 API calls are needed; protocol fixtures do not establish live provider quality.
 
+
+## 模型运行时取证与恢复边界
+
+这组回归验证模型实际收到的证据、Runtime 授权、追加式消息、恢复发布顺序和操作是否被重放。离线 Provider 按脚本返回工具调用，不能据此计算真实模型的根因判断正确率、修复效果或线上自主恢复率；本地协议服务也不代表所有外部 MCP 服务的行为。
+
+| 测试文件 | 核查的边界 |
+|---|---|
+| `tests/harness/test_diagnostic_view.py` | 最多 2048 UTF-8 字节的摘要、原文本/图片/元数据保留、敏感值遮盖、超长多字节内容、恢复成功及取消不被改成新故障 |
+| `tests/agent/test_diagnostic_projection.py` | 真实 Agent 循环中的最终钩子顺序、Provider 内容一次投影、真实执行与传输状态不能被 hook 改写、投影失败保留控制标志、工具表在批次边界更新 |
+| `tests/features/test_diagnostic_access.py` | 主/子/兄弟 Runtime 与共享记账存储隔离、UI 切换后的原调用源、外来或伪造 Runtime 拒绝、100 条证据/1000 个 ID 的可配置保留边界、最多 8 KiB JSON 页、游标快照绑定和过期/缺失/未采集区分 |
+| `tests/harness/test_recovery_lifecycle.py` | 持久化后从所属历史恢复授权、压缩检查点和证据查询、异步故障回到原 Runtime、通知失败不唤醒其他聊天、过期 pending 不堵塞后续证据、诊断不额外启动模型请求、Retry-After 和累计等待预算 |
+| `tests/features/test_mcp_recovery.py` | 可信调用源、服务与 generation 核对、定向重连、进行中调用拒绝、并发去重、无进展预算、schema 安全刷新、错误候选/名称碰撞保留旧连接、握手分页上限与总 deadline、结果未知与不重放、正常权限检查 |
+
+关键的丢回复场景启动真实本机 Python MCP 进程：服务收到 `tools/call` 后先向文件追加一次副作用，再关闭响应通道。测试断言调用为 `dispatch=sent`、`outcome=unknown`、`side_effects=unknown`，重连后文件仍只有一条副作用记录。它证明这个恢复入口没有隐式重发旧调用，不证明外部服务支持幂等或所有业务操作都能“恰好执行一次”。
+
+并发用 `threading.Event` 控制已进入的调用和候选握手；不靠反复重试或固定 sleep 观察竞争。schema 故障包括非字符串 description、当前参数校验器无法使用的 shape，以及候选排队后新增的注册名称冲突：旧 client 和旧工具必须保留，候选进程必须关闭，下一次模型请求仍可继续。恢复工具的否定权限用真实 Session 的 plan 模式检查，不能直接调用 `execute()` 替代权限链路。
+
+```sh
+uv run python ci/run_pytest.py -q tests/harness/test_diagnostic_view.py tests/agent/test_diagnostic_projection.py tests/features/test_diagnostic_access.py
+uv run python ci/run_pytest.py -q tests/harness/test_recovery_lifecycle.py tests/features/test_mcp_recovery.py tests/features/test_mcp_diagnostics.py
+```
+
+这些场景与原有 `test_diagnostics`、`test_async_diagnostics`、`test_harness_boundaries`、Provider 传输及 CLI/TUI 场景共同验证取消、保存失败停止、脱敏和消息兼容；不把全部 `is_error` 都当成同一种可重试状态。
 
 ## Harness 边界回归
 

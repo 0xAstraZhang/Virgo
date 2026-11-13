@@ -215,12 +215,13 @@ Bash/Zsh 开启 `errexit` 和 `pipefail`；PowerShell 7.4+ 对 cmdlet 和原生�
   },
   "hooks": {"PreToolUse": [{"matcher": "bash", "command": "./scripts/guard.sh"}]},
   "compaction": {"triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": null},
-  "retry": {"maxRetries": 3, "fallbackModel": null},
+  "retry": {"maxRetries": 3, "maxWaitSeconds": 120, "fallbackModel": null},
   "features": {"team": true, "schedule": true}
 }
 ```
 
 - **模型提供方**：Anthropic、OpenAI 兼容和 xAI Responses 使用官方 SDK；OpenAI 账号与 Google 账号使用对应的流式接口。也可以在 `providers` 里声明自定义端点。
+- **模型重试**：`retry.maxRetries` 默认 3；沿用指数退避和抖动，并把有效的 HTTP `Retry-After`（秒数或 HTTP 日期）作为最短等待。`retry.maxWaitSeconds` 默认 120，限制一次逻辑模型调用内自动重试的累计等待时间；不包含请求本身耗时。若下一次等待超过剩余预算，保留失败并停止重试，不提前重放请求。取消信号可中断等待。
 - **小模型**：权限审批、其他 Provider 的压缩摘要、goal 评审和记忆整理共用自动选择的小模型。OpenAI API、Codex 账号及指向 OpenAI 官方 API 的自定义连接使用同一连接下的 `gpt-6-luna`；Anthropic 及指向其官方 API 的自定义连接使用同一连接下的 `claude-haiku-5-5`；其他厂商使用主模型。切换模型或登录后同步更新，旧 `smallModel` 配置不再参与选择。小模型默认优先使用 `low`；不支持时使用合法的模型默认强度，没有合法默认值时省略参数并记录原因。非推理模型不发送强度参数。此规则不受主对话 `/effort` 影响。目录提供强度信息时自动使用，也可在 `providers.<厂商>.models.<模型>` 中补充 `supportedReasoningLevels` 和 `defaultReasoningLevel`。
 - **上下文压缩**：所有 Provider 默认在上下文估算达到模型窗口的 80% 时压缩；`triggerRatio` 可调整比例，非空 `triggerTokens` 优先指定绝对阈值，旧 `reserveTokens` 不再参与计算。OpenAI API 默认调用 [Responses 原生压缩](https://developers.openai.com/api/docs/guides/compaction)，压缩后使用 Responses 回传完整加密上下文；Codex 账号使用 Responses 的原生 `compaction_trigger`。Anthropic 默认调用 [按需压缩](https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand)，使用当前模型并原样保留签名块。其他 Provider（包括第三方兼容 API）继续使用小模型结构化摘要。`keepRecentTokens` 控制 Anthropic 和通用摘要保留的近期消息；OpenAI 使用服务端返回的完整窗口。`/compact [focus]` 的重点提示适用于 Anthropic 和通用摘要，OpenAI 使用服务端摘要指令。原生请求失败时保留原上下文并报告错误；切换到不兼容 Provider 时从完整历史重建。
 - **实时模型目录**：[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、[DeepSeek](https://api-docs.deepseek.com/api/list-models/) 及兼容连接查询其 API 根路径下的 `GET /models`；[Anthropic](https://platform.claude.com/docs/en/api/models/list) 查询 `GET /v1/models` 并处理分页；Codex 账号沿用[官方客户端的目录接口](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/models.rs)。服务端明确隐藏、不可用或不适用于文本对话的模型会被过滤。`providers.<厂商>.models` 仅补充模型参数，不再决定菜单中有哪些模型；每次启动 Virgo 先加载本地快照，同时在后台对各已连接厂商刷新一次（最多四个并发，单个目录请求有超时），不阻塞启动。`/model`、新建对话、恢复或切换模型不再触发刷新。成功结果（模型 ID、能力参数、发布日期排序信息）原子写入用户目录 `model-metadata/`，包括成功返回空目录和模型删除的情况；失败或退出取消时保留旧快照。缓存按厂商、API 协议和完整端点隔离，不保存密钥；缓存损坏时安全回退，保存失败不影响当前会话。刷新完成后更新当前模型参数；若主对话正在运行，等本轮结束再应用，避免中途改变请求限制。参数优先级为显式 `providers.<厂商>.models` 配置 > 服务端返回字段 > 内置模型资料 > 协议兜底值。接口缺失字段不会覆盖已有资料；获取失败会提示并继续使用已保存的参数、配置或内置值。内置 Grok 4.7 的 500,000 上下文来自 [xAI 官方说明](https://docs.x.ai/developers/grok-4-7)（2026-11-12 核验）。实时目录沿用当前连接和凭据，中转返回的数据不等同于原厂数据；未知模型的兜底值也不代表官方上限。Google Code Assist 账号目前没有适配的实时目录，需使用 `/model provider/id` 指定模型；离线 `faux` 演示继续使用本地目录。
@@ -306,9 +307,19 @@ DeepSeek key 复用已保存的官方连接或 `DEEPSEEK_API_KEY`，可用 `fetc
 
 模型、工具、权限策略、扩展与命令、后台任务、MCP 及会话保存故障统一保留错误 ID、发生阶段、异常类型、异常链和堆栈位置。模型请求还关联会话、运行、调用和重试次数；服务提供时记录 HTTP 状态码、request ID、Retry-After 和安全端点。界面显示简短错误和诊断日志路径，`/diagnostics` 列出最近错误，`/diagnostics <error-id>` 查看详情。
 
-重试后成功仍保留此前失败；辅助请求与子 Agent 的错误归属原会话。错误详情随模型消息、工具结果和 `model_call` 审计保存，不额外进入模型上下文。`--mode json` 输出可直接读取 `error_details`。会话文件无法写入时，独立诊断日志仍会尝试记录；日志也写不了时回退到 stderr，原始错误仍保留。
+重试后成功仍保留此前失败；辅助请求与子 Agent 的错误归属原会话。工具最终失败时，在原有文本和图片后追加最多 **2 KiB** 的诊断摘要，包含错误 ID、阶段、已观测原因和执行状态；原始 `details` 和完整堆栈不会整包进入模型请求。模型可调用只读的 `diagnostic_get(error_id, section, cursor)`，按需读取摘要、异常链、堆栈、MCP stderr、已保留的失败尝试和关联诊断。每个 Runtime 默认保留 100 条证据和 1000 个授权 ID，单次分页响应最多 8 KiB；未知、过期或未采集的证据会明确说明，不能凭别的会话的 ID 读取日志。
+
+以上模型诊断功能默认启用；设置 `features.diagnostics=false` 可关闭诊断工具、失败摘要和自动诊断通知，独立错误日志仍保留。显式受限的 Runtime 若未暴露 `diagnostic_get`，摘要只保留错误引用并标明查询工具不可用，不自动扩大工具名单。
+
+运行时故障在下一次本来就要发出的模型请求前追加通知；诊断本身不创建额外模型轮次。子任务与后台任务把证据显式交回原 Runtime，切换聊天不会改变归属；压缩与恢复保留可查询引用，不重写旧工具结果。用户取消、权限拒绝和会话保存失败仍保持原有停止边界。`--mode json` 可读取 `error_details`、工具 `execution` 和 MCP `transport`；后两者分别描述本地工具是否开始执行、请求是否已经发送，结果未知不代表副作用未发生。
 
 日志按实例写入，单文件默认最多 5 MiB，保留两份轮转文件。`--no-session` 不保存对话，但发生故障仍产生诊断日志。诊断不采集 frame locals、源代码行、完整请求正文、提示词或工具参数；凭据字段、已知 token 和 URL 查询参数会被脱敏。完整字段、排查流程与扩展接入见 [错误诊断](docs/ERRORS.md)。
+
+### MCP 状态与定向恢复
+
+模型可用 `mcp_status(server)` 查看单个服务的本地状态、连接代次、正在进行的调用和当前可访问的错误 ID；省略 `server` 时列出已配置服务。`mcp_reconnect(server, error_id)` 根据当前 Runtime 已获得的诊断重连指定服务，仍经过普通工具权限检查；它启动原注册配置中的进程，不修改或重新加载 MCP 启动命令。存在进行中的调用时拒绝重连，同一服务的并发恢复只允许一个候选。
+
+候选完成握手和工具列表查询后才替换连接。工具 schema 未变时保留工具句柄；发生变化或启动时缺少工具时，在下一次模型请求前的安全边界刷新，旧 schema 调用不会被派发。每个服务连续没有远端工具调用成功时，最多允许两次恢复尝试；仅握手成功不重置预算。重连**不会自动重放**失败的工具调用：超时、发送异常或回复丢失后，应先核对操作结果，不能把连接恢复当成外部操作尚未发生。人工 `/mcp reconnect` 继续提供全服务配置重载，进行中的调用也会阻止它。
 
 ### 运行审计与用量
 
@@ -351,7 +362,8 @@ Workflow 名称、路径和描述在工作区的 `AgentSession` 初始化时读�
 | 功能 | Virgo 实现 | 设计要点 |
 |---|---|---|
 | Agent 循环 | `agent/loop.py` | 双层循环：工具调用 / steering 驱动内层，follow-up 和停止钩子驱动外层；事件化，无 I/O |
-| 工具 | `tools/`、`AgentTool` | 工具注册即分发；`content` 给模型，`details` 给 UI 和状态；默认并行执行，同一文件的写操作串行；输出统一截断并落盘 |
+| 工具 | `tools/`、`AgentTool` | 工具注册即分发；`content` 给模型，`details` 保存结构化状态；最终失败通过白名单投影追加有界诊断摘要；默认并行执行，同一文件的写操作串行；输出统一截断并落盘 |
+| 运行时诊断 | `harness/diagnostic_view.py`、`diagnostic_access.py`、`recovery.py` | 最多 2 KiB 的失败摘要、按 Runtime 授权的 `diagnostic_get`、追加式投递记录和压缩后引用；诊断不自行触发模型调用 |
 | 权限 | `features/permission.py` | 三种模式；auto-review 识别工作区边界并对外部/联网操作调用小模型审批；accept-all 全部放行；plan 只读；无人值守时需要人工审批的操作视为拒绝 |
 | 钩子 | `harness/extensions.py` | 带优先级的事件总线：`tool_call` 可拦截或改参，`tool_result` 可改结果，`agent_stop` 可要求继续；另有 shell 命令钩子 |
 | TodoWrite | `features/todo.py` | 整表替换、校验失败不改状态；允许多个进行项，不限制条目数量；状态存在工具结果 `details` 里，可从会话重建，`/todos` 查看；未完成项不会触发续接 |
@@ -364,23 +376,23 @@ Workflow 名称、路径和描述在工作区的 `AgentSession` 初始化时读�
 | 后台任务 | `features/background.py` | bash 和子 agent 共用一个 JobManager；完成后通知（agent 运行中则插入，空闲则唤醒） |
 | 定时任务 | `features/schedule.py` | 5 字段 cron 加 `at`（ISO 时间或 `+10m`）；到点作为 follow-up 送达；可持久化 |
 | Agent 团队 | `features/team.py` | 队友各占一个线程，有独立会话和进程内邮箱；完成当前委派后等待消息；模型通过 `task_list` / `task_update` 显式认领，`team_message` 委派或唤醒；仅设置 owner 不唤醒；停止和计划审批都是带 request_id 的协议；计划审批复用权限的 plan 模式；可为队友建独立 git worktree |
-| MCP | `features/mcp.py` | 真正的 stdio JSON-RPC 客户端（initialize → tools/list → tools/call）；工具命名 `mcp__server__tool`；默认需要授权 |
+| MCP | `features/mcp.py` | stdio JSON-RPC；工具命名 `mcp__server__tool`；`mcp_status` 本地查询，`mcp_reconnect` 定向且有界恢复；连接代次、并发保护、schema 边界刷新和结果未知状态；调用与恢复默认需要授权，不自动重放 |
 | 集成 harness | `harness/session.py` | 所有功能都以扩展身份接入同一个循环；负责重试、回退模型、反应式压缩和统一唤醒 |
 | Workflow | `features/workflow.py` | 编排由脚本固定，模型只负责调用；结构化输出带校验和重试；journal 按调用内容哈希，续跑时已完成的调用直接命中 |
 | Goal loop | `features/goal.py` | 用户通过 `/goal` 启用后，准备停止时由无工具评审按用户条件和现有证据判断：达成 / 不可能 / 未满足则继续；有上限；后台任务未完成时暂缓评审 |
 
 ## 设计取舍
 
-默认主 Agent 保留 25 个工具和现有 `features.*` 开关。工具描述只通过工具定义提供，基础提示不再重复工具目录或规定统一工作流程。技能由模型按需选择、使用前读取；用户 `SYSTEM.md` / `APPEND_SYSTEM.md`、项目指令和资源目录仍保留。用户显式启用的 `/goal`、Workflow、Stop hook 和 `plan_first` 继续生效。扩展接口变更见 [扩展迁移说明](docs/EXTENSION_MIGRATION.md)。
+默认主 Agent 提供 28 个工具和现有 `features.*` 开关：原 25 个工具加上 `diagnostic_get`、`mcp_status`、`mcp_reconnect`。这个数量对应空项目、默认功能和客户端网页工具；配置 MCP、用户扩展、原生网页能力或功能开关后会变化。工具描述只通过工具定义提供，基础提示不再重复工具目录或规定统一工作流程。技能由模型按需选择、使用前读取；用户 `SYSTEM.md` / `APPEND_SYSTEM.md`、项目指令和资源目录仍保留。用户显式启用的 `/goal`、Workflow、Stop hook 和 `plan_first` 继续生效。扩展接口变更见 [扩展迁移说明](docs/EXTENSION_MIGRATION.md)。
 
 - **发送给 API 的历史只追加。** 
-  - system prompt 和工具集合在同一权限模式及 shell 选择内保持稳定；`/shell` 显式切换时更新工具与环境信息；切换到或离开 plan 时更新规划提示和可用工具；通用摘要压缩后重建基础上下文，原生压缩保持前缀配置稳定；
+  - system prompt 和工具集合在权限模式、shell 和工具 schema 未变时保持稳定；`/shell` 显式切换时更新工具与环境信息；切换到或离开 plan 时更新规划提示和可用工具；MCP schema 变化在工具批次结束后的请求边界刷新并重新核对原生上下文绑定；通用摘要压缩后重建基础上下文，原生压缩保持前缀配置稳定；
   - 通知、提醒、队友消息都以追加消息的形式进入；
   - 不改写、不删除旧轮次，所以**不做 micro-compaction**，也不做中段 snip；
   - 完整历史始终保存在会话文件中。
   - 有测试逐字节检查相邻两次请求的前缀是否一致。
 - **少即是多。** 能复用的机制尽量复用：计划审批复用权限模式；后台任务同时承载 bash 和子 agent；记忆和技能共用"索引 + 按需 `read`"的渐进披露方式，因此每轮不会产生额外的模型调用。
-- **失败即数据。** provider 的流和工具都不会把异常抛进循环，错误会变成消息交给模型处理。
+- **失败即数据。** Provider 与工具把错误转成结构化结果；模型通过有界摘要和按需查询获得证据，再决定调查、修正或停止。Provider 无法继续请求时，仍由现有运行时重试策略控制，不依赖模型先执行恢复决策。
 - **Anthropic 请求形态**：
   - adaptive thinking，用 `output_config.effort` 控制深度；
   - 顶层自动 prompt caching；
