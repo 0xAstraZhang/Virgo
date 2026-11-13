@@ -34,10 +34,9 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
 
         model = authenticated_model(model, options.signal)
         model = context_model(model, context.messages)
-        if context.web_search and model.api == "openai":
+        if (context.web_tools or context.web_search) and model.api == "openai":
             model = replace(model, api="openai-responses")
-        context = Context(system=context.system, messages=normalize(context.messages, model),
-                          tools=context.tools, web_search=context.web_search)
+        context = replace(context, messages=normalize(context.messages, model))
         if model.api == "anthropic":
             from .providers import anthropic as impl
         elif model.api == "openai":

@@ -10,7 +10,11 @@ from .types import RawContent, TextContent
 
 
 def is_search_unsupported(error: Exception) -> bool:
-    """Only explicit capability rejection permits a retry without hosted search."""
+    return is_web_unsupported(error, "search")
+
+
+def is_web_unsupported(error: Exception, capability: str) -> bool:
+    """Only explicit tool rejection, never page errors, permits capability fallback."""
     status = getattr(error, "status_code", None)
     body = getattr(error, "body", None)
     if isinstance(body, dict):
@@ -21,16 +25,16 @@ def is_search_unsupported(error: Exception) -> bool:
     ):
         return False
     text = (str(error) + " " + json.dumps(body, default=str)).lower()
-    if not re.search(r"web[_ ]search", text):
+    pattern = r"web[_ ]" + re.escape(capability)
+    if not re.search(pattern, text):
         return False
     if code in {"unsupported_tool", "unknown_tool"}:
         return True
     return bool(re.search(
-        r"web[_ ]search(?:_\d+)?['\"` ]*(?:is |tool is )?(?:not supported|unsupported|not enabled|"
+        pattern + r"(?:_\d+)?['\"` ]*(?:is |tool is )?(?:not supported|unsupported|not enabled|"
         r"not permitted|not allowed|not available (?:for|with|on))|"
         r"(?:does not support|unsupported|unknown tool|unrecognized tool|invalid tool type)"
-        r"[^.\n]{0,60}web[_ ]search|"
-        r"invalid value[^.\n]{0,40}web_search[^\n]{0,100}supported values", text
+        r"[^.\n]{0,60}" + pattern + r"|invalid value[^.\n]{0,40}" + pattern + r"[^\n]{0,100}supported values", text
     ))
 
 
@@ -44,13 +48,20 @@ def add_source_links(message) -> None:
             data = block.data
             if data.get("type") == "web_search_tool_result" and isinstance(data.get("content"), list):
                 citations = data["content"]
+            if data.get("type") == "web_fetch_tool_result" and isinstance(data.get("content"), dict):
+                fetched = data["content"]
+                document = fetched.get("content") or {}
+                if fetched.get("type") == "web_fetch_result":
+                    citations = [{"url": fetched.get("url"), "title": document.get("title")}]
             if data.get("type") == "server_tool_use" and data.get("name") == "web_search":
                 query = data.get("input", {}).get("query")
                 if isinstance(query, str):
                     queries.append(query[:2000])
             if data.get("type") == "web_search_call":
                 action = data.get("action") or {}
-                citations = action.get("sources") or []
+                citations = list(action.get("sources") or [])
+                if action.get("url"):
+                    citations.append({"url": action["url"]})
                 query = action.get("query")
                 if isinstance(query, str):
                     queries.append(query[:2000])
@@ -75,8 +86,9 @@ def add_source_links(message) -> None:
         )
         if not any(isinstance(b, TextContent) and b.text == links for b in message.content):
             message.content.append(TextContent(links))
-    if message.search_started and message.stop_reason in {"error", "aborted"}:
-        note = "\n\n[Web search was interrupted after it started; any sources above are partial results."
+    if (message.search_started or message.native_started) and message.stop_reason in {"error", "aborted"}:
+        operation = "Web search" if message.search_started else "Web retrieval"
+        note = f"\n\n[{operation} was interrupted after it started; any sources above are partial results."
         if queries:
             note += " Queries: " + json.dumps(list(dict.fromkeys(queries)), ensure_ascii=False)[:4000]
         note += "]"

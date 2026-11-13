@@ -63,7 +63,7 @@ def normalize(messages: list, model: Model) -> list:
     for m in messages:
         if isinstance(m, AssistantMessage):
             close_open()
-            if m.search_started and m.stop_reason in {"error", "aborted"}:
+            if (m.search_started or m.native_started) and m.stop_reason in {"error", "aborted"}:
                 from .search import add_source_links
 
                 m = copy.deepcopy(m)
@@ -74,9 +74,19 @@ def normalize(messages: list, model: Model) -> list:
             same_api = m.api == model.api
             same_provider = same_api and m.provider == model.provider
             blocks = []
+            if not same_provider:
+                for block in m.content:
+                    if isinstance(block, RawContent) and block.data.get("type") == "web_fetch_tool_result":
+                        fetched = block.data.get("content") or {}
+                        if isinstance(fetched, dict) and fetched.get("type") == "web_fetch_result":
+                            document = fetched.get("content") or {}
+                            source = document.get("source") or {}
+                            body = source.get("data", "") if source.get("type") == "text" else "[PDF content is not portable to this provider]"
+                            body = body[:32000] + ("\n[Portable content truncated]" if len(body) > 32000 else "")
+                            blocks.append(TextContent(f"[Fetched document: {fetched.get('url', '')}]\n{body}"))
             source_calls: dict[str, ToolCall] = {}
             result_ids = {b.data.get("tool_use_id") for b in m.content if isinstance(b, RawContent)
-                          and b.data.get("type") == "web_search_tool_result"}
+                          and b.data.get("type") in {"web_search_tool_result", "web_fetch_tool_result"}}
             for b in m.content:
                 if isinstance(b, TextContent) and (b.citations or b.native) and not same_provider:
                     b = copy.copy(b)
@@ -86,7 +96,7 @@ def normalize(messages: list, model: Model) -> list:
                     if isinstance(b, RawContent) and b.api != model.api:
                         continue
                     if (isinstance(b, RawContent) and not same_provider
-                            and b.data.get("type") in {"web_search_call", "server_tool_use", "web_search_tool_result"}):
+                            and b.data.get("type") in {"web_search_call", "server_tool_use", "web_search_tool_result", "web_fetch_tool_result"}):
                         continue
                     if isinstance(b, RawContent) and m.stop_reason in {"error", "aborted"}:
                         if b.data.get("type") == "web_search_call" and b.data.get("status") != "completed":

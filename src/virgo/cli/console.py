@@ -16,6 +16,7 @@ import threading
 import time
 
 from ..agent.types import AgentEvent
+from ..ai.web import native_event
 from ..harness.ui import TIMED_OUT, UI
 
 STYLES = {
@@ -349,6 +350,14 @@ class TerminalUI(UI):
                     self.write(se.delta)
                 elif se.type == "thinking_delta" and self.show_thinking:
                     self.write(se.delta, "dim")
+                elif se.type == "native_tool_end" and 0 <= se.index < len(se.partial.content):
+                    block = se.partial.content[se.index]
+                    info = native_event(getattr(block, "data", {}))
+                    if info:
+                        self._block = None
+                        self._newline()
+                        detail = info.get("result", info["args"])
+                        self.write(f"● {info['name']} · {info['status']} {_brief(detail)}\n", "dim")
                 elif se.type == "retry":
                     self._block = None
                     self._newline()
@@ -410,6 +419,11 @@ def event_json(ev: AgentEvent) -> dict:
         d["event"] = ev.stream_event.type
         if ev.stream_event.delta:
             d["delta"] = ev.stream_event.delta
+        se = ev.stream_event
+        if se.type.startswith("native_tool_") and 0 <= se.index < len(se.partial.content):
+            info = native_event(getattr(se.partial.content[se.index], "data", {}))
+            if info:
+                d["native"] = info
     elif ev.type == "message_end" and ev.message is not None:
         d["message"] = asdict(ev.message)
     elif ev.type.startswith("tool_execution"):
