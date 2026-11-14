@@ -8,6 +8,8 @@ Enter `/schedule` to fill in a title, task prompt, schedule type and time, then 
 
 `/schedules` opens the task workspace. Select a task to read its full prompt, inspect the next run, edit it or delete it. Deletion requires confirmation. In the full-screen list, use arrows, Enter, `n` for a new task and Esc to return. Long details scroll; text editing uses Enter for newlines and Ctrl+S to confirm the field. Confirming a field does not save the whole task: the final summary still requires confirmation.
 
+Schedule lists and choice menus mark the current selection with `›` and a purple highlight. Use the arrow keys to move the marker.
+
 Both commands take no arguments and wait for the current model run to finish. Plain mode uses numbered choices. For multiline input, a line containing only `.` finishes; `/cancel` cancels; `.` alone keeps existing content during an edit. Noninteractive use, such as `virgo -p /schedules`, prints the list or usage without waiting for input.
 
 Editing only the title or prompt preserves the next execution time. Choosing a new schedule recalculates it while retaining the task ID. A stale form cannot overwrite another session's update, deletion or completion of a one-off task.

@@ -187,6 +187,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     OptionList { background: $background; color: $foreground; }
     OptionList > .option-list--option-highlighted { background: $background;
         color: $foreground; text-style: reverse; }
+    #schedule-list > .option-list--option-highlighted,
+    #schedule-list:focus > .option-list--option-highlighted,
+    #schedule-options > .option-list--option-highlighted,
+    #schedule-options:focus > .option-list--option-highlighted {
+        background: #7C3AED; color: #FFFFFF; text-style: bold; }
     #approval-options > .option-list--option-highlighted,
     #approval-options:focus > .option-list--option-highlighted {
         background: $background; color: #7C3AED; text-style: bold; }

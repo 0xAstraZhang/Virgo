@@ -61,10 +61,6 @@ class ScheduleWorkspace(Vertical):
     ScheduleWorkspace #schedule-list:focus,
     ScheduleWorkspace #schedule-options:focus { border: none; background-tint: transparent; }
     ScheduleWorkspace OptionList > .option-list--option { padding: 0; }
-    ScheduleWorkspace OptionList > .option-list--option-highlighted,
-    ScheduleWorkspace OptionList:focus > .option-list--option-highlighted {
-        background: $background; color: $foreground; text-style: reverse;
-    }
     ScheduleWorkspace #schedule-options { height: auto; max-height: 50%; border: none;
         padding: 0; background: $background; scrollbar-size: 0 0; }
     ScheduleWorkspace #schedule-empty { height: auto; }
@@ -164,7 +160,10 @@ class ScheduleWorkspace(Vertical):
             if request.options is not None:
                 choices = self.query_one("#schedule-options", OptionList)
                 choices.clear_options()
-                choices.add_options(Option(Text(label), id=str(i)) for i, label in enumerate(request.options))
+                choices.add_options(
+                    Option(Text(("› " if i == 0 else "  ") + label), id=str(i))
+                    for i, label in enumerate(request.options)
+                )
                 choices.highlighted = 0
                 choices.display = True
                 help_text = tr(self, "ui.schedule.select_hints")
@@ -293,6 +292,16 @@ class ScheduleWorkspace(Vertical):
                 choices.replace_option_prompt(
                     key, ScheduleRow(row.title, row.frequency, row.next_run, key == self._selected_id)
                 )
+
+    @on(OptionList.OptionHighlighted, "#schedule-options")
+    def option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        event.stop()
+        if self.request is None or self.request.options is None:
+            return
+        choices = self.query_one("#schedule-options", OptionList)
+        for i, label in enumerate(self.request.options):
+            prefix = "› " if i == choices.highlighted else "  "
+            choices.replace_option_prompt(str(i), Text(prefix + label))
 
     @on(OptionList.OptionSelected, "#schedule-options")
     def option_selected(self, event: OptionList.OptionSelected) -> None:
