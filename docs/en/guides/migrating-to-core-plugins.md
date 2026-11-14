@@ -47,7 +47,7 @@ To deliberately bypass permission review, use the existing explicit `permissions
 
 The model-facing `agent` tool now uses `description`, `prompt`, optional `read_only` and optional `background`, without a `type` selector:
 
-- Former `type="general"`: omit the type; general delegation is the default.
+- Former `type="general"`: omit the type; general delegation is the default. A call without `type` always uses the built-in generic configuration, even if a legacy definition named `general` exists. Explicitly passing `type="general"` continues to select that legacy override.
 - Former `type="explore"`: use `read_only=true`. It allows `read`, `glob`, `grep`, and `bash` checked under plan mode, but not PowerShell. This is not an OS sandbox.
 - Custom `agents/*.md`: move task instructions into a Skill or delegated prompt. Use a trusted extension for model overrides or special tool restrictions.
 

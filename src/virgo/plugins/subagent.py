@@ -43,11 +43,15 @@ class AgentType:
     extra: dict = field(default_factory=dict)
 
 
+# The model-facing capability API always uses this default, never a named
+# legacy definition that a user may have installed under "general".
+DEFAULT_AGENT = AgentType(
+    "general",
+    "General-purpose agent for multi-step tasks: research, edits, running commands.",
+)
+
 BUILTIN_TYPES = [
-    AgentType(
-        "general",
-        "General-purpose agent for multi-step tasks: research, edits, running commands.",
-    ),
+    DEFAULT_AGENT,
     AgentType(
         "explore",
         "Read-only agent for finding code and answering questions about the codebase.",
@@ -223,7 +227,10 @@ def setup(api: ExtensionAPI) -> None:
         prompt, desc = args["prompt"], args.get("description") or args["prompt"][:60]
         # Old tool calls (including calls from extensions) may still specify a
         # named type. It is deliberately absent from the new model-facing schema.
-        type_name = args.get("type") or "general"
+        # Only an explicitly supplied legacy type may resolve an on-disk named
+        # definition. Capability-only calls use the built-in default even if a
+        # user-defined "general" shadows it in the compatibility registry.
+        type_name = (args.get("type") or "general") if "type" in args else DEFAULT_AGENT
         read_only = args.get("read_only", False)
         if "type" in args and "read_only" in args and type_name in ("general", "explore"):
             if read_only != (type_name == "explore"):

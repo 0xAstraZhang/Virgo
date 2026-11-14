@@ -47,7 +47,7 @@ virgo --profile minimal --no-extensions
 
 现在模型可见的 `agent` 工具使用 `description`、`prompt`、可选 `read_only` 和可选 `background`，不再要求选择 `type`：
 
-- 原 `type="general"`：省略类型，通用委派为默认行为。
+- 原 `type="general"`：省略类型，通用委派为默认行为。未指定 `type` 时始终使用内置通用配置，即使旧版存在名为 `general` 的自定义定义；显式传入 `type="general"` 仍可选择这个旧版覆盖项。
 - 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob`、`grep` 和经过 `plan` 检查的 `bash` 命令，无 PowerShell。这不是操作系统沙箱。
 - 自定义 `agents/*.md`：将任务指令写入 Skill 或委派 Prompt；特殊模型和工具限制通过受信任的扩展实现。
 
