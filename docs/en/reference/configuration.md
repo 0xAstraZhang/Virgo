@@ -36,6 +36,10 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 
 | Key | Default / meaning |
 | --- | --- |
+| `profile` | `coding`; use `minimal` for no preset capabilities |
+| `plugins.<id>.enabled` | Explicit boolean override of the preset |
+| `budget.maxModelCalls` | `null`; optional positive shared parent/child model-request limit |
+| `extensions.trustedProjects` | User settings only; canonical absolute paths authorized for project Python |
 | `language` | `en`; built-in choices are `en` and `zh-CN` |
 | `model` | `anthropic/claude-opus-5-5`; use `provider/model-id` |
 | `effort` | `medium`; supported UI levels are `low`, `medium`, `high`, `xhigh`, `max` |
@@ -44,7 +48,6 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `permissions.mode` | `auto-review` |
 | `permissions.allow`, `permissions.deny` | Lists of tool rules |
 | `permissions.readOnlyCommands` | Additional commands considered for read-only execution |
-| `features.<name>` | Enabled by default; set `false` to disable a built-in feature |
 | `compaction.enabled` | `true` |
 | `compaction.triggerRatio` | `0.8` of the model's context window |
 | `compaction.triggerTokens` | Unset; when supplied, takes precedence over the ratio |
@@ -54,13 +57,25 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `retry.fallbackModel` | Unset; optional overload fallback |
 | `askUser.unattendedTimeout` | `300` seconds for questions in unattended runs |
 | `subagents.maxTurns` | `50` |
-| `goal.maxContinues` | `8` |
-| `workflow.maxAgents`, `workflow.concurrency` | `200`, `8` |
-| `memory.autoExtract` | `false`; explicit opt-in for automatic extraction |
 
-Feature names are `permission`, `diagnostics`, `search`, `fetch`, `todo`, `ask_user`, `subagent`, `skills`, `memory`, `tasks`, `background`, `schedule`, `team`, `mcp`, `workflow`, and `goal`. Disabling the permission feature removes its policy; use a permission mode to change review behavior deliberately.
 
 Web-specific fields are documented in [Web search and reading](../guides/web.md). Shell-specific precedence and platform behavior are in [Command shells](../guides/shells.md).
+
+## Profiles and plugins
+
+`coding` is the default. It enables `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background`, `web` and `auto_review`. MCP is enabled only when server configuration exists. `minimal` starts with no official capabilities; explicit `plugins.<id>.enabled` overrides either preset. Unknown plugin names and malformed values fail configuration rather than silently enabling something.
+
+```json
+{
+  "profile": "minimal",
+  "plugins": {"skills": {"enabled": true}, "todo": {"enabled": true}},
+  "budget": {"maxModelCalls": 40}
+}
+```
+
+The example selects only Skills and Todo from the official set. Permissions, sessions and diagnostics stay in Core. Python extensions are a separate trusted-code path: use `--no-extensions` to disable them. A project cannot grant itself trust; use `--trust-project-extensions` or add its absolute directory to user `extensions.trustedProjects`.
+
+Legacy `features` keys are translated per configuration layer with a notice; same-layer `plugins` values win, then normal user/project/runtime precedence applies. `features.permission=false` only disables the automatic reviewer, never the Core guard. Removed products no longer execute and their files are retained. See [Migration](../guides/migrating-to-core-plugins.md) for aliases, storage locations and the compatibility window.
 
 ## Models and credentials
 
@@ -96,9 +111,9 @@ Auxiliary requests automatically choose a small model on the same connection: `c
 | `accept-all` | Skips permission review and allow/deny rules |
 | `plan` | Exposes read-only investigation tools and restricts command execution |
 
-Auto-review distinguishes authorization from risk. Its verdict is `allow`, `ask` or `deny`. Missing evidence or review failure requires the existing human confirmation; noninteractive runs cannot approve that prompt. An explicit denial blocks the operation. Execution is checked again immediately before the tool runs, after argument changes. These are application-level checks; Virgo does not provide an operating-system sandbox.
+The `auto_review` plugin supplies model review. Without it, the Core retains rules and requires human confirmation for uncertain operations. Noninteractive sessions cannot approve those requests. Auto-review distinguishes authorization from risk. Its verdict is `allow`, `ask` or `deny`. Missing evidence or review failure requires the existing human confirmation; noninteractive runs cannot approve that prompt. An explicit denial blocks the operation. Execution is checked again immediately before the tool runs, after argument changes. These are application-level checks; Virgo does not provide an operating-system sandbox.
 
-Rules use `tool(pattern)` with fnmatch-style patterns, or a tool-name pattern alone. Path tools match paths; command tools match commands; web tools match queries/URLs. Examples include `edit(src/**)`, `read(~/.ssh/*)`, `bash(npm test*)` and `mcp__server__*`. PowerShell uses separate `powershell(...)` rules. See [`features/permission.py`](../../../src/virgo/features/permission.py) for ordering and [`permission_scope.py`](../../../src/virgo/features/permission_scope.py) for boundary detection.
+Rules use `tool(pattern)` with fnmatch-style patterns, or a tool-name pattern alone. Path tools match paths; command tools match commands; web tools match queries/URLs. Examples include `edit(src/**)`, `read(~/.ssh/*)`, `bash(npm test*)` and `mcp__server__*`. PowerShell uses separate `powershell(...)` rules. See [`harness/permission_policy.py`](../../../src/virgo/harness/permission_policy.py) for ordering and [`permission_scope.py`](../../../src/virgo/harness/permission_scope.py) for boundary detection.
 
 ## Context and retries
 
@@ -119,8 +134,8 @@ Retries use exponential backoff with jitter and honor valid `Retry-After` as a m
 | `<user>/sessions/` | Workspace session history |
 | `<user>/model-metadata/`, `<user>/cache/` | Cached connection/model metadata |
 | `<user>/logs/` | Diagnostic logs, also used with `--no-session` |
-| `<user>/memory/`, `<project>/.virgo/memory/` | Memory documents and indexes |
 | `<project>/.virgo/outputs/` | Full tool output logs and retrieved text |
-| `<project>/.virgo/tasks/`, `schedules.json`, `runs/`, `worktrees/` | Task graph, schedules, workflow journals and team worktrees |
 
-Project instructions come from user `AGENTS.md` and ancestor directories' `AGENTS.md` or `CLAUDE.md`, with `AGENTS.md` preferred at the same level. User/project `.virgo/SYSTEM.md` can replace the identity section, and `APPEND_SYSTEM.md` appends instructions. Skills, prompts, agents, extensions, workflows and MCP configuration have separate resource locations described in [Extensions](../development/extensions.md).
+Historical Schedule/Workflow/Team/Tasks/Memory/Goal files are preserved without execution; locations and manual export are in [Migration](../guides/migrating-to-core-plugins.md#inspect-historical-data-without-running-it).
+
+Project instructions come from user `AGENTS.md` and ancestor directories' `AGENTS.md` or `CLAUDE.md`, with `AGENTS.md` preferred at the same level. User/project `.virgo/SYSTEM.md` can replace the identity section, and `APPEND_SYSTEM.md` appends instructions. Skills, prompts, agents, extensions and MCP configuration have separate resource locations described in [Extensions](../development/extensions.md).

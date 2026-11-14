@@ -10,7 +10,6 @@
 | 模型列表为空 | 等待启动刷新完成后重开 `/model`，检查 `/login`，或直接 `/model provider/id` |
 | 更换服务地址后认证失败 | 为新协议／地址重新登录，保存的凭据与连接绑定 |
 | 配置的 Shell 不可用 | 用 `/shell` 选择或指定受支持的可执行文件；Virgo 不会静默替换语言 |
-| 定时任务未执行 | 检查本地时间、持久化及 Virgo 是否持续运行，参见[重启语义](schedules.md#持久化与重启) |
 | 保存历史失败后暂停 | 保持当前进程运行，解决文件系统问题，在切换或退出前查看诊断 |
 
 `/diagnostics` 显示日志位置和最近十条错误。`/diagnostics <error-id>` 根据唯一 ID 或前缀，显示当前实例最近一百条记录中的完整 JSON。重启后应直接读取 JSONL 日志，此命令不会扫描全部历史日志。
@@ -48,7 +47,7 @@
 
 查询使用完整 ID，不接受任意路径或 ID 前缀。权限属于调用 Runtime，共享记账存储或在界面选中其他对话不会授予访问权。默认保留 100 条证据和 1000 个已授权 ID，分别返回 `not_found`、`expired` 或 `unavailable` 等明确状态。完整 JSON 响应每页最多 8 KiB，游标绑定错误、栏目和证据快照。
 
-`features.diagnostics=false` 关闭模型工具、结果摘要和诊断通知，但保留独立日志。诊断在正常模型请求边界追加；收集证据不会自行启动模型轮次，也不会改写旧消息。
+`plugins.diagnostic_get.enabled=false` 关闭面向模型的证据读取工具；Core 日志、错误 ID、有界结果摘要与恢复证据保留，`/diagnostics` 也仍可使用。诊断在正常模型请求边界追加；收集证据不会自行启动模型轮次，也不会改写旧消息。
 
 ## 执行失败不等于没有副作用
 
@@ -68,4 +67,10 @@ Provider 重试仍由 Runtime 的现有策略统一控制。有效 `Retry-After`
 
 写入失败后，会话存储保留逻辑上的内存记录，并通过独立日志报告原始原因。调度暂停，同时通知所属 Runtime，避免继续执行却不断积累未保存历史。切换界面不会修复失败存储，诊断通知也不能清除取消或保存失败状态。在恢复需要的未保存信息前，应避免关闭进程。
 
-实现：[诊断](../../../src/virgo/diagnostics.py)、[日志存储](../../../src/virgo/harness/diagnostics.py)、[Runtime 证据](../../../src/virgo/harness/diagnostic_access.py)、[恢复](../../../src/virgo/harness/recovery.py)、[MCP](../../../src/virgo/features/mcp.py)。
+实现：[诊断](../../../src/virgo/diagnostics.py)、[日志存储](../../../src/virgo/harness/diagnostics.py)、[Runtime 证据](../../../src/virgo/harness/diagnostic_access.py)、[恢复](../../../src/virgo/harness/recovery.py)、[MCP](../../../src/virgo/plugins/mcp.py)。
+
+## 插件配置与升级
+
+未知插件 ID 或非法配置会在启动时报错。可选插件初始化失败会说明插件名称和降级状态，并回滚部分注册；禁用插件不会启动对应服务。项目 Python 扩展需要来自项目之外的信任，审查后才使用 `--trust-project-extensions`。
+
+旧定时任务按设计不再执行。Schedule、Workflow、Team、Tasks、Memory 和 Goal 已移除，原文件保留供人工检查；见[迁移](migrating-to-core-plugins.md)，无需通过旧功能开关重新激活。

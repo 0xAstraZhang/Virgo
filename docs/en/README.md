@@ -12,19 +12,21 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 | [Using Virgo](guides/interaction.md) | Commands, keyboard shortcuts, language, sessions, steering |
 | [Web search and reading](guides/web.md) | Backends, routing, permissions, fetch limits |
 | [Command shells](guides/shells.md) | Shell selection, execution behavior, output and cancellation |
-| [Scheduled tasks](guides/schedules.md) | Creating, editing, persistence, time and restart behavior |
 | [Troubleshooting](guides/troubleshooting.md) | Errors, logs, diagnostic evidence, recovery boundaries |
+
+[Upgrading an existing installation?](guides/migrating-to-core-plugins.md) Review profile changes, project trust and preserved historical data.
 
 ## Look up a detail
 
 - [Configuration](reference/configuration.md): precedence, settings, environment variables, permissions and stored files.
-- [Tools and automation](reference/tools.md): files, tasks, memory, subagents, teams, workflows and MCP.
+- [Tools and plugins](reference/tools.md): files, web, questions, checklists, subagents, background jobs and MCP.
 - [Example files](../../examples/README.md): copy individual files into your own project.
 
 ## Extend or contribute
 
+- [Core and plugin boundaries](development/core-plugin-boundaries.md): ownership, capability inventory and acceptance.
 - [Architecture](development/architecture.md): module responsibilities, execution flow and stable boundaries.
-- [Extensions](development/extensions.md): Python tools and commands, events, skills, templates and workflows.
+- [Extensions](development/extensions.md): Python tools and commands, events, lifecycle, runtime services, skills and templates.
 - [Localization](development/localization.md): language packs, session ownership, fallback and adding a language.
 - [Development and CI](development/testing-and-ci.md): local commands, end-to-end checks, result comparison and runner maintenance.
 

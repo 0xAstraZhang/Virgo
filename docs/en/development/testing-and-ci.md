@@ -50,6 +50,12 @@ Intentional duplicate removal requires an explicit entry in `ci/pipeline/reports
 
 The identity remains in `removed`; `retired` records its retained coverage in both JSON and the readable summary. This is separate from identity aliases and does not reduce expected counts or omit tests from execution. The [retirement record](test-retirements.md) explains each entry. If a PR's base changes before merge, review the mapping against that base and update the exact SHA explicitly. Once merged, later baselines no longer contain these cases and the old exception cannot apply.
 
+### Reviewed product retirements
+
+Removing an official product uses the separate exact manifest [`core_plugin_retirements.json`](../../../ci/pipeline/core_plugin_retirements.json). It is not a duplicate-coverage exemption. The 46 cases at baseline `47e1757` must have passed; five preserved-capability gates must pass in base/head and all eight new migration/Core acceptance gates in head. Original modules and parameter-expanded identities must match. Wrong baselines, unrelated removals and existing failures/skips still fail.
+
+These cases stay in `removed` and are explained in `retired_products`, separately from duplicate `retired` entries. [Test retirements](test-retirements.md#coreplugin-product-retirements) records the product rationale; the JSON manifest contains every exact identity. A fresh baseline requires reviewing the manifest again rather than accepting all deletions under a directory.
+
 ## CI code map
 
 | Path | Responsibility |

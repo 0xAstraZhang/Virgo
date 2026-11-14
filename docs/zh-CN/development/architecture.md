@@ -2,7 +2,7 @@
 
 [文档首页](../README.md) · [English](../../en/development/architecture.md)
 
-Virgo 将模型传输、Agent 循环和应用策略分离。内置功能与项目扩展使用相同的扩展 API。模型选择完成任务的方法，Harness 提供能力、执行边界、持久化和可观察信息。
+Virgo 将模型传输、Agent 循环和应用策略分离。官方能力插件与可信项目扩展使用相同的扩展 API。模型选择完成任务的方法，Harness 提供能力、执行边界、持久化和可观察信息。
 
 ## 仓库结构
 
@@ -12,7 +12,8 @@ Virgo 将模型传输、Agent 循环和应用策略分离。内置功能与项�
 | `src/virgo/agent/` | 工具调用循环、事件、取消、steering 和 follow-up 队列 |
 | `src/virgo/harness/` | 会话／Runtime 构造、配置、命令、扩展、上下文、权限和持久化 |
 | `src/virgo/tools/` | 文件、Shell 和网页执行基础能力 |
-| `src/virgo/features/` | 通过 `setup(api)` 注册的内置功能 |
+| `src/virgo/plugins/` | 通过 `setup(api)` 注册的可选官方插件 |
+| `src/virgo/features/` | 保留能力的临时导入兼容层 |
 | `src/virgo/cli/` | 入口、打印模式、逐行 REPL 和 Textual 全屏界面 |
 | `src/virgo/i18n/` | 语言注册表、翻译 API 和内置词条 |
 | `tests/` | 按源码职责组织的测试，共享支持位于 `tests/support/` |
@@ -22,11 +23,17 @@ Virgo 将模型传输、Agent 循环和应用策略分离。内置功能与项�
 
 安装后的命令和 `python -m virgo` 均进入 [`cli/main.py`](../../../src/virgo/cli/main.py)。根目录的小型 `main.py` 是兼容启动器。运行时代码放在包内，保证源码和安装后的 wheel 使用同一实现。
 
-跨调用方共用的规则放在其语义归属层：`ai/providers/reasoning.py` 为请求构造和诊断元数据提供 OpenAI 推理强度映射；`harness/permissions.py` 管理权限模式、本地化显示名称和计划模式工具筛选。具体审批策略继续位于 `features/permission.py`，并兼容导出旧公开函数。功能通过 `AgentSession.runtime_for_context()` 解析可信调用方，不自行复制身份检查，也不借用当前选中的 Runtime。保留的分层与需要单独设计的接口见[抽象边界](abstraction-boundaries.md)。
+跨调用方共用的规则放在其语义归属层：`ai/providers/reasoning.py` 为请求构造和诊断元数据提供 OpenAI 推理强度映射；`harness/permissions.py` 管理权限模式、本地化显示名称和计划模式工具筛选。必要权限门位于 `harness/permission_policy.py`，范围判断和审查来源契约同样属于 Harness；可选的 `plugins/auto_review.py` 仅提供模型审批。插件通过 `api.runtime_for_context()` 解析可信调用方，不自行复制身份检查，也不借用当前选中的 Runtime。职责归属与不变量见[抽象边界](abstraction-boundaries.md)和 [Core／插件边界](core-plugin-boundaries.md)。
+
+## Core 与插件装配
+
+Core 先初始化基础编程工具、Shell、Store、运行时身份、诊断和必要权限门，再加载能力。`coding` 选择官方编程插件；`minimal` 默认不选择能力，显式配置仍可启用。可信 Python 扩展单独控制，因此零扩展路径为 `--profile minimal --no-extensions`。
+
+注册记录归属，名称冲突失败；初始化回滚移除部分注册，清理按逆序运行。禁用的能力不导入。动态工具集通过有归属的注册表在模型请求边界原子发布。Core 依赖这些契约，不依赖具体插件实现。详见[扩展 API](extensions.md)。
 
 ## 会话与 Runtime
 
-`AgentSession` 持有工作区路径、生效配置、认证、会话级翻译器、UI 适配器、已注册工具／命令、共享服务和诊断日志。每个 `Runtime` 持有一份 Agent 上下文：主 Agent、子 Agent 或队友。构造时显式绑定工作目录、工具、模型、对话存储、记账存储和审查归属。
+`AgentSession` 持有工作区路径、生效配置、认证、会话级翻译器、UI 适配器、已注册工具／命令、共享服务和诊断日志。每个 `Runtime` 持有一份 Agent 上下文：主 Agent 或聚焦的子运行时。构造时显式绑定工作目录、工具、模型、对话存储、记账存储和审查归属。
 
 候选 Runtime 在激活前构建系统上下文。`RuntimeContext` 让支持 Runtime 的提示段读取候选存储和角色，无需临时替换 `session.main` 或 `session.store`。候选创建失败时，活动对话保持原状。
 
@@ -59,7 +66,7 @@ Virgo 将模型传输、Agent 循环和应用策略分离。内置功能与项�
 
 ## 上下文、诊断与恢复
 
-基础系统上下文组合身份／指导、扩展提示段、项目指令、可选自定义系统文本和实际环境。`_base_context` 在请求中加入选定的回复语言偏好，不会每轮重建基础提示。技能与记忆先展示索引，空资源不注入大段提示。配置和能力事实来自各自所属的服务。
+基础系统上下文组合身份／指导、扩展提示段、项目指令、可选自定义系统文本和实际环境。`_base_context` 在请求中加入选定的回复语言偏好，不会每轮重建基础提示。技能先展示索引，空资源不注入大段提示。配置和能力事实来自各自所属的服务。
 
 压缩保留完整历史，只替换模型的活动上下文。受支持的官方服务使用原生表示，其他服务使用续接摘要和近期消息。上下文钩子应保持追加式行为，除非它代表明确记录的配置边界。
 
@@ -69,6 +76,6 @@ MCP 恢复在替换活动句柄前验证新连接和 schema。schema 变化在�
 
 ## 扩展入口
 
-工具、命令、事件处理和提示段使用 [`ExtensionAPI`](../../../src/virgo/harness/extensions.py)。新模型协议使用 AI 适配器，新命令语言使用 Shell 适配器，显示语言使用语言包。策略放在 Harness／features，底层执行放在 tools／适配器。
+工具、命令、事件处理和提示段使用 [`ExtensionAPI`](../../../src/virgo/harness/extensions.py)。新模型协议使用 AI 适配器，新命令语言使用 Shell 适配器，显示语言使用语言包。必要策略放在 Harness，可选能力放在 plugins，底层执行放在 tools／适配器。
 
 继续阅读[扩展](extensions.md)、[本地化](localization.md)或[开发与 CI](testing-and-ci.md)。

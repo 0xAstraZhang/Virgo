@@ -69,7 +69,7 @@ git diff | uv run virgo -p "检查这份 diff 中的正确性问题"
 
 文本打印模式输出最终答案。JSON 模式输出 JSONL 事件；有显式结果的斜杠命令会产生 `command_result` 记录。`-p` 必须通过参数或标准输入获得提示。此模式不能回答交互问题，相关工具会报告未作答，不会替你选择。
 
-`--no-session` 关闭对话历史保存，但不会关闭诊断日志或工具产生的输出文件。`--no-extensions` 跳过用户和项目的 Python 扩展；内置功能仍然启用，除非在配置中关闭。
+`--no-session` 关闭对话历史保存，但不会关闭诊断日志或工具产生的输出文件。`--no-extensions` 跳过用户和项目的 Python 扩展；官方插件由 `--profile` 和 `plugins` 配置控制。`--profile minimal --no-extensions` 只启用 Core 能力；默认 `coding` 保留标准编程工具与可选助手能力。项目 Python 扩展需要 `--trust-project-extensions` 或用户级信任，见[迁移](migrating-to-core-plugins.md)。
 
 ## 体验离线演示
 

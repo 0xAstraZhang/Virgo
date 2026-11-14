@@ -69,7 +69,7 @@ git diff | uv run virgo -p "Review this diff for correctness issues"
 
 Text print mode prints the final answer. JSON mode emits JSONL events; slash commands with explicit results emit `command_result` records. `-p` requires a prompt from arguments or stdin. It cannot answer interactive questions, so tools report unanswered requests instead of choosing on your behalf.
 
-Use `--no-session` to avoid saving conversation history. This does not disable diagnostic logs or outputs created by tools. Use `--no-extensions` to skip user and project Python extensions; built-in features remain enabled unless disabled in settings.
+Use `--no-session` to avoid saving conversation history. This does not disable diagnostic logs or outputs created by tools. Use `--no-extensions` to skip user and project Python extensions; official plugins are controlled by `--profile` and `plugins` settings. `--profile minimal --no-extensions` starts with Core capabilities only. The default `coding` preset keeps the standard coding tools and optional helpers. Project Python extensions require `--trust-project-extensions` or user-level trust; see [Migration](migrating-to-core-plugins.md).
 
 ## Try the offline demo
 

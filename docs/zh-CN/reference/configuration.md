@@ -36,6 +36,10 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 
 | 键 | 默认值／含义 |
 | --- | --- |
+| `profile` | `coding`；`minimal` 不选择官方能力 |
+| `plugins.<id>.enabled` | 显式布尔值覆盖预设 |
+| `budget.maxModelCalls` | `null`；可选的父子运行时共享模型请求正整数上限 |
+| `extensions.trustedProjects` | 仅用户配置；获准运行项目 Python 的规范化绝对路径 |
 | `language` | `en`；内置语言为 `en` 和 `zh-CN` |
 | `model` | `anthropic/claude-opus-5-5`；格式为 `provider/model-id` |
 | `effort` | `medium`；界面支持 `low`、`medium`、`high`、`xhigh`、`max` |
@@ -44,7 +48,6 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `permissions.mode` | `auto-review` |
 | `permissions.allow`、`permissions.deny` | 工具规则列表 |
 | `permissions.readOnlyCommands` | 额外纳入只读执行判断的命令 |
-| `features.<name>` | 默认启用，设为 `false` 关闭内置功能 |
 | `compaction.enabled` | `true` |
 | `compaction.triggerRatio` | 模型上下文窗口的 `0.8` |
 | `compaction.triggerTokens` | 未设置；提供时优先于比例阈值 |
@@ -54,13 +57,25 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `retry.fallbackModel` | 未设置；可指定过载时的回退模型 |
 | `askUser.unattendedTimeout` | 无人值守运行中的提问等待 `300` 秒 |
 | `subagents.maxTurns` | `50` |
-| `goal.maxContinues` | `8` |
-| `workflow.maxAgents`、`workflow.concurrency` | `200`、`8` |
-| `memory.autoExtract` | `false`；需显式启用自动提取 |
 
-功能名称包括 `permission`、`diagnostics`、`search`、`fetch`、`todo`、`ask_user`、`subagent`、`skills`、`memory`、`tasks`、`background`、`schedule`、`team`、`mcp`、`workflow` 和 `goal`。关闭 `permission` 会移除对应权限策略；需要调整审查方式时，应有意识地选择权限模式。
 
 网页配置见[联网搜索与读取](../guides/web.md)，解释器的具体优先级与平台语义见[命令解释器](../guides/shells.md)。
+
+## 预设与插件
+
+默认 `coding` 启用 `skills`、`todo`、`ask_user`、`diagnostic_get`、`subagent`、`background`、`web`、`auto_review`。MCP 仅在存在服务器配置时启用。`minimal` 默认无官方能力；显式 `plugins.<id>.enabled` 可覆盖任一预设。未知插件名和非法值会报告配置错误，不会静默启用能力。
+
+```json
+{
+  "profile": "minimal",
+  "plugins": {"skills": {"enabled": true}, "todo": {"enabled": true}},
+  "budget": {"maxModelCalls": 40}
+}
+```
+
+示例仅选择 Skills 和 Todo 两个官方插件。权限、会话和诊断仍属于 Core。Python 扩展是单独的可信代码路径；使用 `--no-extensions` 禁用。项目不能自行授予信任；应使用 `--trust-project-extensions`，或将绝对目录加入用户 `extensions.trustedProjects`。
+
+旧 `features` 按配置层转换并提示；同层 `plugins` 优先，再应用通常的用户／项目／运行时顺序。`features.permission=false` 只关闭模型审查，不会关闭 Core 权限门。退役产品不再运行，原文件保留。别名、数据位置和兼容期限见[迁移](../guides/migrating-to-core-plugins.md)。
 
 ## 模型与凭据
 
@@ -96,9 +111,9 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 | `accept-all` | 跳过权限审查及 allow/deny 规则 |
 | `plan` | 提供只读调查工具，并限制命令执行 |
 
-自动审查分别判断用户授权和风险，返回 `allow`、`ask` 或 `deny`。证据不足或审查失败时进入现有人工确认；非交互运行无法批准该问题。明确拒绝会阻止操作。参数变化后，在工具真正执行前还会再次检查。这些是应用层检查，Virgo 不提供操作系统级沙箱。
+`auto_review` 插件提供模型审查；禁用后 Core 仍执行规则，不确定操作需要人工确认，非交互会话无法批准。自动审查分别判断用户授权和风险，返回 `allow`、`ask` 或 `deny`。证据不足或审查失败时进入现有人工确认；非交互运行无法批准该问题。明确拒绝会阻止操作。参数变化后，在工具真正执行前还会再次检查。这些是应用层检查，Virgo 不提供操作系统级沙箱。
 
-规则采用 `tool(pattern)`，其中 pattern 使用 fnmatch 风格，也可以只写工具名模式。文件工具匹配路径，命令工具匹配命令，网页工具匹配查询或 URL。例如 `edit(src/**)`、`read(~/.ssh/*)`、`bash(npm test*)` 和 `mcp__server__*`。PowerShell 使用独立的 `powershell(...)` 规则。顺序见 [`features/permission.py`](../../../src/virgo/features/permission.py)，边界判断见 [`permission_scope.py`](../../../src/virgo/features/permission_scope.py)。
+规则采用 `tool(pattern)`，其中 pattern 使用 fnmatch 风格，也可以只写工具名模式。文件工具匹配路径，命令工具匹配命令，网页工具匹配查询或 URL。例如 `edit(src/**)`、`read(~/.ssh/*)`、`bash(npm test*)` 和 `mcp__server__*`。PowerShell 使用独立的 `powershell(...)` 规则。顺序见 [`harness/permission_policy.py`](../../../src/virgo/harness/permission_policy.py)，边界判断见 [`permission_scope.py`](../../../src/virgo/harness/permission_scope.py)。
 
 ## 上下文与重试
 
@@ -119,8 +134,8 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 | `<用户目录>/sessions/` | 各工作空间的会话历史 |
 | `<用户目录>/model-metadata/`、`<用户目录>/cache/` | 连接与模型元数据缓存 |
 | `<用户目录>/logs/` | 诊断日志，`--no-session` 下也使用 |
-| `<用户目录>/memory/`、`<项目>/.virgo/memory/` | 记忆文件及索引 |
 | `<项目>/.virgo/outputs/` | 完整工具日志和网页正文 |
-| `<项目>/.virgo/tasks/`、`schedules.json`、`runs/`、`worktrees/` | 任务图、定时任务、工作流日志和团队工作树 |
 
-项目指令读取用户目录的 `AGENTS.md` 和祖先目录中的 `AGENTS.md` 或 `CLAUDE.md`，同层优先 `AGENTS.md`。用户／项目 `.virgo/SYSTEM.md` 可替换身份段落，`APPEND_SYSTEM.md` 可追加指令。技能、模板、Agent、扩展、工作流和 MCP 的资源位置见[扩展文档](../development/extensions.md)。
+历史 Schedule／Workflow／Team／Tasks／Memory／Goal 文件原样保留且不自动执行；位置与人工导出方法见[迁移](../guides/migrating-to-core-plugins.md#只读检查历史数据)。
+
+项目指令读取用户目录的 `AGENTS.md` 和祖先目录中的 `AGENTS.md` 或 `CLAUDE.md`，同层优先 `AGENTS.md`。用户／项目 `.virgo/SYSTEM.md` 可替换身份段落，`APPEND_SYSTEM.md` 可追加指令。技能、模板、Agent、扩展和 MCP 的资源位置见[扩展文档](../development/extensions.md)。
