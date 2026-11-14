@@ -231,10 +231,12 @@ def make_web_search(
             return ToolResult.text(
                 json.dumps(result, ensure_ascii=False), details={"count": len(rows), "backend": backend}
             )
-        except httpx.TimeoutException:
-            return ToolResult.error(ctx.t("tools.search.timeout"))
-        except httpx.HTTPError:
-            return ToolResult.error(ctx.t("tools.search.network"))
+        except httpx.TimeoutException as error:
+            # Exception text may contain the request URL or credentials. The
+            # transport class still distinguishes read, connect and pool timeouts.
+            return ToolResult.error(f"{ctx.t('tools.search.timeout')} ({type(error).__name__})")
+        except httpx.HTTPError as error:
+            return ToolResult.error(f"{ctx.t('tools.search.network')} ({type(error).__name__})")
         except (SearchError, ValueError, TypeError) as error:
             return ToolResult.error(
                 str(error), details={"cancelled": True} if getattr(error, "cancelled", False) else None

@@ -29,13 +29,15 @@ Core 始终提供文件和所选 Shell 工具。下列可选工具由 `web`、`t
 
 ## 聚焦的子 Agent
 
-`agent(description, prompt, read_only=false, background=false)` 使用独立上下文处理任务并返回最终答案，所需上下文必须包含在任务提示里。`read_only=true` 仅允许 `read`、`glob`、`grep`、`bash`，并通过 `plan` 模式限制 Shell 命令（无 PowerShell）；这不是操作系统沙箱。默认子代理不施加额外限制，但不能突破父代理权限上限。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
+`agent(description, prompt, read_only=false, background=false)` 使用独立上下文处理任务并返回最终答案，所需上下文必须包含在任务提示里。`read_only=true` 仅允许 `read`、`glob`、`grep`、`bash`，并通过 `plan` 模式限制 Shell 命令（无 PowerShell）；这不是操作系统沙箱。默认子代理不施加额外限制，但不能突破父代理权限上限。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。达到轮数上限、最终回答中断或最终回答为空时，会明确报告**未完成**，而不是成功。子代理失败时，父代理能收到有长度限制的近期工具错误原因及明确传递的诊断证据；成功时仍只返回最终回答。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 ## 后台任务
 
 后台命令和子 Agent 共用任务管理器。`/jobs` 查看列表，`job_output` 读取输出，`job_kill` 取消任务。完成通知绑定原始对话，可插入正在运行的 Agent 或唤醒空闲 Agent，不会转移到界面当前选中的其他对话。
 
-后台子 Agent 的完成通知包含完整的最终回答。后台命令的通知只包含已捕获输出的最后 1,200 个字符；可使用 `job_output` 读取更多内容。
+后台子 Agent 的完成通知包含完整的最终回答。后台命令的通知只包含已捕获输出的最后 1,200 个字符；可使用 `job_output` 读取更多内容。后台可调用任务若返回错误但没有结构化诊断，其任务记录会保留经过脱敏和长度限制的原始失败文本，而不是仅记录笼统状态。
+
+客户端 `web_search` 和 `web_fetch` 的传输错误会标明异常类型（如 `ConnectError` 或 `ReadTimeout`），但不会显示可能包含私密 URL 或凭据的原始异常文本。
 
 ## MCP 与诊断
 

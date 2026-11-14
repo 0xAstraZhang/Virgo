@@ -286,10 +286,16 @@ class JobManager:
                 if details.get("status") == "aborted":
                     status = "killed"
                 if status == "failed":
+                    original_error = details.get("error")
+                    # An extension may return an error result without structured
+                    # diagnostics. Preserve its bounded, redacted explanation instead
+                    # of replacing it with a generic "job failed" message.
+                    reason = original_error or safe_text(text, secrets=(job.label,))[:1024]
                     self._report(
                         job,
-                        details.get("error") or f"Background job {job.id} reported a failed result.",
+                        reason or f"Background job {job.id} reported a failed result.",
                         phase="background.callable",
+                        code="BACKGROUND_RESULT_FAILED" if not original_error else None,
                     )
                 for related in details.get("related_errors") or []:
                     if isinstance(related, dict):

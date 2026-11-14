@@ -58,7 +58,7 @@ def run_loop(
                     push(
                         AssistantMessage(
                             content=[TextContent(cfg.t("harness.agent.turn_limit", turns=cfg.max_turns))],
-                            stop_reason="stop",
+                            stop_reason="turn_limit",
                         )
                     )
                     emit(AgentEvent("turn_end", cfg.name))
@@ -87,7 +87,7 @@ def run_loop(
                     if native_continues > 3:
                         push(AssistantMessage(
                             content=[TextContent(cfg.t("harness.agent.search_paused"))],
-                            stop_reason="stop",
+                            stop_reason="search_paused",
                         ))
                         emit(AgentEvent("turn_end", cfg.name))
                         return

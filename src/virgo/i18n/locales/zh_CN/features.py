@@ -4,6 +4,10 @@ MESSAGES = {
     "features.agent.aborted": "子代理已中止。",
     "features.agent.background": "已启动后台子代理 {id}（{description}）。完成后会通知你；用 job_output 读取结果。",
     "features.agent.failed": "子代理失败: {error}",
+    "features.agent.turn_limit": "子代理达到 {turns} 轮上限，任务尚未完成。"
+    "先检查已经完成的工作，再缩小任务范围或调整 subagents.maxTurns。",
+    "features.agent.incomplete": "子代理未生成完整的最终回答：{reason}。"
+    "请先核对错误信息和已完成的工作，再决定后续操作。",
     "features.agent.no_answer": "子代理未生成回答。",
     "features.agent.no_text": "（最终回答没有文本）",
     "features.agent.progress": "\n子代理停止前已返回 {count} 个工具结果；先前的操作可能已生效。最近结果:\n",
