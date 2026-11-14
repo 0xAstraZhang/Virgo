@@ -11,13 +11,12 @@ import itertools
 import queue
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from ...agent.types import AgentEvent
 from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest
-from ...harness.ui import TIMED_OUT, UI, ScheduleChoice
+from ...harness.ui import TIMED_OUT, UI
 from ..i18n import tr
 
 
@@ -52,9 +51,6 @@ class InputRequest:
     preferences: PreferenceRequest | None = None
     details: str | None = None
     multiline: bool = False
-    schedule_workspace: bool = False
-    schedules: tuple[ScheduleChoice, ...] | None = None
-    selected_schedule: str | None = None
 
 
 @dataclass
@@ -77,7 +73,6 @@ class FullscreenUI(UI):
         self._inputs: dict[int, _Waiting] = {}
         self._signals: dict[str, threading.Event] = {}
         self._closed = False
-        self._local = threading.local()
 
     def push(self, kind: str, payload: Any = None) -> None:
         self._queue.put(Update(kind, payload))
@@ -199,27 +194,6 @@ class FullscreenUI(UI):
     def input_multiline(self, question: str, *, default: str = "") -> str | None:
         return self._ask_input(question, default=default, multiline=True)
 
-    @contextmanager
-    def schedule_workspace(self):
-        nested = getattr(self._local, "schedule_workspace", False)
-        self._local.schedule_workspace = True
-        if not nested:
-            self.push("schedule_workspace", True)
-        try:
-            yield
-        finally:
-            self._local.schedule_workspace = nested
-            if not nested:
-                self.push("schedule_workspace", False)
-
-    def select_schedule(self, choices: list[ScheduleChoice], *, selected: str | None = None) -> str | None:
-        return self._ask_input(
-            tr(self, "ui.schedule.title"),
-            schedules=tuple(choices),
-            selected_schedule=selected,
-            options=tuple(row.id for row in choices) + ("new",),
-        )
-
     def _ask_input(
         self, question: str, timeout: float | None = None, **kwargs
     ) -> str | PreferenceChoice | None:
@@ -230,7 +204,6 @@ class FullscreenUI(UI):
             request = InputRequest(
                 next(self._ids),
                 question,
-                schedule_workspace=getattr(self._local, "schedule_workspace", False),
                 **kwargs,
             )
             waiting = _Waiting(request)

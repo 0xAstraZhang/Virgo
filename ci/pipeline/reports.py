@@ -1,9 +1,12 @@
-"""Report integrity, test identity aliases, and reviewed duplicate retirements."""
+"""Report integrity, aliases, and separately reviewed duplicate/product retirements."""
 
 from __future__ import annotations
 
 import math
 from collections import Counter
+from pathlib import Path
+
+from .io import read_json
 
 BAD = {"failed", "error"}
 STATUSES = BAD | {"passed", "skipped"}
@@ -86,6 +89,11 @@ APPROVED_RETIREMENTS = {
     },
 }
 
+# This is an exact reviewed inventory, not a feature-directory exemption. Each
+# original case must have passed at this SHA and all preservation/migration
+# gates must pass at their specified revisions before a deletion is accepted.
+PRODUCT_RETIREMENTS = read_json(Path(__file__).with_name("core_plugin_retirements.json"))
+
 
 def approved_retirements(base, head):
     retired = {}
@@ -97,6 +105,27 @@ def approved_retirements(base, head):
                             for report in (base, head) for case in coverage):
             retired[name] = list(coverage)
     return retired
+
+
+def approved_product_retirements(base, head):
+    policy = PRODUCT_RETIREMENTS
+    if base["sha"] != policy["baseline_sha"]:
+        return {}
+
+    def passed(report, identity):
+        case = report["tests"].get(identity["name"], {})
+        return case.get("status") == "passed" and case.get("classname") == identity["classname"]
+
+    preserved, acceptance = policy["preservation_gates"], policy["acceptance_gates"]
+    if (not preserved or not acceptance
+            or not all(passed(report, identity) for report in (base, head) for identity in preserved)
+            or not all(passed(head, identity) for identity in acceptance)):
+        return {}
+    return {
+        identity["name"]: {"classname": identity["classname"], "product": identity["product"]}
+        for identity in policy["retired_cases"]
+        if identity["name"] not in head["tests"] and passed(base, identity)
+    }
 
 
 def validate_report(data):

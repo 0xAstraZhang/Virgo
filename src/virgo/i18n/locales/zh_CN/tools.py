@@ -94,12 +94,6 @@ MESSAGES = {
     "tools.mcp_reconnect.label": "重连 MCP",
     "tools.mcp_status.description": "读取本地 MCP 连接状态、连接代次、待处理调用和可访问的诊断 ID，不联系服务器。",
     "tools.mcp_status.label": "MCP 状态",
-    "tools.memory.description": "保存、更新或删除持久记忆。后续会话会收到索引条目并可读取文件。user/feedback 类型使用用户范围，project/reference "
-    "使用项目范围。保存必须提供 type、description 和 body；更新会保留未提供的字段。",
-    "tools.memory.label": "记忆",
-    "tools.memory.parameters.properties.body.description": "记忆正文（Markdown）",
-    "tools.memory.parameters.properties.description.description": "用一行说明这条记忆的内容",
-    "tools.memory.parameters.properties.name.description": "简短且唯一的标题",
     "tools.output.aborted": "{text}\n\n[命令已中止]",
     "tools.output.budget": "{shown}\n"
     "\n"
@@ -116,14 +110,6 @@ MESSAGES = {
     "tools.read.parameters.properties.limit.description": "最多读取的行数",
     "tools.read.parameters.properties.offset.description": "起始行号，从 1 开始",
     "tools.read.parameters.properties.path.description": "文件路径，可相对于工作目录，也可使用绝对路径",
-    "tools.schedule.description": "安排提示词稍后执行（at：ISO 时间或 +10m/+2h/+1d）、按日历重复执行（cron：5 个字段，使用本地时间），或每隔 "
-    "interval_minutes 分钟执行（可选 start_at：首次执行的 ISO 日期时间）。at、cron、interval_minutes "
-    "必须且只能指定一个。get 读取完整详情；list 返回标题。edit 仅修改 title/prompt "
-    "时保留时间规则，修改时间时须提供完整的新规则。重启时跳过错过的执行时刻。任务仅在 Virgo 开启时运行。",
-    "tools.schedule.label": "定时任务",
-    "tools.schedule.parameters.properties.persist.description": "在后续 Virgo 会话中保留",
-    "tools.schedule.parameters.properties.start_at.description": "首次间隔执行时间（未来的 ISO 时间）；默认当前时间加一个间隔",
-    "tools.schedule.parameters.properties.title.description": "简短的单行任务标题",
     "tools.search.backend": "search.backend 必须为 'duckduckgo' 或 'deepseek'。",
     "tools.search.balance": "搜索服务账户余额不足。请充值后重试。",
     "tools.search.cancelled": "联网搜索已取消。",
@@ -171,29 +157,6 @@ MESSAGES = {
     "tools.shell.unsupported": "不支持 Shell {value!r}；支持: {supported}",
     "tools.shell.version_probe_failed": "版本探测失败",
     "tools.shell.wsl": "WSL Bash 启动器不是本机 Shell；请选择 Git Bash 或 PowerShell。",
-    "tools.submit_plan.description": "把实施计划提交给负责人审批，然后结束当前一轮。",
-    "tools.submit_plan.label": "提交计划",
-    "tools.task_create.description": "在共享任务图中创建持久任务（跨会话保留，可被队友认领）。blocked_by 列出必须先完成的已有任务 ID；task_update "
-    "可修改依赖关系。",
-    "tools.task_create.label": "创建任务",
-    "tools.task_get.description": "查看一个任务及其完整描述。",
-    "tools.task_get.label": "任务详情",
-    "tools.task_list.description": "列出任务及其状态（ready / blocked / in_progress / completed）和负责人。",
-    "tools.task_list.label": "任务列表",
-    "tools.task_update.description": "更新任务。设置 status=in_progress 可认领任务（被依赖阻塞或已被他人认领时会拒绝）；status=completed "
-    "会报告哪些任务已就绪。设置 owner 不会唤醒队友；请用 team_message 分派工作。",
-    "tools.task_update.label": "更新任务",
-    "tools.team_message.description": "按名称向队友、向 'lead' 或向 '*'（所有队友）发送消息。闲置接收方会被唤醒；正在工作的接收方会在消息边界收到消息。",
-    "tools.team_message.label": "团队消息",
-    "tools.team_review.description": "批准或拒绝队友的计划（request_id 来自其计划请求）。",
-    "tools.team_review.label": "审核计划",
-    "tools.team_spawn.description": "启动具有独立上下文的长期队友；请在 prompt 中提供任务上下文。每轮工作结束后，它会等待消息。plan_first=true "
-    "要求它在修改前提交计划供你批准；worktree=true 会为它创建独立的 Git worktree。",
-    "tools.team_spawn.label": "启动队友",
-    "tools.team_status.description": "列出队友及其状态。",
-    "tools.team_status.label": "团队状态",
-    "tools.team_stop.description": "请队友完成当前一轮后关闭（force=true 会中止当前工作）。",
-    "tools.team_stop.label": "停止队友",
     "tools.todo_write.description": "用提供的完整列表替换当前会话的待办清单。每项状态为 pending、in_progress 或 completed；允许多项同时处于 "
     "in_progress。",
     "tools.todo_write.label": "待办事项",
@@ -205,9 +168,6 @@ MESSAGES = {
     "tools.web_search.parameters.properties.limit.description": "结果数量，1–10（默认 5）。",
     "tools.web_search.parameters.properties.query.description": "搜索词；DeepSeek 最多 128 个字符，DuckDuckGo 最多 2000 "
     "个字符。",
-    "tools.workflow.description": "按名称运行脚本化的多代理工作流（见 <workflows>）。脚本决定执行顺序；args 以对象传入。执行失败后可用 resume=<run_id> "
-    "再次调用，从中断处继续。",
-    "tools.workflow.label": "工作流",
     "tools.write.description": "使用提供的内容创建或覆盖文件；会自动创建父目录。",
     "tools.write.label": "写入文件",
 }

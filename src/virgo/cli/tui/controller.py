@@ -21,7 +21,7 @@ from .bridge import FullscreenUI, RunFinished, StagedFullscreenUI, Update
 class RunController:
     """All methods except worker closures run on the UI thread.
 
-    ``poll`` returns presentation updates and advances the scheduler. A worker
+    ``poll`` returns presentation updates and schedules queued work. A worker
     remains busy until its completion is consumed here, avoiding overlapping
     calls during the gap between a fast worker exiting and the next UI frame.
     """
@@ -73,7 +73,8 @@ class RunController:
                 if not target.cwd.is_dir():
                     raise FileNotFoundError(tr(self, "ui.session.missing_workspace", path=target.cwd))
                 candidate = AgentSession(
-                    target.cwd, ui=StagedFullscreenUI(self.ui), session=path, **previous.session_options
+                    target.cwd, ui=StagedFullscreenUI(self.ui), session=path,
+                    **{**previous.session_options, "trust_project_extensions": False},
                 )
                 with self._lifecycle_lock:
                     closing = self.closing
@@ -84,7 +85,7 @@ class RunController:
                     return
                 try:
                     previous.shutdown()
-                    # Teammates can finish emitting after their abort signal.
+                    # Child runtimes can finish emitting after their abort signal.
                     # Persist their final messages without painting the next conversation.
                     previous.ui = UI()
                     with self._lifecycle_lock:
@@ -155,7 +156,7 @@ class RunController:
         if event.agent == "main" and event.type == "agent_start" and (self.closing or self._interrupted):
             # Agent.prompt resets its own signal. An interrupt may have arrived
             # after scheduling but before that reset on the worker thread.
-            runtime.agent.abort()
+            self.session.abort_runtime(runtime)
 
     def start(self, initial: str | None = None) -> None:
         if self._started or self.closing:
@@ -246,7 +247,7 @@ class RunController:
             elif update.kind == "helper_done":
                 self._helpers.pop(update.payload, None)
             elif update.kind == "wake":
-                pass  # The scheduler below checks wakeups after all queued events.
+                pass  # The worker scheduling below checks wakeups after all queued events.
             elif update.kind == "event":
                 ev = update.payload
                 if ev.type == "message_end" and ev.agent == "main" and isinstance(ev.message, UserMessage):

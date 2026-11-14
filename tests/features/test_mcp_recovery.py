@@ -65,11 +65,14 @@ def test_reconnect_scope_server_generation_and_stable_tool_binding(make_session)
     owner = context(session, runtime=original_runtime)
     result = reconnect(session, error, ctx=owner)
     assert not result.is_error and result.details["mcp_recovery"]["replayed_calls"] == 0
+    assert result.details["mcp_recovery"]["refresh_required"]
+    session.prompt("publish recovered connection")
     replacement = session.services["mcp"]["echo"]
     assert replacement is not original and replacement.generation == original.generation + 1
     assert session.services["mcp"]["other"] is other and not other._closing
-    assert session.tool("mcp__echo__echo") is wrapper
-    assert wrapper.execute({"text": "new connection"}, owner).as_text() == "new connection"
+    assert session.tool("mcp__echo__echo") is not wrapper
+    assert wrapper.execute({"text": "stale connection"}, owner).is_error
+    assert session.tool("mcp__echo__echo").execute({"text": "new connection"}, context(session)).as_text() == "new connection"
     assert original._closing
     assert reconnect(session, error, ctx=owner).is_error
     assert session.services["mcp"]["echo"] is replacement
@@ -200,6 +203,7 @@ def test_handshake_alone_does_not_reset_recovery_budget(make_session):
     session = make_session(settings=settings("echo"))
     for _ in range(MAX_RECONNECT_ATTEMPTS):
         assert not reconnect(session, incident(session)).is_error
+        session.prompt("publish recovered connection")
     result = reconnect(session, incident(session))
     assert result.is_error and "budget" in result.as_text()
 
@@ -434,3 +438,29 @@ def test_manual_reload_changes_generation_and_invalidates_old_incident(make_sess
     assert current.generation > generation
     assert reconnect(session, error).is_error
     assert session.services["mcp"]["echo"] is current
+
+
+def test_failed_manual_reload_preserves_all_healthy_connections(make_session, monkeypatch):
+    """Validate every candidate before changing registry or closing a healthy transport."""
+    session = make_session(settings=settings("echo", "other"))
+    original = dict(session.services["mcp"])
+    wrappers = {name: session.tool(f"mcp__{name}__echo") for name in original}
+    candidates = []
+    connect = MCPClient.connect
+
+    def fail_one(client, *args, **kwargs):
+        candidates.append(client)
+        if client.name == "other":
+            raise OSError("replacement dependency unavailable")
+        return connect(client, *args, **kwargs)
+
+    monkeypatch.setattr(MCPClient, "connect", fail_one)
+    with pytest.raises(OSError, match="replacement dependency unavailable"):
+        session.prompt("/mcp reconnect")
+    assert session.services["mcp"] == original
+    for name, client in original.items():
+        assert not client._closing
+        assert session.tool(f"mcp__{name}__echo") is wrappers[name]
+        assert wrappers[name].execute({"text": "still healthy"}, context(session)).as_text() == "still healthy"
+    assert candidates and all(candidate._closing for candidate in candidates)
+    assert "replacement dependency unavailable" in session.ui.text

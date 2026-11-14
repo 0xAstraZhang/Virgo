@@ -30,10 +30,6 @@ IDENTITY = {
         "You are a Virgo sub-agent with an independent context. "
         "Only your final answer is returned to the agent that delegated your task."
     ),
-    "teammate": (
-        "You are a Virgo teammate: a long-lived agent in a team led by the main agent ('lead'). "
-        "You have an independent context, receive work through messages, and communicate with team_message."
-    ),
 }
 
 GUIDELINES = (

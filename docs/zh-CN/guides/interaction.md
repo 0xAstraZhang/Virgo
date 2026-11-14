@@ -16,7 +16,7 @@
 
 ## 命令
 
-`/help` 列出当前配置下已注册的命令，包括提示模板。关闭某项功能后，相应命令不会注册。全屏编辑器在完整命令名后显示参数提示；输入参数后提示消失，也不会随输入一起提交。
+`/help` 列出当前配置下已注册的命令，包括提示模板。禁用插件后，相应命令不会注册。默认预设和开关见[配置](../reference/configuration.md#预设与插件)，退役命令见[迁移](migrating-to-core-plugins.md)。全屏编辑器在完整命令名后显示参数提示；输入参数后提示消失，也不会随输入一起提交。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -33,13 +33,9 @@
 | `/compact [focus]` | 压缩较早的模型上下文 |
 | `/new`、`/sessions [number]`、`/session` | 新建、浏览或查看会话 |
 | `/diagnostics [error-id]` | 查看近期错误和诊断记录 |
-| `/schedule`、`/schedules` | 创建或管理定时任务 |
-| `/todos`、`/tasks`、`/jobs`、`/team` | 查看清单、任务图、后台任务或队友 |
+| `/todos`、`/jobs` | 查看当前对话清单或后台任务 |
 | `/skills`、`/skill:name [args]` | 列出技能或显式使用技能 |
-| `/memory [tidy]` | 查看记忆，或由小模型整理记忆 |
 | `/mcp [reconnect]` | 查看或重新加载 MCP 连接 |
-| `/workflow [resume run_id]` | 列出工作流和近期运行，或续跑 |
-| `/goal [condition\|clear]` | 设置、查看或清除明确的完成条件 |
 | `/exit` | 退出交互程序 |
 
 模型和推理强度选择器读取已保存的模型目录，不会自行联网刷新。Virgo 启动时在后台刷新已连接的厂商；首次目录仍在加载时，可在完成后重新打开 `/model`。刷新失败会保留旧目录。选择器中 Enter 保存为用户默认值，`s` 仅应用于当前会话，Esc 取消。直接使用 `/model provider/id` 和 `/effort high` 只影响当前会话。

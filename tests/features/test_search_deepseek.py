@@ -276,7 +276,7 @@ def test_deepseek_native_honors_exact_query_denial(make_session, search_http, mo
         "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
     })
     session.set_model("deepseek/deepseek-flash")
-    monkeypatch.setattr("virgo.features.permission.review_tool_call", lambda *args: pytest.fail("denial must precede review"))
+    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", lambda *args: pytest.fail("denial must precede review"))
     install_responses(monkeypatch,
         AssistantMessage(content=[ToolCall("s", "web_search", {"query": "private information"})], stop_reason="tool_use"),
         AssistantMessage(content=[TextContent("Denied")]),

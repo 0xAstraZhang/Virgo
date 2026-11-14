@@ -5,7 +5,13 @@ from __future__ import annotations
 import os
 
 from .io import read_json, write_json
-from .reports import BAD, approved_retirements, validate_report
+from .reports import (
+    BAD,
+    PRODUCT_RETIREMENTS,
+    approved_product_retirements,
+    approved_retirements,
+    validate_report,
+)
 
 
 def compare(args):
@@ -84,6 +90,7 @@ def compare(args):
             "new_skips", "unskipped", "added", "removed", "problems", "failures",
         )}
         result["retired"] = {}
+        result["retired_products"] = {}
         combined["platforms"][operating_system] = result
         result["problems"].extend(report_problems[operating_system])
         for label in labels:
@@ -117,8 +124,10 @@ def compare(args):
             result["added"] = sorted(after.keys() - before.keys())
             result["removed"] = sorted(before.keys() - after.keys())
             result["retired"] = approved_retirements(base, head)
+            result["retired_products"] = approved_product_retirements(base, head)
             missing_executed = [name for name in result["removed"]
-                                if before[name] != "skipped" and name not in result["retired"]]
+                                if before[name] != "skipped" and name not in result["retired"]
+                                and name not in result["retired_products"]]
             if missing_executed:
                 result["problems"].append(f"{len(missing_executed)} previously executed tests disappeared")
             result["counts"] = {"base": base["counts"], "head": head["counts"]}
@@ -139,9 +148,19 @@ def compare(args):
             markdown += [f"### {title}: {len(result[key])}", ""]
             markdown += [f"- `{name}`" for name in result[key]] or ["None."]
             markdown.append("")
-        markdown += [f"### Reviewed duplicate retirements: {len(result['retired'])}", ""]
-        markdown += [f"- `{name}` — covered by " + ", ".join(f"`{case}`" for case in coverage)
-                     for name, coverage in sorted(result["retired"].items())] or ["None."]
+        retirement_count = len(result["retired"]) + len(result["retired_products"])
+        markdown += [f"### Reviewed retirements: {retirement_count}", ""]
+        markdown += [f"- `{name}` — duplicate test; covered by " + ", ".join(f"`{case}`" for case in coverage)
+                     for name, coverage in sorted(result["retired"].items())] or ["No duplicate test retirements."]
+        markdown += [f"- `{identity['classname']}::{name}` — retired product: `{identity['product']}`."
+                     for name, identity in sorted(result["retired_products"].items())] or ["No retired product cases."]
+        if result["retired_products"]:
+            markdown += ["", PRODUCT_RETIREMENTS["reason"], "", "Preservation checks passed in base and head:", ""]
+            markdown += [f"- `{identity['classname']}::{identity['name']}`"
+                         for identity in PRODUCT_RETIREMENTS["preservation_gates"]]
+            markdown += ["", "Migration acceptance checks passed in head:", ""]
+            markdown += [f"- `{identity['classname']}::{identity['name']}`"
+                         for identity in PRODUCT_RETIREMENTS["acceptance_gates"]]
         markdown.append("")
         if base and head:
             markdown += ["Module-level collection skips:", "",

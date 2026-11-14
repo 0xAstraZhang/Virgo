@@ -84,7 +84,7 @@ def test_anthropic_independent_tools_and_fetch_off(make_session):
     assert {d["name"] for d in ctx.web_tools} == {"web_search", "web_fetch"}
     fetch = next(d for d in ctx.web_tools if d["name"] == "web_fetch")
     assert fetch["citations"] == {"enabled": True}
-    assert fetch["max_uses"] == 3 and fetch["max_content_tokens"] == 8000
+    assert "max_uses" not in fetch and fetch["max_content_tokens"] == 8000
     s.settings.set("fetch.mode", "off")
     assert [d["name"] for d in s.main.request_context([]).web_tools] == ["web_search"]
 

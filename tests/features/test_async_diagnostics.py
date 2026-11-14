@@ -12,7 +12,7 @@ from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage
 from virgo.features import background
 
-from tests.support.harness import calls, tool_results, wait_until
+from tests.support.harness import calls, tool_results
 from tests.support.shell import selected
 
 
@@ -264,63 +264,3 @@ def test_background_subagent_preserves_child_error_in_job(make_session):
     link = next(row for row in records(session) if row["code"] == "BACKGROUND_ERROR_LINK")
     assert link["context"]["related_error_id"] == error_id
     assert link["context"]["job_id"] == job.id and link["context"]["tool_call_id"] == "agent-origin"
-
-
-def test_team_model_failure_and_notification_failure_keep_both_causes(make_session, monkeypatch):
-    session = make_session(faux.error("teammate provider unavailable"))
-    team = session.services["team"]
-
-    def broken_notify(*args, **kwargs):
-        raise RuntimeError("team queue unavailable")
-
-    monkeypatch.setattr(session, "notify", broken_notify)
-    member = team.spawn("alice", "private role", "private prompt", False, False)
-    try:
-        wait_until(lambda: member.state == "idle")
-        original = member.runtime.messages[-1].error_details
-        assert member.error_details["error_id"] == original["error_id"]
-        assert any(error["phase"] == "team.notify" for error in member.related_errors)
-        assert any(error["error_id"] == original["error_id"] for error in team.errors())
-        raw = json.dumps(records(session))
-        assert "private role" not in raw and "private prompt" not in raw
-    finally:
-        team.request_stop("alice", force=True)
-        member.thread.join(5)
-    assert not member.thread.is_alive() and member.state == "stopped"
-
-
-def test_teammate_crash_after_switch_keeps_owner_and_finishes_cleanup(make_session, monkeypatch):
-    session = make_session()
-    team, original = session.services["team"], session.store
-    entered, release = threading.Event(), threading.Event()
-    create_runtime = session.create_runtime
-
-    def create(name, role, **kwargs):
-        runtime = create_runtime(name, role, **kwargs)
-        if role == "teammate":
-            def broken_prompt(*args):
-                entered.set()
-                assert release.wait(5)
-                raise RuntimeError("teammate worker root cause")
-
-            runtime.agent.prompt = broken_prompt
-        return runtime
-
-    def broken_release(*args):
-        raise RuntimeError("task cleanup secondary failure")
-
-    monkeypatch.setattr(session, "create_runtime", create)
-    monkeypatch.setattr(session.services["tasks"], "release", broken_release)
-    member = team.spawn("alice", "private role", "private prompt", True, False)
-    try:
-        assert entered.wait(5)
-        session.new_session()
-    finally:
-        release.set()
-        member.thread.join(5)
-    assert not member.thread.is_alive() and member.state == "stopped"
-    assert "alice" not in session.services["permissions"].agent_modes
-    assert member.error_details["phase"] == "team.loop"
-    assert member.error_details["context"]["accounting_session_id"] == original.id != session.store.id
-    assert member.error_details["message"] == "teammate worker root cause"
-    assert any(error["message"] == "task cleanup secondary failure" for error in member.related_errors)

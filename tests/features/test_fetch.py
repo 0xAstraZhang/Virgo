@@ -177,3 +177,34 @@ def test_client_execution_uses_the_selected_offer_not_adapter_order(make_session
     result, _ = fetch(make_session(refresh_models=False), monkeypatch)
     assert json.loads(result.text())["backend"] == "http"
     assert http["requests"][0].method == "GET"
+
+
+def test_shared_web_budget_spans_search_and_fetch_and_resets_on_user_request(make_session, monkeypatch, http):
+    """A shared cap must cover both client tools and cannot be bypassed by a hosted offer."""
+    from virgo.tools import web as search_http
+
+    requests = []
+
+    def search_page(*args, **kwargs):
+        requests.append(args[0])
+        return '<a class="result__a" href="https://example.com/article">Evidence</a>'
+
+    monkeypatch.setattr(search_http, "_fetch", search_page)
+    session = make_session(settings={"plugins": {"web": {"maxCalls": 1}},
+                                     "search": {"mode": "builtin"}, "fetch": {"mode": "builtin"},
+                                     "compaction": {"enabled": False}})
+    install_responses(monkeypatch,
+        AssistantMessage(content=[ToolCall("s1", "web_search", {"query": "evidence"})], stop_reason="tool_use"),
+        AssistantMessage(content=[ToolCall("f1", "web_fetch", {"url": "https://example.com/article"})], stop_reason="tool_use"),
+        AssistantMessage(content=[TextContent("Budget reached")]),
+    )
+    session.prompt("Search and read the page")
+    assert len(requests) == 1 and not http["requests"]
+    assert not tool_results(session)[0].is_error
+    assert tool_results(session)[1].is_error and "maxCalls" in tool_results(session)[1].text()
+    result, _ = fetch(session, monkeypatch)
+    assert not result.is_error and len(http["requests"]) == 1
+    session.settings.set("search.mode", "auto")
+    session.settings.set("fetch.mode", "auto")
+    session.main.model = Model("anthropic", "claude-sonnet-4-6", "anthropic")
+    assert not session.main.request_context(session.main.messages).web_tools

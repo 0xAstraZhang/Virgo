@@ -10,16 +10,16 @@ import pytest
 from virgo.agent.types import Block, ToolCallEvent
 from virgo.ai.providers import faux
 from virgo.ai.types import UserMessage
-from virgo.features import permission
-from virgo.features.permission import (
+from virgo.harness.permission_policy import (
     MODES,
     ReviewDecision,
     normalize_permission_mode,
     permission_mode_label,
     rule_matches,
 )
-from virgo.features.permission_scope import command_review_reason
+from virgo.harness.permission_scope import command_review_reason
 from virgo.harness.session import Runtime
+from virgo.plugins import auto_review as permission
 
 from tests.support.harness import RecordingUI, tool_call_event, tool_results
 

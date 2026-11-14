@@ -2,7 +2,7 @@
 
 [Documentation](../README.md) · [简体中文](../../zh-CN/development/architecture.md)
 
-Virgo separates model transport, the agent loop and application policy. Built-in features use the same extension API as project extensions. The model chooses how to approach a task; the harness supplies capabilities, execution boundaries, persistence and observations.
+Virgo separates model transport, the agent loop and application policy. Official capability plugins use the same extension API as trusted project extensions. The model chooses how to approach a task; the harness supplies capabilities, execution boundaries, persistence and observations.
 
 ## Repository map
 
@@ -12,7 +12,8 @@ Virgo separates model transport, the agent loop and application policy. Built-in
 | `src/virgo/agent/` | Tool-call loop, events, cancellation, steering and follow-up queues |
 | `src/virgo/harness/` | Session/runtime construction, settings, commands, extensions, context, permissions and persistence |
 | `src/virgo/tools/` | File, shell and web execution primitives |
-| `src/virgo/features/` | Built-in capabilities registered through `setup(api)` |
+| `src/virgo/plugins/` | Optional official capabilities registered through `setup(api)` |
+| `src/virgo/features/` | Temporary import compatibility shims for retained capabilities |
 | `src/virgo/cli/` | Entry point, print mode, plain REPL and Textual full-screen application |
 | `src/virgo/i18n/` | Language registry, translation API and built-in catalogs |
 | `tests/` | Tests organized by source responsibility; shared support in `tests/support/` |
@@ -22,11 +23,17 @@ Virgo separates model transport, the agent loop and application policy. Built-in
 
 The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). The small root `main.py` is a compatibility launcher. Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
 
-Shared rules live in the layer that owns their meaning. `ai/providers/reasoning.py` supplies OpenAI reasoning-effort mapping to request construction and diagnostic metadata. `harness/permissions.py` owns permission modes, localized labels and plan-mode tool filtering; the concrete approval policy stays in `features/permission.py`, which re-exports the public helpers for compatibility. Features resolve trusted callers through `AgentSession.runtime_for_context()` instead of duplicating identity checks or borrowing the currently selected runtime. See [Abstraction boundaries](abstraction-boundaries.md) for the retained layers and interfaces that need separate design.
+Shared rules live in the layer that owns their meaning. `ai/providers/reasoning.py` supplies OpenAI reasoning-effort mapping to request construction and diagnostic metadata. `harness/permissions.py` owns permission modes, localized labels and plan-mode tool filtering; the mandatory guard stays in `harness/permission_policy.py`, with scope and review-source contracts in the harness. The optional `plugins/auto_review.py` only supplies the model reviewer. Plugins resolve trusted callers through `api.runtime_for_context()` instead of duplicating identity checks or borrowing the currently selected runtime. See [Abstraction boundaries](abstraction-boundaries.md) and [Core/plugin boundaries](core-plugin-boundaries.md) for ownership and invariants.
+
+## Core and plugin assembly
+
+Core initializes the base coding toolkit, Shell, store, runtime identity, diagnostics and mandatory permission gate before loading capabilities. `coding` selects the official coding plugins; `minimal` selects none unless explicitly enabled. Trusted Python extensions are separate, so `--profile minimal --no-extensions` is the zero-extension path.
+
+Registrations have owners; collisions fail. Setup rollback removes partial registrations, and cleanup runs in reverse order. Disabled capabilities are not imported. Dynamic tool sets publish atomically at model-request boundaries through the owned registry. The Core depends on these contracts, not concrete plugin implementations. See [Extension API](extensions.md).
 
 ## Sessions and runtimes
 
-`AgentSession` owns workspace paths, effective settings, authentication, a session-scoped translator, the UI adapter, registered tools/commands, shared services and diagnostic logs. A `Runtime` owns one agent context: main, subagent or teammate. Its construction explicitly binds working directory, tools, model, conversation store, accounting store and review ancestry.
+`AgentSession` owns workspace paths, effective settings, authentication, a session-scoped translator, the UI adapter, registered tools/commands, shared services and diagnostic logs. A `Runtime` owns one agent context: main or a focused child runtime. Its construction explicitly binds working directory, tools, model, conversation store, accounting store and review ancestry.
 
 Candidate runtimes build their system context before activation. `RuntimeContext` lets runtime-aware prompt sections read the candidate's store and role without temporarily replacing `session.main` or `session.store`. A failed candidate leaves the active conversation intact.
 
@@ -59,7 +66,7 @@ The loop itself does not perform application I/O. Execution arrives through tool
 
 ## Context, diagnostics and recovery
 
-The base system context combines identity/guidelines, extension sections, project instructions, optional custom system text, and the actual environment. `_base_context` adds the selected response-language preference to the request without rebuilding the base prompt on every turn. Skills and memory disclose indexes first; empty resources do not add a large prompt block. Configuration and capability facts come from their owning services.
+The base system context combines identity/guidelines, extension sections, project instructions, optional custom system text, and the actual environment. `_base_context` adds the selected response-language preference to the request without rebuilding the base prompt on every turn. Skills disclose indexes first; empty resources do not add a large prompt block. Configuration and capability facts come from their owning services.
 
 Compaction preserves full history while replacing only the model's active context. Supported official providers use their native representation; other providers receive a continuation summary and recent messages. Context hooks should preserve append-only behavior unless they represent a documented boundary.
 
@@ -69,6 +76,6 @@ MCP recovery validates a new connection and schema before replacing live handles
 
 ## Where to extend
 
-Use [`ExtensionAPI`](../../../src/virgo/harness/extensions.py) for tools, commands, event handlers and prompt sections. Use an AI adapter for a new model protocol, a shell adapter for a new command language, and a language pack for another display language. Keep policy in the harness/features and low-level execution in tools/adapters.
+Use [`ExtensionAPI`](../../../src/virgo/harness/extensions.py) for tools, commands, event handlers and prompt sections. Use an AI adapter for a new model protocol, a shell adapter for a new command language, and a language pack for another display language. Keep mandatory policy in the harness and optional capabilities in plugins and low-level execution in tools/adapters.
 
 Continue with [Extensions](extensions.md), [Localization](localization.md), or [Development and CI](testing-and-ci.md).

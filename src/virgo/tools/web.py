@@ -181,6 +181,7 @@ def make_web_search(
     *,
     resolve_backend: Callable[[ToolContext], str] | None = None,
     resolve_api_key: Callable[[ToolContext], str] | None = None,
+    before_search: Callable[[ToolContext], None] | None = None,
 ) -> AgentTool:
     """Create a search tool; resolve the backend and credentials at each execution."""
 
@@ -218,6 +219,8 @@ def make_web_search(
                 json_body = {"query": query.strip(), "count": limit, "need_content": False}
             else:
                 raise SearchError(ctx.t("tools.search.backend"))
+            if before_search is not None:
+                before_search(ctx)
             rows = parse(_fetch(url, params, headers, timeout, ctx, json_body=json_body), limit, ctx.t)
             result = {
                 "query": query.strip(),

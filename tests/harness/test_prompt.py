@@ -8,10 +8,8 @@ from virgo.ai.providers import faux
 from virgo.harness.session import Runtime
 
 MAIN_TOOLS = {
-    "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "todo_write", "ask_user", "agent", "memory",
-    "task_create", "task_update", "task_list", "task_get", "bash", "job_output", "job_kill", "schedule",
-    "team_spawn", "team_message", "team_status", "team_stop", "team_review", "workflow",
-    "diagnostic_get", "mcp_status", "mcp_reconnect",
+    "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "todo_write", "ask_user", "agent",
+    "bash", "job_output", "job_kill", "diagnostic_get",
 }
 
 
@@ -48,7 +46,7 @@ def test_user_system_and_project_context_survive_for_their_roles(make_session, p
     (user / "AGENTS.md").write_text("user context", encoding="utf-8")
     (project / "AGENTS.md").write_text("project context", encoding="utf-8")
     session = make_session()
-    for role in ("main", "subagent", "teammate"):
+    for role in ("main", "subagent", "custom"):
         runtime = session.main if role == "main" else Runtime(session, role, role)
         context = runtime.request_context([])
         assert ("project identity" in context.system) == (role == "main")
@@ -64,8 +62,8 @@ def test_permission_switch_updates_requests_and_restores_the_original_prefix(mak
     original = session.main.request_context([])
     session.permission_mode = "plan"
     planning = session.main.request_context([])
-    assert {"read", "ask_user", "task_update"} <= {t.name for t in planning.tools}
-    assert not {"write", "edit", "workflow"} & {t.name for t in planning.tools}
+    assert {"read", "ask_user", "todo_write"} <= {t.name for t in planning.tools}
+    assert not {"write", "edit", "job_kill"} & {t.name for t in planning.tools}
     assert "<permission_mode>" in planning.system
     session.permission_mode = "accept-all"
     restored = session.main.request_context([])

@@ -228,39 +228,3 @@ def test_close_removes_empty_record_written_after_shutdown_hooks(make_session, m
     controller.request_close()
     assert controller.wait_closed()
     assert not path.exists()
-
-
-def test_old_teammate_finishes_persisting_without_updating_new_workspace(make_session, tmp_path):
-    path = saved_session(tmp_path / "target")
-    entered, release = threading.Event(), threading.Event()
-
-    def blocked_reply(_context):
-        entered.set()
-        assert release.wait(3)
-        return faux.reply("old workspace teammate response")
-
-    ui = FullscreenUI()
-    previous = make_session(blocked_reply, ui=ui, persist=True)
-    controller = RunController(previous, ui)
-    controller.start()
-    member = previous.services["team"].spawn("reviewer", "review", "old task", False, False)
-    try:
-        assert entered.wait(3)
-        assert controller.open_session(path)
-        pump(controller)
-        assert controller.session is not previous
-        before_count = len(member.runtime.store.entries)
-        release.set()
-        member.thread.join(3)
-        assert not member.thread.is_alive()
-        late = controller.poll()
-        assert not [update for update in late if update.kind == "event"]
-        assert len(member.runtime.store.entries) > before_count
-        saved = SessionStore.load(member.runtime.store.path)
-        assert saved.entries[-1]["message"]["role"] == "assistant"
-        assert ui._signals["main"] is controller.session.main.agent.signal
-    finally:
-        release.set()
-        member.thread.join(3)
-        controller.request_close()
-        assert controller.wait_closed()

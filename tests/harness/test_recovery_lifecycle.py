@@ -167,7 +167,9 @@ def test_model_diagnostics_feature_can_be_disabled_without_disabling_logs(make_s
     install_failure(session)
     session.prompt("inspect")
     assert session.tool("diagnostic_get") is None
-    assert "Diagnostic evidence" not in wire_text(calls()[-1])
+    # Disabling the lookup plugin leaves Core's bounded diagnostic evidence on.
+    assert "Diagnostic evidence" in wire_text(calls()[-1])
+    assert "Use diagnostic_get(" not in wire_text(calls()[-1])
     assert session.diagnostics.recent()
 
 

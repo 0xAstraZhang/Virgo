@@ -244,6 +244,7 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     context = rt.request_context(messages[:cut], model)
     binding = context_binding(model, context)
     started = time.monotonic()
+    rt.request_budget.consume()
     result = native_compact(
         model,
         context,

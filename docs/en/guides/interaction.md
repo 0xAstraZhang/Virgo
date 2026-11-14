@@ -16,7 +16,7 @@ The first two commands switch the current session and save a user default. `/lan
 
 ## Commands
 
-`/help` lists commands currently registered for your configuration, including prompt templates. Disabled features do not register their commands. The full-screen editor shows an argument hint after a complete command name; the hint disappears when you type arguments and is never submitted as input.
+`/help` lists commands currently registered for your configuration, including prompt templates. Disabled plugins do not register their commands. The default `coding` preset and optional capabilities are described in [Configuration](../reference/configuration.md#profiles-and-plugins); removed commands are listed in [Migration](migrating-to-core-plugins.md). The full-screen editor shows an argument hint after a complete command name; the hint disappears when you type arguments and is never submitted as input.
 
 | Command | Purpose |
 | --- | --- |
@@ -33,13 +33,9 @@ The first two commands switch the current session and save a user default. `/lan
 | `/compact [focus]` | Compact older model context |
 | `/new`, `/sessions [number]`, `/session` | Start, browse or inspect sessions |
 | `/diagnostics [error-id]` | Inspect recent errors and diagnostic records |
-| `/schedule`, `/schedules` | Create or manage scheduled tasks |
-| `/todos`, `/tasks`, `/jobs`, `/team` | Inspect checklists, task graphs, background jobs or teammates |
+| `/todos`, `/jobs` | Inspect the conversation checklist or background jobs |
 | `/skills`, `/skill:name [args]` | List skills or explicitly use one |
-| `/memory [tidy]` | Inspect memory or ask the small model to consolidate it |
 | `/mcp [reconnect]` | Inspect or reload MCP connections |
-| `/workflow [resume run_id]` | List workflows and recent runs, or resume a run |
-| `/goal [condition\|clear]` | Set, inspect or clear an explicit completion condition |
 | `/exit` | Exit the interactive application |
 
 Model and effort pickers use the saved model catalog. They do not start a network refresh. Virgo refreshes connected providers in the background at startup; if the first catalog is still loading, reopen `/model` after it completes. A failed refresh keeps the previous catalog. Enter saves the picker choice as a user default; `s` applies it only to the current session; Esc cancels. Direct `/model provider/id` and `/effort high` commands affect the current session.

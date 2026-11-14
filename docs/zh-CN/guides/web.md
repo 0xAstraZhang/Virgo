@@ -32,12 +32,12 @@ DeepSeek 搜索可搭配其他对话模型使用。先配置 `/login api deepsee
     "mode": "auto",
     "backend": "duckduckgo",
     "timeout": 15,
-    "maxUses": 3
+    "maxUses": null
   }
 }
 ```
 
-`mode` 支持 `auto`、`native`、`builtin` 和 `off`。`native` 在没有获准的原生路径时报错，`builtin` 使用选定的内置后端。`features.search=false` 完全关闭该功能。内置搜索接受 `query` 和可选的 `limit`（默认 5，最多 10）。DeepSeek 查询最多 128 个 Unicode 字符，DuckDuckGo 最多 2000 个字符。内置响应预算为 1 MiB，超时最高 30 秒。`maxUses` 控制支持该参数的原生每轮次数限制，其中 Anthropic 的范围为 1–10。
+`mode` 支持 `auto`、`native`、`builtin` 和 `off`。`native` 在没有获准的原生路径时报错，`builtin` 使用选定的内置后端。`plugins.web.searchEnabled=false` 完全关闭该功能。内置搜索接受 `query` 和可选的 `limit`（默认 5，最多 10）。DeepSeek 查询最多 128 个 Unicode 字符，DuckDuckGo 最多 2000 个字符。内置响应预算为 1 MiB，超时最高 30 秒。`maxUses` 默认为 `null`（Virgo 不施加次数上限），也可设置正整数。客户端按一次用户请求执行对应操作预算。原生 `max_uses` 声明作用于单次厂商 API 请求，不覆盖全部模型轮次；省略该参数仅代表 Virgo 不施加次数上限，不代表厂商没有限制。
 
 ## 选择读取后端
 
@@ -57,19 +57,35 @@ DeepSeek 搜索可搭配其他对话模型使用。先配置 `/login api deepsee
     "backend": "http",
     "timeout": 20,
     "maxBytes": 2097152,
-    "maxUses": 3,
+    "maxUses": null,
     "maxContentTokens": 8000
   }
 }
 ```
 
-`mode` 支持 `auto`、`native`、`builtin` 和 `off`，`backend` 为 `http` 或 `deepseek`。`features.fetch=false` 关闭读取功能。超时必须大于 0 且不超过 60 秒，`maxBytes` 上限为 16 MiB，`maxUses` 范围为 1–10。原生服务使用其支持的限制参数；组合工具不一定提供独立的读取次数限制。
+`mode` 支持 `auto`、`native`、`builtin` 和 `off`，`backend` 为 `http` 或 `deepseek`。`plugins.web.fetchEnabled=false` 关闭读取功能。超时必须大于 0 且不超过 60 秒，`maxBytes` 上限为 16 MiB，`maxUses` 为 `null` 或正整数。原生服务使用其支持的限制参数；组合工具不一定提供独立的读取次数限制。
 
 客户端 `web_fetch` 工具接受 `url`，返回来源信息、标题、正文、后端、读取时间和截断状态。显示正文最多为 32 KiB／2000 行；截断后，已取得的正文保存到 `.virgo/outputs/`，可按 `output_path` 继续读取。读取时间不保证上游缓存已经刷新。
 
 内置 HTTP 后端支持 HTML、纯文本和 Markdown，不执行 JavaScript、不使用浏览器会话，也不解析 PDF。它验证公网地址，将连接绑定到已检查的 IP，并以原主机名验证 TLS；每次重定向都会复核。它不读取 cookie、netrc 凭据或环境代理。默认最多五次重定向、20 秒，以及解压前后各 2 MiB。
 
 DeepSeek Fetch 使用已保存的官方连接、`DEEPSEEK_API_KEY` 或独立的 `fetch.apiKeyEnv`，不会隐式复用 `search.apiKeyEnv`，也不会将代理凭据发送到官方地址。
+
+## 共享请求预算
+
+搜索与读取属于 `web` 插件。`plugins.web.enabled=false` 同时关闭两者，包括实现导入和注册；只需一种能力时，独立设置 `searchEnabled` 或 `fetchEnabled`。
+
+```json
+{
+  "plugins": {"web": {"enabled": true, "maxCalls": 12}},
+  "search": {"maxUses": null, "timeout": 15},
+  "fetch": {"maxUses": null, "timeout": 20, "maxBytes": 2097152, "maxContentTokens": 8000}
+}
+```
+
+`maxCalls` 可省略（默认 `null`），设置时必须为正整数。它限制每个调用 Runtime 的一次用户请求中，客户端搜索与读取的总调用数。单次操作仍受超时与输出预算约束，不再默认限制三次。子 Agent 有自己的联网操作计数；Core 的 `budget.maxModelCalls` 另行限制父子运行时共享的模型请求数。
+
+托管操作无法提供可靠的搜索／读取共享调用计数。因此显式共享预算要求客户端工具：自动路由选择客户端路径，原生专用模式明确报告冲突，避免宣称能够计算厂商内部的隐藏操作。
 
 ## 权限与失败
 
@@ -79,4 +95,4 @@ DeepSeek Fetch 使用已保存的官方连接、`DEEPSEEK_API_KEY` 或独立的 
 
 只有明确的“不支持该能力”响应才会触发有界回退。认证失败、限流、超时和空结果不会静默切换厂商。服务端操作已经开始后，Virgo 会保留证据并停止自动重放。来源和可读引用在切换模型后仍保留于会话历史。
 
-实现：[能力类型](../../../src/virgo/ai/web.py)、[路由](../../../src/virgo/features/web.py)、[搜索](../../../src/virgo/features/search.py)、[读取](../../../src/virgo/features/fetch.py)。
+实现：[能力类型](../../../src/virgo/ai/web.py)、[路由](../../../src/virgo/plugins/web.py)、[搜索](../../../src/virgo/plugins/search.py)、[读取](../../../src/virgo/plugins/fetch.py)。

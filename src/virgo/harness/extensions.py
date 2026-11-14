@@ -39,11 +39,12 @@ from typing import TYPE_CHECKING, Any
 from ..agent.types import AgentTool, Block, Continue, ToolResult
 from ..ai.types import TextContent
 from ..diagnostics import capture_error, emergency_write, safe_text
+from .settings import PLUGIN_IDS
 
 if TYPE_CHECKING:
     from .session import AgentSession
 
-ROLES_ALL = ("main", "subagent", "teammate")
+ROLES_ALL = ("main", "subagent")
 
 
 @dataclass
@@ -58,15 +59,23 @@ class EventBus:
                  on_diagnostic: Callable[[dict, tuple], None] | None = None):
         self._handlers: dict[str, list] = defaultdict(list)
         self._seq = 0
+        self._owners: dict[tuple[str, int], str] = {}
         self.on_error = on_error or (lambda msg: print(msg, file=sys.stderr))
         self.on_diagnostic = on_diagnostic
 
-    def on(self, event: str, fn: Callable, priority: int = 0) -> Callable[[], None]:
+    def on(self, event: str, fn: Callable, priority: int = 0, *, owner: str = "host") -> Callable[[], None]:
         self._seq += 1
         entry = (-priority, self._seq, fn)
         self._handlers[event].append(entry)
         self._handlers[event].sort(key=lambda e: (e[0], e[1]))
-        return lambda: self._handlers[event].remove(entry)
+        self._owners[event, self._seq] = owner
+
+        def unsubscribe():
+            if entry in self._handlers[event]:
+                self._handlers[event].remove(entry)
+            self._owners.pop((event, entry[1]), None)
+
+        return unsubscribe
 
     def boundary(self, priority: int) -> tuple[int, int]:
         """Reserve a stable registration position without registering a callback."""
@@ -128,9 +137,20 @@ class EventBus:
 
 
 class ExtensionAPI:
+    """Owned registration and runtime services for trusted in-process plugins.
+
+    ``session`` is a compatibility escape hatch until 0.3. Official plugins use
+    this facade. Python extensions are trusted code, not a security sandbox.
+    """
+
     def __init__(self, session: AgentSession, name: str):
-        self.session = session
+        self._session = session
         self.name = name
+        self._undos: list[Callable] = []
+
+    @property
+    def session(self):
+        return self._session
 
     # shortcuts
     @property
@@ -149,15 +169,49 @@ class ExtensionAPI:
     def services(self) -> dict:
         return self.session.services
 
+    @property
+    def cwd(self):
+        return self._session.cwd
+
+    @property
+    def model(self):
+        return self._session.model
+
+    @property
+    def small_model(self):
+        return self._session.small_model
+
+    @property
+    def small_model_effort(self):
+        return self._session.small_model_effort
+
+    @property
+    def auth(self):
+        return self._session.auth
+
+    @property
+    def translator(self):
+        return self._session.translator
+
     def t(self, key: str, /, **values: object) -> str:
         """Translate an extension-owned key using the current session language."""
         return self.session.t(key, **values)
 
     def on(self, event: str, fn: Callable, priority: int = 0):
-        return self.session.bus.on(event, fn, priority)
+        unsubscribe = self._session.bus.on(event, fn, priority, owner=self.name)
+        self._undos.append(unsubscribe)
+        return unsubscribe
 
     def register_tool(self, tool: AgentTool, roles: tuple = ("main",)) -> None:
-        self.session.register_tool(tool, roles)
+        self._session.register_tool(tool, roles, owner=self.name)
+
+    def replace_tools(self, namespace: str, tools: list[tuple[AgentTool, tuple]]) -> None:
+        """Validate a whole owned set before atomically publishing its next version.
+
+        Existing runtime requests/batches keep their tool objects. New schemas
+        become visible to each runtime at its next model request boundary.
+        """
+        self._session.replace_tools(namespace, tools, owner=self.name)
 
     def register_command(
         self, name: str, fn: Callable, description: str = "", concurrent: bool = False, *, argument_hint: str = "",
@@ -169,78 +223,178 @@ class ExtensionAPI:
                                        argument_hint_key=argument_hint_key)
 
     def add_system_section(self, name: str, fn: Callable[[str], str | None], order: int = 50) -> None:
-        """fn(role) -> text for the system prompt (role: main | subagent | teammate)."""
-        self.session.sections.append((order, name, fn))
+        """fn(role) -> text for the system prompt."""
+        self._add_section(self._session.sections, name, fn, order)
 
     def register_permission_policy(self, policy) -> None:
-        self.session.register_permission_policy(policy)
+        """Add restrictions without replacing the mandatory Core policy."""
+        self._undos.append(self._session.add_permission_policy(policy, owner=self.name))
+
+    def register_permission_reviewer(self, reviewer) -> None:
+        policy = self._session.permission_policy
+        if not callable(reviewer) or not callable(getattr(policy, "set_reviewer", None)):
+            raise TypeError("The Core policy requires a callable permission reviewer")
+        if getattr(policy, "reviewer", None) is not None:
+            raise ValueError("A permission reviewer is already registered")
+        policy.set_reviewer(reviewer)
+        self.on_cleanup(lambda: policy.set_reviewer(None))
 
     def add_runtime_system_section(self, name: str, fn: Callable, order: int = 50) -> None:
         """fn(RuntimeContext) -> text; construction errors reject the candidate."""
-        self.session.runtime_sections.append((order, name, fn))
+        self._add_section(self._session.runtime_sections, name, fn, order)
+
+    def _add_section(self, sections, name, fn, order):
+        key = f"{self.name}:{name}"
+        if any(existing == key for _, existing, _ in sections):
+            raise ValueError(f"System section {key!r} is already registered")
+        entry = (order, key, fn)
+        sections.append(entry)
+        self._undos.append(lambda: sections.remove(entry) if entry in sections else None)
+
+    def on_cleanup(self, callback: Callable[[], None]) -> None:
+        """Close owned resources in reverse order, even if another cleanup fails."""
+        if not callable(callback):
+            raise TypeError("Cleanup must be callable")
+        self._session.register_cleanup(self.name, callback)
+
+    def current_runtime(self):
+        with self._session._lock:
+            return self._session.main
+
+    def current_store(self):
+        with self._session._lock:
+            return self._session.store
+
+    def runtime_for_context(self, context):
+        return self._session.runtime_for_context(context)
+
+    def runtime_for(self, event):
+        return self.runtime_for_context(event)
+
+    def create_runtime(self, name: str, role: str, *, parent=None, permission=None, **kwargs):
+        if role == "main":
+            raise ValueError("Plugins create child runtimes; the Host owns main sessions")
+        parent = parent or self.current_runtime()
+        if parent.session is not self._session:
+            raise ValueError("Child runtime parent belongs to another session")
+        return self._session.create_runtime(name, role, parent=parent, permission=permission, **kwargs)
+
+    def release_runtime(self, runtime):
+        self._session.release_runtime(runtime)
+
+    def tools_for(self, role: str):
+        return self._session.tools_for(role)
+
+    def resolve(self, spec: str):
+        return self._session.resolve(spec)
+
+    def complete(self, *args, **kwargs):
+        return self._session.complete(*args, **kwargs)
+
+    def review_input(self, event, reason):
+        from .permission_context import build_review_input
+
+        return build_review_input(self._session, event, reason)
+
+    def review_context_key(self, event):
+        from .permission_context import review_context_key
+
+        return review_context_key(self._session, event)
+
+    def authorize_tool(self, event):
+        return self._session._before_tool(event) or self._session._before_tool_execute(event)
+
+    def has_tool_hooks(self):
+        return (bool(self._session._additional_permission_policies)
+                or self._session.bus.has_handlers("tool_call") or self._session.bus.has_handlers("tool_result"))
+
+    def report_error(self, error, **kwargs):
+        return self._session.report_error(error, **kwargs)
+
+    def retain_diagnostics(self, store, records):
+        self._session.retain_diagnostics(store, records)
 
     def notify(self, text: str, mode: str = "steer", source: str | None = None, *, store=None,
                diagnostics=()) -> None:
         self.session.notify(text, mode=mode, source=source or self.name, store=store, diagnostics=diagnostics)
 
     def append_entry(self, kind: str, data: Any) -> None:
-        self.session.store.append("custom", kind=kind, data=data)
+        self.current_store().append("custom", kind=kind, data=data)
 
     def entries(self, kind: str) -> list:
-        return self.session.store.custom(kind)
+        return self.current_store().custom(kind)
+
+    def _rollback(self):
+        self._session.cleanup_plugins(owner=self.name)
+        for undo in reversed(self._undos):
+            undo()
+        self._session.remove_owned_tools(self.name)
+        self._session.commands.remove_source(self.name)
 
 
 # ---------------------------------------------------------------------------
 # loading
 # ---------------------------------------------------------------------------
 
-BUILTIN_FEATURES = [
-    "permission",
-    "diagnostics",
-    "search",
-    "fetch",
-    "todo",
-    "ask_user",
-    "subagent",
-    "skills",
-    "memory",
-    "tasks",
-    "background",
-    "schedule",
-    "team",
-    "mcp",
-    "workflow",
-    "goal",
-]
+BUILTIN_PLUGINS = PLUGIN_IDS
+# Kept for source compatibility until 0.3; these are plugin IDs, not all-enabled features.
+BUILTIN_FEATURES = BUILTIN_PLUGINS
+
+
+def _setup(session: AgentSession, name: str, setup: Callable[[ExtensionAPI], None], *, context=None) -> None:
+    api = ExtensionAPI(session, name)
+    services = dict(session.services)
+    tools = dict(session._tool_groups)
+    try:
+        setup(api)
+        session.loaded_plugins.append(name)
+    except Exception as error:
+        api._rollback()
+        # A capability may ask a Core adapter to rebuild its owned tools (shell
+        # background mode). Restore that adapter's registration too on failure.
+        session._tool_groups = tools
+        session._tool_version += 1
+        session.services.clear()
+        session.services.update(services)
+        session.report_error(error, phase="extension.load", code="PLUGIN_DEGRADED",
+                             context={"plugin": name, "status": "disabled_after_failure", **(context or {})})
+        session.ui.print(session.t("harness.plugins.degraded", name=name), "warn")
 
 
 def load_builtin_features(session: AgentSession) -> None:
-    for name in BUILTIN_FEATURES:
-        if not session.settings.feature_enabled(name):
+    for name in BUILTIN_PLUGINS:
+        if not session.settings.plugin_enabled(name):
             continue
-        mod = importlib.import_module(f"virgo.features.{name}")
-        mod.setup(ExtensionAPI(session, name))
+        # The import is inside the transaction: disabled plugins are never imported.
+        _setup(session, name, lambda api, name=name: importlib.import_module(f"virgo.plugins.{name}").setup(api))
 
 
 def load_user_extensions(session: AgentSession) -> None:
     for d in session.paths.both("extensions"):
         if not d.is_dir():
             continue
+        if d == session.paths.project / "extensions" and not (
+            session.trust_project_extensions or session.settings.project_extensions_trusted
+        ):
+            if any(d.glob("*.py")):
+                session.ui.print(session.t("harness.extensions.untrusted_project"), "warn")
+            continue
         for path in sorted(d.glob("*.py")):
             _load_file(session, path)
 
 
 def _load_file(session: AgentSession, path: Path) -> None:
-    try:
+    scope = "project" if path.parent == session.paths.project / "extensions" else "user"
+
+    def load(api):
         spec = importlib.util.spec_from_file_location(f"virgo_ext_{path.stem}", path)
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         if hasattr(mod, "setup"):
-            mod.setup(ExtensionAPI(session, path.stem))
-    except Exception as e:  # noqa: BLE001
-        session.report_error(e, phase="extension.load", code="EXTENSION_LOAD_FAILED",
-                             context={"extension": str(path)})
+            mod.setup(api)
+
+    _setup(session, f"{scope}:{path.stem}", load, context={"extension": str(path)})
 
 
 # ---------------------------------------------------------------------------

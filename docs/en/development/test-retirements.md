@@ -2,6 +2,36 @@
 
 [Development and CI](testing-and-ci.md) · [Comparison policy](testing-and-ci.md#reviewed-duplicate-retirements) · [Abstraction boundaries](abstraction-boundaries.md) · [简体中文](../../zh-CN/development/test-retirements.md)
 
+## Core/plugin product retirements
+
+Reviewed baseline: `47e1757bda5c5cfafb3a5a508a1a6ec4d629bfaf`. This migration retires **46 parameter-expanded cases** that exercise the six removed official products. They are recorded separately from duplicate cleanup: the old behavior is deliberately unavailable, so preserved coding tests are not described as equivalent coverage for a scheduler or team platform.
+
+The exact baseline, original modules, full test identities and parameter IDs are maintained in [`core_plugin_retirements.json`](../../../ci/pipeline/core_plugin_retirements.json). The reasons and data locations are in [Core/plugin boundaries](core-plugin-boundaries.md) and [Migration](../guides/migrating-to-core-plugins.md).
+
+| Retired product | Cases | Scope of retired behavior |
+| --- | ---: | --- |
+| Schedule | 7 | Cron parsing, scheduler notifications, time/file repair, ownership and two TUI multi-conversation scheduler parameters |
+| Workflow | 3 | Python orchestration, journal/resume, workflow tool steps and unsafe run-ID rejection in the removed engine |
+| Team | 8 | Long-lived workers, mailboxes, plan approval, worktrees, task cleanup and teammate-specific async/UI lifecycle |
+| Tasks | 3 | Persistent dependency graph, task tools and task-file path handling |
+| Memory | 11 | Save/index/tidy/update behavior plus eight tidy/extraction model-effort parameters |
+| Goal | 14 | Evaluator input/verdicts, continuation loop, cancellation/limits plus four auxiliary model-effort parameters |
+
+Only the six product test modules and their explicitly listed shared cases/parameters are retired. Existing auxiliary permission and compaction parameters remain. Background jobs, subagents, permissions, recovery, session ownership, native protocol and TUI interaction scenarios continue to run. The command-hint scenario now uses a distinct extension command because name collisions are rejected; it retains the completion/template/clipboard/history checks.
+
+Before production code changed, `tests/harness/test_core_plugins_e2e.py` added eight assembled-session acceptance scenarios. The new contracts are exercised across the model/tool boundary, including file editing and a real subprocess, rather than by mirroring implementation methods.
+
+CI permits these product retirements only when all of the following hold:
+
+- The comparison baseline is exactly the reviewed SHA, the original module/identity matches, and each removed original case passed.
+- Five exact preservation gates pass in both base and head: persistence failure, fail-closed policy order, background notification, subagent isolation and execution-time permission rechecks.
+- All eight exact new Core/plugin acceptance cases pass in head, including preserved legacy files/history and the zero-plugin coding loop.
+- The retired identity is absent from head. A still-present failing/skipped case receives ordinary regression checks; unrelated deletions receive no exemption.
+
+Every case remains visible in `removed`; `retired_products` separately records the product decision and gates in readable and JSON output. No directory, prefix or count-wide exception is used. A changed baseline requires a fresh explicit review. The comparison CLI's pre-implementation acceptance scenarios cover wrong baselines/modules, failed originals, missing/failed/skipped gates and unrelated removal.
+
+## Previous duplicate cleanup
+
 Reviewed baseline: `0ffc23707de6e87a579a46a8f027679c253b78dc`. Nine non-parameterized duplicate cases were removed, reducing product tests by 105 lines. Retained tests were neither rewritten nor renamed. Existing fuller scenarios already covered the same behavior; test size or layer was not a reason for removal.
 
 ## Removed cases and retained coverage

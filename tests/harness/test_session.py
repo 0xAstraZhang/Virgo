@@ -345,7 +345,7 @@ def test_examples_directory_loads(make_session):
     assert "code-review" in s.services["skills"] and "reviewer" in s.services["subagents"].types
     s.prompt("hi")
     system = calls()[0]["system"]
-    assert "review-changes" in system and "code-review" in system
+    assert "code-review" in system and "workflows" not in s.services
     assert not [line for line in ui.lines if "failed" in line]
 
 

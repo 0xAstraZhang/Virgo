@@ -27,8 +27,8 @@ from virgo.ai.types import (
     message_from_dict,
     message_to_dict,
 )
-from virgo.features.permission import ReviewDecision
 from virgo.features.search import native_tool
+from virgo.harness.permission_policy import ReviewDecision
 from virgo.harness.session import Runtime
 
 from tests.support.harness import install_responses, response_stream
@@ -198,7 +198,7 @@ def test_cache_is_invalidated_by_endpoint_model_and_credential_changes(make_sess
 def test_deny_rule_blocks_native_and_builtin_execution(make_session, monkeypatch, mode):
     session = make_session(mode=mode, settings={"fetch": {"mode": "off"}, "permissions": {"deny": ["web_search"]}})
     runtime = select(session)
-    monkeypatch.setattr("virgo.features.permission.review_tool_call", lambda *a: pytest.fail("deny must precede review"))
+    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", lambda *a: pytest.fail("deny must precede review"))
     context = runtime.request_context(runtime.messages)
     assert context.web_search is None
     event = ToolCallEvent(call_id="s", tool_name="web_search", args={"query": "Python"},
@@ -210,7 +210,7 @@ def test_deny_rule_blocks_native_and_builtin_execution(make_session, monkeypatch
 def test_scoped_rules_keep_search_local_for_exact_query_review(make_session, monkeypatch, kind):
     session = make_session(mode="auto-review", settings={"fetch": {"mode": "off"}, "permissions": {kind: ["web_search(*private*)"]}})
     runtime = select(session)
-    monkeypatch.setattr("virgo.features.permission.review_tool_call", lambda *a: pytest.fail("native scope cannot satisfy query rules"))
+    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", lambda *a: pytest.fail("native scope cannot satisfy query rules"))
     context = runtime.request_context(runtime.messages)
     assert context.web_search is None
     assert "web_search" in [t.name for t in context.tools]
@@ -225,7 +225,7 @@ def test_native_permission_review_is_cached_only_for_current_request(make_sessio
         reviewed.append((event, reason))
         return ReviewDecision("allow", "Public research")
 
-    monkeypatch.setattr("virgo.features.permission.review_tool_call", review)
+    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", review)
     assert runtime.request_context(runtime.messages).web_search
     assert runtime.request_context(runtime.messages).web_search
     assert len(reviewed) == 1
@@ -238,7 +238,7 @@ def test_native_permission_review_is_cached_only_for_current_request(make_sessio
 def test_unapproved_native_scope_falls_back_without_asking_user(make_session, monkeypatch):
     session = make_session(mode="auto-review")
     runtime = select(session)
-    monkeypatch.setattr("virgo.features.permission.review_tool_call", lambda *a: ReviewDecision("ask", "Need exact query"))
+    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", lambda *a: ReviewDecision("ask", "Need exact query"))
     context = runtime.request_context(runtime.messages)
     assert context.web_search is None
     assert "web_search" in [t.name for t in context.tools]

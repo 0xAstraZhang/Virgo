@@ -1,23 +1,24 @@
 # 扩展 Virgo
 
-[文档首页](../README.md) · [English](../../en/development/extensions.md)
+[文档首页](../README.md) · [Core 边界](core-plugin-boundaries.md) · [English](../../en/development/extensions.md)
 
 ## 选择合适的扩展入口
 
-| 资源 | 用户位置 | 项目位置 |
-| --- | --- | --- |
-| Python 扩展 | `~/.virgo/extensions/*.py` | `.virgo/extensions/*.py` |
-| 技能 | `~/.virgo/skills/<name>/SKILL.md` | `.virgo/skills/<name>/SKILL.md`，然后 `.agents/skills/<name>/SKILL.md` |
-| 提示模板 | `~/.virgo/prompts/*.md` | `.virgo/prompts/*.md` |
-| 子 Agent 类型 | `~/.virgo/agents/*.md` | `.virgo/agents/*.md` |
-| 工作流 | `~/.virgo/workflows/*.py` | `.virgo/workflows/*.py` |
-| MCP 服务器 | `~/.virgo/mcp.json` | `.virgo/mcp.json` |
+| 资源 | 用户位置 | 项目位置 | 对应能力 |
+| --- | --- | --- | --- |
+| Python 扩展 | `~/.virgo/extensions/*.py` | `.virgo/extensions/*.py` | 可信的 `setup(api)` 代码 |
+| 技能 | `~/.virgo/skills/<name>/SKILL.md` | `.virgo/skills/<name>/SKILL.md`，然后 `.agents/skills/<name>/SKILL.md` | `skills` |
+| 提示模板 | `~/.virgo/prompts/*.md` | `.virgo/prompts/*.md` | Core 提示装配 |
+| 子 Agent 类型 | `~/.virgo/agents/*.md` | `.virgo/agents/*.md` | `subagent` |
+| MCP 服务器 | `~/.virgo/mcp.json` | `.virgo/mcp.json` | `mcp` |
 
-`VIRGO_HOME` 可替换用户目录。资源先加载用户级再加载项目级，同名的声明式资源采用较后的定义；Python 扩展按加载顺序执行。重启或初始化工作空间会话后会重新发现文件。扩展是在 Virgo 进程内执行的受信任 Python 代码。
+`VIRGO_HOME` 替换用户目录。声明式资源先加载用户级，再加载项目级，同名项以较后的定义为准。官方插件位于 `virgo.plugins`，与 Python 扩展共用 `setup(api)`。插件按固定顺序装载一次；重启或初始化工作区会话后重新发现文件。不提供运行时卸载、依赖安装器或插件沙箱。
+
+项目 Python 扩展需要项目配置之外的信任：为所选项目使用 `--trust-project-extensions`，或配置用户级 `extensions.trustedProjects`。授权前审查代码。用户级扩展属于用户控制的可信代码。`--no-extensions` 跳过这两类 Python 扩展，不关闭官方插件；`minimal` 关闭官方预设能力，但可信 Python 扩展仍独立加载；同时使用 `--profile minimal --no-extensions` 才关闭两者。详见[迁移](../guides/migrating-to-core-plugins.md#信任项目扩展)。
 
 ## 添加工具与命令
 
-创建 `.virgo/extensions/project_overview.py`：
+创建并审查 `.virgo/extensions/project_overview.py`，再以 `--trust-project-extensions` 启动：
 
 ```python
 from virgo.agent import AgentTool, ToolResult
@@ -32,31 +33,66 @@ def setup(api):
         AgentTool(
             name="project_overview",
             label="Project overview",
-            description="List the names directly inside the working directory.",
+            description="List names directly inside the working directory.",
             parameters={"type": "object", "properties": {}, "required": []},
             execute=overview,
             read_only=True,
         ),
         roles=("main", "subagent"),
     )
-
-    def location(session, args):
-        api.ui.print(str(session.cwd))
-
     api.register_command(
-        "location", location, "show the working directory", concurrent=True
+        "location", lambda _session, _args: api.ui.print(str(api.cwd)),
+        "show the working directory", concurrent=True,
     )
 ```
 
-`execute(args, ctx)` 返回 `ToolResult` 或字符串。`ToolContext` 提供 `cwd`、`call_id`、`signal`、`agent`、可选进度回调和绑定的审查来源。执行时应响应取消。`content` 是模型可见内容，`details` 是结构化状态／UI 数据。已知失败可使用 `ToolResult.error(...)`，也可直接抛出异常，让 Harness 保留类型和堆栈。
+`execute(args, ctx)` 返回 `ToolResult` 或字符串。`ToolContext` 提供 `cwd`、`call_id`、`signal`、`agent`、可选进度回调和绑定的审查来源。执行时应响应取消。`content` 是模型可见内容；`details` 是结构化状态／UI 数据。已知失败返回 `ToolResult.error(...)`，其他异常交由 Core 保留类型与堆栈。
 
-`AgentTool` 还支持 `sequential`、`prepare_arguments` 和本地化元数据。工具名与 schema 是公开契约，不应翻译名称、属性键、枚举值或可执行示例。`i18n_key`、`api.t` 和 `ctx.t` 见[本地化](localization.md)。
+`AgentTool` 支持 `sequential`、`prepare_arguments` 和本地化元数据。工具名、参数键与枚举值是协议契约，不应翻译。`i18n_key`、`api.t`、`ctx.t` 见[本地化](localization.md)。
 
-命令接收 `(session, args: str)`。只有能够在 Agent 忙碌时安全读取状态的命令才使用 `concurrent=True`。编辑器参数提示由独立的 `argument_hint="[path]"` 提供，不应从说明文本解析。扩展还可用 `description_key` 和 `argument_hint_key` 提供本地化元数据。
+命令为兼容保留 `(session, args: str)` 回调签名；新代码可使用捕获的 API，不依赖 Session 内部状态。只有能够在 Agent 运行时安全执行的命令才设置 `concurrent=True`。`argument_hint="[path]"` 提供编辑器提示，`description_key` 和 `argument_hint_key` 提供本地化元数据。
 
-## 事件与策略
+## 注册、发布与清理
 
-`api.on(event, handler, priority=0)` 注册处理器并返回取消订阅函数。优先级高的先执行，同优先级保持注册顺序。常用事件包括：
+工具、命令和事件处理器都有所属插件。重复的工具／命令名称明确失败，包括与 Core 或其他插件冲突；提示章节按插件归属命名。可选插件初始化失败会记录诊断并回滚部分注册，不留下只装配一半的能力。Core 初始化或权限失败会阻断执行。
+
+`api.replace_tools(namespace, [(tool, roles), ...])` 验证整个候选集后，原子替换一个属于本插件的动态工具集。它不能占用其他插件的命名空间或覆盖别人的工具。已有请求和工具批次保持快照；每个 Runtime 在下一次模型请求边界看到新 Schema。传输专用的旧句柄可以保守失败，不重放副作用。MCP 通过此接口发布，不再修改 `session._tools`。
+
+获得资源后立即注册清理：
+
+```python
+def setup(api):
+    connection = open_connection()  # 由该扩展提供
+    api.on_cleanup(connection.close)
+    # 注册清理后，再注册使用该连接的工具。
+```
+
+`on_cleanup(callback)` 在关闭或失败回滚时按注册逆序执行。清理异常进入诊断，不阻止其他回调。关闭操作应有界、可重复，并尊重所创建任务的取消信号。
+
+## Runtime 与诊断服务
+
+| 公开 API | 用途 |
+| --- | --- |
+| `api.settings`、`api.paths`、`api.cwd`、`api.ui`、`api.t` | 生效配置、资源路径和 Host 服务 |
+| `api.current_runtime()`、`api.current_store()` | 在命令或初始化入口捕获当前归属 |
+| `api.runtime_for_context(ctx)` | 解析工具真实调用方，不借用当前选中的对话 |
+| `api.create_runtime(name, role, parent=..., permission=..., ...)` | 创建继承权限上限、记账、取消和共享请求预算的子运行时 |
+| `api.release_runtime(runtime)` | 释放完成后的子运行时注册及关联权限状态 |
+| `api.tools_for(role)`、`api.resolve(spec)` | 解析角色工具和模型配置 |
+| `api.authorize_tool(event)` | 为适配操作应用 Core 预检、钩子和执行前权限门 |
+| `api.notify(..., store=owner, diagnostics=...)` | 将异步结果送回原对话 |
+| `api.report_error(..., store=owner)`、`api.retain_diagnostics(owner, records)` | 保留归属明确的诊断证据 |
+| `api.complete(...)` | 使用 Core 请求策略发起记账明确的辅助模型请求 |
+
+`runtime_for_context` 验证真实 Runtime、所属 Session、原始审查来源对象和 Agent 名称；非法或外来来源返回 `None`，请求应明确失败。解析 Runtime 不授予其他证据访问权。工具调用应通过该入口解析身份，不能改用 `current_runtime()`；后者用于在入口刻意捕获当前对话。
+
+子 Runtime 工厂接收显式可信父对象，防止子任务提高父运行时的权限等级。配置后，`budget.maxModelCalls` 限制与子任务共享的模型请求数；`subagents.maxTurns` 仍限制单个聚焦子任务的轮数。插件不应另建独立 AgentSession 来绕过归属或预算。
+
+`api.services` 仅用于明确的共享服务契约。`api.session` 在 0.2 系列作为兼容入口保留，官方插件使用 facade。不要修改 `_tools`、`_lock`、`main` 或 UI 选择状态。保留能力的 `virgo.features` 导入路径同样只是临时别名，需在 0.3 前迁移。
+
+## 事件与权限
+
+`api.on(event, handler, priority=0)` 返回取消订阅函数；优先级高的先执行，同优先级保持注册顺序。事件签名保留：
 
 | 事件 | 处理器契约 |
 | --- | --- |
@@ -65,36 +101,32 @@ def setup(api):
 | `user_steer` | `(text, session)` |
 | `before_agent_start` | `(runtime, prompts)` |
 | `agent_event`、`turn_end` | `(event, runtime)` |
-| `tool_call` | `(event, session)` → `Block` 或 `None`，可调整参数 |
+| `tool_call` | `(event, session)` → `Block` 或 `None`；可调整参数 |
 | `tool_result` | `(result, event, session)` → 替换结果或 `None` |
 | `context` | `(messages, runtime)` → 请求视图或 `None` |
 | `agent_stop` | `(runtime)` → `Continue` 或 `None` |
 | `agent_end`、`before_compact` | `(runtime)` |
 | `compact` | `(runtime, summary)` |
 
-用 `Block(reason)` 阻止工具，用 `Continue(text)` 实现用户显式启用的继续策略。处理器失败会记录诊断，不阻止后续处理器。上下文视图应保持旧消息前缀稳定。
+`Block(reason)` 阻止工具；只有明确启用的继续策略才使用 `Continue(text)`。处理器失败进入诊断并与后续处理器隔离。上下文视图应保留追加式的消息前缀。
 
-权限策略通过 `api.register_permission_policy(policy)` 注册，实现 `preflight(event)` 和 `before_execute(event)`。由于预检后参数或授权仍可能改变，第二次检查不可省略。使用绑定到 Runtime 的审查来源，不应按当前界面选中的会话选择授权历史。
+`api.register_permission_policy(policy)` 在必要的 Core 策略后添加限制，不能替换 Core 权限门。策略实现 `preflight(event)` 和 `before_execute(event)`，第二次检查捕获预检后的变化。托管／适配操作需使用 `api.authorize_tool`；`read_only` 标记不是授权。Python 本身仍是可信代码，不在沙箱中执行。
 
-权限模式常量 `MODES`、规范化函数 `normalize_permission_mode`、显示名称 `permission_mode_label` 和计划模式工具筛选 `plan_tool_allowed` 统一从 `virgo.harness.permissions` 导入；`virgo.features.permission` 保留兼容导出。`permission_mode_label(mode)` 默认返回英文，传入 `permission_mode_label(mode, session.t)` 则使用会话语言，规范化后的模式标识不变。
+权限模式与辅助函数位于 `virgo.harness.permissions`；具体权限门、范围判断和审查来源契约同样属于 Harness。`auto_review` 通过 `register_permission_reviewer` 提供可选模型审查；禁用它仍保留规则和不确定操作的人工审批。
 
-最小权限协议未覆盖所有内置功能：hosted web、子 Agent 和队友还使用 `on_tool_call`、`mode_for`、`decide`、`set_agent_mode` 等策略服务。需要这些功能时，包装并转发内置策略。仅赋值 `api.services["permissions"]` 不会替换已注册的执行策略。详见[策略能力边界](abstraction-boundaries.md#自定义权限策略的能力范围)。
+配置命令钩子支持 `PreToolUse`、`PostToolUse`、`UserPromptSubmit`、`Stop`，从 stdin 读取 JSON。退出码 `2` 表示相应事件的阻止／继续，stderr 提供反馈；其他失败记录诊断。匹配与准确语义见 [`extensions.py`](../../../src/virgo/harness/extensions.py)。
 
-配置中的命令钩子支持 `PreToolUse`、`PostToolUse`、`UserPromptSubmit` 和 `Stop`，从 stdin 读取 JSON。退出码 `2` 是控制结果，按事件表示阻止或继续，stderr 作为反馈；其他失败进入诊断。匹配与具体语义见 [`extensions.py`](../../../src/virgo/harness/extensions.py)。
+## 提示章节与状态
 
-## 提示段与持久化
+`api.add_system_section(name, fn, order=50)` 调用 `fn(role)`。`add_runtime_system_section(name, fn, order=50)` 提供候选 `RuntimeContext`，包含角色、cwd、Store、记账 Store 和审查父来源。构造失败会拒绝候选，不应临时替换当前会话状态。
 
-`api.add_system_section(name, fn, order=50)` 调用 `fn(role)`。需要候选 Runtime 的数据时，使用 `add_runtime_system_section(name, fn, order=50)`，其 `RuntimeContext` 提供角色、cwd、存储、记账存储和审查父来源。构造过程中不要临时替换活动会话状态。
+`api.append_entry(kind, data)` 和 `api.entries(kind)` 访问当前 Store 的自定义状态。后台工作需先捕获真实所有者，再使用其 Store 和 `api.notify(..., store=owner)`。保存失败是真正的执行边界，不能当作持久化成功。Todo 仍是当前对话状态，不是持久任务图。
 
-`api.append_entry(kind, data)` 保存自定义状态，`api.entries(kind)` 从活动分支恢复。保存失败是真实的执行边界，不能当成追加成功。后台回调应捕获原始 `store`，并调用 `api.notify(..., store=owner)` 或 `session.report_error(..., store=owner)`，避免切换对话后输出被转向。
+## 技能、模板和 Agent 类型
 
-按调用方查询诊断或恢复连接时，使用 `session.runtime_for_context(ctx)`。它核对真实 Runtime 类型、所属 Session、原始 `review_source` 对象和 Agent 名称；不可信来源返回 `None`，具体功能负责通过 `ctx.t` 返回本地化拒绝结果。会话切换不改变旧调用的归属，解析 Runtime 也不授予额外诊断访问权。
+技能包含 YAML frontmatter（`name`、`description`）和 Markdown。发现阶段展示索引，模型按需读取正文；`/skill:name args` 显式展开，内部相对路径按技能目录解析。
 
-## 技能、模板与 Agent 类型
-
-技能使用含 `name`、`description` 的 YAML frontmatter，之后是 Markdown 指令。发现阶段只展示名称、描述和位置，模型按需读取正文。`/skill:name args` 显式展开技能，内部相对引用按技能所在目录解析。
-
-`prompts/review.md` 等文件会成为 `/review` 命令：
+`prompts/review.md` 模板成为 `/review`：
 
 ```markdown
 ---
@@ -103,18 +135,6 @@ description: review the current diff
 Review the current diff. Focus on: ${1:-correctness}. Additional context: $@
 ```
 
-模板支持位置参数 `$1`、全部参数 `$@`／`$ARGUMENTS`、默认值 `${1:-value}` 和切片 `${@:2}`。没有占位符时，传入参数追加到模板正文末尾。
+模板支持 `$1`、`$@`／`$ARGUMENTS`、`${1:-value}`、`${@:2}`；没有占位符时，参数追加到正文。子 Agent frontmatter 支持 `name`、`description`、`tools`、`model`、`permission`，正文提供额外系统指令。[审查 Agent 示例](../../../examples/project/.virgo/agents/reviewer.md)选择只读工具和计划模式。
 
-子 Agent Markdown 的 frontmatter 支持 `name`、`description`、`tools`、`model` 和 `permission`，正文作为附加系统提示。[审查 Agent 示例](../../../examples/project/.virgo/agents/reviewer.md)使用计划模式和显式的只读工具列表。
-
-## 工作流
-
-工作流导出 `META` 和 `run(ctx, args)`。`ctx.agent(prompt, schema=..., tools=..., label=...)` 运行子 Agent，`ctx.map` 和 `ctx.parallel` 协调任务，`ctx.phase`／`ctx.log` 报告进度。结构化结果按指定 schema 校验。
-
-日志按调用内容缓存成功的 Agent 结果。续跑会从头执行 Python 控制流，日志范围之外的副作用应设计为可重复，或显式保护。工作流元数据在工作空间初始化时发现一次，执行时重新加载选中的脚本。[审查工作流示例](../../../examples/project/.virgo/workflows/review-changes.py)展示了并行审查后再验证。
-
-## 错误与证据
-
-捕获异常后，可用 `virgo.diagnostics.capture_error` 保留结构化诊断，再放入 `ToolResult.details["error"]`。若恢复成功，原始错误保留在 `related_errors`。诊断上下文应限制为 ID、计数和安全元数据，不要附加任意请求对象。
-
-证据属于某个 Runtime 时，使用该 Runtime 的 `report_error()`。只有结果或通知中的显式传播才授予父任务证据，单独传递错误 ID 字符串并不足够。详见[故障排查](../guides/troubleshooting.md)和[扩展 API 源码](../../../src/virgo/harness/extensions.py)。
+捕获异常后用 `virgo.diagnostics.capture_error` 保留结构化诊断；成功恢复时将原始证据保留在 `related_errors`。属于某个 Runtime 的错误优先使用其 `report_error()`；结果／通知的显式传播可以授予父任务访问权，单独的错误 ID 字符串不能。详见[故障排查](../guides/troubleshooting.md)。

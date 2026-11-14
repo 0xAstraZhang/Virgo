@@ -15,7 +15,7 @@ def setup(api):
     api.on("tool_call", guard, priority=90)  # runs right after the permission check
 
     def stats(session, args):
-        msgs = session.main.messages
-        api.ui.print(f"{len(msgs)} messages, ~{session.context_tokens()} context tokens")
+        runtime = api.current_runtime()
+        api.ui.print(f"{len(runtime.messages)} messages, ~{runtime.context_tokens()} context tokens")
 
     api.register_command("stats", stats, "show conversation stats", concurrent=True)

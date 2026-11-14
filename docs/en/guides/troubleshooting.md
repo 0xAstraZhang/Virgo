@@ -10,7 +10,6 @@
 | No models in the picker | Let the startup refresh finish, reopen `/model`, check `/login`, or specify `/model provider/id` |
 | Authentication fails after changing an endpoint | Log in again for the new protocol/endpoint; saved credentials are connection-bound |
 | A configured shell is unavailable | Use `/shell` or specify an adapted executable path; Virgo does not silently substitute a different language |
-| A scheduled task did not run | Check local time, persistence and whether Virgo stayed running; see [restart semantics](schedules.md#persistence-and-restart-behavior) |
 | Work pauses after saving history fails | Keep the current process open, resolve the filesystem problem, and inspect the diagnostic before switching or exiting |
 
 Use `/diagnostics` to find the log path and the latest ten errors. `/diagnostics <error-id>` shows full JSON for a unique ID or prefix among the current instance's last 100 records. After restarting, inspect the JSONL log directly; the command does not scan all historical logs.
@@ -48,7 +47,13 @@ A failed tool result can include an added diagnostic summary of at most 2 KiB. I
 
 Queries use exact IDs, never arbitrary paths or ID prefixes. Access belongs to the calling runtime; sharing a session accounting store or selecting another UI conversation does not grant access. Defaults retain 100 evidence records and 1000 authorized IDs. Responses distinguish `not_found`, `expired` and `unavailable`. Each complete JSON page is bounded to 8 KiB; a cursor is bound to its error, section and evidence snapshot.
 
-`features.diagnostics=false` disables the model tool, result summaries and diagnostic notifications, but preserves independent logs. Diagnostics append at normal model-request boundaries; gathering evidence does not itself start a model turn or rewrite old messages.
+`plugins.diagnostic_get.enabled=false` disables the model lookup tool. Core logs, error IDs, bounded result summaries and recovery evidence remain available; `/diagnostics` also remains available. Diagnostics append at normal model-request boundaries; gathering evidence does not itself start a model turn or rewrite old messages.
+
+## Plugin configuration and upgrades
+
+An unknown plugin ID or malformed configuration fails startup with a configuration error. Optional setup failures identify the plugin and report degradation; partial registrations are rolled back. Disabled plugins do not start their services. Project Python extensions need external trust; use `--trust-project-extensions` only after reviewing them.
+
+Old schedules are intentionally inactive. Schedule, Workflow, Team, Tasks, Memory and Goal were removed; their files remain for manual inspection. See [Migration](migrating-to-core-plugins.md), rather than recreating an old command by changing feature flags.
 
 ## Execution failure does not imply no side effects
 
@@ -68,4 +73,4 @@ There are at most two recovery attempts without a successful remote tool call; a
 
 The session store keeps logical in-memory entries after a write failure and reports the original cause through the independent log. It pauses scheduling and signals the owning runtime so further work does not race ahead of unsaved history. Switching views does not repair the failed store, and a diagnostic notification cannot clear cancellation or a save failure. Avoid closing the process until you have recovered needed unsaved information.
 
-Implementation: [diagnostics](../../../src/virgo/diagnostics.py), [log storage](../../../src/virgo/harness/diagnostics.py), [runtime evidence](../../../src/virgo/harness/diagnostic_access.py), [recovery](../../../src/virgo/harness/recovery.py), [MCP](../../../src/virgo/features/mcp.py).
+Implementation: [diagnostics](../../../src/virgo/diagnostics.py), [log storage](../../../src/virgo/harness/diagnostics.py), [runtime evidence](../../../src/virgo/harness/diagnostic_access.py), [recovery](../../../src/virgo/harness/recovery.py), [MCP](../../../src/virgo/plugins/mcp.py).

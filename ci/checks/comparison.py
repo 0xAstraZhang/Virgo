@@ -83,6 +83,119 @@ def check_retirements(root):
         assert report[category] == [retired]
 
 
+def check_product_retirements(root):
+    """Retired products are explicit removals, never equivalent coverage aliases.
+
+    Failure cases fixed before comparator changes: broad-name/module/parameter
+    exemptions; another baseline inheriting an exception; a failed original
+    disappearing; missing/failed/skipped or relocated preservation/acceptance
+    gates; head-only migration checks accidentally required on the old revision;
+    unrelated deletions, failures or new skips hidden by a retirement.
+    """
+    baseline = "47e1757bda5c5cfafb3a5a508a1a6ec4d629bfaf"
+    retired = "test_goal_rejects_incomplete_or_malformed_verdicts[reply0]"
+    module = "tests.features.test_goal"
+    preservation = {
+        "test_result_save_failure_delivers_result_and_blocks_restart": "tests.harness.test_harness_boundaries",
+        "test_explicit_policy_preserves_order_and_fails_closed": "tests.harness.test_harness_boundaries",
+        "test_background_job_notifies_idle_session": "tests.features.test_background",
+        "test_subagent_fresh_context_and_no_recursion": "tests.features.test_subagent",
+        "test_execution_rechecks_mode_arguments_and_symlink_boundary": "tests.features.test_permission",
+    }
+    acceptance = {name: "tests.harness.test_core_plugins_e2e" for name in (
+        "test_minimal_coding_loop_and_resume_without_plugin_imports",
+        "test_minimal_permission_rechecks_hook_rewritten_arguments",
+        "test_owned_publication_preserves_the_running_batch",
+        "test_failed_plugin_rolls_back_and_cleanup_continues",
+        "test_project_extensions_require_trust_outside_the_project",
+        "test_children_share_budget_permission_ceiling_and_cancellation",
+        "test_retired_data_stays_untouched_and_history_remains_readable",
+        "test_profile_layers_and_explicit_plugin_overrides",
+    )}
+
+    def run(label, *, old=None, original=retired, original_module=module, sha=None,
+            changed=None, moved=None, unrelated=False):
+        project = root / label
+        shutil.rmtree(project, ignore_errors=True)
+        project.mkdir(parents=True)
+        identities = {**preservation, **(acceptance if label == "head" else {})}
+        cases = {name: (path, "pass") for name, path in identities.items()}
+        if old is not None:
+            cases[original] = (original_module, old)
+        if unrelated:
+            cases["test_unapproved_product_deletion"] = (module, "pass")
+        for name, body in (changed or {}).items():
+            if body is None:
+                cases.pop(name, None)
+            else:
+                cases[name] = (identities[name], body)
+        for name in moved or ():
+            cases[name] = ("test_wrong_module", cases[name][1])
+        sources = {}
+        for name, (path, body) in cases.items():
+            function, separator, parameter = name.partition("[")
+            decorator = f"@pytest.mark.parametrize('_case', [0], ids=[{parameter[:-1]!r}])\n" if separator else ""
+            sources.setdefault(path, []).append(f"{decorator}def {function}({'_case' if separator else ''}): {body}\n")
+        for path, functions in sources.items():
+            target = project / (path.replace(".", "/") + ".py")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("import pytest\n" + "\n".join(functions), encoding="utf-8")
+        subprocess.run([
+            sys.executable, str(RUNNER), "run", "--project", str(project),
+            "--output", str(root / "reports" / label), "--platform", "local",
+            "--label", label, "--sha", sha or (baseline if label == "base" else "head"),
+        ], check=False, stdout=subprocess.DEVNULL)
+
+    def compare(expected):
+        result = subprocess.run([
+            sys.executable, str(RUNNER), "compare", "--reports", str(root / "reports"),
+            "--output", str(root / "comparison"), "--platforms", "local",
+        ], check=False, stdout=subprocess.DEVNULL)
+        text = (root / "comparison.md").read_text(encoding="utf-8")
+        assert result.returncode == expected, text
+        report = json.loads((root / "comparison.json").read_text(encoding="utf-8"))["platforms"]["local"]
+        return report, text
+
+    run("base", old="pass")
+    run("head")
+    report, text = compare(0)
+    assert report["removed"] == [retired] and list(report["retired_products"]) == [retired]
+    assert not report["retired"], "Removed products must not masquerade as duplicate coverage"
+    assert "Reviewed retirements" in text and "retired product" in text and retired in text
+    assert set(acceptance) <= set(report["added"]), "Migration checks exist only on head"
+
+    for options in ({"sha": "other-baseline"}, {"original_module": "test_same_name"},
+                    {"original": "test_goal_rejects_incomplete_or_malformed_verdicts[reply99]"},
+                    {"old": "assert False"}):
+        run("base", **{"old": "pass", **options})
+        assert not compare(1)[0]["retired_products"]
+    run("base", old="pytest.skip('old skip')")
+    assert not compare(0)[0]["retired_products"]  # Preserve the general baseline-skipped removal rule.
+
+    retained = next(iter(preservation))
+    migration = "test_retired_data_stays_untouched_and_history_remains_readable"
+    for label, gate in (("base", retained), ("head", retained), ("head", migration)):
+        for body in (None, "assert False", "pytest.skip('not executed')"):
+            run("base", old="pass")
+            run("head")
+            run(label, old="pass" if label == "base" else None, changed={gate: body})
+            assert not compare(1)[0]["retired_products"]
+        run("base", old="pass")
+        run("head")
+        run(label, old="pass" if label == "base" else None, moved=[gate])
+        assert not compare(1)[0]["retired_products"]
+
+    run("base", old="pass", unrelated=True)
+    run("head")
+    report, _ = compare(1)
+    assert list(report["retired_products"]) == [retired] and report["problems"]
+    run("base", old="pass")
+    for old, category in (("assert False", "regressions"), ("pytest.skip('new skip')", "new_skips")):
+        run("head", old=old)
+        report, _ = compare(1)
+        assert not report["retired_products"] and report[category] == [retired]
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="virgo-ci-check-") as directory:
         root = Path(directory)
@@ -281,6 +394,7 @@ def main():
         target_path.write_text(json.dumps(target))
         compare(1, "--target", str(target_path))
         check_retirements(root / "retirements")
+        check_product_retirements(root / "product-retirements")
     print("CLI end-to-end checks passed")
 
 

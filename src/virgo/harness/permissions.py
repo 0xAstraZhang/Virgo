@@ -9,7 +9,7 @@ from ..i18n import Translator
 
 MODES = ("auto-review", "accept-all", "plan")
 _ALIASES = {"default": "auto-review", "accept-edits": "auto-review", "yolo": "accept-all"}
-_PLAN_SIDE_EFFECTS = {"workflow", "schedule", "memory", "team_review", "job_kill"}
+_PLAN_SIDE_EFFECTS = {"job_kill"}
 
 
 def normalize_permission_mode(mode: str) -> str:
@@ -32,13 +32,3 @@ class PermissionPolicy(Protocol):
     def preflight(self, event: ToolCallEvent) -> Block | None: ...
 
     def before_execute(self, event: ToolCallEvent) -> Block | None: ...
-
-
-class NoPermissions:
-    """Only selected when the permission feature is explicitly disabled."""
-
-    def preflight(self, event: ToolCallEvent) -> None:
-        return None
-
-    def before_execute(self, event: ToolCallEvent) -> None:
-        return None

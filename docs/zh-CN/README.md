@@ -12,19 +12,21 @@
 | [使用 Virgo](guides/interaction.md) | 命令、快捷键、语言、会话和运行中补充指令 |
 | [联网搜索与网页读取](guides/web.md) | 后端、能力路由、权限和读取限制 |
 | [命令解释器](guides/shells.md) | Shell 选择、执行语义、输出和取消 |
-| [定时任务](guides/schedules.md) | 创建、编辑、持久化、时间和重启行为 |
 | [故障排查](guides/troubleshooting.md) | 错误、日志、诊断证据和恢复边界 |
+
+[升级已有安装？](guides/migrating-to-core-plugins.md) 先了解预设变化、项目信任和保留的历史数据。
 
 ## 查阅细节
 
 - [配置参考](reference/configuration.md)：优先级、配置项、环境变量、权限和存储位置。
-- [工具与自动化](reference/tools.md)：文件、任务、记忆、子 Agent、团队、工作流和 MCP。
+- [工具与插件](reference/tools.md)：文件、联网、询问、清单、子 Agent、后台任务和 MCP。
 - [示例文件](../../examples/README.zh-CN.md)：按需将单个文件复制到自己的项目。
 
 ## 扩展与开发
 
+- [Core 与插件边界](development/core-plugin-boundaries.md)：职责归属、能力清单和验收。
 - [架构](development/architecture.md)：模块职责、执行流程和稳定边界。
-- [扩展](development/extensions.md)：Python 工具和命令、事件、技能、提示模板和工作流。
+- [扩展](development/extensions.md)：Python 工具与命令、事件、生命周期、运行时服务、技能和提示模板。
 - [本地化](development/localization.md)：语言包、会话归属、回退策略和新增语言。
 - [开发与 CI](development/testing-and-ci.md)：本地命令、端到端验收、结果比较和运行器维护。
 

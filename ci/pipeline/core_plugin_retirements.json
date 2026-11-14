@@ -1,0 +1,292 @@
+{
+  "baseline_sha": "47e1757bda5c5cfafb3a5a508a1a6ec4d629bfaf",
+  "reason": "The six official non-coding product subsystems are removed. These cases verify retired behavior, not duplicate coverage. Preservation gates protect retained functionality; head-only acceptance checks validate the migration.",
+  "preservation_gates": [
+    {
+      "classname": "tests.harness.test_harness_boundaries",
+      "name": "test_result_save_failure_delivers_result_and_blocks_restart"
+    },
+    {
+      "classname": "tests.harness.test_harness_boundaries",
+      "name": "test_explicit_policy_preserves_order_and_fails_closed"
+    },
+    {
+      "classname": "tests.features.test_background",
+      "name": "test_background_job_notifies_idle_session"
+    },
+    {
+      "classname": "tests.features.test_subagent",
+      "name": "test_subagent_fresh_context_and_no_recursion"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_execution_rechecks_mode_arguments_and_symlink_boundary"
+    }
+  ],
+  "acceptance_gates": [
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_minimal_coding_loop_and_resume_without_plugin_imports"
+    },
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_minimal_permission_rechecks_hook_rewritten_arguments"
+    },
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_owned_publication_preserves_the_running_batch"
+    },
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_failed_plugin_rolls_back_and_cleanup_continues"
+    },
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_project_extensions_require_trust_outside_the_project"
+    },
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_children_share_budget_permission_ceiling_and_cancellation"
+    },
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_retired_data_stays_untouched_and_history_remains_readable"
+    },
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_profile_layers_and_explicit_plugin_overrides"
+    }
+  ],
+  "retired_cases": [
+    {
+      "classname": "tests.cli.tui.test_session_switching",
+      "name": "test_old_teammate_finishes_persisting_without_updating_new_workspace",
+      "product": "team"
+    },
+    {
+      "classname": "tests.cli.tui.test_sessions",
+      "name": "test_live_conversations_deliver_persisted_schedule_once[at]",
+      "product": "schedule"
+    },
+    {
+      "classname": "tests.cli.tui.test_sessions",
+      "name": "test_live_conversations_deliver_persisted_schedule_once[cron]",
+      "product": "schedule"
+    },
+    {
+      "classname": "tests.features.test_async_diagnostics",
+      "name": "test_team_model_failure_and_notification_failure_keep_both_causes",
+      "product": "team"
+    },
+    {
+      "classname": "tests.features.test_async_diagnostics",
+      "name": "test_teammate_crash_after_switch_keeps_owner_and_finishes_cleanup",
+      "product": "team"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_evaluation_records_evidence_and_verdict",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_gives_up_after_cap_and_keeps_goal",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_keeps_full_verification_commands_and_tail_failures",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_loop_continues_until_met",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_rejects_incomplete_or_malformed_verdicts[reply0]",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_rejects_incomplete_or_malformed_verdicts[reply1]",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_rejects_incomplete_or_malformed_verdicts[reply2]",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_rejects_incomplete_or_malformed_verdicts[reply3]",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_goal_truncation_is_explicit_bounded_and_keeps_latest_evidence",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_goal",
+      "name": "test_interrupt_during_goal_review_keeps_goal_active",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.features.test_memory",
+      "name": "test_memory_save_dedupe_and_index",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.features.test_memory",
+      "name": "test_memory_tidy_rejects_malformed_records_before_rewriting",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.features.test_memory",
+      "name": "test_memory_update_with_unknown_type_on_disk_returns_a_clear_error",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.features.test_schedule",
+      "name": "test_cron_parsing_and_matching",
+      "product": "schedule"
+    },
+    {
+      "classname": "tests.features.test_schedule",
+      "name": "test_live_workspace_schedule_ownership_survives_changes_and_shutdown",
+      "product": "schedule"
+    },
+    {
+      "classname": "tests.features.test_schedule",
+      "name": "test_schedule_converts_zone_qualified_times_to_local",
+      "product": "schedule"
+    },
+    {
+      "classname": "tests.features.test_schedule",
+      "name": "test_schedule_file_with_zone_qualified_or_invalid_times_is_repaired",
+      "product": "schedule"
+    },
+    {
+      "classname": "tests.features.test_schedule",
+      "name": "test_schedule_fires_as_notification",
+      "product": "schedule"
+    },
+    {
+      "classname": "tests.features.test_tasks",
+      "name": "test_task_graph",
+      "product": "tasks"
+    },
+    {
+      "classname": "tests.features.test_tasks",
+      "name": "test_task_ids_cannot_name_files_outside_the_task_directory",
+      "product": "tasks"
+    },
+    {
+      "classname": "tests.features.test_tasks",
+      "name": "test_task_tools",
+      "product": "tasks"
+    },
+    {
+      "classname": "tests.features.test_team",
+      "name": "test_git_worktree_helper",
+      "product": "team"
+    },
+    {
+      "classname": "tests.features.test_team",
+      "name": "test_idle_teammate_waits_for_messages_and_claims_only_explicit_tasks",
+      "product": "team"
+    },
+    {
+      "classname": "tests.features.test_team",
+      "name": "test_message_arriving_as_a_teammate_turn_ends_is_delivered",
+      "product": "team"
+    },
+    {
+      "classname": "tests.features.test_team",
+      "name": "test_team_messaging_plan_approval_and_shutdown",
+      "product": "team"
+    },
+    {
+      "classname": "tests.features.test_team",
+      "name": "test_teammate_whose_runtime_cannot_start_is_stopped_and_leaves_plan_mode",
+      "product": "team"
+    },
+    {
+      "classname": "tests.features.test_workflow",
+      "name": "test_unknown_workflow_or_escaping_run_id_leaves_no_journal",
+      "product": "workflow"
+    },
+    {
+      "classname": "tests.features.test_workflow",
+      "name": "test_workflow_parallel_and_resume",
+      "product": "workflow"
+    },
+    {
+      "classname": "tests.features.test_workflow",
+      "name": "test_workflow_tool_steps_do_not_register_agent_types",
+      "product": "workflow"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[goal-compatible-low-without-default]",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[goal-model-default]",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[goal-server-default]",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[goal-supports-low]",
+      "product": "goal"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[memory-extract-compatible-low-without-default]",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[memory-extract-model-default]",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[memory-extract-server-default]",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[memory-extract-supports-low]",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[memory-tidy-compatible-low-without-default]",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[memory-tidy-model-default]",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[memory-tidy-server-default]",
+      "product": "memory"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[memory-tidy-supports-low]",
+      "product": "memory"
+    }
+  ]
+}

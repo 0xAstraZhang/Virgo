@@ -11,7 +11,7 @@ from virgo.ai.stream import StreamEvent
 from virgo.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.controller import RunController
-from virgo.features.permission import ReviewDecision
+from virgo.harness.permission_policy import ReviewDecision
 
 from tests.support.harness import wait_until
 from tests.support.tui import pump
@@ -183,7 +183,7 @@ def test_input_before_run_starts_is_processed_as_a_later_prompt(make_session):
     assert not controller.pending and not session.main.agent.drain_queues()
 
 
-def test_input_during_new_session_command_preserves_fifo_after_reset(make_session):
+def test_input_during_new_session_command_preserves_fifo_after_reset(make_session, monkeypatch):
     ui = FullscreenUI()
     session = make_session(faux.reply("old answer"), faux.reply("new answer"), ui=ui)
     controller = RunController(session, ui)
@@ -197,7 +197,7 @@ def test_input_during_new_session_command_preserves_fifo_after_reset(make_sessio
         release.wait(2)
         new_command(s, args)
 
-    session.commands.register("new", blocked_new, "start a new session")
+    monkeypatch.setattr(session.commands._cmds["new"], "fn", blocked_new)
     controller.submit("/new")
     assert entered.wait(1)
     assert controller.busy and not session.busy
@@ -230,7 +230,7 @@ def test_background_notification_wakes_idle_session(make_session):
 
 def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, project, monkeypatch):
     monkeypatch.setattr(
-        "virgo.features.permission.review_tool_call",
+        "virgo.plugins.auto_review.review_tool_call",
         lambda *_: ReviewDecision("ask", "external file write needs approval"),
     )
     first, second = project.parent / "one.txt", project.parent / "two.txt"

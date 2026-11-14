@@ -77,6 +77,8 @@ def make_session(project):
             session=kw.pop("session", "new" if persist else None),
             permission_mode=mode,
             settings=settings,
+            # These local fixtures create their own extension files deliberately.
+            trust_project_extensions=kw.pop("trust_project_extensions", True),
             **kw,
         )
         made.append(s)
