@@ -93,3 +93,47 @@ def test_legacy_explore_cannot_override_read_only_with_false(make_session):
     }, ctx)
     assert result.is_error
     assert "conflict" in result.as_text().lower()
+
+
+def test_capability_only_subagent_does_not_inherit_shadowed_general_definition(make_session, project):
+    agents = project / ".virgo" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "general.md").write_text(
+        "---\nname: general\ndescription: legacy editing worker\n"
+        "tools: write, edit\nmodel: faux/legacy\n---\n"
+        "LEGACY_GENERAL_INSTRUCTIONS\n",
+        encoding="utf-8",
+    )
+    child_requests = []
+
+    def respond(ctx):
+        if "You are a Virgo sub-agent" in ctx.system:
+            child_requests.append(ctx)
+            return faux.reply("inspection complete")
+        return faux.reply("main complete")
+
+    session = make_session(settings={"shell": {"executable": "bash"}})
+    faux.handler("test", respond)
+    faux.push("test", faux.reply(tools=[("agent", {
+        "description": "inspect", "prompt": "Inspect files.", "read_only": True,
+    })]))
+    session.prompt("Inspect without changes.")
+
+    assert tool_results(session)[0].text() == "inspection complete"
+    assert len(child_requests) == 1
+    assert sorted(tool.name for tool in child_requests[0].tools) == ["bash", "glob", "grep", "read"]
+    assert "LEGACY_GENERAL_INSTRUCTIONS" not in child_requests[0].system
+    assert not faux.CALLS["legacy"]
+
+    def legacy_response(ctx):
+        assert "LEGACY_GENERAL_INSTRUCTIONS" in ctx.system
+        assert sorted(tool.name for tool in ctx.tools) == ["edit", "write"]
+        return faux.reply("legacy worker complete")
+
+    faux.script("legacy", legacy_response)
+    faux.push("test", faux.reply(tools=[("agent", {
+        "description": "legacy", "prompt": "Run old worker.", "type": "general",
+    })]))
+    session.prompt("Use the explicitly named legacy worker.")
+    assert tool_results(session)[-1].text() == "legacy worker complete"
+    assert len(faux.CALLS["legacy"]) == 1
