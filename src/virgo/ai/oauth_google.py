@@ -173,7 +173,7 @@ def _discover_project(access: str, ui, signal=None) -> str:
     tier = next((t for t in tiers if isinstance(t, dict) and t.get("isDefault")), {})
     tier_id = tier.get("id") or "legacy-tier"
     if tier_id != "free-tier" and not project:
-        project = ui.input("Google Cloud project ID (required for this account)")
+        project = ui.input(oauth._t(ui, "harness.oauth.project"))
         _check_cancelled(signal)
         if project is None:
             raise oauth.AuthCancelled("Login cancelled.")
@@ -184,7 +184,7 @@ def _discover_project(access: str, ui, signal=None) -> str:
     if tier_id != "free-tier" and project:
         body["cloudaicompanionProject"] = project
         body["metadata"]["duetProject"] = project
-    ui.print("Preparing Google Code Assist access…")
+    ui.print(oauth._t(ui, "harness.oauth.preparing"))
     operation = _request("POST", CODE_ASSIST_URL + ":onboardUser", signal, headers=headers, json=body)
     deadline = time.monotonic() + ONBOARD_TIMEOUT
     while not operation.get("done"):
@@ -217,7 +217,7 @@ def login(ui, signal=None) -> dict:
     if method == "Copy code login":
         redirect_uri = COPY_CODE_REDIRECT
         oauth._open(ui, _authorization_url(redirect_uri, challenge, state))
-        answer = ui.input("Paste the Google authorization code", password=True)
+        answer = ui.input(oauth._t(ui, "harness.oauth.code"), password=True)
         _check_cancelled(signal)
         if answer is None:
             raise oauth.AuthCancelled("Login cancelled.")
@@ -230,7 +230,7 @@ def login(ui, signal=None) -> dict:
         try:
             redirect_uri = callback.uri
             oauth._open(ui, _authorization_url(redirect_uri, challenge, state))
-            ui.print("Waiting for Google sign-in. Cancel to stop; use Copy code login on a remote machine.")
+            ui.print(oauth._t(ui, "harness.oauth.waiting"))
             code = callback.wait(signal)
         finally:
             callback.close()

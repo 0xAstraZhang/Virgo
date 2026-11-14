@@ -1,9 +1,11 @@
 """Shared permission modes and fail-closed checkpoints, independent of policy internals."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol
 
 from ..agent import AgentTool, Block, ToolCallEvent
+from ..i18n import Translator
 
 MODES = ("auto-review", "accept-all", "plan")
 _ALIASES = {"default": "auto-review", "accept-edits": "auto-review", "yolo": "accept-all"}
@@ -17,8 +19,9 @@ def normalize_permission_mode(mode: str) -> str:
     return mode
 
 
-def permission_mode_label(mode: str) -> str:
-    return normalize_permission_mode(mode).replace("-", " ")
+def permission_mode_label(mode: str, t: Callable[[str], str] | None = None) -> str:
+    t = t or Translator()
+    return t("features.permission.mode." + normalize_permission_mode(mode))
 
 
 def plan_tool_allowed(tool: AgentTool | None) -> bool:

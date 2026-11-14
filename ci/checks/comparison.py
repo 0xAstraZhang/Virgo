@@ -51,7 +51,7 @@ def check_retirements(root):
         assert retired in text, "The deletion must stay visible in the readable report"
         return report
 
-    # Failure modes are recorded in docs/ci/runner.md before the comparison change.
+    # Failure modes are recorded in docs/en/development/testing-and-ci.md before the comparison change.
     run("base", old="pass")
     run("head")
     report = compare(0)

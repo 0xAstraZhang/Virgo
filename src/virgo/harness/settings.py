@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULTS: dict[str, Any] = {
+    "language": "en",
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,

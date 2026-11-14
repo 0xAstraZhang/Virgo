@@ -11,6 +11,7 @@ from textual.message import Message
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
+from ..i18n import tr
 from .bridge import Confirmation
 from .choices import ChoiceList
 from .sessions import SessionPicker as SessionPicker
@@ -66,17 +67,23 @@ class ApprovalPicker(Vertical):
         self.confirmation = confirmation
         self._answered = False
         self.display = True
-        self.query_one("#approval-title", Static).update(f"Permission · {confirmation.agent}")
-        question = confirmation.question.removesuffix("  Allow? [y]es / [n]o / [a]lways this session")
+        self.query_one("#approval-title", Static).update(
+            tr(self, "ui.approval.title", agent=confirmation.agent)
+        )
+        question = confirmation.question.removesuffix(
+            tr(self, "features.permission.allow_suffix")
+        ).removesuffix("  Allow? [y]es / [n]o / [a]lways this session")
         self.query_one("#approval-question-text", Static).update(Text(question))
         self.query_one("#approval-question").scroll_home(animate=False)
         options = self.query_one("#approval-options", ChoiceList)
         options.clear_options()
-        options.add_options([
-            Option("1. Allow once [y]", id="allow"),
-            Option("2. Deny [n]", id="deny"),
-            Option("3. Allow this session [a]", id="always"),
-        ])
+        options.add_options(
+            [
+                Option(tr(self, "ui.approval.once"), id="allow"),
+                Option(tr(self, "ui.approval.deny"), id="deny"),
+                Option(tr(self, "ui.approval.session"), id="always"),
+            ]
+        )
         options.highlighted = 1
         self.resize_panel()
         self.focus_control()
@@ -100,9 +107,7 @@ class ApprovalPicker(Vertical):
             1, min(8, self.app.size.height // 2 - (5 if compact else 7))
         )
         help_text = (
-            "↑↓ select · Enter · Esc deny"
-            if self.app.size.width < 64
-            else "↑↓ select · Enter confirm · Esc deny · PgUp/PgDn scroll"
+            tr(self, "ui.approval.hints_short") if self.app.size.width < 64 else tr(self, "ui.approval.hints")
         )
         self.query_one("#approval-help", Static).update(Text(help_text))
 

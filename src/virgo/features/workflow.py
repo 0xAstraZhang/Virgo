@@ -33,11 +33,14 @@ from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..ai.types import UserMessage
 from ..ai.validate import parse_json_loose, validate
 from ..harness.extensions import ExtensionAPI
+from ..i18n import Translator
 from ..tools.truncate import budget
 
 
 class WorkflowError(Exception):
-    pass
+    def __init__(self, message: str, *, cancelled: bool = False):
+        super().__init__(message)
+        self.cancelled = cancelled
 
 
 class Journal:
@@ -93,7 +96,7 @@ class Context:
 
     # -- primitives -----------------------------------------------------------
     def log(self, msg: str) -> None:
-        self.api.ui.print(f"  [workflow {self.run_id}] {msg}", "agent")
+        self.api.ui.print(self.session.t("features.workflow.log", id=self.run_id, message=msg), "agent")
 
     def phase(self, title: str) -> None:
         self.log(f"== {title} ==")
@@ -107,7 +110,7 @@ class Context:
         system: str | None = None,
     ) -> Any:
         if self.signal.is_set():
-            raise WorkflowError("aborted")
+            raise WorkflowError(self.session.t("features.workflow.aborted"), cancelled=True)
         key = hashlib.sha256(
             json.dumps([label, prompt, schema, tools, system], sort_keys=True, default=str).encode()
         ).hexdigest()[:20]
@@ -117,9 +120,9 @@ class Context:
             return self.journal.entries[key]
         with self._lock:
             if self.stats["agents"] >= self.max_agents:
-                raise WorkflowError(f"agent call limit ({self.max_agents}) reached")
+                raise WorkflowError(self.session.t("features.workflow.agent_limit", limit=self.max_agents))
             self.stats["agents"] += 1
-        self.log(f"agent: {label or prompt[:60]}")
+        self.log(self.session.t("features.workflow.agent_log", label=label or prompt[:60]))
         value = self._run_agent(prompt, schema, tools, system)
         self.journal.record(key, value)
         return value
@@ -167,7 +170,10 @@ class Context:
                     signal=self.signal,
                 )
                 if msg.stop_reason in ("error", "refusal", "aborted"):
-                    raise WorkflowError(f"model call failed: {msg.error_message}")
+                    raise WorkflowError(
+                        self.session.t("features.workflow.model_failed", error=msg.error_message),
+                        cancelled=msg.stop_reason == "aborted",
+                    )
                 text = msg.text()
             if not schema:
                 return text
@@ -178,12 +184,12 @@ class Context:
             if not errors:
                 return value
             instructions = f"{prompt}\n\nYour previous reply was invalid ({'; '.join(errors[:3])}). Return only valid JSON matching the schema:\n{json.dumps(schema)}"
-        raise WorkflowError("the model did not return valid JSON for the schema")
+        raise WorkflowError(self.session.t("features.workflow.invalid_json"))
 
     def _with_tools(self, prompt: str, tools) -> str:
         subs = self.session.services.get("subagents")
         if subs is None:
-            raise WorkflowError("tools in workflows need the subagent feature")
+            raise WorkflowError(self.session.t("features.workflow.subagent_required"))
         agent_type = "explore" if tools == "read-only" else "general"
         if isinstance(tools, list):
             from .subagent import AgentType
@@ -192,7 +198,10 @@ class Context:
             agent_type = AgentType(f"wf:{','.join(tools)}", "workflow step", tools=tools)
         res = subs.run(prompt, agent_type, f"workflow {self.run_id}", self.signal)
         if res.is_error:
-            raise WorkflowError(res.as_text())
+            raise WorkflowError(
+                res.as_text(),
+                cancelled=isinstance(res.details, dict) and bool(res.details.get("cancelled")),
+            )
         return res.as_text()
 
 
@@ -205,13 +214,14 @@ def discover(api: ExtensionAPI) -> dict[str, Path]:
     return out
 
 
-def load_module(path: Path):
+def load_module(path: Path, t=None):
+    t = t or Translator()
     spec = importlib.util.spec_from_file_location(f"virgo_workflow_{path.stem}", path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     if not callable(getattr(mod, "run", None)):
-        raise WorkflowError(f"{path} has no run(ctx, args) function")
+        raise WorkflowError(t("features.workflow.missing_run", path=path))
     return mod
 
 
@@ -223,17 +233,23 @@ def run_workflow(
 
     def check(workflow) -> None:
         if workflow not in flows:
-            raise WorkflowError(f"unknown workflow {workflow!r}. Available: {', '.join(flows) or 'none'}")
+            raise WorkflowError(
+                api.session.t(
+                    "features.workflow.unknown",
+                    name=workflow,
+                    available=", ".join(flows) or api.session.t("features.workflow.none"),
+                )
+            )
 
     if resume:
         path = runs / f"{resume}.jsonl"
         if Path(resume).name != resume or not path.exists():
-            raise WorkflowError(f"no run {resume}")
+            raise WorkflowError(api.session.t("features.workflow.no_run", id=resume))
         journal = Journal.open(path)
         name = journal.header.get("workflow")
         check(name)
         if args and args != journal.header.get("args"):
-            raise WorkflowError("resume uses the original args; omit args")
+            raise WorkflowError(api.session.t("features.workflow.resume_args"))
         args, run_id = journal.header.get("args") or {}, resume
     else:
         check(name)  # before creating a journal, so a typo leaves no run file
@@ -242,13 +258,16 @@ def run_workflow(
             runs / f"{run_id}.jsonl", {"workflow": name, "args": args or {}, "started": time.time()}
         )
         args = args or {}
-    mod = load_module(flows[name])
+    mod = load_module(flows[name], api.session.t)
     ctx = Context(api, run_id, journal, args, signal)
     try:
         result = mod.run(ctx, args)
     except Exception as e:
         journal.finish("failed", str(e))
-        raise WorkflowError(f"{type(e).__name__}: {e} (resume with resume='{run_id}')") from e
+        raise WorkflowError(
+            api.session.t("features.workflow.resume_error", type=type(e).__name__, error=e, id=run_id),
+            cancelled=bool(getattr(e, "cancelled", False)),
+        ) from e
     journal.finish("done", result)
     return {"run_id": run_id, "result": result, **ctx.stats}
 
@@ -258,30 +277,41 @@ def setup(api: ExtensionAPI) -> None:
         try:
             out = run_workflow(api, args.get("name"), args.get("args"), args.get("resume"), tctx.signal)
         except (WorkflowError, json.JSONDecodeError) as e:
-            return ToolResult.error(f"Workflow failed: {e}")
+            return ToolResult.error(
+                tctx.t("features.workflow.failed", error=e),
+                details={"cancelled": True} if getattr(e, "cancelled", False) else None,
+            )
         text = (
             json.dumps(out["result"], indent=2, ensure_ascii=False, default=str)
             if not isinstance(out["result"], str)
             else out["result"]
         )
-        head = f"Workflow run {out['run_id']} finished ({out['agents']} agent calls, {out['cached']} from journal).\n"
-        return ToolResult.text(head + budget(text, tctx.cwd, out["run_id"]), details=out | {"result": None})
+        head = tctx.t(
+            "features.workflow.finished", id=out["run_id"], agents=out["agents"], cached=out["cached"]
+        )
+        return ToolResult.text(
+            head + budget(text, tctx.cwd, out["run_id"], t=tctx.t), details=out | {"result": None}
+        )
 
     flows = discover(api)
     api.services["workflows"] = flows
     lines = []
     for name, path in flows.items():
         try:
-            meta = getattr(load_module(path), "META", {})
+            meta = getattr(load_module(path, api.session.t), "META", {})
             description = meta.get("description", "")
         except Exception:  # noqa: BLE001 - a broken script must not prevent startup.
             description = ""
         lines.append(f"- {name}: {description}")
     summary = (
-        "<workflows>\nScripted workflows you can launch with the workflow tool:\n"
-        + "\n".join(lines)
-        + "\n</workflows>"
-    ) if flows else None
+        (
+            "<workflows>\nScripted workflows you can launch with the workflow tool:\n"
+            + "\n".join(lines)
+            + "\n</workflows>"
+        )
+        if flows
+        else None
+    )
 
     def section(role: str):
         return summary if role == "main" else None
@@ -302,6 +332,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             execute,
             read_only=True,  # each step is permission-checked
+            i18n_key="tools.workflow",
         ),
         roles=("main",),
     )
@@ -314,13 +345,19 @@ def setup(api: ExtensionAPI) -> None:
             )
             return
         if not flows:
-            api.ui.print("No workflows. Add .virgo/workflows/<name>.py with run(ctx, args).")
+            api.ui.print(api.session.t("features.workflow.empty"))
             return
         api.ui.print("\n".join(f"  {n}  ({p})" for n, p in flows.items()))
         runs = sorted(
             (api.paths.project / "runs").glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True
         )[:5]
         if runs:
-            api.ui.print("recent runs:\n" + "\n".join(f"  {r.stem}" for r in runs))
+            api.ui.print(api.session.t("features.workflow.recent") + "\n".join(f"  {r.stem}" for r in runs))
 
-    api.register_command("workflow", cmd, "list workflows and recent runs (/workflow resume <run_id>)", argument_hint="[resume run_id]")
+    api.register_command(
+        "workflow",
+        cmd,
+        "list workflows and recent runs (/workflow resume <run_id>)",
+        argument_hint="[resume run_id]",
+        description_key="features.commands.workflow",
+    )

@@ -2,37 +2,41 @@
 
 from __future__ import annotations
 
-CHOICES = {
-    "Auto — 模型原生搜索优先，否则使用免费的 DuckDuckGo": "auto",
-    "DuckDuckGo — 免费，无需 API key": "duckduckgo",
-    "DeepSeek — 官方搜索，需要 API key": "deepseek",
-    "Off — 关闭联网搜索": "off",
-}
-USAGE = "Usage: /search [auto|duckduckgo|deepseek|off] (aliases: ddg, ds)"
+CHOICES = {'Auto — prefer model-native search; otherwise use free DuckDuckGo': 'auto',
+ 'DuckDuckGo — free, no API key required': 'duckduckgo',
+ 'DeepSeek — official search, API key required': 'deepseek',
+ 'Off — disable web search': 'off'}
+_CHOICE_KEYS = {'Auto — prefer model-native search; otherwise use free DuckDuckGo': 'harness.search.choice.auto',
+ 'DeepSeek — official search, API key required': 'harness.search.choice.deepseek',
+ 'DuckDuckGo — free, no API key required': 'harness.search.choice.duckduckgo',
+ 'Off — disable web search': 'harness.search.choice.off'}
+USAGE = 'Usage: /search [auto|duckduckgo|deepseek|off] (aliases: ddg, ds)'
 
 
 def configure_search(session, args: str) -> None:
     service = session.services.get("search")
     if service is None:
-        session.ui.print("Search is disabled by features.search; enable it in settings to choose a backend.", "error")
+        session.ui.print(session.t("harness.search.disabled"), "error")
         return
+    choices = {session.t(_CHOICE_KEYS[label]): value for label, value in CHOICES.items()}
+    usage = session.t("harness.search.usage")
     choice = args.strip().lower()
     if not choice:
         if not session.ui.interactive:
-            session.ui.print(f"search: {service.selection}\n{USAGE}")
+            session.ui.print(session.t("harness.search.current", selection=service.selection, usage=usage))
             return
-        selected = session.ui.select(f"Search backend (current: {service.selection})", list(CHOICES))
+        selected = session.ui.select(session.t("harness.search.picker", selection=service.selection), list(choices))
         if selected is None:
-            session.ui.print(f"Kept search as {service.selection}", "dim")
+            session.ui.print(session.t("harness.search.kept", selection=service.selection), "dim")
             return
-        choice = CHOICES.get(selected, "")
+        choice = choices.get(selected, "")
     choice = {"ds": "deepseek", "ddg": "duckduckgo"}.get(choice, choice)
     if choice not in CHOICES.values():
-        session.ui.print(USAGE, "error")
+        session.ui.print(usage, "error")
         return
     try:
         service.set_selection(choice)
     except (ValueError, OSError) as error:
-        session.ui.print(f"Search selection failed: {error}", "error")
+        session.ui.print(session.t("harness.search.failed", error=error), "error")
         return
-    session.ui.print(f"search: {service.selection} (saved as user default; project/runtime settings take precedence on restart)", "ok")
+    session.ui.print(session.t("harness.search.saved", selection=service.selection), "ok")

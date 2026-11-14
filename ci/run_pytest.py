@@ -28,7 +28,7 @@ def main():
                 raise SystemExit("PowerShell cache protection requires an unprivileged CI user")
         # A fresh cache also triggers telemetry UUID creation. Concurrent pwsh
         # starts can crash in .NET's named-mutex wait before running a command.
-        # Opt out before process startup; see docs/ci-results/powershell-macos-2026-11-12.md.
+        # Opt out before process startup; see docs/en/development/testing-and-ci.md#runner-maintenance.
         env = {**os.environ, "XDG_CACHE_HOME": directory,
                "POWERSHELL_TELEMETRY_OPTOUT": "true"}
         return subprocess.call(command, env=env)

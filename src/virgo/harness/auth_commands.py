@@ -30,42 +30,45 @@ def _input(ui, question, *, password=False, default=""):
         raise _Cancelled
     value = value.strip()
     if not value:
-        raise ValueError(f"{question} is required")
+        raise ValueError(ui.t("harness.auth.required", question=question))
     return value
 
 
-def _endpoint(value):
+def _endpoint(value, t=None):
+    from ..i18n import Translator
+
+    t = t or Translator()
     url = urlsplit(value)
     if url.scheme not in ("https", "http") or not url.hostname or url.username or url.password or url.query or url.fragment:
-        raise ValueError("Base URL must be an HTTP(S) endpoint without credentials, query or fragment")
+        raise ValueError(t("harness.auth.endpoint"))
     return value.rstrip("/")
 
 
 def login(session, args):
     ui = session.ui
     if not ui.interactive:
-        ui.print("/login requires an interactive terminal; use an API key environment variable in print mode.", "error")
+        ui.print(session.t("harness.auth.interactive"), "error")
         return
     try:
         argv = shlex.split(args)
         if len(argv) > 2:
-            raise ValueError("Usage: /login [auth|api] [provider]. Enter secrets only in the password prompt.")
+            raise ValueError(session.t("harness.auth.usage_secret"))
         mode = argv.pop(0).lower() if argv and argv[0].lower() in ("auth", "api") else None
         provider = argv.pop(0).lower() if argv else None
         if argv:
-            raise ValueError("Usage: /login [auth|api] [provider]")
+            raise ValueError(session.t("harness.auth.usage"))
         if mode is None and provider:
             mode = "api" if provider in (*API_PRESETS, "custom") and provider != "kimi" else None
             if provider in (*AUTH_PRESETS, *_ALIASES) and provider != "kimi":
                 mode = "auth"
         if mode is None:
-            mode = _choose(ui, "Login method", {"Auth — 登录账号": "auth", "API — API 接入": "api"})
+            mode = _choose(ui, session.t("harness.auth.method"), {session.t("harness.auth.auth_label"): "auth", session.t("harness.auth.api_label"): "api"})
         if mode == "auth":
             provider = "kimi-coding" if provider == "kimi" else _ALIASES.get(provider, provider)
             if provider is None:
-                provider = _choose(ui, "Auth — 选择账号", {p["name"]: k for k, p in AUTH_PRESETS.items()})
+                provider = _choose(ui, session.t("harness.auth.auth_picker"), {p["name"]: k for k, p in AUTH_PRESETS.items()})
             if provider not in AUTH_PRESETS:
-                raise ValueError("Auth provider must be OpenAI, Anthropic, xAI, Google or Kimi")
+                raise ValueError(session.t("harness.auth.auth_provider"))
             preset = AUTH_PRESETS[provider]
             config = dict(preset["config"])
             model_id = preset["model"]
@@ -77,16 +80,16 @@ def login(session, args):
                 raise _Cancelled
         else:
             if provider is None:
-                provider = _choose(ui, "API — 选择服务商", {
-                    **{p["name"]: k for k, p in API_PRESETS.items()}, "自定义": "custom",
+                provider = _choose(ui, session.t("harness.auth.api_picker"), {
+                    **{p["name"]: k for k, p in API_PRESETS.items()}, session.t("harness.auth.custom"): "custom",
                 })
             if provider == "custom":
-                provider = _input(ui, "Provider ID", default="custom").lower()
+                provider = _input(ui, session.t("harness.auth.provider_id"), default="custom").lower()
                 if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", provider):
-                    raise ValueError("Provider ID must contain only letters, numbers, underscores or hyphens")
+                    raise ValueError(session.t("harness.auth.provider_invalid"))
                 if provider == "all" or provider in BUILTIN_PROVIDERS:
-                    raise ValueError("Choose a custom Provider ID that differs from the built-in providers")
-                api = _choose(ui, "API protocol", {"OpenAI compatible": "openai", "Anthropic Messages": "anthropic"})
+                    raise ValueError(session.t("harness.auth.provider_builtin"))
+                api = _choose(ui, session.t("harness.auth.api_protocol"), {session.t("harness.auth.openai_compatible"): "openai", "Anthropic Messages": "anthropic"})
                 config = {"api": api, "apiKeyEnv": f"VIRGO_{provider.upper().replace('-', '_')}_API_KEY"}
                 default_model = ""
             elif provider in API_PRESETS:
@@ -98,13 +101,13 @@ def login(session, args):
                         config[key] = configured[key]
                 default_model = preset["model"]
             else:
-                raise ValueError("API provider must be DeepSeek, GLM, Kimi or custom")
-            config["baseUrl"] = _endpoint(_input(ui, "Base URL", default=config.get("baseUrl", "")))
-            model_id = _input(ui, "Model ID", default=default_model)
+                raise ValueError(session.t("harness.auth.api_provider"))
+            config["baseUrl"] = _endpoint(_input(ui, session.t("harness.auth.base_url"), default=config.get("baseUrl", "")), session.t)
+            model_id = _input(ui, session.t("harness.auth.model_id"), default=default_model)
             if any(c.isspace() for c in model_id):
-                raise ValueError("Model ID cannot contain whitespace")
+                raise ValueError(session.t("harness.auth.model_invalid"))
             session.settings.check_provider_update(provider, config)
-            key = _input(ui, "API key", password=True)
+            key = _input(ui, session.t("harness.auth.api_key"), password=True)
             credential = {"type": "api_key", "key": key}
         if session.main.agent.signal.is_set():
             raise _Cancelled
@@ -115,11 +118,11 @@ def login(session, args):
             lambda: session.settings.save_user({"providers": {provider: config}, "model": spec}),
         )
         session.set_model(spec)
-        ui.print(f"Logged in to {provider}. Model: {spec}", "ok")
+        ui.print(session.t("harness.auth.success", provider=provider, model=spec), "ok")
     except _Cancelled:
-        ui.print("Login cancelled.", "dim")
+        ui.print(session.t("harness.auth.cancelled"), "dim")
     except Exception as exc:  # noqa: BLE001 - OAuth errors are redacted by the auth layer.
-        ui.print(f"Login failed: {exc}", "error")
+        ui.print(session.t("harness.auth.failed", error=exc), "error")
 
 
 def logout(session, args):
@@ -128,27 +131,27 @@ def logout(session, args):
         provider = args.strip().lower()
         saved = session.auth.all()
         if not saved:
-            ui.print("No saved logins. Environment variable credentials are managed by your shell.")
+            ui.print(session.t("harness.auth.empty"))
             return
         if not provider:
             if not ui.interactive:
-                ui.print("Usage: /logout <provider|all>", "error")
+                ui.print(session.t("harness.auth.logout_usage"), "error")
                 return
             labels = {}
             for name, credential in saved.items():
                 title = {**AUTH_PRESETS, **API_PRESETS}.get(name, {}).get("name", name)
                 kind = "Auth" if credential.get("type") == "oauth" else "API"
                 labels[f"{title} · {kind} ({name})"] = name
-            labels["All saved logins"] = "all"
-            provider = _choose(ui, "Logout — 选择已保存的登录", labels)
+            labels[session.t("harness.auth.logout_all")] = "all"
+            provider = _choose(ui, session.t("harness.auth.logout_picker"), labels)
         if provider not in saved:
             provider = _ALIASES.get(provider, provider)
             if provider == "kimi" and "kimi-coding" in saved:
                 provider = "kimi-coding"
         removed = session.auth.remove(list(saved) if provider == "all" else [provider])
-        ui.print(f"Logged out: {', '.join(removed)}." if removed else f"No saved login for {provider}.")
-        ui.print("Environment variable credentials, if set, still apply.", "dim")
+        ui.print(session.t("harness.auth.logout_success", providers=", ".join(removed)) if removed else session.t("harness.auth.logout_missing", provider=provider))
+        ui.print(session.t("harness.auth.env_remains"), "dim")
     except _Cancelled:
-        ui.print("Logout cancelled.", "dim")
+        ui.print(session.t("harness.auth.logout_cancelled"), "dim")
     except Exception as exc:  # noqa: BLE001
-        ui.print(f"Logout failed: {exc}", "error")
+        ui.print(session.t("harness.auth.logout_failed", error=exc), "error")

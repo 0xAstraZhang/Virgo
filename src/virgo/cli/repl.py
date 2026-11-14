@@ -11,6 +11,7 @@ from .. import __version__
 from ..harness.permissions import permission_mode_label
 from ..harness.session import AgentSession
 from .console import ConsoleBroker, TerminalUI
+from .i18n import tr
 
 EXIT = {"/exit", "/quit", "exit", "quit", ":q"}
 
@@ -47,13 +48,19 @@ def run_repl(
 ) -> None:
     _setup_readline(session.paths.user / "history", session)
     ui.print(
-        f"Virgo {__version__} · {session.model.spec} · effort {session.effort} · "
-        f"permissions {permission_mode_label(session.permission_mode)}\n"
-        f"{session.cwd}  —  /help for commands, Ctrl-C to interrupt, /exit to quit",
+        tr(
+            session,
+            "ui.repl.welcome",
+            version=__version__,
+            model=session.model.spec,
+            effort=session.effort,
+            permissions=permission_mode_label(session.permission_mode, session.t),
+            cwd=session.cwd,
+        ),
         "dim",
     )
     if session.main.messages:
-        ui.print(f"(resumed session with {len(session.main.messages)} messages)", "dim")
+        ui.print(tr(session, "ui.repl.resumed", count=len(session.main.messages)), "dim")
     worker: list[threading.Thread | None] = [None]
     deferred: list[str] = []
 
@@ -91,12 +98,12 @@ def run_repl(
             if busy():
                 session.abort()
                 broker.cancel_pending()
-                ui.print("[interrupting…]", "warn")
+                ui.print(tr(session, "ui.repl.interrupting"), "warn")
                 continue
             if time.time() - last_interrupt < 2:
                 break
             last_interrupt = time.time()
-            ui.print("(Ctrl-C again or /exit to quit)", "dim")
+            ui.print(tr(session, "ui.repl.exit"), "dim")
             ui.prompt()
             continue
         kind = item[0]
@@ -131,14 +138,14 @@ def run_repl(
             if busy():
                 if line.startswith("/"):
                     deferred.append(line)
-                    ui.print("(will run when the agent finishes)", "dim")
+                    ui.print(tr(session, "ui.repl.queued_command"), "dim")
                 elif session.steer(line):
-                    ui.print("[steering message queued]", "dim")
+                    ui.print(tr(session, "ui.repl.steered"), "dim")
                 else:
                     # The worker is running a command, or the agent is already past its last queue
                     # check: nothing would drain a steering message, so send it as the next prompt.
                     deferred.append(line)
-                    ui.print("(will be sent when the current command finishes)", "dim")
+                    ui.print(tr(session, "ui.repl.queued_prompt"), "dim")
                 broker.resume_reading()
                 continue
             start(lambda line=line: session.prompt(line))
@@ -154,6 +161,6 @@ def run_repl(
                 start(session.run_pending)
             else:
                 ui.prompt()
-    ui.print("bye", "dim")
+    ui.print(tr(session, "ui.repl.bye"), "dim")
     broker.close()
     session.shutdown()

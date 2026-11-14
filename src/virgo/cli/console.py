@@ -19,6 +19,7 @@ from ..agent.types import AgentEvent
 from ..ai.web import native_event
 from ..diagnostics import sanitize
 from ..harness.ui import TIMED_OUT, UI
+from .i18n import tr
 
 STYLES = {
     "dim": "\033[2m",
@@ -196,7 +197,11 @@ class ConsoleBroker:
                 write(question + "\n> ")
                 deadline = None if timeout is None else time.monotonic() + timeout
                 while not ev.wait(0.05):
-                    if self._input_timeout_cancelled.is_set() or deadline is None or time.monotonic() < deadline:
+                    if (
+                        self._input_timeout_cancelled.is_set()
+                        or deadline is None
+                        or time.monotonic() < deadline
+                    ):
                         continue
                     with self._state_lock:
                         if self._input_timeout_cancelled.is_set():
@@ -301,7 +306,7 @@ class TerminalUI(UI):
         prompt = question + (f" [{default}]" if default and not password else "")
         value = self.broker.read_value(prompt, self.write, password=password, timeout=timeout)
         if value is TIMED_OUT:
-            self.print("(no answer in time)", "dim")
+            self.print(tr(self, "ui.console.timeout"), "dim")
             return value
         return default if value == "" else value
 
@@ -312,7 +317,7 @@ class TerminalUI(UI):
         prompt = "\n".join([question, *(f"  {i}. {label}" for i, label in enumerate(options, 1))])
         while True:
             left = None if deadline is None else max(0.0, deadline - time.monotonic())
-            value = self.input(prompt + "\nChoose a number (empty to cancel)", timeout=left)
+            value = self.input(prompt + tr(self, "ui.console.choose"), timeout=left)
             if value is TIMED_OUT:
                 return value
             if value is None or not value.strip():
@@ -323,7 +328,7 @@ class TerminalUI(UI):
                 return value
             if value.isdecimal() and 1 <= int(value) <= len(options):
                 return options[int(value) - 1]
-            self.print("Choose one of the listed options.", "warn")
+            self.print(tr(self, "ui.console.invalid_choice"), "warn")
 
     def cancel_input_timeouts(self) -> None:
         self.broker.cancel_input_timeouts()
@@ -362,7 +367,10 @@ class TerminalUI(UI):
                         self._block = None
                         self._newline()
                         detail = info.get("result", info["args"])
-                        self.write(f"● {info['name']} · {info['status']} {_brief(detail)}\n", "dim")
+                        status = info["status"]
+                        if status in {"in_progress", "completed", "failed", "incomplete"}:
+                            status = tr(self, "ui.native." + status)
+                        self.write(f"● {info['name']} · {status} {_brief(detail)}\n", "dim")
                 elif se.type == "retry":
                     self._block = None
                     self._newline()
@@ -373,7 +381,7 @@ class TerminalUI(UI):
                 if m.stop_reason in ("error", "refusal"):
                     self.print(f"✗ {m.error_message}", "error")
                 elif m.stop_reason == "aborted":
-                    self.print("[aborted]", "warn")
+                    self.print(tr(self, "ui.console.aborted"), "warn")
             elif t == "tool_execution_start":
                 self._block = None
                 self._newline()
@@ -381,10 +389,10 @@ class TerminalUI(UI):
                 self.write(f"({_brief(ev.args)})\n", "dim")
             elif t == "tool_execution_end":
                 text = ev.result.as_text() if ev.result else ""
-                lines = text.strip().splitlines() or ["(no output)"]
+                lines = text.strip().splitlines() or [tr(self, "ui.no_output")]
                 width = shutil.get_terminal_size((100, 20)).columns - 6
                 first = lines[0][:width]
-                more = f"  (+{len(lines) - 1} lines)" if len(lines) > 1 else ""
+                more = tr(self, "ui.console.more_lines", count=len(lines) - 1) if len(lines) > 1 else ""
                 self.write(f"  ⎿ {first}{more}\n", "error" if ev.is_error else "dim")
 
     def _sub(self, ev: AgentEvent) -> None:
@@ -407,7 +415,11 @@ class PrintUI(UI):
     def command_result(self, text: str) -> None:
         with self._lock:
             self.command_output = True
-            print(json.dumps({"type": "command_result", "text": text}, ensure_ascii=False) if self.json_mode else text)
+            print(
+                json.dumps({"type": "command_result", "text": text}, ensure_ascii=False)
+                if self.json_mode
+                else text
+            )
 
     def print(self, text: str, style: str | None = None) -> None:
         if style in ("error", "warn"):
@@ -418,8 +430,16 @@ class PrintUI(UI):
         self.print(message, "error")
         if self.json_mode:
             with self._lock:
-                print(json.dumps({"type": "session_save_failed", "session_id": session_id,
-                                  "path": path, "message": message}))
+                print(
+                    json.dumps(
+                        {
+                            "type": "session_save_failed",
+                            "session_id": session_id,
+                            "path": path,
+                            "message": message,
+                        }
+                    )
+                )
 
     def on_event(self, ev: AgentEvent) -> None:
         if self.json_mode:

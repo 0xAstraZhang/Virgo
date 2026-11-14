@@ -8,28 +8,31 @@ from __future__ import annotations
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..ai.types import ToolResultMessage
 from ..harness.extensions import ExtensionAPI
+from ..i18n import Translator
 
 STATUSES = ("pending", "in_progress", "completed")
 MARK = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
 
 
-def render(todos: list[dict]) -> str:
+def render(todos: list[dict], t=None) -> str:
+    t = t or Translator()
     if not todos:
-        return "(todo list is empty)"
+        return t("features.todo.empty")
     done = sum(t["status"] == "completed" for t in todos)
     lines = [f"{MARK[t['status']]} {t['content']}" for t in todos]
-    return "\n".join(lines) + f"\n({done}/{len(todos)} completed)"
+    return "\n".join(lines) + t("features.todo.completed", done=done, total=len(todos))
 
 
-def validate_todos(todos: list) -> list[dict]:
+def validate_todos(todos: list, t=None) -> list[dict]:
+    translate = t or Translator()
     out = []
     for i, t in enumerate(todos, 1):
         content = str(t.get("content", "")).strip()
         status = str(t.get("status", "pending")).strip().lower()
         if not content:
-            raise ValueError(f"item {i}: content is empty")
+            raise ValueError(translate("features.todo.content_empty", index=i))
         if status not in STATUSES:
-            raise ValueError(f"item {i}: status must be one of {STATUSES}")
+            raise ValueError(translate("features.todo.invalid_status", index=i, statuses=STATUSES))
         out.append({"content": content, "status": status})
     return out
 
@@ -39,11 +42,11 @@ def setup(api: ExtensionAPI) -> None:
 
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
         try:
-            todos = validate_todos(args["todos"])
+            todos = validate_todos(args["todos"], ctx.t)
         except ValueError as e:
-            return ToolResult.error(f"Todo list not updated: {e}")
+            return ToolResult.error(ctx.t("features.todo.not_updated", error=e))
         state["todos"] = todos
-        return ToolResult.text(render(todos), details={"todos": todos})
+        return ToolResult.text(render(todos, ctx.t), details={"todos": todos})
 
     api.register_tool(
         AgentTool(
@@ -72,6 +75,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             execute=execute,
             read_only=True,
+            i18n_key="tools.todo_write",
         ),
         roles=("main",),
     )
@@ -89,6 +93,10 @@ def setup(api: ExtensionAPI) -> None:
 
     api.on("session_start", restore)
     api.register_command(
-        "todos", lambda s, a: api.ui.print(render(state["todos"])), "show the todo list", concurrent=True
+        "todos",
+        lambda s, a: api.ui.print(render(state["todos"], s.t)),
+        "show the todo list",
+        concurrent=True,
+        description_key="features.commands.todos",
     )
     api.services["todos"] = state

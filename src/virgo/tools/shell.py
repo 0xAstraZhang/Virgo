@@ -1,4 +1,5 @@
 """Discover supported interpreters and bind each command tool to one immutable shell."""
+
 from __future__ import annotations
 
 import base64
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolResult
+from ..i18n import Translator
 
 SUPPORTED = ("bash", "zsh", "sh", "dash", "pwsh", "powershell")
 SHELL_TOOLS = {"bash", "powershell"}
@@ -33,17 +35,25 @@ class Shell:
 
     @property
     def syntax(self) -> str:
-        return "PowerShell" if self.tool_name == "powershell" else {"bash": "Bash", "zsh": "Zsh"}.get(self.kind, "POSIX sh")
+        return (
+            "PowerShell"
+            if self.tool_name == "powershell"
+            else {"bash": "Bash", "zsh": "Zsh"}.get(self.kind, "POSIX sh")
+        )
 
     @property
     def label(self) -> str:
         return f"{self.kind} {self.version} — {self.executable}"
 
-    def environment(self) -> str:
-        return (
-            f"Command tool: {self.tool_name}\nShell: {self.kind} {self.version}\n"
-            f"Executable: {self.executable}\nSyntax: {self.syntax}. Use this syntax, not the parent terminal's shell.\n"
-            "Each call starts a fresh non-interactive process; variables and directory changes do not persist."
+    def environment(self, t=None) -> str:
+        t = t or Translator()
+        return t(
+            "tools.shell.environment",
+            tool=self.tool_name,
+            kind=self.kind,
+            version=self.version,
+            executable=self.executable,
+            syntax=self.syntax,
         )
 
     def argv(self, command: str) -> list[str]:
@@ -63,12 +73,25 @@ class Shell:
                 "} catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }\n"
             )
             encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-            argv = [self.executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", encoded]
+            argv = [
+                self.executable,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-OutputFormat",
+                "Text",
+                "-EncodedCommand",
+                encoded,
+            ]
             if os.name == "nt" and len(subprocess.list2cmdline(argv).encode("utf-16-le")) // 2 >= 32767:
-                raise ValueError("PowerShell command is too long; write a .ps1 file and invoke it with & 'path'.")
+                raise ValueError(
+                    "PowerShell command is too long; write a .ps1 file and invoke it with & 'path'."
+                )
             return argv
-        options = {"bash": ["--noprofile", "--norc", "-e", "-o", "pipefail"],
-                   "zsh": ["-f", "-e", "-o", "pipefail"]}.get(self.kind, ["-e"])
+        options = {
+            "bash": ["--noprofile", "--norc", "-e", "-o", "pipefail"],
+            "zsh": ["-f", "-e", "-o", "pipefail"],
+        }.get(self.kind, ["-e"])
         return [self.executable, *options, "-c", command]
 
 
@@ -80,21 +103,32 @@ def shell_environment() -> dict[str, str]:
     return env
 
 
-def probe_shell(value: str) -> Shell:
+def probe_shell(value: str, *, t=None) -> Shell:
     """Validate and probe an exact supported executable; never accept arguments as a path."""
+    t = t or Translator()
     value = os.path.expanduser(value)
     kind = Path(value).name.lower().removesuffix(".exe")
     if kind not in SUPPORTED:
-        raise ValueError(f"Unsupported shell {value!r}; supported: {', '.join(SUPPORTED)}")
+        raise ValueError(t("tools.shell.unsupported", value=value, supported=", ".join(SUPPORTED)))
     executable = shutil.which(value)
     if not executable:
-        raise ValueError(f"Shell unavailable: {value}")
+        raise ValueError(t("tools.shell.unavailable", value=value))
     # Preserve invocation paths: /bin/sh can be a Bash symlink with different semantics.
     executable = os.path.abspath(executable)
-    if os.name == "nt" and kind == "bash" and Path(executable).parent.name.lower() in {"system32", "sysnative"}:
-        raise ValueError("The WSL bash launcher is not a local shell; select Git Bash or PowerShell.")
+    if (
+        os.name == "nt"
+        and kind == "bash"
+        and Path(executable).parent.name.lower() in {"system32", "sysnative"}
+    ):
+        raise ValueError(t("tools.shell.wsl"))
     if kind in {"pwsh", "powershell"}:
-        args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"]
+        args = [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$PSVersionTable.PSVersion.ToString()",
+        ]
     elif kind == "bash":
         args = ["--noprofile", "--norc", "-c", 'printf "%s" "$BASH_VERSION"']
     elif kind == "zsh":
@@ -103,31 +137,44 @@ def probe_shell(value: str) -> Shell:
         args = ["-c", 'printf "%s" "${BASH_VERSION:-POSIX (version not reported)}"']
     try:
         result = subprocess.run(
-            [executable, *args], stdin=subprocess.DEVNULL, capture_output=True,
-            env=shell_environment(), timeout=3, check=False,
+            [executable, *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            env=shell_environment(),
+            timeout=3,
+            check=False,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise ValueError(f"Shell unavailable: {executable} ({type(error).__name__})") from error
+        raise ValueError(
+            t("tools.shell.probe_failed_error", executable=executable, type=type(error).__name__)
+        ) from error
     version = result.stdout.decode("utf-8", errors="replace").strip()
     reason = ""
     if result.returncode or not version or len(version) > 120 or "\n" in version:
-        reason = "version probe failed"
+        reason = t("tools.shell.version_probe_failed")
     elif kind not in {"sh", "dash"} and not re.match(r"\d+\.\d+", version):
-        reason = "unrecognized version"
+        reason = t("tools.shell.unknown_version")
     if reason:
+
         def excerpt(data: bytes) -> str:
             text = data.decode("utf-8", errors="replace")
-            return repr(text[:1024]) + (" [truncated]" if len(text) > 1024 else "")
+            return repr(text[:1024]) + (t("tools.shell.probe_truncated") if len(text) > 1024 else "")
 
         raise ValueError(
-            f"Shell unavailable: {executable} ({reason}; exit_code={result.returncode}; "
-            f"stdout={excerpt(result.stdout)}; stderr={excerpt(result.stderr)})"
+            t(
+                "tools.shell.probe_failed_details",
+                executable=executable,
+                reason=reason,
+                code=result.returncode,
+                stdout=excerpt(result.stdout),
+                stderr=excerpt(result.stderr),
+            )
         )
     if kind == "powershell" and not version.startswith("5.1.") and int(version.split(".")[0]) < 7:
-        raise ValueError("PowerShell requires Windows PowerShell 5.1 or PowerShell 7+.")
+        raise ValueError(t("tools.shell.powershell_version"))
     if kind == "pwsh" and int(version.split(".")[0]) < 7:
-        raise ValueError("pwsh requires PowerShell 7 or later.")
+        raise ValueError(t("tools.shell.pwsh_version"))
     return Shell(kind, executable, version)
 
 
@@ -144,8 +191,11 @@ def discover_shells(extra: str | None = None) -> list[Shell]:
     else:
         folders.extend(["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"])
         try:
-            candidates.extend(line.strip() for line in Path("/etc/shells").read_text().splitlines()
-                              if line.startswith("/") and Path(line.strip()).name in SUPPORTED)
+            candidates.extend(
+                line.strip()
+                for line in Path("/etc/shells").read_text().splitlines()
+                if line.startswith("/") and Path(line.strip()).name in SUPPORTED
+            )
         except OSError:
             pass
     for name in SUPPORTED:
@@ -176,13 +226,14 @@ def discover_shells(extra: str | None = None) -> list[Shell]:
     return found
 
 
-def default_shell(found: list[Shell] | tuple[Shell, ...]) -> Shell:
+def default_shell(found: list[Shell] | tuple[Shell, ...], *, t=None) -> Shell:
     """Choose from an existing catalog without probing the machine again."""
+    t = t or Translator()
     preferred = ("pwsh", "powershell", "bash", "sh") if os.name == "nt" else ("bash", "zsh", "sh")
     for name in preferred:
         if shell := next((s for s in found if s.kind == name), None):
             return shell
-    raise ValueError("No supported shell is available; install PowerShell 7 or Bash and use /shell.")
+    raise ValueError(t("tools.shell.none_available"))
 
 
 @dataclass
@@ -198,16 +249,19 @@ def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
         timeout = min(float(args.get("timeout") or DEFAULT_TIMEOUT), MAX_TIMEOUT)
         if jobs is not None and args.get("background"):
             job = jobs.start_command(
-                args["command"], ctx.cwd, timeout if args.get("timeout") else None, shell=shell,
+                args["command"],
+                ctx.cwd,
+                timeout if args.get("timeout") else None,
+                shell=shell,
                 store=ctx.review_source.root if ctx.review_source is not None else None,
-                agent=ctx.agent, tool_call_id=ctx.call_id,
+                agent=ctx.agent,
+                tool_call_id=ctx.call_id,
             )
             return ToolResult.text(
-                f"Started background job {job.id} using {shell.kind} {shell.version}. "
-                "You will be notified when it finishes; job_output shows progress."
+                ctx.t("tools.shell.job_started", id=job.id, kind=shell.kind, version=shell.version)
             )
         out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell)
-        result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name)
+        result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name, t=ctx.t)
         result.details.update(shell=shell.kind, executable=shell.executable, version=shell.version)
         return result
 
@@ -215,24 +269,35 @@ def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
     params["properties"]["timeout"] = {**params["properties"]["timeout"], "exclusiveMinimum": 0}
     if jobs is not None:
         params["properties"]["background"] = {
-            "type": "boolean", "description": "Run in the background; job_output/job_kill manage the job."
+            "type": "boolean",
+            "description": "Run in the background; job_output/job_kill manage the job.",
         }
-    errors = "Bash/Zsh stop on unhandled command or pipeline failures."
-    if shell.tool_name == "powershell":
-        errors = "Cmdlet errors stop execution. " + (
-            "Native command failures also stop execution; handle expected nonzero statuses explicitly."
-            if shell.native_errors else
-            "Compatibility mode: check $LASTEXITCODE after EACH native command; only the last native exit is propagated automatically."
-        )
-    elif shell.kind in {"sh", "dash"}:
-        errors = "Stops on unhandled command errors; earlier pipeline failures may be hidden."
-    description = (
-        f"Run {shell.syntax} code in the working directory. {shell.environment()}\n{errors} "
-        f"Output is limited to the last {MAX_LINES} lines / {MAX_BYTES // 1024}KB; longer output is saved to a file."
-    )
-    if jobs is not None:
-        description += " background=true returns a job ID before the command finishes."
+
+    def values(t):
+        error_key = "tools.shell.errors.posix"
+        if shell.tool_name == "powershell":
+            error_key = (
+                "tools.shell.errors.powershell" if shell.native_errors else "tools.shell.errors.compatibility"
+            )
+        elif shell.kind in {"sh", "dash"}:
+            error_key = "tools.shell.errors.sh"
+        return {
+            "syntax": shell.syntax,
+            "environment": shell.environment(t),
+            "errors": t(error_key),
+            "max_lines": MAX_LINES,
+            "max_kb": MAX_BYTES // 1024,
+            "background": t("tools.shell.background") if jobs is not None else "",
+        }
+
+    translator = Translator()
     return ShellTool(
-        name=shell.tool_name, label=shell.syntax, description=description, parameters=params,
-        execute=execute, shell=shell,
+        name=shell.tool_name,
+        label=shell.syntax,
+        description=translator("tools.shell.description", **values(translator)),
+        parameters=params,
+        execute=execute,
+        shell=shell,
+        i18n_key="tools.shell",
+        i18n_values=values,
     )

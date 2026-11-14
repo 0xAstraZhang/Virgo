@@ -10,6 +10,8 @@ import itertools
 import time
 from pathlib import Path
 
+from ..i18n import Translator
+
 MAX_LINES = 2000
 MAX_BYTES = 50 * 1024
 _counter = itertools.count(1)
@@ -58,15 +60,20 @@ def save_output(text: str, cwd: Path, prefix: str) -> Path:
     return path
 
 
-def budget(text: str, cwd: Path, prefix: str, keep: str = "head") -> str:
+def budget(text: str, cwd: Path, prefix: str, keep: str = "head", *, t=None) -> str:
     """Bound `text`; if cut, save the full text and append a pointer to it."""
+    t = t or Translator()
     fn = truncate_tail if keep == "tail" else truncate_head
     shown, cut = fn(text)
     if not cut:
         return text
     path = save_output(text, cwd, prefix)
-    where = "last" if keep == "tail" else "first"
-    return (
-        f"{shown.rstrip()}\n\n[Output truncated: showing the {where} {len(shown.splitlines())} of "
-        f"{len(text.splitlines())} lines. Full output saved to {path} — use read with offset/limit or grep to inspect it.]"
+    where = t("tools.output.last" if keep == "tail" else "tools.output.first")
+    return t(
+        "tools.output.budget",
+        shown=shown.rstrip(),
+        where=where,
+        count=len(shown.splitlines()),
+        total=len(text.splitlines()),
+        path=path,
     )

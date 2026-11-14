@@ -13,59 +13,82 @@ from ..diagnostics import capture_error, emergency_write, error_summary, safe_te
 from ..harness.diagnostics import DiagnosticLog
 from ..harness.permissions import MODES, normalize_permission_mode
 from ..harness.session import AgentSession
-from ..harness.settings import Paths
+from ..harness.settings import Paths, Settings
 from ..harness.store import SessionStore
+from ..i18n import Translator, normalize_language
 from .console import ConsoleBroker, PrintUI, TerminalUI
+from .i18n import tr
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="virgo", description="Virgo — a lightweight, extensible coding agent.")
-    p.add_argument("prompt", nargs="*", help="initial prompt")
-    p.add_argument(
-        "-p", "--print", action="store_true", help="run the prompt non-interactively and print the answer"
-    )
-    p.add_argument(
-        "--mode", choices=["text", "json"], default="text", help="print-mode output (json = event stream)"
-    )
+class _LocalizedFormatter(argparse.HelpFormatter):
+    def __init__(self, prog: str, *, translator: Translator):
+        super().__init__(prog)
+        self.translator = translator
+
+    def add_usage(self, usage, actions, groups, prefix=None):
+        super().add_usage(usage, actions, groups, prefix or self.translator("ui.cli.usage"))
+
+
+class _LocalizedParser(argparse.ArgumentParser):
+    def __init__(self, *, translator: Translator, **kwargs):
+        self.translator = translator
+        super().__init__(
+            add_help=False,
+            formatter_class=lambda prog: _LocalizedFormatter(prog, translator=translator),
+            **kwargs,
+        )
+        self._positionals.title = translator("ui.cli.arguments")
+        self._optionals.title = translator("ui.cli.options")
+        self.add_argument("-h", "--help", action="help", help=translator("ui.cli.help"))
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, self.translator("ui.cli.error", prog=self.prog, message=message))
+
+
+def build_parser(language: str = "en") -> argparse.ArgumentParser:
+    t = Translator(language)
+    p = _LocalizedParser(translator=t, prog="virgo", description=tr(t, "ui.cli.description"))
+    p.add_argument("--language", type=normalize_language, metavar="LANGUAGE", help=t("ui.cli.language"))
+    p.add_argument("prompt", nargs="*", help=tr(t, "ui.cli.prompt"))
+    p.add_argument("-p", "--print", action="store_true", help=tr(t, "ui.cli.print"))
+    p.add_argument("--mode", choices=["text", "json"], default="text", help=tr(t, "ui.cli.mode"))
     p.add_argument(
         "--ui",
         choices=["auto", "fullscreen", "plain"],
         default="auto",
-        help="interactive UI (auto = fullscreen on a supported terminal, otherwise plain)",
+        help=tr(t, "ui.cli.ui"),
     )
-    p.add_argument(
-        "-m", "--model", help="model as provider/id, e.g. anthropic/claude-opus-5-5 or openai/gpt-5"
-    )
-    p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], help="reasoning effort")
+    p.add_argument("-m", "--model", help=tr(t, "ui.cli.model"))
+    p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], help=tr(t, "ui.cli.effort"))
     p.add_argument(
         "--permission-mode",
         type=normalize_permission_mode,
         choices=MODES,
-        help="permission mode (auto-review: review external/network operations; accept-all: no approval; plan: read-only)",
+        help=tr(t, "ui.cli.permissions"),
     )
+    p.add_argument("-c", "--continue", dest="cont", action="store_true", help=tr(t, "ui.cli.continue"))
+    p.add_argument("-r", "--resume", nargs="?", const="", metavar="FILE", help=tr(t, "ui.cli.resume"))
+    p.add_argument("--no-session", action="store_true", help=tr(t, "ui.cli.no_session"))
+    p.add_argument("--no-extensions", action="store_true", help=tr(t, "ui.cli.no_extensions"))
+    p.add_argument("-C", "--cwd", default=".", help=tr(t, "ui.cli.cwd"))
     p.add_argument(
-        "-c", "--continue", dest="cont", action="store_true", help="continue the most recent session"
+        "-V", "--version", action="version", version=f"virgo {__version__}", help=t("ui.cli.version")
     )
-    p.add_argument(
-        "-r", "--resume", nargs="?", const="", metavar="FILE", help="resume a session (pick from a list)"
-    )
-    p.add_argument("--no-session", action="store_true", help="do not save this session")
-    p.add_argument("--no-extensions", action="store_true", help="skip user/project extensions")
-    p.add_argument("-C", "--cwd", default=".", help="working directory")
-    p.add_argument("-V", "--version", action="version", version=f"virgo {__version__}")
     return p
 
 
-def _pick_session(sessions_dir: Path) -> Path | None:
+def _pick_session(sessions_dir: Path, t: Translator | None = None) -> Path | None:
+    t = t or Translator()
     items = SessionStore.list(sessions_dir) if sessions_dir.is_dir() else []
     if not items:
-        print("No saved sessions for this directory.", file=sys.stderr)
+        print(tr(t, "ui.cli.no_saved_sessions"), file=sys.stderr)
         return None
     listed = items[:20]
     for i, it in enumerate(listed, 1):
-        print(f"{i:>3}. {it['title']}  ({it['messages']} msgs)")
+        print(tr(t, "ui.cli.session_row", index=i, title=it["title"], count=it["messages"]))
     try:
-        choice = input("session number: ").strip()
+        choice = input(tr(t, "ui.cli.session_number")).strip()
     except EOFError:
         return None
     # Only listed numbers are valid: 0 or a negative value must not index from the end.
@@ -82,7 +105,7 @@ def _fullscreen_available() -> bool:
     )
 
 
-def _startup_error(error: Exception, cwd: str) -> None:
+def _startup_error(error: Exception, cwd: str, *, t: Translator | None = None) -> None:
     """Initialization can fail before an AgentSession owns a diagnostic sink."""
     details = getattr(error, "_virgo_error_details", None)
     if not isinstance(details, dict):
@@ -90,7 +113,7 @@ def _startup_error(error: Exception, cwd: str) -> None:
     try:
         if not details.get("log_path") and not details.get("logging_error"):
             details = DiagnosticLog(Paths(Path(cwd)).user / "logs").record(details)
-        print(f"virgo: {error_summary(details)}", file=sys.stderr)
+        print(f"virgo: {error_summary(details, t=t)}", file=sys.stderr)
     except Exception as reporting_error:
         emergency_write(details, reporting_error)
 
@@ -105,14 +128,24 @@ def _shutdown(session: AgentSession) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument("--language")
+    bootstrap.add_argument("-C", "--cwd", default=".")
+    early, _ = bootstrap.parse_known_args(argv)
+    try:
+        language = early.language or Settings.load(Paths(Path(early.cwd))).get("language", "en")
+        t = Translator(language)
+    except (OSError, ValueError) as error:
+        _startup_error(error, early.cwd)
+        return 2
+    args = build_parser(t.language).parse_args(argv)
     fullscreen = False
     if not args.print and args.ui != "plain":
         fullscreen = _fullscreen_available()
         if args.ui == "fullscreen" and not fullscreen:
             print(
-                "virgo: fullscreen needs an interactive stdin/stdout and a supported TERM; "
-                "use --ui plain or -p.",
+                tr(t, "ui.cli.fullscreen_error"),
                 file=sys.stderr,
             )
             return 2
@@ -122,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         if piped.strip():
             prompt = f"{prompt}\n\n{piped}" if prompt else piped
     if args.print and not prompt:
-        print("virgo: -p needs a prompt (argument or stdin)", file=sys.stderr)
+        print(tr(t, "ui.cli.print_prompt_error"), file=sys.stderr)
         return 2
 
     session_arg: str | Path | None = "new"
@@ -137,12 +170,14 @@ def main(argv: list[str] | None = None) -> int:
         elif fullscreen:
             pick_session = True
         else:
-            picked = _pick_session(Paths(Path(args.cwd)).sessions)
+            picked = _pick_session(Paths(Path(args.cwd)).sessions, t)
             if picked is None:
                 return 1
             session_arg = picked
 
-    overrides = {"effort": args.effort} if args.effort else None
+    overrides = {"effort": args.effort} if args.effort else {}
+    if args.language:
+        overrides["language"] = args.language
     try:
         if args.print:
             ui = PrintUI(json_mode=args.mode == "json")
@@ -165,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as error:
-        _startup_error(error, args.cwd)
+        _startup_error(error, args.cwd, t=t)
         return 2 if isinstance(error, (ValueError, OSError)) else 1
 
     if not args.print:

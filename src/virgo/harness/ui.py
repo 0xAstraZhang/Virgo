@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 
 from ..agent.types import AgentEvent
+from ..i18n import Translator
 from .preferences import PreferenceChoice, PreferenceRequest
 
 
@@ -35,6 +36,16 @@ class UI:
 
     interactive = False
     supports_preferences = False
+
+    def set_translator(self, translator: Translator) -> None:
+        self.translator = translator
+
+    def t(self, key: str, /, **values: object) -> str:
+        return (getattr(self, "translator", None) or Translator())(key, **values)
+
+    def language_changed(self) -> None:
+        """Refresh client chrome after this UI's session changes language."""
+        pass
 
     def on_event(self, ev: AgentEvent) -> None:  # streaming output, tool calls, ...
         pass
@@ -85,10 +96,11 @@ class UI:
 
     def select_schedule(self, choices: list[ScheduleChoice], *, selected: str | None = None) -> str | None:
         labels = [f"{i}. {row.title} │ {row.frequency} │ {row.next_run}" for i, row in enumerate(choices, 1)]
-        answer = self.select("定时任务 · 标题 │ 执行频率 │ 下次执行时间", labels + ["＋ 新建任务", "返回"])
-        if answer in (None, "返回"):
+        new, back = self.t("ui.base.schedule_new"), self.t("ui.base.back")
+        answer = self.select(self.t("ui.base.schedules"), labels + [new, back])
+        if answer in (None, back):
             return None
-        return "new" if answer == "＋ 新建任务" else choices[labels.index(answer)].id
+        return "new" if answer == new else choices[labels.index(answer)].id
 
     def input_multiline(self, question: str, *, default: str = "") -> str | None:
         """Read task content without putting it in conversation/input history."""
@@ -96,7 +108,7 @@ class UI:
             return None
         if default:
             self.print(default)
-        self.print(question + "\nFinish with a line containing .; /cancel cancels; . alone keeps existing content.")
+        self.print(question + "\n" + self.t("ui.base.multiline_help"))
         lines = []
         while True:
             line = self.input("│")

@@ -41,8 +41,17 @@ MAX_TOOL_PAGES = 100
 
 
 class MCPError(Exception):
-    def __init__(self, message: str, *, phase="mcp.request", method=None, request_id=None, rpc_code=None,
-                 dispatch="not_started", outcome="not_started"):
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase="mcp.request",
+        method=None,
+        request_id=None,
+        rpc_code=None,
+        dispatch="not_started",
+        outcome="not_started",
+    ):
         super().__init__(message)
         self.phase = phase
         self.method = method
@@ -109,8 +118,11 @@ class MCPClient:
         """Thread-local transport facts; a missing response never proves no effect."""
         dispatch = getattr(self._request_local, "dispatch", "not_started")
         return {
-            "protocol": "mcp", "server": self.name, "generation": self.generation,
-            "dispatch": dispatch, "outcome": getattr(self._request_local, "outcome", "not_started"),
+            "protocol": "mcp",
+            "server": self.name,
+            "generation": self.generation,
+            "dispatch": dispatch,
+            "outcome": getattr(self._request_local, "outcome", "not_started"),
             "side_effects": "none" if dispatch == "not_started" else "unknown",
         }
 
@@ -125,7 +137,9 @@ class MCPClient:
             env=self.env,
             cwd=str(self.cwd) if self.cwd else None,
         )
-        self._stderr_thread = threading.Thread(target=self._read_stderr, daemon=True, name=f"mcp-{self.name}-stderr")
+        self._stderr_thread = threading.Thread(
+            target=self._read_stderr, daemon=True, name=f"mcp-{self.name}-stderr"
+        )
         self._reader_thread = threading.Thread(target=self._reader, daemon=True, name=f"mcp-{self.name}")
         self._stderr_thread.start()
         self._reader_thread.start()
@@ -159,7 +173,9 @@ class MCPClient:
             "exit_code": self.proc.poll() if self.proc is not None else None,
             "dispatch": getattr(error, "dispatch", self.transport()["dispatch"]),
             "outcome": getattr(error, "outcome", self.transport()["outcome"]),
-            "side_effects": "none" if getattr(error, "dispatch", self.transport()["dispatch"]) == "not_started" else "unknown",
+            "side_effects": "none"
+            if getattr(error, "dispatch", self.transport()["dispatch"]) == "not_started"
+            else "unknown",
             **(context or {}),
         }
         if tail:
@@ -167,8 +183,12 @@ class MCPClient:
             metadata["stderr_truncated"] = truncated
         if protocol_error is not None:
             metadata["protocol_error"] = safe_text(protocol_error, secrets=self._secrets)
-        return capture_error(error, phase=phase or getattr(error, "phase", "mcp.request"),
-                             context=metadata, secrets=self._secrets)
+        return capture_error(
+            error,
+            phase=phase or getattr(error, "phase", "mcp.request"),
+            context=metadata,
+            secrets=self._secrets,
+        )
 
     def _reader(self) -> None:
         failure = None
@@ -176,7 +196,11 @@ class MCPClient:
             assert self.proc and self.proc.stdout
             # Keep reads efficient while the main thread owns only the raw pipe;
             # shutdown must not wait for a buffered reader's lock.
-            output = io.BufferedReader(self.proc.stdout) if isinstance(self.proc.stdout, io.RawIOBase) else self.proc.stdout
+            output = (
+                io.BufferedReader(self.proc.stdout)
+                if isinstance(self.proc.stdout, io.RawIOBase)
+                else self.proc.stdout
+            )
             for line in output:
                 try:
                     msg = json.loads(line)
@@ -229,8 +253,12 @@ class MCPClient:
         self._request_local.outcome = "not_started"
         try:
             if self._reader_done.is_set() or self._closing:
-                raise MCPError(f"{self.name}: {self.error or 'connection closed'} for {method}",
-                               phase="mcp.read", method=method, request_id=rid) from self._reader_failure
+                raise MCPError(
+                    f"{self.name}: {self.error or 'connection closed'} for {method}",
+                    phase="mcp.read",
+                    method=method,
+                    request_id=rid,
+                ) from self._reader_failure
             try:
                 # A write exception can occur after the peer received the request.
                 # Do not guess that a broken pipe means nothing was dispatched.
@@ -238,14 +266,24 @@ class MCPClient:
                 self._request_local.outcome = "unknown"
                 self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
             except Exception as error:
-                raise MCPError(f"{self.name}: cannot write to server ({safe_text(error, secrets=self._secrets)})",
-                               phase="mcp.write", method=method, request_id=rid,
-                               dispatch="sending", outcome="unknown") from error
+                raise MCPError(
+                    f"{self.name}: cannot write to server ({safe_text(error, secrets=self._secrets)})",
+                    phase="mcp.write",
+                    method=method,
+                    request_id=rid,
+                    dispatch="sending",
+                    outcome="unknown",
+                ) from error
             self._request_local.dispatch = "sent"
             with self._cv:
                 ok = self._cv.wait_for(
-                    lambda: rid in self._pending or self._reader_done.is_set() or self._closing
-                    or self.proc is not None and self.proc.poll() is not None,
+                    lambda: (
+                        rid in self._pending
+                        or self._reader_done.is_set()
+                        or self._closing
+                        or self.proc is not None
+                        and self.proc.poll() is not None
+                    ),
                     timeout,
                 )
                 msg = self._pending.pop(rid, None)
@@ -256,8 +294,11 @@ class MCPClient:
         if msg is None:
             raise MCPError(
                 f"{self.name}: {'timeout' if not ok else self.error or 'connection closed'} for {method}",
-                phase="mcp.timeout" if not ok else "mcp.read", method=method, request_id=rid,
-                dispatch="sent", outcome="unknown",
+                phase="mcp.timeout" if not ok else "mcp.read",
+                method=method,
+                request_id=rid,
+                dispatch="sent",
+                outcome="unknown",
             ) from self._reader_failure
         self._request_local.dispatch = "response_received"
         if "error" in msg:
@@ -265,13 +306,24 @@ class MCPClient:
             error = msg["error"]
             message = error.get("message") if isinstance(error, dict) else error
             code = error.get("code") if isinstance(error, dict) else None
-            raise MCPError(f"{self.name}: {safe_text(message or 'server returned an error', secrets=self._secrets)}",
-                           phase="mcp.response", method=method, request_id=rid, rpc_code=code,
-                           dispatch="response_received", outcome="returned_error")
+            raise MCPError(
+                f"{self.name}: {safe_text(message or 'server returned an error', secrets=self._secrets)}",
+                phase="mcp.response",
+                method=method,
+                request_id=rid,
+                rpc_code=code,
+                dispatch="response_received",
+                outcome="returned_error",
+            )
         if not isinstance(msg.get("result"), dict):
-            raise MCPError(f"{self.name}: invalid result for {method}",
-                           phase="mcp.protocol", method=method, request_id=rid,
-                           dispatch="response_received", outcome="unknown")
+            raise MCPError(
+                f"{self.name}: invalid result for {method}",
+                phase="mcp.protocol",
+                method=method,
+                request_id=rid,
+                dispatch="response_received",
+                outcome="unknown",
+            )
         self._request_local.outcome = "returned_error" if msg["result"].get("isError") else "returned_success"
         return msg["result"]
 
@@ -279,8 +331,9 @@ class MCPClient:
         try:
             self._send({"jsonrpc": "2.0", "method": method, "params": params or {}})
         except Exception as error:
-            raise MCPError(f"{self.name}: cannot send notification {method}",
-                           phase="mcp.write", method=method) from error
+            raise MCPError(
+                f"{self.name}: cannot send notification {method}", phase="mcp.write", method=method
+            ) from error
 
     # -- protocol ------------------------------------------------------------
     def connect(self, timeout: float = 30.0) -> None:
@@ -289,7 +342,9 @@ class MCPClient:
         def remaining(method):
             left = deadline - time.monotonic()
             if left <= 0:
-                raise MCPError(f"{self.name}: handshake deadline exceeded", phase="mcp.timeout", method=method)
+                raise MCPError(
+                    f"{self.name}: handshake deadline exceeded", phase="mcp.timeout", method=method
+                )
             return left
 
         self.start()
@@ -309,21 +364,37 @@ class MCPClient:
             page = self.request("tools/list", {"cursor": cursor} if cursor else {}, remaining("tools/list"))
             listed = page.get("tools", [])
             if not isinstance(listed, list):
-                raise MCPError(f"{self.name}: invalid tools/list result", phase="mcp.protocol",
-                               method="tools/list", request_id=self._request_local.id)
-            tools.extend(t for t in listed if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"])
+                raise MCPError(
+                    f"{self.name}: invalid tools/list result",
+                    phase="mcp.protocol",
+                    method="tools/list",
+                    request_id=self._request_local.id,
+                )
+            tools.extend(
+                t for t in listed if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"]
+            )
             cursor = page.get("nextCursor")
             if not cursor:
                 break
             if not isinstance(cursor, str) or cursor in cursors:
-                raise MCPError(f"{self.name}: invalid or repeated tools/list cursor", phase="mcp.protocol",
-                               method="tools/list", request_id=self._request_local.id,
-                               dispatch="response_received", outcome="unknown")
+                raise MCPError(
+                    f"{self.name}: invalid or repeated tools/list cursor",
+                    phase="mcp.protocol",
+                    method="tools/list",
+                    request_id=self._request_local.id,
+                    dispatch="response_received",
+                    outcome="unknown",
+                )
             cursors.add(cursor)
         else:
-            raise MCPError(f"{self.name}: tools/list exceeded the pagination limit", phase="mcp.protocol",
-                           method="tools/list", request_id=self._request_local.id,
-                           dispatch="response_received", outcome="unknown")
+            raise MCPError(
+                f"{self.name}: tools/list exceeded the pagination limit",
+                phase="mcp.protocol",
+                method="tools/list",
+                request_id=self._request_local.id,
+                dispatch="response_received",
+                outcome="unknown",
+            )
         self.tools = tools
 
     def call(self, tool: str, arguments: dict, timeout: float = 300.0) -> dict:
@@ -397,13 +468,15 @@ def load_config(api: ExtensionAPI) -> dict:
                 servers.update(listed)
             except ValueError as e:  # includes JSONDecodeError
                 api.session.report_error(e, phase="mcp.config", context={"path": str(f)}, notify=False)
-                api.ui.print(f"[mcp: invalid {f}: {safe_text(e)}]", "error")
+                api.ui.print(
+                    api.session.t("features.mcp.invalid_config", path=f, error=safe_text(e)), "error"
+                )
     from_settings = api.settings.get("mcpServers", {}) or {}
     if isinstance(from_settings, dict):
         servers.update(from_settings)
     else:
         api.session.report_error("mcpServers must be an object", phase="mcp.config", notify=False)
-        api.ui.print("[mcp: invalid settings: mcpServers must be an object]", "error")
+        api.ui.print(api.session.t("features.mcp.invalid_settings"), "error")
     return {
         k: v for k, v in servers.items() if isinstance(v, dict) and v.get("command") and not v.get("disabled")
     }
@@ -415,9 +488,20 @@ def _schema_shape(schema: dict, depth=0) -> None:
         raise ValueError("inputSchema must contain bounded object schemas")
     if "type" in schema:
         types = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
-        if not types or any(not isinstance(value, str) or value not in {
-            "string", "integer", "number", "boolean", "object", "array", "null",
-        } for value in types):
+        if not types or any(
+            not isinstance(value, str)
+            or value
+            not in {
+                "string",
+                "integer",
+                "number",
+                "boolean",
+                "object",
+                "array",
+                "null",
+            }
+            for value in types
+        ):
             raise ValueError("inputSchema type must contain supported type names")
     properties = schema.get("properties", {})
     if not isinstance(properties, dict):
@@ -456,14 +540,23 @@ def _schemas(client: MCPClient) -> dict[str, str]:
                 _schema_shape(schema)
                 if schema.get("type", "object") != "object":
                     raise ValueError("a tool's inputSchema must describe an object")
-            result[spec["name"]] = json.dumps({
-                "description": spec.get("description") or spec["name"],
-                "inputSchema": spec.get("inputSchema") or {"type": "object", "properties": {}},
-            }, sort_keys=True, ensure_ascii=False)
+            result[spec["name"]] = json.dumps(
+                {
+                    "description": spec.get("description") or spec["name"],
+                    "inputSchema": spec.get("inputSchema") or {"type": "object", "properties": {}},
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
     except (TypeError, ValueError) as error:
-        raise MCPError(f"{client.name}: invalid tools/list schema ({error})", phase="mcp.schema", method="tools/list",
-                       request_id=getattr(client._request_local, "id", None),
-                       dispatch="response_received", outcome="unknown") from error
+        raise MCPError(
+            f"{client.name}: invalid tools/list schema ({error})",
+            phase="mcp.schema",
+            method="tools/list",
+            request_id=getattr(client._request_local, "id", None),
+            dispatch="response_received",
+            outcome="unknown",
+        ) from error
     return result
 
 
@@ -504,17 +597,24 @@ class MCPConnections:
         self._generations: dict[str, int] = {}
 
     def _client(self, name: str, conf: dict, generation: int = 1, *, cwd=None) -> MCPClient:
-        client = MCPClient(name, conf["command"], conf.get("args"), conf.get("env"), cwd or self.api.session.cwd)
+        client = MCPClient(
+            name, conf["command"], conf.get("args"), conf.get("env"), cwd or self.api.session.cwd
+        )
         client.generation = generation
         return client
 
     def _report(self, client: MCPClient, error, ctx: ToolContext, *, phase=None, context=None) -> dict:
         runtime = ctx.review_source.runtime if ctx.review_source is not None else None
-        owner = (runtime.store if runtime.store is not None else runtime.accounting_store
-                 ) if runtime is not None else self.api.session.store
+        owner = (
+            (runtime.store if runtime.store is not None else runtime.accounting_store)
+            if runtime is not None
+            else self.api.session.store
+        )
         metadata = {
             **(runtime.diagnostic_context() if runtime is not None else {}),
-            "agent": ctx.agent, "tool_call_id": ctx.call_id, **(context or {}),
+            "agent": ctx.agent,
+            "tool_call_id": ctx.call_id,
+            **(context or {}),
         }
         details = client.diagnostic(error, phase=phase, context=metadata)
         details = self.api.session.report_error(details, phase=details["phase"], store=owner, notify=False)
@@ -526,38 +626,63 @@ class MCPConnections:
 
     @staticmethod
     def _blocked(slot: _Connection, reason: str) -> ToolResult:
-        return ToolResult.error(reason, details={"mcp": True, "transport": {
-            "protocol": "mcp", "server": slot.name, "generation": slot.generation,
-            "dispatch": "not_started", "outcome": "not_started", "side_effects": "none",
-        }})
+        return ToolResult.error(
+            reason,
+            details={
+                "mcp": True,
+                "transport": {
+                    "protocol": "mcp",
+                    "server": slot.name,
+                    "generation": slot.generation,
+                    "dispatch": "not_started",
+                    "outcome": "not_started",
+                    "side_effects": "none",
+                },
+            },
+        )
 
-    def _execute(self, slot: _Connection, remote: str, schema: str, args: dict, ctx: ToolContext) -> ToolResult:
+    def _execute(
+        self, slot: _Connection, remote: str, schema: str, args: dict, ctx: ToolContext
+    ) -> ToolResult:
         with slot.lock:
             if slot.retired:
-                return self._blocked(slot, "This MCP connection was removed; refresh the tool set before continuing.")
+                return self._blocked(slot, ctx.t("features.mcp.retired"))
             if slot.reconnecting or slot.pending is not None:
-                return self._blocked(slot, "MCP recovery is in progress; this call was not dispatched.")
+                return self._blocked(slot, ctx.t("features.mcp.recovering"))
             if slot.schemas.get(remote) != schema:
-                return self._blocked(slot, "The MCP tool schema changed; refresh the tool set before calling it again.")
+                return self._blocked(slot, ctx.t("features.mcp.schema_changed"))
             client = slot.client
             slot.inflight += 1
         try:
-            metadata = {"server": slot.name, "method": "tools/call", "mcp_tool": remote,
-                        "tool_name": tool_name(slot.name, remote), "generation": client.generation}
+            metadata = {
+                "server": slot.name,
+                "method": "tools/call",
+                "mcp_tool": remote,
+                "tool_name": tool_name(slot.name, remote),
+                "generation": client.generation,
+            }
             try:
                 result = to_result(client.call(remote, args))
                 if result.is_error:
                     metadata["request_id"] = getattr(client._request_local, "id", None)
                     result.details["error"] = self._report(
-                        client, "MCP server reported a tool error.", ctx, phase="mcp.tool", context=metadata,
+                        client,
+                        "MCP server reported a tool error.",
+                        ctx,
+                        phase="mcp.tool",
+                        context=metadata,
                     )
                 else:
                     with slot.lock:
                         slot.attempts_without_progress = 0
                         slot.recovery_error = None
             except Exception as error:
-                details = self._report(client, error, ctx, phase=getattr(error, "phase", "mcp.tool"), context=metadata)
-                result = ToolResult.error(safe_text(error, secrets=client._secrets), {"mcp": True, "error": details})
+                details = self._report(
+                    client, error, ctx, phase=getattr(error, "phase", "mcp.tool"), context=metadata
+                )
+                result = ToolResult.error(
+                    safe_text(error, secrets=client._secrets), {"mcp": True, "error": details}
+                )
             result.details["transport"] = client.transport()
             if result.is_error:
                 with slot.lock:
@@ -568,14 +693,23 @@ class MCPConnections:
                 slot.inflight -= 1
 
     def _prepare_tools(self, slot: _Connection, client: MCPClient, schemas: dict) -> list[AgentTool]:
-        seen = {tool.name for role in ROLES_ALL for tool in self.api.session.tools_for(role)
-                if slot.wrappers.get(tool.name) is not tool}
+        seen = {
+            tool.name
+            for role in ROLES_ALL
+            for tool in self.api.session.tools_for(role)
+            if slot.wrappers.get(tool.name) is not tool
+        }
         prepared = []
         for spec in client.tools:
             name = tool_name(slot.name, spec["name"])
             if name in seen:
-                raise MCPError(f"{slot.name}: tool name {name} conflicts with an active tool", phase="mcp.schema",
-                               method="tools/list", dispatch="response_received", outcome="unknown")
+                raise MCPError(
+                    f"{slot.name}: tool name {name} conflicts with an active tool",
+                    phase="mcp.schema",
+                    method="tools/list",
+                    dispatch="response_received",
+                    outcome="unknown",
+                )
             schema = deepcopy(spec.get("inputSchema") or {"type": "object", "properties": {}})
 
             def execute(args, ctx, _slot=slot, _tool=spec["name"], _schema=schemas[spec["name"]]):
@@ -586,7 +720,9 @@ class MCPConnections:
             seen.add(name)
         return prepared
 
-    def _publish(self, slot: _Connection, client: MCPClient, schemas: dict, prepared: list[AgentTool]) -> None:
+    def _publish(
+        self, slot: _Connection, client: MCPClient, schemas: dict, prepared: list[AgentTool]
+    ) -> None:
         # Match Session.register_tool's registry representation, replacing only
         # this server's own objects in one assignment after all preparation.
         owned = {id(tool) for tool in slot.wrappers.values()}
@@ -615,20 +751,25 @@ class MCPConnections:
                 client.error = safe_text(error, secrets=client._secrets) or type(error).__name__
                 client.close()
                 client.error_details = client.diagnostic(
-                    error, phase=getattr(error, "phase", "mcp.connect" if client.proc else "mcp.start"),
+                    error,
+                    phase=getattr(error, "phase", "mcp.connect" if client.proc else "mcp.start"),
                 )
             return name, conf, client, schemas
 
         if config:
             with ThreadPoolExecutor(max_workers=min(8, len(config))) as pool:
                 for name, conf, client, schemas in pool.map(one, config.items()):
-                    slot = _Connection(name, deepcopy(conf), client, generation=client.generation, schemas=schemas)
+                    slot = _Connection(
+                        name, deepcopy(conf), client, generation=client.generation, schemas=schemas
+                    )
                     self.connections[name] = slot
                     self.clients[name] = client
                     self._generations[name] = client.generation
                     if client.error:
                         client.error_details = self.api.session.report_error(
-                            client.error_details, phase="mcp.connect", store=owner,
+                            client.error_details,
+                            phase="mcp.connect",
+                            store=owner,
                         )
                     else:
                         try:
@@ -638,62 +779,82 @@ class MCPConnections:
                             client.error = safe_text(error, secrets=client._secrets)
                             client.close()
                             client.error_details = self.api.session.report_error(
-                                client.diagnostic(error, phase="mcp.schema"), phase="mcp.schema", store=owner,
+                                client.diagnostic(error, phase="mcp.schema"),
+                                phase="mcp.schema",
+                                store=owner,
                             )
 
     def status(self, args: dict, ctx: ToolContext) -> ToolResult:
         server = args.get("server")
         runtime = self.api.session.runtime_for_context(ctx)
         if runtime is None:
-            return ToolResult.error("MCP status requires a trusted calling runtime.")
+            return ToolResult.error(ctx.t("features.mcp.status_runtime"))
         access = getattr(runtime, "diagnostic_access", None)
         with self._registry_lock:
-            slots = ([self.connections[server]] if server in self.connections else []) if server else list(self.connections.values())
+            slots = (
+                ([self.connections[server]] if server in self.connections else [])
+                if server
+                else list(self.connections.values())
+            )
         if server and not slots:
-            return ToolResult.error("No configured MCP server with that name.")
+            return ToolResult.error(ctx.t("features.mcp.no_server"))
         rows = []
         for slot in slots:
             with slot.lock:
                 client = slot.client
                 ready = not client.error and not client._reader_done.is_set() and not client._closing
-                row = {"server": slot.name, "generation": slot.generation,
-                       "state": "reconnecting" if slot.reconnecting else "refresh_required" if slot.pending else "ready" if ready else "unavailable",
-                       "inflight": slot.inflight, "tools": len(slot.schemas),
-                       "reconnect_attempts_remaining": max(0, MAX_RECONNECT_ATTEMPTS - slot.attempts_without_progress)}
+                row = {
+                    "server": slot.name,
+                    "generation": slot.generation,
+                    "state": "reconnecting"
+                    if slot.reconnecting
+                    else "refresh_required"
+                    if slot.pending
+                    else "ready"
+                    if ready
+                    else "unavailable",
+                    "inflight": slot.inflight,
+                    "tools": len(slot.schemas),
+                    "reconnect_attempts_remaining": max(
+                        0, MAX_RECONNECT_ATTEMPTS - slot.attempts_without_progress
+                    ),
+                }
                 error = slot.recovery_error or client.error_details
                 visible = access.get(error["error_id"]) if access is not None and error else None
                 if visible:
                     row["error_id"] = visible["error_id"]
                 rows.append(row)
-        return ToolResult.text(json.dumps({"servers": rows}, ensure_ascii=False), details={"mcp_status": rows})
+        return ToolResult.text(
+            json.dumps({"servers": rows}, ensure_ascii=False), details={"mcp_status": rows}
+        )
 
     def reconnect(self, args: dict, ctx: ToolContext) -> ToolResult:
         runtime = self.api.session.runtime_for_context(ctx)
         if runtime is None:
-            return ToolResult.error("MCP recovery requires a trusted calling runtime.")
+            return ToolResult.error(ctx.t("features.mcp.recovery_runtime"))
         access = getattr(runtime, "diagnostic_access", None)
         error = access.get(args["error_id"]) if access is not None else None
         if error is None:
-            return ToolResult.error("The diagnostic is unavailable in this runtime; obtain an authorized error ID first.")
+            return ToolResult.error(ctx.t("features.mcp.evidence_missing"))
         server = args["server"]
         context = error.get("context", {})
         if context.get("server") != server or not str(error.get("phase", "")).startswith("mcp."):
-            return ToolResult.error("This diagnostic does not describe a failure of the requested MCP server.")
+            return ToolResult.error(ctx.t("features.mcp.evidence_mismatch"))
         with self._registry_lock:
             slot = self.connections.get(server)
         if slot is None:
-            return ToolResult.error("No configured MCP server with that name.")
+            return ToolResult.error(ctx.t("features.mcp.no_server"))
         with slot.lock:
             if slot.retired or context.get("generation") != slot.generation:
-                return self._blocked(slot, "This diagnostic refers to an older MCP connection; inspect current status first.")
+                return self._blocked(slot, ctx.t("features.mcp.old_connection"))
             if slot.reconnecting or slot.pending is not None:
-                return self._blocked(slot, "Recovery is already pending for this server; no additional process was started.")
+                return self._blocked(slot, ctx.t("features.mcp.pending"))
             if slot.inflight:
-                return self._blocked(slot, "The server has in-flight calls; reconnection was not started. Wait for their outcomes.")
+                return self._blocked(slot, ctx.t("features.mcp.inflight"))
             if ctx.signal.is_set():
-                return self._blocked(slot, "Recovery was cancelled before starting.")
+                return self._blocked(slot, ctx.t("features.mcp.cancelled"))
             if slot.attempts_without_progress >= MAX_RECONNECT_ATTEMPTS:
-                return self._blocked(slot, "The MCP recovery budget is exhausted. Inspect the cause or request user intervention.")
+                return self._blocked(slot, ctx.t("features.mcp.budget"))
             slot.reconnecting = True
             slot.attempts_without_progress += 1
             generation = slot.generation
@@ -710,11 +871,11 @@ class MCPConnections:
                 self._prepare_tools(slot, candidate, schemas)
             if ctx.signal.is_set():
                 candidate.close()
-                return self._blocked(slot, "Recovery was cancelled; the original connection was retained.")
+                return self._blocked(slot, ctx.t("features.mcp.cancelled_retained"))
             with slot.lock:
                 if slot.retired:
                     candidate.close()
-                    return self._blocked(slot, "The server was removed while reconnecting; the candidate was discarded.")
+                    return self._blocked(slot, ctx.t("features.mcp.removed"))
                 if schemas != slot.schemas:
                     slot.pending = candidate
                     slot.pending_context = ctx
@@ -727,34 +888,63 @@ class MCPConnections:
                     self._generations[server] = candidate.generation
                     refresh_required = False
                 slot.recovery_error = None
-            state = {"server": server, "generation": candidate.generation,
-                     "state": "refresh_required" if refresh_required else "connected",
-                     "refresh_required": refresh_required, "replayed_calls": 0}
+            state = {
+                "server": server,
+                "generation": candidate.generation,
+                "state": "refresh_required" if refresh_required else "connected",
+                "refresh_required": refresh_required,
+                "replayed_calls": 0,
+            }
             return ToolResult.text(
-                json.dumps(state) + "\nNo failed call was replayed. Check the previous operation's outcome before issuing another mutating call.",
+                json.dumps(state) + ctx.t("features.mcp.no_replay"),
                 details={"mcp_recovery": state},
             )
         except Exception as failure:
             if candidate is not None:
                 candidate.close()
             diagnostic_client = candidate or slot.client
-            transport = candidate.transport() if candidate is not None else {
-                "protocol": "mcp", "server": server, "generation": generation + 1,
-                "dispatch": "not_started", "outcome": "not_started", "side_effects": "none",
-            }
+            transport = (
+                candidate.transport()
+                if candidate is not None
+                else {
+                    "protocol": "mcp",
+                    "server": server,
+                    "generation": generation + 1,
+                    "dispatch": "not_started",
+                    "outcome": "not_started",
+                    "side_effects": "none",
+                }
+            )
             if isinstance(failure, MCPError):
-                transport.update(dispatch=failure.dispatch, outcome=failure.outcome,
-                                 side_effects="none" if failure.dispatch == "not_started" else "unknown")
-            details = self._report(diagnostic_client, failure, ctx, phase=getattr(failure, "phase", "mcp.reconnect"), context={
-                **transport,
-                "server": server, "generation": generation, "candidate_generation": generation + 1,
-                "tool_name": "mcp_reconnect", "related_error_id": error["error_id"],
-            })
+                transport.update(
+                    dispatch=failure.dispatch,
+                    outcome=failure.outcome,
+                    side_effects="none" if failure.dispatch == "not_started" else "unknown",
+                )
+            details = self._report(
+                diagnostic_client,
+                failure,
+                ctx,
+                phase=getattr(failure, "phase", "mcp.reconnect"),
+                context={
+                    **transport,
+                    "server": server,
+                    "generation": generation,
+                    "candidate_generation": generation + 1,
+                    "tool_name": "mcp_reconnect",
+                    "related_error_id": error["error_id"],
+                },
+            )
             with slot.lock:
                 slot.recovery_error = details
-            return ToolResult.error("MCP reconnection failed; the original connection was retained.", details={
-                "mcp": True, "error": details, "transport": transport,
-            })
+            return ToolResult.error(
+                ctx.t("features.mcp.failed"),
+                details={
+                    "mcp": True,
+                    "error": details,
+                    "transport": transport,
+                },
+            )
         finally:
             with slot.lock:
                 slot.reconnecting = False
@@ -778,10 +968,18 @@ class MCPConnections:
                         slot.pending = slot.pending_context = None
                         old_clients.append(candidate)
                         if ctx is not None:
-                            details = self._report(candidate, error, ctx, phase="mcp.schema", context={
-                                "server": slot.name, "generation": slot.generation,
-                                "candidate_generation": candidate.generation, "tool_name": "mcp_reconnect",
-                            })
+                            details = self._report(
+                                candidate,
+                                error,
+                                ctx,
+                                phase="mcp.schema",
+                                context={
+                                    "server": slot.name,
+                                    "generation": slot.generation,
+                                    "candidate_generation": candidate.generation,
+                                    "tool_name": "mcp_reconnect",
+                                },
+                            )
                             slot.recovery_error = details
                             owner = self.api.session.runtime_for_context(ctx)
                             if owner is not None:
@@ -809,7 +1007,7 @@ class MCPConnections:
                     slot.lock.acquire()
                     locked.append(slot)
                 if any(slot.inflight or slot.reconnecting for slot in slots):
-                    raise ValueError("MCP has in-flight calls or recovery; wait before /mcp reconnect.")
+                    raise ValueError(self.api.session.t("features.mcp.inflight"))
                 for slot in slots:
                     slot.retired = True
             finally:
@@ -842,31 +1040,56 @@ def setup(api: ExtensionAPI) -> None:
     api.services["mcp"] = manager.clients
     api.services["mcp_refresh"] = manager.refresh
     manager.connect_all(load_config(api))
-    api.register_tool(AgentTool(
-        "mcp_status", "Read local MCP connection state, generation, pending calls and accessible diagnostic IDs. Does not contact servers.",
-        {"type": "object", "properties": {"server": {"type": "string"}}, "additionalProperties": False},
-        manager.status, read_only=True,
-    ), roles=ROLES_ALL)
-    api.register_tool(AgentTool(
-        "mcp_reconnect", "Reconnect one configured MCP server using an accessible diagnostic ID. Starts its configured process; never replays failed calls. "
-        "Only use after checking the failure and previous operation's outcome; in-flight calls and repeated recovery without progress block this action.",
-        {"type": "object", "properties": {"server": {"type": "string"}, "error_id": {"type": "string"}},
-         "required": ["server", "error_id"], "additionalProperties": False},
-        manager.reconnect,
-    ), roles=ROLES_ALL)
+    api.register_tool(
+        AgentTool(
+            "mcp_status",
+            "Read local MCP connection state, generation, pending calls and accessible diagnostic IDs. Does not contact servers.",
+            {"type": "object", "properties": {"server": {"type": "string"}}, "additionalProperties": False},
+            manager.status,
+            read_only=True,
+            i18n_key="tools.mcp_status",
+        ),
+        roles=ROLES_ALL,
+    )
+    api.register_tool(
+        AgentTool(
+            "mcp_reconnect",
+            "Reconnect one configured MCP server using an accessible diagnostic ID. Starts its configured process; never replays failed calls. "
+            "Only use after checking the failure and previous operation's outcome; in-flight calls and repeated recovery without progress block this action.",
+            {
+                "type": "object",
+                "properties": {"server": {"type": "string"}, "error_id": {"type": "string"}},
+                "required": ["server", "error_id"],
+                "additionalProperties": False,
+            },
+            manager.reconnect,
+            i18n_key="tools.mcp_reconnect",
+        ),
+        roles=ROLES_ALL,
+    )
 
     def cmd(session, args):
         if args.strip() == "reconnect":
             manager.reload(load_config(api))
             session.main.tools[:] = session.tools_for("main")
             session.main.rebuild_system()
-            api.ui.print("MCP servers reconnected (tool set changed: the prompt cache restarts).")
+            api.ui.print(api.session.t("features.mcp.reconnected"))
         if not manager.clients:
-            api.ui.print("No MCP servers configured (.virgo/mcp.json).")
+            api.ui.print(api.session.t("features.mcp.empty"))
             return
         for client in manager.clients.values():
-            state = f"error: {client.error}" if client.error else f"{len(client.tools)} tools"
+            state = (
+                api.session.t("features.mcp.error", error=client.error)
+                if client.error
+                else api.session.t("features.mcp.tools", count=len(client.tools))
+            )
             api.ui.print(f"  {client.name}: {state}")
 
-    api.register_command("mcp", cmd, "show MCP servers (/mcp reconnect)", argument_hint="[reconnect]")
+    api.register_command(
+        "mcp",
+        cmd,
+        "show MCP servers (/mcp reconnect)",
+        argument_hint="[reconnect]",
+        description_key="features.commands.mcp",
+    )
     api.on("session_shutdown", lambda s: manager.close())

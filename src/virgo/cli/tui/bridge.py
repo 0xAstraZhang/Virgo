@@ -18,6 +18,7 @@ from typing import Any
 from ...agent.types import AgentEvent
 from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest
 from ...harness.ui import TIMED_OUT, UI, ScheduleChoice
+from ..i18n import tr
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,9 @@ class FullscreenUI(UI):
 
     def push(self, kind: str, payload: Any = None) -> None:
         self._queue.put(Update(kind, payload))
+
+    def language_changed(self) -> None:
+        self.push("language_changed")
 
     def drain(self) -> list[Update]:
         updates = []
@@ -151,7 +155,7 @@ class FullscreenUI(UI):
 
     def resolve_confirmation(self, request_id: int, answer: str | None) -> bool:
         if answer not in (None, "y", "n", "a"):
-            raise ValueError("confirmation answer must be y, n, a or None")
+            raise ValueError(tr(self, "ui.bridge.invalid_confirmation"))
         with self._lock:
             waiting = self._waiting.pop(request_id, None)
             if waiting is None:
@@ -182,7 +186,12 @@ class FullscreenUI(UI):
         return self._ask_input(question, timeout=timeout, password=password, default=default)
 
     def choose_preferences(self, request: PreferenceRequest) -> PreferenceChoice | None:
-        return self._ask_input("Select model" if request.kind == "model" else "Effort", preferences=request)
+        return self._ask_input(
+            tr(self, "ui.preference.select_model")
+            if request.kind == "model"
+            else tr(self, "ui.preference.effort"),
+            preferences=request,
+        )
 
     def select_details(self, question: str, options: list[str], details: str) -> str | None:
         return self._ask_input(question, options=tuple(options), details=details)
@@ -205,18 +214,24 @@ class FullscreenUI(UI):
 
     def select_schedule(self, choices: list[ScheduleChoice], *, selected: str | None = None) -> str | None:
         return self._ask_input(
-            "定时任务", schedules=tuple(choices), selected_schedule=selected,
+            tr(self, "ui.schedule.title"),
+            schedules=tuple(choices),
+            selected_schedule=selected,
             options=tuple(row.id for row in choices) + ("new",),
         )
 
-    def _ask_input(self, question: str, timeout: float | None = None, **kwargs) -> str | PreferenceChoice | None:
+    def _ask_input(
+        self, question: str, timeout: float | None = None, **kwargs
+    ) -> str | PreferenceChoice | None:
         with self._lock:
             signal = self._signals.get("main")
             if self._closed or (signal is not None and signal.is_set()):
                 return None
             request = InputRequest(
-                next(self._ids), question,
-                schedule_workspace=getattr(self._local, "schedule_workspace", False), **kwargs,
+                next(self._ids),
+                question,
+                schedule_workspace=getattr(self._local, "schedule_workspace", False),
+                **kwargs,
             )
             waiting = _Waiting(request)
             self._inputs[request.id] = waiting
@@ -249,7 +264,7 @@ class FullscreenUI(UI):
                 return False
             options = waiting.request.options
             if answer is not None and options is not None and answer not in options:
-                raise ValueError("answer must be one of the offered options")
+                raise ValueError(tr(self, "ui.bridge.invalid_option"))
             preferences = waiting.request.preferences
             if answer is not None and preferences is not None:
                 if (
@@ -257,7 +272,7 @@ class FullscreenUI(UI):
                     or answer.model not in {model.spec for model in preferences.models}
                     or answer.effort not in EFFORT_LEVELS
                 ):
-                    raise ValueError("answer must be an offered model and effort")
+                    raise ValueError(tr(self, "ui.bridge.invalid_model"))
             self._inputs.pop(request_id)
             signal = self._signals.get("main")
             if self._closed or (signal is not None and signal.is_set()):
@@ -278,3 +293,26 @@ class FullscreenUI(UI):
             self._closed = True
             self.cancel_confirmations()
             self.cancel_inputs()
+
+
+class StagedFullscreenUI(FullscreenUI):
+    """Share a live terminal's transport while a candidate owns its language.
+
+    Construction hooks may still print or ask questions through the active
+    queue. A failed workspace switch cannot change the current UI's translator.
+    Operational state, including cancellation and closure, belongs to the
+    underlying bridge; only the candidate translator is held separately.
+    """
+
+    def __init__(self, bridge: FullscreenUI) -> None:
+        object.__setattr__(self, "_bridge", bridge)
+        object.__setattr__(self, "translator", getattr(bridge, "translator", None))
+
+    def __getattr__(self, name):
+        return getattr(self._bridge, name)
+
+    def __setattr__(self, name, value) -> None:
+        if name in {"_bridge", "translator"}:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._bridge, name, value)

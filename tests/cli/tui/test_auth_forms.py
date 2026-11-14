@@ -139,7 +139,7 @@ def test_real_login_wizard_reuses_command_list_and_saves_key_without_history(mak
             assert_inline_form(app, choices)
             assert choices.highlighted == 0 and choices.option_count == 2
             await pilot.press("down", "enter")
-            await wait_for(pilot, lambda: form_is_ready(app, "API — 选择服务商"))
+            await wait_for(pilot, lambda: form_is_ready(app, "API — Choose a provider"))
             assert_inline_form(app, choices)
             assert choices.highlighted == 0 and choices.option_count == 4
             await pilot.press("enter")

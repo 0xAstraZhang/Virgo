@@ -13,8 +13,9 @@ from ...ai.types import UserMessage
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
 from ...harness.ui import UI
+from ..i18n import tr
 from ..repl import EXIT
-from .bridge import FullscreenUI, RunFinished, Update
+from .bridge import FullscreenUI, RunFinished, StagedFullscreenUI, Update
 
 
 class RunController:
@@ -70,9 +71,9 @@ class RunController:
                 previous.open_session(path)
             else:
                 if not target.cwd.is_dir():
-                    raise FileNotFoundError(f"Workspace no longer exists: {target.cwd}")
+                    raise FileNotFoundError(tr(self, "ui.session.missing_workspace", path=target.cwd))
                 candidate = AgentSession(
-                    target.cwd, ui=self.ui, session=path, **previous.session_options
+                    target.cwd, ui=StagedFullscreenUI(self.ui), session=path, **previous.session_options
                 )
                 with self._lifecycle_lock:
                     closing = self.closing
@@ -93,6 +94,8 @@ class RunController:
                             for unsubscribe in self._unsubscribers:
                                 unsubscribe()
                             self.session = candidate
+                            candidate.ui = self.ui
+                            self.ui.set_translator(candidate.translator)
                             self._unsubscribers = [
                                 candidate.bus.on("session_start", self._session_reset, priority=-100),
                                 candidate.bus.on("agent_event", self._agent_event, priority=100),
@@ -130,9 +133,16 @@ class RunController:
 
     @property
     def pending(self) -> list[str]:
-        unsaved = ([f"unprocessed: {message.text()}" for message in self.session.wakeups]
-                   if self.session.store.save_error is not None else [])
-        return [*[f"steering: {text}" for text in self._steering], *self._deferred, *unsaved]
+        unsaved = (
+            [tr(self, "ui.controller.unprocessed", text=message.text()) for message in self.session.wakeups]
+            if self.session.store.save_error is not None
+            else []
+        )
+        return [
+            *[tr(self, "ui.controller.steering", text=text) for text in self._steering],
+            *self._deferred,
+            *unsaved,
+        ]
 
     def _session_reset(self, session: AgentSession) -> None:
         self.ui.bind_signal("main", session.main.agent.signal)
@@ -155,7 +165,9 @@ class RunController:
         if initial:
             self.submit(initial)
 
-    def _launch(self, fn: Callable[[], object], *, concurrent: bool = False, command: str | None = None) -> None:
+    def _launch(
+        self, fn: Callable[[], object], *, concurrent: bool = False, command: str | None = None
+    ) -> None:
         if self.closing:
             return
         ticket = next(self._ids)
@@ -171,8 +183,11 @@ class RunController:
                 fn()
             except Exception as error:  # noqa: BLE001 - errors become transcript entries
                 failed = True
-                self.session.report_error(error, phase="cli.command" if concurrent else "cli.tui_worker",
-                                          context={"ticket": ticket, **({"command": command} if command else {})})
+                self.session.report_error(
+                    error,
+                    phase="cli.command" if concurrent else "cli.tui_worker",
+                    context={"ticket": ticket, **({"command": command} if command else {})},
+                )
             finally:
                 if concurrent:
                     self.ui.push("helper_done", ticket)
@@ -202,7 +217,9 @@ class RunController:
             return
         cmd = self.session.commands.get(text[1:].split(" ", 1)[0]) if text.startswith("/") else None
         if cmd is not None and cmd.concurrent:
-            self._launch(lambda: cmd.fn(self.session, text.partition(" ")[2]), concurrent=True, command=cmd.name)
+            self._launch(
+                lambda: cmd.fn(self.session, text.partition(" ")[2]), concurrent=True, command=cmd.name
+            )
         elif self.busy:
             if text.startswith("/") and not text.startswith("//"):
                 self._deferred.append(text)
@@ -266,7 +283,7 @@ class RunController:
         self.session.abort()
         self.ui.cancel_confirmations("main")
         self.ui.cancel_inputs()
-        self.ui.print("Interrupted.", "warn")
+        self.ui.print(tr(self, "ui.event.interrupted"), "warn")
 
     def request_close(self) -> None:
         with self._lifecycle_lock:
@@ -292,7 +309,7 @@ class RunController:
                     if worker is not None and worker is not threading.current_thread():
                         worker.join(timeout=5)
                         if worker.is_alive():
-                            self.ui.print("A worker is still stopping; its cancellation signal is set.", "warn")
+                            self.ui.print(tr(self, "ui.controller.worker_stopping"), "warn")
                 # A command may finish its final write after shutdown hooks.
                 # Recheck only the stores owned by the sessions we closed.
                 for session in sessions:

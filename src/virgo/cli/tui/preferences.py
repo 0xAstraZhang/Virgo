@@ -13,6 +13,7 @@ from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest, provider_name
+from ..i18n import tr
 
 
 class PreferencePicker(Vertical, can_focus=True):
@@ -93,8 +94,10 @@ class PreferencePicker(Vertical, can_focus=True):
         if model_mode:
             self.show_catalog()
         else:
-            self.query_one("#preference-title", Static).update("Effort")
-            self.query_one("#preference-description", Static).update("Adjust how much reasoning the model uses.")
+            self.query_one("#preference-title", Static).update(tr(self, "ui.preference.effort"))
+            self.query_one("#preference-description", Static).update(
+                tr(self, "ui.preference.effort_description")
+            )
         models.display = model_mode
         self.query_one("#preference-more").display = model_mode
         self.resize_panel()
@@ -114,18 +117,20 @@ class PreferencePicker(Vertical, can_focus=True):
             current_provider = provider_name(self.request.model.split("/", 1)[0])
             current = self.providers.index(current_provider) if current_provider in self.providers else 0
             ids = [f"provider:{name}" for name in self.providers]
-            title = "Select provider"
-            description = "Choose a connected provider to see its available models."
+            title = tr(self, "ui.preference.provider")
+            description = tr(self, "ui.preference.provider_description")
         else:
             current = next(
                 (i for i, model in enumerate(self.visible_models) if model.spec == self.request.model), 0
             )
             ids = [model.spec for model in self.visible_models]
-            title = f"Select model · {provider}"
-            description = "The current model is marked ✓. Backspace returns to providers."
+            title = tr(self, "ui.preference.model_title", provider=provider)
+            description = tr(self, "ui.preference.model_description")
         self.query_one("#preference-title", Static).update(title)
         self.query_one("#preference-description", Static).update(description)
-        models.add_options(Option(self.model_row(i, selected=i == current), id=id_) for i, id_ in enumerate(ids))
+        models.add_options(
+            Option(self.model_row(i, selected=i == current), id=id_) for i, id_ in enumerate(ids)
+        )
         models.highlighted = current if ids else None
         self._highlighted = models.highlighted
         self.query_one("#preference-effort").display = provider is not None
@@ -166,20 +171,20 @@ class PreferencePicker(Vertical, can_focus=True):
         )
         self.query_one("#preference-effort").styles.margin = (0, 0) if compact else (1, 0)
         help_text = (
-            "Enter default · s session · Esc cancel"
+            tr(self, "ui.preference.help_short")
             if self.app.size.width < 64
-            else "Enter to save as default · s for this session only · Esc to cancel"
+            else tr(self, "ui.preference.help")
         )
         if self.request is not None and self.request.kind == "effort":
-            help_text = "←/→ to adjust · " + help_text
+            help_text = tr(self, "ui.preference.adjust") + help_text
             self.query_one("#preference-effort").display = True
         elif self.provider is None:
-            help_text = "Enter models · Esc cancel"
+            help_text = tr(self, "ui.preference.provider_help")
         else:
             help_text = (
-                "Enter save · s session · ⌫ back · Esc"
+                tr(self, "ui.preference.model_help_short")
                 if self.app.size.width < 64
-                else "Enter save · s session · Backspace back · Esc cancel"
+                else tr(self, "ui.preference.model_help")
             )
         self.query_one("#preference-help", Static).update(help_text)
 
@@ -202,12 +207,17 @@ class PreferencePicker(Vertical, can_focus=True):
             return
         if self.request.kind == "model":
             label = Text.assemble(
-                (f"◯ {self.effort.capitalize()} effort", "#7C3AED"), ("  ←/→ to adjust", "dim")
+                (tr(self, "ui.preference.effort_label", effort=self.effort.capitalize()), "#7C3AED"),
+                (tr(self, "ui.preference.adjust_label"), "dim"),
             )
         else:
             width = max(24, self.content_size.width - 2)
             positions = [round(i * (width - 6) / 4) for i in range(5)]
-            title = "Faster" + " " * max(1, width - 13) + "Smarter"
+            title = (
+                tr(self, "ui.preference.faster")
+                + " " * max(1, width - 13)
+                + tr(self, "ui.preference.smarter")
+            )
             bar = ["─"] * width
             selected = EFFORT_LEVELS.index(self.effort)
             for i, position in enumerate(positions):
@@ -225,9 +235,11 @@ class PreferencePicker(Vertical, can_focus=True):
         models = self.query_one("#preference-models", OptionList)
         selected = (models.highlighted + 1) if models.highlighted is not None else 0
         count = len(self.providers) if self.provider is None else len(self.visible_models)
-        noun = "providers" if self.provider is None else "models"
+        noun = (
+            tr(self, "ui.preference.providers") if self.provider is None else tr(self, "ui.preference.models")
+        )
         self.query_one("#preference-more", Static).update(
-            f"{selected} / {count} {noun} · ↑/↓ to choose"
+            tr(self, "ui.preference.count", selected=selected, count=count, noun=noun)
         )
 
     def model_row(self, index: int, *, selected: bool) -> Table | Text:
@@ -235,7 +247,8 @@ class PreferencePicker(Vertical, can_focus=True):
             name = self.providers[index]
             count = sum(provider_name(model.spec.split("/", 1)[0]) == name for model in self.request.models)
             label = Text(f"{'›' if selected else ' '} {index + 1}. {name}")
-            label.append(f"  {count} {'model' if count == 1 else 'models'}", style="dim")
+            count_key = "ui.preference.model_count_one" if count == 1 else "ui.preference.model_count"
+            label.append(tr(self, count_key, count=count), style="dim")
             return label
         model = self.visible_models[index]
         label = Text(f"{'›' if selected else ' '} {index + 1}. {model.label}")

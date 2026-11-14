@@ -44,7 +44,7 @@ PARAMETER_ALIASES = {
 
 
 # Each retirement is scoped to the reviewed baseline and original module.
-# Coverage and rationale: docs/testing/test-retirements.md. These are not aliases:
+# Coverage and rationale: docs/en/development/test-retirements.md. These are not aliases:
 # the removed test stays visible and its retained coverage must pass in both runs.
 APPROVED_RETIREMENTS = {
     "0ffc23707de6e87a579a46a8f027679c253b78dc": {

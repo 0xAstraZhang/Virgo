@@ -61,10 +61,17 @@ class Team:
         member = self.members.get(sender)
         owner = member.accounting_store if member is not None else None
         if member is not None:
-            evidence = ([member.error_details] if member.error_details is not None else []) + member.related_errors
+            evidence = (
+                [member.error_details] if member.error_details is not None else []
+            ) + member.related_errors
             self.session.retain_diagnostics(owner, evidence)
         try:
-            self.session.notify(f"[Team] {sender}: {text}", mode="steer", source="team", store=owner)
+            self.session.notify(
+                self.session.t("features.team.notification", sender=sender, text=text),
+                mode="steer",
+                source="team",
+                store=owner,
+            )
         except Exception as error:
             if member is not None:
                 self._report(member, error, phase="team.notify")
@@ -79,7 +86,9 @@ class Team:
         if member.runtime is not None:
             details = member.runtime.report_error(error, phase=phase, context=context)
         else:
-            details = self.session.report_error(error, phase=phase, context=context, store=member.accounting_store)
+            details = self.session.report_error(
+                error, phase=phase, context=context, store=member.accounting_store
+            )
         if member.error_details is None:
             member.error_details = details
         elif details["error_id"] != member.error_details["error_id"] and all(
@@ -98,7 +107,10 @@ class Team:
     def deliver(self, m: Teammate, item: dict) -> None:
         if m.state == "working" and item.get("type") == "message":
             m.runtime.agent.steer(
-                UserMessage(f"[Message from {item['from']}]\n{item['content']}", kind="notification")
+                UserMessage(
+                    self.session.t("features.team.message", sender=item["from"], content=item["content"]),
+                    kind="notification",
+                )
             )
         else:
             m.inbox.put(item)
@@ -107,9 +119,9 @@ class Team:
         sender = "lead" if sender == "main" else sender
         if to in ("lead", "main"):
             if sender == "lead":
-                return "You are the lead."
+                return self.session.t("features.team.you_lead")
             self.to_lead(sender, content)
-            return "Sent to lead."
+            return self.session.t("features.team.sent_lead")
         targets = (
             [m for m in self.members.values() if m.state != "stopped" and m.name != sender]
             if to in ("*", "all")
@@ -118,35 +130,45 @@ class Team:
         if not targets:
             m = self.members.get(to)
             if m is None or m.state == "stopped":
-                return f"No active teammate {to!r}. Active: {', '.join(self.active_names()) or 'none'}"
+                return self.session.t(
+                    "features.team.unknown_active",
+                    name=to,
+                    active=", ".join(self.active_names()) or self.session.t("features.team.none"),
+                )
             targets = [m]
         for m in targets:
             self.deliver(m, {"type": "message", "from": sender, "content": content})
-        return f"Sent to {', '.join(m.name for m in targets)}."
+        return self.session.t("features.team.sent", recipients=", ".join(m.name for m in targets))
 
     def active_names(self) -> list[str]:
         return [m.name for m in self.members.values() if m.state != "stopped"]
 
     # -- lifecycle ---------------------------------------------------------------
-    def spawn(self, name: str, role: str, prompt: str, plan_first: bool, worktree: bool, review_parent=None) -> Teammate:
+    def spawn(
+        self, name: str, role: str, prompt: str, plan_first: bool, worktree: bool, review_parent=None
+    ) -> Teammate:
         if review_parent is None:
             with self.session._lock:
                 review_parent = self.session.main.review_source
         review_parent.root.entries()
         if not NAME_RE.match(name) or name.lower() in RESERVED:
-            raise ValueError("name must be 1-32 letters/digits/-/_ and not lead/main/all")
+            raise ValueError(self.session.t("features.team.invalid_name"))
         with self._lock:
             if name in self.members and self.members[name].state != "stopped":
-                raise ValueError(f"teammate {name} already exists")
+                raise ValueError(self.session.t("features.team.exists", name=name))
             cwd = self.session.cwd
             wt = None
             if worktree:
                 wt = make_worktree(
-                    self.session.cwd, self.session.paths.project / "worktrees" / name, f"team/{name}"
+                    self.session.cwd,
+                    self.session.paths.project / "worktrees" / name,
+                    f"team/{name}",
+                    self.session.t,
                 )
                 cwd = wt
-            m = Teammate(name, role, cwd, plan_first=plan_first, worktree=wt,
-                         accounting_store=review_parent.root)
+            m = Teammate(
+                name, role, cwd, plan_first=plan_first, worktree=wt, accounting_store=review_parent.root
+            )
             self.members[name] = m
         perms = self.session.services.get("permissions")
         lead_store = review_parent.store if review_parent is not None else self.session.store
@@ -206,7 +228,7 @@ class Team:
             kind = item.get("type")
             if kind == "shutdown_request":
                 m.stop = True
-                self._notify(m, f"acknowledged shutdown request {item['request_id']} and is stopping.")
+                self._notify(m, self.session.t("features.team.stopping", id=item["request_id"]))
                 self.requests.get(item["request_id"], {})["status"] = "done"
                 return []
             if kind == "plan_response":
@@ -217,20 +239,28 @@ class Team:
                         perms.set_agent_mode(m.name, None)
                     out.append(
                         UserMessage(
-                            f"[Lead] Your plan was approved. {item.get('feedback') or ''}\nProceed with the implementation.",
+                            self.session.t(
+                                "features.team.approved_notice", feedback=item.get("feedback") or ""
+                            ),
                             kind="notification",
                         )
                     )
                 else:
                     out.append(
                         UserMessage(
-                            f"[Lead] Your plan was rejected: {item.get('feedback') or 'no reason given'}\nRevise it and call submit_plan again.",
+                            self.session.t(
+                                "features.team.rejected_notice",
+                                feedback=item.get("feedback") or self.session.t("features.team.no_reason"),
+                            ),
                             kind="notification",
                         )
                     )
             elif kind == "message":
                 out.append(
-                    UserMessage(f"[Message from {item['from']}]\n{item['content']}", kind="notification")
+                    UserMessage(
+                        self.session.t("features.team.message", sender=item["from"], content=item["content"]),
+                        kind="notification",
+                    )
                 )
 
     def _loop(self, m: Teammate, prompt: str) -> None:
@@ -255,26 +285,46 @@ class Team:
                 # Messages steered in after the agent's last queue check would
                 # otherwise wait for an unrelated future turn.
                 pending = m.runtime.agent.drain_queues()
-                last = next((message for message in reversed(m.runtime.messages)
-                             if isinstance(message, AssistantMessage)), None)
+                last = next(
+                    (
+                        message
+                        for message in reversed(m.runtime.messages)
+                        if isinstance(message, AssistantMessage)
+                    ),
+                    None,
+                )
                 if last is not None and last.stop_reason == "error":
-                    details = self._report(m, last.error_details or last.error_message or "Teammate request failed.",
-                                           phase="team.model")
-                    self._notify(m, f"(turn failed)\n{error_summary(details)}")
+                    details = self._report(
+                        m,
+                        last.error_details or last.error_message or "Teammate request failed.",
+                        phase="team.model",
+                    )
+                    self._notify(
+                        m,
+                        self.session.t(
+                            "features.team.turn_failed", error=error_summary(details, t=self.session.t)
+                        ),
+                    )
                 else:
                     text = m.runtime.agent.last_text.strip()
                     if text:
-                        self._notify(m, f"(turn finished)\n{text[:3000]}")
+                        self._notify(m, self.session.t("features.team.turn_finished", text=text[:3000]))
         except Exception as e:  # noqa: BLE001
             details = self._report(m, e, phase="team.loop")
-            self._notify(m, f"crashed: {error_summary(details)}")
+            self._notify(
+                m, self.session.t("features.team.crashed", error=error_summary(details, t=self.session.t))
+            )
         finally:
             m.state = "stopped"
             if tasks is not None:
                 try:
                     released = tasks.release(m.name)
                     if released:
-                        self._notify(m, "released unfinished task(s) " + ", ".join(f"#{t.id}" for t in released))
+                        self._notify(
+                            m,
+                            self.session.t("features.team.released")
+                            + ", ".join(f"#{t.id}" for t in released),
+                        )
                 except Exception as error:
                     self._report(m, error, phase="team.cleanup")
             perms = self.session.services.get("permissions")
@@ -287,7 +337,7 @@ class Team:
     def request_stop(self, name: str, force: bool = False) -> str:
         m = self.members.get(name)
         if m is None or m.state == "stopped":
-            return f"No active teammate {name!r}."
+            return self.session.t("features.team.unknown", name=name)
         rid = f"req{next(self._ids)}"
         self.requests[rid] = {"type": "shutdown", "to": name, "status": "pending"}
         m.inbox.put({"type": "shutdown_request", "request_id": rid})
@@ -295,59 +345,76 @@ class Team:
             m.stop = True
             if m.runtime is not None:
                 m.runtime.agent.abort()
-        return f"Shutdown requested ({rid}); {name} will stop after its current turn."
+        return self.session.t("features.team.stop_requested", id=rid, name=name)
 
     def submit_plan(self, name: str, plan: str) -> str:
         m = self.members.get(name)
         if m is None:
-            return "Only teammates can submit plans."
+            return self.session.t("features.team.only_teammates")
         rid = f"req{next(self._ids)}"
         self.requests[rid] = {"type": "plan", "from": name, "status": "pending", "plan": plan}
         m.awaiting_plan = rid
         self.to_lead(
             name,
-            f"requests plan approval ({rid}):\n{plan}\n\nReview with team_review(request_id='{rid}', approve=..., feedback=...).",
+            self.session.t("features.team.plan_request", id=rid, plan=plan),
         )
-        return f"Plan submitted as {rid}. End your turn now; you will be told when the lead decides."
+        return self.session.t("features.team.plan_submitted", id=rid)
 
     def review(self, rid: str, approve: bool, feedback: str = "") -> str:
         req = self.requests.get(rid)
         if not req or req["type"] != "plan":
-            return f"No plan request {rid}."
+            return self.session.t("features.team.plan_missing", id=rid)
         if req["status"] != "pending":
-            return f"{rid} was already {req['status']}."
+            return self.session.t(
+                "features.team.plan_already",
+                id=rid,
+                status=self.session.t("features.team.state." + req["status"]),
+            )
         m = self.members.get(req["from"])
         if m is None or m.state == "stopped" or m.awaiting_plan != rid:
             req["status"] = "stale"
-            return f"{rid} is stale (the teammate stopped or submitted a newer plan)."
+            return self.session.t("features.team.plan_stale", id=rid)
         req["status"] = "approved" if approve else "rejected"
         m.inbox.put({"type": "plan_response", "request_id": rid, "approve": approve, "feedback": feedback})
-        return f"Plan {rid} {req['status']}."
+        return self.session.t(
+            "features.team.plan_result", id=rid, status=self.session.t("features.team.state." + req["status"])
+        )
 
     def status(self) -> str:
         if not self.members:
-            return "(no teammates)"
+            return self.session.t("features.team.empty")
         lines = []
         for m in self.members.values():
-            extra = " (awaiting plan approval)" if m.awaiting_plan else ""
+            extra = self.session.t("features.team.awaiting") if m.awaiting_plan else ""
             lines.append(
-                f"{m.name} [{m.state}]{extra} — {m.role}"
-                + (f" — worktree {m.worktree}" if m.worktree else "")
-                + (f" — error {m.error_details['error_id']}" if m.error_details else "")
+                f"{m.name} [{self.session.t('features.team.state.' + m.state)}]{extra} — {m.role}"
+                + (self.session.t("features.team.worktree", path=m.worktree) if m.worktree else "")
+                + (
+                    self.session.t("features.team.error", id=m.error_details["error_id"])
+                    if m.error_details
+                    else ""
+                )
             )
         return "\n".join(lines)
 
     def errors(self) -> list[dict]:
-        return [error for member in self.members.values()
-                for error in ([member.error_details] if member.error_details else []) + member.related_errors]
+        return [
+            error
+            for member in self.members.values()
+            for error in ([member.error_details] if member.error_details else []) + member.related_errors
+        ]
 
 
-def make_worktree(repo: Path, path: Path, branch: str) -> Path:
+def make_worktree(repo: Path, path: Path, branch: str, t=None) -> Path:
+    from ..i18n import Translator
+
+    t = t or Translator()
+
     def git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
 
     if git("rev-parse", "--verify", "--quiet", "HEAD").returncode != 0:
-        raise ValueError("worktrees need a git repository with at least one commit")
+        raise ValueError(t("features.team.worktree_git"))
     if path.exists():
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -358,7 +425,7 @@ def make_worktree(repo: Path, path: Path, branch: str) -> Path:
         else git("worktree", "add", "-b", branch, str(path))
     )
     if p.returncode != 0:
-        raise ValueError(f"git worktree add failed: {p.stderr.strip()}")
+        raise ValueError(t("features.team.worktree_failed", error=p.stderr.strip()))
     return path
 
 
@@ -379,10 +446,7 @@ def setup(api: ExtensionAPI) -> None:
         except ValueError as e:
             details = getattr(e, "_virgo_error_details", None)
             return ToolResult.error(str(e), details={"error": details} if details is not None else None)
-        return ToolResult.text(
-            f"Spawned teammate {m.name} ({m.role}) in {m.cwd}. It works in the background and reports with "
-            "team messages; you will be notified."
-        )
+        return ToolResult.text(ctx.t("features.team.spawned", name=m.name, role=m.role, cwd=m.cwd))
 
     def message(args: dict, ctx: ToolContext) -> ToolResult:
         return ToolResult.text(team.send(ctx.agent, args["to"], args["content"]))
@@ -418,6 +482,7 @@ def setup(api: ExtensionAPI) -> None:
             ),
             spawn,
             read_only=True,
+            i18n_key="tools.team_spawn",
         ),
         roles=("main",),
     )
@@ -429,6 +494,7 @@ def setup(api: ExtensionAPI) -> None:
             obj({"to": s, "content": s}, ["to", "content"]),
             message,
             read_only=True,
+            i18n_key="tools.team_message",
         ),
         roles=("main", "teammate"),
     )
@@ -439,6 +505,7 @@ def setup(api: ExtensionAPI) -> None:
             obj({}, []),
             lambda a, c: ToolResult.text(team.status(), details={"related_errors": team.errors()}),
             read_only=True,
+            i18n_key="tools.team_status",
         ),
         roles=("main",),
     )
@@ -449,6 +516,7 @@ def setup(api: ExtensionAPI) -> None:
             obj({"name": s, "force": {"type": "boolean"}}, ["name"]),
             stop,
             read_only=True,
+            i18n_key="tools.team_stop",
         ),
         roles=("main",),
     )
@@ -459,6 +527,7 @@ def setup(api: ExtensionAPI) -> None:
             obj({"request_id": s, "approve": {"type": "boolean"}, "feedback": s}, ["request_id", "approve"]),
             review,
             read_only=True,
+            i18n_key="tools.team_review",
         ),
         roles=("main",),
     )
@@ -469,11 +538,16 @@ def setup(api: ExtensionAPI) -> None:
             obj({"plan": s}, ["plan"]),
             submit,
             read_only=True,
+            i18n_key="tools.submit_plan",
         ),
         roles=("teammate",),
     )
     api.register_command(
-        "team", lambda sess, a: api.ui.print(team.status()), "show teammates", concurrent=True
+        "team",
+        lambda sess, a: api.ui.print(team.status()),
+        "show teammates",
+        concurrent=True,
+        description_key="features.commands.team",
     )
     api.on(
         "pending_work", lambda sess: any(m.state in ("starting", "working") for m in team.members.values())

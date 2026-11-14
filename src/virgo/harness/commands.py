@@ -10,11 +10,13 @@ from __future__ import annotations
 import re
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
+
+from ..i18n import Translator, available_languages
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -27,12 +29,15 @@ class Command:
     description: str = ""
     source: str = "builtin"
     argument_hint: str = field(default="", kw_only=True)
+    description_key: str = field(default="", kw_only=True)
+    argument_hint_key: str = field(default="", kw_only=True)
     concurrent: bool = False  # only reads state: may run while the agent is busy
 
 
 class Commands:
-    def __init__(self):
+    def __init__(self, translator: Translator | None = None):
         self._cmds: dict[str, Command] = {}
+        self.translator = translator or Translator()
 
     def register(
         self,
@@ -43,14 +48,30 @@ class Commands:
         concurrent: bool = False,
         *,
         argument_hint: str = "",
+        description_key: str = "",
+        argument_hint_key: str = "",
     ) -> None:
-        self._cmds[name.lstrip("/")] = Command(name.lstrip("/"), fn, description, source, concurrent, argument_hint=argument_hint)
+        self._cmds[name.lstrip("/")] = Command(
+            name.lstrip("/"), fn, description, source, concurrent, argument_hint=argument_hint,
+            description_key=description_key, argument_hint_key=argument_hint_key,
+        )
+
+    def _localized(self, command: Command) -> Command:
+        fields = {}
+        for attr in ("description", "argument_hint"):
+            key = getattr(command, f"{attr}_key")
+            if key and self.translator.has(key):
+                fields[attr] = self.translator(key)
+        if command.name == "language" and command.source == "builtin":
+            fields["argument_hint"] = "[" + "|".join(pack.name for pack in available_languages()) + "]"
+        return replace(command, **fields) if fields else command
 
     def get(self, name: str) -> Command | None:
-        return self._cmds.get(name)
+        command = self._cmds.get(name)
+        return self._localized(command) if command is not None else None
 
     def all(self) -> list[Command]:
-        return sorted(self._cmds.values(), key=lambda c: c.name)
+        return [self._localized(command) for command in sorted(self._cmds.values(), key=lambda c: c.name)]
 
     def names(self) -> list[str]:
         return sorted(self._cmds)
@@ -118,18 +139,19 @@ def expand_template(body: str, args: str) -> str:
 def register_builtins(session: AgentSession) -> None:
     from ..diagnostics import error_summary
     from .auth_commands import login, logout
+    from .language_commands import configure_language
     from .preferences import configure_preference
     from .shell_commands import configure_shell
 
     c = session.commands
 
     def help_(s, args):
-        lines = ["Commands:"]
+        lines = [s.t("harness.help.title")]
         for cmd in s.commands.all():
             lines.append(f"  /{cmd.name:<14} {cmd.description}")
         for name, (desc, _) in sorted(s.templates.items()):
-            lines.append(f"  /{name:<14} {desc or '(prompt template)'}")
-        lines.append("Type text to chat. While the agent works, typed lines are sent as steering messages.")
+            lines.append(f"  /{name:<14} {desc or s.t('harness.help.template')}")
+        lines.append(s.t("harness.help.instructions"))
         s.ui.print("\n".join(lines))
 
     def model(s, args):
@@ -138,7 +160,7 @@ def register_builtins(session: AgentSession) -> None:
             return
         if args.strip():
             s.set_model(args.strip())
-        s.ui.print(f"model: {s.model.spec}  (small: {s.small_model.spec}, effort: {s.effort})")
+        s.ui.print(s.t("harness.model.current", model=s.model.spec, small=s.small_model.spec, effort=s.effort))
 
     def effort(s, args):
         a = args.strip()
@@ -147,26 +169,26 @@ def register_builtins(session: AgentSession) -> None:
             return
         if a:
             if a not in ("low", "medium", "high", "xhigh", "max"):
-                s.ui.print("effort must be one of: low, medium, high, xhigh, max", "error")
+                s.ui.print(s.t("harness.effort.invalid"), "error")
                 return
             s.effort = a
-        s.ui.print(f"effort: {s.effort}")
+        s.ui.print(s.t("harness.effort.current", effort=s.effort))
 
     def compact(s, args):
         r = s.compact(focus=args.strip() or None)
         s.ui.print(
-            "Nothing to compact." if r is None else f"Compacted: ~{r['tokens_before']} tokens summarized."
+            s.t("harness.compact.empty") if r is None else s.t("harness.compact.done", tokens=r["tokens_before"])
         )
 
     def new(s, args):
         s.new_session()
-        s.ui.print("Started a new session.")
+        s.ui.print(s.t("harness.session.new"))
 
     def session_(s, args):
         st = s.store
         s.ui.print(
-            f"session {st.id}\nfile: {st.path or '(not persisted)'}\nmessages: {len(s.main.messages)}"
-            f"\nestimated context tokens: {s.context_tokens()}"
+            s.t("harness.session.info", id=st.id, path=st.path or s.t("harness.session.memory"),
+                messages=len(s.main.messages), tokens=s.context_tokens())
         )
 
     def diagnostics(s, args):
@@ -175,48 +197,50 @@ def register_builtins(session: AgentSession) -> None:
         if query:
             matches = [record for record in records if record["error_id"].startswith(query)]
             if len(matches) != 1:
-                s.ui.command_result("Error ID is unknown or ambiguous. Use /diagnostics to list recent errors.")
+                s.ui.command_result(s.t("harness.diagnostics.unknown"))
                 return
             import json
 
             s.ui.command_result(json.dumps(matches[0], ensure_ascii=False, indent=2))
         else:
-            lines = [f"Diagnostics: {s.diagnostics.path}"]
-            lines.extend(error_summary(record) for record in records[-10:])
+            lines = [s.t("harness.diagnostics.path", path=s.diagnostics.path)]
+            lines.extend(error_summary(record, t=s.t) for record in records[-10:])
             if not records:
-                lines.append("No errors recorded in this instance. The log is created on the first error.")
-            lines.append("Use /diagnostics <error-id> for full details (last 100 errors in this instance).")
+                lines.append(s.t("harness.diagnostics.empty"))
+            lines.append(s.t("harness.diagnostics.help"))
             s.ui.command_result("\n".join(lines))
 
     def sessions(s, args):
         items = s.list_sessions()
         if not items:
-            s.ui.print("No saved sessions for this directory.")
+            s.ui.print(s.t("harness.sessions.empty"))
             return
         listed = items[:20]
         choice = args.strip()
         if not choice:
             for i, it in enumerate(listed, 1):
-                s.ui.print(f"  {i:>2}. {it['title']}  ({it['messages']} msgs)  {it['path'].name}")
-            s.ui.print("Use /sessions <number> to open one.")
+                s.ui.print(s.t("harness.sessions.row", index=i, title=it["title"], messages=it["messages"], file=it["path"].name))
+            s.ui.print(s.t("harness.sessions.help"))
             return
         # Only listed numbers are valid: 0 or a negative value must not index from the end.
         if not choice.isdecimal() or not 1 <= int(choice) <= len(listed):
-            s.ui.print("Invalid session number.", "error")
+            s.ui.print(s.t("harness.sessions.invalid"), "error")
             return
         it = listed[int(choice) - 1]
         s.open_session(it["path"])
-        s.ui.print(f"Resumed {it['path'].name} ({len(s.main.messages)} messages).")
+        s.ui.print(s.t("harness.sessions.resumed", file=it["path"].name, messages=len(s.main.messages)))
 
-    c.register("help", help_, "show commands", concurrent=True)
-    c.register("login", login, "sign in to an account or configure an API (/login [auth|api] [provider])", argument_hint="[auth|api] [provider]")
-    c.register("logout", logout, "remove saved credentials (/logout [provider|all])", argument_hint="[provider|all]")
-    c.register("shell", configure_shell, "detect and choose the command shell (/shell [name|path|auto])", argument_hint="[name|path|auto]")
-    c.register("model", model, "show or switch the model (/model provider/id)", argument_hint="[provider/id]")
-    c.register("effort", effort, "show or set reasoning effort", argument_hint="[low|medium|high|xhigh|max]")
-    c.register("compact", compact, "summarize older context now (/compact [focus])", argument_hint="[focus]")
-    c.register("new", new, "start a fresh session")
-    c.register("session", session_, "show session info", concurrent=True)
-    c.register("diagnostics", diagnostics, "show diagnostic log and recent errors", concurrent=True,
-               argument_hint="[error-id]")
-    c.register("sessions", sessions, "browse saved sessions (g toggles workspace grouping in fullscreen)", argument_hint="[number]")
+    c.register("help", help_, "show commands", description_key="harness.commands.help", concurrent=True)
+    c.register("language", configure_language, "show or change the interface language",
+               description_key="language.description", argument_hint="[中文|English]")
+    c.register("login", login, "sign in to an account or configure an API (/login [auth|api] [provider])", description_key="harness.commands.login", argument_hint="[auth|api] [provider]")
+    c.register("logout", logout, "remove saved credentials (/logout [provider|all])", description_key="harness.commands.logout", argument_hint="[provider|all]")
+    c.register("shell", configure_shell, "detect and choose the command shell (/shell [name|path|auto])", description_key="harness.commands.shell", argument_hint="[name|path|auto]", argument_hint_key="harness.hints.shell")
+    c.register("model", model, "show or switch the model (/model provider/id)", description_key="harness.commands.model", argument_hint="[provider/id]")
+    c.register("effort", effort, "show or set reasoning effort", description_key="harness.commands.effort", argument_hint="[low|medium|high|xhigh|max]")
+    c.register("compact", compact, "summarize older context now (/compact [focus])", description_key="harness.commands.compact", argument_hint="[focus]", argument_hint_key="harness.hints.compact")
+    c.register("new", new, "start a fresh session", description_key="harness.commands.new")
+    c.register("session", session_, "show session info", description_key="harness.commands.session", concurrent=True)
+    c.register("diagnostics", diagnostics, "show diagnostic log and recent errors", description_key="harness.commands.diagnostics", concurrent=True,
+               argument_hint="[error-id]", argument_hint_key="harness.hints.diagnostics")
+    c.register("sessions", sessions, "browse saved sessions (g toggles workspace grouping in fullscreen)", description_key="harness.commands.sessions", argument_hint="[number]", argument_hint_key="harness.hints.sessions")

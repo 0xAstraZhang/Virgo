@@ -91,7 +91,9 @@ class Subagents:
         owner = review_parent.root
         at = agent_type if isinstance(agent_type, AgentType) else self.types.get(agent_type)
         if at is None:
-            return ToolResult.error(f"Unknown agent type {agent_type!r}. Available: {', '.join(self.types)}")
+            return ToolResult.error(
+                session.t("features.agent.unknown_type", type=agent_type, available=", ".join(self.types))
+            )
         pool = session.tools_for("subagent")
         tools = [t for t in pool if t.name in at.tools] if at.tools is not None else None
         name = f"{at.name}#{next(_counter)}"
@@ -116,16 +118,23 @@ class Subagents:
             )
             rt.agent.prompt([UserMessage(prompt)])
         except Exception as error:
-            failure = session.report_error(error, phase="subagent.run", store=owner,
-                                           context={"agent": name, "role": "subagent"})
+            failure = session.report_error(
+                error, phase="subagent.run", store=owner, context={"agent": name, "role": "subagent"}
+            )
         finally:
             if perms and at.permission:
                 try:
                     perms.set_agent_mode(name, None)
                 except Exception as error:
-                    cleanup_error = session.report_error(error, phase="subagent.cleanup", store=owner,
-                                                         context={"agent": name, "role": "subagent"})
-        last = next((m for m in reversed(rt.messages) if isinstance(m, AssistantMessage)), None) if rt else None
+                    cleanup_error = session.report_error(
+                        error,
+                        phase="subagent.cleanup",
+                        store=owner,
+                        context={"agent": name, "role": "subagent"},
+                    )
+        last = (
+            next((m for m in reversed(rt.messages) if isinstance(m, AssistantMessage)), None) if rt else None
+        )
         details = {"agent": name}
         if failure is not None:
             details["error"] = failure
@@ -137,38 +146,59 @@ class Subagents:
             details["related_errors"] = [cleanup_error]
 
         def failed(text):
-            results = [message for message in rt.messages if isinstance(message, ToolResultMessage)] if rt else []
+            results = (
+                [message for message in rt.messages if isinstance(message, ToolResultMessage)] if rt else []
+            )
             if results:
-                recent = [{"tool": message.tool_name, "call_id": message.tool_call_id,
-                           "outcome": "returned_error" if message.is_error else "returned_success"}
-                          for message in results[-8:]]
+                recent = [
+                    {
+                        "tool": message.tool_name,
+                        "call_id": message.tool_call_id,
+                        "outcome": "returned_error" if message.is_error else "returned_success",
+                    }
+                    for message in results[-8:]
+                ]
                 details["child_progress"] = {
                     "completed_calls": sum(not message.is_error for message in results),
-                    "recent_tools": recent, "side_effects": "unknown",
+                    "recent_tools": recent,
+                    "side_effects": "unknown",
                 }
-                text += (
-                    f"\nThe child returned {len(results)} tool result(s) before stopping; "
-                    "earlier actions may already have taken effect. Recent results:\n" +
-                    "\n".join(f"- {item['tool']} ({item['call_id']}): {item['outcome']}" for item in recent)
+                text += session.t("features.agent.progress", count=len(results)) + "\n".join(
+                    f"- {item['tool']} ({item['call_id']}): {item['outcome']}" for item in recent
                 )
             return ToolResult.error(text, details=details)
 
         if failure is not None or cleanup_error is not None:
-            return failed(f"Sub-agent failed: {details['error']['message']}")
+            return failed(session.t("features.agent.failed", error=details["error"]["message"]))
         cancelled = (signal is not None and signal.is_set()) or (rt is not None and rt.agent.signal.is_set())
         if cancelled and (last is None or last.stop_reason not in ("error", "refusal")):
-            return ToolResult.error("Sub-agent was aborted.", details={**details, "status": "aborted"})
+            return ToolResult.error(
+                session.t("features.agent.aborted"),
+                details={**details, "status": "aborted", "cancelled": True},
+            )
         if last is None:
-            details["error"] = session.report_error("The sub-agent produced no answer.", phase="subagent.result",
-                                                   store=owner, context={"agent": name, "role": "subagent"})
-            return failed("The sub-agent produced no answer.")
+            details["error"] = session.report_error(
+                session.t("features.agent.no_answer"),
+                phase="subagent.result",
+                store=owner,
+                context={"agent": name, "role": "subagent"},
+            )
+            return failed(session.t("features.agent.no_answer"))
         if last.stop_reason in ("error", "refusal"):
-            return failed(f"Sub-agent failed: {safe_text(last.error_message or last.text() or last.stop_reason)}")
+            return failed(
+                session.t(
+                    "features.agent.failed",
+                    error=safe_text(last.error_message or last.text() or last.stop_reason),
+                )
+            )
         if last.stop_reason == "aborted":
-            return ToolResult.error("Sub-agent was aborted.", details={**details, "status": "aborted"})
+            return ToolResult.error(
+                session.t("features.agent.aborted"),
+                details={**details, "status": "aborted", "cancelled": True},
+            )
         turns = sum(isinstance(m, AssistantMessage) for m in rt.messages)
         return ToolResult.text(
-            last.text() or "(no text in final answer)", details={"agent": name, "turns": turns}
+            last.text() or session.t("features.agent.no_text"), details={"agent": name, "turns": turns}
         )
 
 
@@ -184,13 +214,14 @@ def setup(api: ExtensionAPI) -> None:
         review_parent.root.entries()
         if args.get("background") and jobs is not None:
             job = jobs.start_callable(
-                f"agent: {desc}", lambda signal: subs.run(prompt, type_name, desc, signal, ctx.cwd, review_parent),
-                store=review_parent.root, agent=ctx.agent, tool_call_id=ctx.call_id, cwd=ctx.cwd,
+                f"agent: {desc}",
+                lambda signal: subs.run(prompt, type_name, desc, signal, ctx.cwd, review_parent),
+                store=review_parent.root,
+                agent=ctx.agent,
+                tool_call_id=ctx.call_id,
+                cwd=ctx.cwd,
             )
-            return ToolResult.text(
-                f"Started background agent {job.id} ({desc}). You will be notified when it finishes; "
-                "use job_output to read its result."
-            )
+            return ToolResult.text(ctx.t("features.agent.background", id=job.id, description=desc))
         return subs.run(prompt, type_name, desc, ctx.signal, ctx.cwd, review_parent)
 
     api.register_tool(
@@ -218,6 +249,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             execute=execute,
             read_only=True,  # its own tool calls are permission-checked individually
+            i18n_key="tools.agent",
         ),
         roles=("main",),
     )
@@ -225,7 +257,10 @@ def setup(api: ExtensionAPI) -> None:
     def section(role: str):
         if role != "main":
             return None
-        lines = [f"- {t.name}: {t.description}" for t in subs.types.values()]
+        lines = [
+            f"- {t.name}: {api.session.t('features.agent.type.' + t.name) if t.source == 'builtin' else t.description}"
+            for t in subs.types.values()
+        ]
         return "<agent_types>\nSub-agent types for the agent tool:\n" + "\n".join(lines) + "\n</agent_types>"
 
     api.add_system_section("agent_types", section, order=30)

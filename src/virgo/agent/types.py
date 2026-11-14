@@ -10,6 +10,7 @@ from typing import Any
 
 from ..ai.stream import EventStream, StreamEvent
 from ..ai.types import ImageContent, TextContent, ToolCall, ToolSpec
+from ..i18n import Translator, localize_tool
 
 
 @dataclass
@@ -39,6 +40,10 @@ class ToolContext:
     agent: str = "main"
     on_update: Callable[[str], None] | None = None
     review_source: Any = None  # Bound task/runtime source, never the currently selected chat.
+    translator: Translator | None = field(default=None, kw_only=True)
+
+    def t(self, key: str, /, **values: object) -> str:
+        return (self.translator or Translator())(key, **values)
 
 
 @dataclass
@@ -51,9 +56,12 @@ class AgentTool:
     read_only: bool = False  # does not modify the user's files or system
     sequential: bool = False  # force the whole batch to run sequentially
     prepare_arguments: Callable[[dict], dict] | None = None
+    i18n_key: str = field(default="", kw_only=True)
+    i18n_values: dict | Callable[[Translator], dict] = field(default_factory=dict, kw_only=True)
 
-    def spec(self) -> ToolSpec:
-        return ToolSpec(self.name, self.description, self.parameters)
+    def spec(self, translator: Translator | None = None) -> ToolSpec:
+        tool = localize_tool(self, translator) if translator is not None else self
+        return ToolSpec(tool.name, tool.description, tool.parameters)
 
 
 @dataclass
@@ -111,6 +119,10 @@ class AgentConfig:
     on_error: Callable[[dict], None] | None = None
     # Pure, optional view applied once before a result enters model history.
     project_tool_result: Callable[[ToolCall, ToolResult], list] | None = None
+    translator: Translator | None = field(default=None, kw_only=True)
+
+    def t(self, key: str, /, **values: object) -> str:
+        return (self.translator or Translator())(key, **values)
 
 
 def image_result(data: str, mime: str, note: str = "") -> ToolResult:

@@ -77,7 +77,13 @@ def setup(api: ExtensionAPI) -> None:
         if sk is None:
             from ..harness.extensions import Handled
 
-            return Handled(f"Unknown skill {head!r}. Available: {', '.join(skills) or 'none'}")
+            return Handled(
+                api.session.t(
+                    "features.skills.unknown",
+                    name=head,
+                    available=", ".join(skills) or api.session.t("features.skills.none"),
+                )
+            )
         block = f'<skill name="{sk.name}" location="{sk.path}">\nPaths are relative to {sk.path.parent}.\n\n{sk.body()}\n</skill>'
         return f"{block}\n\n{args.strip()}" if args.strip() else block
 
@@ -85,8 +91,14 @@ def setup(api: ExtensionAPI) -> None:
 
     def cmd(session, args):
         if not skills:
-            api.ui.print("No skills found. Add <dir>/SKILL.md under ~/.virgo/skills or .virgo/skills.")
+            api.ui.print(api.session.t("features.skills.empty"))
             return
         api.ui.print("\n".join(f"  {s.name:<20} {s.description}" for s in skills.values()))
 
-    api.register_command("skills", cmd, "list available skills (/skill:name to use one)", concurrent=True)
+    api.register_command(
+        "skills",
+        cmd,
+        "list available skills (/skill:name to use one)",
+        concurrent=True,
+        description_key="features.commands.skills",
+    )

@@ -66,25 +66,27 @@ def _display(p: Path, cwd: Path) -> str:
 def _read(args: dict, ctx: ToolContext) -> ToolResult:
     p = resolve(args["path"], ctx.cwd)
     if not p.exists():
-        return ToolResult.error(f"File not found: {args['path']}")
+        return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
     if p.is_dir():
-        return ToolResult.error(f"{args['path']} is a directory. Use glob to list files.")
+        return ToolResult.error(ctx.t("tools.fs.is_directory", path=args["path"]))
     if p.suffix.lower() in IMAGE_TYPES:
         data = p.read_bytes()
         if len(data) > 5 * 1024 * 1024:
-            return ToolResult.error("Image is larger than 5MB.")
+            return ToolResult.error(ctx.t("tools.fs.large_image"))
         return image_result(
-            base64.b64encode(data).decode(), IMAGE_TYPES[p.suffix.lower()], f"Image: {p.name}"
+            base64.b64encode(data).decode(),
+            IMAGE_TYPES[p.suffix.lower()],
+            ctx.t("tools.fs.image", name=p.name),
         )
     raw = p.read_bytes()
     if b"\x00" in raw[:8192]:
-        return ToolResult.error(f"{args['path']} looks like a binary file.")
+        return ToolResult.error(ctx.t("tools.fs.binary", path=args["path"]))
     lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
     total = len(lines)
     offset = max(1, int(args.get("offset") or 1))
     limit = int(args.get("limit") or MAX_LINES)
     if offset > max(total, 1):
-        return ToolResult.error(f"offset {offset} is past the end of the file ({total} lines).")
+        return ToolResult.error(ctx.t("tools.fs.offset", offset=offset, total=total))
     chunk, size = [], 0
     for line in lines[offset - 1 : offset - 1 + min(limit, MAX_LINES)]:
         size += len(line.encode("utf-8"))
@@ -94,14 +96,14 @@ def _read(args: dict, ctx: ToolContext) -> ToolResult:
     if not chunk and lines:
         n = offset
         return ToolResult.error(
-            f"Line {n} exceeds {MAX_BYTES // 1024}KB. Use bash: sed -n '{n}p' {args['path']} | head -c 20000"
+            ctx.t("tools.fs.long_line", line=n, max_kb=MAX_BYTES // 1024, path=args["path"])
         )
     text = "".join(chunk)
     end = offset + len(chunk) - 1
     if end < total:
-        text += f"\n[Showing lines {offset}-{end} of {total}. Use offset={end + 1} to continue.]"
+        text += ctx.t("tools.fs.page", offset=offset, end=end, total=total, next_offset=end + 1)
     return ToolResult.text(
-        text or "(empty file)", details={"path": str(p), "lines": [offset, end], "total": total}
+        text or ctx.t("tools.fs.empty"), details={"path": str(p), "lines": [offset, end], "total": total}
     )
 
 
@@ -126,6 +128,7 @@ READ = AgentTool(
     },
     execute=_read,
     read_only=True,
+    i18n_key="tools.read",
 )
 
 # ---------------------------------------------------------------------------
@@ -140,9 +143,10 @@ def _write(args: dict, ctx: ToolContext) -> ToolResult:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(args["content"], encoding="utf-8")
     n = len(args["content"].encode("utf-8"))
-    verb = "Overwrote" if existed else "Created"
+    verb = ctx.t("tools.fs.overwrite") if existed else ctx.t("tools.fs.create")
     return ToolResult.text(
-        f"{verb} {_display(p, ctx.cwd)} ({n} bytes).", details={"path": str(p), "created": not existed}
+        ctx.t("tools.fs.written", verb=verb, path=_display(p, ctx.cwd), size=n),
+        details={"path": str(p), "created": not existed},
     )
 
 
@@ -156,6 +160,7 @@ WRITE = AgentTool(
         "required": ["path", "content"],
     },
     execute=_write,
+    i18n_key="tools.write",
 )
 
 # ---------------------------------------------------------------------------
@@ -251,7 +256,7 @@ def _prepare_edit(args: dict) -> dict:
 def _edit(args: dict, ctx: ToolContext) -> ToolResult:
     p = resolve(args["path"], ctx.cwd)
     if not p.is_file():
-        return ToolResult.error(f"File not found: {args['path']}")
+        return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
     with file_lock(p):
         raw = p.read_bytes().decode("utf-8")  # no newline translation: CRLF is preserved explicitly
         bom = raw.startswith(BOM)
@@ -264,27 +269,24 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
             old = (e.get("old_text") or "").replace("\r\n", "\n")
             new = (e.get("new_text") or "").replace("\r\n", "\n")
             if not old:
-                return ToolResult.error(f"edit {n}: old_text must not be empty.")
+                return ToolResult.error(ctx.t("tools.fs.edit_empty", index=n))
             found, _how = _locate(content, old)
             if not found:
-                return ToolResult.error(
-                    f"edit {n}: old_text not found in {args['path']}. Read the file again and copy the exact text."
-                )
+                return ToolResult.error(ctx.t("tools.fs.edit_missing", index=n, path=args["path"]))
             if len(found) > 1:
                 return ToolResult.error(
-                    f"edit {n}: old_text matches {len(found)} places in {args['path']}. "
-                    "Include more surrounding lines so it is unique."
+                    ctx.t("tools.fs.edit_ambiguous", index=n, count=len(found), path=args["path"])
                 )
             spans.append((found[0][0], found[0][1], new))
         spans.sort()
         for (_, e1, _), (s2, _, _) in zip(spans, spans[1:], strict=False):
             if s2 < e1:
-                return ToolResult.error("Edits overlap; merge them into a single edit.")
+                return ToolResult.error(ctx.t("tools.fs.edit_overlap"))
         updated = content
         for s, e, new in reversed(spans):
             updated = updated[:s] + new + updated[e:]
         if updated == content:
-            return ToolResult.error("No changes: new_text is identical to old_text.")
+            return ToolResult.error(ctx.t("tools.fs.edit_unchanged"))
         final = updated.replace("\n", "\r\n") if crlf else updated
         p.write_text((BOM if bom else "") + final, encoding="utf-8", newline="")
     diff = "".join(
@@ -297,7 +299,12 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
         )
     )
     return ToolResult.text(
-        f"Edited {_display(p, ctx.cwd)} ({len(spans)} replacement{'s' if len(spans) > 1 else ''}).",
+        ctx.t(
+            "tools.fs.edited",
+            path=_display(p, ctx.cwd),
+            count=len(spans),
+            replacements=ctx.t("tools.fs.replacements" if len(spans) > 1 else "tools.fs.replacement"),
+        ),
         details={"path": str(p), "diff": diff[:20000]},
     )
 
@@ -328,6 +335,7 @@ EDIT = AgentTool(
     },
     execute=_edit,
     prepare_arguments=_prepare_edit,
+    i18n_key="tools.edit",
 )
 
 # ---------------------------------------------------------------------------
@@ -368,7 +376,7 @@ def _match_segments(parts: list[str], segments: list[str]) -> bool:
 def _glob(args: dict, ctx: ToolContext) -> ToolResult:
     base = resolve(args.get("path") or ".", ctx.cwd)
     if not base.is_dir():
-        return ToolResult.error(f"Not a directory: {args.get('path')}")
+        return ToolResult.error(ctx.t("tools.fs.not_directory", path=args.get("path")))
     pattern = args["pattern"]
     hits = []
     for f in _walk(base):
@@ -378,9 +386,9 @@ def _glob(args: dict, ctx: ToolContext) -> ToolResult:
     limit = 200
     lines = [_display(f, ctx.cwd) for f in hits[:limit]]
     if not lines:
-        return ToolResult.text("(no matches)")
+        return ToolResult.text(ctx.t("tools.fs.no_matches"))
     if len(hits) > limit:
-        lines.append(f"... {len(hits) - limit} more; narrow the pattern")
+        lines.append(ctx.t("tools.fs.more_matches", count=len(hits) - limit))
     return ToolResult.text("\n".join(lines), details={"count": len(hits)})
 
 
@@ -399,6 +407,7 @@ GLOB = AgentTool(
     },
     execute=_glob,
     read_only=True,
+    i18n_key="tools.glob",
 )
 
 
@@ -407,7 +416,7 @@ def _grep(args: dict, ctx: ToolContext) -> ToolResult:
     try:
         rx = re.compile(args["pattern"], flags)
     except re.error as e:
-        return ToolResult.error(f"Invalid regex: {e}")
+        return ToolResult.error(ctx.t("tools.fs.regex", error=e))
     base = resolve(args.get("path") or ".", ctx.cwd)
     files = [base] if base.is_file() else _walk(base)
     gl = args.get("glob")
@@ -444,9 +453,9 @@ def _grep(args: dict, ctx: ToolContext) -> ToolResult:
         if matches > limit:
             break
     if not out:
-        return ToolResult.text("(no matches)")
+        return ToolResult.text(ctx.t("tools.fs.no_matches"))
     if matches > limit:
-        out.append(f"... stopped after {limit} matches; refine the pattern or raise limit")
+        out.append(ctx.t("tools.fs.match_limit", limit=limit))
     return ToolResult.text("\n".join(out), details={"matches": min(matches, limit)})
 
 
@@ -468,4 +477,5 @@ GREP = AgentTool(
     },
     execute=_grep,
     read_only=True,
+    i18n_key="tools.grep",
 )

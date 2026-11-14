@@ -29,6 +29,7 @@ from ...ai.types import (
     message_from_dict,
 )
 from ...ai.web import native_event
+from ..i18n import tr, translator_for
 from .folding import Foldable, FoldHeader
 
 # Saved runs replayed at a time: when a session opens, then whenever the
@@ -95,8 +96,11 @@ class EventView(Foldable):
         self._preview_width = -1
         self._visible_preview = Text()
         self.header = FoldHeader("", markup=False)
-        self.output = (Markdown(text, classes="output", open_links=False) if kind == "text"
-                       else Static("", classes="output", markup=False))
+        self.output = (
+            Markdown(text, classes="output", open_links=False)
+            if kind == "text"
+            else Static("", classes="output", markup=False)
+        )
         self._rendered_text = text
         self.set_class(kind == "text", "message")
         self.set_class(kind in ("tool_call", "tool_result"), "tool")
@@ -118,9 +122,19 @@ class EventView(Foldable):
         if self.tool_name:
             title.append(self.tool_name, style="bold")
         else:
-            title.append({"thinking": "Thought", "text": "Message", "sources": "Sources"}.get(
-                self.kind, self.kind.title()
-            ))
+            key = {
+                "thinking": "thought",
+                "text": "message",
+                "sources": "sources",
+                "context": "context",
+                "retry": "retry_title",
+                "image": "image_title",
+                "notice": "notice",
+                "user": "user",
+                "notification": "notification",
+                "summary": "summary",
+            }.get(self.kind)
+            title.append(tr(self, "ui.event." + key) if key else self.kind.title())
         if self.activity_phase:
             title.append(f" · {self.activity_frame} {self.activity_phase}…", style="bold")
         if not (self.expanded and self.kind in TOOL_KINDS):
@@ -149,7 +163,7 @@ class EventView(Foldable):
             self.display = bool(self.text.strip()) or bool(self.activity_phase)
         self.render_header()
         if self.expanded:
-            update_static(self.output, self.text or "(no output)")
+            update_static(self.output, self.text or tr(self, "ui.no_output"))
         self.output.display = self.expanded
 
     def render_header(self) -> None:
@@ -294,10 +308,15 @@ class AssistantView(Vertical):
         await self._show_answer("".join(event.text for event in events))
         error = ""
         if message.stop_reason in ("error", "refusal", "aborted", "length"):
-            error = message.error_message or {
-                "error": "The model request failed.", "refusal": "The model declined this request.",
-                "aborted": "Interrupted.", "length": "The response reached its output limit.",
-            }[message.stop_reason]
+            error = (
+                message.error_message
+                or {
+                    "error": tr(self, "ui.event.request_failed"),
+                    "refusal": tr(self, "ui.event.refused"),
+                    "aborted": tr(self, "ui.event.interrupted"),
+                    "length": tr(self, "ui.event.limit"),
+                }[message.stop_reason]
+            )
         self.error.update(error)
         self.error.display = bool(error)
         self.error.set_class(message.stop_reason == "aborted", "aborted")
@@ -489,6 +508,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
     async def _assistant(self, agent: str = "main") -> AssistantView:
         if self._run is None:
             self._run = AssistantView(show_thinking=self.show_thinking)
+            self._run.translator = translator_for(self)
             self.active[agent] = self.activity_card = self._run
             await self._place(self._run)
         self.active[agent] = self.activity_card = self._run
@@ -521,6 +541,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self._running = False
 
     async def _append(self, row: EventView) -> EventView:
+        row.translator = translator_for(self)
         card = await self._assistant(row.agent)
         await card.append_event(row)
         return row
@@ -549,7 +570,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         text = message.text()
         for block in message.content:
             if isinstance(block, ImageContent):
-                text += f"\n[image: {block.mime_type}]"
+                text += tr(self, "ui.event.image_line", type=block.mime_type)
         row.set_result(text, is_error=message.is_error, details=message.details)
         if call := self._current_calls.get(key):
             call.status = row.status
@@ -597,7 +618,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             elif isinstance(block, RawContent):
                 row = await self._native(agent, block, row, index)
             elif isinstance(block, ImageContent) and row is None:
-                row = await self._append(EventView("image", f"[image: {block.mime_type}]", agent=agent))
+                row = await self._append(
+                    EventView("image", tr(self, "ui.event.image", type=block.mime_type), agent=agent)
+                )
             if row is not None:
                 blocks[index] = row
         card.thinking = "\n\n".join(e.text for e in card.events if e.kind == "thinking")
@@ -606,8 +629,12 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             card.clear_event_activity(agent)
             self._streaming.pop(agent, None)
             terminal_error = message.stop_reason in ("error", "refusal", "aborted", "length")
-            if agent == "main" and (terminal_error or (not message.tool_calls() and message.stop_reason != "pause_turn")):
-                last_tool = max((i for i, row in blocks.items() if row.kind in ("tool_call", "tool_result")), default=-1)
+            if agent == "main" and (
+                terminal_error or (not message.tool_calls() and message.stop_reason != "pause_turn")
+            ):
+                last_tool = max(
+                    (i for i, row in blocks.items() if row.kind in ("tool_call", "tool_result")), default=-1
+                )
                 text_rows = [(i, row) for i, row in blocks.items() if row.kind == "text"]
                 answer = [row for i, row in text_rows if i > last_tool]
                 # Native search can append its final answer to a text block
@@ -632,7 +659,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             terminal = data.get("status") in ("completed", "failed", "incomplete")
             if row.status not in ("done", "error"):
                 row.status = "done" if terminal else "running"
-                self._set_event_activity(row, "" if terminal else "Running")
+                self._set_event_activity(row, "" if terminal else tr(self, "ui.event.running"))
             if kind == "web_search_call" and data.get("status") in ("completed", "failed", "incomplete"):
                 key = (agent, call_id)
                 result = self._native_results.get(key)
@@ -645,10 +672,16 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 self._set_event_activity(row, "")
         elif kind.endswith("_tool_result"):
             if row is None:
-                row = await self._append(ToolView(agent, data.get("tool_use_id", ""), kind.removesuffix("_tool_result"), result=True))
+                row = await self._append(
+                    ToolView(
+                        agent, data.get("tool_use_id", ""), kind.removesuffix("_tool_result"), result=True
+                    )
+                )
             info = native_event(data)
             content = info["result"] if info else data.get("content", {})
-            row.set_result(_json(content), is_error=isinstance(content, dict) and "error" in content.get("type", ""))
+            row.set_result(
+                _json(content), is_error=isinstance(content, dict) and "error" in content.get("type", "")
+            )
             if call := self._current_calls.get((agent, data.get("tool_use_id", ""))):
                 call.status = row.status
                 self._set_event_activity(call, "")
@@ -667,11 +700,17 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             return
         row = self._blocks.get(agent, {}).get(stream.index)
         previous = self._streaming.get(agent)
-        if previous is not None and (previous is not row or stream.type.endswith("_end") or stream.type in ("done", "error")):
+        if previous is not None and (
+            previous is not row or stream.type.endswith("_end") or stream.type in ("done", "error")
+        ):
             self._set_event_activity(previous, "")
             self._streaming.pop(agent, None)
         if row is not None and stream.type.endswith(("_start", "_delta")):
-            phase = {"thinking": "Thinking", "text": "Responding", "tool_call": "Preparing"}.get(row.kind)
+            phase = {
+                "thinking": tr(self, "ui.event.thinking"),
+                "text": tr(self, "ui.event.responding"),
+                "tool_call": tr(self, "ui.event.preparing"),
+            }.get(row.kind)
             if phase:
                 self._streaming[agent] = row
                 self._set_event_activity(row, phase)
@@ -688,7 +727,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             await self._snapshot(ev.agent, message)
         elif ev.type == "message_update" and ev.stream_event is not None:
             if ev.stream_event.type == "retry":
-                await self._append(EventView("retry", "Retrying model request", agent=ev.agent))
+                await self._append(EventView("retry", tr(self, "ui.event.retry"), agent=ev.agent))
                 await self._start_message(ev.agent)
             else:
                 await self._snapshot(ev.agent, ev.stream_event.partial)
@@ -703,19 +742,25 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         elif ev.type == "tool_execution_start" and ev.tool_call_id:
             row = await self._tool(ev.agent, ev.tool_call_id, ev.tool_name or "tool", ev.args)
             row.status = "running"
-            self._set_event_activity(row, "Running")
+            self._set_event_activity(row, tr(self, "ui.event.running"))
         elif ev.type == "tool_execution_end" and ev.tool_call_id:
-            await self._result(ev.agent, ToolResultMessage(
-                ev.tool_call_id, ev.tool_name or "tool", ev.result.content if ev.result else [],
-                details=ev.result.details if ev.result else None, is_error=ev.is_error,
-            ))
+            await self._result(
+                ev.agent,
+                ToolResultMessage(
+                    ev.tool_call_id,
+                    ev.tool_name or "tool",
+                    ev.result.content if ev.result else [],
+                    details=ev.result.details if ev.result else None,
+                    is_error=ev.is_error,
+                ),
+            )
 
     async def _user_message(self, agent: str, message: UserMessage) -> None:
         text = message.text()
         if isinstance(message.content, list):
             for image in message.content:
                 if isinstance(image, ImageContent):
-                    text += f"\n[image: {image.mime_type}]"
+                    text += tr(self, "ui.event.image_line", type=image.mime_type)
         if agent != "main" or message.kind or (self._running and self._run and self._run.has_prompt):
             await self._append(EventView(message.kind or "user", text, agent=agent))
             return
@@ -758,6 +803,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         run here is unaffected when older runs are replayed later.
         """
         replay = Transcript()
+        replay.translator = translator_for(self)
         replay.show_thinking = self.show_thinking
         replay._staged = []
         await replay._replay(entries, has_run_boundaries)
@@ -780,11 +826,13 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 try:
                     message = message_from_dict(entry["message"])
                 except (KeyError, TypeError, ValueError):
-                    await self.add_notice("Unable to display a saved message.", "warn")
+                    await self.add_notice(tr(self, "ui.event.saved_message_error"), "warn")
                     continue
                 if (
-                    not has_run_boundaries and isinstance(message, UserMessage)
-                    and message.kind == "notification" and self._run is not None
+                    not has_run_boundaries
+                    and isinstance(message, UserMessage)
+                    and message.kind == "notification"
+                    and self._run is not None
                     and (self._run.answer_events or self._run.error.display)
                 ):
                     # Older stores have no run markers. A notification after a
@@ -806,18 +854,30 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     agent, kind = data.get("agent", "main"), data["stream_type"]
                     if kind == "retry":
                         partials.pop(agent, None)
-                        await self.consume(AgentEvent("message_update", agent=agent, stream_event=StreamEvent(kind, AssistantMessage())))
+                        await self.consume(
+                            AgentEvent(
+                                "message_update",
+                                agent=agent,
+                                stream_event=StreamEvent(kind, AssistantMessage()),
+                            )
+                        )
                         continue
                     index = data["index"]
                     if not isinstance(index, int) or not 0 <= index < 10000:
-                        raise ValueError("Invalid saved block index")
+                        raise ValueError(tr(self, "ui.event.saved_block_error"))
                     block = block_from_dict(data["block"])
                     partial = partials.setdefault(agent, AssistantMessage())
                     partial.content.extend([None] * max(0, index + 1 - len(partial.content)))
                     partial.content[index] = block
-                    await self.consume(AgentEvent("message_update", agent=agent, stream_event=StreamEvent(kind, partial, index=index)))
+                    await self.consume(
+                        AgentEvent(
+                            "message_update",
+                            agent=agent,
+                            stream_event=StreamEvent(kind, partial, index=index),
+                        )
+                    )
                 except (KeyError, TypeError, ValueError):
-                    await self.add_notice("Unable to display a saved stream event.", "warn")
+                    await self.add_notice(tr(self, "ui.event.saved_stream_error"), "warn")
             elif entry.get("type") == "custom" and entry.get("kind") == "transcript_tool_result":
                 data = entry.get("data", {})
                 try:
@@ -825,9 +885,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     if isinstance(message, ToolResultMessage):
                         await self._result(data.get("agent", "main"), message)
                 except (KeyError, TypeError, ValueError):
-                    await self.add_notice("Unable to display a saved tool event.", "warn")
+                    await self.add_notice(tr(self, "ui.event.saved_tool_error"), "warn")
             elif entry.get("type") == "compaction":
-                await self.add_notice("Earlier context compacted · full conversation retained", "dim")
+                await self.add_notice(tr(self, "ui.event.compacted"), "dim")
 
     async def add_notice(self, text: str, style: str | None = None) -> None:
         if self._run is not None:
@@ -836,7 +896,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             row.set_class(style == "error", "error")
             await self._append(row)
         else:
-            rich_style = {"error": "red", "warn": "yellow", "dim": "dim", "ok": "green", "bold": "bold"}.get(style, "")
+            rich_style = {"error": "red", "warn": "yellow", "dim": "dim", "ok": "green", "bold": "bold"}.get(
+                style, ""
+            )
             await self._place(Static(Text(text, style=rich_style), classes="notice"))
 
     def toggle_tools(self) -> None:

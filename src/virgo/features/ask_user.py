@@ -37,11 +37,14 @@ def _timeout(api: ExtensionAPI) -> float:
     return max(0.0, float(value))
 
 
-def _wait_text(seconds: float) -> str:
+def _wait_text(seconds: float, t=None) -> str:
+    from ..i18n import Translator
+
+    t = t or Translator()
     if seconds >= 60 and seconds % 60 == 0:
         n = int(seconds // 60)
-        return f"{n} minute{'s' if n != 1 else ''}"
-    return f"{seconds:g} seconds"
+        return t("features.ask_user.minute" if n == 1 else "features.ask_user.minutes", count=n)
+    return t("features.ask_user.seconds", seconds=seconds)
 
 
 def setup(api: ExtensionAPI) -> None:
@@ -66,35 +69,42 @@ def setup(api: ExtensionAPI) -> None:
             for o in args.get("options") or []
         ]
         if not question:
-            return ToolResult.error("question is empty")
+            return ToolResult.error(ctx.t("features.ask_user.empty"))
         if any(not o["label"] for o in options):
-            return ToolResult.error("every option needs a non-empty label")
+            return ToolResult.error(ctx.t("features.ask_user.empty_option"))
         ui = api.ui
         if not getattr(ui, "interactive", False):
-            return ToolResult.text(NO_USER, details={"question": question, "answered": False})
+            return ToolResult.text(
+                ctx.t("features.ask_user.no_user"), details={"question": question, "answered": False}
+            )
         timeout = _timeout(api) if state["unattended"] else None
         details: dict = {"question": question, "options": [o["label"] for o in options]}
 
         def declined() -> ToolResult:
             if ctx.signal.is_set():
                 return ToolResult.text(
-                    "The question was cancelled without an answer.",
-                    is_error=True, details={**details, "answered": False},
+                    ctx.t("features.ask_user.cancelled"),
+                    is_error=True,
+                    details={**details, "answered": False, "cancelled": True},
                 )
-            return ToolResult.text(DECLINED, details={**details, "answered": False})
+            return ToolResult.text(
+                ctx.t("features.ask_user.declined"), details={**details, "answered": False}
+            )
 
         def timed_out() -> ToolResult:
             return ToolResult.text(
-                f"The user did not answer within {_wait_text(timeout)}; the question was withdrawn.",
+                ctx.t("features.ask_user.timed_out", duration=_wait_text(timeout, ctx.t)),
                 details={**details, "answered": False, "timed_out": True},
             )
 
         if options:
             labels = []
             for i, o in enumerate(options):
-                label = f"{LETTERS[i]}. {o['label']}" + (" (recommended)" if i == 0 else "")
+                label = f"{LETTERS[i]}. {o['label']}" + (
+                    ctx.t("features.ask_user.recommended") if i == 0 else ""
+                )
                 labels.append(label + (f" — {o['description']}" if o["description"] else ""))
-            custom = f"{LETTERS[len(options)]}. Type my own answer"
+            custom = ctx.t("features.ask_user.custom", letter=LETTERS[len(options)])
             picked = ui.select(question, [*labels, custom], timeout=timeout)
             if picked is TIMED_OUT:
                 return timed_out()
@@ -104,8 +114,13 @@ def setup(api: ExtensionAPI) -> None:
             if picked != custom:
                 i = labels.index(picked)
                 return ToolResult.text(
-                    f"The user chose {LETTERS[i]}: {options[i]['label']}",
-                    details={**details, "answered": True, "choice": LETTERS[i], "answer": options[i]["label"]},
+                    ctx.t("features.ask_user.chose", letter=LETTERS[i], answer=options[i]["label"]),
+                    details={
+                        **details,
+                        "answered": True,
+                        "choice": LETTERS[i],
+                        "answer": options[i]["label"],
+                    },
                 )
             # The user is present once they picked the custom option: wait for them to type.
             timeout = None
@@ -117,7 +132,8 @@ def setup(api: ExtensionAPI) -> None:
             return declined()
         answer = answer.strip()
         return ToolResult.text(
-            f"The user answered: {answer}", details={**details, "answered": True, "answer": answer}
+            ctx.t("features.ask_user.answered", answer=answer),
+            details={**details, "answered": True, "answer": answer},
         )
 
     api.register_tool(
@@ -140,7 +156,11 @@ def setup(api: ExtensionAPI) -> None:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "label": {"type": "string", "minLength": 1, "description": "Short choice text"},
+                                "label": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Short choice text",
+                                },
                                 "description": {"type": "string", "description": "What choosing it means"},
                             },
                             "required": ["label"],
@@ -152,6 +172,7 @@ def setup(api: ExtensionAPI) -> None:
             execute=execute,
             read_only=True,
             sequential=True,
+            i18n_key="tools.ask_user",
         ),
         roles=("main",),
     )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..i18n import tr
+
 
 def run_fullscreen(session, ui, initial: str | None = None, pick_session: bool = False) -> int:
     import sys
@@ -17,4 +19,4 @@ def run_fullscreen(session, ui, initial: str | None = None, pick_session: bool =
         # The controller also releases approvals on exceptional exit.
         app.request_close()
         if not app.wait_closed(timeout=5):
-            print("virgo: terminal restored; a shutdown hook is still waiting.", file=sys.stderr)
+            print(tr(session, "ui.shutdown.waiting"), file=sys.stderr)

@@ -16,6 +16,7 @@ from textual.message import Message
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from ..i18n import tr
 from .bridge import InputRequest
 from .forms import MultilineInput
 from .transcript import update_static
@@ -40,7 +41,8 @@ class ScheduleRow:
         prefix = "› " if self.selected else "  "
         table.add_row(
             Text(prefix + " ".join(self.title.split()), no_wrap=True, overflow="ellipsis"),
-            Text(self.frequency), Text(self.next_run),
+            Text(self.frequency),
+            Text(self.next_run),
         )
         yield table
 
@@ -93,12 +95,19 @@ class ScheduleWorkspace(Vertical):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("定时任务", id="schedule-heading", markup=False)
+            yield Static(tr(self, "ui.schedule.title"), id="schedule-heading", markup=False)
             yield Static("", id="schedule-notice", markup=False)
             with Vertical(id="schedule-content"):
-                yield Static(ScheduleRow("标题", "执行频率", "下次执行时间"), id="schedule-columns")
+                yield Static(
+                    ScheduleRow(
+                        tr(self, "ui.schedule.column_title"),
+                        tr(self, "ui.schedule.column_frequency"),
+                        tr(self, "ui.schedule.column_next"),
+                    ),
+                    id="schedule-columns",
+                )
                 yield OptionList(id="schedule-list")
-                yield Static("暂无定时任务，按 n 新建任务。", id="schedule-empty", markup=False)
+                yield Static(tr(self, "ui.schedule.empty"), id="schedule-empty", markup=False)
                 with VerticalScroll(id="schedule-detail-scroll"):
                     yield Static("", id="schedule-details", markup=False)
                 yield OptionList(id="schedule-options")
@@ -112,7 +121,20 @@ class ScheduleWorkspace(Vertical):
         self._scroll_y = 0
         self.display = True
         self.query_one("#schedule-notice").display = False
+        self.refresh_language()
         self.resize_workspace()
+
+    def refresh_language(self) -> None:
+        self.query_one("#schedule-columns", Static).update(
+            ScheduleRow(
+                tr(self, "ui.schedule.column_title"),
+                tr(self, "ui.schedule.column_frequency"),
+                tr(self, "ui.schedule.column_next"),
+            )
+        )
+        self.query_one("#schedule-empty", Static).update(tr(self, "ui.schedule.empty"))
+        if self.request is None:
+            self.query_one("#schedule-heading", Static).update(tr(self, "ui.schedule.title"))
 
     def end(self) -> None:
         self.request = None
@@ -122,13 +144,18 @@ class ScheduleWorkspace(Vertical):
     def open(self, request: InputRequest) -> None:
         self.request = request
         for selector in (
-            "#schedule-columns", "#schedule-list", "#schedule-empty", "#schedule-detail-scroll",
-            "#schedule-options", "#schedule-value", "#schedule-multiline",
+            "#schedule-columns",
+            "#schedule-list",
+            "#schedule-empty",
+            "#schedule-detail-scroll",
+            "#schedule-options",
+            "#schedule-value",
+            "#schedule-multiline",
         ):
             self.query_one(selector).display = False
         if request.schedules is not None:
             self._open_list(request)
-            help_text = "↑↓ 选择   Enter 详情   n 新建   Esc 返回对话"
+            help_text = tr(self, "ui.schedule.list_hints")
         else:
             if request.details is not None:
                 self.query_one("#schedule-details", Static).update(Text(request.details))
@@ -140,19 +167,19 @@ class ScheduleWorkspace(Vertical):
                 choices.add_options(Option(Text(label), id=str(i)) for i, label in enumerate(request.options))
                 choices.highlighted = 0
                 choices.display = True
-                help_text = "↑↓ 选择   Enter 确认   Esc 返回"
+                help_text = tr(self, "ui.schedule.select_hints")
                 if request.details is not None:
-                    help_text += "   PgUp/PgDn 滚动正文"
+                    help_text += tr(self, "ui.schedule.details_hints")
             elif request.multiline:
                 field = self.query_one("#schedule-multiline", MultilineInput)
                 field.load_text(request.default)
                 field.display = True
-                help_text = "Enter 换行   Ctrl+S 确认   Esc 取消"
+                help_text = tr(self, "ui.schedule.multiline_hints")
             else:
                 field = self.query_one("#schedule-value", Input)
                 field.value = request.default
                 field.display = True
-                help_text = "Enter 确认   Esc 取消"
+                help_text = tr(self, "ui.schedule.input_hints")
         self.update_heading()
         self.query_one("#schedule-help", Static).update(Text(help_text))
         self.focus_control()
@@ -176,11 +203,15 @@ class ScheduleWorkspace(Vertical):
         self._selected_id = request.selected_schedule or self._selected_id
         ids = [row.id for row in rows]
         self._selected_index = (
-            ids.index(self._selected_id) if self._selected_id in ids else min(self._selected_index, max(0, len(rows) - 1))
+            ids.index(self._selected_id)
+            if self._selected_id in ids
+            else min(self._selected_index, max(0, len(rows) - 1))
         )
         self._selected_id = ids[self._selected_index] if ids else None
         choices.add_options(
-            Option(ScheduleRow(row.title, row.frequency, row.next_run, row.id == self._selected_id), id=row.id)
+            Option(
+                ScheduleRow(row.title, row.frequency, row.next_run, row.id == self._selected_id), id=row.id
+            )
             for row in rows
         )
         choices.highlighted = self._selected_index if rows else None
@@ -205,9 +236,13 @@ class ScheduleWorkspace(Vertical):
             self.focus()
             return
         selector = (
-            "#schedule-list" if self.request.schedules is not None else
-            "#schedule-options" if self.request.options is not None else
-            "#schedule-multiline" if self.request.multiline else "#schedule-value"
+            "#schedule-list"
+            if self.request.schedules is not None
+            else "#schedule-options"
+            if self.request.options is not None
+            else "#schedule-multiline"
+            if self.request.multiline
+            else "#schedule-value"
         )
         self.query_one(selector).focus()
 
@@ -255,7 +290,9 @@ class ScheduleWorkspace(Vertical):
         for key in (previous, self._selected_id):
             if key in ids:
                 row = ids[key]
-                choices.replace_option_prompt(key, ScheduleRow(row.title, row.frequency, row.next_run, key == self._selected_id))
+                choices.replace_option_prompt(
+                    key, ScheduleRow(row.title, row.frequency, row.next_run, key == self._selected_id)
+                )
 
     @on(OptionList.OptionSelected, "#schedule-options")
     def option_selected(self, event: OptionList.OptionSelected) -> None:

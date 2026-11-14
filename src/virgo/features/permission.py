@@ -31,7 +31,13 @@ from .permission_context import (
     review_workspace,
     source_for,
 )
-from .permission_scope import command_path_targets, command_review_reason, inside, is_read_only_command
+from .permission_scope import (
+    ReviewBoundary,
+    command_boundary,
+    command_path_targets,
+    inside,
+    is_read_only_command,
+)
 
 if TYPE_CHECKING:
     from ..harness.extensions import ExtensionAPI
@@ -80,10 +86,16 @@ def review_tool_call(session, ev: ToolCallEvent, boundary_reason: str) -> Review
     if review.error:
         return ReviewDecision("ask", review.error)
     msg = session.complete(
-        "permission", REVIEW_SYSTEM, review.payload, total_max_tokens=4096, effort=session.small_model_effort,
+        "permission",
+        REVIEW_SYSTEM,
+        review.payload,
+        total_max_tokens=4096,
+        effort=session.small_model_effort,
         signal=getattr(ev, "signal", None) or session.main.agent.signal,
-        agent=ev.agent, tool_call_id=ev.call_id,
-        accounting_store=review.store, call_metadata=review.audit,
+        agent=ev.agent,
+        tool_call_id=ev.call_id,
+        accounting_store=review.store,
+        call_metadata=review.audit,
     )
     if msg.stop_reason != "stop":
         if msg.stop_reason == "length":
@@ -106,31 +118,47 @@ def review_tool_call(session, ev: ToolCallEvent, boundary_reason: str) -> Review
         or not isinstance(verdict.get("reason"), str)
         or not verdict["reason"].strip()
         or not isinstance(verdict.get("evidence_ids"), list)
-        or any(not isinstance(item, str) or item not in review.evidence_ids for item in verdict["evidence_ids"])
+        or any(
+            not isinstance(item, str) or item not in review.evidence_ids for item in verdict["evidence_ids"]
+        )
     ):
         raise ReviewFailure("invalid-verdict")
     decision = ReviewDecision(
-        verdict["decision"], verdict["reason"].strip()[:1000], verdict["risk"], verdict["authorization"],
+        verdict["decision"],
+        verdict["reason"].strip()[:1000],
+        verdict["risk"],
+        verdict["authorization"],
         tuple(dict.fromkeys(verdict["evidence_ids"])),
     )
     if decision.decision == "allow":
         explicit_ids = set(review.audit.get("user_evidence_ids", [])) | set(
             review.audit.get("human_approval_evidence_ids", [])
         )
-        explicit = decision.authorization == "explicit" and bool(explicit_ids.intersection(decision.evidence_ids))
-        if (not review.audit.get("user_history_complete", False)
-                or decision.risk not in {"low", "medium"}
-                or decision.authorization not in {"explicit", "implicit"}
-                or (decision.authorization == "explicit" and not explicit)
-                or (decision.risk == "medium" and not explicit)):
+        explicit = decision.authorization == "explicit" and bool(
+            explicit_ids.intersection(decision.evidence_ids)
+        )
+        if (
+            not review.audit.get("user_history_complete", False)
+            or decision.risk not in {"low", "medium"}
+            or decision.authorization not in {"explicit", "implicit"}
+            or (decision.authorization == "explicit" and not explicit)
+            or (decision.risk == "medium" and not explicit)
+        ):
             decision = ReviewDecision(
-                "ask", "Automatic review did not establish sufficient risk and authorization evidence. " + decision.reason,
-                decision.risk, decision.authorization, decision.evidence_ids,
+                "ask",
+                "Automatic review did not establish sufficient risk and authorization evidence. "
+                + decision.reason,
+                decision.risk,
+                decision.authorization,
+                decision.evidence_ids,
             )
-    ev._review_audit.update({
-        "risk": decision.risk, "authorization": decision.authorization,
-        "evidence_ids": list(decision.evidence_ids),
-    })
+    ev._review_audit.update(
+        {
+            "risk": decision.risk,
+            "authorization": decision.authorization,
+            "evidence_ids": list(decision.evidence_ids),
+        }
+    )
     return decision
 
 
@@ -199,15 +227,26 @@ class Permissions:
             target = command_path_targets(ev.args.get("command", ""), ev.cwd)
         shell = getattr(ev.tool, "shell", None)
         return json.dumps(
-            [review_context_key(self.session, ev), ev.tool_name, str(ev.cwd.resolve()), ev.args, target,
-             shell.environment() if shell else None],
-            sort_keys=True, ensure_ascii=False,
+            [
+                review_context_key(self.session, ev),
+                ev.tool_name,
+                str(ev.cwd.resolve()),
+                ev.args,
+                target,
+                shell.environment() if shell else None,
+            ],
+            sort_keys=True,
+            ensure_ascii=False,
         )
 
     def _snapshot(self, ev: ToolCallEvent) -> tuple:
         rules = self.session.settings.get("permissions", {})
-        return (self.mode_for(ev.agent), self._approval_key(ev), json.dumps(rules, sort_keys=True),
-                self._requires_denial_review(ev))
+        return (
+            self.mode_for(ev.agent),
+            self._approval_key(ev),
+            json.dumps(rules, sort_keys=True),
+            self._requires_denial_review(ev),
+        )
 
     def _requires_denial_review(self, ev: ToolCallEvent) -> bool:
         # A changed command spelling must not turn a denied effect into a static
@@ -222,23 +261,27 @@ class Permissions:
             return False
         records = source.records()
         last_user = max((i for i, record in enumerate(records) if record["role"] == "user"), default=-1)
-        return any(record["role"] == "approval" and record.get("decision") == "deny" and (
-                       record.get("source") in {"auto-review", "previous-denial"}
-                       or (record.get("source") == "human" and record.get("reason") == "Denied by user.")
-                   )
-                   for record in records[last_user + 1:])
+        return any(
+            record["role"] == "approval"
+            and record.get("decision") == "deny"
+            and (
+                record.get("source") in {"auto-review", "previous-denial"}
+                or (record.get("source") == "human" and record.get("reason") == "Denied by user.")
+            )
+            for record in records[last_user + 1 :]
+        )
 
-    def _boundary_reason(self, ev: ToolCallEvent) -> str:
+    def _boundary(self, ev: ToolCallEvent) -> ReviewBoundary | None:
         workspace = review_workspace(self.session, ev)
         if ev.tool_name == "powershell":
-            return "PowerShell scripts require review; POSIX command boundary checks do not apply"
+            return ReviewBoundary("features.permission.scope.powershell")
         if ev.tool_name == "bash":
-            return command_review_reason(ev.args.get("command", ""), ev.cwd, workspace)
+            return command_boundary(ev.args.get("command", ""), ev.cwd, workspace)
         if ev.tool_name in {"read", "write", "edit", "glob", "grep"}:
             path = ev.args.get("path", ".")
             if not isinstance(path, str) or not inside(path, ev.cwd, workspace):
                 target = (ev.cwd / os.path.expanduser(path)).resolve() if isinstance(path, str) else path
-                return f"action accesses a path outside the workspace: {target}"
+                return ReviewBoundary("features.permission.scope.action_path", {"path": target})
             if ev.tool_name in {"glob", "grep"}:
                 root = (ev.cwd / os.path.expanduser(path)).resolve()
                 try:
@@ -259,21 +302,24 @@ class Permissions:
                                 if not glob_match(displayed.as_posix(), pattern):
                                     continue
                             if candidate.is_symlink() and not inside(str(candidate), ev.cwd, workspace):
-                                return f"search can follow a link outside the workspace: {candidate} -> {candidate.resolve()}"
+                                return ReviewBoundary(
+                                    "features.permission.scope.search_link",
+                                    {"path": candidate, "target": candidate.resolve()},
+                                )
                 except (OSError, RuntimeError):
-                    return "search paths could not be verified"
-            return ""
+                    return ReviewBoundary("features.permission.scope.search_paths")
+            return None
         if ev.tool_name.startswith("mcp__"):
-            return "external service access needs review"
+            return ReviewBoundary("features.permission.scope.external")
         if ev.tool_name == "web_fetch":
-            return "web fetch sends URLs to external services and retrieves untrusted page content"
+            return ReviewBoundary("features.permission.scope.fetch")
         if ev.tool_name == "web_search":
-            return "web search sends queries to an external search service"
+            return ReviewBoundary("features.permission.scope.search")
         if ev.tool_name in {"workflow", "memory"}:
-            return "action can execute code or modify data outside the workspace"
+            return ReviewBoundary("features.permission.scope.code")
         if ev.tool and ev.tool.read_only:
-            return ""
-        return "tool effects cannot be confined to the workspace without review"
+            return None
+        return ReviewBoundary("features.permission.scope.unknown_tool")
 
     def decide(self, ev: ToolCallEvent) -> tuple[str, str]:
         s = self.session.settings
@@ -283,15 +329,18 @@ class Permissions:
         ev._review_audit = {}
 
         def finish(decision, reason, source, *, audit_reason=None):
-            self._record(ev, mode, decision, audit_reason if audit_reason is not None else reason,
-                         source, started)
+            self._record(
+                ev, mode, decision, audit_reason if audit_reason is not None else reason, source, started
+            )
             return decision, reason
 
         if mode == "accept-all":
             return finish("allow", "", "accept-all")
         for rule in s.get("permissions.deny", []) or []:
             if rule_matches(rule, ev):
-                return finish("deny", f"Denied by permission rule {rule!r}.", "deny-rule")
+                return finish(
+                    "deny", self.session.t("features.permission.denied_rule", rule=rule), "deny-rule"
+                )
         if mode == "plan":
             read_only = plan_tool_allowed(ev.tool)
             if ev.tool_name == "bash":
@@ -300,7 +349,7 @@ class Permissions:
             elif ev.tool_name == "team_spawn" and ev.args.get("worktree"):
                 read_only = False
             if not read_only:
-                return finish("deny", "Plan mode is read-only: investigate and plan, but do not modify anything yet.", "plan")
+                return finish("deny", self.session.t("features.permission.plan_readonly"), "plan")
             return finish("allow", "", "plan")
         action_key = self._approval_key(ev)
         if action_key in self.review_denials:
@@ -311,11 +360,15 @@ class Permissions:
         for rule in s.get("permissions.allow", []) or []:
             if not denial_review and rule_matches(rule, ev):
                 return finish("allow", "", "allow-rule", audit_reason=rule)
-        boundary_reason = self._boundary_reason(ev)
-        if denial_review:
-            boundary_reason = "An earlier action was denied in this task; verify this action is a materially safer alternative. " + boundary_reason
-        if not boundary_reason:
+        boundary = self._boundary(ev)
+        if boundary is None and not denial_review:
             return finish("allow", "", "workspace")
+        boundary_reason = boundary.describe(self.session.t) if boundary is not None else ""
+        if denial_review:
+            boundary_reason = (
+                ReviewBoundary("features.permission.scope.previous_denial").describe(self.session.t)
+                + boundary_reason
+            )
         source = "auto-review"
         try:
             verdict = review_tool_call(self.session, ev, boundary_reason)
@@ -323,13 +376,17 @@ class Permissions:
         except Exception as error:  # noqa: BLE001 - failed reviews must go to a person, never fail open
             signal = getattr(ev, "signal", None) or self.session.main.agent.signal
             if signal.is_set():
-                return finish("deny", "Permission review was interrupted.", "interrupted")
-            failure = error.kind if isinstance(error, ReviewFailure) else (
-                "timeout" if isinstance(error, TimeoutError) else "request-error"
+                return finish("deny", self.session.t("features.permission.interrupted"), "interrupted")
+            failure = (
+                error.kind
+                if isinstance(error, ReviewFailure)
+                else ("timeout" if isinstance(error, TimeoutError) else "request-error")
             )
             ev._review_audit["failure_kind"] = failure
             decision = "ask"
-            reason = f"automatic review could not complete ({failure}); this is not a safety denial: {boundary_reason}"
+            reason = self.session.t(
+                "features.permission.review_failed", failure=failure, reason=boundary_reason
+            )
             source = "review-error"
         if snapshot != self._snapshot(ev):
             finish("superseded", reason, source)
@@ -337,33 +394,41 @@ class Permissions:
         if decision == "allow":
             return finish("allow", "", source, audit_reason=reason)
         if decision == "deny":
-            reason = (
-                f"Automatic review denied this action: {reason}. Do not pursue the same outcome by "
-                "workaround or indirect execution. Use a materially safer alternative or ask the user."
-            )
+            reason = self.session.t("features.permission.denied", reason=reason)
             self.review_denials[self._approval_key(ev)] = reason
             return finish("deny", reason, source)
-        return finish("ask", f"automatic review requires approval: {reason}", source)
+        return finish("ask", self.session.t("features.permission.approval_required", reason=reason), source)
 
     def _record(self, ev, mode, decision, reason, source, started):
         # Link to the existing tool call without duplicating command bodies or file contents.
         arguments = json.dumps(ev.args, sort_keys=True, ensure_ascii=False, default=str)
         store = review_store(self.session, ev)
-        store.append("custom", kind="permission_decision", data={
-            "tool_call_id": ev.call_id, "tool": ev.tool_name, "agent": ev.agent,
-            "cwd": str(ev.cwd), "mode": mode, "source": source, "decision": decision,
-            "reason": reason, "arguments_sha256": hashlib.sha256(arguments.encode()).hexdigest(),
-            "model": getattr(ev, "_review_model", self.session.small_model.spec)
-            if source in {"auto-review", "review-error", "interrupted"} else None,
-            "duration": round(time.monotonic() - started, 6),
-            "review_context": getattr(ev, "_review_audit", {}),
-        })
+        store.append(
+            "custom",
+            kind="permission_decision",
+            data={
+                "tool_call_id": ev.call_id,
+                "tool": ev.tool_name,
+                "agent": ev.agent,
+                "cwd": str(ev.cwd),
+                "mode": mode,
+                "source": source,
+                "decision": decision,
+                "reason": reason,
+                "arguments_sha256": hashlib.sha256(arguments.encode()).hexdigest(),
+                "model": getattr(ev, "_review_model", self.session.small_model.spec)
+                if source in {"auto-review", "review-error", "interrupted"}
+                else None,
+                "duration": round(time.monotonic() - started, 6),
+                "review_context": getattr(ev, "_review_audit", {}),
+            },
+        )
 
     def remember(self, ev: ToolCallEvent) -> str:
         if ev.tool_name == "powershell" or (
             ev.tool_name == "bash" and command_path_targets(ev.args.get("command", ""), ev.cwd) is None
         ):
-            self.session.ui.print("Allowed once; dynamic shell paths cannot be remembered for this session.", "warn")
+            self.session.ui.print(self.session.t("features.permission.cannot_remember"), "warn")
             return ""
         self.session_approvals.add(self._approval_key(ev))
         rule = describe(ev)
@@ -372,14 +437,16 @@ class Permissions:
 
     def _allow(self, ev: ToolCallEvent):
         ev._permission_snapshot = self._snapshot(ev)
-        ev._permission_boundary = self._boundary_reason(ev) if self.mode_for(ev.agent) == "auto-review" else ""
+        ev._permission_boundary = (
+            self._boundary(ev) if self.mode_for(ev.agent) == "auto-review" else None
+        )
         return None
 
     def before_execute(self, ev: ToolCallEvent):
         snapshot = self._snapshot(ev)
         unchanged = getattr(ev, "_permission_snapshot", None) == snapshot
         if unchanged and snapshot[0] == "auto-review":
-            unchanged = getattr(ev, "_permission_boundary", None) == self._boundary_reason(ev)
+            unchanged = getattr(ev, "_permission_boundary", None) == self._boundary(ev)
         if unchanged:
             return None
         return self.on_tool_call(ev, self.session)
@@ -391,7 +458,7 @@ class Permissions:
         try:
             return self._on_tool_call(ev)
         except Exception:  # noqa: BLE001 - EventBus swallows exceptions; permission hooks must fail closed.
-            return Block("Permission checking failed; the action was not executed.")
+            return Block(self.session.t("features.permission.check_failed"))
 
     def _on_tool_call(self, ev: ToolCallEvent):
         mode = self.mode_for(ev.agent)
@@ -407,25 +474,31 @@ class Permissions:
         who = "" if ev.agent == "main" else f"[{ev.agent}] "
         started = time.monotonic()
         answer = self.session.ui.confirm(
-            f"{who}{summary}\n  ({reason})  Allow? [y]es / [n]o / [a]lways this session", ev.agent
+            f"{who}{summary}\n  ({reason})" + self.session.t("features.permission.allow_suffix"), ev.agent
         )
         if snapshot != self._snapshot(ev):
-            self._record(ev, mode, "superseded", "Permission context changed during confirmation.", "human", started)
-            return self.on_tool_call(ev, self.session)
-        self._record(ev, mode, "allow" if answer in {"y", "a"} else "deny",
-                     {"y": "Allowed once.", "a": "Allowed for this session.", "n": "Denied by user."}.get(
-                         answer, "No approver available."), "human", started)
-        if answer is None:
-            return Block(
-                f"Permission required ({reason}) but nobody is available to approve it. "
-                "Ask the user to rerun with an allow rule or a different --permission-mode."
+            self._record(
+                ev, mode, "superseded", "Permission context changed during confirmation.", "human", started
             )
+            return self.on_tool_call(ev, self.session)
+        self._record(
+            ev,
+            mode,
+            "allow" if answer in {"y", "a"} else "deny",
+            {"y": "Allowed once.", "a": "Allowed for this session.", "n": "Denied by user."}.get(
+                answer, "No approver available."
+            ),
+            "human",
+            started,
+        )
+        if answer is None:
+            return Block(self.session.t("features.permission.no_approver", reason=reason))
         if answer == "a":
             self.remember(ev)
             return self._allow(ev)
         if answer == "y":
             return self._allow(ev)
-        reason = "The user denied this tool call. Use a materially safer alternative or ask what they want instead."
+        reason = self.session.t("features.permission.user_denied")
         if answer == "n":
             self.review_denials[self._approval_key(ev)] = reason
         return Block(reason)
@@ -450,20 +523,24 @@ def setup(api: ExtensionAPI) -> None:
         if a:
             try:
                 session.permission_mode = normalize_permission_mode(a)
-            except ValueError as error:
-                api.ui.print(str(error), "error")
+            except ValueError:
+                api.ui.print(session.t("features.permission.invalid_mode", modes=", ".join(MODES)), "error")
                 return
         s = session.settings
-        label = permission_mode_label(session.permission_mode)
-        lines = [f"permission mode: {label}"]
+        label = permission_mode_label(session.permission_mode, session.t)
+        lines = [session.t("features.permission.status", label=label)]
         for key in ("allow", "deny"):
             rules = s.get(f"permissions.{key}", []) or []
             if rules:
-                lines.append(f"{key}: {', '.join(rules)}")
+                lines.append(f"{session.t('features.permission.' + key)}: {', '.join(rules)}")
         if perms.session_rules:
-            lines.append(f"approved this session: {', '.join(perms.session_rules)}")
+            lines.append(session.t("features.permission.session_rules", rules=", ".join(perms.session_rules)))
         api.ui.print("\n".join(lines))
 
     api.register_command(
-        "permissions", cmd, "show or set permissions (auto-review|accept-all|plan)", argument_hint="[auto-review|accept-all|plan]",
+        "permissions",
+        cmd,
+        "show or set permissions (auto-review|accept-all|plan)",
+        argument_hint="[auto-review|accept-all|plan]",
+        description_key="features.commands.permissions",
     )

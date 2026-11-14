@@ -25,6 +25,7 @@ from ...harness.permissions import MODES, normalize_permission_mode, permission_
 from ...harness.preferences import PreferenceChoice
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
+from ..i18n import tr
 from .activity import RunActivity
 from .bridge import FullscreenUI
 from .choices import ChoiceList, CommandChoice
@@ -36,7 +37,7 @@ from .preferences import PreferencePicker
 from .schedules import ScheduleWorkspace
 from .selection import SelectionCopyMixin
 from .sessions import workspace_name
-from .transcript import Transcript, update_static
+from .transcript import EventView, Transcript, update_static
 
 PURPLE = "#7C3AED"
 PERMISSION_COLORS = {"auto-review": "#B8860B", "accept-all": "#DC2626", "plan": "#2563EB"}
@@ -93,14 +94,16 @@ def short_number(value: int) -> str:
 
 def shortcut_hints(text: str) -> Text:
     hint = Text(text)
-    for key in re.finditer(r"(?<!\S)(?:Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter|Esc|Backspace|↑↓|←→|/exit|/|s)(?=\s|$)", text):
+    for key in re.finditer(
+        r"(?<!\S)(?:Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter|Esc|Backspace|↑↓|←→|/exit|/|s)(?=\s|$)", text
+    ):
         hint.stylize("bold", key.start(), key.end())
     return hint
 
 
-def input_hints() -> Text:
+def input_hints(owner=None) -> Text:
     newline = "Ctrl+J" if os.environ.get("TERM_PROGRAM") == "Apple_Terminal" else "Shift+Enter"
-    return shortcut_hints(f"Enter send · {newline} newline · Esc interrupt · / commands · Ctrl+R sessions · Shift+Tab mode")
+    return shortcut_hints(tr(owner, "ui.hints.input", newline=newline))
 
 
 class ConversationPane(Vertical):
@@ -120,12 +123,12 @@ class ConversationPane(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="cwd", markup=False)
-        yield Static(input_hints(), id="hints", markup=False)
+        yield Static(input_hints(self), id="hints", markup=False)
         yield ScheduleWorkspace(id="schedule-workspace")
         with Vertical(id="body"):
             yield Transcript(id="transcript")
         with Vertical(id="dock"):
-            yield Static("↓ Latest message", id="jump")
+            yield Static(tr(self, "ui.latest"), id="jump")
             yield Static("", id="pending", markup=False)
             yield ApprovalPicker(id="approval")
             yield PreferencePicker(id="preferences")
@@ -192,9 +195,17 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     # State associated with the visible pane; widgets keep drafts, selections,
     # scroll positions and partially completed forms without answering them.
     CONVERSATION_STATE = (
-        "activity", "history", "confirmations", "active_confirmation", "input_requests",
-        "active_input", "input_request", "completion_names", "completion_query",
-        "completion_suppressed", "last_interrupt",
+        "activity",
+        "history",
+        "confirmations",
+        "active_confirmation",
+        "input_requests",
+        "active_input",
+        "input_request",
+        "completion_names",
+        "completion_query",
+        "completion_suppressed",
+        "last_interrupt",
     )
     BINDINGS = [
         Binding("ctrl+c", "interrupt", priority=True, show=False),
@@ -214,7 +225,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.session = session
         self.ui = ui
         self.controller = RunController(session, ui)
-        self.activity = RunActivity()
+        self.activity = RunActivity(session.translator)
         self.initial = initial
         self.pick_session = pick_session
         self.session_grouped = session.settings.get("tui.sessionGrouping", "workspace") != "none"
@@ -271,7 +282,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.hide_completions()
         self.controller.browsing = True
         picker = SessionPicker(
-            self.session_browser_items(), current_path=self._pane.key, grouped=self.session_grouped,
+            self.session_browser_items(),
+            current_path=self._pane.key,
+            grouped=self.session_grouped,
             current_status=self.session_browser_status(),
         )
         self._session_picker = picker
@@ -281,7 +294,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         items = SessionStore.list_all(self.session.paths.user / "sessions")
         retained = {
             store.path: store.describe()
-            for pane in self._panes for store in pane.controller.session.retained_stores()
+            for pane in self._panes
+            for store in pane.controller.session.retained_stores()
         }
         items = [item for item in items if item["path"] not in retained] + list(retained.values())
         for pane in self._panes:
@@ -298,64 +312,81 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             item["status"] = self.pane_status(pane)
         statuses = self.session_browser_statuses()
         for item in items:
-            item["status"] = statuses.get(str(item["path"]), item.get("status", "Saved"))
+            item["status"] = statuses.get(str(item["path"]), item.get("status", tr(self, "ui.state.saved")))
         return items
 
     def session_browser_statuses(self) -> dict[str, str]:
         statuses = {
-            str(store.path): "Unsaved — paused" if store.save_error is not None else "Saved"
-            for pane in self._panes for store in pane.controller.session.retained_stores()
+            str(store.path): tr(self, "ui.state.unsaved")
+            if store.save_error is not None
+            else tr(self, "ui.state.saved")
+            for pane in self._panes
+            for store in pane.controller.session.retained_stores()
         }
         statuses.update({str(pane.key): self.pane_status(pane) for pane in self._panes})
         return statuses
 
     def can_change_session(self) -> bool:
         return (
-            self.controller.can_switch and not self.ui.has_pending_requests
-            and self.active_input is None and self.active_confirmation is None
-            and not self.input_requests and not self.confirmations
+            self.controller.can_switch
+            and not self.ui.has_pending_requests
+            and self.active_input is None
+            and self.active_confirmation is None
+            and not self.input_requests
+            and not self.confirmations
             and not self.session.has_save_failure
             and not any(self.session.bus.emit("pending_work", self.session))
         )
 
     def session_browser_status(self) -> str:
         if self.session.store.save_error is not None:
-            return "Unsaved — paused"
-        if self.active_input is not None or self.active_confirmation is not None or self.input_requests or self.confirmations:
-            return "Waiting"
-        return "Ready" if self.controller.can_switch else "Running"
+            return tr(self, "ui.state.unsaved")
+        if (
+            self.active_input is not None
+            or self.active_confirmation is not None
+            or self.input_requests
+            or self.confirmations
+        ):
+            return tr(self, "ui.state.waiting")
+        return tr(self, "ui.state.ready") if self.controller.can_switch else tr(self, "ui.state.running")
 
     def pane_status(self, pane: ConversationPane) -> str:
         if pane.controller.session.store.save_error is not None:
-            return "Unsaved — paused"
+            return tr(self, "ui.state.unsaved")
         if pane is self._pane:
             return self.session_browser_status()
         if pane.controller.ui.has_pending_requests:
-            return "Waiting"
-        return "Ready" if pane.controller.can_switch else "Running"
+            return tr(self, "ui.state.waiting")
+        return tr(self, "ui.state.ready") if pane.controller.can_switch else tr(self, "ui.state.running")
 
     @on(SessionPicker.GroupingChanged)
     def session_grouping_changed(self, event: SessionPicker.GroupingChanged) -> None:
         self.session_grouped = event.grouped
         try:
-            self.session.settings.save_user({"tui": {"sessionGrouping": "workspace" if event.grouped else "none"}})
+            self.session.settings.save_user(
+                {"tui": {"sessionGrouping": "workspace" if event.grouped else "none"}}
+            )
         except (OSError, ValueError) as error:
-            self.notify(f"Cannot save session view: {error}", severity="error")
+            self.notify(tr(self, "ui.session.view_save_error", error=error), severity="error")
 
     @on(SessionPicker.DeleteRequested)
     def session_delete_requested(self, event: SessionPicker.DeleteRequested) -> None:
         picker = self._session_picker
         if picker is None:
             return
-        owner = next((pane for pane in self._panes if pane.controller.session.live_store(event.path) is not None), None)
-        if owner is not None and (not owner.controller.can_switch or owner.controller.ui.has_pending_requests):
-            self.notify("This session is still active. Finish or interrupt it before moving it to Trash.")
+        owner = next(
+            (pane for pane in self._panes if pane.controller.session.live_store(event.path) is not None), None
+        )
+        if owner is not None and (
+            not owner.controller.can_switch or owner.controller.ui.has_pending_requests
+        ):
+            self.notify(tr(self, "ui.session.active"))
             return
         current = event.path == self.session.store.path
         try:
             (owner.controller.session if owner is not None else self.session).trash_session(event.path)
         except (OSError, ValueError) as error:
-            self.notify(f"Cannot move session to Trash: {error}", severity="error")
+            self.notify(tr(self, "ui.session.trash_error", error=error), severity="error")
             return
         picker.current_path = self._pane.key
         picker.remove_session(event.path)
@@ -386,13 +417,15 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     async def change_conversation(self, path, initial=None) -> None:
         target = next((pane for pane in self._panes if pane.key == path), None)
         if target is None and path != "new":
-            owner = next((pane for pane in self._panes
-                          if pane.controller.session.live_store(path) is not None), None)
+            owner = next(
+                (pane for pane in self._panes if pane.controller.session.live_store(path) is not None), None
+            )
             if owner is not None:
                 # Never create a disk-backed duplicate of a retained conversation.
-                if owner.controller.ui.has_pending_requests or not owner.controller.open_session(path, initial=initial):
-                    self.notify("Another conversation is running here. Finish or interrupt it before reopening this history.",
-                                severity="warning")
+                if owner.controller.ui.has_pending_requests or not owner.controller.open_session(
+                    path, initial=initial
+                ):
+                    self.notify(tr(self, "ui.session.other_active"), severity="warning")
                     return
                 owner.query_one(ChatEditor).clear()
                 owner.history.reset()
@@ -408,14 +441,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     store.build_context()
                     cwd = store.cwd
                     if not cwd.is_dir():
-                        raise FileNotFoundError(f"Workspace no longer exists: {cwd}")
+                        raise FileNotFoundError(tr(self, "ui.session.missing_workspace", path=cwd))
                 storage = None if path == "new" and previous.store.path is None else path
                 return AgentSession(cwd, ui=ui, session=storage, **previous.session_options)
 
             try:
                 candidate = await asyncio.to_thread(construct)
             except Exception as error:  # noqa: BLE001 - retain the current live conversation
-                self.notify(f"Cannot open session: {error}", severity="error")
+                self.notify(tr(self, "ui.session.open_error", error=error), severity="error")
                 return
             if self.controller.closing or not self.is_running:
                 await asyncio.to_thread(candidate.shutdown)
@@ -435,9 +468,17 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.session = self.controller.session
             self.ui = self.controller.ui
             defaults = dict(
-                activity=RunActivity(), history=target.history, confirmations=deque(), active_confirmation=None,
-                input_requests=deque(), active_input=None, input_request=None, completion_names=[],
-                completion_query=None, completion_suppressed=None, last_interrupt=0.0,
+                activity=RunActivity(self.session.translator),
+                history=target.history,
+                confirmations=deque(),
+                active_confirmation=None,
+                input_requests=deque(),
+                active_input=None,
+                input_request=None,
+                completion_names=[],
+                completion_query=None,
+                completion_suppressed=None,
+                last_interrupt=0.0,
             )
             for name, value in (target.state or defaults).items():
                 setattr(self, name, value)
@@ -475,9 +516,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             for update in updates:
                 if not self.is_running:
                     return
-                if update.kind == "session_changed":
+                if update.kind == "language_changed":
+                    self.refresh_language()
+                elif update.kind == "session_changed":
                     self.session = update.payload
-                    self.update_status()
+                    self.activity.translator = self.session.translator
+                    self.refresh_language()
                 elif update.kind == "reset":
                     self.activity.reset()
                     await self.transcript.load_history(update.payload)
@@ -522,11 +566,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 self._session_picker.set_current_status(self.session_browser_status())
                 self._session_picker.set_statuses(self.session_browser_statuses())
             self.activity.waiting = (
-                "Closing"
+                tr(self, "ui.state.closing")
                 if self.controller.closing
-                else "Waiting for approval"
+                else tr(self, "ui.state.approval")
                 if self.active_confirmation is not None
-                else "Waiting for input"
+                else tr(self, "ui.state.input")
                 if self.active_input is not None
                 else None
             )
@@ -548,7 +592,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             pending = self.controller.pending
             pending_widget = self._pane.query_one("#pending", Static)
             pending_widget.display = bool(pending)
-            queued = "\n".join(f"Queued · {text.splitlines()[0]}" for text in pending[-3:])
+            queued = "\n".join(tr(self, "ui.queued", text=text.splitlines()[0]) for text in pending[-3:])
             update_static(pending_widget, Text(queued))  # runs every frame: skip no-op relayouts
             if self.input_request is not None and self.input_request.preferences is not None:
                 self._pane.query_one(PreferencePicker).resize_panel()
@@ -558,7 +602,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self._polling = False
 
     def show_next_confirmation(self) -> None:
-        if self.controller.closing or self.has_modal or self.active_confirmation is not None or self.active_input is not None:
+        if (
+            self.controller.closing
+            or self.has_modal
+            or self.active_confirmation is not None
+            or self.active_input is not None
+        ):
             return
         # The workspace hides the approval dock, including between input steps.
         if self._pane.query_one(ScheduleWorkspace).display:
@@ -597,7 +646,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.finish_confirmation(event.answer, event.confirmation.id)
 
     def show_next_input(self) -> None:
-        if self.controller.closing or self.has_modal or self.active_input is not None or self.active_confirmation is not None:
+        if (
+            self.controller.closing
+            or self.has_modal
+            or self.active_input is not None
+            or self.active_confirmation is not None
+        ):
             return
         while self.input_requests:
             request = self.input_requests.popleft()
@@ -714,7 +768,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     @on(ScheduleWorkspace.Answered)
     def schedule_answered(self, event: ScheduleWorkspace.Answered) -> None:
         event.stop()
-        if event.workspace is self._pane.query_one(ScheduleWorkspace) and event.request_id == self.active_input:
+        if (
+            event.workspace is self._pane.query_one(ScheduleWorkspace)
+            and event.request_id == self.active_input
+        ):
             self.finish_input(event.answer)
 
     @on(Input.Submitted, "#auth-value")
@@ -742,9 +799,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         workspace = root.query_one(ScheduleWorkspace)
         brand = Text.assemble(("V_", f"bold {PURPLE}"), " Virgo")
         if workspace.display:
-            brand.append(" / 定时任务", style="dim")
+            brand.append(tr(self, "ui.brand.schedules"), style="dim")
             width = max(1, self.size.width - 2)
-            path = Text(workspace_name(self.session.cwd), style="dim", no_wrap=True, overflow="ellipsis")
+            path = Text(
+                workspace_name(self.session.cwd, self), style="dim", no_wrap=True, overflow="ellipsis"
+            )
             path.truncate(max(0, width - brand.cell_len - 2), overflow="ellipsis")
             if path.cell_len:
                 brand.append(" " * max(2, width - brand.cell_len - path.cell_len))
@@ -753,33 +812,33 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             brand.append(f" {__version__}", style="dim")
         update_static(self.screen_stack[0].query_one("#brand", Static), brand)
         if self.controller.closing:
-            hints = shortcut_hints("Closing services… Ctrl+C to return to the terminal immediately")
+            hints = shortcut_hints(tr(self, "ui.hints.closing"))
         elif self.input_request is not None:
             if self.input_request.preferences is not None:
                 if self.input_request.preferences.kind == "model":
                     picker = self._pane.query_one(PreferencePicker)
                     hint = (
-                        "↑↓ provider · Enter open · Esc cancel"
+                        tr(self, "ui.hints.providers")
                         if picker.provider is None
-                        else "↑↓ model · ←→ effort · Enter default · s session · Backspace providers · Esc cancel"
+                        else tr(self, "ui.hints.models")
                     )
                 else:
-                    hint = "←→ adjust · Enter default · s session · Esc cancel"
+                    hint = tr(self, "ui.hints.effort")
             elif self.input_request.multiline:
-                hint = "Enter newline · Ctrl+S confirm · Esc cancel"
+                hint = tr(self, "ui.hints.multiline")
             elif self.input_request.details is not None:
-                hint = "↑↓ action · Enter confirm · PageUp/PageDown details · Esc back"
+                hint = tr(self, "ui.hints.details")
             else:
                 hint = (
-                    "↑↓ select · Enter confirm · Esc cancel"
+                    tr(self, "ui.hints.select")
                     if self.input_request.options is not None
-                    else "Enter confirm · Esc cancel"
+                    else tr(self, "ui.hints.confirm")
                 )
             hints = shortcut_hints(hint)
         elif not self.controller.busy and 0 < time.monotonic() - self.last_interrupt < 2:
-            hints = shortcut_hints("Ctrl+C again to exit · /exit also closes Virgo")
+            hints = shortcut_hints(tr(self, "ui.hints.exit"))
         else:
-            hints = input_hints()
+            hints = input_hints(self)
         update_static(root.query_one("#hints", Static), hints)
         width = max(1, self.size.width - 2)
         cwd = str(self.session.cwd)
@@ -795,9 +854,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             context = f"~{tokens / max(window, 1):.1%}/{short_number(window)}"
         else:
             context = f"0.0%/{short_number(window)}"
-        used = (
-            f"↑{short_number(usage.input_total)} ↓{short_number(usage.output)}"
-            f" cache {usage.cache_hit_rate:.1%}"
+        used = tr(
+            self,
+            "ui.metrics",
+            input=short_number(usage.input_total),
+            output=short_number(usage.output),
+            cache=usage.cache_hit_rate,
         )
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
         metrics.truncate(width, overflow="ellipsis")
@@ -805,8 +867,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         mode = normalize_permission_mode(self.session.permission_mode)
         footer = Text(no_wrap=True, overflow="ellipsis")
         if self.session.store.save_error is not None:
-            footer.append("UNSAVED · paused · memory only  ", style="bold red")
-        footer.append(permission_mode_label(mode), style=PERMISSION_COLORS[mode])
+            footer.append(tr(self, "ui.state.unsaved_footer"), style="bold red")
+        footer.append(permission_mode_label(mode, self.session.t), style=PERMISSION_COLORS[mode])
         effort = f" · {self.session.effort}"
         available = max(1, width - footer.cell_len - 2)
         model = Text(self.session.main.model.id, style="dim", no_wrap=True, overflow="ellipsis")
@@ -817,6 +879,18 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         footer.append(model)
         footer.truncate(width, overflow="ellipsis")
         update_static(root.query_one("#status", Static), footer)
+
+    def refresh_language(self) -> None:
+        """Refresh presentation chrome without altering stored conversation text."""
+        self.activity.translator = self.session.translator
+        update_static(self._pane.query_one("#jump", Static), tr(self, "ui.latest"))
+        self._pane.query_one(ScheduleWorkspace).refresh_language()
+        for event in self.transcript.query(EventView):
+            event.render_header()
+        self.completion_query = None
+        self.update_completions()
+        self.editor.refresh()
+        self.update_status()
 
     @on(ChatEditor.Submitted)
     def submitted(self, event: ChatEditor.Submitted) -> None:
@@ -847,9 +921,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.editor.styles.height = min(
             max(3, self.editor.wrapped_document.height + 2), max(3, self.size.height // 3)
         )
-        self._pane.query_one("#completions").styles.max_height = max(
-            3, min(6, self.size.height // 4)
-        )
+        self._pane.query_one("#completions").styles.max_height = max(3, min(6, self.size.height // 4))
 
     def hide_completions(self) -> None:
         self.completion_names = []
@@ -874,7 +946,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         commands.update(
             {f"/{name}": description for name, (description, _) in self.session.templates.items()}
         )
-        commands["/exit"] = "exit Virgo"
+        commands["/exit"] = tr(self, "ui.command.exit")
         names = sorted(name for name in commands if name.startswith(text))
         self.completion_names = names
         options = self._pane.query_one("#completions", ChoiceList)
@@ -924,9 +996,16 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.controller.abort()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if not self.has_modal and self.input_request is not None and self.input_request.details is not None and action in {"page", "top"}:
+        if (
+            not self.has_modal
+            and self.input_request is not None
+            and self.input_request.details is not None
+            and action in {"page", "top"}
+        ):
             return True
-        if (self.has_modal or self.active_input is not None or self.active_confirmation is not None) and action in {"page", "top", "tools", "thinking", "cycle_permissions"}:
+        if (
+            self.has_modal or self.active_input is not None or self.active_confirmation is not None
+        ) and action in {"page", "top", "tools", "thinking", "cycle_permissions"}:
             return False
         return True
 
@@ -948,7 +1027,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.last_interrupt = time.monotonic()
             update_static(
                 self._pane.query_one("#hints", Static),
-                shortcut_hints("Ctrl+C again to exit · /exit also closes Virgo"),
+                shortcut_hints(tr(self, "ui.hints.exit")),
             )
 
     def action_cycle_permissions(self) -> None:
@@ -976,7 +1055,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if self.has_modal:
             return
         if self.input_request is not None and self.input_request.details is not None:
-            selector = "#schedule-detail-scroll" if self.input_request.schedule_workspace else "#input-detail-scroll"
+            selector = (
+                "#schedule-detail-scroll" if self.input_request.schedule_workspace else "#input-detail-scroll"
+            )
             details = self._pane.query_one(selector, VerticalScroll)
             if direction < 0:
                 details.action_page_up()
@@ -990,7 +1071,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def action_top(self) -> None:
         if not self.has_modal and self.input_request is not None and self.input_request.details is not None:
-            selector = "#schedule-detail-scroll" if self.input_request.schedule_workspace else "#input-detail-scroll"
+            selector = (
+                "#schedule-detail-scroll" if self.input_request.schedule_workspace else "#input-detail-scroll"
+            )
             self._pane.query_one(selector, VerticalScroll).scroll_home(animate=False)
         elif not self.has_modal:
             self.transcript.action_scroll_home()
