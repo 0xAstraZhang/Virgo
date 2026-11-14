@@ -29,7 +29,7 @@ Reads and tool output have budgets; long results include a continuation or saved
 
 ## Focused subagents
 
-The `agent(description, prompt, read_only=false, background=false)` tool delegates a focused task with an independent context and returns its final answer; include relevant context in the task prompt. `read_only=true` limits tools to `read`, `glob`, `grep`, and `bash` under plan-mode command checks (no PowerShell). This is not an OS sandbox. By default, the child has no extra restrictions beyond its parent's permission ceiling. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. Old named-type calls remain supported in the 0.2 compatibility window but are no longer advertised to the model. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
+The `agent(description, prompt, read_only=false, background=false)` tool delegates a focused task with an independent context and returns its final answer; include relevant context in the task prompt. `read_only=true` limits tools to `read`, `glob`, `grep`, and `bash` under plan-mode command checks (no PowerShell). This is not an OS sandbox. By default, the child has no extra restrictions beyond its parent's permission ceiling. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. Calls with the removed `type` argument are rejected. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
 
 ## Background jobs
 

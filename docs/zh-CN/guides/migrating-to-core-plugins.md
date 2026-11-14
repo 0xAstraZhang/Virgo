@@ -45,13 +45,13 @@ virgo --profile minimal --no-extensions
 
 ## 子代理能力迁移
 
-现在模型可见的 `agent` 工具使用 `description`、`prompt`、可选 `read_only` 和可选 `background`，不再要求选择 `type`：
+`agent` 工具现在接收 `description`、`prompt`、可选 `read_only` 和可选 `background`。`type` 参数已被移除，继续传入会导致参数校验失败。
 
-- 原 `type="general"`：省略类型，通用委派为默认行为。未指定 `type` 时始终使用内置通用配置，即使旧版存在名为 `general` 的自定义定义；显式传入 `type="general"` 仍可选择这个旧版覆盖项。
-- 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob`、`grep` 和经过 `plan` 检查的 `bash` 命令，无 PowerShell。这不是操作系统沙箱。
-- 自定义 `agents/*.md`：将任务指令写入 Skill 或委派 Prompt；特殊模型和工具限制通过受信任的扩展实现。
+- 原 `type="general"`：直接省略类型参数，默认执行普通委派。
+- 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob`、`grep` 和经过 `plan` 检查的 `bash`，不提供 PowerShell。这不是操作系统沙箱。
+- 自定义 `agents/*.md`：将任务指令迁移至 Skill 或委派提示，特殊模型和工具策略通过受信任的扩展实现。
 
-现有 `~/.virgo/agents/` 和 `.virgo/agents/` 文件**不会被自动删除或改写**。0.2 兼容期内，显式传入 `type` 的旧调用仍可使用 `general`、`explore` 和自定义类型，并沿用其原有 Prompt、工具、模型及权限设置。新工具 Schema 不向模型暴露这些类型；内置类型与 `read_only` 冲突时拒绝调用。计划在下一次破坏性升级（0.3）移除兼容加载器，请提前迁移自定义定义。
+Virgo 不再加载 `~/.virgo/agents/*.md` 或 `.virgo/agents/*.md`。现有文件不会被删除或改写，需要时可手动迁移或归档。
 
 ## 信任项目扩展
 

@@ -1,29 +1,15 @@
-"""Sub-agents: delegate focused work with a fresh context and inherited limits.
+"""Sub-agents: delegate focused work with fresh contexts and inherited limits.
 
-The public tool selects capabilities rather than agent types. Legacy named definitions
-remain readable for old tool calls during the 0.2 compatibility window; they are not
-advertised to the model. Legacy Markdown definitions live in
-``~/.virgo/agents/`` or ``.virgo/agents/``::
-
-    ---
-    name: reviewer
-    description: Reviews a diff for bugs
-    tools: read, grep, glob, bash      # optional (default: all sub-agent tools)
-    model: anthropic/claude-sonnet-5-5  # optional
-    permission: plan                   # optional permission mode for this agent
-    ---
-    You are a meticulous code reviewer...
+The read_only capability restricts child tools and shell permissions, not the parent.
 """
 
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass, field
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..ai.types import AssistantMessage, ToolResultMessage, UserMessage
 from ..diagnostics import safe_text
-from ..harness.commands import parse_frontmatter
 from ..harness.extensions import ExtensionAPI
 
 _counter = itertools.count(1)
@@ -31,89 +17,23 @@ READ_ONLY_TOOLS = frozenset({"read", "glob", "grep", "bash"})
 READ_ONLY_PROMPT = "You are in read-only mode; file and system changes are not permitted."
 
 
-@dataclass
-class AgentType:
-    name: str
-    description: str
-    prompt: str = ""
-    tools: list[str] | None = None  # None = all sub-agent tools
-    model: str | None = None
-    permission: str | None = None
-    source: str = "builtin"
-    extra: dict = field(default_factory=dict)
-
-
-# The model-facing capability API always uses this default, never a named
-# legacy definition that a user may have installed under "general".
-DEFAULT_AGENT = AgentType(
-    "general",
-    "General-purpose agent for multi-step tasks: research, edits, running commands.",
-)
-
-BUILTIN_TYPES = [
-    DEFAULT_AGENT,
-    AgentType(
-        "explore",
-        "Read-only agent for finding code and answering questions about the codebase.",
-        prompt="You are in read-only mode; file and system changes are not permitted.",
-        tools=["read", "glob", "grep", "bash"],
-        permission="plan",
-    ),
-]
-
-
-def load_types(api: ExtensionAPI) -> dict[str, AgentType]:
-    types = {t.name: t for t in BUILTIN_TYPES}
-    for d in api.paths.both("agents"):
-        if not d.is_dir():
-            continue
-        for f in sorted(d.glob("*.md")):
-            meta, body = parse_frontmatter(f.read_text(encoding="utf-8"))
-            tools = meta.get("tools")
-            if isinstance(tools, str):
-                tools = [t.strip() for t in tools.split(",") if t.strip()]
-            name = str(meta.get("name") or f.stem)
-            types[name] = AgentType(
-                name=name,
-                description=str(meta.get("description", "")).strip(),
-                prompt=body.strip(),
-                tools=tools,
-                model=meta.get("model"),
-                permission=meta.get("permission"),
-                source=str(f),
-            )
-    return types
-
-
 class Subagents:
     def __init__(self, api: ExtensionAPI):
         self.api = api
-        self.types = load_types(api)
 
     def run(
-        self, prompt: str, agent_type: str | AgentType, description: str, signal, cwd=None, review_parent=None,
+        self, prompt: str, description: str, signal, cwd=None, review_parent=None,
         *, read_only: bool = False,
     ) -> ToolResult:
-        """Run a child with the caller's authority; named types are legacy overrides."""
+        """Run a child with the caller's authority and optional read-only limits."""
         api = self.api
         review_parent = review_parent or api.current_runtime().review_source
         parent = review_parent.runtime
         owner = review_parent.root
-        at = agent_type if isinstance(agent_type, AgentType) else self.types.get(agent_type)
-        if at is None:
-            return ToolResult.error(
-                api.t("features.agent.unknown_type", type=agent_type, available=", ".join(self.types))
-            )
-        pool = api.tools_for("subagent")
-        allowed = set(at.tools) if at.tools is not None else None
-        if read_only:
-            # A capability can only narrow an existing legacy tool allowlist.
-            allowed = set(READ_ONLY_TOOLS) if allowed is None else allowed & READ_ONLY_TOOLS
-        tools = [t for t in pool if t.name in allowed] if allowed is not None else None
-        permission = "plan" if read_only else at.permission
-        extra = at.prompt
-        if read_only and READ_ONLY_PROMPT not in extra:
-            extra = f"{READ_ONLY_PROMPT}\n\n{extra}".strip()
+        tools = (
+            [tool for tool in api.tools_for("subagent") if tool.name in READ_ONLY_TOOLS]
+            if read_only else None
+        )
         name = f"subagent#{next(_counter)}"
         rt = None
         failure = cleanup_error = None
@@ -123,11 +43,10 @@ class Subagents:
                 name,
                 "subagent",
                 parent=parent,
-                permission=permission,
+                permission="plan" if read_only else None,
                 cwd=cwd,
                 tools=tools,
-                system_extra=extra or None,
-                model=api.resolve(at.model) if at.model else None,
+                system_extra=READ_ONLY_PROMPT if read_only else None,
                 max_turns=int(api.settings.get("subagents.maxTurns", 50)),
                 signal=signal,
                 compaction=True,
@@ -225,16 +144,10 @@ def setup(api: ExtensionAPI) -> None:
 
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
         prompt, desc = args["prompt"], args.get("description") or args["prompt"][:60]
-        # Old tool calls (including calls from extensions) may still specify a
-        # named type. It is deliberately absent from the new model-facing schema.
-        # Only an explicitly supplied legacy type may resolve an on-disk named
-        # definition. Capability-only calls use the built-in default even if a
-        # user-defined "general" shadows it in the compatibility registry.
-        type_name = (args.get("type") or "general") if "type" in args else DEFAULT_AGENT
+        unknown = set(args) - {"description", "prompt", "read_only", "background"}
+        if unknown:
+            return ToolResult.error(f"Unexpected agent argument(s): {', '.join(sorted(unknown))}")
         read_only = args.get("read_only", False)
-        if "type" in args and "read_only" in args and type_name in ("general", "explore"):
-            if read_only != (type_name == "explore"):
-                return ToolResult.error(api.t("features.agent.conflicting_type"))
         jobs = api.services.get("jobs")
         runtime = api.runtime_for_context(ctx)
         if runtime is None and ctx.review_source is None and ctx.agent == "main":
@@ -247,9 +160,7 @@ def setup(api: ExtensionAPI) -> None:
         review_parent.root.entries()
 
         def run_child(signal):
-            # Do not change the call signature for existing direct integrations.
-            options = {"read_only": True} if read_only else {}
-            return subs.run(prompt, type_name, desc, signal, ctx.cwd, review_parent, **options)
+            return subs.run(prompt, desc, signal, ctx.cwd, review_parent, read_only=read_only)
 
         if args.get("background") and jobs is not None:
             job = jobs.start_callable(
@@ -293,6 +204,7 @@ def setup(api: ExtensionAPI) -> None:
                     "background": {"type": "boolean"},
                 },
                 "required": ["description", "prompt"],
+                "additionalProperties": False,
             },
             execute=execute,
             read_only=True,  # its own tool calls are permission-checked individually

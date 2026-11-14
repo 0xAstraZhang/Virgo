@@ -7,8 +7,6 @@ MESSAGES = {
     "features.agent.no_answer": "子代理未生成回答。",
     "features.agent.no_text": "（最终回答没有文本）",
     "features.agent.progress": "\n子代理停止前已返回 {count} 个工具结果；先前的操作可能已生效。最近结果:\n",
-    "features.agent.conflicting_type": "旧代理类型与 read_only 参数冲突。",
-    "features.agent.unknown_type": "未知代理类型 {type!r}。可用类型: {available}",
     "features.ask_user.answered": "用户回答: {answer}",
     "features.ask_user.cancelled": "问题已取消，未得到回答。",
     "features.ask_user.chose": "用户选择了 {letter}: {answer}",

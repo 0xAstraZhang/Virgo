@@ -229,7 +229,7 @@ def test_subagent_cancellation_before_first_call_or_tools_is_not_a_fault(make_se
         session.bus.on("agent_event", cancel_before_tools)
     else:
         signal.set()
-    result = session.services["subagents"].run("private prompt", "general", "private label", signal)
+    result = session.services["subagents"].run("private prompt", "private label", signal)
     assert result.is_error and result.as_text() == "Sub-agent was aborted."
     assert result.details["status"] == "aborted" and "error" not in result.details
     assert len(calls()) == int(before_tools)
@@ -245,7 +245,7 @@ def test_subagent_cancellation_does_not_hide_an_actual_model_error(make_session)
             runtime.agent.signal.set()
 
     session.bus.on("agent_event", cancel_after_response)
-    result = session.services["subagents"].run("private prompt", "general", "private label", signal)
+    result = session.services["subagents"].run("private prompt", "private label", signal)
     assert result.is_error and "actual provider failure" in result.as_text()
     assert result.details["error"]["message"] == "actual provider failure"
     assert result.details.get("status") != "aborted"

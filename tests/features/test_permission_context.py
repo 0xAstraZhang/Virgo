@@ -321,7 +321,7 @@ def test_background_subagent_captures_origin_before_worker_starts(make_session, 
     jobs = session.services["jobs"]
     pending, parents = [], []
     monkeypatch.setattr(jobs, "start_callable", lambda _label, fn, **kwargs: (pending.append(fn) or SimpleNamespace(id="job")))
-    monkeypatch.setattr(session.services["subagents"], "run", lambda *args: (parents.append(args[-1]) or ToolResult.text("ok")))
+    monkeypatch.setattr(session.services["subagents"], "run", lambda *args, **kwargs: (parents.append(args[-1]) or ToolResult.text("ok")))
     # Direct tool integrations without a pre-attached source must capture now,
     # not look up session.main after the background thread starts.
     ctx = ToolContext("spawn", session.cwd, threading.Event())

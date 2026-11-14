@@ -9,7 +9,6 @@
 | Python 扩展 | `~/.virgo/extensions/*.py` | `.virgo/extensions/*.py` | 可信的 `setup(api)` 代码 |
 | 技能 | `~/.virgo/skills/<name>/SKILL.md` | `.virgo/skills/<name>/SKILL.md`，然后 `.agents/skills/<name>/SKILL.md` | `skills` |
 | 提示模板 | `~/.virgo/prompts/*.md` | `.virgo/prompts/*.md` | Core 提示装配 |
-| 旧版具名子 Agent 定义（0.2 兼容） | `~/.virgo/agents/*.md` | `.virgo/agents/*.md` | `subagent` |
 | MCP 服务器 | `~/.virgo/mcp.json` | `.virgo/mcp.json` | `mcp` |
 
 `VIRGO_HOME` 替换用户目录。声明式资源先加载用户级，再加载项目级，同名项以较后的定义为准。官方插件位于 `virgo.plugins`，与 Python 扩展共用 `setup(api)`。插件按固定顺序装载一次；重启或初始化工作区会话后重新发现文件。不提供运行时卸载、依赖安装器或插件沙箱。
@@ -122,7 +121,7 @@ def setup(api):
 
 `api.append_entry(kind, data)` 和 `api.entries(kind)` 访问当前 Store 的自定义状态。后台工作需先捕获真实所有者，再使用其 Store 和 `api.notify(..., store=owner)`。保存失败是真正的执行边界，不能当作持久化成功。Todo 仍是当前对话状态，不是持久任务图。
 
-## 技能、模板和旧版 Agent 定义
+## 技能与模板
 
 技能包含 YAML frontmatter（`name`、`description`）和 Markdown。发现阶段展示索引，模型按需读取正文；`/skill:name args` 显式展开，内部相对路径按技能目录解析。
 
@@ -135,6 +134,6 @@ description: review the current diff
 Review the current diff. Focus on: ${1:-correctness}. Additional context: $@
 ```
 
-模板支持 `$1`、`$@`／`$ARGUMENTS`、`${1:-value}`、`${@:2}`；没有占位符时，参数追加到正文。专门的工作方法应优先写成 [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) 或委派任务提示，必要时设置 `read_only=true`。旧版子 Agent frontmatter（`name`、`description`、`tools`、`model`、`permission`）在 0.2 兼容期内仍供旧调用显式传入 `type` 时使用，但新模型工具不展示类型。特殊模型和工具策略通过受信任的扩展实现。详见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
+模板支持 `$1`、`$@`／`$ARGUMENTS`、`${1:-value}`、`${@:2}`；没有占位符时，参数追加到正文。专门的工作方法应写成 [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) 或委派任务提示；只读检查时设置 `read_only=true`。特殊模型和工具策略通过受信任的扩展实现。详见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 捕获异常后用 `virgo.diagnostics.capture_error` 保留结构化诊断；成功恢复时将原始证据保留在 `related_errors`。属于某个 Runtime 的错误优先使用其 `report_error()`；结果／通知的显式传播可以授予父任务访问权，单独的错误 ID 字符串不能。详见[故障排查](../guides/troubleshooting.md)。

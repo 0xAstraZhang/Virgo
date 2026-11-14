@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-
-from virgo.agent.types import ToolContext
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage
 
@@ -34,7 +31,7 @@ def test_subagent_fresh_context_and_no_recursion(make_session):
 
 
 def test_subagent_request_exposes_only_its_own_tools(make_session):
-    # Explore uses plan permissions, where only the POSIX command tool is supported.
+    # Read-only delegation uses plan permissions and only the POSIX shell tool.
     seen = {}
 
     def respond(ctx):
@@ -51,12 +48,12 @@ def test_subagent_request_exposes_only_its_own_tools(make_session):
     assert sorted(seen["tools"]) == ["bash", "glob", "grep", "read"]
 
 
-
 def test_subagent_schema_exposes_capabilities_not_types(make_session):
     session = make_session()
     properties = session.tool("agent").parameters["properties"]
     assert "read_only" in properties
     assert "type" not in properties
+    assert session.tool("agent").parameters["additionalProperties"] is False
     assert "<agent_types>" not in session.main.system
 
 
@@ -83,57 +80,3 @@ def test_read_only_subagent_blocks_shell_writes_even_if_parent_is_unrestricted(m
     assert not target.exists()
     assert sorted(child_tools) == ["bash", "glob", "grep", "read"]
     assert tool_results(session)[0].text() == "Read-only inspection complete."
-
-
-def test_legacy_explore_cannot_override_read_only_with_false(make_session):
-    session = make_session()
-    ctx = ToolContext("legacy", session.cwd, threading.Event(), review_source=session.main.review_source)
-    result = session.tool("agent").execute({
-        "description": "legacy", "prompt": "inspect", "type": "explore", "read_only": False,
-    }, ctx)
-    assert result.is_error
-    assert "conflict" in result.as_text().lower()
-
-
-def test_capability_only_subagent_does_not_inherit_shadowed_general_definition(make_session, project):
-    agents = project / ".virgo" / "agents"
-    agents.mkdir(parents=True)
-    (agents / "general.md").write_text(
-        "---\nname: general\ndescription: legacy editing worker\n"
-        "tools: write, edit\nmodel: faux/legacy\n---\n"
-        "LEGACY_GENERAL_INSTRUCTIONS\n",
-        encoding="utf-8",
-    )
-    child_requests = []
-
-    def respond(ctx):
-        if "You are a Virgo sub-agent" in ctx.system:
-            child_requests.append(ctx)
-            return faux.reply("inspection complete")
-        return faux.reply("main complete")
-
-    session = make_session(settings={"shell": {"executable": "bash"}})
-    faux.handler("test", respond)
-    faux.push("test", faux.reply(tools=[("agent", {
-        "description": "inspect", "prompt": "Inspect files.", "read_only": True,
-    })]))
-    session.prompt("Inspect without changes.")
-
-    assert tool_results(session)[0].text() == "inspection complete"
-    assert len(child_requests) == 1
-    assert sorted(tool.name for tool in child_requests[0].tools) == ["bash", "glob", "grep", "read"]
-    assert "LEGACY_GENERAL_INSTRUCTIONS" not in child_requests[0].system
-    assert not faux.CALLS["legacy"]
-
-    def legacy_response(ctx):
-        assert "LEGACY_GENERAL_INSTRUCTIONS" in ctx.system
-        assert sorted(tool.name for tool in ctx.tools) == ["edit", "write"]
-        return faux.reply("legacy worker complete")
-
-    faux.script("legacy", legacy_response)
-    faux.push("test", faux.reply(tools=[("agent", {
-        "description": "legacy", "prompt": "Run old worker.", "type": "general",
-    })]))
-    session.prompt("Use the explicitly named legacy worker.")
-    assert tool_results(session)[-1].text() == "legacy worker complete"
-    assert len(faux.CALLS["legacy"]) == 1

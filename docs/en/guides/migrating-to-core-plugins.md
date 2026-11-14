@@ -45,13 +45,13 @@ To deliberately bypass permission review, use the existing explicit `permissions
 
 ## Subagent capability migration
 
-The model-facing `agent` tool now uses `description`, `prompt`, optional `read_only` and optional `background`, without a `type` selector:
+The `agent` tool accepts `description`, `prompt`, optional `read_only` and optional `background`. The `type` parameter is removed and calls containing it are rejected.
 
-- Former `type="general"`: omit the type; general delegation is the default. A call without `type` always uses the built-in generic configuration, even if a legacy definition named `general` exists. Explicitly passing `type="general"` continues to select that legacy override.
-- Former `type="explore"`: use `read_only=true`. It allows `read`, `glob`, `grep`, and `bash` checked under plan mode, but not PowerShell. This is not an OS sandbox.
-- Custom `agents/*.md`: move task instructions into a Skill or delegated prompt. Use a trusted extension for model overrides or special tool restrictions.
+- Replace `type="general"` with an omitted type argument; unrestricted delegation is the default.
+- Replace `type="explore"` with `read_only=true`. Only `read`, `glob`, `grep` and plan-checked `bash` are available, not PowerShell. This is not an OS sandbox.
+- Move custom `agents/*.md` instructions into a Skill or delegated prompt; use trusted extensions for custom model and tool policies.
 
-Existing files under `~/.virgo/agents/` and `.virgo/agents/` are **not deleted or rewritten**. In the 0.2 compatibility window, old callers that explicitly supply `type` can still use `general`, `explore`, and custom definitions with their original prompt, tool, model and permission settings. The new schema does not advertise them, and conflicting built-in type/`read_only` combinations fail closed. The compatibility loader is planned for removal in the next breaking version (0.3); migrate custom definitions before then.
+Virgo no longer loads `~/.virgo/agents/*.md` or `.virgo/agents/*.md`. Existing files are not deleted or rewritten; archive or migrate them manually.
 
 ## Trust project extensions
 
