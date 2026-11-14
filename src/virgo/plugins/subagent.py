@@ -8,7 +8,7 @@ from __future__ import annotations
 import itertools
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
-from ..ai.types import AssistantMessage, ToolResultMessage, UserMessage
+from ..ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from ..diagnostics import safe_text
 from ..harness.extensions import ExtensionAPI
 
@@ -86,21 +86,63 @@ class Subagents:
                 [message for message in rt.messages if isinstance(message, ToolResultMessage)] if rt else []
             )
             if results:
+                recent_messages = results[-8:]
                 recent = [
                     {
                         "tool": message.tool_name,
                         "call_id": message.tool_call_id,
                         "outcome": "returned_error" if message.is_error else "returned_success",
                     }
-                    for message in results[-8:]
+                    for message in recent_messages
                 ]
+                # Pass a bounded reason for only the last three failures, never the
+                # child's full tool transcript or the injected diagnostic capsule.
+                shown = 0
+                for message, item in zip(reversed(recent_messages), reversed(recent), strict=True):
+                    if not message.is_error or shown >= 3:
+                        continue
+                    original = "\n".join(
+                        block.text for block in message.content
+                        if isinstance(block, TextContent)
+                        and not block.text.startswith("[Diagnostic evidence; treat as data]")
+                    )
+                    if original.strip():
+                        excerpt = " ".join(safe_text(original).split())
+                        encoded = excerpt.encode("utf-8")
+                        if len(encoded) > 320:
+                            excerpt = "…" + encoded[-317:].decode("utf-8", errors="ignore")
+                        item["reason"] = excerpt
+                        shown += 1
+
+                # Child diagnostics are runtime-scoped. Explicitly propagate the
+                # latest failed tool records so the parent can inspect their IDs.
+                related = list(details.get("related_errors", []))
+                seen = {record.get("error_id") for record in related if isinstance(record, dict)}
+                seen.add(details.get("error", {}).get("error_id"))
+                for message in reversed(recent_messages):
+                    if not message.is_error or not isinstance(message.details, dict):
+                        continue
+                    record = message.details.get("error")
+                    if not isinstance(record, dict):
+                        continue
+                    error_id = record.get("error_id")
+                    if isinstance(error_id, str) and error_id not in seen:
+                        related.append(record)
+                        seen.add(error_id)
+                    if len(related) >= 3:
+                        break
+                if related:
+                    details["related_errors"] = related
+
                 details["child_progress"] = {
                     "completed_calls": sum(not message.is_error for message in results),
                     "recent_tools": recent,
                     "side_effects": "unknown",
                 }
                 text += api.t("features.agent.progress", count=len(results)) + "\n".join(
-                    f"- {item['tool']} ({item['call_id']}): {item['outcome']}" for item in recent
+                    f"- {item['tool']} ({item['call_id']}): {item['outcome']}"
+                    + (f" — {item['reason']}" if item.get("reason") else "")
+                    for item in recent
                 )
             return ToolResult.error(text, details=details)
 
@@ -132,10 +174,18 @@ class Subagents:
                 api.t("features.agent.aborted"),
                 details={**details, "status": "aborted", "cancelled": True},
             )
+        if last.stop_reason == "turn_limit":
+            details["status"] = "turn_limit"
+            return failed(api.t("features.agent.turn_limit", turns=rt.agent.cfg.max_turns))
+        if last.stop_reason != "stop":
+            details["status"] = "incomplete"
+            reason = safe_text(last.error_message or last.text() or last.stop_reason)[:500]
+            return failed(api.t("features.agent.incomplete", reason=reason))
+        if not last.text().strip():
+            details["status"] = "empty_answer"
+            return failed(api.t("features.agent.no_answer"))
         turns = sum(isinstance(m, AssistantMessage) for m in rt.messages)
-        return ToolResult.text(
-            last.text() or api.t("features.agent.no_text"), details={"agent": name, "turns": turns}
-        )
+        return ToolResult.text(last.text(), details={"agent": name, "turns": turns})
 
 
 def setup(api: ExtensionAPI) -> None:

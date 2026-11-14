@@ -359,10 +359,11 @@ def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=N
                     "truncated": cut,
                 },
             )
-        except httpx.TimeoutException:
-            return ToolResult.error(ctx.t("tools.fetch.timeout"))
-        except (httpx.HTTPError, OSError):
-            return ToolResult.error(ctx.t("tools.fetch.network"))
+        except httpx.TimeoutException as error:
+            # Do not expose raw transport exceptions: they can embed query secrets.
+            return ToolResult.error(f"{ctx.t('tools.fetch.timeout')} ({type(error).__name__})")
+        except (httpx.HTTPError, OSError) as error:
+            return ToolResult.error(f"{ctx.t('tools.fetch.network')} ({type(error).__name__})")
         except (ValueError, TypeError, zlib.error) as error:
             return ToolResult.error(
                 str(error), details={"cancelled": True} if getattr(error, "cancelled", False) else None

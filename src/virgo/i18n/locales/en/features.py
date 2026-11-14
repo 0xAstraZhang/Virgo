@@ -5,6 +5,10 @@ MESSAGES = {
     "features.agent.background": "Started background agent {id} ({description}). You will be notified when it "
     "finishes; use job_output to read its result.",
     "features.agent.failed": "Sub-agent failed: {error}",
+    "features.agent.turn_limit": "Sub-agent stopped at its {turns}-turn limit without finishing. "
+    "Inspect completed work before delegating a smaller task or increasing subagents.maxTurns.",
+    "features.agent.incomplete": "Sub-agent stopped without a completed answer: {reason}. "
+    "Check the failure and completed work before deciding how to continue.",
     "features.agent.no_answer": "The sub-agent produced no answer.",
     "features.agent.no_text": "(no text in final answer)",
     "features.agent.progress": "\n"

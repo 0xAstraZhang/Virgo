@@ -29,13 +29,15 @@ Reads and tool output have budgets; long results include a continuation or saved
 
 ## Focused subagents
 
-The `agent(description, prompt, read_only=false, background=false)` tool delegates a focused task with an independent context and returns its final answer; include relevant context in the task prompt. `read_only=true` limits tools to `read`, `glob`, `grep`, and `bash` under plan-mode command checks (no PowerShell). This is not an OS sandbox. By default, the child has no extra restrictions beyond its parent's permission ceiling. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. Calls with the removed `type` argument are rejected. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
+The `agent(description, prompt, read_only=false, background=false)` tool delegates a focused task with an independent context and returns its final answer; include relevant context in the task prompt. `read_only=true` limits tools to `read`, `glob`, `grep`, and `bash` under plan-mode command checks (no PowerShell). This is not an OS sandbox. By default, the child has no extra restrictions beyond its parent's permission ceiling. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. An exhausted turn limit, interrupted final response, or empty final answer is reported as **incomplete**, not success. On a child failure, the parent receives bounded recent tool-error reasons and explicitly linked diagnostics; a successful delegation still returns only the final answer. Calls with the removed `type` argument are rejected. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
 
 ## Background jobs
 
 Background shell commands and subagents share the job manager. `/jobs` lists them; `job_output` reads output and `job_kill` cancels a job. Completion notifications stay bound to the originating conversation. They can steer a running agent or wake an idle one, without moving results into the conversation currently selected in the UI.
 
-Background subagent completion notifications include the full final answer. Background command notifications include only the last 1,200 characters of captured output; use `job_output` to read more.
+Background subagent completion notifications include the full final answer. Background command notifications include only the last 1,200 characters of captured output; use `job_output` to read more. When a background callable returns an error without structured diagnostics, the job record retains a bounded, redacted copy of its original failure text instead of a generic status alone.
+
+Client-side `web_search` and `web_fetch` transport errors identify the exception class (such as `ConnectError` versus `ReadTimeout`), but deliberately omit raw exception messages that might contain private URLs or credentials.
 
 ## MCP and diagnostics
 
