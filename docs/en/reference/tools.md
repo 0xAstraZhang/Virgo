@@ -35,6 +35,8 @@ The `agent` tool runs a focused task with an independent context and returns its
 
 Background shell commands and subagents share the job manager. `/jobs` lists them; `job_output` reads output and `job_kill` cancels a job. Completion notifications stay bound to the originating conversation. They can steer a running agent or wake an idle one, without moving results into the conversation currently selected in the UI.
 
+Background subagent completion notifications include the full final answer. Background command notifications include only the last 1,200 characters of captured output; use `job_output` to read more.
+
 ## MCP and diagnostics
 
 Without configured servers, the default preset starts no MCP connection and registers no MCP management tools. An explicitly enabled MCP plugin can expose management even before servers are added.

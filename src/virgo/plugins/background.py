@@ -342,7 +342,8 @@ class JobManager:
                 details = self._report(job, error, phase="background.output")
                 out = job.result or error_summary(details, t=self.api.t)
                 total, unit = len(out), "chars"
-            tail = out[-1200:] if len(out) > 1200 else out
+            truncated = job.kind != "agent" and total > 1200
+            output = out[-1200:] if job.kind != "agent" else out
             code = (
                 self.api.t("features.jobs.exit_code", code=job.exit_code)
                 if job.exit_code is not None
@@ -359,9 +360,9 @@ class JobManager:
                 heading=self.api.t(
                     "features.jobs.result" if job.kind == "agent" else "features.jobs.last_output"
                 ),
-                output=tail or self.api.t("tools.output.empty"),
+                output=output or self.api.t("tools.output.empty"),
             )
-            if total > 1200:
+            if truncated:
                 text += self.api.t(
                     "features.jobs.more",
                     total=total,
