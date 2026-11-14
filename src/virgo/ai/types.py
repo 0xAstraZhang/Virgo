@@ -223,3 +223,4 @@ class StreamOptions:
     signal: Any = None  # threading.Event
     max_tokens: int | None = None
     effort: str | None = None
+    prompt_cache_key: str | None = None
