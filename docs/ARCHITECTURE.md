@@ -2,6 +2,7 @@
 
 ## 专题设计
 
+- [抽象边界与维护规则](designs/abstraction-boundaries.md)：共享策略、Runtime 身份归属、保留的分层与待收敛接口。
 - [web_fetch：原生优先的网页读取](designs/web-fetch.md)：原生能力声明、统一路由与去重、工具契约、权限、回退和端到端测试。
 - [会话保存失败处理计划](designs/session-save-failure.md)：失败状态、停止调度、UI 提示和 JSONL 兼容。
 - [工具权限显式接口计划](designs/permission-policy-interface.md)：两阶段检查、钩子顺序兼容和异常拦截。
@@ -38,6 +39,8 @@
 ```
 
 依赖方向自上而下：`ai` 不知道 agent 的存在，`agent` 不做任何 I/O，所有应用逻辑都在 `harness` 和 `features` 里。
+
+跨调用方共用的规则放在其语义归属层：OpenAI 推理强度映射由 `ai/providers/reasoning.py` 同时服务请求构造和诊断元数据；权限模式与计划模式工具筛选由 `harness/permissions.py` 提供。具体权限策略继续位于 `features/permission.py`。需要确认工具调用归属的功能使用 `AgentSession.runtime_for_context()`，不自行复制身份检查，也不借用当前选中的主 Runtime。
 
 ## 终端界面（`virgo.cli.tui`）
 

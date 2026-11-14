@@ -3,12 +3,84 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 RUNNER = Path(__file__).resolve().parents[1] / "compare_tests.py"
+
+
+def check_retirements(root):
+    """Exercise the reviewed deletion through real pytest runs and comparison CLI."""
+    baseline = "0ffc23707de6e87a579a46a8f027679c253b78dc"
+    retired = "test_result_hook_failure_preserves_the_original_tool_failure"
+    retained = "test_projection_sees_final_hooks_and_recorded_evidence_once_in_provider_content"
+
+    def run(label, *, old=None, coverage="pass", sha=None, module="tests/agent/test_diagnostics.py",
+            unrelated=False):
+        project = root / label
+        shutil.rmtree(project, ignore_errors=True)
+        project.mkdir(parents=True)
+        (project / "test_smoke.py").write_text("def test_smoke(): pass\n", encoding="utf-8")
+        for path, name, body in ((module, retired, old),
+                                 ("tests/agent/test_diagnostic_projection.py", retained, coverage)):
+            if body is not None:
+                target = project / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(f"import pytest\ndef {name}(): {body}\n", encoding="utf-8")
+        if unrelated:
+            (project / "test_other.py").write_text("def test_unapproved_removal(): pass\n", encoding="utf-8")
+        subprocess.run([
+            sys.executable, str(RUNNER), "run", "--project", str(project),
+            "--output", str(root / "reports" / label), "--platform", "local",
+            "--label", label, "--sha", sha or (baseline if label == "base" else "head"),
+        ], check=False, stdout=subprocess.DEVNULL)
+
+    def compare(expected):
+        for suffix in (".md", ".json"):
+            (root / "comparison").with_suffix(suffix).unlink(missing_ok=True)
+        result = subprocess.run([
+            sys.executable, str(RUNNER), "compare", "--reports", str(root / "reports"),
+            "--output", str(root / "comparison"), "--platforms", "local",
+        ], check=False, stdout=subprocess.DEVNULL)
+        text = (root / "comparison.md").read_text(encoding="utf-8")
+        assert result.returncode == expected, text
+        report = json.loads((root / "comparison.json").read_text(encoding="utf-8"))["platforms"]["local"]
+        assert retired in text, "The deletion must stay visible in the readable report"
+        return report
+
+    # Failure modes are recorded in docs/ci/runner.md before the comparison change.
+    run("base", old="pass")
+    run("head")
+    report = compare(0)
+    assert report["removed"] == [retired]
+    assert report["retired"] == {retired: [retained]} and not report["problems"]
+
+    for options in ({"sha": "another-baseline"}, {"module": "test_same_name.py"},
+                    {"old": "assert False"}, {"coverage": None},
+                    {"coverage": "pytest.skip('not executed')"}, {"coverage": "assert False"}):
+        run("base", **{"old": "pass", **options})
+        assert not compare(1)["retired"]
+
+    run("base", old="pass", unrelated=True)
+    report = compare(1)
+    assert report["retired"] == {retired: [retained]}
+    assert report["removed"] == sorted([retired, "test_unapproved_removal"])
+    assert report["problems"]
+
+    run("base", old="pass")
+    for coverage in (None, "pytest.skip('not executed')", "assert False"):
+        run("head", coverage=coverage)
+        assert not compare(1)["retired"]
+
+    # Keeping the old name cannot use the retirement to bypass a failure or skip.
+    for old, category in (("assert False", "regressions"), ("pytest.skip('not executed')", "new_skips")):
+        run("head", old=old)
+        report = compare(1)
+        assert not report["retired"] and not report["removed"]
+        assert report[category] == [retired]
 
 
 def main():
@@ -208,6 +280,7 @@ def main():
         target["run_tests"] = "false"
         target_path.write_text(json.dumps(target))
         compare(1, "--target", str(target_path))
+        check_retirements(root / "retirements")
     print("CLI end-to-end checks passed")
 
 

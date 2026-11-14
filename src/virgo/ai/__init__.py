@@ -9,6 +9,7 @@ from ..diagnostics import capture_error, safe_text
 from .compaction import compact as native_compact
 from .compaction import context_model
 from .models import resolve_model
+from .providers.reasoning import chat_effort, responses_effort
 from .stream import EventStream, StreamEvent, error_message
 from .transform import normalize
 from .types import (
@@ -107,16 +108,9 @@ def completion_request_metadata(model: Model, effort: str | None, limit: int | N
     """Describe adapter request controls, without recording credentials or prompt contents."""
     effective = effort if model.reasoning else None
     if effective and model.api == "openai":
-        from .providers.openai import _EFFORT, _reasoning_effort
-
-        if "reasoningEffortMap" in model.options:
-            effective = model.options["reasoningEffortMap"].get(effective)
-        else:
-            effective = _reasoning_effort(model, effective, _EFFORT.get(effective))
+        effective = chat_effort(model, effective)
     elif effective and model.api in {"openai-responses", "openai-codex"}:
-        from .providers.openai import _reasoning_effort
-
-        effective = _reasoning_effort(model, effective, "xhigh" if effective == "max" else effective)
+        effective = responses_effort(model, effective)
     elif effective and model.api == "google-gemini-cli":
         # The adapter sends a thinking level for Gemini 3, a token budget for older models.
         effective = "low" if effective == "low" else (

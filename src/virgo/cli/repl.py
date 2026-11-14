@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .. import __version__
-from ..features.permission import permission_mode_label
+from ..harness.permissions import permission_mode_label
 from ..harness.session import AgentSession
 from .console import ConsoleBroker, TerminalUI
 

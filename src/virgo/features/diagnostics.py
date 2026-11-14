@@ -8,17 +8,12 @@ from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..diagnostics import capture_error, emergency_write
 from ..harness.diagnostic_access import SECTIONS, DiagnosticAccess
 from ..harness.extensions import ROLES_ALL, ExtensionAPI
-from .permission_context import ReviewSource
 
 
 def setup(api: ExtensionAPI) -> None:
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
-        from ..harness.session import Runtime
-
-        source = ctx.review_source
-        runtime = source.runtime if isinstance(source, ReviewSource) else None
-        if (not isinstance(runtime, Runtime) or runtime.session is not api.session
-                or source is not runtime.review_source or ctx.agent != runtime.name):
+        runtime = api.session.runtime_for_context(ctx)
+        if runtime is None:
             result = {"status": "denied", "message": "Diagnostic lookup requires a trusted calling runtime."}
         elif not isinstance(getattr(runtime, "diagnostic_access", None), DiagnosticAccess):
             result = {"status": "unavailable", "message": "This runtime has no diagnostic evidence collection."}

@@ -52,6 +52,8 @@ UI 新增可选实现 `cancel_input_timeouts()`，用于用户发来 steering �
 
 ### 权限策略
 
+权限模式常量、规范化、显示名称和计划模式工具筛选统一从 `virgo.harness.permissions` 导入。`virgo.features.permission` 保留这些公开名称的兼容导出，现有扩展无需立即改动。
+
 自定义策略通过 `api.register_permission_policy(policy)` 绑定，提供 `preflight(event)` 和 `before_execute(event)`，返回 `Block | None`。`api.services["permissions"]` 仍指向绑定实例，但直接赋值该字典不再替换执行策略。需要兼容内置权限命令和队友模式的策略还应保留内置权限服务的模式管理接口；最简单的方式是包装原策略并转发这些属性。
 
 预检保留原优先级 100 的注册位置。高优先级扩展仍先执行，同优先级按注册顺序运行，第一次非空结果短路。一次派发使用同一处理器快照，动态添加或移除回调只影响下一次派发。执行前复核位于实际工具任务内部；任何检查异常都会阻止工具执行。
@@ -74,6 +76,8 @@ def setup(api):
 `RuntimeContext` 包含 `role`、`cwd`、`store`、`accounting_store` 和 `review_parent`；字段不可重新赋值，存储引用只供读取，不得在准备阶段写入活动会话或候选记录。新回调异常会使准备失败，原活动会话保持不变。旧、新回调按 `order` 排序。
 
 内置主 Agent、队友和子 Agent 统一通过 `session.create_runtime(name, role, **kwargs)` 创建。扩展排队后台任务前应捕获 `ctx.review_source`，传作 `review_parent`；不要在后台启动时重新读取活动主 Agent。子 Agent 的 `store=None` 仍表示不创建独立消息 JSONL，辅助请求必须传入 Runtime 的 `accounting_store`。
+
+工具需要按调用方查询诊断或恢复连接时，使用 `session.runtime_for_context(ctx)` 解析所属 Runtime。它核对真实 Runtime、所属 Session、原始 `review_source` 对象和 Agent 名称；不可信来源返回 `None`，调用方应保留自身的拒绝结果。会话切换不改变旧调用的归属。
 
 ## 结构化错误诊断
 
