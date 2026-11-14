@@ -212,7 +212,7 @@ def test_subagent_failure_reaches_parent_tool_with_same_error_id(make_session):
     assert result.is_error and result.details["error"]["message"] == "child provider unavailable"
     error_id = result.details["error"]["error_id"]
     child_records = [row for row in records(session) if row["error_id"] == error_id]
-    assert len(child_records) == 1 and child_records[0]["context"]["agent"].startswith("general#")
+    assert len(child_records) == 1 and child_records[0]["context"]["agent"].startswith("subagent#")
     assert session.store.custom("model_call")[0]["error_details"]["error_id"] == error_id
     assert "private label" not in json.dumps(child_records) and "private child prompt" not in json.dumps(child_records)
 

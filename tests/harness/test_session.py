@@ -342,10 +342,10 @@ def test_examples_directory_loads(make_session):
     ui = RecordingUI()
     s = make_session(faux.reply("ok"), cwd=examples, ui=ui)
     assert "stats" in s.commands.names() and "review" in s.templates
-    assert "code-review" in s.services["skills"] and "reviewer" in s.services["subagents"].types
+    assert "code-review" in s.services["skills"]
     s.prompt("hi")
     system = calls()[0]["system"]
-    assert "code-review" in system and "workflows" not in s.services
+    assert "code-review" in system and "<agent_types>" not in system and "workflows" not in s.services
     assert not [line for line in ui.lines if "failed" in line]
 
 
