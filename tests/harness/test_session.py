@@ -337,40 +337,6 @@ def test_notify_wakes_idle_session(make_session):
     assert '<notification source="jobs">' in first["content"][0]["text"]
 
 
-def test_retry_on_retryable_errors(make_session, monkeypatch):
-    ui = RecordingUI()
-    s = make_session(
-        faux.error("overloaded_error 529", kind="retryable"),
-        faux.reply("recovered"),
-        ui=ui,
-        settings={"retry": {"maxRetries": 2}},
-    )
-    monkeypatch.setattr("virgo.harness.session.random.random", lambda: 0.0)  # no backoff jitter
-    s.prompt("go")
-    assert s.main.agent.last_text == "recovered"
-    assert "retrying" in ui.text
-
-
-def test_system_prompt_includes_context_files(make_session, project):
-    (project / "AGENTS.md").write_text("Always use tabs.")
-    s = make_session(faux.reply("ok"))
-    s.prompt("hi")
-    system = calls()[0]["system"]
-    assert "Always use tabs." in system and str(project) in system
-    assert "<tools>" not in system
-
-
-def test_model_errors_are_reported(make_session):
-    s = make_session(faux.error("bad request"))
-    s.prompt("go")
-    last = s.main.messages[-1]
-    assert (
-        isinstance(last, AssistantMessage)
-        and last.stop_reason == "error"
-        and last.error_message == "bad request"
-    )
-
-
 def test_examples_directory_loads(make_session):
     examples = REPO_ROOT / "examples" / "project"
     ui = RecordingUI()

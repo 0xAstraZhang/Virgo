@@ -10,8 +10,8 @@ from pathlib import Path
 from .. import __version__
 from ..ai.types import AssistantMessage
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
-from ..features.permission import MODES, normalize_permission_mode
 from ..harness.diagnostics import DiagnosticLog
+from ..harness.permissions import MODES, normalize_permission_mode
 from ..harness.session import AgentSession
 from ..harness.settings import Paths, Settings
 from ..harness.store import SessionStore

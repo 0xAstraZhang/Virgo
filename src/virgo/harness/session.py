@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .. import ai
-from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, Block, ToolCallEvent, ToolResult
+from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, Block, ToolCallEvent, ToolContext, ToolResult
 from ..ai.auth import AuthStore
 from ..ai.compaction import compatible_context, context_binding, is_native_context
 from ..ai.model_metadata import cache_path, clean_metadata, read_catalog, write_metadata
@@ -40,7 +40,6 @@ from ..ai.types import (
     message_to_dict,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
-from ..features.permission import normalize_permission_mode, plan_tool_allowed
 from ..features.permission_context import ReviewSource
 from ..i18n import Translator, normalize_language
 from ..tools import BASE_TOOLS
@@ -58,7 +57,7 @@ from .extensions import (
     load_builtin_features,
     load_user_extensions,
 )
-from .permissions import NoPermissions, PermissionPolicy
+from .permissions import NoPermissions, PermissionPolicy, normalize_permission_mode, plan_tool_allowed
 from .prompt import RuntimeContext, build_system
 from .recovery import RuntimeDiagnostics, message_diagnostics
 from .retry import retry_after_seconds
@@ -912,6 +911,15 @@ class AgentSession:
                 self.report_error(error, phase="runtime.create", store=owner,
                                   context={"agent": name, "role": role})
                 raise
+
+    def runtime_for_context(self, ctx: ToolContext) -> Runtime | None:
+        """Resolve a trusted caller without borrowing the currently selected runtime."""
+        source = ctx.review_source
+        runtime = source.runtime if isinstance(source, ReviewSource) else None
+        if (not isinstance(runtime, Runtime) or runtime.session is not self
+                or source is not runtime.review_source or ctx.agent != runtime.name):
+            return None
+        return runtime
 
     def _new_main(self, store: SessionStore) -> Runtime:
         messages, ids = store.build_context()

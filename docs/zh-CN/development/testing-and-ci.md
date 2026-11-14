@@ -19,13 +19,15 @@ uv build
 
 测试按源码职责组织在 `tests/ai`、`agent`、`harness`、`features`、`tools` 和 `cli`。共享夹具和替身位于 `tests/support/`，测试模块之间不互相导入。跨平台 Shell 引号使用 `python_command`，写入使用临时目录；子进程从其他目录运行时，使用被测 checkout 的精确源码路径。离线场景应隔离持久化用户配置和外部目录刷新。
 
+保留保护独立行为、失败方式或集成边界的场景。只有现有保留场景已经覆盖同一行为时，才删除较弱的重复用例，不能仅因用例小或只测试单个模块而删除。[测试退役记录](test-retirements.md)列出已删除的 9 个重复用例、保留覆盖和 CI 认可删除的条件。
+
 ## 自动检查
 
 [跨平台 CI](../../../.github/workflows/pr-platform-comparison.yml) 在 PR 和推送 `main` 时运行：解析事件中的不可变版本，执行 lint、工作流和 CI 自身验收，按需运行产品套件，最后报告比较检查。
 
 | 触发方式 | 产品验证 |
 | --- | --- |
-| Pull request | 在 Linux、Windows、macOS 上比较事件中的精确 base 和 head |
+| Pull request | 在 Linux、Windows、macOS 上比较事件中的精确 base 和 head；拒绝新增失败、未经审批的测试移除和基线用例新增跳过 |
 | 推送 `main` | 在三个平台严格验证推送的 head |
 | 手动触发 | 一次性解析指定 PR，并运行完整比较 |
 | 仅允许的 Markdown 文档路径变化 | 执行轻量检查，由最终检查报告跳过全量套件 |
@@ -40,7 +42,13 @@ CI 当前使用 Python 3.13 和锁定依赖，软件声明的最低版本仍为 
 
 PR 比较区分“基线通过后回归”和“基线跳过或不存在、现被暴露的失败”，两者都会失败。基线已经失败的场景保留展示，但单独存在时不会让 PR 比较失败。Main 的单版本严格模式对任何 failure/error 都失败。
 
-基线曾执行的测试消失或变成跳过、收集失败、运行不完整、产物损坏或 SHA 不匹配，都会导致检查失败。场景身份使用函数／方法名加参数 ID，不依赖模块路径；重复身份会被拒绝。获认可的历史改名明确记录在 [`reports.py`](../../../ci/pipeline/reports.py)，未知改名不会静默接受，别名也不能掩盖回归。
+基线曾执行的测试未经审批而消失或变成跳过、收集失败、运行不完整、产物损坏或 SHA 不匹配，都会导致检查失败。场景身份使用函数／方法名加参数 ID，不依赖模块路径；重复身份会被拒绝。获认可的历史改名明确记录在 [`reports.py`](../../../ci/pipeline/reports.py)，未知改名不会静默接受，别名也不能掩盖回归。
+
+### 经审查的重复测试退役
+
+主动删除重复用例需要在 `ci/pipeline/reports.py::APPROVED_RETIREMENTS` 显式登记，范围限定为经审查的精确基线 SHA、测试 identity 和原始模块。仅当被删除用例在该基线通过，且每个列出的保留场景在 base/head 均通过时，例外才生效。基线失败、保留覆盖缺失／跳过／失败、其他基线或无关同名用例都不能使用该例外。旧用例仍存在于 head 时，继续接受常规失败／跳过检查。
+
+删除项仍列入 `removed`，`retired` 在 JSON 和可读摘要中记录其保留覆盖。这独立于身份别名，不减少预期数量，也不跳过测试执行。各条目的理由见[退役记录](test-retirements.md)。如果 PR 合并前基线改变，需针对新基线审查映射并显式更新精确 SHA；合并后，后续基线不再包含这些用例，旧例外无法适用。
 
 ## CI 代码结构
 
@@ -49,7 +57,7 @@ PR 比较区分“基线通过后回归”和“基线跳过或不存在、现�
 | `ci/compare_tests.py` | 稳定的 `resolve`、`classify`、`run`、`compare` CLI |
 | `ci/pipeline/targets.py` | 不可变版本解析和变更路径分类 |
 | `ci/pipeline/execution.py` | 执行套件并生成报告 |
-| `ci/pipeline/reports.py` | 报告完整性和认可的身份别名 |
+| `ci/pipeline/reports.py` | 报告完整性、认可的身份别名和经审查的重复测试退役 |
 | `ci/pipeline/comparison.py` | 回归策略与最终摘要 |
 | `ci/pipeline/io.py` | 严格 JSON 和工作流输出 |
 | `ci/run_suite.py`、`ci/run_pytest.py` | 套件分组和进程环境 |
@@ -76,6 +84,8 @@ uv run --no-sync python ci/checks/powershell_cache.py
 ```
 
 这些检查驱动真实临时项目，覆盖错误版本、缺失／不完整结果、前置任务假绿、身份冲突、测试丢失和运行器失败。新增失败边界需要覆盖时，在修改实现前补足，而非实现后补写。
+
+退役机制验收还必须防范无关删除、基线失败、新增跳过，以及保留覆盖缺失／跳过／失败；必须拒绝将例外复用于其他基线 SHA 或无关同名测试，并检查被删除的 identity 是否从可读或 JSON 比较报告中消失。
 
 ## 手动诊断
 

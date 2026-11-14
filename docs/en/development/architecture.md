@@ -22,6 +22,8 @@ Virgo separates model transport, the agent loop and application policy. Built-in
 
 The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). The small root `main.py` is a compatibility launcher. Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
 
+Shared rules live in the layer that owns their meaning. `ai/providers/reasoning.py` supplies OpenAI reasoning-effort mapping to request construction and diagnostic metadata. `harness/permissions.py` owns permission modes, localized labels and plan-mode tool filtering; the concrete approval policy stays in `features/permission.py`, which re-exports the public helpers for compatibility. Features resolve trusted callers through `AgentSession.runtime_for_context()` instead of duplicating identity checks or borrowing the currently selected runtime. See [Abstraction boundaries](abstraction-boundaries.md) for the retained layers and interfaces that need separate design.
+
 ## Sessions and runtimes
 
 `AgentSession` owns workspace paths, effective settings, authentication, a session-scoped translator, the UI adapter, registered tools/commands, shared services and diagnostic logs. A `Runtime` owns one agent context: main, subagent or teammate. Its construction explicitly binds working directory, tools, model, conversation store, accounting store and review ancestry.

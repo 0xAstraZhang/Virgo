@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 
@@ -74,14 +73,6 @@ def test_codex_request_preserves_declared_effort_without_low(effort, declared_by
     params = codex.build_params(model, Context("", [UserMessage("hi")]), StreamOptions(effort=effort))
     expected = "xhigh" if declared_by == "unknown" and effort == "max" else effort
     assert params["reasoning"]["effort"] == expected
-
-
-def test_codex_http_failure_redacts_access_token(account_server):
-    account_server["status"] = 429
-    account_server["body"] = json.dumps({"error": {"message": "Invalid private-test-token"}}).encode()
-    result = codex.stream(_model(account_server), Context("", [UserMessage("hi")]), StreamOptions()).result()
-    assert result.stop_reason == "error" and result.error_kind == "retryable"
-    assert "private-test-token" not in result.error_message
 
 
 def test_codex_truncated_stream_fails(account_server):

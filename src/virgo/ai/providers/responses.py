@@ -30,7 +30,8 @@ from ..validate import parse_tool_arguments
 from ..web import declarations
 from ._errors import attach_error
 from ._http import ProviderError, cancelled, run_cancellable
-from .openai import _client, _reasoning_effort, classify_error
+from .openai import _client, classify_error
+from .reasoning import responses_effort
 
 
 def convert_messages(messages: list, *, api: str = "openai-responses") -> list[dict]:
@@ -134,7 +135,7 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
         params["include"] = ["reasoning.encrypted_content"]
         if opts.effort:
             params["reasoning"] = {
-                "effort": _reasoning_effort(model, opts.effort, "xhigh" if opts.effort == "max" else opts.effort),
+                "effort": responses_effort(model, opts.effort),
                 "summary": "auto",
             }
     return params

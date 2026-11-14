@@ -11,7 +11,7 @@ from ..types import AssistantMessage, Context, Model, RawContent, StreamOptions
 from . import responses
 from ._errors import attach_error
 from ._http import ProviderError, cancelled, classify_error, json_events
-from .openai import _reasoning_effort
+from .reasoning import responses_effort
 
 
 def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
@@ -32,7 +32,7 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
         params.setdefault("tools", []).append(copy.deepcopy(ctx.web_search))
     if model.reasoning and opts.effort:
         params["reasoning"] = {
-            "effort": _reasoning_effort(model, opts.effort, "xhigh" if opts.effort == "max" else opts.effort),
+            "effort": responses_effort(model, opts.effort),
             "summary": "auto",
         }
     return params

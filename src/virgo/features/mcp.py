@@ -603,21 +603,6 @@ class MCPConnections:
         client.generation = generation
         return client
 
-    def _runtime(self, ctx: ToolContext):
-        from ..harness.session import Runtime
-        from .permission_context import ReviewSource
-
-        source = ctx.review_source
-        runtime = source.runtime if isinstance(source, ReviewSource) else None
-        if (
-            not isinstance(runtime, Runtime)
-            or runtime.session is not self.api.session
-            or source is not runtime.review_source
-            or ctx.agent != runtime.name
-        ):
-            return None
-        return runtime
-
     def _report(self, client: MCPClient, error, ctx: ToolContext, *, phase=None, context=None) -> dict:
         runtime = ctx.review_source.runtime if ctx.review_source is not None else None
         owner = (
@@ -801,7 +786,7 @@ class MCPConnections:
 
     def status(self, args: dict, ctx: ToolContext) -> ToolResult:
         server = args.get("server")
-        runtime = self._runtime(ctx)
+        runtime = self.api.session.runtime_for_context(ctx)
         if runtime is None:
             return ToolResult.error(ctx.t("features.mcp.status_runtime"))
         access = getattr(runtime, "diagnostic_access", None)
@@ -844,7 +829,7 @@ class MCPConnections:
         )
 
     def reconnect(self, args: dict, ctx: ToolContext) -> ToolResult:
-        runtime = self._runtime(ctx)
+        runtime = self.api.session.runtime_for_context(ctx)
         if runtime is None:
             return ToolResult.error(ctx.t("features.mcp.recovery_runtime"))
         access = getattr(runtime, "diagnostic_access", None)
@@ -996,7 +981,7 @@ class MCPConnections:
                                 },
                             )
                             slot.recovery_error = details
-                            owner = self._runtime(ctx)
+                            owner = self.api.session.runtime_for_context(ctx)
                             if owner is not None:
                                 owner.recovery.safely("queue", details)
                         continue

@@ -19,13 +19,15 @@ Prefer end-to-end coverage of observable behavior. Add a new scenario only when 
 
 Tests mirror source responsibilities under `tests/ai`, `agent`, `harness`, `features`, `tools` and `cli`. Shared fixtures and doubles live in `tests/support/`; test modules should not import each other. Use the supplied `python_command` helper for cross-platform shell quoting, temporary directories for writes, and the exact checkout's source path when a child process runs outside that checkout. Keep persistent user settings and external catalog refreshes out of offline scenarios.
 
+Retain cases that protect distinct behavior, failure modes or integration boundaries. Remove a weaker duplicate only when existing retained scenarios exercise its behavior, never merely because it is small or tests one module. The [reviewed retirement record](test-retirements.md) lists the nine removed duplicates, their retained coverage and the CI conditions for recognizing the deletion.
+
 ## Automatic checks
 
 [Cross-platform CI](../../../.github/workflows/pr-platform-comparison.yml) runs on pull requests and pushes to `main`. It resolves immutable event revisions, runs lint/workflow/CI acceptance checks, executes product suites where needed, and publishes a final comparison check.
 
 | Trigger | Product validation |
 | --- | --- |
-| Pull request | Compare the event's exact base and head commits on Linux, Windows and macOS |
+| Pull request | Compare the event's exact base and head commits on Linux, Windows and macOS; reject new failures, unapproved test removals and newly skipped baseline tests |
 | Push to `main` | Validate the pushed head strictly on all three platforms |
 | Manual dispatch | Resolve the requested PR once and run the full comparison |
 | Only approved Markdown documentation paths changed | Run lightweight checks and report the full-suite skip through the final check |
@@ -40,7 +42,13 @@ The final summary and `comparison` artifact show new failures, existing failures
 
 PR comparison distinguishes a regression against a passing baseline from a newly exposed failure whose baseline was skipped or absent. Both fail the check. An already failing baseline case remains visible but does not alone fail the PR comparison. Main's strict single-revision mode fails on every failure/error.
 
-Missing executed baseline tests, newly skipped previously executed tests, collection errors, incomplete runs and malformed/mismatched artifacts fail validation. Test identity uses function/method name plus parameter ID, independent of module path. Duplicate identities are rejected. Approved historical renames are explicit aliases in [`reports.py`](../../../ci/pipeline/reports.py); unknown renames are not silently accepted, and aliases cannot hide a regression.
+Unapproved missing executed baseline tests, newly skipped previously executed tests, collection errors, incomplete runs and malformed/mismatched artifacts fail validation. Test identity uses function/method name plus parameter ID, independent of module path. Duplicate identities are rejected. Approved historical renames are explicit aliases in [`reports.py`](../../../ci/pipeline/reports.py); unknown renames are not silently accepted, and aliases cannot hide a regression.
+
+### Reviewed duplicate retirements
+
+Intentional duplicate removal requires an explicit entry in `ci/pipeline/reports.py::APPROVED_RETIREMENTS`, scoped to the exact reviewed baseline SHA, test identity and original module. It applies only if the removed case passed in that baseline and every named retained scenario passed in both base and head. A failing baseline case, missing/skipped/failing retained coverage, another baseline or an unrelated same-name case cannot use the exemption. An old case still present in head receives the ordinary failure/skip checks.
+
+The identity remains in `removed`; `retired` records its retained coverage in both JSON and the readable summary. This is separate from identity aliases and does not reduce expected counts or omit tests from execution. The [retirement record](test-retirements.md) explains each entry. If a PR's base changes before merge, review the mapping against that base and update the exact SHA explicitly. Once merged, later baselines no longer contain these cases and the old exception cannot apply.
 
 ## CI code map
 
@@ -49,7 +57,7 @@ Missing executed baseline tests, newly skipped previously executed tests, collec
 | `ci/compare_tests.py` | Stable `resolve`, `classify`, `run`, `compare` CLI |
 | `ci/pipeline/targets.py` | Immutable revision resolution and changed-path classification |
 | `ci/pipeline/execution.py` | Running suites and producing reports |
-| `ci/pipeline/reports.py` | Report integrity and approved identity aliases |
+| `ci/pipeline/reports.py` | Report integrity, approved identity aliases and reviewed duplicate retirements |
 | `ci/pipeline/comparison.py` | Regression policy and final summary |
 | `ci/pipeline/io.py` | Strict JSON and workflow outputs |
 | `ci/run_suite.py`, `ci/run_pytest.py` | Suite partitioning and process environment |
@@ -76,6 +84,8 @@ uv run --no-sync python ci/checks/powershell_cache.py
 ```
 
 They drive real temporary projects and catch wrong revisions, missing/incomplete results, false-green prerequisites, identity collisions, lost tests, and runner failures. Expand coverage before changing a new failure boundary rather than after the implementation.
+
+Retirement acceptance must also catch unrelated deletions, failing baseline cases, new skips, and retained coverage that is missing, skipped or failing. It must reject reuse against another baseline SHA or an unrelated same-name test, and detect a removed identity disappearing from either the readable or JSON comparison report.
 
 ## Manual diagnostics
 

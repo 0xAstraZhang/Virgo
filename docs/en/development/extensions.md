@@ -76,6 +76,10 @@ Use `Block(reason)` to stop a tool and `Continue(text)` for an explicitly enable
 
 A permission policy is registered with `api.register_permission_policy(policy)` and implements `preflight(event)` plus `before_execute(event)`. The second check is required because parameters or authorization can change after preflight. Use runtime-bound review sources; do not select authorization history from whichever conversation happens to be visible.
 
+Import `MODES`, `normalize_permission_mode`, `permission_mode_label` and `plan_tool_allowed` from `virgo.harness.permissions`. `virgo.features.permission` keeps compatibility re-exports. `permission_mode_label(mode)` defaults to English; pass `permission_mode_label(mode, session.t)` for the session's language. Normalized mode identifiers remain unchanged.
+
+The minimal policy protocol does not cover every built-in feature: hosted web, subagents and teammates also use policy services such as `on_tool_call`, `mode_for`, `decide` and `set_agent_mode`. Wrap and forward the built-in policy when those features are needed. Assigning `api.services["permissions"]` alone does not replace the registered execution policy. See [Policy capability boundaries](abstraction-boundaries.md#custom-permission-policy-capabilities).
+
 Command hooks in settings support `PreToolUse`, `PostToolUse`, `UserPromptSubmit` and `Stop`. They receive JSON on stdin. Exit code `2` is a control result (block/continue, depending on the event), with stderr used as feedback; ordinary failures are diagnosed. Hook matching and exact result semantics live in [`extensions.py`](../../../src/virgo/harness/extensions.py).
 
 ## Prompt sections and persistence
@@ -83,6 +87,8 @@ Command hooks in settings support `PreToolUse`, `PostToolUse`, `UserPromptSubmit
 `api.add_system_section(name, fn, order=50)` calls `fn(role)`. For data tied to a candidate runtime, use `add_runtime_system_section(name, fn, order=50)`: its `RuntimeContext` exposes role, cwd, store, accounting store and review parent. Do not temporarily swap active session state during construction.
 
 `api.append_entry(kind, data)` stores custom state; `api.entries(kind)` restores it from the active branch. Save failure is a real execution boundary, not a successful append. Background callbacks should capture their originating `store` and call `api.notify(..., store=owner)` or `session.report_error(..., store=owner)` so switching conversations cannot redirect their output.
+
+For caller-scoped diagnostic lookup or connection recovery, use `session.runtime_for_context(ctx)`. It checks the real Runtime type, owning Session, original `review_source` object and agent name. An untrusted source returns `None`; the feature must return its own denial, localized through `ctx.t`. Switching conversations does not change the old call's owner, and resolving a Runtime grants no additional diagnostic access.
 
 ## Skills, templates and agent types
 
