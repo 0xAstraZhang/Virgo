@@ -440,7 +440,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     if not cwd.is_dir():
                         raise FileNotFoundError(tr(self, "ui.session.missing_workspace", path=cwd))
                 storage = None if path == "new" and previous.store.path is None else path
-                return AgentSession(cwd, ui=ui, session=storage, **previous.session_options)
+                options = dict(previous.session_options)
+                if cwd.resolve() != previous.cwd:
+                    options["trust_project_extensions"] = False
+                return AgentSession(cwd, ui=ui, session=storage, **options)
 
             try:
                 candidate = await asyncio.to_thread(construct)

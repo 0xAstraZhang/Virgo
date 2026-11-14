@@ -6,8 +6,8 @@ common format::
     {"mcpServers": {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
                                "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}}}}
 
-Servers are connected at session start (in parallel). Same-schema recovery keeps
-stable tool handles; changed schemas enter runtime snapshots at a safe boundary.
+Servers are connected at session start (in parallel). Recovered connections enter
+runtime snapshots at a safe boundary, even when their schemas are unchanged.
 MCP calls and reconnection need permission by default; allow calls with rules like
 ``mcp__github__*``. Reconnection never replays a failed call.
 """
@@ -580,9 +580,9 @@ class _Connection:
 
 
 class MCPConnections:
-    """A stable dispatch handle per server, with bounded, explicit recovery.
+    """Generation-bound dispatch handles, with bounded, explicit recovery.
 
-    Reconnection never replays a tools/call. Changed schemas are published only
+    Reconnection never replays a tools/call. Recovered clients are published only
     by refresh(), which the harness calls between completed tool batches and the
     next model request. An active response keeps its old schema and transport;
     stale direct handles are rejected once their owning response has ended.
@@ -908,7 +908,6 @@ class MCPConnections:
             generation = slot.generation
             conf = slot.config
         candidate = None
-        old = None
         try:
             candidate = self._client(server, conf, generation + 1, cwd=slot.client.cwd)
             candidate.connect(timeout=float(conf.get("timeout", 30)))
@@ -924,23 +923,17 @@ class MCPConnections:
                 if slot.retired:
                     candidate.close()
                     return self._blocked(slot, ctx.t("features.mcp.removed"))
-                if schemas != slot.schemas or slot.inflight:
-                    slot.pending = candidate
-                    slot.pending_context = ctx
-                    refresh_required = True
-                else:
-                    old = slot.client
-                    slot.client = candidate
-                    slot.generation = candidate.generation
-                    self.clients[server] = candidate
-                    self._generations[server] = candidate.generation
-                    refresh_required = False
+                # Zero active calls does not mean zero response leases: a model
+                # may still be generating, or a batch may be between calls.
+                # Publish a new slot at the next boundary for every recovery.
+                slot.pending = candidate
+                slot.pending_context = ctx
                 slot.recovery_error = None
             state = {
                 "server": server,
                 "generation": candidate.generation,
-                "state": "refresh_required" if refresh_required else "connected",
-                "refresh_required": refresh_required,
+                "state": "refresh_required",
+                "refresh_required": True,
                 "replayed_calls": 0,
             }
             return ToolResult.text(
@@ -996,11 +989,9 @@ class MCPConnections:
         finally:
             with slot.lock:
                 slot.reconnecting = False
-            if old is not None:
-                old.close()
 
     def refresh(self, runtime) -> bool:
-        """Publish pending schemas at a safe boundary; the harness refreshes its own runtime."""
+        """Publish pending clients at a safe boundary; the harness refreshes its own runtime."""
         old_clients = []
         with self._registry_lock:
             for slot in list(self.connections.values()):

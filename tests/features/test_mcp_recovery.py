@@ -65,11 +65,14 @@ def test_reconnect_scope_server_generation_and_stable_tool_binding(make_session)
     owner = context(session, runtime=original_runtime)
     result = reconnect(session, error, ctx=owner)
     assert not result.is_error and result.details["mcp_recovery"]["replayed_calls"] == 0
+    assert result.details["mcp_recovery"]["refresh_required"]
+    session.prompt("publish recovered connection")
     replacement = session.services["mcp"]["echo"]
     assert replacement is not original and replacement.generation == original.generation + 1
     assert session.services["mcp"]["other"] is other and not other._closing
-    assert session.tool("mcp__echo__echo") is wrapper
-    assert wrapper.execute({"text": "new connection"}, owner).as_text() == "new connection"
+    assert session.tool("mcp__echo__echo") is not wrapper
+    assert wrapper.execute({"text": "stale connection"}, owner).is_error
+    assert session.tool("mcp__echo__echo").execute({"text": "new connection"}, context(session)).as_text() == "new connection"
     assert original._closing
     assert reconnect(session, error, ctx=owner).is_error
     assert session.services["mcp"]["echo"] is replacement
@@ -200,6 +203,7 @@ def test_handshake_alone_does_not_reset_recovery_budget(make_session):
     session = make_session(settings=settings("echo"))
     for _ in range(MAX_RECONNECT_ATTEMPTS):
         assert not reconnect(session, incident(session)).is_error
+        session.prompt("publish recovered connection")
     result = reconnect(session, incident(session))
     assert result.is_error and "budget" in result.as_text()
 
