@@ -95,6 +95,22 @@ MESSAGES = {
     "features.permission.mode.auto-review": "自动审查",
     "features.permission.mode.plan": "规划",
     "features.permission.no_approver": "操作需要批准（{reason}），但目前无人可审批。请让用户设置允许规则，或使用其他 --permission-mode 重新运行。",
+    "features.permission.plan_command_denied": "只读模式拒绝了此 Shell 命令：{reason}"
+    "不要换一种写法反复尝试相同操作。可使用 read/glob/grep 或已识别的只读命令；"
+    "如果任务必须修改内容，请报告需要写入权限。",
+    "features.permission.readonly.redirection": "Shell 重定向无法被验证为只读。",
+    "features.permission.readonly.shell_syntax": "无法验证 Shell 展开、命令替换或当前语法是否只读。",
+    "features.permission.readonly.environment": "环境变量覆盖可能改变命令的执行行为。",
+    "features.permission.readonly.executable": "可执行文件路径 {command!r} 不属于只读模式信任的系统命令。",
+    "features.permission.readonly.git": "Git 子命令 {subcommand!r} 或其参数未被识别为只读操作。",
+    "features.permission.readonly.mutating": "命令 {command!r} 可能修改文件。",
+    "features.permission.readonly.network": "命令 {command!r} 可能访问网络。",
+    "features.permission.readonly.env_execution": "env 命令可执行其他程序。",
+    "features.permission.readonly.option": "{command!r} 的参数 {option!r} 可能产生副作用，"
+    "或无法验证其是否只读。",
+    "features.permission.readonly.output_operand": "命令 {command!r} 的位置参数包含输出文件。",
+    "features.permission.readonly.unsupported_form": "命令 {command!r} 的参数形式未被识别为只读。",
+    "features.permission.readonly.unverified": "命令 {command!r} 未被识别为只读。",
     "features.permission.plan_readonly": "规划模式仅允许读取：可以调查和制定计划，但暂时不能修改任何内容。",
     "features.permission.review_failed": "自动审查未能完成（{failure}）；这并非安全拒绝: {reason}",
     "features.permission.scope.action_path": "操作访问了工作区外的路径: {path}",

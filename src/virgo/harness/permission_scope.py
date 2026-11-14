@@ -256,6 +256,65 @@ def is_read_only_command(command: str, extra: set[str] | None = None) -> bool:
     return bool(segments) and all(_safe_read_words(words, extra or set()) for words in segments)
 
 
+def read_only_command_rejection(command: str, extra: set[str] | None = None) -> ReviewBoundary | None:
+    """Explain the first rejected segment, without changing the allow/deny classifier."""
+    segments = split_segments(command)
+    if not segments:
+        if ">" in command or "<" in command:
+            return ReviewBoundary("features.permission.readonly.redirection")
+        return ReviewBoundary("features.permission.readonly.shell_syntax")
+
+    for raw_words in segments:
+        if _safe_read_words(raw_words, extra or set()):
+            continue
+        words = _strip_assignments(raw_words)
+        if not words:
+            return ReviewBoundary("features.permission.readonly.environment")
+        executable, *args = words
+        name = PurePosixPath(executable).name
+        if "/" in executable and str(PurePosixPath(executable).parent) not in {"/bin", "/usr/bin"}:
+            return ReviewBoundary("features.permission.readonly.executable", {"command": executable})
+        if name == "git":
+            while len(args) >= 2 and args[0] == "-C":
+                args = args[2:]
+            risky_git_options = (
+                "--output", "--ext-diff", "--textconv", "--exec-path", "-O", "--open-files-in-pager"
+            )
+            option = next((arg for arg in args if arg.startswith(risky_git_options)), None)
+            if option:
+                return ReviewBoundary(
+                    "features.permission.readonly.option",
+                    {"command": "git", "option": option.split("=", 1)[0]},
+                )
+            return ReviewBoundary(
+                "features.permission.readonly.git", {"subcommand": args[0] if args else "(none)"}
+            )
+        if name in _LOCAL_WRITES:
+            return ReviewBoundary("features.permission.readonly.mutating", {"command": name})
+        if name in _NETWORK:
+            return ReviewBoundary("features.permission.readonly.network", {"command": name})
+        if name == "env" and args:
+            return ReviewBoundary("features.permission.readonly.env_execution")
+        risky_options = {
+            "find": ("-delete", "-exec", "-ok", "-fprint", "-fls"),
+            "sed": ("-i", "-f", "-e", "--file", "--in-place", "--expression"),
+            "sort": ("-o", "--output", "--compress-program"),
+            "rg": ("--pre", "--hostname-bin"),
+        }
+        option = next((a for a in args if a.startswith(risky_options.get(name, ()))), None)
+        if option:
+            return ReviewBoundary(
+                "features.permission.readonly.option",
+                {"command": name, "option": option.split("=", 1)[0]},
+            )
+        if name == "uniq" and len([a for a in args if not a.startswith("-")]) > 1:
+            return ReviewBoundary("features.permission.readonly.output_operand", {"command": name})
+        if name in READ_ONLY_COMMANDS or name == "date":
+            return ReviewBoundary("features.permission.readonly.unsupported_form", {"command": name})
+        return ReviewBoundary("features.permission.readonly.unverified", {"command": name})
+    return None
+
+
 def _argument_value(name: str, argument: str) -> str:
     value = argument.split("=", 1)[-1] if "=" in argument else argument
     if argument.startswith("-") and not argument.startswith("--"):

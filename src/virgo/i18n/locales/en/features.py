@@ -112,6 +112,26 @@ MESSAGES = {
     "features.permission.no_approver": "Permission required ({reason}) but nobody is available to approve it. "
     "Ask the user to rerun with an allow rule or a different "
     "--permission-mode.",
+    "features.permission.plan_command_denied": "Read-only mode rejected this shell command: {reason} "
+    "Do not retry the same action using different syntax. Use read/glob/grep or a recognized "
+    "read-only command; if changes are required, report that write access is needed.",
+    "features.permission.readonly.redirection": "Shell redirection cannot be verified as read-only.",
+    "features.permission.readonly.shell_syntax": "Shell expansion, substitution, or syntax cannot "
+    "be verified as read-only.",
+    "features.permission.readonly.environment": "An environment override may change command behavior.",
+    "features.permission.readonly.executable": "Executable path {command!r} is not trusted for "
+    "read-only classification.",
+    "features.permission.readonly.git": "Git subcommand {subcommand!r} or its arguments are not "
+    "recognized as read-only.",
+    "features.permission.readonly.mutating": "Command {command!r} can modify files.",
+    "features.permission.readonly.network": "Command {command!r} can access the network.",
+    "features.permission.readonly.env_execution": "The env command can execute another program.",
+    "features.permission.readonly.option": "Option {option!r} of {command!r} can cause side effects "
+    "or cannot be verified as read-only.",
+    "features.permission.readonly.output_operand": "Command {command!r} uses a positional output file.",
+    "features.permission.readonly.unsupported_form": "The arguments to {command!r} are not a "
+    "recognized read-only form.",
+    "features.permission.readonly.unverified": "Command {command!r} is not recognized as read-only.",
     "features.permission.plan_readonly": "Plan mode is read-only: investigate and plan, but do not modify "
     "anything yet.",
     "features.permission.review_failed": "automatic review could not complete ({failure}); this is not a safety "
