@@ -238,12 +238,16 @@ def setup(api: ExtensionAPI) -> None:
             return ToolResult.error("Subagent requires the originating runtime context.")
         review_parent = runtime.review_source
         review_parent.root.entries()
+
+        def run_child(signal):
+            # Do not change the call signature for existing direct integrations.
+            options = {"read_only": True} if read_only else {}
+            return subs.run(prompt, type_name, desc, signal, ctx.cwd, review_parent, **options)
+
         if args.get("background") and jobs is not None:
             job = jobs.start_callable(
                 f"agent: {desc}",
-                lambda signal: subs.run(
-                    prompt, type_name, desc, signal, ctx.cwd, review_parent, read_only=read_only
-                ),
+                run_child,
                 store=review_parent.root,
                 agent=ctx.agent,
                 tool_call_id=ctx.call_id,
@@ -254,7 +258,7 @@ def setup(api: ExtensionAPI) -> None:
                 # Latch it before this tool returns and the parent can start a new run.
                 jobs.kill(job)
             return ToolResult.text(ctx.t("features.agent.background", id=job.id, description=desc))
-        return subs.run(prompt, type_name, desc, ctx.signal, ctx.cwd, review_parent, read_only=read_only)
+        return run_child(ctx.signal)
 
     api.register_tool(
         AgentTool(
