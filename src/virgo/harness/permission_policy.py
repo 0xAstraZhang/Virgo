@@ -32,6 +32,7 @@ from .permission_scope import (
     command_path_targets,
     inside,
     is_read_only_command,
+    read_only_command_rejection,
 )
 from .permissions import MODES as MODES
 from .permissions import normalize_permission_mode as normalize_permission_mode
@@ -263,11 +264,17 @@ class Permissions:
                     "deny", self.session.t("features.permission.denied_rule", rule=rule), "deny-rule"
                 )
         if mode == "plan":
-            read_only = plan_tool_allowed(ev.tool)
             if ev.tool_name == "bash":
                 extra = set(s.get("permissions.readOnlyCommands", []) or [])
-                read_only = is_read_only_command(ev.args.get("command", ""), extra)
-            if not read_only:
+                rejection = read_only_command_rejection(ev.args.get("command", ""), extra)
+                if rejection is not None:
+                    reason = self.session.t(
+                        "features.permission.plan_command_denied",
+                        reason=rejection.describe(self.session.t),
+                    )
+                    return finish("deny", reason, "plan")
+                return finish("allow", "", "plan")
+            if not plan_tool_allowed(ev.tool):
                 return finish("deny", self.session.t("features.permission.plan_readonly"), "plan")
             return finish("allow", "", "plan")
         action_key = self._approval_key(ev)

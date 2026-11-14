@@ -16,6 +16,8 @@ Use `/diagnostics` to find the log path and the latest ten errors. `/diagnostics
 
 Logs are written on the first error under `~/.virgo/logs/`, or `$VIRGO_HOME/logs/`. Each instance has its own `harness-<UTC-time>-<pid>-<id>.jsonl`. `/new` keeps that instance's log and records the original session ID on each event. `--no-session` still permits diagnostic logs.
 
+When a shell command is blocked in `plan` mode (including runtimes inheriting that mode), the tool result identifies the first unapproved command, option, or shell construct. This is a permission denial, not a transient shell failure: do not retry the same effect with different syntax. Use the file-inspection tools or recognized read-only commands; request a writable run when the task needs changes. The classifier is conservative and is not an OS sandbox.
+
 ## Read a diagnostic
 
 | Field | Meaning |
