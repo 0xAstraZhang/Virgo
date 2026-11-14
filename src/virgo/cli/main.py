@@ -13,7 +13,7 @@ from ..diagnostics import capture_error, emergency_write, error_summary, safe_te
 from ..harness.diagnostics import DiagnosticLog
 from ..harness.permissions import MODES, normalize_permission_mode
 from ..harness.session import AgentSession
-from ..harness.settings import Paths, Settings
+from ..harness.settings import PROFILES, Paths, Settings
 from ..harness.store import SessionStore
 from ..i18n import Translator, normalize_language
 from .console import ConsoleBroker, PrintUI, TerminalUI
@@ -70,7 +70,9 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("-c", "--continue", dest="cont", action="store_true", help=tr(t, "ui.cli.continue"))
     p.add_argument("-r", "--resume", nargs="?", const="", metavar="FILE", help=tr(t, "ui.cli.resume"))
     p.add_argument("--no-session", action="store_true", help=tr(t, "ui.cli.no_session"))
+    p.add_argument("--profile", choices=PROFILES, help=t("ui.cli.profile"))
     p.add_argument("--no-extensions", action="store_true", help=tr(t, "ui.cli.no_extensions"))
+    p.add_argument("--trust-project-extensions", action="store_true", help=t("ui.cli.trust_project_extensions"))
     p.add_argument("-C", "--cwd", default=".", help=tr(t, "ui.cli.cwd"))
     p.add_argument(
         "-V", "--version", action="version", version=f"virgo {__version__}", help=t("ui.cli.version")
@@ -178,6 +180,10 @@ def main(argv: list[str] | None = None) -> int:
     overrides = {"effort": args.effort} if args.effort else {}
     if args.language:
         overrides["language"] = args.language
+    if args.profile:
+        overrides["profile"] = args.profile
+    if args.no_extensions:
+        print(t("ui.cli.no_extensions_warning"), file=sys.stderr)
     try:
         if args.print:
             ui = PrintUI(json_mode=args.mode == "json")
@@ -196,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             permission_mode=args.permission_mode,
             settings=overrides,
             extensions=not args.no_extensions,
+            trust_project_extensions=args.trust_project_extensions,
         )
     except KeyboardInterrupt:
         return 130

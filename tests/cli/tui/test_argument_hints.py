@@ -1,5 +1,6 @@
 """Argument hints exercised through the assembled application."""
 import asyncio
+import json
 
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
@@ -70,7 +71,7 @@ def test_feature_hints(make_session):
         app = VirgoApp(make_session(ui=ui), ui)
         async with app.run_test() as pilot:
             for name in ('login', 'logout', 'shell', 'effort', 'compact', 'sessions',
-                         'search', 'permissions', 'goal', 'memory', 'tasks', 'workflow', 'mcp'):
+                         'search', 'permissions'):
                 app.editor.load_text('/' + name)
                 app.editor.move_cursor(app.editor.document.end)
                 await pilot.pause()
@@ -86,18 +87,18 @@ def setup(api):
     def capture(session, args):
         session.services['captured'] = args
     api.register_command('old', capture, 'legacy', True)
-    api.register_command('model', capture, 'override')
+    api.register_command('hintless', capture, 'no hint')
     api.register_command('capture', capture, argument_hint='[中文参数很长很长很长]')
 ''')
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui)
-        session.templates['model'] = ('collision', '$ARGUMENTS')
+        session.templates['hintless'] = ('collision', '$ARGUMENTS')
         app = VirgoApp(session, ui)
         copied = []
         monkeypatch.setattr(app, 'copy_to_clipboard', copied.append)
         async with app.run_test() as pilot:
-            for name in ('old', 'model'):
+            for name in ('old', 'hintless'):
                 app.editor.load_text('/' + name)
                 app.editor.move_cursor(app.editor.document.end)
                 await pilot.pause()
@@ -134,6 +135,9 @@ def test_workspace_switch_uses_current_command_metadata(make_session, project, t
 
     target = tmp_path / 'target'
     path = saved_session(target)
+    (tmp_path / 'home' / 'settings.json').write_text(json.dumps({
+        'extensions': {'trustedProjects': [str(project.resolve()), str(target.resolve())]},
+    }), encoding='utf-8')
     for root, hint in ((project, '[first]'), (target, '[second]')):
         directory = root / '.virgo' / 'extensions'
         directory.mkdir(parents=True)
@@ -143,7 +147,7 @@ def test_workspace_switch_uses_current_command_metadata(make_session, project, t
         )
     async def scenario():
         ui = FullscreenUI()
-        app = VirgoApp(make_session(ui=ui), ui)
+        app = VirgoApp(make_session(ui=ui, trust_project_extensions=False), ui)
         async with app.run_test() as pilot:
             await pilot.press(*'/custom')
             assert '[first]' in rendered(app)

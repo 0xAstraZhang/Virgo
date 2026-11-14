@@ -43,7 +43,7 @@ def test_mcp_tools_are_namespaced_and_permission_checked(make_session, project, 
         reviewed.append(event.tool_name)
         return False, "external service needs approval"
 
-    monkeypatch.setattr("virgo.features.permission.review_tool_call", review)
+    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", review)
     (project / ".virgo").mkdir()
     (project / ".virgo" / "mcp.json").write_text(
         json.dumps({"mcpServers": {"echo": {"command": sys.executable, "args": [str(SERVER)]}}})
@@ -90,7 +90,8 @@ def test_mcp_reconnect_rebinds_tools_to_the_new_connection(make_session, project
     # A server removed from the configuration takes its tools with it.
     (project / ".virgo" / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
     s.prompt("/mcp reconnect")
-    assert not any(t.name.startswith("mcp__") for t in s.main.tools)
+    # Registry publication is immediate; runtimes adopt it at their next request boundary.
+    assert not any(t.name.startswith("mcp__") for t in s.tools_for("main"))
     assert s.tool("mcp__echo__add", "subagent") is None
 
 

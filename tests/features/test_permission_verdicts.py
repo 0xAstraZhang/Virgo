@@ -11,9 +11,9 @@ from virgo import ai
 from virgo.agent.types import Block
 from virgo.ai.providers import faux, openai
 from virgo.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
-from virgo.features import permission
-from virgo.features.permission import ReviewDecision
-from virgo.features.permission_context import build_review_input
+from virgo.harness.permission_context import build_review_input
+from virgo.harness.permission_policy import ReviewDecision
+from virgo.plugins import auto_review as permission
 
 from tests.support.harness import RecordingUI, tool_call_event
 

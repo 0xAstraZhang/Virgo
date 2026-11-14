@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from virgo.features.permission_scope import command_review_reason, is_read_only_command
+from virgo.harness.permission_scope import command_review_reason, is_read_only_command
 
 
 @pytest.mark.parametrize("command", [

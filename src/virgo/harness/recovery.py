@@ -138,8 +138,7 @@ class RuntimeDiagnostics:
 
     def before_request(self):
         """Append evidence only when a model request is already going to happen."""
-        if (not self.runtime.session.settings.feature_enabled("diagnostics") or
-                not self.runtime.can_run() or self.runtime.agent.signal.is_set()):
+        if not self.runtime.can_run() or self.runtime.agent.signal.is_set():
             return
         query_available = any(tool.name == "diagnostic_get" for tool in self.runtime.tools)
         with self._lock:

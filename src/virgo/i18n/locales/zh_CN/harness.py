@@ -166,4 +166,8 @@ MESSAGES = {
     "harness.shell.saved": "命令解释器：{label}\n工具：{tool}；语法：{syntax}。已保存为默认设置；重启时项目设置、运行参数和 VIRGO_SHELL 优先。",
     "harness.shell.unavailable": "命令解释器不可用：{error}。使用 /shell 选择已安装的解释器。",
     "harness.shell.usage": "用法：/shell [名称|绝对路径|auto]（路径包含空格时请加引号）",
+    "harness.plugins.degraded": "插件 {name!r} 不可用；当前会话已降级运行。",
+    "harness.extensions.untrusted_project": "未加载项目 Python 扩展。审查后，可使用 --trust-project-extensions 或用户配置中的 extensions.trustedProjects 授予本工作区信任。",
+    "harness.migration.retired_data": "发现旧版自动化或记忆数据，已原样保留。定时任务不再执行；迁移或导出前请阅读 docs/zh-CN/guides/migrating-to-core-plugins.md。",
+    "harness.commands.retired": "/{name} 已退出官方 Coding Harness。历史数据保持原样，迁移方式见 Core／插件迁移指南。",
 }

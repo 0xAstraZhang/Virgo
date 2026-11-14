@@ -38,7 +38,7 @@ def login(session, args):
         return
     ui.print(f'Configured {method} / {model}; key length={len(secret)}')
 
-session.commands.register('login', login, 'test login form')
+session.commands._cmds['login'].fn = login  # Replace the test fixture callback, not registration.
 run_repl(session, ui, broker)
 """
 

@@ -18,8 +18,8 @@ from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalPicker, SessionPicker
 from virgo.cli.tui.transcript import AssistantView
-from virgo.features import permission as permission_module
-from virgo.features.permission import ReviewDecision
+from virgo.harness.permission_policy import ReviewDecision
+from virgo.plugins import auto_review as permission_module
 
 from tests.support.tui import has_reply, wait_for
 

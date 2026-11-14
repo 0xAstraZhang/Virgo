@@ -115,14 +115,6 @@ MESSAGES = {
     "tools.mcp_status.description": "Read local MCP connection state, generation, pending calls and accessible "
     "diagnostic IDs. Does not contact servers.",
     "tools.mcp_status.label": "MCP status",
-    "tools.memory.description": "Save, update or delete a durable memory. Future sessions receive its index "
-    "entry and can read the file. Types user/feedback use user scope; "
-    "project/reference use project scope. Save requires type, description and body; "
-    "update preserves omitted fields.",
-    "tools.memory.label": "Memory",
-    "tools.memory.parameters.properties.body.description": "The memory itself (Markdown)",
-    "tools.memory.parameters.properties.description.description": "One line: what this memory is about",
-    "tools.memory.parameters.properties.name.description": "Short unique title",
     "tools.output.aborted": "{text}\n\n[Command aborted]",
     "tools.output.budget": "{shown}\n"
     "\n"
@@ -142,18 +134,6 @@ MESSAGES = {
     "tools.read.parameters.properties.offset.description": "1-based line to start from",
     "tools.read.parameters.properties.path.description": "File path, relative to the working directory or "
     "absolute",
-    "tools.schedule.description": "Schedule a prompt to run later (at: ISO time or +10m/+2h/+1d) or repeatedly "
-    "(cron: 5 fields, local time), or every interval_minutes elapsed minutes "
-    "(optional start_at: first ISO date/time). Specify exactly one of at, cron, "
-    "interval_minutes. get reads full details; list returns titles. edit "
-    "preserves timing when only title/prompt changes; to change timing provide a "
-    "complete new rule. Missed intervals are skipped on restart. Tasks run only "
-    "while Virgo is open.",
-    "tools.schedule.label": "Schedule",
-    "tools.schedule.parameters.properties.persist.description": "Keep across Virgo sessions",
-    "tools.schedule.parameters.properties.start_at.description": "First interval execution (ISO, future); "
-    "default now + interval",
-    "tools.schedule.parameters.properties.title.description": "Short, single-line task title",
     "tools.search.backend": "search.backend must be 'duckduckgo' or 'deepseek'.",
     "tools.search.balance": "Search service account has insufficient balance. Top up the account before "
     "retrying.",
@@ -214,39 +194,6 @@ MESSAGES = {
     "tools.shell.unsupported": "Unsupported shell {value!r}; supported: {supported}",
     "tools.shell.version_probe_failed": "version probe failed",
     "tools.shell.wsl": "The WSL bash launcher is not a local shell; select Git Bash or PowerShell.",
-    "tools.submit_plan.description": "Submit your implementation plan to the lead for approval, then end your "
-    "turn.",
-    "tools.submit_plan.label": "Submit plan",
-    "tools.task_create.description": "Create a durable task in the shared task graph (survives sessions; "
-    "teammates can claim it). blocked_by lists existing task ids that must be "
-    "completed first; task_update can change dependencies.",
-    "tools.task_create.label": "Create task",
-    "tools.task_get.description": "Show one task with its full description.",
-    "tools.task_get.label": "Task details",
-    "tools.task_list.description": "List tasks with their state (ready / blocked / in_progress / completed) and "
-    "owner.",
-    "tools.task_list.label": "List tasks",
-    "tools.task_update.description": "Update a task. Setting status=in_progress claims it for you (refused if "
-    "blocked or owned by someone else); status=completed reports which tasks "
-    "became ready. Setting owner does not wake a teammate; team_message "
-    "delivers work.",
-    "tools.task_update.label": "Update task",
-    "tools.team_message.description": "Send a message to a teammate by name, to 'lead', or to '*' (all "
-    "teammates). Wakes an idle recipient; reaches a working recipient at a "
-    "message boundary.",
-    "tools.team_message.label": "Team message",
-    "tools.team_review.description": "Approve or reject a teammate's plan (request_id from its plan request).",
-    "tools.team_review.label": "Review plan",
-    "tools.team_spawn.description": "Start a long-lived teammate with an independent context; include its task "
-    "context in prompt. It waits for messages after finishing a turn. "
-    "plan_first=true requires a plan for your approval before changing "
-    "anything; worktree=true gives it an isolated git worktree.",
-    "tools.team_spawn.label": "Start teammate",
-    "tools.team_status.description": "List teammates and their state.",
-    "tools.team_status.label": "Team status",
-    "tools.team_stop.description": "Ask a teammate to finish its current turn and shut down (force=true aborts "
-    "it).",
-    "tools.team_stop.label": "Stop teammate",
     "tools.todo_write.description": "Replace the session checklist with the complete supplied list. Each item "
     "is pending, in_progress or completed; multiple items may be in_progress.",
     "tools.todo_write.label": "Todos",
@@ -261,10 +208,6 @@ MESSAGES = {
     "tools.web_search.parameters.properties.limit.description": "Number of results, 1–10 (default 5).",
     "tools.web_search.parameters.properties.query.description": "Search query, at most 128 characters for "
     "DeepSeek or 2000 for DuckDuckGo.",
-    "tools.workflow.description": "Run a scripted multi-agent workflow by name (see <workflows>). The script "
-    "fixes the orchestration; pass args as an object. If a run fails, call again "
-    "with resume=<run_id> to continue where it stopped.",
-    "tools.workflow.label": "Workflow",
     "tools.write.description": "Create or overwrite a file with the given content. Parent directories are "
     "created.",
     "tools.write.label": "Write",

@@ -410,7 +410,7 @@ class PrintUI(UI):
     def __init__(self, json_mode: bool = False):
         self.json_mode = json_mode
         self.command_output = False
-        self._lock = threading.Lock()  # sub-agents and teammates emit from other threads
+        self._lock = threading.Lock()  # sub-agents emit from other threads
 
     def command_result(self, text: str) -> None:
         with self._lock:

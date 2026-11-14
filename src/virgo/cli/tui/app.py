@@ -34,9 +34,7 @@ from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .forms import MultilineInput
 from .preferences import PreferencePicker
-from .schedules import ScheduleWorkspace
 from .selection import SelectionCopyMixin
-from .sessions import workspace_name
 from .transcript import EventView, Transcript, update_static
 
 PURPLE = "#7C3AED"
@@ -124,7 +122,6 @@ class ConversationPane(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("", id="cwd", markup=False)
         yield Static(input_hints(self), id="hints", markup=False)
-        yield ScheduleWorkspace(id="schedule-workspace")
         with Vertical(id="body"):
             yield Transcript(id="transcript")
         with Vertical(id="dock"):
@@ -537,11 +534,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     await self.transcript.consume(update.payload)
                 elif update.kind == "print":
                     await self.transcript.add_notice(*update.payload)
-                    workspace = self._pane.query_one(ScheduleWorkspace)
-                    if workspace.display:
-                        workspace.notice(*update.payload)
-                elif update.kind == "schedule_workspace":
-                    self.set_schedule_workspace(update.payload)
                 elif update.kind == "confirmation":
                     self.confirmations.append(update.payload)
                 elif update.kind == "confirmation_cancelled":
@@ -609,9 +601,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             or self.active_input is not None
         ):
             return
-        # The workspace hides the approval dock, including between input steps.
-        if self._pane.query_one(ScheduleWorkspace).display:
-            return
         while self.confirmations:
             confirmation = self.confirmations.popleft()
             if self.ui.is_confirmation_pending(confirmation.id):
@@ -663,10 +652,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.active_input = request.id
         self.input_request = request
         root = self._pane
-        if request.schedule_workspace:
-            root.query_one(ScheduleWorkspace).open(request)
-            self.update_status()
-            return
         if request.preferences is not None:
             self.editor.display = False
             root.query_one(PreferencePicker).open(request.preferences)
@@ -706,8 +691,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             return
         if self.active_confirmation is not None:
             self._pane.query_one(ApprovalPicker).focus_control()
-        elif self._pane.query_one(ScheduleWorkspace).display:
-            self._pane.query_one(ScheduleWorkspace).focus_control()
         elif self.input_request is None:
             self.editor.focus()
         elif self.input_request.preferences is not None:
@@ -722,13 +705,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def finish_input(self, answer: str | PreferenceChoice | None) -> None:
         request_id = self.active_input
         if request_id is None:
-            return
-        if self.input_request is not None and self.input_request.schedule_workspace:
-            self.active_input = None
-            self.input_request = None
-            self._pane.query_one(ScheduleWorkspace).close_request()
-            self.ui.resolve_input(request_id, answer)
-            self.update_status()
             return
         self.active_input = None
         self.input_request = None
@@ -754,26 +730,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.ui.resolve_input(request_id, answer)
         self.update_status()
 
-    def set_schedule_workspace(self, visible: bool) -> None:
-        workspace = self._pane.query_one(ScheduleWorkspace)
-        if visible:
-            workspace.begin()
-        else:
-            workspace.end()
-        for selector in ("#cwd", "#hints", "#body", "#dock"):
-            self._pane.query_one(selector).display = not visible
-        self.focus_composer()
-        self.update_status()
-
-    @on(ScheduleWorkspace.Answered)
-    def schedule_answered(self, event: ScheduleWorkspace.Answered) -> None:
-        event.stop()
-        if (
-            event.workspace is self._pane.query_one(ScheduleWorkspace)
-            and event.request_id == self.active_input
-        ):
-            self.finish_input(event.answer)
-
     @on(Input.Submitted, "#auth-value")
     def input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
@@ -796,20 +752,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         """Refresh the dock labels; unchanged labels are left alone (see ``update_static``)."""
         self.last_status = time.monotonic()
         root = self._pane
-        workspace = root.query_one(ScheduleWorkspace)
-        brand = Text.assemble(("V_", f"bold {PURPLE}"), " Virgo")
-        if workspace.display:
-            brand.append(tr(self, "ui.brand.schedules"), style="dim")
-            width = max(1, self.size.width - 2)
-            path = Text(
-                workspace_name(self.session.cwd, self), style="dim", no_wrap=True, overflow="ellipsis"
-            )
-            path.truncate(max(0, width - brand.cell_len - 2), overflow="ellipsis")
-            if path.cell_len:
-                brand.append(" " * max(2, width - brand.cell_len - path.cell_len))
-                brand.append_text(path)
-        else:
-            brand.append(f" {__version__}", style="dim")
+        brand = Text.assemble(("V_", f"bold {PURPLE}"), " Virgo", (f" {__version__}", "dim"))
         update_static(self.screen_stack[0].query_one("#brand", Static), brand)
         if self.controller.closing:
             hints = shortcut_hints(tr(self, "ui.hints.closing"))
@@ -884,7 +827,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         """Refresh presentation chrome without altering stored conversation text."""
         self.activity.translator = self.session.translator
         update_static(self._pane.query_one("#jump", Static), tr(self, "ui.latest"))
-        self._pane.query_one(ScheduleWorkspace).refresh_language()
         for event in self.transcript.query(EventView):
             event.render_header()
         self.completion_query = None
@@ -1055,9 +997,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if self.has_modal:
             return
         if self.input_request is not None and self.input_request.details is not None:
-            selector = (
-                "#schedule-detail-scroll" if self.input_request.schedule_workspace else "#input-detail-scroll"
-            )
+            selector = "#input-detail-scroll"
             details = self._pane.query_one(selector, VerticalScroll)
             if direction < 0:
                 details.action_page_up()
@@ -1071,9 +1011,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def action_top(self) -> None:
         if not self.has_modal and self.input_request is not None and self.input_request.details is not None:
-            selector = (
-                "#schedule-detail-scroll" if self.input_request.schedule_workspace else "#input-detail-scroll"
-            )
+            selector = "#input-detail-scroll"
             self._pane.query_one(selector, VerticalScroll).scroll_home(animate=False)
         elif not self.has_modal:
             self.transcript.action_scroll_home()

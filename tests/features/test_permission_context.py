@@ -19,7 +19,7 @@ from virgo.ai.types import (
     ToolResultMessage,
     UserMessage,
 )
-from virgo.features.permission_context import (
+from virgo.harness.permission_context import (
     build_review_input,
     review_context_key,
     review_store,

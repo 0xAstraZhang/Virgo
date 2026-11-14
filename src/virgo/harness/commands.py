@@ -51,10 +51,16 @@ class Commands:
         description_key: str = "",
         argument_hint_key: str = "",
     ) -> None:
+        key = name.lstrip("/")
+        if key in self._cmds:
+            raise ValueError(f"Command /{key} is already registered by {self._cmds[key].source}")
         self._cmds[name.lstrip("/")] = Command(
             name.lstrip("/"), fn, description, source, concurrent, argument_hint=argument_hint,
             description_key=description_key, argument_hint_key=argument_hint_key,
         )
+
+    def remove_source(self, source: str) -> None:
+        self._cmds = {name: command for name, command in self._cmds.items() if command.source != source}
 
     def _localized(self, command: Command) -> Command:
         fields = {}

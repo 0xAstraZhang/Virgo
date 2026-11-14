@@ -2,12 +2,12 @@
 
 This is the "integrated harness": every feature plugs into one loop through extension events.
 Per model call, in order:
-  1. steering messages (notifications, teammate messages) are appended by the loop
+  1. steering messages and notifications are appended by the loop
   2. auto-compaction check (at a turn boundary)
   3. `context` handlers build the request view; plan mode restricts instructions and tools
   4. stream with retries (backoff, optional fallback model) and one reactive compaction on overflow
 Per tool call: ordered extensions and explicit permission preflight -> execution recheck -> tool -> results.
-When the agent would stop: follow-ups (schedules), then `agent_stop` handlers (todo, goal, hooks).
+When the agent would stop: queued follow-ups, then `agent_stop` extension handlers.
 """
 
 from __future__ import annotations
@@ -40,10 +40,9 @@ from ..ai.types import (
     message_to_dict,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
-from ..features.permission_context import ReviewSource
 from ..i18n import Translator, normalize_language
 from ..tools import BASE_TOOLS
-from ..tools.shell import Shell
+from ..tools.shell import Shell, ShellTool
 from ..tools.truncate import MAX_BYTES, budget
 from . import compaction
 from .commands import Commands, expand_template, load_templates, register_builtins
@@ -57,10 +56,13 @@ from .extensions import (
     load_builtin_features,
     load_user_extensions,
 )
-from .permissions import NoPermissions, PermissionPolicy, normalize_permission_mode, plan_tool_allowed
+from .permission_context import ReviewSource
+from .permission_policy import install_permissions
+from .permissions import PermissionPolicy, normalize_permission_mode, plan_tool_allowed
 from .prompt import RuntimeContext, build_system
 from .recovery import RuntimeDiagnostics, message_diagnostics
 from .retry import retry_after_seconds
+from .runtime_limits import ChildCancellation, RequestBudget
 from .settings import Paths, Settings
 from .shell_commands import ShellSelection
 from .store import SessionSaveError, SessionStore
@@ -75,7 +77,7 @@ _TRANSCRIPT_STREAM_TYPES = {
 
 
 class Runtime:
-    """One conversation (the lead agent, a teammate, or a sub-agent) and its model-call policy."""
+    """One conversation and its model-call, ownership and cancellation policy."""
 
     def __init__(
         self,
@@ -95,8 +97,10 @@ class Runtime:
         compaction: bool = True,
         review_parent: ReviewSource | None = None,
         accounting_store=None,
+        request_budget: RequestBudget | None = None,
     ):
         self.session = session
+        self.request_budget = request_budget or RequestBudget(session.settings.get("budget.maxModelCalls"))
         self.name = name
         self.role = role
         self.cwd = Path(cwd or session.cwd)
@@ -104,6 +108,7 @@ class Runtime:
         self.accounting_store = accounting_store if accounting_store is not None else (store if role == "main" and store is not None else session.store)
         if role != "main" and review_parent is None:
             review_parent = getattr(getattr(session, "main", None), "review_source", None)
+        self.parent = review_parent.runtime if review_parent is not None else None
         if review_parent is not None:
             review_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
             self.accounting_store = review_parent.root
@@ -114,6 +119,8 @@ class Runtime:
         self.tools = tools if tools is not None else session.tools_for(role)
         self._dynamic_tools = tools is None
         self._allowed_tool_names = {tool.name for tool in self.tools}
+        self._tool_version, registered = session.tool_snapshot(role)
+        self._registered_tools = {tool.name: tool for tool in registered}
         self.compaction = compaction
         self.compacted_at = 1 if messages and (
             getattr(messages[0], "kind", None) == "summary" or is_native_context(messages[0])
@@ -143,7 +150,7 @@ class Runtime:
             max_turns=max_turns,
             can_run=self.can_run,
             on_error=lambda details: self.report_error(details, phase="agent.listener"),
-            project_tool_result=self._project_tool_result if session.settings.feature_enabled("diagnostics") else None,
+            project_tool_result=self._project_tool_result,
             translator=session.translator,
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
@@ -419,24 +426,35 @@ class Runtime:
         s = self.session
         view = s.bus.chain("context", list(messages), self)
         context = self._base_context(view, report_errors=True)
-        from ..features.web import web_service
-
-        web_service(s).prepare(self, context, model or self.model)
+        web = s.services.get("web")
+        if web is not None:
+            web.prepare(self, context, model or self.model)
         if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):
             context.messages = strip_thinking(view)
         return context
 
     # -- model calls ---------------------------------------------------------
+    def refresh_tools(self) -> None:
+        """Adopt registered tools at a request boundary while retaining local restrictions."""
+        version, registered = self.session.tool_snapshot(self.role)
+        if version == self._tool_version:
+            return
+        local = [tool for tool in self.tools if self._registered_tools.get(tool.name) is not tool
+                 or (self.role != "main" and isinstance(tool, ShellTool))]
+        local_names = {tool.name for tool in local}
+        allowed = [tool for tool in registered if tool.name not in local_names and (
+            self._dynamic_tools or tool.name in self._allowed_tool_names
+        )]
+        self.tools[:] = [*allowed, *local]
+        self.agent.cfg.tools = self.tools
+        self._registered_tools = {tool.name: tool for tool in registered}
+        self._tool_version = version
+        self.rebuild_system()
+
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
-        refresh = self.session.services.get("mcp_refresh")
-        if refresh is not None and self.can_run() and not signal.is_set() and refresh(self):
-            # Only MCP wrappers changed. Preserve runtime-local extension tools
-            # and explicitly restricted child tool sets, including their objects.
-            tools = [tool for tool in self.session.tools_for(self.role) if tool.name.startswith("mcp__")]
-            if not self._dynamic_tools:
-                tools = [tool for tool in tools if tool.name in self._allowed_tool_names]
-            self.tools[:] = [tool for tool in self.tools if not tool.name.startswith("mcp__")] + tools
-            self.rebuild_system()
+        if self.can_run() and not signal.is_set():
+            self.session.bus.emit("runtime_request", self)
+            self.refresh_tools()
         self._call_started = time.monotonic()
         self._model_call_id = uuid.uuid4().hex
         self._attempt_number = 0
@@ -475,6 +493,7 @@ class Runtime:
                 yield StreamEvent("error", stopped)
                 return
             request_model = model
+            self.request_budget.consume()
             self._attempt_number += 1
             self._call_started = time.monotonic()
             failed: AssistantMessage | None = None
@@ -561,6 +580,7 @@ class AgentSession:
         permission_mode: str | None = None,
         settings: dict | None = None,
         extensions: bool = True,
+        trust_project_extensions: bool = False,
         home: str | Path | None = None,
         refresh_models: bool = True,
         shell_catalog: tuple[Shell, ...] | None = None,
@@ -570,6 +590,7 @@ class AgentSession:
             "permission_mode": permission_mode,
             "settings": settings,
             "extensions": extensions,
+            "trust_project_extensions": trust_project_extensions,
             "home": home,
             "refresh_models": False,
         }
@@ -580,6 +601,7 @@ class AgentSession:
         self._diagnostic_lock = threading.RLock()
         self._notified_errors: set[str] = set()
         self.settings = Settings.load(self.paths, settings)
+        self.trust_project_extensions = trust_project_extensions
         self.translator = Translator(self.settings.get("language", "en"))
         self.ui.set_translator(self.translator)
         self.auth = AuthStore(self.paths.user / "auth.json")
@@ -590,11 +612,16 @@ class AgentSession:
         self.runtime_sections: list = []
         self.permission_policy: PermissionPolicy | None = None
         self._permission_boundary = None
+        self._additional_permission_policies: list[tuple[str, PermissionPolicy]] = []
         self._reported_save_errors: set[int] = set()
         self._failed_stores: list = []
         self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
         self._main_runtimes: dict[str, Runtime] = {}
-        self._tools: list[tuple[AgentTool, tuple]] = []
+        self._tool_groups: dict[tuple[str, str], tuple[tuple[AgentTool, tuple], ...]] = {}
+        self._tool_version = 0
+        self._plugin_cleanups: list[tuple[str, object]] = []
+        self.loaded_plugins: list[str] = []
+        self._child_runtimes: dict[str, Runtime] = {}
         self.templates: dict = {}
         self.permission_mode = permission_mode or self.settings.get("permissions.mode", "auto-review")
         self.effort = self.settings.get("effort", "medium")
@@ -613,29 +640,35 @@ class AgentSession:
 
         for t in BASE_TOOLS:
             if t.name != "bash":
-                self.register_tool(t, ROLES_ALL)
+                self.register_tool(t, ROLES_ALL, owner="core")
         self.services["shell"] = ShellSelection(self, shell_catalog)
         self.session_options["shell_catalog"] = self.services["shell"].catalog
         self.services["shell"].install_tools()
         register_builtins(self)
         self.store = self._open_store(session)
         self._visited_stores = [self.store]
-        load_builtin_features(self)
-        if extensions:
-            load_user_extensions(self)
-        if self.settings.feature_enabled("permission") and self.permission_policy is None:
-            raise RuntimeError("Permission feature enabled but no policy was registered")
-        if self.permission_policy is None:
-            self.permission_policy = NoPermissions()
-        install_command_hooks(self)
-        self.templates = load_templates(self.paths.both("prompts"))
-        self.main = self._new_main(self.store)
+        try:
+            install_permissions(self)
+            if self.permission_policy is None:
+                raise RuntimeError("Core permission policy was not installed")
+            load_builtin_features(self)
+            if extensions:
+                load_user_extensions(self)
+            install_command_hooks(self)
+            self.templates = load_templates(self.paths.both("prompts"))
+            self.main = self._new_main(self.store)
+        except BaseException:
+            self.cleanup_plugins()
+            raise
         self.main.wakeups = self.wakeups
         for record in self.diagnostics.recent():
             context = record.get("context", {})
             if context.get("session_id") == self.store.id and context.get("agent") in (None, "main"):
                 self.main.recovery.safely("queue", record)
         self.bus.emit("session_start", self)
+        for warning in self.settings.migration_warnings:
+            self.ui.print(warning, "warn")
+        self._warn_retired_data()
         if refresh_models:
             from .preferences import start_model_refresh
 
@@ -644,6 +677,38 @@ class AgentSession:
             self._catalog_refresh_done.set()
 
     # -- diagnostics -----------------------------------------------------------
+    def _warn_retired_data(self):
+        """Only inspect existence; old files are neither parsed nor migrated."""
+        retired = ("schedules.json", "tasks", "runs", "workflows", "memory", "MEMORY.md", "worktrees")
+        if not any(path.exists() for part in retired for path in self.paths.both(part)):
+            return
+        marker = self.paths.user / "migrations" / "core-plugins-v1-notice"
+        if marker.exists():
+            return
+        self.ui.print(self.t("harness.migration.retired_data"), "warn")
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch(exist_ok=True)
+        except OSError as error:
+            self.report_error(error, phase="migration.notice", notify=False)
+
+    def register_cleanup(self, owner: str, callback) -> None:
+        with self._lock:
+            if self._shutdown_started:
+                raise RuntimeError("Cannot register cleanup after shutdown")
+            self._plugin_cleanups.append((owner, callback))
+
+    def cleanup_plugins(self, *, owner: str | None = None) -> None:
+        with self._lock:
+            callbacks = [entry for entry in self._plugin_cleanups if owner is None or entry[0] == owner]
+            self._plugin_cleanups = [entry for entry in self._plugin_cleanups if owner is not None and entry[0] != owner]
+        for plugin, callback in reversed(callbacks):
+            try:
+                callback()
+            except Exception as error:
+                self.report_error(error, phase="extension.cleanup", code="PLUGIN_CLEANUP_FAILED",
+                                  context={"plugin": plugin})
+
     def report_error(self, error, *, phase: str, context=None, store=None,
                      notify=True, kind="fatal", code=None) -> dict:
         """Record a failure independently of session writes, then show its reference.
@@ -842,6 +907,9 @@ class AgentSession:
         if store.save_error is not None:
             self.report_save_error(store.save_error)
             raise store.save_error
+        runtime = self._child_runtimes.get(agent) or self.runtime_for_store(store)
+        if runtime is not None:
+            runtime.request_budget.consume()
         started = time.monotonic()
         diagnostic_context = {
             "agent": agent, "purpose": purpose, "tool_call_id": tool_call_id,
@@ -892,25 +960,62 @@ class AgentSession:
             return SessionStore.new(self.paths.sessions, self.cwd)
         return SessionStore.load(Path(session))
 
-    def create_runtime(self, name: str, role: str, **kwargs) -> Runtime:
+    def create_runtime(self, name: str, role: str, *, parent=None, permission=None, **kwargs) -> Runtime:
         with self._lock:
-            parent = kwargs.get("review_parent")
-            if role != "main" and parent is None:
-                parent = self.main.review_source
-                kwargs["review_parent"] = parent
-            if parent is not None:
-                parent.root.entries()
-            kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else parent.root)
+            review_parent = kwargs.get("review_parent")
+            if role != "main":
+                parent = parent or (review_parent.runtime if review_parent is not None else self.main)
+                if not isinstance(parent, Runtime) or parent.session is not self:
+                    raise ValueError("Runtime parent must belong to this session")
+                if review_parent is not None and review_parent is not parent.review_source:
+                    raise ValueError("Runtime permission source must match its parent")
+                if name in self._child_runtimes or name == "main":
+                    raise ValueError(f"Runtime name {name!r} is already in use")
+                review_parent = parent.review_source
+                kwargs["review_parent"] = review_parent
+                kwargs["request_budget"] = parent.request_budget
+                kwargs["signal"] = ChildCancellation(parent.agent.signal, kwargs.get("signal"))
+                parent_limit = parent.agent.cfg.max_turns
+                if parent_limit is not None:
+                    kwargs["max_turns"] = min(parent_limit, kwargs.get("max_turns") or parent_limit)
+                permissions = self.permission_policy
+                if hasattr(permissions, "set_agent_parent"):
+                    if permission is not None:
+                        permission = normalize_permission_mode(permission)
+                    permissions.set_agent_parent(name, parent.name)
+                    permissions.set_agent_mode(name, permission)
+            if review_parent is not None:
+                review_parent.root.entries()
+            kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else review_parent.root)
             try:
                 runtime = Runtime(self, name, role, **kwargs)
                 if role == "main" and runtime.store is not None:
                     self._main_runtimes[runtime.store.id] = runtime
+                elif role != "main":
+                    self._child_runtimes[name] = runtime
                 return runtime
             except Exception as error:
+                if role != "main" and hasattr(self.permission_policy, "set_agent_parent"):
+                    self.permission_policy.set_agent_mode(name, None)
+                    self.permission_policy.set_agent_parent(name, None)
                 owner = kwargs.get("store") or kwargs.get("accounting_store")
                 self.report_error(error, phase="runtime.create", store=owner,
                                   context={"agent": name, "role": role})
                 raise
+
+    def release_runtime(self, runtime: Runtime) -> None:
+        with self._lock:
+            if self._child_runtimes.get(runtime.name) is not runtime:
+                return
+            self._child_runtimes.pop(runtime.name)
+            if hasattr(self.permission_policy, "set_agent_parent"):
+                self.permission_policy.set_agent_mode(runtime.name, None)
+                self.permission_policy.set_agent_parent(runtime.name, None)
+            for store in (runtime.store, runtime.accounting_store):
+                if store is not None:
+                    with store._lock:
+                        if runtime.agent.signal in store.failure_signals:
+                            store.failure_signals.remove(runtime.agent.signal)
 
     def runtime_for_context(self, ctx: ToolContext) -> Runtime | None:
         """Resolve a trusted caller without borrowing the currently selected runtime."""
@@ -1056,24 +1161,65 @@ class AgentSession:
             self.report_error(error, phase="ui.language_changed")
 
     # -- tools -------------------------------------------------------------------
-    def register_tool(self, tool: AgentTool, roles: tuple = ("main",)) -> None:
-        """Register a tool for the given roles; replaces a same-named tool for those roles only."""
-        kept = []
-        for t, r in self._tools:
-            if t.name == tool.name:
-                r = tuple(x for x in r if x not in roles)
-            if r:
-                kept.append((t, r))
-        self._tools = [*kept, (tool, tuple(roles))]
+    def register_tool(self, tool: AgentTool, roles: tuple = ("main",), *, owner: str = "host") -> None:
+        """Register once; all replacements must use an explicitly owned namespace."""
+        with self._lock:
+            namespace = f"tool:{tool.name}"
+            if (owner, namespace) in self._tool_groups:
+                raise ValueError(f"Tool {tool.name!r} is already registered by {owner}")
+            self.replace_tools(namespace, [(tool, roles)], owner=owner)
+
+    def replace_tools(self, namespace: str, tools, *, owner: str = "host") -> None:
+        """Validate and publish one complete namespace without partial mutations."""
+        if not owner or not namespace:
+            raise ValueError("Tool registrations require an owner and namespace")
+        entries = tuple((tool, tuple(roles)) for tool, roles in tools)
+        if any(not isinstance(tool, AgentTool) or not tool.name or not roles
+               or any(not isinstance(role, str) or not role for role in roles) for tool, roles in entries):
+            raise ValueError("Tool registrations require AgentTool objects and nonempty role names")
+        key = (owner, namespace)
+        with self._lock:
+            occupied = {}
+            for group, values in self._tool_groups.items():
+                if group == key:
+                    continue
+                for tool, roles in values:
+                    for role in roles:
+                        occupied[tool.name, role] = group[0]
+            for tool, roles in entries:
+                for role in roles:
+                    if (tool.name, role) in occupied:
+                        raise ValueError(f"Tool {tool.name!r} for {role} is already registered by {occupied[tool.name, role]}")
+                    occupied[tool.name, role] = owner
+            groups = dict(self._tool_groups)
+            if entries:
+                groups[key] = entries
+            else:
+                groups.pop(key, None)
+            self._tool_groups = groups
+            self._tool_version += 1
+
+    def remove_owned_tools(self, owner: str) -> None:
+        with self._lock:
+            self._tool_groups = {key: values for key, values in self._tool_groups.items() if key[0] != owner}
+            self._tool_version += 1
 
     def unregister_tool(self, name: str) -> None:
-        """Remove a tool from every role, e.g. when the service behind it is replaced."""
-        self._tools = [(t, r) for t, r in self._tools if t.name != name]
+        """Host compatibility API. Plugins replace only their owned namespaces."""
+        with self._lock:
+            self._tool_groups = {
+                key: tuple((tool, roles) for tool, roles in values if tool.name != name)
+                for key, values in self._tool_groups.items()
+            }
+            self._tool_version += 1
+
+    def tool_snapshot(self, role: str) -> tuple[int, list[AgentTool]]:
+        with self._lock:
+            return self._tool_version, [tool for values in self._tool_groups.values()
+                                        for tool, roles in values if role in roles]
 
     def tools_for(self, role: str) -> list[AgentTool]:
-        # Features use object identity to distinguish builtin tools from overrides.
-        # Localize copies only when projecting ToolSpec for a model request.
-        return [t for t, roles in self._tools if role in roles]
+        return self.tool_snapshot(role)[1]
 
     def tool(self, name: str, role: str = "main") -> AgentTool | None:
         return next((t for t in self.tools_for(role) if t.name == name), None)
@@ -1086,6 +1232,18 @@ class AgentSession:
         self.permission_policy = policy
         self.services["permissions"] = policy
 
+    def add_permission_policy(self, policy: PermissionPolicy, *, owner: str):
+        if not callable(getattr(policy, "preflight", None)) or not callable(getattr(policy, "before_execute", None)):
+            raise TypeError("Policy requires preflight(event) and before_execute(event)")
+        entry = (owner, policy)
+        self._additional_permission_policies.append(entry)
+
+        def remove():
+            if entry in self._additional_permission_policies:
+                self._additional_permission_policies.remove(entry)
+
+        return remove
+
     def _persistence_block(self, ev):
         runtime = ev.review_source.runtime if ev.review_source is not None else self.main
         return None if runtime.can_run() else Block(self.t("harness.session.unsaved"))
@@ -1096,6 +1254,12 @@ class AgentSession:
         try:
             policy = getattr(ev, "_permission_policy", self.permission_policy)
             result = getattr(policy, method)(ev)
+            if result is None:
+                policies = getattr(ev, "_additional_permission_policies", tuple(self._additional_permission_policies))
+                for _, policy in policies:
+                    result = getattr(policy, method)(ev)
+                    if result is not None:
+                        break
             return result or self._persistence_block(ev)
         except Exception as error:
             runtime = ev.review_source.runtime if ev.review_source is not None else self.main
@@ -1109,6 +1273,7 @@ class AgentSession:
         if block := self._persistence_block(ev):
             return block
         ev._permission_policy = self.permission_policy
+        ev._additional_permission_policies = tuple(self._additional_permission_policies)
         snapshot = self.bus.snapshot("tool_call")
         boundary = self._permission_boundary
         if boundary is None:
@@ -1163,7 +1328,10 @@ class AgentSession:
             if name in self.templates:
                 text = expand_template(self.templates[name][1], args)
             else:
-                self.ui.print(self.t("harness.commands.unknown", name=name), "error")
+                if name in {"schedule", "schedules", "workflow", "team", "tasks", "task", "memory", "goal"}:
+                    self.ui.print(self.t("harness.commands.retired", name=name), "error")
+                else:
+                    self.ui.print(self.t("harness.commands.unknown", name=name), "error")
                 return
         self.run([UserMessage(text)])
 
@@ -1285,7 +1453,22 @@ class AgentSession:
         self.ui.wake()
 
     def abort(self) -> None:
-        self.main.agent.abort()
+        self.abort_runtime(self.main)
+
+    def abort_runtime(self, runtime: Runtime) -> None:
+        """Latch cancellation for descendants before a main Event can be reused."""
+        if runtime.session is not self:
+            raise ValueError("Cannot abort a runtime owned by another session")
+        with self._lock:
+            runtime.agent.abort()
+            for child in tuple(self._child_runtimes.values()):
+                parent = child.parent
+                while parent is not None:
+                    if parent is runtime:
+                        child.agent.abort()
+                        break
+                    parent = parent.parent
+        self.bus.emit("runtime_abort", runtime)
 
     def compact(self, focus: str | None = None) -> dict | None:
         return self.main.compact(focus=focus, reason="manual")
@@ -1314,10 +1497,15 @@ class AgentSession:
             self._catalog_stop.set()
             self.wakeups.clear()
         self.abort()
+        for runtime in tuple(self._child_runtimes.values()):
+            runtime.agent.abort()
         try:
             self.bus.emit("session_shutdown", self)
         finally:
-            self.cleanup_empty_stores()
+            try:
+                self.cleanup_plugins()
+            finally:
+                self.cleanup_empty_stores()
 
     def cleanup_empty_stores(self) -> None:
         """Remove only empty stores visited by this process, including abandoned /new sessions."""

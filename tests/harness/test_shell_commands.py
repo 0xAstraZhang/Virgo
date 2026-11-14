@@ -21,7 +21,7 @@ from virgo.ai.types import ToolResultMessage
 from virgo.cli.console import ConsoleBroker, TerminalUI
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
-from virgo.features.permission import ReviewDecision
+from virgo.harness.permission_policy import ReviewDecision
 from virgo.harness.session import Runtime
 
 from tests.support.harness import calls
@@ -239,7 +239,7 @@ def test_powershell_failure_and_permission_boundaries(make_session, monkeypatch,
     def deny(s, ev, reason):
         reviews.append((ev.tool_name, ev.args, reason))
         return ReviewDecision("deny", "test denial")
-    monkeypatch.setattr("virgo.features.permission.review_tool_call", deny)
+    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", deny)
     session.permission_mode = "auto-review"
     res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and reviews and not (session.cwd / "unexpected").exists()

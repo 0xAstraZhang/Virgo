@@ -434,3 +434,29 @@ def test_manual_reload_changes_generation_and_invalidates_old_incident(make_sess
     assert current.generation > generation
     assert reconnect(session, error).is_error
     assert session.services["mcp"]["echo"] is current
+
+
+def test_failed_manual_reload_preserves_all_healthy_connections(make_session, monkeypatch):
+    """Validate every candidate before changing registry or closing a healthy transport."""
+    session = make_session(settings=settings("echo", "other"))
+    original = dict(session.services["mcp"])
+    wrappers = {name: session.tool(f"mcp__{name}__echo") for name in original}
+    candidates = []
+    connect = MCPClient.connect
+
+    def fail_one(client, *args, **kwargs):
+        candidates.append(client)
+        if client.name == "other":
+            raise OSError("replacement dependency unavailable")
+        return connect(client, *args, **kwargs)
+
+    monkeypatch.setattr(MCPClient, "connect", fail_one)
+    with pytest.raises(OSError, match="replacement dependency unavailable"):
+        session.prompt("/mcp reconnect")
+    assert session.services["mcp"] == original
+    for name, client in original.items():
+        assert not client._closing
+        assert session.tool(f"mcp__{name}__echo") is wrappers[name]
+        assert wrappers[name].execute({"text": "still healthy"}, context(session)).as_text() == "still healthy"
+    assert candidates and all(candidate._closing for candidate in candidates)
+    assert "replacement dependency unavailable" in session.ui.text

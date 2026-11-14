@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from ..tools.shell import Shell, ShellTool, default_shell, discover_shells, make_shell_tool, probe_shell
+from ..tools.shell import Shell, default_shell, discover_shells, make_shell_tool, probe_shell
 from .extensions import ROLES_ALL
 
 USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)'
@@ -35,12 +35,15 @@ class ShellSelection:
 
     def install_tools(self) -> None:
         s = self.session
-        s._tools = [(tool, roles) for tool, roles in s._tools if not isinstance(tool, ShellTool)]
+        tools = []
         if self.current is None:
+            s.replace_tools("shell", tools, owner="core.shell")
             return
-        s.register_tool(make_shell_tool(self.current), ROLES_ALL)
-        if jobs := s.services.get("jobs"):
-            s.register_tool(make_shell_tool(self.current, jobs), ("main",))
+        jobs = s.services.get("jobs")
+        tools.append((make_shell_tool(self.current), ("subagent",) if jobs else ROLES_ALL))
+        if jobs:
+            tools.append((make_shell_tool(self.current, jobs), ("main",)))
+        s.replace_tools("shell", tools, owner="core.shell")
 
     def select(self, shell: Shell, *, automatic=False) -> None:
         s = self.session

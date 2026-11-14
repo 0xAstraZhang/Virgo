@@ -186,4 +186,8 @@ MESSAGES = {
     "VIRGO_SHELL take precedence on restart.",
     "harness.shell.unavailable": "Shell unavailable: {error}. Use /shell to select an installed interpreter.",
     "harness.shell.usage": "Usage: /shell [name|absolute path|auto] (quote paths containing spaces)",
+    "harness.plugins.degraded": "Plugin {name!r} is unavailable; the session is running with reduced capabilities.",
+    "harness.extensions.untrusted_project": "Project Python extensions were not loaded. Trust this workspace with --trust-project-extensions or a user-level extensions.trustedProjects entry.",
+    "harness.migration.retired_data": "Legacy automation or memory data was found and left untouched. Schedules no longer run. See docs/en/guides/migrating-to-core-plugins.md before migrating or exporting it.",
+    "harness.commands.retired": "/{name} was removed from the official Coding Harness. Historical data is unchanged; see the Core/plugins migration guide.",
 }

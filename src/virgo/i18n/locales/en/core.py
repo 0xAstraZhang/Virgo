@@ -10,8 +10,6 @@ MESSAGES = {
     "language.save_failed": "Language was not changed because the preference could not be saved: {error}",
     "common.unavailable": "unavailable",
     "common.cancelled": "Cancelled.",
-    "ui.base.schedules": "Schedules · Title │ Frequency │ Next run",
-    "ui.base.schedule_new": "＋ New schedule",
     "ui.base.back": "Back",
     "ui.base.multiline_help": "Finish with a line containing .; /cancel cancels; . alone keeps existing content.",
 }

@@ -30,8 +30,13 @@
     "triggerRatio": 0.8,
     "keepRecentTokens": 20000
   },
-  "features": {
-    "schedule": true,
-    "team": true
+  "profile": "coding",
+  "plugins": {
+    "todo": {
+      "enabled": true
+    },
+    "web": {
+      "enabled": true
+    }
   }
 }
