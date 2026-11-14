@@ -43,6 +43,16 @@ To deliberately bypass permission review, use the existing explicit `permissions
 
 `search.maxUses` and `fetch.maxUses` default to `null` rather than three. Configure a positive explicit limit when required. `plugins.web.maxCalls` can bound client search and reading together per calling runtime/user request; operation time and output limits remain. See [Web](web.md).
 
+## Subagent capability migration
+
+The model-facing `agent` tool now uses `description`, `prompt`, optional `read_only` and optional `background`, without a `type` selector:
+
+- Former `type="general"`: omit the type; general delegation is the default.
+- Former `type="explore"`: use `read_only=true`. It allows `read`, `glob`, `grep`, and `bash` checked under plan mode, but not PowerShell. This is not an OS sandbox.
+- Custom `agents/*.md`: move task instructions into a Skill or delegated prompt. Use a trusted extension for model overrides or special tool restrictions.
+
+Existing files under `~/.virgo/agents/` and `.virgo/agents/` are **not deleted or rewritten**. In the 0.2 compatibility window, old callers that explicitly supply `type` can still use `general`, `explore`, and custom definitions with their original prompt, tool, model and permission settings. The new schema does not advertise them, and conflicting built-in type/`read_only` combinations fail closed. The compatibility loader is planned for removal in the next breaking version (0.3); migrate custom definitions before then.
+
 ## Trust project extensions
 
 Project Python can execute arbitrary code as the user. Neither the Core tool permission gate nor plugin failure isolation is a Python sandbox. Review an unfamiliar project's `.virgo/extensions/*.py` before granting trust.
