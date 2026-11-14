@@ -18,7 +18,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import ExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -845,12 +845,29 @@ class AgentSession:
     def _apply_model_metadata(self) -> None:
         if not self._metadata_pending:
             return
-        model = self.resolve(self.model.spec)
+
+        def refreshed(current):
+            resolved = self.resolve(current.spec)
+            # A directory refresh owns capacity/capability metadata, not the
+            # runtime's transport, credentials or explicit provider options.
+            model = replace(
+                current,
+                context_window=resolved.context_window,
+                max_tokens=resolved.max_tokens,
+                reasoning=resolved.reasoning,
+                vision=resolved.vision,
+                supported_reasoning_levels=resolved.supported_reasoning_levels,
+                default_reasoning_level=resolved.default_reasoning_level,
+            )
+            return current if model == current else model
+
+        shared_model = self.small_model is self.model
+        model = refreshed(self.model)
         # An unrelated catalog refresh must not invalidate prepared request
         # bindings by replacing an otherwise unchanged runtime model object.
-        if model != self.model:
+        if model is not self.model:
             self.model = self.main.model = model
-        self.small_model = self.model if self.small_model.spec == self.model.spec else self.resolve(self.small_model.spec)
+        self.small_model = self.model if shared_model else refreshed(self.small_model)
         self._metadata_pending = False
 
     def _small_model(self, model: ai.Model) -> ai.Model:
