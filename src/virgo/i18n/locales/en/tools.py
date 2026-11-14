@@ -3,8 +3,9 @@
 MESSAGES = {
     "tools.agent.description": "Delegate a self-contained task to a sub-agent with a fresh context. It cannot "
     "see this conversation, so include the needed context; only its final answer "
-    "comes back. Several calls in one response run in parallel. Set background=true "
-    "to keep working while it runs. Set read_only=true for read-only inspection.",
+    "comes back. Delegate distinct work that can proceed independently. Several calls in one "
+    "response run in parallel. Set background=true when you have other work to do while it runs. "
+    "A completion notification will deliver the result. Set read_only=true for read-only inspection.",
     "tools.agent.label": "Agent",
     "tools.agent.parameters.properties.description.description": "Short task label",
     "tools.agent.parameters.properties.prompt.description": "Complete instructions for the sub-agent",
@@ -104,8 +105,9 @@ MESSAGES = {
     "tools.grep.parameters.properties.path.description": "File or directory (default: working directory)",
     "tools.job_kill.description": "Stop a background job.",
     "tools.job_kill.label": "Stop job",
-    "tools.job_output.description": "Show a background job's status and output. wait=N blocks up to N seconds "
-    "for it to finish.",
+    "tools.job_output.description": "Inspect a background job's status or output. The job sends a completion "
+    "notification. Keep doing independent work while it runs. Wait only when the next step depends on it "
+    "(wait=N blocks for up to N seconds). Use job_kill when its result is no longer needed.",
     "tools.job_output.label": "Background output",
     "tools.mcp_reconnect.description": "Reconnect one configured MCP server using an accessible diagnostic ID. "
     "Starts its configured process; never replays failed calls. Only use "
