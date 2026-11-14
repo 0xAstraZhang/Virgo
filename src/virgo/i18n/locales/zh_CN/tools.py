@@ -2,11 +2,11 @@
 
 MESSAGES = {
     "tools.agent.description": "把独立任务委派给具有全新上下文的子代理。它无法看到本段对话，请提供必要上下文；仅返回最终回答。同一次回复中的多个调用会并行执行。设置 "
-    "background=true 可在其运行期间继续工作。",
+    "background=true 可在其运行期间继续工作；read_only=true 仅允许只读检查。",
     "tools.agent.label": "子代理",
     "tools.agent.parameters.properties.description.description": "简短的任务标签",
     "tools.agent.parameters.properties.prompt.description": "给子代理的完整指令",
-    "tools.agent.parameters.properties.type.description": "代理类型（默认 general）",
+    "tools.agent.parameters.properties.read_only.description": "只允许子代理使用只读工具和只读 Shell 命令",
     "tools.ask_user.description": "向用户提出一个问题并等待答复。最多提供 3 "
     "个选项（第一个显示为推荐），也可省略选项让用户自由输入。始终提供自定义回答选项。回答会存入对话；不要索取秘密信息。超时、关闭问题或非交互会话会返回 "
     "answered=false，不含回答。",

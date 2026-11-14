@@ -4,11 +4,11 @@ MESSAGES = {
     "tools.agent.description": "Delegate a self-contained task to a sub-agent with a fresh context. It cannot "
     "see this conversation, so include the needed context; only its final answer "
     "comes back. Several calls in one response run in parallel. Set background=true "
-    "to keep working while it runs.",
+    "to keep working while it runs. Set read_only=true for read-only inspection.",
     "tools.agent.label": "Agent",
     "tools.agent.parameters.properties.description.description": "Short task label",
     "tools.agent.parameters.properties.prompt.description": "Complete instructions for the sub-agent",
-    "tools.agent.parameters.properties.type.description": "Agent type (default: general)",
+    "tools.agent.parameters.properties.read_only.description": "Restrict child tools and shell commands to read-only use.",
     "tools.ask_user.description": "Ask one question and wait for the user. Offer up to 3 options (the first is "
     "shown as recommended), or omit options for free text. A custom-answer choice "
     "is always available. Answers are saved in the conversation; do not request "

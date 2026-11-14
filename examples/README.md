@@ -14,7 +14,6 @@ These files show how a project can extend Virgo. Copy only the parts you need in
 | [Secret-file guard](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | A tool hook and a `/stats` command |
 | [Review template](project/.virgo/prompts/review.md) | `.virgo/prompts/review.md` | `/review` with arguments |
 | [Code-review skill](project/.virgo/skills/code-review/SKILL.md) | `.virgo/skills/code-review/` | A skill with a separate checklist |
-| [Reviewer agent](project/.virgo/agents/reviewer.md) | `.virgo/agents/reviewer.md` | A read-only subagent type |
 
 `project/.virgo/` mirrors Virgo's runtime project configuration directory. The enclosing `project/` keeps the sample discoverable; it is not part of the destination path. `AGENTS.example.md` belongs at the project root, not inside `.virgo/`.
 

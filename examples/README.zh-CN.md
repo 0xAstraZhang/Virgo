@@ -14,7 +14,6 @@
 | [敏感文件保护](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | 工具钩子与 `/stats` 命令 |
 | [审查模板](project/.virgo/prompts/review.md) | `.virgo/prompts/review.md` | 支持参数的 `/review` |
 | [代码审查技能](project/.virgo/skills/code-review/SKILL.md) | `.virgo/skills/code-review/` | 技能与单独的检查清单 |
-| [审查 Agent](project/.virgo/agents/reviewer.md) | `.virgo/agents/reviewer.md` | 只读子 Agent 类型 |
 
 `project/.virgo/` 对应 Virgo 实际使用的项目配置目录。外层 `project/` 用于清楚展示示例，不属于目标路径。`AGENTS.example.md` 应放到项目根目录，而不是 `.virgo/` 内。
 

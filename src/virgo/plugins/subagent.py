@@ -1,103 +1,40 @@
-"""Sub-agents: delegate a focused task to an agent with a fresh context; only its final answer returns.
+"""Sub-agents: delegate focused work with fresh contexts and inherited limits.
 
-Built-in types: ``general`` (all base tools) and ``explore`` (read-only). Custom types are Markdown
-files in ``~/.virgo/agents/`` or ``.virgo/agents/``::
-
-    ---
-    name: reviewer
-    description: Reviews a diff for bugs
-    tools: read, grep, glob, bash      # optional (default: all sub-agent tools)
-    model: anthropic/claude-sonnet-5-5  # optional
-    permission: plan                   # optional permission mode for this agent
-    ---
-    You are a meticulous code reviewer...
+The read_only capability restricts child tools and shell permissions, not the parent.
 """
 
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass, field
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..ai.types import AssistantMessage, ToolResultMessage, UserMessage
 from ..diagnostics import safe_text
-from ..harness.commands import parse_frontmatter
 from ..harness.extensions import ExtensionAPI
 
 _counter = itertools.count(1)
-
-
-@dataclass
-class AgentType:
-    name: str
-    description: str
-    prompt: str = ""
-    tools: list[str] | None = None  # None = all sub-agent tools
-    model: str | None = None
-    permission: str | None = None
-    source: str = "builtin"
-    extra: dict = field(default_factory=dict)
-
-
-BUILTIN_TYPES = [
-    AgentType(
-        "general",
-        "General-purpose agent for multi-step tasks: research, edits, running commands.",
-    ),
-    AgentType(
-        "explore",
-        "Read-only agent for finding code and answering questions about the codebase.",
-        prompt="You are in read-only mode; file and system changes are not permitted.",
-        tools=["read", "glob", "grep", "bash"],
-        permission="plan",
-    ),
-]
-
-
-def load_types(api: ExtensionAPI) -> dict[str, AgentType]:
-    types = {t.name: t for t in BUILTIN_TYPES}
-    for d in api.paths.both("agents"):
-        if not d.is_dir():
-            continue
-        for f in sorted(d.glob("*.md")):
-            meta, body = parse_frontmatter(f.read_text(encoding="utf-8"))
-            tools = meta.get("tools")
-            if isinstance(tools, str):
-                tools = [t.strip() for t in tools.split(",") if t.strip()]
-            name = str(meta.get("name") or f.stem)
-            types[name] = AgentType(
-                name=name,
-                description=str(meta.get("description", "")).strip(),
-                prompt=body.strip(),
-                tools=tools,
-                model=meta.get("model"),
-                permission=meta.get("permission"),
-                source=str(f),
-            )
-    return types
+READ_ONLY_TOOLS = frozenset({"read", "glob", "grep", "bash"})
+READ_ONLY_PROMPT = "You are in read-only mode; file and system changes are not permitted."
 
 
 class Subagents:
     def __init__(self, api: ExtensionAPI):
         self.api = api
-        self.types = load_types(api)
 
     def run(
-        self, prompt: str, agent_type: str | AgentType, description: str, signal, cwd=None, review_parent=None
+        self, prompt: str, description: str, signal, cwd=None, review_parent=None,
+        *, read_only: bool = False,
     ) -> ToolResult:
-        """Run a registered or explicitly supplied agent type under its caller's authority."""
+        """Run a child with the caller's authority and optional read-only limits."""
         api = self.api
         review_parent = review_parent or api.current_runtime().review_source
         parent = review_parent.runtime
         owner = review_parent.root
-        at = agent_type if isinstance(agent_type, AgentType) else self.types.get(agent_type)
-        if at is None:
-            return ToolResult.error(
-                api.t("features.agent.unknown_type", type=agent_type, available=", ".join(self.types))
-            )
-        pool = api.tools_for("subagent")
-        tools = [t for t in pool if t.name in at.tools] if at.tools is not None else None
-        name = f"{at.name}#{next(_counter)}"
+        tools = (
+            [tool for tool in api.tools_for("subagent") if tool.name in READ_ONLY_TOOLS]
+            if read_only else None
+        )
+        name = f"subagent#{next(_counter)}"
         rt = None
         failure = cleanup_error = None
         try:
@@ -106,11 +43,10 @@ class Subagents:
                 name,
                 "subagent",
                 parent=parent,
-                permission=at.permission,
+                permission="plan" if read_only else None,
                 cwd=cwd,
                 tools=tools,
-                system_extra=at.prompt or None,
-                model=api.resolve(at.model) if at.model else None,
+                system_extra=READ_ONLY_PROMPT if read_only else None,
                 max_turns=int(api.settings.get("subagents.maxTurns", 50)),
                 signal=signal,
                 compaction=True,
@@ -208,7 +144,10 @@ def setup(api: ExtensionAPI) -> None:
 
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
         prompt, desc = args["prompt"], args.get("description") or args["prompt"][:60]
-        type_name = args.get("type") or "general"
+        unknown = set(args) - {"description", "prompt", "read_only", "background"}
+        if unknown:
+            return ToolResult.error(f"Unexpected agent argument(s): {', '.join(sorted(unknown))}")
+        read_only = args.get("read_only", False)
         jobs = api.services.get("jobs")
         runtime = api.runtime_for_context(ctx)
         if runtime is None and ctx.review_source is None and ctx.agent == "main":
@@ -219,10 +158,14 @@ def setup(api: ExtensionAPI) -> None:
             return ToolResult.error("Subagent requires the originating runtime context.")
         review_parent = runtime.review_source
         review_parent.root.entries()
+
+        def run_child(signal):
+            return subs.run(prompt, desc, signal, ctx.cwd, review_parent, read_only=read_only)
+
         if args.get("background") and jobs is not None:
             job = jobs.start_callable(
                 f"agent: {desc}",
-                lambda signal: subs.run(prompt, type_name, desc, signal, ctx.cwd, review_parent),
+                run_child,
                 store=review_parent.root,
                 agent=ctx.agent,
                 tool_call_id=ctx.call_id,
@@ -233,7 +176,7 @@ def setup(api: ExtensionAPI) -> None:
                 # Latch it before this tool returns and the parent can start a new run.
                 jobs.kill(job)
             return ToolResult.text(ctx.t("features.agent.background", id=job.id, description=desc))
-        return subs.run(prompt, type_name, desc, ctx.signal, ctx.cwd, review_parent)
+        return run_child(ctx.signal)
 
     api.register_tool(
         AgentTool(
@@ -242,7 +185,8 @@ def setup(api: ExtensionAPI) -> None:
             description=(
                 "Delegate a self-contained task to a sub-agent with a fresh context. It cannot see this "
                 "conversation, so include the needed context; only its final answer comes back. Several calls in one "
-                "response run in parallel. Set background=true to keep working while it runs."
+                "response run in parallel. Set read_only=true to restrict tools and commands. "
+                "Set background=true to keep working while it runs."
             ),
             parameters={
                 "type": "object",
@@ -253,10 +197,14 @@ def setup(api: ExtensionAPI) -> None:
                         "minLength": 1,
                         "description": "Complete instructions for the sub-agent",
                     },
-                    "type": {"type": "string", "description": "Agent type (default: general)"},
+                    "read_only": {
+                        "type": "boolean",
+                        "description": "Limit the child to reading files and read-only shell commands.",
+                    },
                     "background": {"type": "boolean"},
                 },
                 "required": ["description", "prompt"],
+                "additionalProperties": False,
             },
             execute=execute,
             read_only=True,  # its own tool calls are permission-checked individually
@@ -265,13 +213,3 @@ def setup(api: ExtensionAPI) -> None:
         roles=("main",),
     )
 
-    def section(role: str):
-        if role != "main":
-            return None
-        lines = [
-            f"- {t.name}: {api.t('features.agent.type.' + t.name) if t.source == 'builtin' else t.description}"
-            for t in subs.types.values()
-        ]
-        return "<agent_types>\nSub-agent types for the agent tool:\n" + "\n".join(lines) + "\n</agent_types>"
-
-    api.add_system_section("agent_types", section, order=30)

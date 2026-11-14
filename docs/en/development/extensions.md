@@ -9,7 +9,6 @@
 | Python extensions | `~/.virgo/extensions/*.py` | `.virgo/extensions/*.py` | Trusted `setup(api)` code |
 | Skills | `~/.virgo/skills/<name>/SKILL.md` | `.virgo/skills/<name>/SKILL.md`, then `.agents/skills/<name>/SKILL.md` | `skills` |
 | Prompt templates | `~/.virgo/prompts/*.md` | `.virgo/prompts/*.md` | Core prompt assembly |
-| Subagent types | `~/.virgo/agents/*.md` | `.virgo/agents/*.md` | `subagent` |
 | MCP servers | `~/.virgo/mcp.json` | `.virgo/mcp.json` | `mcp` |
 
 `VIRGO_HOME` replaces the user directory. Declarative resources load user-first, then project; later definitions of the same name win. Official plugins live in `virgo.plugins` and use the same `setup(api)` interface as Python extensions. Plugins are loaded once in a fixed order; restart or initialize a workspace session to rediscover files. There is no live unload, dependency installer or plugin sandbox.
@@ -122,7 +121,7 @@ Settings command hooks support `PreToolUse`, `PostToolUse`, `UserPromptSubmit` a
 
 `api.append_entry(kind, data)` and `api.entries(kind)` access custom state on the current store. Background work should capture its actual owner first, then use that store and `api.notify(..., store=owner)`. Save failure is a real execution boundary, not successful persistence. Todo remains conversation state, not a durable task graph.
 
-## Skills, templates and agent types
+## Skills and templates
 
 Skills contain YAML frontmatter (`name`, `description`) followed by Markdown. Discovery exposes the index; the model reads content when needed. `/skill:name args` explicitly expands one. Relative references resolve from the skill directory.
 
@@ -135,6 +134,6 @@ description: review the current diff
 Review the current diff. Focus on: ${1:-correctness}. Additional context: $@
 ```
 
-Templates support `$1`, `$@` / `$ARGUMENTS`, `${1:-value}` and `${@:2}`. Without placeholders, arguments append to the body. Subagent frontmatter supports `name`, `description`, `tools`, `model` and `permission`; its body supplies additional system instructions. The [reviewer example](../../../examples/project/.virgo/agents/reviewer.md) selects read-only tools and plan mode.
+Templates support `$1`, `$@` / `$ARGUMENTS`, `${1:-value}` and `${@:2}`. Without placeholders, arguments append to the body. Specialized instructions belong in a [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) or delegated task prompt; set `read_only=true` for inspection. Custom model or tool policies belong in trusted extensions. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
 
 For caught exceptions use `virgo.diagnostics.capture_error` and retain structured errors in tool results; on successful recovery keep original evidence under `related_errors`. Prefer the original runtime's `report_error()` for runtime-owned evidence. Propagated results/notifications can grant parent access; an error-ID string alone cannot. See [Troubleshooting](../guides/troubleshooting.md).

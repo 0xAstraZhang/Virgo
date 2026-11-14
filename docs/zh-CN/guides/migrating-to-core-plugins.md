@@ -43,6 +43,16 @@ virgo --profile minimal --no-extensions
 
 `search.maxUses` 和 `fetch.maxUses` 从默认三次改为 `null`；需要时可显式设置正整数上限。`plugins.web.maxCalls` 可限制每个调用运行时的一次用户请求中客户端搜索与读取的总调用数；单次操作的时间和输出限制保留。详见[联网能力](web.md)。
 
+## 子代理能力迁移
+
+`agent` 工具现在接收 `description`、`prompt`、可选 `read_only` 和可选 `background`。`type` 参数已被移除，继续传入会导致参数校验失败。
+
+- 原 `type="general"`：直接省略类型参数，默认执行普通委派。
+- 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob`、`grep` 和经过 `plan` 检查的 `bash`，不提供 PowerShell。这不是操作系统沙箱。
+- 自定义 `agents/*.md`：将任务指令迁移至 Skill 或委派提示，特殊模型和工具策略通过受信任的扩展实现。
+
+Virgo 不再加载 `~/.virgo/agents/*.md` 或 `.virgo/agents/*.md`。现有文件不会被删除或改写，需要时可手动迁移或归档。
+
 ## 信任项目扩展
 
 项目 Python 扩展可以用户身份执行任意代码。Core 工具权限门和插件错误隔离都不是 Python 沙箱。对陌生仓库授权前，应先审查 `.virgo/extensions/*.py`。

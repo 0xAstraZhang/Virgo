@@ -10,11 +10,6 @@ MESSAGES = {
     "features.agent.progress": "\n"
     "The child returned {count} tool result(s) before stopping; earlier actions may "
     "already have taken effect. Recent results:\n",
-    "features.agent.type.explore": "Read-only agent for finding code and answering questions about the "
-    "codebase.",
-    "features.agent.type.general": "General-purpose agent for multi-step tasks: research, edits, running "
-    "commands.",
-    "features.agent.unknown_type": "Unknown agent type {type!r}. Available: {available}",
     "features.ask_user.answered": "The user answered: {answer}",
     "features.ask_user.cancelled": "The question was cancelled without an answer.",
     "features.ask_user.chose": "The user chose {letter}: {answer}",
