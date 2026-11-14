@@ -28,7 +28,13 @@ from .permission_context import (
     review_workspace,
     source_for,
 )
-from .permission_scope import command_path_targets, command_review_reason, inside, is_read_only_command
+from .permission_scope import (
+    ReviewBoundary,
+    command_boundary,
+    command_path_targets,
+    inside,
+    is_read_only_command,
+)
 
 if TYPE_CHECKING:
     from ..harness.extensions import ExtensionAPI
@@ -283,19 +289,17 @@ class Permissions:
             for record in records[last_user + 1 :]
         )
 
-    def _boundary_reason(self, ev: ToolCallEvent, t=None) -> str:
-        # Snapshots use stable English; only the displayed review reason follows the session language.
-        t = t or Translator()
+    def _boundary(self, ev: ToolCallEvent) -> ReviewBoundary | None:
         workspace = review_workspace(self.session, ev)
         if ev.tool_name == "powershell":
-            return t("features.permission.scope.powershell")
+            return ReviewBoundary("features.permission.scope.powershell")
         if ev.tool_name == "bash":
-            return command_review_reason(ev.args.get("command", ""), ev.cwd, workspace, t)
+            return command_boundary(ev.args.get("command", ""), ev.cwd, workspace)
         if ev.tool_name in {"read", "write", "edit", "glob", "grep"}:
             path = ev.args.get("path", ".")
             if not isinstance(path, str) or not inside(path, ev.cwd, workspace):
                 target = (ev.cwd / os.path.expanduser(path)).resolve() if isinstance(path, str) else path
-                return t("features.permission.scope.action_path", path=target)
+                return ReviewBoundary("features.permission.scope.action_path", {"path": target})
             if ev.tool_name in {"glob", "grep"}:
                 root = (ev.cwd / os.path.expanduser(path)).resolve()
                 try:
@@ -316,25 +320,24 @@ class Permissions:
                                 if not glob_match(displayed.as_posix(), pattern):
                                     continue
                             if candidate.is_symlink() and not inside(str(candidate), ev.cwd, workspace):
-                                return t(
+                                return ReviewBoundary(
                                     "features.permission.scope.search_link",
-                                    path=candidate,
-                                    target=candidate.resolve(),
+                                    {"path": candidate, "target": candidate.resolve()},
                                 )
                 except (OSError, RuntimeError):
-                    return t("features.permission.scope.search_paths")
-            return ""
+                    return ReviewBoundary("features.permission.scope.search_paths")
+            return None
         if ev.tool_name.startswith("mcp__"):
-            return t("features.permission.scope.external")
+            return ReviewBoundary("features.permission.scope.external")
         if ev.tool_name == "web_fetch":
-            return t("features.permission.scope.fetch")
+            return ReviewBoundary("features.permission.scope.fetch")
         if ev.tool_name == "web_search":
-            return t("features.permission.scope.search")
+            return ReviewBoundary("features.permission.scope.search")
         if ev.tool_name in {"workflow", "memory"}:
-            return t("features.permission.scope.code")
+            return ReviewBoundary("features.permission.scope.code")
         if ev.tool and ev.tool.read_only:
-            return ""
-        return t("features.permission.scope.unknown_tool")
+            return None
+        return ReviewBoundary("features.permission.scope.unknown_tool")
 
     def decide(self, ev: ToolCallEvent) -> tuple[str, str]:
         s = self.session.settings
@@ -375,11 +378,15 @@ class Permissions:
         for rule in s.get("permissions.allow", []) or []:
             if not denial_review and rule_matches(rule, ev):
                 return finish("allow", "", "allow-rule", audit_reason=rule)
-        boundary_reason = self._boundary_reason(ev, self.session.t)
-        if denial_review:
-            boundary_reason = self.session.t("features.permission.scope.previous_denial") + boundary_reason
-        if not boundary_reason:
+        boundary = self._boundary(ev)
+        if boundary is None and not denial_review:
             return finish("allow", "", "workspace")
+        boundary_reason = boundary.describe(self.session.t) if boundary is not None else ""
+        if denial_review:
+            boundary_reason = (
+                ReviewBoundary("features.permission.scope.previous_denial").describe(self.session.t)
+                + boundary_reason
+            )
         source = "auto-review"
         try:
             verdict = review_tool_call(self.session, ev, boundary_reason)
@@ -449,7 +456,7 @@ class Permissions:
     def _allow(self, ev: ToolCallEvent):
         ev._permission_snapshot = self._snapshot(ev)
         ev._permission_boundary = (
-            self._boundary_reason(ev) if self.mode_for(ev.agent) == "auto-review" else ""
+            self._boundary(ev) if self.mode_for(ev.agent) == "auto-review" else None
         )
         return None
 
@@ -457,7 +464,7 @@ class Permissions:
         snapshot = self._snapshot(ev)
         unchanged = getattr(ev, "_permission_snapshot", None) == snapshot
         if unchanged and snapshot[0] == "auto-review":
-            unchanged = getattr(ev, "_permission_boundary", None) == self._boundary_reason(ev)
+            unchanged = getattr(ev, "_permission_boundary", None) == self._boundary(ev)
         if unchanged:
             return None
         return self.on_tool_call(ev, self.session)

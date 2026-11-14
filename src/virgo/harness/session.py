@@ -386,8 +386,8 @@ class Runtime:
             trigger = int((model or self.model).context_window * float(s.get("compaction.triggerRatio", 0.8)))
         return self.context_tokens() >= trigger
 
-    def _base_context(self, messages: list) -> Context:
-        """Assemble instructions and permitted tool schemas without request side effects."""
+    def _base_context(self, messages: list, *, report_errors: bool = False) -> Context:
+        """Assemble instructions and schemas; only actual requests report formatting failures."""
         s = self.session
         permissions = s.services.get("permissions")
         mode = permissions.mode_for(self.name) if hasattr(permissions, "mode_for") else s.permission_mode
@@ -401,7 +401,8 @@ class Runtime:
             except Exception as error:
                 # Extension-provided translation values are presentation data;
                 # a broken formatter must not disable an otherwise usable tool.
-                self.report_error(error, phase="i18n.tool", context={"tool_name": tool.name})
+                if report_errors:
+                    self.report_error(error, phase="i18n.tool", context={"tool_name": tool.name})
                 tools.append(tool.spec())
         if mode == "plan":
             system += (
@@ -418,7 +419,7 @@ class Runtime:
         """Use the same instructions, tools and extension view for generation and compaction."""
         s = self.session
         view = s.bus.chain("context", list(messages), self)
-        context = self._base_context(view)
+        context = self._base_context(view, report_errors=True)
         from ..features.web import web_service
 
         web_service(s).prepare(self, context, model or self.model)

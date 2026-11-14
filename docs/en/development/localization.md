@@ -62,6 +62,8 @@ Do not construct keys from display text or split sentences into translated fragm
 
 Resolution checks the selected pack, then English. If the selected message cannot format the supplied values, the formatter retries the English fallback; invalid arguments still raise if that fallback also cannot format. A key absent from both is returned as the key itself, making missing integration visible. Partial additional packs can therefore fall back to English, but the two shipped editions should stay complete and synchronized. Use distinct keys when grammar requires distinct forms; the current formatter does not implement a plural-rules engine.
 
+Permission decisions and execution rechecks use structured boundary keys and arguments, never the truthiness of a translated reason. Empty boundary translations fall back to English when explaining a required review; they cannot bypass it, including a review required by an earlier denial.
+
 ## Commands and tools
 
 Command registration accepts `description_key` and `argument_hint_key`. Their translated values are resolved when commands are retrieved, so changing languages does not require re-registering every command. The literal name, handler and concurrency behavior stay unchanged. Language choices are generated from the registry.
@@ -77,7 +79,7 @@ Command registration accepts `description_key` and `argument_hint_key`. Their tr
 
 `i18n_values` supplies a mapping, or a callable receiving the translator, for dynamic label/description placeholders such as actual shell details. `localize_tool` copies metadata and schemas; it does not mutate shared tool constants. For built-in keys, an opted-in field translates only when its original text matches the canonical English entry, preserving explicitly overridden extension prose. A custom tool can use keys supplied by an additional language pack even without a canonical English entry; missing translations fall back to the tool's original text. Only schema annotations are translated. Property names, execution functions and values under `default`, `const`, `enum`, `examples` and `required` remain intact, even when a payload contains fields named `description` or `title`.
 
-When extension-supplied metadata or formatting fails during model-request assembly, the runtime records an `i18n.tool` diagnostic and uses the original `ToolSpec`. The localization failure does not remove an otherwise usable tool.
+When extension-supplied metadata or formatting fails during model-request assembly, the runtime records an `i18n.tool` diagnostic and uses the original `ToolSpec`. Token estimation uses the same fallback without recording errors, printing notices or queuing diagnostics, so idle status refreshes cannot grow logs or session history. The localization failure does not remove an otherwise usable tool.
 
 Tool results translate at the point where Virgo creates its own explanatory text through `ctx.t` or `api.t`. File contents, command output and remote payloads are data and must not be passed through a translation catalog.
 
