@@ -219,7 +219,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         Binding("ctrl+r", "sessions", priority=True, show=False),
     ]
 
-    def __init__(self, session, ui: FullscreenUI, initial: str | None = None, pick_session=False):
+    def __init__(self, session, ui: FullscreenUI, initial: str | None = None, pick_session=False,
+                 work_mode: str | None = None):
         super().__init__(ansi_color=True)
         self.session = session
         self.ui = ui
@@ -227,6 +228,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.activity = RunActivity(session.translator)
         self.initial = initial
         self.pick_session = pick_session
+        self.startup_work_mode = work_mode if pick_session else None
         self.session_grouped = session.settings.get("tui.sessionGrouping", "workspace") != "none"
         self._session_picker: SessionPicker | None = None
         self.exit_code = 0
@@ -423,6 +425,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self._session_picker = None
         startup = self.pick_session
         self.pick_session = False
+        work_mode = self.startup_work_mode
+        self.startup_work_mode = None
         self.controller.browsing = False
         if path is None:
             if startup:
@@ -433,12 +437,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             return
         initial = self.initial if startup else None
         self.initial = None
-        if not startup and path == self._pane.key:
+        if path == self._pane.key:
+            if initial:
+                self.controller.submit(initial)
             self.focus_composer()
             return
-        self._pending_switch = (path, initial)
+        self._pending_switch = (path, initial, work_mode)
 
-    async def change_conversation(self, path, initial=None) -> None:
+    async def change_conversation(self, path, initial=None, *, work_mode=None) -> None:
         target = next((pane for pane in self._panes if pane.key == path), None)
         if target is None and path != "new":
             owner = next(
@@ -447,7 +453,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             if owner is not None:
                 # Never create a disk-backed duplicate of a retained conversation.
                 if owner.controller.ui.has_pending_requests or not owner.controller.open_session(
-                    path, initial=initial
+                    path, initial=initial, work_mode=work_mode
                 ):
                     self.notify(tr(self, "ui.session.other_active"), severity="warning")
                     return
@@ -470,7 +476,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 options = dict(previous.session_options)
                 if cwd.resolve() != previous.cwd:
                     options["trust_project_extensions"] = False
-                return AgentSession(cwd, ui=ui, session=storage, **options)
+                return AgentSession(cwd, ui=ui, session=storage, work_mode=work_mode, **options)
 
             try:
                 candidate = await asyncio.to_thread(construct)
@@ -514,9 +520,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.focus_composer()
             return
         if path == "new":
-            changed = self.controller.new_session(initial=initial)
+            changed = self.controller.new_session(initial=initial, work_mode=work_mode)
         else:
-            changed = self.controller.open_session(path, initial=initial)
+            changed = self.controller.open_session(path, initial=initial, work_mode=work_mode)
         if changed:
             self.editor.clear()
             self.history.reset()
@@ -528,10 +534,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self._polling = True
         try:
             if self._pending_switch is not None:
-                path, initial = self._pending_switch
+                path, initial, work_mode = self._pending_switch
                 self._pending_switch = None
                 if not self.controller.closing:
-                    await self.change_conversation(path, initial)
+                    await self.change_conversation(path, initial, work_mode=work_mode)
             for pane in self._panes:
                 if pane is not self._pane:
                     pane.updates.extend(pane.controller.poll())
@@ -884,7 +890,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if event.text.strip() == "/sessions":
             self.action_sessions()
         elif event.text.strip() == "/new":
-            self._pending_switch = ("new", None)
+            self._pending_switch = ("new", None, None)
         else:
             self.controller.submit(event.text)
         self.update_status()

@@ -222,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
             if fullscreen:
                 from .tui import run_fullscreen
 
-                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session)
+                startup = {"work_mode": args.work_mode} if pick_session and args.work_mode is not None else {}
+                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session, **startup)
 
             from .repl import run_repl
 

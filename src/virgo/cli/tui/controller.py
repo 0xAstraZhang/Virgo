@@ -56,7 +56,8 @@ class RunController:
     def can_switch(self) -> bool:
         return not self.busy and not self.closing and not self._helpers and not self._deferred
 
-    def open_session(self, path: Path | str, *, initial: str | None = None) -> bool:
+    def open_session(self, path: Path | str, *, initial: str | None = None,
+                     work_mode: str | None = None) -> bool:
         """Open a saved conversation without retaining another workspace's services."""
         if not self.can_switch:
             return False
@@ -70,12 +71,12 @@ class RunController:
             if target.cwd.resolve() == previous.cwd:
                 if self.closing:
                     return
-                previous.open_session(path)
+                previous.open_session(path, work_mode=work_mode)
             else:
                 if not target.cwd.is_dir():
                     raise FileNotFoundError(tr(self, "ui.session.missing_workspace", path=target.cwd))
                 candidate = AgentSession(
-                    target.cwd, ui=StagedFullscreenUI(self.ui), session=path,
+                    target.cwd, ui=StagedFullscreenUI(self.ui), session=path, work_mode=work_mode,
                     **{**previous.session_options, "trust_project_extensions": False},
                 )
                 with self._lifecycle_lock:
@@ -122,14 +123,14 @@ class RunController:
         self._launch(open_saved)
         return True
 
-    def new_session(self, *, initial: str | None = None) -> bool:
+    def new_session(self, *, initial: str | None = None, work_mode: str | None = None) -> bool:
         if not self.can_switch:
             return False
 
         def start_new() -> None:
             if self.closing:
                 return
-            self.session.new_session()
+            self.session.new_session(work_mode=work_mode)
             if initial and not self.closing:
                 self.session.prompt(initial)
 
