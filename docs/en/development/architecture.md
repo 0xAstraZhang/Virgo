@@ -70,6 +70,8 @@ The base system context combines identity/guidelines, extension sections, projec
 
 Compaction preserves full history while replacing only the model's active context. Supported official providers use their native representation; other providers receive a continuation summary and recent messages. Context hooks should preserve append-only behavior unless they represent a documented boundary.
 
+The ChatGPT account transport sends a stable, opaque cache identifier for each active runtime. The main agent and each subagent have separate identifiers. Normal requests and native compaction share the identifier within each runtime.
+
 `diagnostic_view.py` projects bounded safe summaries. `diagnostic_access.py` owns per-runtime authorization and pagination. `recovery.py` persists granted IDs and pending/delivered evidence and appends notifications at normal request boundaries. Provider retry remains in `Runtime._attempts`; evidence collection does not introduce a second retry loop.
 
 MCP recovery validates a new connection and schema before replacing live handles. Schema changes publish after a tool batch at a safe request boundary; restricted runtimes keep their capability limits. Reconnection never replays business operations. Detailed state and budgets are in [Troubleshooting](../guides/troubleshooting.md).

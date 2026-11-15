@@ -248,7 +248,10 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     result = native_compact(
         model,
         context,
-        StreamOptions(signal=rt.agent.signal, max_tokens=min(8000, model.max_tokens), effort=session.effort),
+        StreamOptions(
+            signal=rt.agent.signal, max_tokens=min(8000, model.max_tokens), effort=session.effort,
+            prompt_cache_key=rt.diagnostic_id,
+        ),
         focus=focus,
     )
     rt.record_model_error(result, purpose="compaction", notify=True, context={

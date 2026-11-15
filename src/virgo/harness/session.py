@@ -487,7 +487,10 @@ class Runtime:
                 yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
                 return
             ctx = self.request_context(messages, model)
-            opts = StreamOptions(signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort)
+            opts = StreamOptions(
+                signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort,
+                prompt_cache_key=self.diagnostic_id,
+            )
             if not self.can_run() or signal.is_set():
                 stopped = AssistantMessage(stop_reason="aborted")
                 yield StreamEvent("error", stopped)

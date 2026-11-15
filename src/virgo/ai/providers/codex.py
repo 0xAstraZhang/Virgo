@@ -26,6 +26,8 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
         "tool_choice": "auto",
         "parallel_tool_calls": True,
     }
+    if opts.prompt_cache_key:
+        params["prompt_cache_key"] = opts.prompt_cache_key
     if ctx.tools:
         params["tools"] = responses.convert_tools(ctx.tools)
     if ctx.web_search:
@@ -115,6 +117,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             "Authorization": f"Bearer {token}",
             "chatgpt-account-id": account_id,
         }
+        if opts.prompt_cache_key:
+            headers.setdefault("session-id", opts.prompt_cache_key)
         events = json_events(
             _endpoint(model), headers, params if params is not None else build_params(model, ctx, opts), opts.signal
         )
