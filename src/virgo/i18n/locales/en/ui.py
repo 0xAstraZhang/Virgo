@@ -1,6 +1,16 @@
 """Terminal and command-line presentation messages."""
 
 MESSAGES = {
+    "ui.status.sandbox": "sandbox: {mode}",
+    "ui.plan.title": "Proposed plan",
+    "ui.plan.token": "Version: {token}",
+    "ui.plan.save": "Save changes",
+    "ui.plan.execute": "Execute this plan",
+    "ui.plan.cancel": "Close",
+    "ui.plan.missing": "No proposed plan yet. Enter Plan mode and ask Virgo to investigate and propose one.",
+    "ui.plan.hints": "Saving returns to Plan and clears confirmation. Execution keeps tool approvals and sandbox limits.",
+    "ui.plan.changed": "The conversation changed. Reopen its current plan before saving or executing.",
+    "ui.plan.busy": "This conversation is busy. Wait or stop it, then select execution again. No execution was queued.",
     "ui.copied": "Copied",
     "ui.preference.model_count_one": "  {count} model",
     "ui.native.in_progress": "in_progress",
@@ -39,6 +49,7 @@ MESSAGES = {
     "ui.cli.help": "show this help message and exit",
     "ui.cli.language": "interface language: English or 中文 (also en or zh-CN)",
     "ui.cli.mode": "print-mode output (json = event stream)",
+    "ui.cli.work_mode": "initial work mode; explicitly overrides this conversation's saved mode without starting execution",
     "ui.cli.model": "model as provider/id, e.g. anthropic/claude-opus-5-5 or openai/gpt-5",
     "ui.cli.no_extensions": "skip user/project extensions",
     "ui.cli.no_saved_sessions": "No saved sessions for this directory.",
@@ -100,7 +111,7 @@ MESSAGES = {
     "ui.hints.effort": "←→ adjust · Enter default · s session · Esc cancel",
     "ui.hints.exit": "Ctrl+C again to exit · /exit also closes Virgo",
     "ui.hints.input": "Enter send · {newline} newline · Esc interrupt · / commands · Ctrl+R sessions · "
-    "Shift+Tab mode",
+    "Ctrl+G plan · Shift+Tab work mode",
     "ui.hints.models": "↑↓ model · ←→ effort · Enter default · s session · Backspace providers · Esc cancel",
     "ui.hints.multiline": "Enter newline · Ctrl+S confirm · Esc cancel",
     "ui.hints.providers": "↑↓ provider · Enter open · Esc cancel",
@@ -137,7 +148,7 @@ MESSAGES = {
     "ui.repl.queued_prompt": "(will be sent when the current command finishes)",
     "ui.repl.resumed": "(resumed session with {count} messages)",
     "ui.repl.steered": "[steering message queued]",
-    "ui.repl.welcome": "Virgo {version} · {model} · effort {effort} · permissions {permissions}\n"
+    "ui.repl.welcome": "Virgo {version} · {model} · effort {effort} · {work_mode} · approval {permissions} · sandbox {sandbox}\n"
     "{cwd}  —  /help for commands, Ctrl-C to interrupt, /exit to quit",
     "ui.session.active": "This session is still active. Finish or interrupt it before moving it to Trash.",
     "ui.session.missing_workspace": "Workspace no longer exists: {path}",

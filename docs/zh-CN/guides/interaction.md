@@ -4,7 +4,7 @@
 
 ## 对话与语言
 
-输入任务并按 Enter。Agent 工作时再次发送消息，会在当前批次工具执行结束后、下一次模型调用前补充到当前任务中。只读命令可并发执行；修改状态的命令会等待当前运行结束。
+输入任务并按 Enter。Agent 工作时再次发送消息，会在当前批次工具执行结束后、下一次模型调用前补充到当前任务中。只读命令可并发执行；普通状态修改命令会等待当前运行结束。`/mode plan` 立即收紧尚未开始的调用。退出 Plan、修改计划或执行计划要求当前对话空闲；忙碌时的计划编辑和执行会被拒绝，不会排队。
 
 ```text
 /language 中文
@@ -30,6 +30,9 @@
 | `/search [auto\|duckduckgo\|deepseek\|off]` | 选择搜索方式 |
 | `/fetch [auto\|http\|deepseek\|off]` | 选择网页读取方式 |
 | `/permissions [auto-review\|accept-all\|plan]` | 查看规则或切换权限模式 |
+| `/mode [default\|plan]` | 查看或切换 WorkMode，保持审批策略与 Sandbox |
+| `/plan [show\|edit [Markdown]\|execute <id>:<revision>]` | 查看、替换或明确执行当前方案 |
+| `/sandbox` | 查看配置的原生命令沙箱 |
 | `/compact [focus]` | 压缩较早的模型上下文 |
 | `/new`、`/sessions [number]`、`/session` | 新建、浏览或查看会话 |
 | `/diagnostics [error-id]` | 查看近期错误和诊断记录 |
@@ -47,9 +50,10 @@
 | Enter | 发送输入；在菜单中确认选中项 |
 | Shift+Enter | 换行；macOS Terminal 使用 Ctrl+J |
 | Tab | 补全斜杠命令和提示模板 |
-| Shift+Tab | 循环切换当前会话的权限模式 |
+| Shift+Tab | 切换 Default / Plan 工作模式；保持审批策略和 Sandbox |
 | ↑ / ↓ | 在菜单中移动；在编辑器边界浏览输入历史 |
 | Ctrl+P / Ctrl+N | 直接浏览输入历史 |
+| Ctrl+G | 打开当前计划，查看、修改或明确执行 |
 | Ctrl+O / Ctrl+T | 切换工具详情／思考的展开状态 |
 | Ctrl+R | 打开会话列表 |
 | PageUp / PageDown | 滚动对话或当前详情 |
@@ -63,6 +67,16 @@ macOS Terminal 可能将 Enter 和 Shift+Enter 发送为相同序列，因此界
 消息正文保持展开；思考、工具调用和结果可独立折叠。向上滚动时停止跟随新输出，回到底部或点击最新消息控件后恢复跟随。选择文字并松开即可复制；密码字段不会自动复制。macOS 使用系统剪贴板，其他终端需要支持 OSC52。
 
 审批面板默认选中拒绝。可以用方向键和 Enter、`y/n/a` 或 `1/2/3` 选择允许一次、拒绝或本会话允许。长问题可滚动查看。权限规则与各模式的含义见[配置参考](../reference/configuration.md#权限)。
+
+底部状态栏分别显示 WorkMode、审批策略和配置的 Sandbox。窄终端优先保留这三项，再显示模型与推理强度。即使审批策略为 `accept-all`，Plan 状态仍然可见。
+
+## 审阅计划后明确执行
+
+使用 `virgo --work-mode plan` 启动，或在现有对话中输入 `/mode plan`。让 Virgo 调查并提出方案。Ctrl+G 打开计划 Markdown 和准确版本 token；`/plan` 也会通过命令输出显示这些内容。
+
+修改计划窗口中的正文后，**执行此计划**按钮禁用。**保存修改**创建未确认的新版本，并保持 Plan；重新打开窗口即可审阅。**执行此计划**只执行窗口所显示的版本，其他入口已经更新该版本时会拒绝执行。关闭窗口不会执行计划或保存编辑。对话忙碌时，保存和执行会被拒绝，不会排队。
+
+使用 `/permissions` 选择审批策略。执行计划或切换 WorkMode 都保留该策略与 Sandbox。完整操作、逐行终端编辑与恢复规则见[规划工作流](planning.md)。
 
 ## 会话与工作空间
 

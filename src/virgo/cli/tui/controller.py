@@ -47,6 +47,8 @@ class RunController:
         self._unsubscribers = [
             session.bus.on("session_start", self._session_reset, priority=-100),
             session.bus.on("agent_event", self._agent_event, priority=100),
+            session.bus.on("work_mode_changed", self._state_changed),
+            session.bus.on("proposed_plan_changed", self._state_changed),
         ]
         ui.bind_signal("main", session.main.agent.signal)
 
@@ -100,6 +102,8 @@ class RunController:
                             self._unsubscribers = [
                                 candidate.bus.on("session_start", self._session_reset, priority=-100),
                                 candidate.bus.on("agent_event", self._agent_event, priority=100),
+                                candidate.bus.on("work_mode_changed", self._state_changed),
+                                candidate.bus.on("proposed_plan_changed", self._state_changed),
                             ]
                             self.ui.push("session_changed", candidate)
                             self._session_reset(candidate)
@@ -157,6 +161,10 @@ class RunController:
             # Agent.prompt resets its own signal. An interrupt may have arrived
             # after scheduling but before that reset on the worker thread.
             self.session.abort_runtime(runtime)
+
+    def _state_changed(self, runtime, _value) -> None:
+        if runtime is self.session.main:
+            self.ui.push("state_changed", None)
 
     def start(self, initial: str | None = None) -> None:
         if self._started or self.closing:
@@ -217,6 +225,10 @@ class RunController:
             self.request_close()
             return
         cmd = self.session.commands.get(text[1:].split(" ", 1)[0]) if text.startswith("/") else None
+        if (cmd is not None and cmd.name == "plan"
+                and text.partition(" ")[2].split(maxsplit=1)[:1] in (["edit"], ["execute"]) and self.busy):
+            self.ui.print(tr(self, "plan.busy"), "warn")
+            return
         if cmd is not None and cmd.concurrent:
             self._launch(
                 lambda: cmd.fn(self.session, text.partition(" ")[2]), concurrent=True, command=cmd.name

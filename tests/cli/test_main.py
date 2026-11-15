@@ -37,7 +37,19 @@ def test_permission_mode_arguments_and_legacy_aliases(value, expected):
     parser = cli.build_parser()
     assert parser.parse_args(["--permission-mode", value]).permission_mode == expected
     assert "{auto-review,accept-all,plan}" in parser.format_help()
-    assert "{default" not in parser.format_help()
+    assert "--permission-mode {default" not in parser.format_help()
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])
+def test_work_mode_startup_is_separate_from_output_approval_and_sandbox(entry, project):
+    result = subprocess.run(
+        [*entry, "--no-session", "--no-extensions", "--model", "faux/demo", "-p",
+         "--mode", "json", "--work-mode", "plan", "--permission-mode", "accept-all",
+         "--sandbox", "read-only", "/permissions"],
+        cwd=project, input="", capture_output=True, text=True, check=True, timeout=10,
+    )
+    assert "plan" in result.stdout.lower() and "accept all" in result.stdout
+    assert all(isinstance(json.loads(line), dict) for line in result.stdout.splitlines())
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])

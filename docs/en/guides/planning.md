@@ -6,7 +6,7 @@ Plan mode lets Virgo investigate a repository and maintain a proposed implementa
 
 ## Investigate, review and execute
 
-Start Virgo, then enter:
+Start in Plan with `virgo --work-mode plan`, or enter `/mode plan` in an existing conversation:
 
 ```text
 /mode plan
@@ -35,7 +35,15 @@ Replace the placeholder with the exact token shown by `/plan`. A missing, stale 
 
 `/mode default` only leaves Plan; it does not confirm or execute the proposal. Text produced by the model, the plan itself and an answer to a clarification question cannot invoke the execution command.
 
-## Edit the Markdown directly
+## Review and edit in the full-screen interface
+
+Press Ctrl+G to open the current proposal, including its Markdown and exact version token. Edit the body and select **Save changes** (Ctrl+S) to save a new unconfirmed revision. Unsaved edits disable **Execute this plan**. After saving, reopen the window to review the new version, then select **Execute this plan** when ready. The window uses the same version checks and execution command as `/plan`; an outdated window cannot overwrite or execute a replacement. **Close** or Esc discards unsaved edits without executing.
+
+Shift+Tab toggles Default and Plan through `/mode`. It does not confirm a proposal or change approval strategy or Sandbox. The footer displays all three dimensions separately and prioritizes them over model metadata when space is limited. Ctrl+P and Ctrl+N continue to browse input history.
+
+A busy conversation rejects plan saves and execution rather than queuing them. Wait for it to finish or stop it, review the current version and select execution again.
+
+## Edit the Markdown with a command
 
 Use `/plan edit` to replace the complete proposal through the client's existing multiline input. In the plain terminal interface, enter the replacement lines and finish with a line containing `.`; `/cancel` cancels, and `.` alone keeps the supplied text. The current Markdown is shown as the starting content. A client without interactive input can supply the Markdown with the command:
 
@@ -97,9 +105,9 @@ Plan state belongs to the main Runtime of its conversation. Child runtimes inher
 | A fresh conversation | Uses configured `workMode`, whose default is `default` |
 | Switching to a retained conversation in the same process | Retains that conversation's Runtime, plan and work mode |
 | Opening saved history | Restores the saved work mode; configured `workMode: "plan"` keeps a Plan ceiling even if history saved Default |
-| Explicit `AgentSession(work_mode="plan" \| "default")` | Overrides the saved/configured independent work mode for the initial conversation only |
+| Explicit `--work-mode plan\|default` or `AgentSession(work_mode="plan" \| "default")` | Overrides the saved/configured independent work mode for the initial conversation only |
 
-Ordinary startup with the default setting does not discard a saved Plan mode. An explicit constructor override does not change the default for subsequently created conversations or write a user preference. The CLI `--mode` remains the output-format option.
+Ordinary startup with the default setting does not discard a saved Plan mode. An explicit CLI or constructor override does not change the default for subsequently created conversations or write a user preference. Use `virgo --continue --work-mode plan` to resume with an explicit Plan ceiling. The CLI `--mode text|json` remains the output-format option; it is independent of `--work-mode`.
 
 Cold restoration clears the plan's live confirmation state. The historical confirmation entry remains available for auditing, but does not queue a request, wake a Runtime or authorize execution again. Approval strategy and Sandbox are taken from the current session configuration, never restored from the plan. Viewing history and selecting a mode do not execute a plan.
 
