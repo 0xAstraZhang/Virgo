@@ -1,8 +1,8 @@
 """Simplified Chinese tools messages."""
 
 MESSAGES = {
-    "tools.agent.description": "把独立任务委派给具有全新上下文的子代理。它无法看到本段对话，请提供必要上下文；仅返回最终回答。同一次回复中的多个调用会并行执行。设置 "
-    "background=true 可在其运行期间继续工作；read_only=true 仅允许只读检查。",
+    "tools.agent.description": "把可独立开展且不重复的工作委派给具有全新上下文的子代理。它无法看到本段对话，请提供必要上下文。仅返回最终回答。"
+    "同一次回复中的多个调用会并行执行。有其他工作可继续时设置 background=true，结果会通过完成通知送达。设置 read_only=true 进行只读检查。",
     "tools.agent.label": "子代理",
     "tools.agent.parameters.properties.description.description": "简短的任务标签",
     "tools.agent.parameters.properties.prompt.description": "给子代理的完整指令",
@@ -87,7 +87,8 @@ MESSAGES = {
     "tools.grep.parameters.properties.path.description": "文件或目录（默认工作目录）",
     "tools.job_kill.description": "停止后台任务。",
     "tools.job_kill.label": "停止任务",
-    "tools.job_output.description": "查看后台任务的状态和输出。wait=N 最多等待 N 秒，让任务完成。",
+    "tools.job_output.description": "查看后台任务的状态或输出。任务完成后会发送通知。运行期间可继续独立工作。"
+    "仅在下一步依赖结果时等待，wait=N 最多阻塞 N 秒。无需结果时用 job_kill 停止任务。",
     "tools.job_output.label": "后台任务输出",
     "tools.mcp_reconnect.description": "使用可访问的诊断 ID 重连一个已配置的 MCP "
     "服务器。会启动其配置的进程，但绝不重放失败调用。请先确认失败原因和上一操作的结果；存在进行中的调用或恢复未取得进展时，此操作会被阻止。",
