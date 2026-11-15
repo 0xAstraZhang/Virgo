@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import socket
 import sys
+import tempfile
 import threading
 
 import pytest
@@ -150,7 +152,7 @@ result = {'secret': os.environ.get('VIRGO_TEST_SECRET'), 'denied': []}
 for family in (socket.AF_INET, socket.AF_INET6, socket.AF_UNIX):
     try:
         with socket.socket(family, socket.SOCK_STREAM) as sock:
-            target = ('127.0.0.1', 9) if family == socket.AF_INET else (('::1', 9) if family == socket.AF_INET6 else '/tmp/virgo-no-socket')
+            target = ('127.0.0.1', 9) if family == socket.AF_INET else (('::1', 9) if family == socket.AF_INET6 else UNIX_TARGET)
             sock.connect(target)
     except PermissionError:
         result['denied'].append(int(family))
@@ -158,7 +160,14 @@ for family in (socket.AF_INET, socket.AF_INET6, socket.AF_UNIX):
         result['denied'].append({'unexpected': exc.errno})
 print(json.dumps(result))
 """
-    result = run(native, python_command(source))
+    # A missing Unix endpoint returns ENOENT before Seatbelt checks connect.
+    # Bind a real host endpoint so this existing scenario measures denial.
+    with tempfile.TemporaryDirectory(prefix="virgo-net-", dir="/tmp") as directory:
+        endpoint = directory + "/socket"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(endpoint)
+            listener.listen(1)
+            result = run(native, python_command(source.replace("UNIX_TARGET", repr(endpoint))))
     assert not result.is_error, result.text()
     data = json.loads(result.text())
     assert data["secret"] is None and len(data["denied"]) == 3
