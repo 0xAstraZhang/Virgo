@@ -17,6 +17,7 @@ import socket
 import sys
 import tempfile
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -117,21 +118,23 @@ def test_invalid_sandbox_configuration_fails_at_startup(make_session, config):
 
 
 def test_native_workspace_write_and_indirect_escape(native, project):
-    outside = project.parent / "external.txt"
-    outside.write_text("original")
-    (project / "escape-link").symlink_to(outside)
-    source = (
-        "from pathlib import Path; import subprocess,sys; "
-        "Path('local.txt').write_text('yes'); "
-        "subprocess.run([sys.executable,'-c',\"from pathlib import Path; Path('escape-link').write_text('bad')\"],check=True)"
-    )
-    result = run(native, python_command(source))
-    assert result.is_error
-    assert (project / "local.txt").read_text() == "yes"
-    assert outside.read_text() == "original"
-    assert result.details["sandbox"]["mode"] == "workspace-write"
-    # The first partial write must not cause automatic replay without isolation.
-    assert len([m for m in native.main.messages if getattr(m, "tool_name", None) == selected(native).tool_name]) == 2
+    # Use a visible read-only host mount, not a hidden path in private /tmp.
+    with tempfile.TemporaryDirectory(prefix="virgo-boundary-", dir=sys.prefix) as directory:
+        outside = Path(directory) / "external.txt"
+        outside.write_text("original")
+        (project / "escape-link").symlink_to(outside)
+        source = (
+            "from pathlib import Path; import subprocess,sys; "
+            "Path('local.txt').write_text('yes'); "
+            "subprocess.run([sys.executable,'-c',\"from pathlib import Path; Path('escape-link').write_text('bad')\"],check=True)"
+        )
+        result = run(native, python_command(source))
+        assert result.is_error
+        assert (project / "local.txt").read_text() == "yes"
+        assert outside.read_text() == "original"
+        assert result.details["sandbox"]["mode"] == "workspace-write"
+        # The first partial write must not cause automatic replay without isolation.
+        assert len([m for m in native.main.messages if getattr(m, "tool_name", None) == selected(native).tool_name]) == 2
 
 
 def test_native_readonly_including_child_shell(native, project):
