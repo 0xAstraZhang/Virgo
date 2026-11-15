@@ -17,7 +17,7 @@ uv run virgo --sandbox read-only
 {"sandbox": {"mode": "workspace-write", "network": "restricted"}}
 ```
 
-项目中的 `sandbox` 配置会被忽略并提示。显式启动覆盖值优先于用户配置。未知模式、字段和网络值会导致配置失败。`/sandbox` 显示请求的模式与探测到的启动器，不改变权限，也不证明当前内核允许隔离。每次启动都会先探测实际执行边界，再启动业务命令。
+项目中的 `sandbox` 配置会被忽略并提示。显式启动覆盖值优先于用户配置。未知模式、字段和网络值会导致配置失败。`/sandbox` 显示请求的模式与探测到的启动器，不改变权限，也不证明当前内核允许隔离。每次启动都会在放行命令前检查原生边界；Windows 还会验证实际挂起进程的 Token 和 Job 归属。
 
 ## 执行边界
 
@@ -29,7 +29,7 @@ uv run virgo --sandbox read-only
 
 启用沙箱还会阻止 Shell 发现与选择过程中的宿主执行。启动配置、PATH 候选、缓存选项和 `/shell` 命令只检查可执行路径，不运行版本探测；版本保持为 `unknown`，由实际隔离启动判断所选解释器能否执行。后端不可用时也不会回退到宿主版本探测。相应的版本与兼容行为见[命令解释器](shells.md)。
 
-`accept-all`、allow 规则、模型审查和人工批准都不会关闭已启用的沙箱。缺少启动器／系统库、不支持的平台、命名空间拒绝或 Seatbelt 配置失败返回 `sandbox_unavailable`，不在宿主直接执行业务命令。探测成功不等于实际启动成功：Linux/macOS 在实际沙箱内运行启用隔离启动选项的固定 Python 启动程序，通过管道确认命令已完成 exec。Windows 挂起创建实际进程，检查其 Token 和 Job 归属后仅恢复一次。启动失败与命令的普通非零退出分别处理，不根据 stderr 文本猜测。超时与取消保留各自状态，也不会自动重放可能已产生部分副作用的操作。Shell 结果记录实际模式与工作区，后台任务结果另外保留后端信息。
+`accept-all`、allow 规则、模型审查和人工批准都不会关闭已启用的沙箱。缺少启动器／系统库、不支持的平台、命名空间拒绝或 Seatbelt 配置失败返回 `sandbox_unavailable`，不在宿主直接执行业务命令。探测成功不等于实际启动成功：Linux/macOS 在实际沙箱内运行启用隔离启动选项的固定 Python 启动程序，通过管道确认命令已完成 exec。Windows 挂起创建实际进程，检查其 Token 和 Job 归属后仅恢复一次；恢复前的原生配置失败单独报告。Windows 没有业务命令启动确认信号：恢复后发生的 DLL 或运行时初始化失败，与其他非零退出一样按进程退出结果报告。两条路径都不根据 stderr 文本猜测。超时与取消保留各自状态，也不会自动重放可能已产生部分副作用的操作。Shell 结果记录实际模式与工作区，后台任务结果另外保留后端信息。
 
 ## 平台要求与限制
 
@@ -63,6 +63,6 @@ macOS 上 Virgo 宿主突然消失，例如收到 `SIGKILL` 或进程崩溃，�
 
 ## 实现与验证
 
-`harness/sandbox.py` 绑定会话策略和调用方，并检查文件工具上限；`tools/sandbox.py` 构造及探测原生启动边界，并检查实际命令的启动确认。`tools/macos_process.py` 管理临时 launchd 任务、经过身份验证的描述符传递、真实子进程状态和内核核对的清理。其监督进程是 Seatbelt 外的可信宿主基础设施；命令及其后代仍使用原有 Seatbelt 配置。`tools/windows_sandbox.py`、`windows_sandbox_acl.py`、`windows_sandbox_files.py` 实现 Windows Token、ACL 与原生路径操作，现有 `WindowsProcess` 负责其进程生命周期。现有 Shell 执行、输出记录、取消和后台任务机制继续作为调用方，没有新增 Agent Loop。
+`harness/sandbox.py` 绑定会话策略和调用方，并检查文件工具上限；`tools/sandbox.py` 构建原生边界并检查 POSIX 命令启动确认；Windows 适配器在恢复前验证挂起进程。`tools/macos_process.py` 管理临时 launchd 任务、经过身份验证的描述符传递、真实子进程状态和内核核对的清理。其监督进程是 Seatbelt 外的可信宿主基础设施；命令及其后代仍使用原有 Seatbelt 配置。`tools/windows_sandbox.py`、`windows_sandbox_acl.py`、`windows_sandbox_files.py` 实现 Windows Token、ACL 与原生路径操作，现有 `WindowsProcess` 负责其进程生命周期。现有 Shell 执行、输出记录、取消和后台任务机制继续作为调用方，没有新增 Agent Loop。
 
 `tests/harness/test_sandbox_e2e.py` 定义真实装配会话和进程的验收场景：后端不可用、配置来源、Shell 发现与选择、文件工具限制、硬链接别名、unlink 及路径替换竞争、间接及符号链接写入、自动项目上下文、子任务／后台归属、网络／环境隔离、已有元数据、工作区内虚拟环境、输出位置、实际启动失败、退出码、超时、取消、脱离的后代进程、普通／脱离的 `posix_spawn`、双重 fork 孤儿进程，以及独立后台命令不受其他命令清理影响。原生 CI 设置 `VIRGO_REQUIRE_SANDBOX_TESTS=1`，将后端不可用视为失败，而不是能力跳过。仅通过模拟失败场景不能证明 OS 隔离有效；原生报告与完整跨平台对比报告是分别需要读取的验证结果。
