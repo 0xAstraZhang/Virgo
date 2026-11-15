@@ -115,6 +115,12 @@ jobs:
           } finally {
             & $gflags /i pwsh.exe -sls
           }
+      - name: Observe runtime object ACLs and bounded capability startup
+        if: ${{ failure() && !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 4
+        shell: pwsh
+        run: uv run --no-sync python ci/windows_runtime_diagnostics.py | Tee-Object windows-runtime-diagnostic.log
       - name: Preserve Windows startup diagnostics
         if: ${{ failure() && !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -123,5 +129,6 @@ jobs:
           path: |
             windows-loader.log
             windows-loader-diagnostic.xml
+            windows-runtime-diagnostic.log
           if-no-files-found: warn
           retention-days: 14
