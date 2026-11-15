@@ -21,11 +21,13 @@ import json
 import os
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
-from contextlib import ExitStack
+import uuid
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import pytest
@@ -124,6 +126,238 @@ def dacl(path: Path) -> str:
         kernel.LocalFree(descriptor)
 
 
+class DeviceSecurity:
+    """Independent native observations and a controlled host-only fixture ACE.
+
+    The measured BCrypt startup denial requires one fixed KsecDD write lease.
+    These checks are defined before that mechanism: unrelated ACE bytes/order,
+    owner, group and mandatory label must survive overlapping grants/revocation.
+    """
+
+    def __enter__(self):
+        from ctypes import wintypes as w
+
+        self.w = w
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+
+        def bind(library, name, arguments, result=w.BOOL):
+            function = getattr(library, name)
+            function.argtypes, function.restype = arguments, result
+            return function
+
+        pointer = ctypes.c_void_p
+        self.close = bind(self.kernel, "CloseHandle", [w.HANDLE])
+        self.free = bind(self.kernel, "LocalFree", [pointer], pointer)
+        create = bind(self.kernel, "CreateFileW", [
+            w.LPCWSTR, w.DWORD, w.DWORD, pointer, w.DWORD, w.DWORD, w.HANDLE,
+        ], w.HANDLE)
+        self.get = bind(self.advapi, "GetKernelObjectSecurity", [
+            w.HANDLE, w.DWORD, pointer, w.DWORD, ctypes.POINTER(w.DWORD),
+        ])
+        self.get_dacl = bind(self.advapi, "GetSecurityDescriptorDacl", [
+            pointer, ctypes.POINTER(w.BOOL), ctypes.POINTER(pointer), ctypes.POINTER(w.BOOL),
+        ])
+        self.get_control = bind(self.advapi, "GetSecurityDescriptorControl", [
+            pointer, ctypes.POINTER(w.WORD), ctypes.POINTER(w.DWORD),
+        ])
+        self.get_ace = bind(self.advapi, "GetAce", [pointer, w.DWORD, ctypes.POINTER(pointer)])
+        self.to_sddl = bind(self.advapi, "ConvertSecurityDescriptorToStringSecurityDescriptorW", [
+            pointer, w.DWORD, w.DWORD, ctypes.POINTER(w.LPWSTR), pointer,
+        ])
+        self.to_sid = bind(self.advapi, "ConvertStringSidToSidW", [w.LPCWSTR, ctypes.POINTER(pointer)])
+        self.sid_length = bind(self.advapi, "GetLengthSid", [pointer], w.DWORD)
+        self.init_acl = bind(self.advapi, "InitializeAcl", [pointer, w.DWORD, w.DWORD])
+        self.add_ace = bind(self.advapi, "AddAce", [pointer, w.DWORD, w.DWORD, pointer, w.DWORD])
+        self.init_sd = bind(self.advapi, "InitializeSecurityDescriptor", [pointer, w.DWORD])
+        self.set_dacl = bind(self.advapi, "SetSecurityDescriptorDacl", [pointer, w.BOOL, pointer, w.BOOL])
+        self.set_control = bind(self.advapi, "SetSecurityDescriptorControl", [pointer, w.WORD, w.WORD])
+        self.set = bind(self.advapi, "SetKernelObjectSecurity", [w.HANDLE, w.DWORD, pointer])
+        self.handle = create(r"\\?\GLOBALROOT\Device\KsecDD", 0x60000, 7, None, 3, 0, None)
+        assert self.handle != pointer(-1).value, ctypes.get_last_error()
+        return self
+
+    def __exit__(self, *_):
+        assert self.close(self.handle), ctypes.get_last_error()
+
+    def _read(self):
+        w = self.w
+        size = w.DWORD()
+        self.get(self.handle, 0x17, None, 0, ctypes.byref(size))  # Owner/group/DACL/label.
+        assert size.value, ctypes.get_last_error()
+        descriptor = ctypes.create_string_buffer(size.value)
+        assert self.get(self.handle, 0x17, descriptor, len(descriptor), ctypes.byref(size)), ctypes.get_last_error()
+        present, defaulted, acl = w.BOOL(), w.BOOL(), ctypes.c_void_p()
+        assert self.get_dacl(descriptor, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted))
+        assert present.value and acl.value, "KsecDD must have a non-null DACL"
+        control, revision = w.WORD(), w.DWORD()
+        assert self.get_control(descriptor, ctypes.byref(control), ctypes.byref(revision))
+        header = ctypes.string_at(acl, 8)
+        entries = []
+        for index in range(struct.unpack_from("<H", header, 4)[0]):
+            entry = ctypes.c_void_p()
+            assert self.get_ace(acl, index, ctypes.byref(entry)), ctypes.get_last_error()
+            size = struct.unpack_from("<H", ctypes.string_at(entry, 4), 2)[0]
+            entries.append(ctypes.string_at(entry, size))
+        return descriptor, header[0], control.value, defaulted.value, tuple(entries)
+
+    def state(self):
+        descriptor, _, control, _, entries = self._read()
+        text = self.w.LPWSTR()
+        assert self.to_sddl(descriptor, 1, 0x13, ctypes.byref(text), None), ctypes.get_last_error()
+        try:
+            return text.value, control, entries
+        finally:
+            self.free(text)
+
+    def sid(self, name):
+        value = ctypes.c_void_p()
+        assert self.to_sid(name, ctypes.byref(value)), ctypes.get_last_error()
+        try:
+            return ctypes.string_at(value, self.sid_length(value))
+        finally:
+            self.free(value)
+
+    def leases(self, name):
+        sid = self.sid(name)
+        return [entry for entry in self.state()[2] if entry[0] == 0 and entry[8:] == sid]
+
+    def assert_lease(self, name, *, present=True):
+        expected = struct.pack("<BBHI", 0, 0, 8 + len(self.sid(name)), 0x100003) + self.sid(name)
+        assert self.leases(name) == ([expected] if present else []), name
+
+    def _marker(self, sid, *, remove=False):
+        _, revision, control, defaulted, previous = self._read()
+        entries = [entry for entry in previous if not (entry[0] == 0 and entry[8:] == sid)]
+        marker = struct.pack("<BBHI", 0, 0, 8 + len(sid), 0x20000) + sid
+        if not remove:
+            entries.append(marker)
+        acl = ctypes.create_string_buffer(8 + sum(map(len, entries)))
+        assert self.init_acl(acl, len(acl), revision), ctypes.get_last_error()
+        for entry in entries:
+            raw = ctypes.create_string_buffer(entry)
+            assert self.add_ace(acl, revision, 0xFFFFFFFF, raw, len(entry)), ctypes.get_last_error()
+        descriptor = ctypes.create_string_buffer(64)
+        assert self.init_sd(descriptor, 1)
+        assert self.set_dacl(descriptor, True, acl, defaulted)
+        assert self.set_control(descriptor, 0x1500, control & 0x1500)
+        assert self.set(self.handle, 4 | (0x80000000 if control & 0x1000 else 0x20000000), descriptor), ctypes.get_last_error()
+        return marker
+
+    @contextmanager
+    def marker(self):
+        # No payload can change this ACL. The host changes it only while both
+        # jobs are ready and no broker is in setup/cleanup; preserve all others.
+        name = "S-1-5-21-" + "-".join(str(value) for value in struct.unpack("<4I", uuid.uuid4().bytes))
+        sid = self.sid(name)
+        entry = self._marker(sid)
+        try:
+            yield name, entry
+        finally:
+            self._marker(sid, remove=True)
+
+
+def device_state():
+    with DeviceSecurity() as device:
+        return device.state()
+
+
+def process_sids(pid, information):
+    """Read the actual host or sandbox process token, without broker internals."""
+    from ctypes import wintypes as w
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [w.DWORD, w.BOOL, w.DWORD], w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+    advapi.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
+                                          ctypes.POINTER(w.DWORD)]
+    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.LPWSTR)]
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("sid", ctypes.c_void_p), ("attributes", w.DWORD)]
+
+    class Groups(ctypes.Structure):
+        _fields_ = [("count", w.DWORD), ("entries", Entry * 1)]
+
+    with ExitStack() as resources:
+        process = kernel.OpenProcess(0x1000, False, pid)
+        assert process, ctypes.get_last_error()
+        resources.callback(kernel.CloseHandle, process)
+        token = w.HANDLE()
+        assert advapi.OpenProcessToken(process, 8, ctypes.byref(token)), ctypes.get_last_error()
+        resources.callback(kernel.CloseHandle, token)
+        size = w.DWORD()
+        advapi.GetTokenInformation(token, information, None, 0, ctypes.byref(size))
+        assert size.value, ctypes.get_last_error()
+        buffer = ctypes.create_string_buffer(size.value)
+        assert advapi.GetTokenInformation(token, information, buffer, len(buffer), ctypes.byref(size)), ctypes.get_last_error()
+        count = 1 if information == 1 else w.DWORD.from_buffer(buffer).value
+        entries = (Entry * count).from_buffer(buffer, 0 if information == 1 else Groups.entries.offset)
+        result = []
+        for entry in entries:
+            text = w.LPWSTR()
+            assert advapi.ConvertSidToStringSidW(entry.sid, ctypes.byref(text)), ctypes.get_last_error()
+            result.append(text.value)
+            kernel.LocalFree(text)
+        return result
+
+
+@contextmanager
+def untrusted_device_mutex():
+    """A precreated global object must cause refusal, never policy takeover."""
+    from ctypes import wintypes as w
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+
+    class Attributes(ctypes.Structure):
+        _fields_ = [("length", w.DWORD), ("descriptor", ctypes.c_void_p), ("inherit", w.BOOL)]
+
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        w.LPCWSTR, w.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
+    ]
+    kernel.CreateMutexExW.argtypes = [ctypes.POINTER(Attributes), w.LPCWSTR, w.DWORD, w.DWORD]
+    kernel.CreateMutexExW.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi.GetKernelObjectSecurity.argtypes = [
+        w.HANDLE, w.DWORD, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD),
+    ]
+
+    def state(handle):
+        size = w.DWORD()
+        advapi.GetKernelObjectSecurity(handle, 7, None, 0, ctypes.byref(size))
+        assert size.value, ctypes.get_last_error()
+        buffer = ctypes.create_string_buffer(size.value)
+        assert advapi.GetKernelObjectSecurity(handle, 7, buffer, len(buffer), ctypes.byref(size))
+        return buffer.raw[:size.value]
+
+    owner = process_sids(os.getpid(), 1)[0]
+    descriptor = ctypes.c_void_p()
+    text = f"O:{owner}G:{owner}D:P(A;;0x1f0001;;;SY)(A;;0x120001;;;BA)(A;;0x120001;;;WD)"
+    assert advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(text, 1, ctypes.byref(descriptor), None)
+    try:
+        attributes = Attributes(ctypes.sizeof(Attributes), descriptor, False)
+        ctypes.set_last_error(0)
+        handle = kernel.CreateMutexExW(ctypes.byref(attributes), r"Global\Virgo.NativeSandbox.KsecDD.v1", 0, 0x120001)
+        error = ctypes.get_last_error()
+        assert handle, error
+        try:
+            assert error != 183, "previous command leaked the global device mutex"
+            before = state(handle)
+            try:
+                yield
+            finally:
+                assert state(handle) == before, "broker must not take over a precreated mutex"
+        finally:
+            assert kernel.CloseHandle(handle)
+    finally:
+        kernel.LocalFree(descriptor)
+
+
 TOKEN_SOURCE = r'''
 import ctypes, json, os
 from ctypes import wintypes as w
@@ -189,6 +423,35 @@ try:
         k.LocalFree(text)
 finally:
     k.CloseHandle(token)
+'''
+
+
+DEVICE_SOURCE = r'''
+import ctypes, json
+from ctypes import wintypes as w
+k = ctypes.WinDLL('kernel32', use_last_error=True)
+n = ctypes.WinDLL('ntdll')
+class Name(ctypes.Structure):
+    _fields_ = [('length', w.USHORT), ('maximum', w.USHORT), ('buffer', w.LPWSTR)]
+class Attributes(ctypes.Structure):
+    _fields_ = [('length', w.ULONG), ('root', w.HANDLE), ('name', ctypes.POINTER(Name)),
+                ('flags', w.ULONG), ('descriptor', ctypes.c_void_p), ('qos', ctypes.c_void_p)]
+class IoStatus(ctypes.Structure):
+    _fields_ = [('status', ctypes.c_void_p), ('information', ctypes.c_size_t)]
+n.NtOpenFile.argtypes = [ctypes.POINTER(w.HANDLE), w.DWORD, ctypes.POINTER(Attributes),
+                         ctypes.POINTER(IoStatus), w.DWORD, w.DWORD]
+n.NtOpenFile.restype = ctypes.c_int32
+k.CloseHandle.argtypes = [w.HANDLE]
+path = r'\Device\KsecDD'
+name = Name(len(path.encode('utf-16-le')), len(path.encode('utf-16-le')) + 2, path)
+attributes = Attributes(ctypes.sizeof(Attributes), None, ctypes.pointer(name), 0x40, None, None)
+device_result = []
+for access in (0x100003, 0x40000, 0x80000, 0x10000, 0x10000000):
+    handle, io = w.HANDLE(), IoStatus()
+    status = n.NtOpenFile(ctypes.byref(handle), access, ctypes.byref(attributes), ctypes.byref(io), 7, 0)
+    device_result.append(status & 0xffffffff)
+    if status == 0:
+        assert k.CloseHandle(handle), ctypes.get_last_error()
 '''
 
 
@@ -460,6 +723,16 @@ print(json.dumps({{'parent': parent, 'child': child, 'host_process_denied': deni
         assert token["sid"].startswith("S-1-15-2-")
     assert outcome["parent"]["sid"] == outcome["child"]["sid"]
     assert outcome["host_process_denied"] == [True] * 5
+    # Separate payload keeps the encoded PowerShell command below the native
+    # command-line limit. The root and its child must inherit the same narrow
+    # device authority, never permission to rewrite/delete the kernel object.
+    child_code = DEVICE_SOURCE + "\nprint(json.dumps(device_result))\n"
+    source = DEVICE_SOURCE + f"""
+import subprocess, sys
+child = json.loads(subprocess.check_output([sys.executable, '-I', '-S', '-c', {child_code!r}]))
+print(json.dumps([device_result, child]))
+"""
+    assert data(run(native, source)) == [[0, *([0xC0000022] * 4)]] * 2  # STATUS_ACCESS_DENIED.
 
 
 def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native):
@@ -531,6 +804,7 @@ def process_exited(pid: int) -> bool:
 
 @pytest.mark.parametrize("finish", ["exit", "timeout", "cancel"])
 def test_completion_drains_descendants_before_scratch_cleanup(native, project, finish):
+    before_device = device_state()
     child_source = """import time
 from pathlib import Path
 Path('child-ready').touch()
@@ -561,6 +835,10 @@ while not Path('child-ready').exists():
         try:
             wait_until(lambda: (project / "child-ready").exists() or not worker.is_alive(), timeout=25)
             assert (project / "child-ready").exists(), errors or [r.text() for r in results]
+            lifetime = json.loads((project / "lifetime.json").read_text())
+            restricting, = process_sids(lifetime["pid"], 11)
+            with DeviceSecurity() as device:
+                device.assert_lease(restricting)
             native.abort()
             worker.join(15)
             assert not worker.is_alive()
@@ -578,20 +856,33 @@ while not Path('child-ready').exists():
     assert process_exited(lifetime["pid"]), "descendant must have exited before command completion"
     assert not (project / "late-write").exists()
     assert not Path(lifetime["scratch"]).exists()
+    assert device_state() == before_device, "device lease must be revoked after descendant drain"
 
 
 def test_background_cancel_preserves_other_job_and_origin_after_switch(native, project):
     (project / "shared.txt").write_text("before")
-    first = run(native, """import time
+    jobs = native.services["jobs"]
+    active = []
+
+    def stop_jobs():
+        for job in active:
+            if not job.done.is_set():
+                jobs.kill(job)
+                assert job.done.wait(15), "fixture must drain before removing its unrelated ACE"
+
+    with DeviceSecurity() as device:
+        before_device = device.state()
+        try:
+            first = run(native, """import time
 from pathlib import Path
 Path('first-ready').touch()
 time.sleep(25)
 Path('first-late').touch()
 """, background=True)
-    assert not first.is_error, first.text()
-    jobs = native.services["jobs"]
-    a = list(jobs.jobs.values())[-1]
-    second = run(native, """import time
+            assert not first.is_error, first.text()
+            a = list(jobs.jobs.values())[-1]
+            active.append(a)
+            second = run(native, """import time
 from pathlib import Path
 Path('second-ready').touch()
 deadline = time.monotonic() + 25
@@ -600,29 +891,41 @@ while not Path('release-second').exists():
     time.sleep(.02)
 Path('shared.txt').write_text('second-still-authorized')
 """, background=True)
-    assert not second.is_error, second.text()
-    b = list(jobs.jobs.values())[-1]
-    wait_until(lambda: (project / "first-ready").exists() and (project / "second-ready").exists(), timeout=25)
-    other = project.parent / "selected-workspace"
-    other.mkdir()
-    selected_store = SessionStore.new(native.paths.sessions, other)
-    native.open_session(selected_store.path)
-    try:
-        jobs.kill(a)
-        assert a.done.wait(15) and a.status == "killed"
-        assert b.status == "running" and b.proc.poll() is None
-        (project / "release-second").touch()
-        assert b.done.wait(15) and b.status == "completed", jobs.output(b)
-        assert a.sandbox["backend"] == b.sandbox["backend"] == "windows-lpac"
-        assert a.sandbox["workspace"] == b.sandbox["workspace"] == str(project.resolve())
-        assert a.log.parent == b.log.parent == project / ".virgo" / "outputs"
-        assert (project / "shared.txt").read_text() == "second-still-authorized"
-        assert not (project / "first-late").exists() and not list(other.iterdir())
-    finally:
-        for job in (a, b):
-            if not job.done.is_set():
-                jobs.kill(job)
-                job.done.wait(15)
+            assert not second.is_error, second.text()
+            b = list(jobs.jobs.values())[-1]
+            active.append(b)
+            wait_until(lambda: (project / "first-ready").exists() and (project / "second-ready").exists(), timeout=25)
+            a_sid, = process_sids(a.proc.pid, 11)
+            b_sid, = process_sids(b.proc.pid, 11)
+            assert a_sid != b_sid
+            device.assert_lease(a_sid)
+            device.assert_lease(b_sid)
+            with device.marker() as (marker_sid, marker_entry):
+                try:
+                    other = project.parent / "selected-workspace"
+                    other.mkdir()
+                    selected_store = SessionStore.new(native.paths.sessions, other)
+                    native.open_session(selected_store.path)
+                    jobs.kill(a)
+                    assert a.done.wait(15) and a.status == "killed"
+                    assert b.status == "running" and b.proc.poll() is None
+                    device.assert_lease(a_sid, present=False)
+                    device.assert_lease(b_sid)
+                    assert device.leases(marker_sid) == [marker_entry]
+                    assert device.state() == (*before_device[:2], before_device[2] + tuple(device.leases(b_sid)) + (marker_entry,))
+                    (project / "release-second").touch()
+                    assert b.done.wait(15) and b.status == "completed", jobs.output(b)
+                    assert a.sandbox["backend"] == b.sandbox["backend"] == "windows-lpac"
+                    assert a.sandbox["workspace"] == b.sandbox["workspace"] == str(project.resolve())
+                    assert a.log.parent == b.log.parent == project / ".virgo" / "outputs"
+                    assert (project / "shared.txt").read_text() == "second-still-authorized"
+                    assert not (project / "first-late").exists() and not list(other.iterdir())
+                    assert device.state() == (*before_device[:2], before_device[2] + (marker_entry,))
+                finally:
+                    stop_jobs()
+            assert device.state() == before_device
+        finally:
+            stop_jobs()
 
 
 def test_child_runtime_keeps_origin_with_canonical_cwd_and_rejects_escape(native, project):
@@ -670,15 +973,35 @@ else:
 def test_actual_start_failure_is_fail_closed_and_nonzero_payload_is_not_replayed(native, project):
     policy = SandboxPolicy("workspace-write", project)
     before = set((project / ".virgo" / "outputs").iterdir())
+    before_device = device_state()
     missing = Shell("pwsh", str(project / "missing-interpreter.exe"), "unknown")
     with pytest.raises(SandboxUnavailable):
         run_command("Set-Content payload-started bad", project, 10, threading.Event(),
                     interpreter=missing, sandbox_policy=policy)
     assert not (project / "payload-started").exists()
     assert set((project / ".virgo" / "outputs").iterdir()) == before
+    # This file passes name/path validation and fails real CreateProcess only
+    # after the broker has acquired its leases. No patched API supplies failure.
+    invalid = project.parent / "invalid-runtime" / "pwsh.exe"
+    invalid.parent.mkdir()
+    invalid.write_bytes(b"not a Windows executable image")
+    with pytest.raises(SandboxUnavailable) as failed:
+        run_command("Set-Content payload-started bad", project, 10, threading.Event(),
+                    interpreter=Shell("pwsh", str(invalid), "unknown"), sandbox_policy=policy)
+    assert "193" in str(failed.value), failed.value  # ERROR_BAD_EXE_FORMAT.
+    assert device_state() == before_device
+    assert not (project / "payload-started").exists()
+    assert set((project / ".virgo" / "outputs").iterdir()) == before
+    with untrusted_device_mutex(), pytest.raises(SandboxUnavailable):
+        run_command("Set-Content payload-started bad", project, 10, threading.Event(),
+                    interpreter=selected(native), sandbox_policy=policy)
+    assert device_state() == before_device
+    assert not (project / "payload-started").exists()
+    assert set((project / ".virgo" / "outputs").iterdir()) == before
     result = run(native, "from pathlib import Path; p=Path('once.txt'); p.open('a').write('once'); raise SystemExit(7)")
     assert result.is_error and result.details["status"] == "ok" and result.details["exit_code"] == 7
     assert (project / "once.txt").read_text() == "once"
+    assert device_state() == before_device
 
 
 def test_repeated_commands_release_owned_acls_scratch_and_handles(native, project):
@@ -696,6 +1019,7 @@ def test_repeated_commands_release_owned_acls_scratch_and_handles(native, projec
     stable = project / "stable.txt"
     stable.write_text("original")
     before = {path: dacl(path) for path in (project, stable)}
+    before_device = device_state()
     handles = count()
     identities = set()
     for index in range(4):
@@ -712,5 +1036,6 @@ print(json.dumps(token_result))
         assert result["sid"] not in dacl(project / f"new-{index}.txt")
         for path, original in before.items():
             assert dacl(path) == original, f"temporary ACL grant remains on {path}"
+        assert device_state() == before_device, "repeated command left a device lease"
     gc.collect()
     assert count() - handles < 12, "repeated native launches leaked Windows handles"
