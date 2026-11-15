@@ -2,6 +2,8 @@
 
 The JOB_LIST startup attribute assigns the process before any user code can run.
 Only duplicated stdin/stdout handles are inherited; the job handle never is.
+The job owns process lifetime; an optional sandbox supplies the security token
+and startup attributes. Its process is verified while suspended before release.
 This module is imported only on Windows. There is no uncontained fallback.
 """
 from __future__ import annotations
@@ -17,8 +19,10 @@ from contextlib import ExitStack
 from ctypes import wintypes as w
 
 kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+advapi = ctypes.WinDLL("advapi32", use_last_error=True)
 SIZE_T = ctypes.c_size_t
 HANDLE = w.HANDLE
+_DRAIN_TIMEOUT = 5.0
 
 
 class BasicLimits(ctypes.Structure):
@@ -41,6 +45,13 @@ class ExtendedLimits(ctypes.Structure):
                 ("PeakProcessMemoryUsed", SIZE_T), ("PeakJobMemoryUsed", SIZE_T)]
 
 
+class BasicAccounting(ctypes.Structure):
+    _fields_ = [("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+                ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                ("TotalPageFaultCount", w.DWORD), ("TotalProcesses", w.DWORD),
+                ("ActiveProcesses", w.DWORD), ("TotalTerminatedProcesses", w.DWORD)]
+
+
 class StartupInfo(ctypes.Structure):
     _fields_ = [("cb", w.DWORD), ("lpReserved", w.LPWSTR), ("lpDesktop", w.LPWSTR), ("lpTitle", w.LPWSTR),
                 ("dwX", w.DWORD), ("dwY", w.DWORD), ("dwXSize", w.DWORD), ("dwYSize", w.DWORD),
@@ -58,16 +69,20 @@ class ProcessInfo(ctypes.Structure):
     _fields_ = [("hProcess", HANDLE), ("hThread", HANDLE), ("dwProcessId", w.DWORD), ("dwThreadId", w.DWORD)]
 
 
-def _api(name, args, result=w.BOOL):
-    fn = getattr(kernel, name)
+def _api(name, args, result=w.BOOL, *, library=kernel):
+    fn = getattr(library, name)
     fn.argtypes, fn.restype = args, result
     return fn
 
 
 CreateJob = _api("CreateJobObjectW", [ctypes.c_void_p, w.LPCWSTR], HANDLE)
 SetJob = _api("SetInformationJobObject", [HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD])
+QueryJob = _api("QueryInformationJobObject", [HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
+                                            ctypes.POINTER(w.DWORD)])
+IsProcessInJob = _api("IsProcessInJob", [HANDLE, HANDLE, ctypes.POINTER(w.BOOL)])
 CloseHandle = _api("CloseHandle", [HANDLE])
 TerminateJob = _api("TerminateJobObject", [HANDLE, w.UINT])
+TerminateProcess = _api("TerminateProcess", [HANDLE, w.UINT])
 GetCurrentProcess = _api("GetCurrentProcess", [], HANDLE)
 DuplicateHandle = _api("DuplicateHandle", [HANDLE, HANDLE, HANDLE, ctypes.POINTER(HANDLE), w.DWORD, w.BOOL, w.DWORD])
 InitializeAttributes = _api("InitializeProcThreadAttributeList", [ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(SIZE_T)])
@@ -76,6 +91,8 @@ UpdateAttribute = _api("UpdateProcThreadAttribute", [ctypes.c_void_p, w.DWORD, S
 DeleteAttributes = _api("DeleteProcThreadAttributeList", [ctypes.c_void_p], None)
 CreateProcess = _api("CreateProcessW", [w.LPCWSTR, w.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, w.BOOL, w.DWORD,
                                       ctypes.c_void_p, w.LPCWSTR, ctypes.POINTER(StartupInfoEx), ctypes.POINTER(ProcessInfo)])
+CreateProcessAsUser = _api("CreateProcessAsUserW", [HANDLE, *CreateProcess.argtypes], library=advapi)
+ResumeThread = _api("ResumeThread", [HANDLE], w.DWORD)
 WaitForSingleObject = _api("WaitForSingleObject", [HANDLE, w.DWORD], w.DWORD)
 GetExitCode = _api("GetExitCodeProcess", [HANDLE, ctypes.POINTER(w.DWORD)])
 
@@ -95,12 +112,17 @@ def _close_handles(job, process):
 class WindowsProcess:
     """Small Popen-compatible surface used by foreground and background commands."""
 
-    def __init__(self, argv, *, cwd, env, stdout):
+    def __init__(self, argv, *, cwd, env, stdout, sandbox=None):
         self.args = argv
         self.returncode = None
         self.stdout = None
         self._lock = threading.RLock()
+        self._sandbox = sandbox
+        self._released = False
+        self._drained = False
+        self._finalizer = None
         try:
+            self._check_cancelled()
             with ExitStack() as resources, ExitStack() as ownership:
                 job = _check(CreateJob(None, None))
                 ownership.callback(CloseHandle, job)
@@ -126,17 +148,24 @@ class WindowsProcess:
                     return duplicate.value
 
                 input_handle, output_handle = inherit(stdin_file), inherit(output_file)
+                extra_attributes = list(sandbox.process_attributes()) if sandbox is not None else []
+                attribute_count = 2 + len(extra_attributes)
                 size = SIZE_T()
-                InitializeAttributes(None, 2, 0, ctypes.byref(size))
+                InitializeAttributes(None, attribute_count, 0, ctypes.byref(size))
                 if not size.value:
                     raise ctypes.WinError(ctypes.get_last_error())
                 attributes = ctypes.create_string_buffer(size.value)
-                _check(InitializeAttributes(attributes, 2, 0, ctypes.byref(size)))
+                _check(InitializeAttributes(attributes, attribute_count, 0, ctypes.byref(size)))
                 resources.callback(DeleteAttributes, attributes)
                 inherited = (HANDLE * 2)(input_handle, output_handle)
                 jobs = (HANDLE * 1)(job)
                 _check(UpdateAttribute(attributes, 0, 0x20002, inherited, ctypes.sizeof(inherited), None, None))
                 _check(UpdateAttribute(attributes, 0, 0x2000D, jobs, ctypes.sizeof(jobs), None, None))
+                # Keep these ctypes values alive until CreateProcess has consumed
+                # the list; attributes contain pointers, not copies of the values.
+                for attribute, value in extra_attributes:
+                    _check(UpdateAttribute(attributes, 0, attribute, ctypes.byref(value),
+                                           ctypes.sizeof(value), None, None))
                 startup = StartupInfoEx()
                 startup.StartupInfo.cb = ctypes.sizeof(startup)
                 startup.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
@@ -149,32 +178,100 @@ class WindowsProcess:
                                                                      sorted(env.items(), key=lambda item: item[0].upper())) + "\0")
                 info = ProcessInfo()
                 flags = 0x08000000 | 0x00080000 | 0x00000400  # NO_WINDOW | EXTENDED_STARTUPINFO | UNICODE_ENVIRONMENT
-                _check(CreateProcess(None, command_buffer, None, None, True, flags, environment, str(cwd),
-                                     ctypes.byref(startup), ctypes.byref(info)))
+                if sandbox is not None:
+                    flags |= 0x00000004  # CREATE_SUSPENDED
+                self._check_cancelled()
+                arguments = (None, command_buffer, None, None, True, flags, environment, str(cwd),
+                             ctypes.byref(startup), ctypes.byref(info))
+                if sandbox is not None and sandbox.token is not None:
+                    _check(CreateProcessAsUser(sandbox.token, *arguments))
+                else:
+                    _check(CreateProcess(*arguments))
                 ownership.callback(CloseHandle, info.hProcess)
-                CloseHandle(info.hThread)
+                resources.callback(CloseHandle, info.hThread)
                 self.pid = info.dwProcessId
                 self._process, self._job = info.hProcess, job
                 self._finalizer = weakref.finalize(self, _close_handles, job, info.hProcess)
                 ownership.pop_all()
-        except BaseException:
-            if self.stdout is not None:
-                self.stdout.close()
+                if sandbox is not None:
+                    contained = w.BOOL()
+                    _check(IsProcessInJob(info.hProcess, job, ctypes.byref(contained)))
+                    if not contained.value:
+                        # Retain control of a suspended root even if its job
+                        # membership does not match the creation contract.
+                        _check(TerminateProcess(info.hProcess, 1))
+                        raise self._failure("Windows did not assign the sandbox process to its job")
+                    sandbox.verify_process(info.hProcess)
+                    self._check_cancelled()
+                    previous = ResumeThread(info.hThread)
+                    if previous == 0xFFFFFFFF:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    # A freshly CREATE_SUSPENDED thread must have exactly one
+                    # suspension. Never retry a resume with an unexpected count.
+                    self._released = True
+                    if previous != 1:
+                        raise self._failure("Windows returned an unexpected sandbox thread suspension count")
+                else:
+                    self._released = True
+        except BaseException as error:
+            try:
+                if sandbox is not None and self._finalizer is not None:
+                    self.cleanup_tree()
+            except BaseException as cleanup_error:
+                # Retain the owning object on the exception. The envelope must
+                # keep its ACL grants and storage until a later drain is proved.
+                raise self._failure(f"Windows sandbox launch failed ({error}); cleanup failed: {cleanup_error}",
+                                    uncertain=True) from cleanup_error
+            finally:
+                if self.stdout is not None:
+                    self.stdout.close()
+            if sandbox is not None and isinstance(error, Exception):
+                from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable
+
+                if not isinstance(error, (SandboxCancelled, SandboxProcessError, SandboxUnavailable)):
+                    raise self._failure(f"Could not create Windows sandbox process: {error}") from error
             raise
+
+    @property
+    def tree_drained(self):
+        return self._drained
+
+    def _check_cancelled(self):
+        if self._sandbox is not None and self._sandbox.cancellation is not None:
+            if self._sandbox.cancellation.is_set():
+                from .sandbox import SandboxCancelled
+
+                raise SandboxCancelled("Windows sandbox command cancelled before release")
+
+    def _failure(self, message, *, uncertain=False):
+        from .sandbox import SandboxProcessError, SandboxUnavailable
+
+        error = (SandboxProcessError if self._released or uncertain else SandboxUnavailable)(message)
+        if self._finalizer is not None:
+            error.process = self
+        return error
 
     def poll(self):
         with self._lock:
             if self.returncode is not None:
                 return self.returncode
-            status = WaitForSingleObject(self._process, 0)
-            if status == 258:  # WAIT_TIMEOUT
-                return None
-            if status != 0:
-                raise ctypes.WinError(ctypes.get_last_error())
-            code = w.DWORD()
-            _check(GetExitCode(self._process, ctypes.byref(code)))
+            try:
+                status = WaitForSingleObject(self._process, 0)
+                if status == 258:  # WAIT_TIMEOUT
+                    return None
+                if status != 0:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                code = w.DWORD()
+                _check(GetExitCode(self._process, ctypes.byref(code)))
+            except OSError as error:
+                if self._sandbox is not None:
+                    raise self._failure(f"Could not observe Windows sandbox process: {error}", uncertain=True) from error
+                raise
             self.returncode = code.value
-            self._finalizer()
+            # An exited root may have live descendants. Active sandboxes retain
+            # the job until the complete tree drains, before the envelope is freed.
+            if self._sandbox is None:
+                self._finalizer()
             return self.returncode
 
     def wait(self, timeout=None):
@@ -186,11 +283,52 @@ class WindowsProcess:
         return self.returncode
 
     def kill(self):
+        if self._sandbox is not None:
+            self.kill_tree()
+            return
         with self._lock:
             if self.returncode is None:
                 _check(TerminateJob(self._job, 1))
 
     terminate = kill
+
+    def _active_processes(self):
+        accounting = BasicAccounting()
+        _check(QueryJob(self._job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
+        return accounting.ActiveProcesses
+
+    def kill_tree(self):
+        if self._sandbox is None:
+            self.kill()
+            return
+        with self._lock:
+            if self._drained:
+                return
+            try:
+                deadline = time.monotonic() + _DRAIN_TIMEOUT
+                if self._active_processes():
+                    _check(TerminateJob(self._job, 1))
+                while self._active_processes():
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Windows sandbox job still has active processes")
+                    time.sleep(0.01)
+                # The root handle must also signal before an unsuccessful job
+                # membership verification can release any envelope resources.
+                self.wait(timeout=max(0, deadline - time.monotonic()))
+                self._drained = True
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise self._failure(f"Could not drain Windows sandbox job: {error}", uncertain=True) from error
+
+    def cleanup_tree(self):
+        if self._sandbox is None:
+            self.kill()
+            self.wait(timeout=_DRAIN_TIMEOUT)
+            return
+        with self._lock:
+            self.kill_tree()
+            # Revoke the token envelope only after the kernel proved drain.
+            # Closing a kill-on-close job by itself is not that proof.
+            self._finalizer()
 
     def communicate(self, input=None, timeout=None):
         if input is not None:
@@ -201,6 +339,9 @@ class WindowsProcess:
             reader = threading.Thread(target=lambda: chunks.append(self.stdout.read()), daemon=True)
             reader.start()
         self.wait(timeout)
+        if self._sandbox is not None:
+            # A detached child may hold stdout open after the root exits.
+            self.cleanup_tree()
         if reader is not None:
             reader.join()
             self.stdout.close()
