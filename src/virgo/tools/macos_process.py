@@ -294,6 +294,9 @@ class LaunchdProcess:
             with os.fdopen(descriptor, "wb") as stream:
                 plistlib.dump({
                     "Label": self._label,
+                    # user/<uid> is the Background domain; the default Aqua
+                    # session type does not match this explicitly chosen domain.
+                    "LimitLoadToSessionType": "Background",
                     "ProgramArguments": [self._env_program, "-i", *(f"{key}={value}" for key, value in self._env.items()),
                                          sys.executable, "-I", "-S", "-c", _SUPERVISOR,
                                          str(self._socket_path), self._token, self._target],
