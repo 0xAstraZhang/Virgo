@@ -90,7 +90,7 @@ def test_filter_resets_selection_after_a_long_wrapped_command(make_session):
             await wait_for(pilot, lambda: app.completion_names[choices.highlighted] == "/zlong")
             assert choices.virtual_size.height > choices.option_count
             assert choices._heights[choices.highlighted] > 1
-            app.editor.load_text("/mo")
+            app.editor.load_text("/model")
             app.editor.move_cursor(app.editor.document.end)
             await wait_for(pilot, lambda: app.completion_names == ["/model"])
             assert choices.highlighted == 0 and choices.scroll_y == 0
