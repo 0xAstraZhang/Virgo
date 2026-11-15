@@ -169,6 +169,8 @@ class WindowsProcess:
                 startup = StartupInfoEx()
                 startup.StartupInfo.cb = ctypes.sizeof(startup)
                 startup.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
+                if sandbox is not None:
+                    startup.StartupInfo.lpDesktop = sandbox.desktop
                 startup.StartupInfo.hStdInput = input_handle
                 startup.StartupInfo.hStdOutput = startup.StartupInfo.hStdError = output_handle
                 startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)

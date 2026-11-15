@@ -59,6 +59,7 @@ advapi = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "advapi32.dll"), use_last_error=Tr
 userenv = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "userenv.dll"), use_last_error=True)
 base = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "kernelbase.dll"), use_last_error=True)
 ole = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "ole32.dll"), use_last_error=True)
+user = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "user32.dll"), use_last_error=True)
 
 
 class SidAndAttributes(ctypes.Structure):
@@ -76,6 +77,10 @@ class SecurityCapabilities(ctypes.Structure):
 
 class GenericMapping(ctypes.Structure):
     _fields_ = [(name, DWORD) for name in ("Read", "Write", "Execute", "All")]
+
+
+class SecurityAttributes(ctypes.Structure):
+    _fields_ = [("Length", DWORD), ("Descriptor", ctypes.c_void_p), ("Inherit", BOOL)]
 
 
 class ServiceStatus(ctypes.Structure):
@@ -123,6 +128,44 @@ OpenService = _api(advapi, "OpenServiceW", [HANDLE, w.LPCWSTR, DWORD], HANDLE)
 QueryServiceStatus = _api(advapi, "QueryServiceStatusEx", [HANDLE, ctypes.c_int, ctypes.c_void_p,
                                                        DWORD, ctypes.POINTER(DWORD)])
 CloseServiceHandle = _api(advapi, "CloseServiceHandle", [HANDLE])
+MakeSelfRelativeSD = _api(advapi, "MakeSelfRelativeSD", [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(DWORD),
+])
+GetProcessWindowStation = _api(user, "GetProcessWindowStation", [], HANDLE)
+GetUserObjectInformation = _api(user, "GetUserObjectInformationW", [
+    HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD),
+])
+OpenWindowStation = _api(user, "OpenWindowStationW", [w.LPCWSTR, BOOL, DWORD], HANDLE)
+CloseWindowStation = _api(user, "CloseWindowStation", [HANDLE])
+GetUserObjectSecurity = _api(user, "GetUserObjectSecurity", [
+    HANDLE, ctypes.POINTER(DWORD), ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD),
+])
+SetUserObjectSecurity = _api(user, "SetUserObjectSecurity", [
+    HANDLE, ctypes.POINTER(DWORD), ctypes.c_void_p,
+])
+CreateDesktop = _api(user, "CreateDesktopW", [
+    w.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p, DWORD, DWORD,
+    ctypes.POINTER(SecurityAttributes),
+], HANDLE)
+CloseDesktop = _api(user, "CloseDesktop", [HANDLE])
+GetCurrentThreadId = _api(kernel, "GetCurrentThreadId", [], DWORD)
+GetThreadDesktop = _api(user, "GetThreadDesktop", [DWORD], HANDLE)
+SetThreadDesktop = _api(user, "SetThreadDesktop", [HANDLE])
+
+
+def _get_user_security(handle, information, descriptor, size, needed):
+    return GetUserObjectSecurity(handle, ctypes.byref(DWORD(information)), descriptor, size, needed)
+
+
+def _set_user_security(handle, information, descriptor):
+    # Unlike SetKernelObjectSecurity, USER objects require a self-relative SD.
+    size = DWORD()
+    MakeSelfRelativeSD(descriptor, None, ctypes.byref(size))
+    if not size.value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    relative = ctypes.create_string_buffer(size.value)
+    _check(MakeSelfRelativeSD(descriptor, relative, ctypes.byref(size)))
+    return SetUserObjectSecurity(handle, ctypes.byref(DWORD(information)), relative)
 
 
 def _hresult(value, operation):
@@ -283,6 +326,9 @@ class WindowsSandbox:
         self._profile = None
         self._package_sid = PSID()
         self._grants = None
+        self._station = None
+        self._desktop = None
+        self.desktop = None
         self._pins = ExitStack()
         self._closed = False
         self._check_cancelled()
@@ -340,6 +386,7 @@ class WindowsSandbox:
             for root in runtime_roots:
                 self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)
             self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
+            self._prepare_desktop()
             self.environment = self._environment(env)
             self._check_cancelled()
         except BaseException as setup_error:
@@ -364,6 +411,7 @@ class WindowsSandbox:
         try:
             user = _token_info(source, 1)
             user_name = _sid_string(ctypes.c_void_p.from_buffer(user).value)
+            self._user_name = user_name
             restricting = (SidAndAttributes * 1)(SidAndAttributes(ctypes.cast(self._write_sid, PSID), 0))
             token = HANDLE()
             # DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED. No Everyone/logon SID
@@ -386,6 +434,72 @@ class WindowsSandbox:
                 LocalFree(descriptor)
         finally:
             CloseHandle(source)
+
+    def _station_access(self, *, cleanup=False):
+        from .windows_sandbox_acl import _ace, _read, _sid_in_ace, _write
+
+        # Limit the station lease to attributes/global atoms for the private
+        # desktop. Do not grant clipboard, screen or desktop creation
+        # rights on the host station, and never lower its integrity label.
+        access = 0x20022  # READ_CONTROL | WINSTA_READATTRIBUTES | ACCESSGLOBALATOMS
+        with self._grants._locked(cleanup=cleanup):
+            previous = _read(self._station, cleanup=cleanup, getter=_get_user_security)
+            if previous is None:
+                return
+            retained = [ace for ace in previous.aces if _sid_in_ace(ace) not in self._grants.sids]
+            if cleanup:
+                if len(retained) == len(previous.aces):
+                    return
+                aces = retained
+            else:
+                deny = [_ace(1, 0, 0xF037F & ~access, sid) for sid in self._grants.sids]
+                allow = [_ace(0, 0, access, sid) for sid in self._grants.sids]
+                aces = deny + retained + allow
+            _write(self._station, previous, aces, previous.control, setter=_set_user_security)
+
+    def _prepare_desktop(self):
+        # GetProcessWindowStation returns a borrowed handle; acquire our own
+        # handle before editing its DACL, and retain it through Job drain.
+        current = _check(GetProcessWindowStation())
+        station_name, needed = ctypes.create_unicode_buffer(32768), DWORD()
+        _check(GetUserObjectInformation(current, 2, station_name,
+                                        ctypes.sizeof(station_name), ctypes.byref(needed)))
+        self._station = _check(OpenWindowStation(station_name.value, False, 0x60002))
+        self._station_access()
+        name = "VirgoShell." + uuid.uuid4().hex
+        descriptor = ctypes.c_void_p()
+        # The private desktop permits ordinary window operations, but not hooks,
+        # journaling, switching desktops or rewriting its security descriptor.
+        participant = 0x200C7  # READ_CONTROL | READ/WRITEOBJECTS | CREATEWINDOW/MENU | ENUMERATE
+        text = (f"O:{self._user_name}G:{self._user_name}D:P(A;;GA;;;SY)"
+                f"(A;;GA;;;{self._user_name})(A;;0x{participant:X};;;{self.package_name})"
+                f"(A;;0x{participant:X};;;{self.write_name})(A;;RC;;;OW)S:(ML;;NW;;;LW)")
+        _check(ConvertSecurityDescriptor(text, 1, ctypes.byref(descriptor), None))
+        try:
+            attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+            original = _check(GetThreadDesktop(GetCurrentThreadId()))  # Borrowed.
+            ctypes.set_last_error(0)
+            self._desktop = _check(CreateDesktop(name, None, None, 0, 0xF01FF, ctypes.byref(attributes)))
+            existing = ctypes.get_last_error() == 183
+            if _check(GetThreadDesktop(GetCurrentThreadId())) != original:
+                _check(SetThreadDesktop(original))
+            if existing:
+                raise SandboxUnavailable("Windows sandbox desktop identity was already in use")
+            self.desktop = station_name.value + "\\" + name
+        finally:
+            LocalFree(descriptor)
+
+    def _release_desktop(self):
+        try:
+            if self._desktop is not None:
+                _check(CloseDesktop(self._desktop))
+                self._desktop = None
+            if self._station is not None:
+                self._station_access(cleanup=True)
+                _check(CloseWindowStation(self._station))
+                self._station = None
+        except OSError as error:
+            raise SandboxProcessError(f"Could not release Windows sandbox desktop resources: {error}") from error
 
     def process_attributes(self):
         capabilities = SecurityCapabilities(self._package_sid, self._capabilities,
@@ -435,6 +549,7 @@ class WindowsSandbox:
             raise SandboxProcessError("Windows sandbox resources require verified process-tree drain")
         # The caller must first prove Job drain. If revocation fails, retain
         # the profile/lease for diagnosis rather than claiming complete cleanup.
+        self._release_desktop()
         if self._grants is not None:
             self._grants.cleanup()
             self._grants = None

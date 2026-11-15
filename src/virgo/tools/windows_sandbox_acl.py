@@ -95,13 +95,13 @@ class _Dacl:
     aces: list[bytes]
 
 
-def _read(handle, *, cleanup=False) -> _Dacl | None:
+def _read(handle, *, cleanup=False, getter=GetSecurity) -> _Dacl | None:
     size = DWORD()
-    GetSecurity(handle, 4, None, 0, ctypes.byref(size))
+    getter(handle, 4, None, 0, ctypes.byref(size))
     if not size.value:
         raise ctypes.WinError(ctypes.get_last_error())
     data = ctypes.create_string_buffer(size.value)
-    _check(GetSecurity(handle, 4, data, len(data), ctypes.byref(size)))
+    _check(getter(handle, 4, data, len(data), ctypes.byref(size)))
     present, defaulted, acl = BOOL(), BOOL(), ctypes.c_void_p()
     _check(GetDacl(data, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted)))
     if not present.value or not acl.value:
@@ -127,7 +127,7 @@ def _read(handle, *, cleanup=False) -> _Dacl | None:
     return _Dacl(acl_revision, control.value, bool(defaulted.value), aces)
 
 
-def _write(handle, previous: _Dacl, aces: list[bytes], control: int):
+def _write(handle, previous: _Dacl, aces: list[bytes], control: int, *, setter=SetSecurity):
     length = 8 + sum(map(len, aces))
     if length > 65535 or len(aces) > 65535:
         raise OSError("Windows sandbox grants exceed the native DACL size limit")
@@ -139,7 +139,7 @@ def _write(handle, previous: _Dacl, aces: list[bytes], control: int):
     _check(SetDacl(descriptor, True, acl, previous.defaulted))
     _check(SetControl(descriptor, 0x1500, control & 0x1500))
     protection = 0x80000000 if control & 0x1000 else 0x20000000
-    _check(SetSecurity(handle, 4 | protection, descriptor))
+    _check(setter(handle, 4 | protection, descriptor))
 
 
 def _sid_in_ace(ace: bytes):
