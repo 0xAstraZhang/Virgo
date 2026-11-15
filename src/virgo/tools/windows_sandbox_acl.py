@@ -228,8 +228,9 @@ class AclGrants:
             finally:
                 _THREAD_LOCK.release()
 
-    def _walk(self, root, excluded, *, cleanup=False):
-        pending = [Path(root)]
+    def _walk(self, root, excluded, *, cleanup=False, skip_reparse=False):
+        root = Path(root)
+        pending = [root]
         while pending:
             if not cleanup:
                 self._cancel()
@@ -237,13 +238,19 @@ class AclGrants:
             if any(_inside(_key(path), item) for item in excluded):
                 continue
             try:
-                handle = open_path(path, _ACL_ACCESS, allow_reparse=cleanup)
+                handle = open_path(path, _ACL_ACCESS,
+                                   allow_reparse=cleanup or (skip_reparse and path != root))
             except FileNotFoundError:
                 if cleanup:
                     continue
                 raise
             directory = bool(handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY)
             reparse = bool(handle.info.attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+            if reparse and skip_reparse:
+                # Read-only runtimes can contain aliases such as python3.exe.
+                # Do not mutate the alias, follow it or grant its target.
+                handle.close()
+                continue
             yield path, handle
             if directory and not reparse:
                 with os.scandir(path) as entries:
@@ -277,17 +284,20 @@ class AclGrants:
             grant.written_control = _read(grant.handle.value).control
 
     def grant_tree(self, root: Path, writable: bool, protected: tuple[Path, ...] = (),
-                   reject_hardlinks: bool = True, excluded: tuple[Path, ...] = ()):
+                   reject_hardlinks: bool = True, excluded: tuple[Path, ...] = (),
+                   skip_reparse: bool = False):
         pending = []
         try:
             if not self._mutex:
                 raise SandboxUnavailable("Windows file grants have already been released")
+            if writable and skip_reparse:
+                raise SandboxUnavailable("Writable sandbox grants must reject every reparse point")
             root = Path(normalize_path(root))
             root_key = _key(root)
             protected_keys, excluded_keys = tuple(map(_key, protected)), tuple(map(_key, excluded))
             # Preflight the complete tree before its first ACL mutation. Retain
             # every opened object; path replacements cannot redirect later edits.
-            for path, handle in self._walk(root, excluded_keys):
+            for path, handle in self._walk(root, excluded_keys, skip_reparse=skip_reparse):
                 pending.append((path, handle))
                 if reject_hardlinks and not handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY:
                     if handle.info.nlinks != 1:

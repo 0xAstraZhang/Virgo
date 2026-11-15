@@ -292,7 +292,7 @@ class WindowsSandbox:
             self._grants.grant_tree(policy.workspace, policy.mode == "workspace-write", protected,
                                     reject_hardlinks=True, excluded=runtime_roots)
             for root in runtime_roots:
-                self._grants.grant_tree(root, False, reject_hardlinks=False)
+                self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)
             self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
             self.environment = self._environment(env)
             self._check_cancelled()
