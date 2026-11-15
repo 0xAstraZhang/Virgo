@@ -101,6 +101,170 @@ def test_workspace_file_tools_obey_sandbox_even_with_accept_all(make_session, pr
     assert [r.is_error for r in tool_results(session)] == [True, True, False]
 
 
+@pytest.mark.parametrize("tool", ["write", "edit"])
+@pytest.mark.parametrize("location", ["outside", "metadata", "workspace"])
+def test_sandbox_file_tools_reject_hardlinks(make_session, project, tool, location):
+    """A writable pathname must not confer authority over a shared inode.
+
+    Failure modes: write truncates an outside inode; edit changes protected Git
+    metadata; an unrecognized alias is accepted because its pathname is ordinary;
+    Windows retains the same bypass through its application-level fallback.
+    All aliases are disposable files on the fixture's filesystem.
+    """
+    source = {"outside": project.parent / "outside.txt",
+              "metadata": project / ".git" / "config",
+              "workspace": project / "source.txt"}[location]
+    source.parent.mkdir(exist_ok=True)
+    source.write_text("original\n")
+    alias = project / "ordinary.txt"
+    os.link(source, alias)
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    arguments = ({"path": alias.name, "content": "changed\n"} if tool == "write" else
+                 {"path": alias.name, "edits": [{"old_text": "original", "new_text": "changed"}]})
+    faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+    session.prompt("Update the ordinary project file")
+    result = tool_results(session)[-1]
+    assert source.read_text() == alias.read_text() == "original\n", result.text()
+    assert result.is_error and result.details["status"] == "sandbox_denied", result.text()
+
+
+@pytest.mark.parametrize("tool", ["write", "edit"])
+def test_native_core_file_mutation_survives_hardlink_unlink_race(native, make_session, project, tool):
+    """An allowed background unlink must not hide the shared inode at fstat.
+
+    Failure modes: the broker opens an outside hardlink, then the shell unlinks
+    the workspace alias before fstat; nlink becomes one and a naive guard allows
+    mutation of the remaining outside link. A trace only schedules the opening
+    boundary; the assembled Core executor and real native unlink are unchanged.
+    """
+    outside = project.parent / "race-outside.txt"
+    outside.write_text("original\n")
+    alias = project / "race-alias.txt"
+    session = make_session(
+        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                  "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    source = """import time
+from pathlib import Path
+deadline = time.monotonic() + 15
+while not Path('unlink-open-file').exists():
+    assert time.monotonic() < deadline
+    time.sleep(0.01)
+Path('race-alias.txt').unlink()
+Path('unlink-finished').touch()
+"""
+    result = run(session, python_command(source), background=True, timeout=20)
+    assert not result.is_error, result.text()
+    job = next(iter(session.services["jobs"].jobs.values()))
+    # The broker file boundary must also hold when the file is supplied after a
+    # clean native launch. The background actor only removes a workspace name.
+    os.link(outside, alias)
+    opened, resume = threading.Event(), threading.Event()
+    errors = []
+
+    def pause_after_open(frame, event, _arg):
+        if (event == "line" and frame.f_code.co_name == "open_mutation"
+                and frame.f_locals.get("path") == alias
+                and frame.f_locals.get("descriptor") is not None and not opened.is_set()):
+            opened.set()
+            assert resume.wait(10), "The native unlink did not complete"
+        return pause_after_open
+
+    def execute():
+        try:
+            session.prompt("Update the alias while the background command runs")
+        except Exception as error:
+            errors.append(error)
+
+    arguments = ({"path": alias.name, "content": "changed\n"} if tool == "write" else
+                 {"path": alias.name, "edits": [{"old_text": "original", "new_text": "changed"}]})
+    faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+    previous_trace = threading.gettrace()
+    threading.settrace(pause_after_open)
+    worker = threading.Thread(target=execute, daemon=True)
+    try:
+        worker.start()
+        assert opened.wait(10), "The Core tool did not open the alias"
+        (project / "unlink-open-file").touch()
+        wait_until((project / "unlink-finished").exists)
+        assert outside.stat().st_nlink == 1 and not alias.exists()
+    finally:
+        resume.set()
+        worker.join(10)
+        threading.settrace(previous_trace)
+        if not job.done.wait(5):
+            session.services["jobs"].kill(job)
+    assert not worker.is_alive() and not errors, errors
+    assert job.status == "completed", session.services["jobs"].output(job)
+    assert outside.read_text() == "original\n", "Core mutated the unlinked outside inode"
+
+
+def test_sandbox_file_mutation_roundtrip_and_failed_edit(make_session, project):
+    """Fresh-inode writes retain content/mode and do not commit a failed edit.
+
+    Failure modes: a new nested file cannot be created; overwrite loses executable
+    permissions; edit translates BOM/CRLF; a rejected edit replaces the inode or
+    changes its bytes; successful or failed operations leave staging files.
+    """
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    target = project / "nested" / "ordinary.txt"
+    text = "\ufefforiginal\r\n"
+    for index, (tool, arguments) in enumerate([
+        ("write", {"path": str(target), "content": text}),
+        ("write", {"path": str(target), "content": text}),
+        ("edit", {"path": str(target), "edits": [{"old_text": "original", "new_text": "changed"}]}),
+    ]):
+        faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+        session.prompt("Update the ordinary file")
+        assert not tool_results(session)[-1].is_error, tool_results(session)[-1].text()
+        if os.name == "posix":
+            if index == 0:
+                target.chmod(0o751)
+            else:
+                assert target.stat().st_mode & 0o777 == 0o751
+    assert target.read_bytes() == "\ufeffchanged\r\n".encode()
+    before = target.stat()
+    metadata_before = {p.relative_to(project) for p in (project / ".virgo").rglob("*")}
+    assert not any((project / p).is_file() for p in metadata_before)
+    for old, new in [("missing", "bad"), ("changed", "changed")]:
+        faux.script("test", faux.reply(tools=[("edit", {
+            "path": str(target), "edits": [{"old_text": old, "new_text": new}],
+        })]), faux.reply("done"))
+        session.prompt("Attempt an edit that cannot change the file")
+        assert tool_results(session)[-1].is_error
+        assert target.stat().st_ino == before.st_ino and target.stat().st_mode == before.st_mode
+        assert target.read_bytes() == "\ufeffchanged\r\n".encode()
+        assert {p.relative_to(project) for p in (project / ".virgo").rglob("*")} == metadata_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX staging-directory symlinks")
+@pytest.mark.parametrize("tool", ["write", "edit"])
+def test_sandbox_file_mutation_rejects_metadata_symlink(make_session, project, tool):
+    """Private staging must not follow a pre-existing metadata alias outside."""
+    outside = project.parent / "outside-stage"
+    outside.mkdir()
+    (project / ".virgo").symlink_to(outside, target_is_directory=True)
+    target = project / "ordinary.txt"
+    target.write_text("original")
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    arguments = ({"path": target.name, "content": "changed"} if tool == "write" else
+                 {"path": target.name, "edits": [{"old_text": "original", "new_text": "changed"}]})
+    faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+    session.prompt("Update a file with invalid broker metadata")
+    assert tool_results(session)[-1].is_error
+    assert target.read_text() == "original" and not list(outside.iterdir())
+
+
 def test_disabled_sandbox_keeps_legacy_execution(make_session, project):
     session = make_session(settings={"profile": "minimal"}, refresh_models=False)
     shell = selected(session)
@@ -184,6 +348,68 @@ def test_native_existing_metadata_is_readonly(native, project):
     for name in (".git/config", "AGENTS.md"):
         result = run(native, python_command(f"from pathlib import Path; Path({name!r}).write_text('bad')"))
         assert result.is_error and (project / name).read_text() == "original"
+
+
+@pytest.mark.parametrize("location", ["outside", "metadata", "workspace"])
+def test_native_rejects_preexisting_writable_hardlinks(native, project, location):
+    """Path-based native grants must not expose a shared inode as writable.
+
+    Failure modes: ordinary shell redirection changes an outside file or Git
+    metadata through a pre-existing alias; launch checks reject only direct
+    protected paths; the rejection occurs only after payload side effects.
+    Conservatively reject workspace-only aliases too, without guessing origins.
+    """
+    source = {"outside": project.parent / "native-outside.txt",
+              "metadata": project / ".git" / "config",
+              "workspace": project / "native-source.txt"}[location]
+    source.parent.mkdir(exist_ok=True)
+    source.write_text("original")
+    alias = project / "native-alias.txt"
+    os.link(source, alias)
+    result = run(native, "printf started > payload-started; printf changed > native-alias.txt")
+    assert source.read_text() == alias.read_text() == "original", result.text()
+    assert result.is_error and result.details["status"] == "sandbox_unavailable", result.text()
+    assert not (project / "payload-started").exists()
+
+
+@pytest.mark.parametrize("location", ["outside", "metadata"])
+def test_native_cannot_create_hardlink_from_readonly_source(native, project, location):
+    """A clean launch cannot acquire an outside inode through link creation.
+
+    Failure modes: a readable runtime or metadata file can be hardlinked into
+    the workspace after launch validation, then changed through the new alias.
+    The outside source is visible in the existing interpreter read-only mount.
+    """
+    with tempfile.TemporaryDirectory(prefix="virgo-link-source-", dir=sys.prefix) as directory:
+        source = (Path(directory) / "outside.txt" if location == "outside" else
+                  project / ".git" / "config")
+        source.parent.mkdir(exist_ok=True)
+        source.write_text("original")
+        result = run(native, python_command(
+            f"import os; from pathlib import Path; os.link({str(source)!r}, 'new-alias.txt'); "
+            "Path('new-alias.txt').write_text('changed')"
+        ))
+        assert source.read_text() == "original", result.text()
+        assert result.is_error and not (project / "new-alias.txt").exists(), result.text()
+
+
+@pytest.mark.parametrize("mode,relative", [("read-only", "ordinary.txt"),
+                                           ("workspace-write", ".git/config")])
+def test_native_readonly_hardlinks_remain_usable(native, make_session, project, mode, relative):
+    """Read-only shared inodes need no writable-file rejection, including Git objects."""
+    source = project.parent / "readonly-shared.txt"
+    source.write_text("original")
+    alias = project / relative
+    alias.parent.mkdir(exist_ok=True)
+    os.link(source, alias)
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": mode}},
+        refresh_models=False, extensions=False,
+    )
+    result = run(session, python_command(f"from pathlib import Path; print(Path({relative!r}).read_text())"))
+    assert not result.is_error and "original" in result.text(), result.text()
+    result = run(session, python_command(f"from pathlib import Path; Path({relative!r}).write_text('bad')"))
+    assert result.is_error and source.read_text() == "original", result.text()
 
 
 def test_native_background_and_child_preserve_workspace(native, project):
