@@ -148,7 +148,7 @@ def test_workspace_switch_uses_current_command_metadata(make_session, project, t
     async def scenario():
         ui = FullscreenUI()
         app = VirgoApp(make_session(ui=ui, trust_project_extensions=False), ui)
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test() as pilot:
             await pilot.press(*'/custom')
             assert '[first]' in rendered(app)
             await app.change_conversation(path)
