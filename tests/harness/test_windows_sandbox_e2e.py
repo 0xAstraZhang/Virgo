@@ -126,13 +126,20 @@ def dacl(path: Path) -> str:
         kernel.LocalFree(descriptor)
 
 
+DEVICE_ACCESS = {"KsecDD": 0x100003, "Null": 0x12019F}
+
+
 class DeviceSecurity:
     """Independent native observations and a controlled host-only fixture ACE.
 
-    The measured BCrypt startup denial requires one fixed KsecDD write lease.
+    Measured BCrypt startup and subprocess.DEVNULL denials require fixed leases.
     These checks are defined before that mechanism: unrelated ACE bytes/order,
     owner, group and mandatory label must survive overlapping grants/revocation.
     """
+
+    def __init__(self, name="KsecDD"):
+        assert name in DEVICE_ACCESS
+        self.name = name
 
     def __enter__(self):
         from ctypes import wintypes as w
@@ -173,7 +180,7 @@ class DeviceSecurity:
         self.set_dacl = bind(self.advapi, "SetSecurityDescriptorDacl", [pointer, w.BOOL, pointer, w.BOOL])
         self.set_control = bind(self.advapi, "SetSecurityDescriptorControl", [pointer, w.WORD, w.WORD])
         self.set = bind(self.advapi, "SetKernelObjectSecurity", [w.HANDLE, w.DWORD, pointer])
-        self.handle = create(r"\\?\GLOBALROOT\Device\KsecDD", 0x60000, 7, None, 3, 0, None)
+        self.handle = create(rf"\\?\GLOBALROOT\Device\{self.name}", 0x60000, 7, None, 3, 0, None)
         assert self.handle != pointer(-1).value, ctypes.get_last_error()
         return self
 
@@ -189,7 +196,7 @@ class DeviceSecurity:
         assert self.get(self.handle, 0x17, descriptor, len(descriptor), ctypes.byref(size)), ctypes.get_last_error()
         present, defaulted, acl = w.BOOL(), w.BOOL(), ctypes.c_void_p()
         assert self.get_dacl(descriptor, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted))
-        assert present.value and acl.value, "KsecDD must have a non-null DACL"
+        assert present.value and acl.value, f"{self.name} must have a non-null DACL"
         control, revision = w.WORD(), w.DWORD()
         assert self.get_control(descriptor, ctypes.byref(control), ctypes.byref(revision))
         header = ctypes.string_at(acl, 8)
@@ -223,7 +230,8 @@ class DeviceSecurity:
         return [entry for entry in self.state()[2] if entry[0] == 0 and entry[8:] == sid]
 
     def assert_lease(self, name, *, present=True):
-        expected = struct.pack("<BBHI", 0, 0, 8 + len(self.sid(name)), 0x100003) + self.sid(name)
+        sid = self.sid(name)
+        expected = struct.pack("<BBHI", 0, 0, 8 + len(sid), DEVICE_ACCESS[self.name]) + sid
         assert self.leases(name) == ([expected] if present else []), name
 
     def _marker(self, sid, *, remove=False):
@@ -258,8 +266,11 @@ class DeviceSecurity:
 
 
 def device_state():
-    with DeviceSecurity() as device:
-        return device.state()
+    states = {}
+    for name in DEVICE_ACCESS:
+        with DeviceSecurity(name) as device:
+            states[name] = device.state()
+    return states
 
 
 def process_sids(pid, information):
@@ -306,10 +317,11 @@ def process_sids(pid, information):
 
 
 @contextmanager
-def untrusted_device_mutex():
+def untrusted_device_mutex(name):
     """A precreated global object must cause refusal, never policy takeover."""
     from ctypes import wintypes as w
 
+    assert name in DEVICE_ACCESS
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
 
@@ -342,7 +354,7 @@ def untrusted_device_mutex():
     try:
         attributes = Attributes(ctypes.sizeof(Attributes), descriptor, False)
         ctypes.set_last_error(0)
-        handle = kernel.CreateMutexExW(ctypes.byref(attributes), r"Global\Virgo.NativeSandbox.KsecDD.v1", 0, 0x120001)
+        handle = kernel.CreateMutexExW(ctypes.byref(attributes), rf"Global\Virgo.NativeSandbox.{name}.v1", 0, 0x120001)
         error = ctypes.get_last_error()
         assert handle, error
         try:
@@ -442,16 +454,19 @@ n.NtOpenFile.argtypes = [ctypes.POINTER(w.HANDLE), w.DWORD, ctypes.POINTER(Attri
                          ctypes.POINTER(IoStatus), w.DWORD, w.DWORD]
 n.NtOpenFile.restype = ctypes.c_int32
 k.CloseHandle.argtypes = [w.HANDLE]
-path = r'\Device\KsecDD'
-name = Name(len(path.encode('utf-16-le')), len(path.encode('utf-16-le')) + 2, path)
-attributes = Attributes(ctypes.sizeof(Attributes), None, ctypes.pointer(name), 0x40, None, None)
-device_result = []
-for access in (0x100003, 0x40000, 0x80000, 0x10000, 0x10000000):
-    handle, io = w.HANDLE(), IoStatus()
-    status = n.NtOpenFile(ctypes.byref(handle), access, ctypes.byref(attributes), ctypes.byref(io), 7, 0)
-    device_result.append(status & 0xffffffff)
-    if status == 0:
-        assert k.CloseHandle(handle), ctypes.get_last_error()
+device_result = {}
+for device, required in (('KsecDD', 0x100003), ('Null', 0x12019f)):
+    path = '\\Device\\' + device
+    name = Name(len(path.encode('utf-16-le')), len(path.encode('utf-16-le')) + 2, path)
+    attributes = Attributes(ctypes.sizeof(Attributes), None, ctypes.pointer(name), 0x40, None, None)
+    results = []
+    for access in (required, 0x40000, 0x80000, 0x10000, 0x10000000):
+        handle, io = w.HANDLE(), IoStatus()
+        status = n.NtOpenFile(ctypes.byref(handle), access, ctypes.byref(attributes), ctypes.byref(io), 7, 0)
+        results.append(status & 0xffffffff)
+        if status == 0:
+            assert k.CloseHandle(handle), ctypes.get_last_error()
+    device_result[device] = results
 '''
 
 
@@ -739,7 +754,8 @@ import subprocess, sys
 child = json.loads(subprocess.check_output([sys.executable, '-I', '-S', '-c', {child_code!r}]))
 print(json.dumps([device_result, child]))
 """
-    assert data(run(native, source)) == [[0, *([0xC0000022] * 4)]] * 2  # STATUS_ACCESS_DENIED.
+    expected = {name: [0, *([0xC0000022] * 4)] for name in DEVICE_ACCESS}  # STATUS_ACCESS_DENIED.
+    assert data(run(native, source)) == [expected, expected]
 
 
 def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native):
@@ -844,8 +860,9 @@ while not Path('child-ready').exists():
             assert (project / "child-ready").exists(), errors or [r.text() for r in results]
             lifetime = json.loads((project / "lifetime.json").read_text())
             restricting, = process_sids(lifetime["pid"], 11)
-            with DeviceSecurity() as device:
-                device.assert_lease(restricting)
+            for name in DEVICE_ACCESS:
+                with DeviceSecurity(name) as device:
+                    device.assert_lease(restricting)
             native.abort()
             worker.join(15)
             assert not worker.is_alive()
@@ -877,8 +894,9 @@ def test_background_cancel_preserves_other_job_and_origin_after_switch(native, p
                 jobs.kill(job)
                 assert job.done.wait(15), "fixture must drain before removing its unrelated ACE"
 
-    with DeviceSecurity() as device:
-        before_device = device.state()
+    with ExitStack() as resources:
+        devices = [resources.enter_context(DeviceSecurity(name)) for name in DEVICE_ACCESS]
+        before_devices = [device.state() for device in devices]
         try:
             first = run(native, """import time
 from pathlib import Path
@@ -905,9 +923,11 @@ Path('shared.txt').write_text('second-still-authorized')
             a_sid, = process_sids(a.proc.pid, 11)
             b_sid, = process_sids(b.proc.pid, 11)
             assert a_sid != b_sid
-            device.assert_lease(a_sid)
-            device.assert_lease(b_sid)
-            with device.marker() as (marker_sid, marker_entry):
+            for device in devices:
+                device.assert_lease(a_sid)
+                device.assert_lease(b_sid)
+            with ExitStack() as markers:
+                marker_entries = [markers.enter_context(device.marker()) for device in devices]
                 try:
                     other = project.parent / "selected-workspace"
                     other.mkdir()
@@ -917,10 +937,11 @@ Path('shared.txt').write_text('second-still-authorized')
                     jobs.kill(a)
                     assert a.done.wait(15) and a.status == "killed"
                     assert b.status == "running" and b.proc.poll() is None
-                    device.assert_lease(a_sid, present=False)
-                    device.assert_lease(b_sid)
-                    assert device.leases(marker_sid) == [marker_entry]
-                    assert device.state() == (*before_device[:2], before_device[2] + tuple(device.leases(b_sid)) + (marker_entry,))
+                    for device, before, (marker_sid, entry) in zip(devices, before_devices, marker_entries, strict=True):
+                        device.assert_lease(a_sid, present=False)
+                        device.assert_lease(b_sid)
+                        assert device.leases(marker_sid) == [entry]
+                        assert device.state() == (*before[:2], before[2] + tuple(device.leases(b_sid)) + (entry,))
                     (project / "release-second").touch()
                     assert b.done.wait(15) and b.status == "completed", jobs.output(b)
                     assert a.sandbox["backend"] == b.sandbox["backend"] == "windows-lpac"
@@ -928,10 +949,11 @@ Path('shared.txt').write_text('second-still-authorized')
                     assert a.log.parent == b.log.parent == project / ".virgo" / "outputs"
                     assert (project / "shared.txt").read_text() == "second-still-authorized"
                     assert not (project / "first-late").exists() and not list(other.iterdir())
-                    assert device.state() == (*before_device[:2], before_device[2] + (marker_entry,))
+                    for device, before, (_, entry) in zip(devices, before_devices, marker_entries, strict=True):
+                        assert device.state() == (*before[:2], before[2] + (entry,))
                 finally:
                     stop_jobs()
-            assert device.state() == before_device
+            assert [device.state() for device in devices] == before_devices
         finally:
             stop_jobs()
 
@@ -1006,12 +1028,13 @@ def test_actual_start_failure_is_fail_closed_and_nonzero_payload_is_not_replayed
     assert device_state() == before_device
     assert not (project / "payload-started").exists()
     assert set((project / ".virgo" / "outputs").iterdir()) == before
-    with untrusted_device_mutex(), pytest.raises(SandboxUnavailable):
-        run_command("Set-Content payload-started bad", project, 10, threading.Event(),
-                    interpreter=selected(native), sandbox_policy=policy)
-    assert device_state() == before_device
-    assert not (project / "payload-started").exists()
-    assert set((project / ".virgo" / "outputs").iterdir()) == before
+    for name in DEVICE_ACCESS:
+        with untrusted_device_mutex(name), pytest.raises(SandboxUnavailable):
+            run_command("Set-Content payload-started bad", project, 10, threading.Event(),
+                        interpreter=selected(native), sandbox_policy=policy)
+        assert device_state() == before_device
+        assert not (project / "payload-started").exists()
+        assert set((project / ".virgo" / "outputs").iterdir()) == before
     result = run(native, "from pathlib import Path; p=Path('once.txt'); p.open('a').write('once'); raise SystemExit(7)")
     assert result.is_error and result.details["status"] == "ok" and result.details["exit_code"] == 7
     assert (project / "once.txt").read_text() == "once"
