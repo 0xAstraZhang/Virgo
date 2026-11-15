@@ -34,7 +34,7 @@ import pytest
 
 from virgo.agent import ToolContext
 from virgo.ai.providers import faux
-from virgo.ai.types import ToolResultMessage
+from virgo.ai.types import ToolResultMessage, UserMessage
 from virgo.harness.extensions import ExtensionAPI
 from virgo.harness.store import SessionStore
 from virgo.tools.bash import run_command
@@ -689,7 +689,14 @@ k = ctypes.WinDLL('kernel32', use_last_error=True)
 k.ReadFile.argtypes = [w.HANDLE, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD), ctypes.c_void_p]
 buffer = ctypes.create_string_buffer(128)
 count = w.DWORD()
-ok = k.ReadFile({handle}, buffer, 128, ctypes.byref(count), None)
+try:
+    ok = k.ReadFile({handle}, buffer, 128, ctypes.byref(count), None)
+except OSError as error:
+    # Windows can raise STATUS_INVALID_HANDLE through ctypes instead of
+    # returning FALSE when the deliberately unlisted handle is inaccessible.
+    if (getattr(error, 'winerror', 0) & 0xffffffff) != 0xC0000008:
+        raise
+    ok = False
 print(json.dumps({{'secrets': [os.environ.get(key) for key in {keys!r}],
                   'handle': buffer.raw[:count.value].decode(errors='replace') if ok else None,
                   'home': os.environ.get('USERPROFILE'), 'temp': os.environ.get('TEMP')}}))
@@ -764,21 +771,21 @@ def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native):
         source = f"""import json, socket
 results = []
 for family, target in {endpoints!r}:
-    with socket.socket(family, socket.SOCK_STREAM) as sock:
-        sock.settimeout(3)
-        try:
-            sock.connect(target)
-        except OSError as error:
-            results.append(error.winerror)
-        else:
-            results.append(0)
-with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
     try:
-        sock.sendto(b'sandbox-must-not-send', {udp.getsockname()!r})
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(3)
+            sock.connect(target)
     except OSError as error:
         results.append(error.winerror)
     else:
         results.append(0)
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.sendto(b'sandbox-must-not-send', {udp.getsockname()!r})
+except OSError as error:
+    results.append(error.winerror)
+else:
+    results.append(0)
 print(json.dumps(results))
 """
         assert data(run(native, source)) == [10013] * (len(endpoints) + 1), "requires WSAEACCES, not refusal/timeout"
@@ -905,6 +912,7 @@ Path('shared.txt').write_text('second-still-authorized')
                     other = project.parent / "selected-workspace"
                     other.mkdir()
                     selected_store = SessionStore.new(native.paths.sessions, other)
+                    selected_store.append_message(UserMessage("Selected workspace conversation"))
                     native.open_session(selected_store.path)
                     jobs.kill(a)
                     assert a.done.wait(15) and a.status == "killed"
@@ -940,6 +948,7 @@ def test_child_runtime_keeps_origin_with_canonical_cwd_and_rejects_escape(native
                                cwd=Path(str(nested).swapcase()) / ".." / nested.name)
     escaped = api.create_runtime("escaped-child", "subagent", parent=native.main, cwd=outside)
     current = SessionStore.new(native.paths.sessions, outside)
+    current.append_message(UserMessage("Selected workspace conversation"))
     native.open_session(current.path)
     try:
         source = f"""from pathlib import Path
@@ -988,7 +997,12 @@ def test_actual_start_failure_is_fail_closed_and_nonzero_payload_is_not_replayed
     with pytest.raises(SandboxUnavailable) as failed:
         run_command("Set-Content payload-started bad", project, 10, threading.Event(),
                     interpreter=Shell("pwsh", str(invalid), "unknown"), sandbox_policy=policy)
-    assert "193" in str(failed.value), failed.value  # ERROR_BAD_EXE_FORMAT.
+    cause = failed.value
+    while cause.__cause__ is not None:
+        cause = cause.__cause__
+    # Both native image-loader errors describe this real invalid executable;
+    # other setup failures cannot stand in for reaching CreateProcess.
+    assert getattr(cause, "winerror", None) in {193, 216}, failed.value
     assert device_state() == before_device
     assert not (project / "payload-started").exists()
     assert set((project / ".virgo" / "outputs").iterdir()) == before
