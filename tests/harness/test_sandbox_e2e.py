@@ -507,3 +507,139 @@ finally:
                                text=True, capture_output=True, timeout=45)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert marker.read_text() == "trusted runtime"
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native workspace mutation")
+@pytest.mark.parametrize("tool", ["write", "edit"])
+def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(make_session, project, tool):
+    """A workspace entry changed after permission review must not redirect I/O.
+
+    Failure modes: the permission gate checks a normal file; a concurrent
+    workspace writer replaces it while the Core tool waits for its existing
+    file lock; write/edit follows the replacement and changes a sibling file.
+    No permission or execution function is replaced in this assembled scenario.
+    """
+    import time
+
+    from virgo.tools.fs import file_lock
+
+    target = project / "ordinary.txt"
+    outside = project.parent / "outside-file.txt"
+    target.write_text("original\n")
+    outside.write_text("original\n")
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    arguments = ({"path": "ordinary.txt", "content": "changed\n"} if tool == "write" else
+                 {"path": "ordinary.txt", "edits": [{"old_text": "original", "new_text": "changed"}]})
+    faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+    errors = []
+
+    def execute():
+        try:
+            session.prompt("Update the ordinary project file")
+        except Exception as error:
+            errors.append(error)
+
+    # Wait for the real executor, after both permission checkpoints. Holding
+    # its normal per-file lock makes the filesystem change deterministic.
+    with file_lock(target):
+        worker = threading.Thread(target=execute, daemon=True)
+        worker.start()
+        deadline = time.monotonic() + 10
+        reached = False
+        while not reached and time.monotonic() < deadline:
+            for frame in sys._current_frames().values():
+                while frame is not None:
+                    if frame.f_code.co_name == "_" + tool and frame.f_locals.get("p") == target:
+                        reached = True
+                        break
+                    frame = frame.f_back
+            if not reached:
+                time.sleep(0.01)
+        if reached:
+            target.unlink()
+            target.symlink_to(outside)
+    worker.join(10)
+    assert not worker.is_alive()
+    assert reached, "The Core file executor did not reach the locked operation"
+    assert not errors, errors
+    assert outside.read_text() == "original\n", "The checked workspace path redirected a host write"
+    assert tool_results(session)[-1].is_error
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX project context symlinks")
+@pytest.mark.parametrize("route", ["rebuild", "child"])
+def test_sandbox_project_context_symlink_never_reaches_provider(make_session, project, route):
+    """Automatic prompt reads must not disclose a metadata link's host target.
+
+    Failure modes: shell selection/compaction rebuilds cached instructions by
+    following a payload-created AGENTS.md link; a new child eagerly reads that
+    link; the shell rejects it only after its contents have reached the model;
+    filtering project instructions also removes explicitly trusted user context.
+    """
+    from tests.support.harness import calls
+
+    (project.parent / "home" / "AGENTS.md").write_text("trusted-user-context-marker")
+    secret = project.parent / "private-context-secret.txt"
+    secret.write_text("credential-never-automatic-project-context")
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    # Linux can create absent metadata names. Reproduce the state after such a
+    # payload without requiring this broker-data-flow check to launch a backend.
+    (project / "AGENTS.md").symlink_to(secret)
+    if route == "rebuild":
+        session.prompt("/shell auto")
+        result = run(session, "printf context-boundary")
+    else:
+        api = ExtensionAPI(session, "sandbox-context")
+        child = api.create_runtime("context-child", "subagent", parent=session.main)
+        try:
+            shell = selected(session)
+            faux.script("test", faux.reply(tools=[(shell.tool_name, {"command": "printf context-boundary"})]),
+                        faux.reply("done"))
+            child.agent.prompt("Run the requested local check")
+            result = next(message for message in reversed(child.messages)
+                          if getattr(message, "tool_name", None) == shell.tool_name)
+        finally:
+            api.release_runtime(child)
+    assert result.is_error and result.details["status"] == "sandbox_unavailable"
+    requests = calls()
+    assert requests
+    for request in requests:
+        assert "credential-never-automatic-project-context" not in request["system"]
+        assert "trusted-user-context-marker" in request["system"]
+    assert secret.read_text() == "credential-never-automatic-project-context"
+
+
+def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(make_session, project):
+    """Changing child cwd must not import another workspace or ancestor context."""
+    from tests.support.harness import calls
+
+    (project.parent / "home" / "AGENTS.md").write_text("trusted-user-context-marker")
+    (project / "AGENTS.md").write_text("origin-workspace-instructions")
+    (project.parent / "AGENTS.md").write_text("outside-ancestor-private-context")
+    other = project.parent / "outside-context-workspace"
+    other.mkdir()
+    (other / "AGENTS.md").write_text("replacement-cwd-private-context")
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    api = ExtensionAPI(session, "sandbox-context-origin")
+    child = api.create_runtime("outside-context-child", "subagent", parent=session.main, cwd=other)
+    try:
+        faux.script("test", faux.reply("done"))
+        child.agent.prompt("Inspect the original task's project instructions")
+        requests = calls()
+        assert requests
+        for request in requests:
+            assert "origin-workspace-instructions" in request["system"]
+            assert "trusted-user-context-marker" in request["system"]
+            assert "outside-ancestor-private-context" not in request["system"]
+            assert "replacement-cwd-private-context" not in request["system"]
+    finally:
+        api.release_runtime(child)
