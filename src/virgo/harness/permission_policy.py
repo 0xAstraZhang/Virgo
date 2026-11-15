@@ -1,7 +1,7 @@
 """Permissions: decide allow / ask / deny for every tool call.
 
-Modes: ``auto-review`` (workspace changes pass, external/network actions require review or approval),
-``accept-all`` (no permission checks), and ``plan`` (read-only investigation and planning).
+Approval strategies: ``auto-review`` and ``accept-all``. The independent ``plan``
+work mode restricts both. Legacy permission-mode ``plan`` remains accepted.
 Rules look like ``bash(npm test*)``, ``edit(src/**)``, ``read(~/.ssh/*)``, ``mcp__github__*``.
 """
 
@@ -38,6 +38,7 @@ from .permissions import MODES as MODES
 from .permissions import normalize_permission_mode as normalize_permission_mode
 from .permissions import permission_mode_label as permission_mode_label
 from .permissions import plan_tool_allowed as plan_tool_allowed
+from .work_modes import WORK_MODES, normalize_work_mode
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -97,6 +98,8 @@ def rule_matches(rule: str, ev: ToolCallEvent) -> bool:
 class Permissions:
     def __init__(self, session: AgentSession):
         self.session = session
+        self._work_mode = normalize_work_mode(session.settings.get("workMode", "default"))
+        self._work_mode_revision = 0
         self.reviewer = None
         self.session_rules: list[str] = []
         self.session_approvals: set[str] = set()
@@ -104,7 +107,32 @@ class Permissions:
         self.agent_modes: dict[str, str] = {}  # child overrides may only restrict the session policy
         self.agent_parents: dict[str, str] = {}
 
+    @property
+    def work_mode(self) -> str:
+        # Preserve the old direct Session API while new mode selection has its
+        # own state. An approval command migrates this legacy input before it
+        # changes the approval strategy, so it cannot implicitly end planning.
+        return "plan" if self.session.permission_mode == "plan" else self._work_mode
+
+    def set_work_mode(self, mode: str) -> None:
+        mode = normalize_work_mode(mode)
+        with self.session._lock:
+            previous = self.work_mode
+            legacy = self.session.permission_mode == "plan"
+            # Install the new ceiling before normalizing a legacy permission.
+            # Readers must not observe a transient unrestricted migration.
+            self._work_mode = mode
+            if legacy:
+                # A legacy startup has no separately selected approval strategy.
+                # Leaving it must never invent an accept-all grant.
+                self.session.permission_mode = "auto-review"
+            if previous != mode or legacy:
+                self._work_mode_revision += 1
+
     def mode_for(self, agent: str) -> str:
+        """Compatibility projection consumed by tool filtering and both gates."""
+        if self.work_mode == "plan":
+            return "plan"
         mode = normalize_permission_mode(self.session.permission_mode)
         severity = {"accept-all": 0, "auto-review": 1, "plan": 2}
         seen = set()
@@ -170,6 +198,7 @@ class Permissions:
             self._approval_key(ev),
             json.dumps(rules, sort_keys=True),
             self._requires_denial_review(ev),
+            self._work_mode_revision,
         )
 
     def _requires_denial_review(self, ev: ToolCallEvent) -> bool:
@@ -343,6 +372,8 @@ class Permissions:
                 "agent": ev.agent,
                 "cwd": str(ev.cwd),
                 "mode": mode,
+                "work_mode": self.work_mode,
+                "permission_mode": self.session.permission_mode,
                 "source": source,
                 "decision": decision,
                 "reason": reason,
@@ -454,13 +485,18 @@ def install_permissions(session: AgentSession) -> Permissions:
         a = args.strip()
         if a:
             try:
-                session.permission_mode = normalize_permission_mode(a)
+                requested = normalize_permission_mode(a)
             except ValueError:
                 session.ui.print(session.t("features.permission.invalid_mode", modes=", ".join(MODES)), "error")
                 return
+            if requested == "plan" or session.permission_mode == "plan":
+                perms.set_work_mode("plan")
+            if requested != "plan":
+                session.permission_mode = requested
         s = session.settings
         label = permission_mode_label(session.permission_mode, session.t)
-        lines = [session.t("features.permission.status", label=label)]
+        lines = [session.t("features.permission.status", label=label),
+                 session.t("work_mode.status", mode=session.t("work_mode." + perms.work_mode))]
         for key in ("allow", "deny"):
             rules = s.get(f"permissions.{key}", []) or []
             if rules:
@@ -469,6 +505,25 @@ def install_permissions(session: AgentSession) -> Permissions:
             lines.append(session.t("features.permission.session_rules", rules=", ".join(perms.session_rules)))
         session.ui.print("\n".join(lines))
 
+    def mode_cmd(session, args):
+        value = args.strip()
+        if value:
+            try:
+                perms.set_work_mode(value)
+            except ValueError:
+                session.ui.print(session.t("work_mode.invalid", modes=", ".join(WORK_MODES)), "error")
+                return
+        session.ui.print(session.t("work_mode.status", mode=session.t("work_mode." + perms.work_mode)))
+        session.ui.print(session.t("work_mode.approval_unchanged"))
+
+    session.commands.register(
+        "mode",
+        mode_cmd,
+        "show or set work mode (default|plan)",
+        argument_hint="[default|plan]",
+        description_key="work_mode.description",
+        source="core",
+    )
     session.commands.register(
         "permissions",
         cmd,

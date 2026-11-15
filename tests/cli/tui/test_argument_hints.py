@@ -15,7 +15,7 @@ def test_hint_keyboard_lifecycle(make_session):
         ui = FullscreenUI()
         app = VirgoApp(make_session(ui=ui), ui)
         async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.press(*'/mo', 'tab')
+            await pilot.press(*'/model', 'tab')
             assert app.editor.text == '/model '
             assert '[provider/id]' in rendered(app)
             await pilot.press('right', 'shift+right')

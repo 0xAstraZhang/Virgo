@@ -12,4 +12,10 @@ MESSAGES = {
     "common.cancelled": "Cancelled.",
     "ui.base.back": "Back",
     "ui.base.multiline_help": "Finish with a line containing .; /cancel cancels; . alone keeps existing content.",
+    "work_mode.description": "show or set work mode without changing the approval strategy",
+    "work_mode.status": "Work mode: {mode}",
+    "work_mode.default": "Default",
+    "work_mode.plan": "Plan (read-only)",
+    "work_mode.invalid": "Invalid work mode. Choose: {modes}.",
+    "work_mode.approval_unchanged": "Use /permissions to inspect the approval strategy. Only /mode default leaves the independent Plan mode.",
 }

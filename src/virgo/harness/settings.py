@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .work_modes import normalize_work_mode
+
 PROFILES = ("minimal", "coding")
 PLUGIN_IDS = (
     "auto_review", "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web", "mcp",
@@ -18,6 +20,7 @@ _FEATURE_ALIASES = {"diagnostics": "diagnostic_get", "permission": "auto_review"
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
+    "workMode": "default",
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
@@ -124,6 +127,7 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
 
 
 def _validate(data: dict) -> None:
+    normalize_work_mode(data.get("workMode", "default"))
     profile = data.get("profile", "coding")
     if profile not in PROFILES:
         raise ValueError(f"profile must be one of {', '.join(PROFILES)}")

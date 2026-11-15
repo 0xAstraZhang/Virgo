@@ -59,7 +59,7 @@ def test_completion_tab_accepts_escape_closes_and_command_stays_local(make_sessi
         session = make_session(ui=ui)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.press("/", "m", "o")
+            await pilot.press("/", "m", "o", "d", "e", "l")
             await wait_for(pilot, lambda: app.completion_names == ["/model"])
             await pilot.press("tab")
             assert app.editor.text == "/model "

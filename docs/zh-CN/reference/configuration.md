@@ -45,6 +45,7 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `effort` | `medium`；界面支持 `low`、`medium`、`high`、`xhigh`、`max` |
 | `maxTokens` | 未设置，使用适配器／模型默认值 |
 | `shell.executable` | `auto`；受支持的解释器名称或可执行文件路径 |
+| `workMode` | `default`；`plan` 增加独立的只读权限上限 |
 | `permissions.mode` | `auto-review` |
 | `permissions.allow`、`permissions.deny` | 工具规则列表 |
 | `permissions.readOnlyCommands` | 额外纳入只读执行判断的命令 |
@@ -103,13 +104,32 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 辅助请求自动选择同一连接的小模型：官方 Anthropic 连接使用 `claude-haiku-5-5`，官方 OpenAI/Codex 连接使用 `gpt-6-luna`，其余使用主模型。推理强度优先 `low`，其次为受支持的默认值，否则省略控制参数。旧 `smallModel` 字段不再参与选择。
 
+## 工作模式
+
+`/mode plan` 进入只读规划，`/mode default` 明确返回正常工作；`/mode` 查看当前工作模式。该命令属于 Core，在 `--profile minimal --no-extensions` 下也可用，不会请求模型。
+
+工作模式与审批策略分别保存。`/permissions accept-all` 或 `/permissions auto-review` 只改变审批策略，不会退出独立的 Plan 模式。返回 `default` 时保留已选择的审批策略，不会自行授予 `accept-all`。两个维度可分别配置：
+
+```json
+{
+  "workMode": "plan",
+  "permissions": {"mode": "auto-review"}
+}
+```
+
+同一套有效策略用于过滤模型可见工具、钩子前预检和执行前复检。Plan 上限同样约束子运行时；退出 Plan 不会移除子运行时自身的只读限制。权限审计保留有效 `mode`，并分别记录 `work_mode` 和 `permission_mode`。
+
+旧 `permissions.mode=plan`、`--permission-mode plan` 和直接使用 `session.permission_mode` 的 API 仍被接受。`/permissions plan` 现在进入独立工作模式，不替换已选择的审批策略。审批命令改变旧启动配置中的 `plan` 前，会先将 Plan 保留为独立状态。若此前没有另外显式选择审批策略，`/mode default` 会将旧 Plan 启动恢复为 `auto-review`。集成代码应使用 `session.services["permissions"].set_work_mode(...)` 切换独立模式；旧的直接赋值 API 保留兼容行为。
+
+模式命令影响当前 `AgentSession`，包括其子运行时及在其中切换的历史对话。命令不保存用户默认值，重启时也不从会话历史恢复模式，而是重新读取 `workMode`。CLI 的 `--mode` 仍控制输出格式，不表示工作模式。本改动没有引入操作系统沙箱、结构化计划产物或代码审查任务。TUI 现有权限选择器仍显示审批设置；`/mode` 和 `/permissions` 会显示独立工作模式。
+
 ## 权限
 
 | 模式 | 行为 |
 | --- | --- |
 | `auto-review` | 放行能确认工作区边界的操作；用小模型审查目录外、联网和边界不明的操作 |
-| `accept-all` | 跳过权限审查及 allow/deny 规则 |
-| `plan` | 提供只读调查工具，并限制命令执行 |
+| `accept-all` | 默认工作模式下跳过审批及 allow/deny 规则；不能覆盖独立 Plan 上限 |
+| `plan` | 旧只读入口；建议使用独立的 `/mode plan` 或 `workMode` 配置 |
 
 `auto_review` 插件提供模型审查；禁用后 Core 仍执行规则，不确定操作需要人工确认，非交互会话无法批准。自动审查分别判断用户授权和风险，返回 `allow`、`ask` 或 `deny`。证据不足或审查失败时进入现有人工确认；非交互运行无法批准该问题。明确拒绝会阻止操作。参数变化后，在工具真正执行前还会再次检查。这些是应用层检查，Virgo 不提供操作系统级沙箱。
 

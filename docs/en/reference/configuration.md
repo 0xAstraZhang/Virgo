@@ -45,6 +45,7 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `effort` | `medium`; supported UI levels are `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxTokens` | Unset; adapter/model defaults apply |
 | `shell.executable` | `auto`; adapted shell name or executable path |
+| `workMode` | `default`; `plan` adds an independent read-only ceiling |
 | `permissions.mode` | `auto-review` |
 | `permissions.allow`, `permissions.deny` | Lists of tool rules |
 | `permissions.readOnlyCommands` | Additional commands considered for read-only execution |
@@ -103,13 +104,32 @@ Catalog caches are scoped to provider, protocol and endpoint and do not store ke
 
 Auxiliary requests automatically choose a small model on the same connection: `claude-haiku-5-5` for official Anthropic connections, `gpt-6-luna` for official OpenAI/Codex connections, and otherwise the main model. Reasoning prefers `low`, then a supported default, otherwise omits the control. The old `smallModel` field is not consulted.
 
+## Work mode
+
+`/mode plan` enters read-only planning; `/mode default` explicitly returns to normal work. `/mode` shows the current work mode. This Core command is available with `--profile minimal --no-extensions` and does not make a model request.
+
+Work mode is separate from the approval strategy. `/permissions accept-all` or `/permissions auto-review` changes that strategy without leaving the independent Plan mode. Returning to `default` retains the selected strategy; it does not grant `accept-all` by itself. Configure the two dimensions independently:
+
+```json
+{
+  "workMode": "plan",
+  "permissions": {"mode": "auto-review"}
+}
+```
+
+The same effective policy filters model-visible tools and checks calls before hooks and again before execution. The Plan ceiling applies to child runtimes as well; leaving Plan does not remove a child's own read-only restriction. Permission audit records retain the effective `mode` and separately record `work_mode` and `permission_mode`.
+
+Legacy `permissions.mode=plan`, `--permission-mode plan` and the direct `session.permission_mode` API remain accepted. `/permissions plan` now enters the independent work mode without replacing the selected approval strategy. When an approval command changes a legacy startup's `plan`, it first preserves Plan as independent state. `/mode default` leaves a legacy startup with `auto-review` unless another approval strategy has already been explicitly selected. Integrations should use `session.services["permissions"].set_work_mode(...)` for independent mode changes; the old direct assignment API retains its compatibility behavior.
+
+Mode commands affect the current `AgentSession`, including its child runtimes and conversations switched within that session. They do not save a user preference or restore a mode from conversation history on restart; startup reads `workMode` again. The CLI `--mode` option still controls output formatting, not work mode. This change does not introduce an OS sandbox, a structured plan artifact or a code-review task. The TUI's existing permission selector still displays the approval setting; `/mode` and `/permissions` show the independent work mode.
+
 ## Permissions
 
 | Mode | Behavior |
 | --- | --- |
 | `auto-review` | Allows operations whose workspace boundary can be established; reviews external, network and uncertain operations with the small model |
-| `accept-all` | Skips permission review and allow/deny rules |
-| `plan` | Exposes read-only investigation tools and restricts command execution |
+| `accept-all` | Skips approval review and allow/deny rules in default work mode; cannot override the independent Plan ceiling |
+| `plan` | Legacy read-only entry point; prefer the independent `/mode plan` or `workMode` setting |
 
 The `auto_review` plugin supplies model review. Without it, the Core retains rules and requires human confirmation for uncertain operations. Noninteractive sessions cannot approve those requests. Auto-review distinguishes authorization from risk. Its verdict is `allow`, `ask` or `deny`. Missing evidence or review failure requires the existing human confirmation; noninteractive runs cannot approve that prompt. An explicit denial blocks the operation. Execution is checked again immediately before the tool runs, after argument changes. These are application-level checks; Virgo does not provide an operating-system sandbox.
 
