@@ -142,11 +142,12 @@ READ = AgentTool(
 def _write(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
     p = resolve(args["path"], ctx.cwd)
     with file_lock(p):
-        if sandbox_policy is not None and os.name == "posix":
+        if sandbox_policy is not None:
             data = args["content"].encode("utf-8")
-            with open_mutation(p, sandbox_policy, create=True) as (stream, existed):
+            with open_mutation(p, sandbox_policy, create=True) as (stream, existed, commit):
                 stream.write(data)
                 stream.truncate()
+                commit()
         else:
             existed = p.exists()
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -268,8 +269,8 @@ def _edit(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
         return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
     with file_lock(p), ExitStack() as stack:
         stream = None
-        if sandbox_policy is not None and os.name == "posix":
-            stream, _ = stack.enter_context(open_mutation(p, sandbox_policy, create=False))
+        if sandbox_policy is not None:
+            stream, _, commit = stack.enter_context(open_mutation(p, sandbox_policy, create=False))
         raw = (stream.read() if stream is not None else p.read_bytes()).decode("utf-8")
         # No newline translation: CRLF is preserved explicitly.
         bom = raw.startswith(BOM)
@@ -306,6 +307,7 @@ def _edit(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
             stream.seek(0)
             stream.write(final.encode("utf-8"))
             stream.truncate()
+            commit()
         else:
             p.write_text(final, encoding="utf-8", newline="")
     diff = "".join(

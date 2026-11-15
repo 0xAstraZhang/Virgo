@@ -1,10 +1,12 @@
-"""Descriptor-bound Core file mutations under an active POSIX sandbox policy."""
+"""Core file mutations staged away from untrusted writable workspace entries."""
 
 from __future__ import annotations
 
 import errno
 import os
+import shutil
 import stat
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -17,10 +19,13 @@ class SandboxFileDenied(PermissionError):
 
 @contextmanager
 def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
-    """Open a checked regular file without following replacement path entries.
+    """Yield a staged stream and explicit commit; never modify an existing inode.
 
-    The caller holds its normal file lock. Never use O_TRUNC: an existing file
-    is validated first, and edit keeps this same descriptor from read to write.
+    The caller holds its normal file lock. Reject known hardlinks, but do not
+    rely on link count staying unchanged: unlinking the workspace alias can
+    make an outside inode appear singly linked after opening. Native commands
+    cannot modify .virgo (created before every native launch), nor can Core
+    file tools. Only a successful caller commits the fresh inode to its target.
     """
     protected = (*(policy.workspace / name for name in PROTECTED_NAMES), *policy.runtime_paths())
     if (policy.mode != "workspace-write" or not path.is_relative_to(policy.workspace)
@@ -30,41 +35,115 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
     if not parts:
         raise SandboxFileDenied("Sandbox file operation requires a file below the workspace root")
 
-    directory = descriptor = None
+    root = directory = staging = descriptor = staged_descriptor = None
+    staged_name = None
+    stream = None
     try:
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        directory = os.open(policy.workspace, flags)
-        for part in parts[:-1]:
+        if os.name == "posix":
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            root = os.open(policy.workspace, flags)
+            directory = os.dup(root)
+            for part in parts[:-1]:
+                if create:
+                    try:
+                        os.mkdir(part, dir_fd=directory)
+                    except FileExistsError:
+                        pass
+                child = os.open(part, flags, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            target = parts[-1]
+        else:
+            # Windows has no native backend or descriptor-relative directory
+            # traversal. Keep its application-level path checks and use the
+            # same fresh-inode mutation, including the hardlink rejection.
             if create:
-                try:
-                    os.mkdir(part, dir_fd=directory)
-                except FileExistsError:
-                    pass
-            child = os.open(part, flags, dir_fd=directory)
-            os.close(directory)
-            directory = child
-        flags = (os.O_WRONLY if create else os.O_RDWR) | os.O_NOFOLLOW | os.O_NONBLOCK
-        existed = True
-        if create:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            target = path
+        flags = ((os.O_WRONLY if create else os.O_RDWR)
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                 | getattr(os, "O_BINARY", 0))
+        try:
+            descriptor = os.open(target, flags, dir_fd=directory)
+        except FileNotFoundError:
+            if not create:
+                raise
+        existed = descriptor is not None
+        info = os.fstat(descriptor) if existed else None
+        if info is not None:
+            if not stat.S_ISREG(info.st_mode):
+                raise SandboxFileDenied(f"Sandbox file operation requires a regular file: {path}")
+            if info.st_nlink != 1:
+                raise SandboxFileDenied(f"Sandbox file operation rejects hard-linked files: {path}")
+
+        metadata = policy.workspace / ".virgo"
+        if os.name == "posix":
             try:
-                descriptor = os.open(parts[-1], flags | os.O_CREAT | os.O_EXCL, 0o666, dir_fd=directory)
-                existed = False
+                os.mkdir(".virgo", mode=0o700, dir_fd=root)
             except FileExistsError:
                 pass
-        if descriptor is None:
-            descriptor = os.open(parts[-1], flags, dir_fd=directory)
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise SandboxFileDenied(f"Sandbox file operation requires a regular file: {path}")
-        stream = os.fdopen(descriptor, "wb" if create else "r+b")
-        descriptor = None  # The stream now owns the descriptor, including error paths.
-        with stream:
-            yield stream, existed
+            staging = os.open(".virgo", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+        else:
+            metadata.mkdir(mode=0o700, exist_ok=True)
+            if metadata.resolve() != metadata or metadata.is_symlink():
+                raise SandboxFileDenied(f"Sandbox file staging must not be an alias: {metadata}")
+        name = f"mutation-{uuid.uuid4().hex}.tmp"
+        staged_target = name if staging is not None else metadata / name
+        # Do not briefly expose a private source with broader staging permissions.
+        mode = stat.S_IMODE(info.st_mode) if info is not None else 0o666
+        staged_descriptor = os.open(staged_target, os.O_RDWR | os.O_CREAT | os.O_EXCL
+                                    | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+                                    mode, dir_fd=staging)
+        staged_name = staged_target
+        stream = os.fdopen(staged_descriptor, "w+b")
+        staged_descriptor = None
+        if existed and not create:
+            source = os.fdopen(descriptor, "rb")
+            descriptor = None
+            with source:
+                shutil.copyfileobj(source, stream)
+            stream.seek(0)
+        elif descriptor is not None:
+            os.close(descriptor)
+            descriptor = None
+
+        def commit():
+            nonlocal staged_name
+            stream.flush()
+            if info is not None:
+                # File permissions are retained; ownership, ACLs and extended
+                # attributes are not copied to the newly created inode.
+                if os.name == "posix":
+                    os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+                else:
+                    os.chmod(staged_target, stat.S_IMODE(info.st_mode))
+                try:
+                    current = os.stat(target, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError as error:
+                    raise SandboxFileDenied(f"Sandbox file changed before commit: {path}") from error
+                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                    raise SandboxFileDenied(f"Sandbox file changed before commit: {path}")
+            stream.close()  # Windows replacement requires closing the staged handle.
+            os.replace(staged_target, target, src_dir_fd=staging, dst_dir_fd=directory)
+            staged_name = None
+
+        yield stream, existed, commit
     except OSError as error:
         if error.errno in {errno.ELOOP, errno.ENOTDIR}:
             raise SandboxFileDenied(f"Sandbox file path changed or contains a symbolic link: {path}") from error
         raise
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        if directory is not None:
-            os.close(directory)
+        try:
+            if stream is not None:
+                stream.close()
+        finally:
+            for handle in (descriptor, staged_descriptor):
+                if handle is not None:
+                    os.close(handle)
+            try:
+                if staged_name is not None:
+                    os.unlink(staged_name, dir_fd=staging)
+            finally:
+                for handle in (staging, directory, root):
+                    if handle is not None:
+                        os.close(handle)

@@ -222,7 +222,9 @@ class SandboxPolicy:
                         # bin/python links inside a protected venv remain usable;
                         # a writable alias of the installation directory does not.
                         raise SandboxUnavailable(f"Interpreter directory alias is writable in the workspace: {alias}")
-            self.protected_paths()
+            protected = self.protected_paths()
+            if self.mode == "workspace-write" and os.name == "posix":
+                self._reject_writable_hardlinks(protected)
             for path in (cwd / ".virgo", cwd / ".virgo" / "outputs"):
                 if path.is_symlink() or not path.resolve().is_relative_to(self.workspace):
                     raise SandboxUnavailable(f"Sandbox output directory must stay inside its workspace: {path}")
@@ -231,6 +233,32 @@ class SandboxPolicy:
             raise
         except (OSError, RuntimeError) as error:
             raise SandboxUnavailable(f"Could not validate sandbox paths: {error}") from error
+
+    def _reject_writable_hardlinks(self, protected: tuple[Path, ...]) -> None:
+        """Path-based mounts/profiles cannot confine pre-existing shared inodes.
+
+        Do not follow symlinks or inspect trees that are mounted/profiled read-only.
+        This is a launch check, not an atomic snapshot against trusted host writers.
+        Isolated commands cannot link read-only sources into the writable tree.
+        """
+        def readonly(path):
+            return any(path.is_relative_to(root) for root in protected)
+
+        def failed(error):
+            raise error
+
+        for parent, directories, files, descriptor in os.fwalk(self.workspace, onerror=failed):
+            parent = Path(parent)
+            directories[:] = [name for name in directories if not readonly(parent / name)]
+            for name in files:
+                if readonly(parent / name):
+                    continue
+                try:
+                    info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue  # An ordinary concurrent workspace deletion is harmless.
+                if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                    raise SandboxUnavailable(f"Writable sandbox files must not be hard-linked: {parent / name}")
 
     def _read_roots(self) -> list[Path]:
         roots = sorted({*self._system_roots(), *(path.resolve() for path in self.runtime_paths())},
