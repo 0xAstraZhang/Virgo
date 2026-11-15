@@ -205,7 +205,8 @@ class AclGrants:
             raise SandboxCancelled("Windows sandbox setup was cancelled")
 
     @contextmanager
-    def _locked(self, *, cleanup=False):
+    def _locked(self, *, cleanup=False, mutex=None):
+        mutex = self._mutex if mutex is None else mutex
         deadline = time.monotonic() + 10
         acquired = False
         while not _THREAD_LOCK.acquire(timeout=0.05):
@@ -217,7 +218,7 @@ class AclGrants:
             while not acquired:
                 if not cleanup:
                     self._cancel()
-                status = WaitForSingleObject(self._mutex, 50)
+                status = WaitForSingleObject(mutex, 50)
                 if status in {0, 0x80}:  # ownership also transfers after an abandoned mutex
                     acquired = True
                 elif status != 258:
@@ -228,7 +229,7 @@ class AclGrants:
         finally:
             try:
                 if acquired:
-                    _check(ReleaseMutex(self._mutex))
+                    _check(ReleaseMutex(mutex))
             finally:
                 _THREAD_LOCK.release()
 

@@ -113,6 +113,15 @@ ConvertSecurityDescriptor = _api(advapi, "ConvertStringSecurityDescriptorToSecur
 GetSecurityDescriptorDacl = _api(advapi, "GetSecurityDescriptorDacl", [
     ctypes.c_void_p, ctypes.POINTER(BOOL), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(BOOL),
 ])
+GetSecurityDescriptorOwner = _api(advapi, "GetSecurityDescriptorOwner", [
+    ctypes.c_void_p, ctypes.POINTER(PSID), ctypes.POINTER(BOOL),
+])
+CreateMutexEx = _api(kernel, "CreateMutexExW", [
+    ctypes.POINTER(SecurityAttributes), w.LPCWSTR, DWORD, DWORD,
+], HANDLE)
+CreateFile = _api(kernel, "CreateFileW", [
+    w.LPCWSTR, DWORD, DWORD, ctypes.c_void_p, DWORD, DWORD, HANDLE,
+], HANDLE)
 CreateProfile = _api(userenv, "CreateAppContainerProfile", [
     w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, ctypes.POINTER(SidAndAttributes), DWORD, ctypes.POINTER(PSID),
 ], ctypes.c_int32)
@@ -326,6 +335,8 @@ class WindowsSandbox:
         self._profile = None
         self._package_sid = PSID()
         self._grants = None
+        self._device = None
+        self._device_mutex = None
         self._station = None
         self._desktop = None
         self.desktop = None
@@ -346,7 +357,10 @@ class WindowsSandbox:
                                                 share_delete=False, share_write=False))
             self._pins.enter_context(open_path(self.cwd, 0x1, directory=True,
                                                 share_delete=False, share_write=False))
-            self._capability_buffers = [_capability("registryRead")]
+            # These capabilities use Windows' existing token-wide grants.
+            # lpacInstrumentation permits ETW registrations wherever its SID is
+            # authorized; this is not a per-provider whitelist or an ETW ACL edit.
+            self._capability_buffers = [_capability(name) for name in ("registryRead", "lpacInstrumentation")]
             self._capabilities = (SidAndAttributes * len(self._capability_buffers))(
                 *(SidAndAttributes(ctypes.cast(value, PSID), 0x4) for value in self._capability_buffers)
             )
@@ -377,6 +391,7 @@ class WindowsSandbox:
             from .windows_sandbox_acl import AclGrants
 
             self._grants = AclGrants(self.package_sid, self.write_sid, cancellation)
+            self._prepare_device()
             runtime_roots = tuple(dict.fromkeys((
                 *policy.runtime_paths(), executable.parent,
             )))
@@ -434,6 +449,84 @@ class WindowsSandbox:
                 LocalFree(descriptor)
         finally:
             CloseHandle(source)
+
+    def _prepare_device(self):
+        from .windows_sandbox_acl import GetSecurity, _ace, _read
+
+        # KsecDD is machine-global. Its DACL cannot be coordinated by the
+        # per-user filesystem mutex. Only already-authorized administrators or
+        # SYSTEM may use this fixed protected mutex; never take over an existing
+        # object with an untrusted owner or a different access policy.
+        descriptor = ctypes.c_void_p()
+        _check(ConvertSecurityDescriptor(
+            "O:BAG:BAD:P(A;;0x1f0001;;;SY)(A;;0x120001;;;BA)",
+            1, ctypes.byref(descriptor), None,
+        ))
+        try:
+            attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+            self._device_mutex = _check(CreateMutexEx(
+                ctypes.byref(attributes), r"Global\Virgo.NativeSandbox.KsecDD.v1", 0, 0x120001,
+            ))  # SYNCHRONIZE | MUTEX_MODIFY_STATE | READ_CONTROL.
+        finally:
+            LocalFree(descriptor)
+        size = DWORD()
+        GetSecurity(self._device_mutex, 1 | 4, None, 0, ctypes.byref(size))
+        if not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        security = ctypes.create_string_buffer(size.value)
+        _check(GetSecurity(self._device_mutex, 1 | 4, security, len(security), ctypes.byref(size)))
+        owner, defaulted = PSID(), BOOL()
+        _check(GetSecurityDescriptorOwner(security, ctypes.byref(owner), ctypes.byref(defaulted)))
+        policy = _read(self._device_mutex)
+        expected = [_ace(0, 0, access, _sid_bytes(_sid_from_string(sid))) for sid, access in (
+            ("S-1-5-18", 0x1F0001), ("S-1-5-32-544", 0x120001),
+        )]
+        if (not owner or _sid_string(owner) not in {"S-1-5-18", "S-1-5-32-544"}
+                or not policy.control & 0x1000 or policy.aces != expected):
+            raise SandboxUnavailable("Windows device coordination mutex has an untrusted security descriptor")
+        self._check_cancelled()
+        # This exact native object and native authority were measured in the
+        # failing BCrypt startup. No path, capability or broader device set is
+        # supplied by the payload. Retain the handle until verified Job drain.
+        handle = CreateFile(r"\\?\GLOBALROOT\Device\KsecDD", 0x60000, 7, None, 3, 0, None)
+        if handle == HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._device = _check(handle)  # READ_CONTROL | WRITE_DAC, never elevation.
+        self._device_access()
+
+    def _device_access(self, *, cleanup=False):
+        from .windows_sandbox_acl import _ace, _read, _sid_in_ace, _write
+
+        with self._grants._locked(cleanup=cleanup, mutex=self._device_mutex):
+            previous = _read(self._device, cleanup=cleanup)
+            if previous is None:
+                return
+            retained = [entry for entry in previous.aces if _sid_in_ace(entry) != self.write_sid]
+            # FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE, exactly the
+            # native BCrypt open. Ambient ARAP supplies the LPAC check; only
+            # this command's ordinary SID receives the additional write grant.
+            owned = [] if cleanup else [_ace(0, 0, 0x100003, self.write_sid)]
+            entries = retained + owned
+            if entries != previous.aces:
+                _write(self._device, previous, entries, previous.control)
+            current = _read(self._device, cleanup=cleanup)
+            actual = [] if current is None else [
+                entry for entry in current.aces if _sid_in_ace(entry) == self.write_sid
+            ]
+            if actual != owned:
+                raise OSError("Windows did not retain the required device lease state")
+
+    def _release_device(self):
+        try:
+            if self._device is not None:
+                self._device_access(cleanup=True)
+                _check(CloseHandle(self._device))
+                self._device = None
+            if self._device_mutex is not None:
+                _check(CloseHandle(self._device_mutex))
+                self._device_mutex = None
+        except OSError as error:
+            raise SandboxProcessError(f"Could not release Windows sandbox device resources: {error}") from error
 
     def _station_access(self, *, cleanup=False):
         from .windows_sandbox_acl import _ace, _read, _sid_in_ace, _write
@@ -550,6 +643,7 @@ class WindowsSandbox:
         # The caller must first prove Job drain. If revocation fails, retain
         # the profile/lease for diagnosis rather than claiming complete cleanup.
         self._release_desktop()
+        self._release_device()
         if self._grants is not None:
             self._grants.cleanup()
             self._grants = None
