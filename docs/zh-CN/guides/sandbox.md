@@ -33,7 +33,7 @@ uv run virgo --sandbox read-only
 
 Linux 需要 root 所有的系统 `bwrap`（支持 `--disable-userns`）、系统 `libseccomp.so.2` 和创建相应命名空间的权限。当前 seccomp 实现支持 x86-64 与 AArch64。macOS 需要系统 `/usr/bin/sandbox-exec`。本阶段没有 Windows 原生后端：启用沙箱的请求会拒绝执行；`disabled` 保持现有 Windows 执行器。
 
-允许读取的范围包括实际存在的系统目录（`/usr`、`/bin`、`/sbin`、`/lib`、`/lib64`、`/etc`、`/opt`；macOS 另含 `/System`、`/Library`、`/dev`、`/private/etc`）、解释器安装目录、工作区与独立临时目录，不会挂载整个宿主用户目录。位于范围外的工具、依赖缓存、证书或 SDK 可能无法使用；暂不支持额外挂载和网络例外。若工作区包含 Virgo 用户凭据／会话目录或沙箱／解释器安装目录，会拒绝执行，不暴露可写的可信运行环境。
+允许读取的范围包括实际存在的系统目录（`/usr`、`/bin`、`/sbin`、`/lib`、`/lib64`、`/etc`、`/opt`；macOS 另含 `/System/Library`、`/System/Cryptexes`、`/System/Volumes/Preboot/Cryptexes/OS`、`/Library`、`/dev`、`/private/etc`）、解释器安装目录、工作区与独立临时目录，不会挂载整个宿主用户目录。位于范围外的工具、依赖缓存、证书或 SDK 可能无法使用；暂不支持额外挂载和网络例外。若工作区包含 Virgo 用户凭据／会话目录或沙箱／解释器安装目录，会拒绝执行，不暴露可写的可信运行环境。
 
 工作区根部已经存在的 `.git`、`.virgo`、`AGENTS.md` 和 `CLAUDE.md` 不允许由 Shell 写入。Linux 使用只读挂载保护已存在路径，不能阻止创建尚不存在的这些名称；macOS 也排除尚不存在的名称。Core 的 `write`／`edit` 工具另行在应用层执行工作区、只读和元数据限制，这些 Python 文件操作不处于 Shell 的 OS 沙箱内。
 

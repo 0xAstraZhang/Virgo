@@ -164,6 +164,28 @@ class SandboxPolicy:
         for alias in ("/bin", "/sbin", "/lib", "/lib64", "/etc"):
             if Path(alias).is_symlink():
                 args += ["--symlink", os.readlink(alias), alias]
+        # uv virtualenv executables can refer to an unversioned directory
+        # alias, while base_prefix names the versioned installation. Recreate
+        # only aliases resolving into already permitted runtime roots.
+        roots = self._read_roots()
+        pending = [Path(sys.executable), Path(sys.prefix), Path(sys.base_prefix)]
+        seen = {Path(p) for p in ("/bin", "/sbin", "/lib", "/lib64", "/etc")}
+        while pending:
+            name = pending.pop()
+            for alias in (*reversed(name.parents), name):
+                if alias in seen:
+                    continue
+                seen.add(alias)
+                if not alias.is_symlink():
+                    continue
+                target = Path(os.readlink(alias))
+                pending.append(target if target.is_absolute() else alias.parent / target)
+                if any(alias.is_relative_to(root) for root in roots):
+                    continue  # The alias is already present inside a mounted root.
+                resolved = alias.resolve(strict=True)
+                if not any(resolved.is_relative_to(root) for root in roots):
+                    raise SandboxUnavailable(f"Interpreter alias leaves permitted roots: {alias}")
+                args += ["--symlink", str(resolved), str(alias)]
         args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/run"]
         args += ["--bind" if self.mode == "workspace-write" else "--ro-bind",
                  str(self.workspace), str(self.workspace)]
