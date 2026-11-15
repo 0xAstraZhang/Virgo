@@ -74,6 +74,10 @@ class SecurityCapabilities(ctypes.Structure):
                 ("CapabilityCount", DWORD), ("Reserved", DWORD)]
 
 
+class GenericMapping(ctypes.Structure):
+    _fields_ = [(name, DWORD) for name in ("Read", "Write", "Execute", "All")]
+
+
 class ServiceStatus(ctypes.Structure):
     _fields_ = [(name, DWORD) for name in (
         "ServiceType", "CurrentState", "ControlsAccepted", "Win32ExitCode",
@@ -82,6 +86,11 @@ class ServiceStatus(ctypes.Structure):
 
 
 OpenProcessToken = _api(advapi, "OpenProcessToken", [HANDLE, DWORD, ctypes.POINTER(HANDLE)])
+DuplicateToken = _api(advapi, "DuplicateToken", [HANDLE, ctypes.c_int, ctypes.POINTER(HANDLE)])
+AccessCheck = _api(advapi, "AccessCheck", [
+    ctypes.c_void_p, HANDLE, DWORD, ctypes.POINTER(GenericMapping), ctypes.c_void_p,
+    ctypes.POINTER(DWORD), ctypes.POINTER(DWORD), ctypes.POINTER(BOOL),
+])
 GetTokenInformation = _api(advapi, "GetTokenInformation", [HANDLE, ctypes.c_int, ctypes.c_void_p,
                                                          DWORD, ctypes.POINTER(DWORD)])
 SetTokenInformation = _api(advapi, "SetTokenInformation", [HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD])
@@ -165,6 +174,42 @@ def _token_sids(token, kind):
         raise SandboxUnavailable("Windows returned an invalid token SID list")
     values = (SidAndAttributes * count).from_buffer(output, offset)
     return {_sid_bytes(value.Sid) for value in values}
+
+
+def _verify_lpac(token):
+    """Prove the LPAC access distinction using the actual suspended token.
+
+    The class-46 GetTokenInformation query is unavailable on the supported
+    Windows runners. LPAC must ignore AAP grants while retaining ARAP access.
+    Everyone satisfies only the ordinary user/group check in each descriptor.
+    """
+    duplicate = HANDLE()
+    _check(DuplicateToken(token, 2, ctypes.byref(duplicate)))  # SecurityImpersonation
+    try:
+        mapping = GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
+        for package, expected in (("S-1-15-2-1", False), ("S-1-15-2-2", True)):
+            descriptor = ctypes.c_void_p()
+            _check(ConvertSecurityDescriptor(
+                f"O:SYG:SYD:(A;;0x1;;;WD)(A;;0x1;;;{package})",
+                1, ctypes.byref(descriptor), None,
+            ))
+            try:
+                privileges = ctypes.create_string_buffer(256)
+                size, granted, permitted = DWORD(len(privileges)), DWORD(), BOOL()
+                # FILE_READ_DATA is already specific, with no generic bits or
+                # write rights that could conflate LPAC and write restrictions.
+                _check(AccessCheck(descriptor, duplicate, 0x1, ctypes.byref(mapping),
+                                   privileges, ctypes.byref(size), ctypes.byref(granted),
+                                   ctypes.byref(permitted)))
+                if bool(permitted.value) != expected or granted.value != int(expected):
+                    raise SandboxUnavailable(
+                        f"Windows did not establish LPAC access semantics for {package}: "
+                        f"allowed={bool(permitted.value)}, access=0x{granted.value:X}"
+                    )
+            finally:
+                LocalFree(descriptor)
+    finally:
+        CloseHandle(duplicate)
 
 
 def _capability(name):
@@ -350,12 +395,12 @@ class WindowsSandbox:
 
     def verify_process(self, process):
         token = HANDLE()
-        _check(OpenProcessToken(process, 0x8, ctypes.byref(token)))
+        _check(OpenProcessToken(process, 0xA, ctypes.byref(token)))  # QUERY | DUPLICATE
         try:
-            for kind, description in ((29, "AppContainer"), (46, "LPAC")):
-                info = _token_info(token, kind)
-                if len(info) != ctypes.sizeof(DWORD) or DWORD.from_buffer(info).value != 1:
-                    raise SandboxUnavailable(f"Windows did not establish the required {description} token")
+            info = _token_info(token, 29)  # TokenIsAppContainer
+            if len(info) != ctypes.sizeof(DWORD) or DWORD.from_buffer(info).value != 1:
+                raise SandboxUnavailable("Windows did not establish the required AppContainer token")
+            _verify_lpac(token)
             info = _token_info(token, 31)  # TOKEN_APPCONTAINER_INFORMATION
             if _sid_bytes(ctypes.c_void_p.from_buffer(info).value) != self.package_sid:
                 raise SandboxUnavailable("Windows returned the wrong AppContainer identity")

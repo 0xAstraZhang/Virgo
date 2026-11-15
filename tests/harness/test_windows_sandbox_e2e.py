@@ -135,8 +135,16 @@ k.LocalFree.argtypes = [ctypes.c_void_p]
 a.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
 a.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD)]
 a.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.LPWSTR)]
+class GenericMapping(ctypes.Structure):
+    _fields_ = [(name, w.DWORD) for name in ('read', 'write', 'execute', 'all')]
+a.DuplicateToken.argtypes = [w.HANDLE, ctypes.c_int, ctypes.POINTER(w.HANDLE)]
+a.AccessCheck.argtypes = [ctypes.c_void_p, w.HANDLE, w.DWORD, ctypes.POINTER(GenericMapping),
+                         ctypes.c_void_p, ctypes.POINTER(w.DWORD), ctypes.POINTER(w.DWORD),
+                         ctypes.POINTER(w.BOOL)]
+a.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+    w.LPCWSTR, w.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
 token = w.HANDLE()
-assert a.OpenProcessToken(k.GetCurrentProcess(), 8, ctypes.byref(token)), ctypes.get_last_error()
+assert a.OpenProcessToken(k.GetCurrentProcess(), 10, ctypes.byref(token)), ctypes.get_last_error()
 def info(kind):
     size = w.DWORD()
     a.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
@@ -144,9 +152,33 @@ def info(kind):
     value = ctypes.create_string_buffer(size.value)
     assert a.GetTokenInformation(token, kind, value, len(value), ctypes.byref(size)), ctypes.get_last_error()
     return value
+def lpac_info():
+    # Class 46 is unavailable through GetTokenInformation on these runners.
+    # Independently check the real token's AAP denial and ARAP positive control.
+    duplicate = w.HANDLE()
+    assert a.DuplicateToken(token, 2, ctypes.byref(duplicate)), ctypes.get_last_error()
+    try:
+        outcomes = []
+        mapping = GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
+        for package in ('S-1-15-2-1', 'S-1-15-2-2'):
+            descriptor = ctypes.c_void_p()
+            assert a.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                'O:SYG:SYD:(A;;0x1;;;WD)(A;;0x1;;;' + package + ')',
+                1, ctypes.byref(descriptor), None), ctypes.get_last_error()
+            try:
+                privileges = ctypes.create_string_buffer(256)
+                size, granted, allowed = w.DWORD(len(privileges)), w.DWORD(), w.BOOL()
+                assert a.AccessCheck(descriptor, duplicate, 1, ctypes.byref(mapping), privileges,
+                                     ctypes.byref(size), ctypes.byref(granted), ctypes.byref(allowed)), ctypes.get_last_error()
+                outcomes.append((bool(allowed.value), granted.value))
+            finally:
+                k.LocalFree(descriptor)
+        return int(outcomes == [(False, 0), (True, 1)])
+    finally:
+        k.CloseHandle(duplicate)
 try:
     ac = ctypes.cast(info(29), ctypes.POINTER(w.DWORD)).contents.value
-    lpac = ctypes.cast(info(46), ctypes.POINTER(w.DWORD)).contents.value
+    lpac = lpac_info()
     sid_info = info(31)
     sid = ctypes.cast(sid_info, ctypes.POINTER(ctypes.c_void_p)).contents.value
     text = w.LPWSTR()
