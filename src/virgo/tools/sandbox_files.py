@@ -54,9 +54,9 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
                 directory = child
             target = parts[-1]
         else:
-            # Windows has no native backend or descriptor-relative directory
-            # traversal. Keep its application-level path checks and use the
-            # same fresh-inode mutation, including the hardlink rejection.
+            # These broker operations run outside the Windows shell's LPAC.
+            # Keep the application-level path checks and fresh-file staging;
+            # this branch does not provide POSIX descriptor-relative traversal.
             if create:
                 path.parent.mkdir(parents=True, exist_ok=True)
             target = path

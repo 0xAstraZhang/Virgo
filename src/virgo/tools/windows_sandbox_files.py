@@ -267,8 +267,9 @@ def open_output(policy, prefix):
         directory = pins.enter_context(open_path(workspace, 0x1, directory=True,
                                                   share_delete=False, share_write=False))
         for part in (".virgo", "outputs"):
-            # No write/delete sharing: an empty pinned directory cannot be
-            # replaced or reopened for conversion into a junction during setup.
+            # Deny deletion/rename while retaining the directory. Share flags
+            # alone do not block FILE_WRITE_ATTRIBUTES reparse conversion;
+            # every child open also uses the native no-reparse path checks.
             directory = pins.enter_context(open_child(directory, part, 0x1, directory=True,
                                                        disposition=FILE_OPEN_IF,
                                                        share_delete=False, share_write=False))

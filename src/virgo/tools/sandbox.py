@@ -3,7 +3,7 @@
 Linux uses a system-owned bubblewrap plus a seccomp filter. macOS uses Seatbelt.
 Windows uses LPAC plus a separately write-restricted token and temporary ACLs.
 The broker stays outside so model transport and diagnostic persistence keep their
-own authority. Only explicitly selected runtime/workspace paths are exposed.
+own authority. POSIX exposes selected paths; Windows also has ambient LPAC reads.
 """
 from __future__ import annotations
 
