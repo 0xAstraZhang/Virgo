@@ -421,6 +421,12 @@ class PrintUI(UI):
                 else text
             )
 
+    def review_result(self, report: dict, text: str) -> None:
+        with self._lock:
+            self.command_output = True
+            print(json.dumps({"type": "code_review", "report": report}, ensure_ascii=False)
+                  if self.json_mode else text)
+
     def print(self, text: str, style: str | None = None) -> None:
         if style in ("error", "warn"):
             with self._lock:

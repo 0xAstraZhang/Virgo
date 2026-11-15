@@ -49,6 +49,10 @@ class UI:
         """Explicit command output, also visible in noninteractive clients."""
         self.print(text)
 
+    def review_result(self, report: dict, text: str) -> None:
+        """Display only the Harness-validated report, with a structured host hook."""
+        self.command_result(text)
+
     def confirm(self, question: str, agent: str = "main") -> str | None:
         """Ask the user. Return 'y', 'n' or 'a' (always), or None when nobody can answer."""
         return None

@@ -15,6 +15,7 @@ from .work_modes import normalize_work_mode
 PROFILES = ("minimal", "coding")
 PLUGIN_IDS = (
     "auto_review", "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web", "mcp",
+    "code_review",
 )
 REMOVED_FEATURES = frozenset({"schedule", "workflow", "team", "tasks", "memory", "goal"})
 _FEATURE_ALIASES = {"diagnostics": "diagnostic_get", "permission": "auto_review"}

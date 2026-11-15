@@ -146,7 +146,7 @@ class Runtime:
             before_tool_call=self._before_tool,
             before_tool_execute=session._before_tool_execute,
             after_tool_call=session._after_tool,
-            should_stop=lambda _msgs: session.bus.first("agent_stop", self),
+            should_stop=(None if role == "review" else lambda _msgs: session.bus.first("agent_stop", self)),
             max_turns=max_turns,
             can_run=self.can_run,
             on_error=lambda details: self.report_error(details, phase="agent.listener"),
@@ -173,6 +173,11 @@ class Runtime:
         return self.agent.messages
 
     def rebuild_system(self) -> None:
+        if self.role == "review":
+            # A review consumes an explicit snapshot, not live project instructions
+            # or another capability's system sections.
+            self.system = self.system_extra or "Review the supplied code snapshot using only its read-only tools."
+            return
         self.system = build_system(self.session, self.role, self.system_extra, self.cwd,
                                    tools=self.tools, context=self.construction_context)
 
@@ -210,9 +215,12 @@ class Runtime:
             self.session.report_save_error(error)
         self.can_run()
         self.session.bus.emit("agent_event", ev, self)
-        if ev.type == "turn_end":
+        if ev.type == "turn_end" and self.role != "review":
             self.session.bus.emit("turn_end", ev, self)
-        self.session.ui.on_event(ev)
+        # The task publishes its validated report. Raw assistant JSON (including
+        # malformed or interrupted output) must not look like a final conclusion.
+        if self.role != "review" or ev.type not in {"message_start", "message_update", "message_end"}:
+            self.session.ui.on_event(ev)
 
     def diagnostic_context(self, **extra) -> dict:
         owner = self.store if self.store is not None else self.accounting_store
@@ -424,10 +432,10 @@ class Runtime:
     def request_context(self, messages: list, model=None) -> Context:
         """Use the same instructions, tools and extension view for generation and compaction."""
         s = self.session
-        view = s.bus.chain("context", list(messages), self)
+        view = list(messages) if self.role == "review" else s.bus.chain("context", list(messages), self)
         context = self._base_context(view, report_errors=True)
         web = s.services.get("web")
-        if web is not None:
+        if web is not None and self.role != "review":
             web.prepare(self, context, model or self.model)
         if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):
             context.messages = strip_thinking(view)
@@ -436,6 +444,8 @@ class Runtime:
     # -- model calls ---------------------------------------------------------
     def refresh_tools(self) -> None:
         """Adopt registered tools at a request boundary while retaining local restrictions."""
+        if self.role == "review":
+            return  # Only the task's frozen snapshot tools belong to this runtime.
         version, registered = self.session.tool_snapshot(self.role)
         if version == self._tool_version:
             return
@@ -453,7 +463,8 @@ class Runtime:
 
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
         if self.can_run() and not signal.is_set():
-            self.session.bus.emit("runtime_request", self)
+            if self.role != "review":
+                self.session.bus.emit("runtime_request", self)
             self.refresh_tools()
         self._call_started = time.monotonic()
         self._model_call_id = uuid.uuid4().hex
@@ -513,7 +524,7 @@ class Runtime:
                 "max_retries": max_retries, "duration": round(duration, 6),
             })
             web = s.services.get("web")
-            if (web_fallbacks < 2 and not signal.is_set() and web
+            if (self.role != "review" and web_fallbacks < 2 and not signal.is_set() and web
                     and web.fallback(request_model, ctx, failed)):
                 web_fallbacks += 1
                 record_call(self.accounting_store, request_model, failed, purpose="fetch-fallback" if failed.error_kind == "fetch_unsupported" else "search-fallback",
@@ -609,7 +620,8 @@ class AgentSession:
         self.ui.set_translator(self.translator)
         self.auth = AuthStore(self.paths.user / "auth.json")
         self.bus = EventBus(on_error=lambda m: self.ui.print(m, "error"), on_diagnostic=self._extension_error)
-        self.commands = Commands(self.translator)
+        self.templates: dict = {}
+        self.commands = Commands(self.translator, templates=self.templates)
         self.services: dict = {}
         self.sections: list = []
         self.runtime_sections: list = []
@@ -625,12 +637,12 @@ class AgentSession:
         self._plugin_cleanups: list[tuple[str, object]] = []
         self.loaded_plugins: list[str] = []
         self._child_runtimes: dict[str, Runtime] = {}
-        self.templates: dict = {}
         self.permission_mode = permission_mode or self.settings.get("permissions.mode", "auto-review")
         self.effort = self.settings.get("effort", "medium")
         self._lock = threading.RLock()
         self._shutdown_started = False
         self.busy = False
+        self.command_exit_code = 0
         self.wakeups: deque = deque()
         self.discovered_models: dict[str, dict] = {}
         self._metadata_paths: dict[str, Path] = {}
@@ -658,7 +670,7 @@ class AgentSession:
             if extensions:
                 load_user_extensions(self)
             install_command_hooks(self)
-            self.templates = load_templates(self.paths.both("prompts"))
+            self.templates.update(load_templates(self.paths.both("prompts")))
             self.main = self._new_main(self.store)
         except BaseException:
             self.cleanup_plugins()
@@ -1294,6 +1306,11 @@ class AgentSession:
             return block
         ev._permission_policy = self.permission_policy
         ev._additional_permission_policies = tuple(self._additional_permission_policies)
+        runtime = self.runtime_for_context(ev)
+        if runtime is not None and runtime.role == "review":
+            # Preserve both mandatory permission gates while excluding executable
+            # tool hooks from an otherwise read-only task.
+            return self._check_policy("preflight", ev)
         snapshot = self.bus.snapshot("tool_call")
         boundary = self._permission_boundary
         if boundary is None:
@@ -1310,6 +1327,13 @@ class AgentSession:
         return self._check_policy("before_execute", ev)
 
     def _after_tool(self, ev: ToolCallEvent, res: ToolResult) -> ToolResult:
+        runtime = self.runtime_for_context(ev)
+        if runtime is not None and runtime.role == "review":
+            if any(isinstance(block, TextContent) and len(block.text.encode("utf-8")) > MAX_BYTES
+                   for block in res.content):
+                return ToolResult.error("Review output exceeds the in-memory limit; request a smaller range.",
+                                        details={"status": "incomplete"})
+            return res  # No post-tool hooks or .virgo/outputs spill files.
         res = self.bus.chain("tool_result", res, ev, self)
         bounded = []
         for b in res.content:
@@ -1322,6 +1346,7 @@ class AgentSession:
     # -- running -----------------------------------------------------------------
     def prompt(self, text: str) -> None:
         """Handle one line of user input without disguising persistence failures."""
+        self.command_exit_code = 0
         try:
             self._prompt(text)
         except SessionSaveError as error:
@@ -1333,6 +1358,29 @@ class AgentSession:
             raise
 
     def _prompt(self, text: str) -> None:
+        if text.startswith("/") and not text.startswith("//"):
+            name, _, args = text[1:].partition(" ")
+            command = self.commands.get(name)
+            if command is not None and command.isolated:
+                # Explicit host tasks bypass UserPromptSubmit hooks. Capture the
+                # owner before any worker or UI can select another conversation.
+                with self._lock:
+                    if self._shutdown_started or not self.main.can_run():
+                        self.command_exit_code = 1
+                        return
+                    if self.busy:
+                        raise RuntimeError("An isolated task cannot overlap another run in this session")
+                    runtime = self.main
+                    self.busy = True
+                    runtime.agent.signal.clear()
+                try:
+                    self.bus.emit("command_start", command, runtime)
+                    command.fn(self, args, runtime)
+                finally:
+                    with self._lock:
+                        self.busy = False
+                        self._apply_model_metadata()
+                return
         result = self.bus.chain("input", text, self)
         if isinstance(result, Handled):
             if result.message:
