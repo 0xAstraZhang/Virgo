@@ -21,6 +21,7 @@ MESSAGES = {
     "sandbox.description": "查看原生命令沙箱状态",
     "sandbox.status": "沙箱：{mode}；后端：{backend}",
     "sandbox.scope": "原生隔离覆盖 Core Shell 进程。Python 扩展和远程工具仍使用各自的信任边界。配置仅在启动时生效。",
+    "sandbox.windows_scope": "Windows 需要原生 x64 LPAC、NTFS 和 PowerShell 7。读取范围包含系统已有的 LPAC ACL 授权；独立令牌限制写入。每次启动都会验证实际可用性。",
     "sandbox.file_denied": "沙箱禁止修改文件：{path}",
     "sandbox.cli": "选择原生 Shell 隔离方式，独立于审批策略",
 }

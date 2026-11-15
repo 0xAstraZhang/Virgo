@@ -96,6 +96,9 @@ def run_command(
                          **({"sandbox_policy": sandbox_policy, "output_path": path, "cancellation": signal} if sandbox_policy else {}))
         except BaseException:
             if sandbox_policy is not None:
+                # Windows intentionally denies delete sharing for the exact
+                # spool handle. Close it before removing a failed launch's log.
+                output_file.close()
                 path.unlink(missing_ok=True)
             raise
         deadline = time.monotonic() + timeout

@@ -1,6 +1,7 @@
 """Core-owned sandbox configuration, caller binding and file-tool ceiling."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ..agent import Block
@@ -26,9 +27,13 @@ class SandboxManager:
             for tool in (WRITE, EDIT):
                 session.replace_tools(f"tool:{tool.name}", [(make_file_tool(tool, self.for_context), ROLES_ALL)],
                                       owner="core")
+            scope = ("Windows uses LPAC object ACLs with an independent write restriction. "
+                     "Reads include the workspace, runtimes and Windows' ambient LPAC grants. "
+                     if os.name == "nt" else
+                     "Only the workspace, system runtime paths and private scratch are exposed. ")
             session.sections.append((90, "core.sandbox", lambda _role: (
                 f"<sandbox>Core shell processes request a {self.mode} native sandbox with no network. "
-                "Only the workspace, system runtime paths and private scratch are exposed. "
+                + scope +
                 "Plan/child restrictions can only narrow this policy. Sandbox startup failure does not "
                 "authorize a native retry. Python extensions and remote tools are not OS-sandboxed.</sandbox>"
             )))
@@ -44,6 +49,8 @@ class SandboxManager:
                 backend = str(error)
         session.ui.print(session.t("sandbox.status", mode=self.mode, backend=backend))
         session.ui.print(session.t("sandbox.scope"))
+        if os.name == "nt" and self.mode != "disabled":
+            session.ui.print(session.t("sandbox.windows_scope"))
 
     def for_context(self, context) -> SandboxPolicy | None:
         if self.mode == "disabled":
@@ -51,7 +58,9 @@ class SandboxManager:
         runtime = self.session.runtime_for_context(context)
         if runtime is None:
             raise SandboxUnavailable("Sandbox execution requires the originating runtime context")
-        workspace = Path(runtime.review_source.workspace).resolve()
+        workspace = Path(runtime.review_source.workspace)
+        if os.name != "nt":
+            workspace = workspace.resolve()
         if self.session.paths.user.resolve().is_relative_to(workspace):
             raise SandboxUnavailable("Sandbox workspace must not contain Virgo's user credentials or session store")
         mode = "read-only" if self.session.services["permissions"].mode_for(context.agent) == "plan" else self.mode

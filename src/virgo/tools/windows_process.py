@@ -191,6 +191,11 @@ class WindowsProcess:
                 resources.callback(CloseHandle, info.hThread)
                 self.pid = info.dwProcessId
                 self._process, self._job = info.hProcess, job
+                if sandbox is not None:
+                    # Keep the native owner reachable even if interruption
+                    # occurs between returning from this constructor and the
+                    # caller storing its result. No lease is revoked before drain.
+                    sandbox.process = self
                 self._finalizer = weakref.finalize(self, _close_handles, job, info.hProcess)
                 ownership.pop_all()
                 if sandbox is not None:
