@@ -222,3 +222,288 @@ def test_native_failure_and_timeout_are_not_reclassified(native):
     result = run(native, "sleep 10", timeout=0.2)
     assert result.is_error and result.details["status"] == "timeout"
     assert result.details["sandbox"]["mode"] == "workspace-write"
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_sandbox_rejects_changed_cwd_before_creating_output(make_session, project, background):
+    """A late cwd change must not create host directories or logs outside the owner.
+
+    Failure modes: foreground spooling creates an external log before rejection;
+    background start failure removes its log but leaves external directories;
+    changed cwd replaces the originating workspace; a failed launch is replayed.
+    """
+    outside = project.parent / "outside-cwd"
+    outside.mkdir()
+    session = make_session(
+        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                  "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+
+    def change_cwd(event, _session):
+        event.cwd = outside
+
+    ExtensionAPI(session, "sandbox-cwd-boundary").on("tool_call", change_cwd)
+    command = ("Set-Content escaped.txt bad" if selected(session).tool_name == "powershell"
+               else "echo bad > escaped.txt")
+    result = run(session, command, background=background)
+    assert result.is_error and result.details["status"] == "sandbox_unavailable"
+    assert result.details["sandbox"]["workspace"] == str(project.resolve())
+    assert not (outside / "escaped.txt").exists()
+    assert not (outside / ".virgo").exists(), "Rejected cwd must not receive broker output files"
+    if background:
+        assert not session.services["jobs"].jobs
+
+
+@pytest.mark.parametrize("finish", ["exit", "timeout", "cancel"])
+def test_native_detached_descendant_is_reaped_with_command(native, project, finish):
+    """Command completion must not leave a detached process with workspace rights.
+
+    Failure modes: a descendant starts a new session/process group and survives
+    normal completion, timeout or cancellation; cleanup removes private scratch
+    but leaves the child able to write later; timeout/cancellation is mislabeled.
+    Native policy may deny detachment, which also satisfies containment. A child
+    that is allowed to detach exits by itself after its bounded delayed write.
+    """
+    import time
+
+    ready = project / "detached-ready"
+    denied = project / "detachment-denied"
+    late = project / "detached-late-write"
+    scratch_file = project / "command-scratch-path"
+    child_source = (
+        "import time; from pathlib import Path; "
+        "Path('detached-ready').write_text('ready'); "
+        "time.sleep(4); Path('detached-late-write').write_text('survived')"
+    )
+    source = (
+        "import os,subprocess,sys,time\nfrom pathlib import Path\n"
+        "Path('command-scratch-path').write_text(os.environ['TMPDIR'])\n"
+        "try:\n"
+        f"    subprocess.Popen([sys.executable, '-c', {child_source!r}], start_new_session=True, "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "except PermissionError:\n"
+        "    Path('detachment-denied').write_text('denied')\n"
+        "    raise SystemExit(0)\n"
+        "while not Path('detached-ready').exists():\n"
+        "    time.sleep(0.02)\n"
+        + ("time.sleep(10)\n" if finish != "exit" else "")
+    )
+    results, errors = [], []
+
+    def execute():
+        try:
+            results.append(run(native, python_command(source), timeout=2 if finish == "timeout" else 15))
+        except Exception as error:
+            errors.append(error)
+
+    if finish == "cancel":
+        worker = threading.Thread(target=execute, daemon=True)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 10
+            while worker.is_alive() and not ready.exists() and not denied.exists():
+                assert time.monotonic() < deadline, "The native descendant did not reach a known state"
+                time.sleep(0.02)
+            if ready.exists():
+                native.abort()
+            worker.join(10)
+            assert not worker.is_alive()
+        finally:
+            if worker.is_alive():
+                native.abort()
+                worker.join(10)
+    else:
+        execute()
+    assert not errors, errors
+    assert results
+    result = results[0]
+    assert scratch_file.exists(), result.text()
+    assert not Path(scratch_file.read_text()).exists(), "Private scratch must be removed after completion"
+    if denied.exists():
+        assert not result.is_error and result.details["status"] == "ok", result.text()
+        assert not ready.exists() and not late.exists()
+        return
+    assert ready.exists(), result.text()
+    expected = {"exit": "ok", "timeout": "timeout", "cancel": "aborted"}[finish]
+    assert result.details["status"] == expected, result.text()
+    assert result.is_error == (finish != "exit")
+    deadline = time.monotonic() + 4.2
+    while not late.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not late.exists(), "A detached descendant retained write access after command completion"
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native sandbox metadata paths")
+@pytest.mark.parametrize("background", [False, True])
+def test_sandbox_rejects_external_output_symlink_before_spooling(make_session, project, background):
+    """Project metadata must not redirect the broker's file writes outside its owner.
+
+    Failure modes: an existing .virgo symlink redirects output mkdir/mkstemp to a
+    host directory; background startup cleanup leaves redirected directories;
+    a valid cwd hides an invalid output destination until after a host write.
+    """
+    outside = project.parent / "outside-metadata"
+    outside.mkdir()
+    (project / ".virgo").symlink_to(outside, target_is_directory=True)
+    session = make_session(
+        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                  "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    result = run(session, "echo sandbox-output", background=background)
+    assert result.is_error and result.details["status"] == "sandbox_unavailable"
+    assert list(outside.iterdir()) == [], "Invalid output aliases must be rejected before mkdir or mkstemp"
+    if background:
+        assert not session.services["jobs"].jobs
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native launch protocol")
+@pytest.mark.parametrize("background", [False, True])
+def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project, monkeypatch, background):
+    """A successful capability probe does not prove the actual envelope started.
+
+    Failure modes: the real wrapper fails after a successful probe but is reported
+    as an ordinary command exit; a background job reports successful startup;
+    the payload is replayed on the host; failed startup leaves a pending job.
+    This launches a real synthetic wrapper that never executes the payload. It
+    validates the launch protocol, not OS isolation (covered by native tests).
+    """
+    launcher = project.parent / "reject_after_probe.py"
+    attempts = project.parent / "launch-attempts.txt"
+    launcher.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"attempts = Path({str(attempts)!r})\n"
+        "probe = len(sys.argv) == 2 and Path(sys.argv[1]).name == 'true'\n"
+        "with attempts.open('a') as log:\n"
+        "    log.write('probe\\n' if probe else 'launch\\n')\n"
+        "if probe:\n"
+        "    raise SystemExit(0)\n"
+        "sys.stderr.write('synthetic sandbox: isolation setup rejected before exec\\n')\n"
+        "raise SystemExit(42)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("seatbelt", Path(sys.executable)))
+    # The synthetic wrapper never executes this probe path. Keep this protocol
+    # check independent of host file ownership; native cases check real trust.
+    system_file = sandbox._system_file
+    monkeypatch.setattr(
+        sandbox, "_system_file",
+        lambda path: path if path == Path("/usr/bin/true") else system_file(path),
+    )
+    monkeypatch.setattr(
+        sandbox.SandboxPolicy, "_macos",
+        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)],
+    )
+    session = make_session(
+        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                  "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    result = run(session, "echo bad > payload-ran.txt", background=background)
+    assert result.is_error and result.details["status"] == "sandbox_unavailable", result.text()
+    assert not (project / "payload-ran.txt").exists()
+    assert attempts.read_text().splitlines() == ["probe", "launch"], "Never retry a rejected payload"
+    if background:
+        assert not session.services["jobs"].jobs
+
+
+
+def test_native_protected_symlink_cannot_add_a_host_read_mount(native, project):
+    """A payload-created metadata link must not reveal a host secret next launch."""
+    secret = project.parent / "outside-sandbox-secret.txt"
+    secret.write_text("credential-that-must-stay-outside")
+    link = project / "AGENTS.md"
+    if sys.platform == "linux":
+        # Linux permits creation of an absent metadata name. The next launch
+        # must not turn its resolved target into an additional readable mount.
+        result = run(native, python_command(
+            f"from pathlib import Path; Path('AGENTS.md').symlink_to({str(secret)!r})"
+        ))
+        assert not result.is_error, result.text()
+    else:
+        # macOS forbids creation of absent metadata names inside its envelope;
+        # an existing project symlink must still not grant its target a read.
+        link.symlink_to(secret)
+    result = run(native, python_command("from pathlib import Path; print(Path('AGENTS.md').read_text())"))
+    assert result.is_error, result.text()
+    assert "credential-that-must-stay-outside" not in result.text()
+    assert secret.read_text() == "credential-that-must-stay-outside"
+    if sys.platform == "linux":
+        assert result.details["status"] == "sandbox_unavailable"
+
+
+def test_native_existing_metadata_symlink_cannot_be_replaced(native, project):
+    """Protect the metadata directory entry, not only its resolved file target."""
+    target = project / "instructions.txt"
+    target.write_text("original instructions")
+    link = project / "AGENTS.md"
+    link.symlink_to(target)
+    result = run(native, python_command(
+        "from pathlib import Path; p=Path('AGENTS.md'); p.unlink(); p.write_text('replaced')"
+    ))
+    assert result.is_error, result.text()
+    assert link.is_symlink()
+    assert link.read_text() == target.read_text() == "original instructions"
+
+
+def test_native_workspace_local_virtualenv_runs_but_stays_readonly(native, project):
+    """A normal broker venv must run without becoming writable by its own tools."""
+    import subprocess
+
+    environment = project / ".venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(environment)],
+                   check=True, capture_output=True, text=True, timeout=30)
+    marker = environment / "runtime-canary.txt"
+    marker.write_text("trusted runtime")
+    executable = environment / "bin" / "python"
+    repository = Path(__file__).resolve().parents[2]
+    # Reuse the already locked test dependencies for this assembled broker. The
+    # sandbox still strips PYTHONPATH before starting its user command payload.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([
+        str(repository), str(repository / "src"),
+        *(str(Path(item).resolve()) for item in sys.path if item),
+    ]))
+    source = r'''
+import shlex
+import sys
+from pathlib import Path
+from virgo.ai.providers import faux
+from virgo.harness.session import AgentSession
+from tests.support.harness import RecordingUI, tool_results
+from tests.support.shell import selected
+
+session = AgentSession(
+    Path.cwd(), model="faux/test", session=None, permission_mode="accept-all",
+    settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+    ui=RecordingUI(), refresh_models=False, extensions=False,
+)
+try:
+    shell = selected(session)
+    def call(name, args):
+        faux.script("test", faux.reply(tools=[(name, args)]), faux.reply("done"))
+        session.prompt("Exercise the workspace-local virtual environment")
+        return tool_results(session)[-1]
+    command = shlex.join([sys.executable, "-c",
+        "from pathlib import Path; Path('ordinary.txt').write_text('allowed'); print('venv-ready')"])
+    result = call(shell.tool_name, {"command": command})
+    assert not result.is_error, result.text()
+    assert "venv-ready" in result.text()
+    assert Path("ordinary.txt").read_text() == "allowed"
+    command = shlex.join([sys.executable, "-c",
+        "from pathlib import Path; Path('.venv/runtime-canary.txt').write_text('tampered')"])
+    result = call(shell.tool_name, {"command": command})
+    assert result.is_error, result.text()
+    assert Path(".venv/runtime-canary.txt").read_text() == "trusted runtime"
+    result = call("write", {"path": ".venv/runtime-canary.txt", "content": "tampered"})
+    assert result.is_error, result.text()
+    assert Path(".venv/runtime-canary.txt").read_text() == "trusted runtime"
+finally:
+    session.shutdown()
+'''
+    completed = subprocess.run([str(executable), "-c", source], cwd=project, env=env,
+                               text=True, capture_output=True, timeout=45)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert marker.read_text() == "trusted runtime"
