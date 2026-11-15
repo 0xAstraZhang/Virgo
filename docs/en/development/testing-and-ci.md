@@ -95,6 +95,8 @@ Retirement acceptance must also catch unrelated deletions, failing baseline case
 
 ## Manual diagnostics
 
+Native sandbox acceptance runs separately from the complete suite. [Native sandbox boundaries](../../../.github/workflows/native-sandbox.yml) exercises Linux/macOS with `VIRGO_REQUIRE_SANDBOX_TESTS=1`. [Windows sandbox boundaries](../../../.github/workflows/windows-sandbox.yml) checks out the exact PR head on Windows Server 2022 and 2025, records the OS/interpreter environment, runs `tests/harness/test_windows_sandbox_e2e.py` and rejects empty reports, failures, errors and skips. Read the native results and the full cross-platform comparison for the same revision; neither replaces the other. Windows support and measured results are recorded in [Windows command sandbox](../guides/windows-sandbox.md).
+
 The separate [Shell diagnostics workflow](../../../.github/workflows/shell-selection.yml) is manual-only:
 
 ```bash

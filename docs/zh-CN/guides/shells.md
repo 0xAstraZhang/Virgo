@@ -17,7 +17,7 @@ Virgo 在启动时探测受支持的解释器。`/shell` 显示缓存的选项�
 
 支持 Bash、Zsh、POSIX sh、dash、PowerShell 7+ 和 Windows PowerShell 5.1。CMD、Fish、WSL 发行版及任意自定义解释器没有对应适配器。选中的名称或路径不能附带额外启动参数。沙箱关闭时会启动解释器验证版本；启用沙箱时，发现与选择只检查受支持的可执行路径，不启动解释器，版本显示为 `unknown`，由实际隔离命令的启动确认能否执行。项目配置、PATH 发现、缓存列表验证以及所有 `/shell` 选择均适用，原生后端不可用时也不进行宿主探测。新安装的解释器可以直接指定；重启会刷新完整列表。
 
-Windows 自动优先选择 PowerShell 7，再选择 Windows PowerShell；macOS/Linux 优先 Bash，再选择 Zsh/sh。显式配置失效时会停用命令执行，并提示重新选择，不会静默改用另一种语言。
+Windows 自动优先选择 PowerShell 7，再选择 Windows PowerShell；macOS/Linux 优先 Bash，再选择 Zsh/sh。启用原生 Windows 沙箱时只接受 `pwsh.exe`，更换适配器不能绕过此限制。验证状态与环境要求见 [Windows 命令沙箱](windows-sandbox.md)。显式配置失效时会停用命令执行，并提示重新选择，不会静默改用另一种语言。
 
 选择立即应用于当前会话，并将 `shell.executable` 保存到用户配置。重启时项目和运行时配置可以覆盖它，`VIRGO_SHELL` 优先级最高。取消或验证失败会保留原选择。
 
