@@ -6,7 +6,6 @@ on:
       - 'src/virgo/**'
       - 'tests/harness/test_windows_sandbox_e2e.py'
       - '.github/workflows/windows-sandbox.yml'
-      - 'ci/windows_runtime_diagnostics.py'
       - 'pyproject.toml'
       - 'uv.lock'
 permissions:
@@ -61,39 +60,5 @@ jobs:
         with:
           name: windows-sandbox-${{ matrix.os }}
           path: windows-sandbox.xml
-          if-no-files-found: error
-          retention-days: 14
-  diagnostic:
-    name: Windows runtime diagnostic / ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2022, windows-2025]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 5
-    env:
-      PYTHONUTF8: '1'
-    steps:
-      - name: Check out the exact diagnostic revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: '0.13.8'
-          python-version: '3.13'
-      - run: uv sync --locked --dev
-      - name: Observe exact native path and null-device behavior
-        shell: pwsh
-        run: |
-          git rev-parse HEAD
-          uv run --no-sync python ci/windows_runtime_diagnostics.py | Tee-Object windows-runtime-diagnostic.log
-      - name: Preserve diagnostic observations separately from acceptance
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: windows-runtime-diagnostic-${{ matrix.os }}
-          path: windows-runtime-diagnostic.log
           if-no-files-found: error
           retention-days: 14
