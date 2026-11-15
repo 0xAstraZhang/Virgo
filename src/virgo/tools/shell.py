@@ -103,8 +103,8 @@ def shell_environment() -> dict[str, str]:
     return env
 
 
-def probe_shell(value: str, *, t=None) -> Shell:
-    """Validate and probe an exact supported executable; never accept arguments as a path."""
+def probe_shell(value: str, *, t=None, execute: bool = True) -> Shell:
+    """Validate an exact supported path, optionally executing its version probe."""
     t = t or Translator()
     value = os.path.expanduser(value)
     kind = Path(value).name.lower().removesuffix(".exe")
@@ -121,6 +121,10 @@ def probe_shell(value: str, *, t=None) -> Shell:
         and Path(executable).parent.name.lower() in {"system32", "sysnative"}
     ):
         raise ValueError(t("tools.shell.wsl"))
+    if not execute:
+        # Discovery is broker work. An active sandbox must not execute a
+        # project/PATH candidate merely to learn its version before isolation.
+        return Shell(kind, executable, "unknown")
     if kind in {"pwsh", "powershell"}:
         args = [
             "-NoLogo",
@@ -178,7 +182,7 @@ def probe_shell(value: str, *, t=None) -> Shell:
     return Shell(kind, executable, version)
 
 
-def discover_shells(extra: str | None = None) -> list[Shell]:
+def discover_shells(extra: str | None = None, *, execute: bool = True) -> list[Shell]:
     candidates: list[str] = [extra] if extra else []
     folders = [p for p in os.get_exec_path() if p and Path(p).is_absolute()]
     if os.name == "nt":
@@ -207,7 +211,7 @@ def discover_shells(extra: str | None = None) -> list[Shell]:
 
     def probe(candidate):
         try:
-            return probe_shell(candidate)
+            return probe_shell(candidate, execute=execute)
         except ValueError:
             return None
 

@@ -15,7 +15,7 @@ Virgo detects supported shells at startup. `/shell` shows the cached choices, in
 /shell auto
 ```
 
-Supported interpreters are Bash, Zsh, POSIX sh, dash, PowerShell 7+ and Windows PowerShell 5.1. CMD, Fish, WSL distributions and arbitrary interpreters are not adapters. A selected name or path is validated by starting the interpreter; it cannot include extra command-line arguments. A newly installed interpreter can be selected directly, while restarting refreshes the full catalog.
+Supported interpreters are Bash, Zsh, POSIX sh, dash, PowerShell 7+ and Windows PowerShell 5.1. CMD, Fish, WSL distributions and arbitrary interpreters are not adapters. A selected name or path cannot include extra command-line arguments. With the sandbox disabled, validation starts the interpreter to obtain its version. With an active sandbox, discovery and selection only validate the supported executable path without starting it; the version is reported as `unknown`. The actual isolated command launch establishes whether it can execute. This also applies to project configuration, PATH discovery, cached-catalog validation and every `/shell` selection, including when the native backend is unavailable. A newly installed interpreter can be selected directly, while restarting refreshes the full catalog.
 
 On Windows, automatic selection prefers PowerShell 7, then Windows PowerShell. On macOS/Linux it prefers Bash, then Zsh/sh. An invalid explicit configuration disables command execution and asks you to select again; it does not silently switch languages.
 
@@ -23,7 +23,7 @@ Selection immediately changes the current session and saves `shell.executable` i
 
 ## Execution behavior
 
-POSIX interpreters use the `bash` tool name; PowerShell uses `powershell`. The model receives the actual interpreter type, version, executable path and syntax. Every command starts a separate process with stdin closed; shell state such as `cd` does not persist between calls.
+POSIX interpreters use the `bash` tool name; PowerShell uses `powershell`. The model receives the interpreter type, executable path, syntax and reported version (or `unknown` with an active sandbox). An unknown PowerShell version uses the conservative compatibility guidance for native errors below. Every command starts a separate process with stdin closed; shell state such as `cd` does not persist between calls.
 
 | Shell | Error and startup behavior |
 | --- | --- |

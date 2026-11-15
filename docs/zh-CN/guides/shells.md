@@ -15,7 +15,7 @@ Virgo 在启动时探测受支持的解释器。`/shell` 显示缓存的选项�
 /shell auto
 ```
 
-支持 Bash、Zsh、POSIX sh、dash、PowerShell 7+ 和 Windows PowerShell 5.1。CMD、Fish、WSL 发行版及任意自定义解释器没有对应适配器。选中的名称或路径会通过实际启动验证，不能附带额外启动参数。新安装的解释器可以直接指定；重启会刷新完整列表。
+支持 Bash、Zsh、POSIX sh、dash、PowerShell 7+ 和 Windows PowerShell 5.1。CMD、Fish、WSL 发行版及任意自定义解释器没有对应适配器。选中的名称或路径不能附带额外启动参数。沙箱关闭时会启动解释器验证版本；启用沙箱时，发现与选择只检查受支持的可执行路径，不启动解释器，版本显示为 `unknown`，由实际隔离命令的启动确认能否执行。项目配置、PATH 发现、缓存列表验证以及所有 `/shell` 选择均适用，原生后端不可用时也不进行宿主探测。新安装的解释器可以直接指定；重启会刷新完整列表。
 
 Windows 自动优先选择 PowerShell 7，再选择 Windows PowerShell；macOS/Linux 优先 Bash，再选择 Zsh/sh。显式配置失效时会停用命令执行，并提示重新选择，不会静默改用另一种语言。
 
@@ -23,7 +23,7 @@ Windows 自动优先选择 PowerShell 7，再选择 Windows PowerShell；macOS/L
 
 ## 执行语义
 
-POSIX 解释器沿用 `bash` 工具名，PowerShell 使用 `powershell`。模型会获得实际解释器的类型、版本、路径和语法信息。每条命令都启动独立进程并关闭标准输入，`cd` 等 Shell 状态不会跨调用保留。
+POSIX 解释器沿用 `bash` 工具名，PowerShell 使用 `powershell`。模型会获得解释器类型、路径、语法及报告的版本；启用沙箱时版本为 `unknown`。PowerShell 版本未知时采用下表中保守的原生命令错误兼容指引。每条命令都启动独立进程并关闭标准输入，`cd` 等 Shell 状态不会跨调用保留。
 
 | Shell | 错误处理与启动行为 |
 | --- | --- |
