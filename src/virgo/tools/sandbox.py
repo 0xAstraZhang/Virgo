@@ -406,10 +406,21 @@ def cleanup_process(proc) -> None:
     if scratch is not None:
         # The existing executor owns waiting/cancellation; reap remaining members
         # of its process group before releasing private scratch storage.
+        # Darwin can report EPERM for a group containing only an unreaped zombie.
+        # Reap our exited launcher before signalling, and close that exit race
+        # without ignoring a permission failure against a live process group.
+        proc.poll()
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            if proc.poll() is None:
+                raise
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         if proc.poll() is None:
             proc.wait(timeout=5)
         scratch.cleanup()

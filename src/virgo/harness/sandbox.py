@@ -20,6 +20,12 @@ class SandboxManager:
         validate_config(config)
         self.mode = config.get("mode", "disabled")
         if self.mode != "disabled":
+            from ..tools.fs import EDIT, WRITE, make_file_tool
+            from .extensions import ROLES_ALL
+
+            for tool in (WRITE, EDIT):
+                session.replace_tools(f"tool:{tool.name}", [(make_file_tool(tool, self.for_context), ROLES_ALL)],
+                                      owner="core")
             session.sections.append((90, "core.sandbox", lambda _role: (
                 f"<sandbox>Core shell processes request a {self.mode} native sandbox with no network. "
                 "Only the workspace, system runtime paths and private scratch are exposed. "
