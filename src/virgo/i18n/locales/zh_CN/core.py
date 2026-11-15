@@ -12,4 +12,10 @@ MESSAGES = {
     "common.cancelled": "已取消。",
     "ui.base.back": "返回",
     "ui.base.multiline_help": "单独输入 . 结束；/cancel 取消；直接输入 . 保留现有内容。",
+    "work_mode.description": "查看或切换工作模式，不改变审批策略",
+    "work_mode.status": "工作模式：{mode}",
+    "work_mode.default": "默认",
+    "work_mode.plan": "计划（只读）",
+    "work_mode.invalid": "无效的工作模式，可选：{modes}。",
+    "work_mode.approval_unchanged": "使用 /permissions 查看审批策略。只有 /mode default 会退出独立的计划模式。",
 }
