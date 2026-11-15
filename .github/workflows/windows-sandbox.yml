@@ -75,7 +75,7 @@ jobs:
             throw "Windows debugging tools are unavailable at $debuggers"
           }
           $python = (Resolve-Path '.venv\Scripts\python.exe').Path
-          # Trace native opens after bcrypt loads without changing the child token.
+          # Trace native initialization after bcrypt loads without changing the child token.
           @'
           sxn av
           sxn *
@@ -85,6 +85,7 @@ jobs:
           '@ | Set-Content -Encoding ascii windows-loader-commands.txt
           @'
           bp ntdll!NtOpenFile "$$><windows-open-commands.txt"
+          bp ntdll!EtwEventRegister "$$><windows-etw-commands.txt"
           '@ | Set-Content -Encoding ascii windows-bcrypt-commands.txt
           @'
           .printf "VIRGO_NATIVE_OPEN pid=%x tid=%x desired=%08x caller=%y name=%msu\n", @$tpid, @$tid, @edx, poi(@rsp), poi(@r8+0x10)
@@ -95,6 +96,16 @@ jobs:
           .printf "VIRGO_NATIVE_RETURN pid=%x tid=%x status=%08x caller=%y\n", @$tpid, @$tid, @eax, @rip
           gc
           '@ | Set-Content -Encoding ascii windows-open-return.txt
+          @'
+          .printf "VIRGO_ETW_REGISTER pid=%x tid=%x caller=%y provider=", @$tpid, @$tid, poi(@rsp)
+          dd @rcx L4
+          bp /1 poi(@rsp) "$$><windows-etw-return.txt"
+          gc
+          '@ | Set-Content -Encoding ascii windows-etw-commands.txt
+          @'
+          .printf "VIRGO_ETW_RETURN pid=%x tid=%x status=%08x caller=%y\n", @$tpid, @$tid, @eax, @rip
+          gc
+          '@ | Set-Content -Encoding ascii windows-etw-return.txt
           try {
             & $gflags /i pwsh.exe +sls
             if ($LASTEXITCODE -ne 0) { throw 'Could not enable PowerShell loader snaps' }
