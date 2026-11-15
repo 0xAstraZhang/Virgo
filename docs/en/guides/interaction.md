@@ -33,6 +33,7 @@ The first two commands switch the current session and save a user default. `/lan
 | `/compact [focus]` | Compact older model context |
 | `/new`, `/sessions [number]`, `/session` | Start, browse or inspect sessions |
 | `/diagnostics [error-id]` | Inspect recent errors and diagnostic records |
+| `/review [uncommitted\|base <branch>\|commit <revision>\|show [id\|last]]` | Run or inspect an [independent read-only code review](code-review.md); `/code-review` is an equivalent entry when available |
 | `/todos`, `/jobs` | Inspect the conversation checklist or background jobs |
 | `/skills`, `/skill:name [args]` | List skills or explicitly use one |
 | `/mcp [reconnect]` | Inspect or reload MCP connections |

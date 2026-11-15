@@ -34,8 +34,9 @@ Model adapters, hosts and capability plugins have different lifecycles. They nee
 | `web` | Search/fetch routing, permission-aware access and configurable budgets | Enabled |
 | `mcp` | Configured connections, tools and bounded recovery | Only when server configuration exists |
 | `auto_review` | Optional model-assisted review for the Core permission policy | Enabled |
+| `code_review` | Independent read-only code review with frozen targets and validated reports | Enabled |
 
-`minimal` disables the preset's optional capabilities. Explicit `plugins.<id>.enabled` values override the preset. Git remains available through the shell; there is no separate Git plugin.
+`minimal` disables the preset's optional capabilities. Explicit `plugins.<id>.enabled` values override the preset. General Git operations remain available through the shell; [code review](../guides/code-review.md) provides only frozen status/diff views in its isolated Runtime.
 
 The Core owns shell/process execution and cancellation. The background plugin uses those primitives rather than a second executor. The Core also owns diagnostics and the human-facing `/diagnostics` command; disabling `diagnostic_get` only removes the model-facing lookup tool.
 

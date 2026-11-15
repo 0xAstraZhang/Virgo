@@ -34,8 +34,9 @@ Virgo 是围绕编程工作的 Harness。Core 负责可靠地运行模型—工�
 | `web` | 搜索与读取路由、权限审查和可配置预算 | 启用 |
 | `mcp` | 已配置的连接、工具和有界恢复 | 存在服务器配置时启用 |
 | `auto_review` | 为 Core 权限策略提供可选的模型审查 | 启用 |
+| `code_review` | 固定目标、校验报告的独立只读代码审查 | 启用 |
 
-`minimal` 关闭预设中的可选能力；显式 `plugins.<id>.enabled` 覆盖预设。Git 仍通过 Shell 使用，不新增独立 Git 插件。
+`minimal` 关闭预设中的可选能力；显式 `plugins.<id>.enabled` 覆盖预设。一般 Git 操作仍通过 Shell 使用；[代码审查](../guides/code-review.md)只在独立 Runtime 中提供冻结的 status/diff 视图。
 
 Core 拥有 Shell／进程执行和取消原语；background 插件复用这些原语，不复制执行器。Core 同样拥有诊断服务和面向用户的 `/diagnostics` 命令；禁用 `diagnostic_get` 只移除面向模型的证据读取工具。
 
