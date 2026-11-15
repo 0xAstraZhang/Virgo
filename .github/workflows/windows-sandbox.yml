@@ -1,0 +1,64 @@
+name: Windows sandbox boundaries
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/virgo/**'
+      - 'tests/harness/test_windows_sandbox_e2e.py'
+      - '.github/workflows/windows-sandbox.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+permissions:
+  contents: read
+concurrency:
+  group: windows-sandbox-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    name: Windows native isolation / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+      VIRGO_REQUIRE_WINDOWS_SANDBOX_TESTS: '1'
+    steps:
+      - name: Check out the exact requested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+      - run: uv sync --locked --dev
+      - name: Record exact revision and native environment
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture | Format-List
+          $PSVersionTable | Format-List
+          uv run --no-sync python -c "import platform,struct,sys; print(platform.platform()); print(sys.version); print(sys.executable); assert struct.calcsize('P') == 8"
+      - name: Exercise actual Windows security boundaries
+        run: uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
+      - name: Reject empty or skipped security reports
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          [xml]$report = Get-Content windows-sandbox.xml
+          $cases = @($report.SelectNodes('//testcase'))
+          if ($cases.Count -eq 0) { throw 'No native Windows security cases executed' }
+          $problems = @($report.SelectNodes('//testcase/failure | //testcase/error | //testcase/skipped'))
+          if ($problems.Count -ne 0) { throw "Native security report contains $($problems.Count) failures/errors/skips" }
+          Write-Output "Validated $($cases.Count) real Windows security cases with zero failures, errors or skips"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-sandbox-${{ matrix.os }}
+          path: windows-sandbox.xml
+          if-no-files-found: error
+          retention-days: 14
