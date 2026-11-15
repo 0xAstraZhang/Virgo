@@ -95,7 +95,7 @@ class _Dacl:
     aces: list[bytes]
 
 
-def _read(handle) -> _Dacl:
+def _read(handle, *, cleanup=False) -> _Dacl | None:
     size = DWORD()
     GetSecurity(handle, 4, None, 0, ctypes.byref(size))
     if not size.value:
@@ -105,6 +105,10 @@ def _read(handle) -> _Dacl:
     present, defaulted, acl = BOOL(), BOOL(), ctypes.c_void_p()
     _check(GetDacl(data, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted)))
     if not present.value or not acl.value:
+        if cleanup:
+            # A payload may supply a protected null DACL when creating an
+            # ordinary file. It contains no execution SID entries to revoke.
+            return None
         raise OSError("Windows sandbox grants require an existing non-null DACL")
     control, revision = WORD(), DWORD()
     _check(GetControl(data, ctypes.byref(control), ctypes.byref(revision)))
@@ -258,7 +262,9 @@ class AclGrants:
 
     def _update(self, grant: _Grant, *, cleanup=False):
         with self._locked(cleanup=cleanup):
-            previous = _read(grant.handle.value)
+            previous = _read(grant.handle.value, cleanup=cleanup)
+            if previous is None:
+                return
             retained = [ace for ace in previous.aces if _sid_in_ace(ace) not in self.sids]
             if cleanup:
                 if len(retained) == len(previous.aces):
