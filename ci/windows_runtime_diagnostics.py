@@ -1,8 +1,9 @@
-"""Observe Windows startup denials; these launches are not security acceptance.
+"""Observe Windows runtime denials; this launch is not security acceptance.
 
-The payload is always print('native-ready'). All production token, desktop and
-Job checks remain in force. Security descriptors are read or copied in memory;
-this script never changes a machine device or ETW provider ACL.
+The fixed payload queries executable paths and opens the null device without
+transferring data. All production token, capability, desktop and Job checks
+remain in force. Observations read descriptors or copy them in memory; only the
+normal production sandbox manages its existing temporary resource leases.
 """
 from __future__ import annotations
 
@@ -13,7 +14,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import uuid
 from pathlib import Path
 
 from virgo.tools import windows_sandbox as native
@@ -28,9 +28,6 @@ GetSecurity = native._api(native.advapi, "GetKernelObjectSecurity", [
 ToSddl = native._api(native.advapi, "ConvertSecurityDescriptorToStringSecurityDescriptorW", [
     POINTER, native.DWORD, native.DWORD, ctypes.POINTER(ctypes.c_wchar_p), POINTER,
 ])
-EventAccessQuery = native._api(native.advapi, "EventAccessQuery", [
-    POINTER, POINTER, ctypes.POINTER(native.DWORD),
-], native.DWORD)
 CreateFile = native._api(native.kernel, "CreateFileW", [
     ctypes.c_wchar_p, native.DWORD, native.DWORD, POINTER, native.DWORD, native.DWORD, native.HANDLE,
 ], native.HANDLE)
@@ -40,9 +37,9 @@ def emit(event, **fields):
     print(json.dumps({"diagnostic_only": True, "event": event, **fields}), flush=True)
 
 
-def sddl(descriptor):
+def sddl(descriptor, information=7):
     text = ctypes.c_wchar_p()
-    native._check(ToSddl(descriptor, 1, 7, ctypes.byref(text), None))
+    native._check(ToSddl(descriptor, 1, information, ctypes.byref(text), None))
     try:
         return text.value
     finally:
@@ -77,84 +74,137 @@ def observe(envelope, process, capabilities):
         ):
             emit("file_access_semantics", name=name, **access(impersonation, value, mask))
 
-        for desired in (0x20000, 0x60000):  # READ_CONTROL; additionally WRITE_DAC authority.
-            handle = CreateFile(r"\\?\GLOBALROOT\Device\KsecDD", desired, 7, None, 3, 0, None)
-            if handle == POINTER(-1).value:
-                emit("device_authority", access=f"0x{desired:x}", winerror=ctypes.get_last_error())
-                continue
-            try:
-                emit("device_authority", access=f"0x{desired:x}", winerror=0)
-                size = native.DWORD()
-                GetSecurity(handle, 7, None, 0, ctypes.byref(size))
-                if not size.value:
-                    raise ctypes.WinError(ctypes.get_last_error())
-                buffer = ctypes.create_string_buffer(size.value)
-                native._check(GetSecurity(handle, 7, buffer, len(buffer), ctypes.byref(size)))
-                text = sddl(buffer)
-                emit("device_descriptor", object=r"\Device\KsecDD", sddl=text)
-                for name, sids in (("current", ()), ("write_sid", (envelope.write_name,)),
-                                   ("package_sid", (envelope.package_name,)),
-                                   ("both_sids", (envelope.write_name, envelope.package_name))):
-                    candidate = text + "".join(f"(A;;0x100003;;;{sid})" for sid in sids)
-                    emit("device_access_copy", name=name, **access(impersonation, candidate, 0x100003))
-            except Exception as error:
-                emit("device_observation_error", error=str(error))
-            finally:
-                native.CloseHandle(handle)
-
-        for name in ("c7e089ac-ba2a-11e0-9af7-68384824019b", "f90714a8-5509-434a-bf6d-b1624c8a19a2"):
-            guid = ctypes.create_string_buffer(uuid.UUID(name).bytes_le)
-            size = native.DWORD()
-            result = EventAccessQuery(guid, None, ctypes.byref(size))
-            if not size.value:
-                emit("provider_descriptor", guid=name, status=result)
-                continue
-            buffer = ctypes.create_string_buffer(size.value)
-            result = EventAccessQuery(guid, buffer, ctypes.byref(size))
-            emit("provider_descriptor", guid=name, status=result, sddl=sddl(buffer) if result == 0 else None)
+        for device, required in (("KsecDD", 0x100003), ("Null", 0x12019F)):
+            for desired in (0x20000, 0x60000):  # READ_CONTROL; additionally WRITE_DAC authority.
+                handle = CreateFile(rf"\\?\GLOBALROOT\Device\{device}", desired, 7, None, 3, 0, None)
+                if handle == POINTER(-1).value:
+                    emit("device_authority", device=device, access=f"0x{desired:x}", winerror=ctypes.get_last_error())
+                    continue
+                try:
+                    emit("device_authority", device=device, access=f"0x{desired:x}", winerror=0)
+                    size = native.DWORD()
+                    GetSecurity(handle, 0x17, None, 0, ctypes.byref(size))
+                    if not size.value:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    buffer = ctypes.create_string_buffer(size.value)
+                    native._check(GetSecurity(handle, 0x17, buffer, len(buffer), ctypes.byref(size)))
+                    text = sddl(buffer, 0x17)
+                    emit("device_descriptor", device=device, sddl=text)
+                    dacl, separator, label = text.partition("S:")
+                    for name, sids, grant in (
+                        ("current", (), required),
+                        ("write_sid", (envelope.write_name,), required),
+                        ("package_sid", (envelope.package_name,), required),
+                        ("both_sids", (envelope.write_name, envelope.package_name), required),
+                        ("data_only_write_sid", (envelope.write_name,), 0x100003),
+                    ):
+                        candidate = dacl + "".join(f"(A;;0x{grant:x};;;{sid})" for sid in sids) + separator + label
+                        emit("device_access_copy", device=device, name=name, desired=f"0x{required:x}",
+                             **access(impersonation, candidate, required))
+                except Exception as error:
+                    emit("device_observation_error", device=device, error=str(error))
+                finally:
+                    native.CloseHandle(handle)
     finally:
         if impersonation:
             native.CloseHandle(impersonation)
         native.CloseHandle(token)
 
 
+PAYLOAD = r'''
+import ctypes, json, os, sys
+from ctypes import wintypes as w
+k = ctypes.WinDLL('kernel32', use_last_error=True)
+n = ctypes.WinDLL('ntdll')
+k.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, ctypes.c_void_p, w.DWORD, w.DWORD, w.HANDLE]
+k.CreateFileW.restype = w.HANDLE
+k.GetFinalPathNameByHandleW.argtypes = [w.HANDLE, w.LPWSTR, w.DWORD, w.DWORD]
+k.GetFinalPathNameByHandleW.restype = w.DWORD
+k.CloseHandle.argtypes = [w.HANDLE]
+def emit(event, **fields):
+    print(json.dumps({'diagnostic_only': True, 'event': event, **fields}), flush=True)
+for executable in dict.fromkeys((sys.executable, sys._base_executable)):
+    ctypes.set_last_error(0)
+    handle = k.CreateFileW(executable, 0, 0, None, 3, 0x02000000, None)
+    error = ctypes.get_last_error()
+    opened = handle != ctypes.c_void_p(-1).value
+    emit('cpython_realpath_open', executable=executable, desired=0, share=0,
+         flags='0x02000000', opened=opened, winerror=error)
+    if opened:
+        try:
+            for flags in (0, 2, 8):
+                path = ctypes.create_unicode_buffer(32768)
+                ctypes.set_last_error(0)
+                count = k.GetFinalPathNameByHandleW(handle, path, len(path), flags)
+                error = ctypes.get_last_error()
+                emit('cpython_finalpath', flags=flags, count=count, winerror=error,
+                     path=path.value if 0 < count < len(path) else None)
+        finally:
+            k.CloseHandle(handle)
+try:
+    descriptor = os.open(os.devnull, os.O_RDWR)
+except OSError as error:
+    emit('python_devnull', errno=error.errno, winerror=error.winerror, error=str(error))
+else:
+    os.close(descriptor)
+    emit('python_devnull', errno=0, winerror=0)
+ctypes.set_last_error(0)
+handle = k.CreateFileW('NUL', 0xc0000000, 3, None, 3, 0x80, None)
+error = ctypes.get_last_error()
+opened = handle != ctypes.c_void_p(-1).value
+emit('win32_devnull', desired='GENERIC_READ|GENERIC_WRITE', opened=opened, winerror=error)
+if opened:
+    k.CloseHandle(handle)
+class Name(ctypes.Structure):
+    _fields_ = [('length', w.USHORT), ('maximum', w.USHORT), ('buffer', w.LPWSTR)]
+class Attributes(ctypes.Structure):
+    _fields_ = [('length', w.ULONG), ('root', w.HANDLE), ('name', ctypes.POINTER(Name)),
+                ('flags', w.ULONG), ('descriptor', ctypes.c_void_p), ('qos', ctypes.c_void_p)]
+class IoStatus(ctypes.Structure):
+    _fields_ = [('status', ctypes.c_void_p), ('information', ctypes.c_size_t)]
+n.NtOpenFile.argtypes = [ctypes.POINTER(w.HANDLE), w.DWORD, ctypes.POINTER(Attributes),
+                         ctypes.POINTER(IoStatus), w.DWORD, w.DWORD]
+n.NtOpenFile.restype = ctypes.c_int32
+path = r'\Device\Null'
+name = Name(len(path.encode('utf-16-le')), len(path.encode('utf-16-le')) + 2, path)
+attributes = Attributes(ctypes.sizeof(Attributes), None, ctypes.pointer(name), 0x40, None, None)
+for access in (0x120089, 0x12019f, 0x100003):
+    handle, io = w.HANDLE(), IoStatus()
+    status = n.NtOpenFile(ctypes.byref(handle), access, ctypes.byref(attributes), ctypes.byref(io), 7, 0)
+    emit('native_devnull', desired=hex(access), status=hex(status & 0xffffffff))
+    if status == 0:
+        k.CloseHandle(handle)
+'''
+
+
 def main():
     original = native.WindowsSandbox
     interpreter = probe_shell(shutil.which("pwsh") or "pwsh", execute=False)
-    source = base64.b64encode(b"print('native-ready')").decode()
+    source = base64.b64encode(PAYLOAD.encode()).decode()
     arguments = [sys.executable, "-I", "-S", "-c", f"import base64;exec(base64.b64decode('{source}'))"]
     command = "& " + " ".join("'" + value.replace("'", "''") + "'" for value in arguments)
-    for capabilities in (("registryRead",), ("registryRead", "lpacCryptoServices", "lpacInstrumentation")):
-        class ObservedSandbox(original):
-            capability_names = capabilities
+    capabilities = ("registryRead", "lpacInstrumentation")
 
-            def process_attributes(self):
-                self._capability_buffers = [native._capability(name) for name in self.capability_names]
-                self._capabilities = (native.SidAndAttributes * len(self._capability_buffers))(
-                    *(native.SidAndAttributes(ctypes.cast(value, native.PSID), 0x4)
-                      for value in self._capability_buffers)
-                )
-                return super().process_attributes()
+    class ObservedSandbox(original):
+        def verify_process(self, process):
+            super().verify_process(process)
+            try:
+                observe(self, process, capabilities)
+            except Exception as error:
+                emit("observation_error", error=str(error))
 
-            def verify_process(self, process):
-                super().verify_process(process)
-                try:
-                    observe(self, process, self.capability_names)
-                except Exception as error:
-                    emit("observation_error", error=str(error))
-
-        native.WindowsSandbox = ObservedSandbox
-        try:
-            with tempfile.TemporaryDirectory(prefix="virgo-native-diagnostic-") as directory:
-                root = Path(directory)
-                output, code, status = run_command(command, root, 30, threading.Event(), interpreter=interpreter,
-                                                  sandbox_policy=SandboxPolicy("workspace-write", root))
-                emit("fixed_payload_result", capabilities=capabilities, exit_code=code,
-                     status=status, output=output.text)
-        except Exception as error:
-            emit("fixed_payload_error", capabilities=capabilities, error=str(error))
-        finally:
-            native.WindowsSandbox = original
+    native.WindowsSandbox = ObservedSandbox
+    try:
+        with tempfile.TemporaryDirectory(prefix="virgo-native-diagnostic-") as directory:
+            root = Path(directory)
+            output, code, status = run_command(command, root, 30, threading.Event(), interpreter=interpreter,
+                                              sandbox_policy=SandboxPolicy("workspace-write", root))
+            emit("fixed_payload_result", capabilities=capabilities, exit_code=code,
+                 status=status, output=output.text)
+    except Exception as error:
+        emit("fixed_payload_error", capabilities=capabilities, error=str(error))
+    finally:
+        native.WindowsSandbox = original
 
 
 if __name__ == "__main__":
