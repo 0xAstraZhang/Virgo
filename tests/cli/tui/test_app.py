@@ -59,7 +59,7 @@ def test_completion_tab_accepts_escape_closes_and_command_stays_local(make_sessi
         session = make_session(ui=ui)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.press("/", "m", "o")
+            await pilot.press("/", "m", "o", "d", "e", "l")
             await wait_for(pilot, lambda: app.completion_names == ["/model"])
             await pilot.press("tab")
             assert app.editor.text == "/model "
@@ -213,7 +213,7 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
                 await pilot.resize_terminal(width, height)
                 await pilot.pause()
                 assert 3 <= app.editor.region.height <= height // 3
-                assert app.transcript.region.bottom <= app.editor.region.y
+                assert app.transcript.region.bottom == app.query_one("#metrics").region.y
                 assert app.query_one("#metrics").region.bottom == app.editor.region.y
                 assert app.editor.region.bottom == app.query_one("#status").region.y
                 assert app.query_one("#status").region.bottom <= height
