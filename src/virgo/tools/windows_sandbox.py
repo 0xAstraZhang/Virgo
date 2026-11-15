@@ -14,6 +14,7 @@ import sys
 import uuid
 from contextlib import ExitStack
 from ctypes import wintypes as w
+from dataclasses import dataclass
 from pathlib import Path
 
 from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable
@@ -325,6 +326,15 @@ def validate_policy(policy, cwd):
     return cwd
 
 
+@dataclass
+class _DeviceLease:
+    name: str
+    access: int
+    sids: tuple[bytes, ...]
+    handle: int | None = None
+    mutex: int | None = None
+
+
 class WindowsSandbox:
     """One token/profile/ACL lease, released only after verified Job drain."""
 
@@ -335,8 +345,7 @@ class WindowsSandbox:
         self._profile = None
         self._package_sid = PSID()
         self._grants = None
-        self._device = None
-        self._device_mutex = None
+        self._devices: list[_DeviceLease] = []
         self._station = None
         self._desktop = None
         self.desktop = None
@@ -391,7 +400,12 @@ class WindowsSandbox:
             from .windows_sandbox_acl import AclGrants
 
             self._grants = AclGrants(self.package_sid, self.write_sid, cancellation)
-            self._prepare_device()
+            # Exactly the measured native BCrypt open, plus the CRT O_RDWR
+            # open used by subprocess.DEVNULL. Null has no ambient LPAC grant,
+            # so it also needs this command's package identity. Neither lease
+            # grants ownership, DACL mutation, deletion or other device names.
+            self._prepare_device("KsecDD", 0x100003, (self.write_sid,))
+            self._prepare_device("Null", 0x12019F, (self.package_sid, self.write_sid))
             runtime_roots = tuple(dict.fromkeys((
                 *policy.runtime_paths(), executable.parent,
             )))
@@ -450,13 +464,15 @@ class WindowsSandbox:
         finally:
             CloseHandle(source)
 
-    def _prepare_device(self):
+    def _prepare_device(self, name, access, sids):
         from .windows_sandbox_acl import GetSecurity, _ace, _read
 
-        # KsecDD is machine-global. Its DACL cannot be coordinated by the
-        # per-user filesystem mutex. Only already-authorized administrators or
+        # These fixed devices each need a machine-wide mutex, separate from
+        # the filesystem's per-user mutex. Only authorized administrators or
         # SYSTEM may use this fixed protected mutex; never take over an existing
         # object with an untrusted owner or a different access policy.
+        lease = _DeviceLease(name, access, sids)
+        self._devices.append(lease)
         descriptor = ctypes.c_void_p()
         _check(ConvertSecurityDescriptor(
             "O:BAG:BAD:P(A;;0x1f0001;;;SY)(A;;0x120001;;;BA)",
@@ -464,67 +480,66 @@ class WindowsSandbox:
         ))
         try:
             attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
-            self._device_mutex = _check(CreateMutexEx(
-                ctypes.byref(attributes), r"Global\Virgo.NativeSandbox.KsecDD.v1", 0, 0x120001,
+            lease.mutex = _check(CreateMutexEx(
+                ctypes.byref(attributes), rf"Global\Virgo.NativeSandbox.{name}.v1", 0, 0x120001,
             ))  # SYNCHRONIZE | MUTEX_MODIFY_STATE | READ_CONTROL.
         finally:
             LocalFree(descriptor)
         size = DWORD()
-        GetSecurity(self._device_mutex, 1 | 4, None, 0, ctypes.byref(size))
+        GetSecurity(lease.mutex, 1 | 4, None, 0, ctypes.byref(size))
         if not size.value:
             raise ctypes.WinError(ctypes.get_last_error())
         security = ctypes.create_string_buffer(size.value)
-        _check(GetSecurity(self._device_mutex, 1 | 4, security, len(security), ctypes.byref(size)))
+        _check(GetSecurity(lease.mutex, 1 | 4, security, len(security), ctypes.byref(size)))
         owner, defaulted = PSID(), BOOL()
         _check(GetSecurityDescriptorOwner(security, ctypes.byref(owner), ctypes.byref(defaulted)))
-        policy = _read(self._device_mutex)
-        expected = [_ace(0, 0, access, _sid_bytes(_sid_from_string(sid))) for sid, access in (
+        policy = _read(lease.mutex)
+        expected = [_ace(0, 0, mask, _sid_bytes(_sid_from_string(sid))) for sid, mask in (
             ("S-1-5-18", 0x1F0001), ("S-1-5-32-544", 0x120001),
         )]
         if (not owner or _sid_string(owner) not in {"S-1-5-18", "S-1-5-32-544"}
                 or not policy.control & 0x1000 or policy.aces != expected):
-            raise SandboxUnavailable("Windows device coordination mutex has an untrusted security descriptor")
+            raise SandboxUnavailable(f"Windows {name} coordination mutex has an untrusted security descriptor")
         self._check_cancelled()
         # This exact native object and native authority were measured in the
-        # failing BCrypt startup. No path, capability or broader device set is
+        # failing runtime operations. No path, capability or broader device set is
         # supplied by the payload. Retain the handle until verified Job drain.
-        handle = CreateFile(r"\\?\GLOBALROOT\Device\KsecDD", 0x60000, 7, None, 3, 0, None)
+        handle = CreateFile(rf"\\?\GLOBALROOT\Device\{name}", 0x60000, 7, None, 3, 0, None)
         if handle == HANDLE(-1).value:
             raise ctypes.WinError(ctypes.get_last_error())
-        self._device = _check(handle)  # READ_CONTROL | WRITE_DAC, never elevation.
-        self._device_access()
+        lease.handle = _check(handle)  # READ_CONTROL | WRITE_DAC, never elevation.
+        self._device_access(lease)
 
-    def _device_access(self, *, cleanup=False):
+    def _device_access(self, lease, *, cleanup=False):
         from .windows_sandbox_acl import _ace, _read, _sid_in_ace, _write
 
-        with self._grants._locked(cleanup=cleanup, mutex=self._device_mutex):
-            previous = _read(self._device, cleanup=cleanup)
+        with self._grants._locked(cleanup=cleanup, mutex=lease.mutex):
+            previous = _read(lease.handle, cleanup=cleanup)
             if previous is None:
                 return
-            retained = [entry for entry in previous.aces if _sid_in_ace(entry) != self.write_sid]
-            # FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE, exactly the
-            # native BCrypt open. Ambient ARAP supplies the LPAC check; only
-            # this command's ordinary SID receives the additional write grant.
-            owned = [] if cleanup else [_ace(0, 0, 0x100003, self.write_sid)]
+            retained = [entry for entry in previous.aces if _sid_in_ace(entry) not in lease.sids]
+            owned = [] if cleanup else [_ace(0, 0, lease.access, sid) for sid in lease.sids]
             entries = retained + owned
             if entries != previous.aces:
-                _write(self._device, previous, entries, previous.control)
-            current = _read(self._device, cleanup=cleanup)
+                _write(lease.handle, previous, entries, previous.control)
+            current = _read(lease.handle, cleanup=cleanup)
             actual = [] if current is None else [
-                entry for entry in current.aces if _sid_in_ace(entry) == self.write_sid
+                entry for entry in current.aces if _sid_in_ace(entry) in lease.sids
             ]
             if actual != owned:
-                raise OSError("Windows did not retain the required device lease state")
+                raise OSError(f"Windows did not retain the required {lease.name} lease state")
 
     def _release_device(self):
         try:
-            if self._device is not None:
-                self._device_access(cleanup=True)
-                _check(CloseHandle(self._device))
-                self._device = None
-            if self._device_mutex is not None:
-                _check(CloseHandle(self._device_mutex))
-                self._device_mutex = None
+            for lease in tuple(self._devices):
+                if lease.handle is not None:
+                    self._device_access(lease, cleanup=True)
+                    _check(CloseHandle(lease.handle))
+                    lease.handle = None
+                if lease.mutex is not None:
+                    _check(CloseHandle(lease.mutex))
+                    lease.mutex = None
+                self._devices.remove(lease)
         except OSError as error:
             raise SandboxProcessError(f"Could not release Windows sandbox device resources: {error}") from error
 
