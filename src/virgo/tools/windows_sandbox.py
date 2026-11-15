@@ -148,7 +148,8 @@ def _token_info(token, kind):
     size = DWORD()
     GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
     if not size.value or size.value > 1 << 20:
-        raise SandboxUnavailable(f"Could not query Windows token information {kind}")
+        error = ctypes.WinError(ctypes.get_last_error())
+        raise SandboxUnavailable(f"Could not query Windows token information {kind}: {error}")
     output = ctypes.create_string_buffer(size.value)
     _check(GetTokenInformation(token, kind, output, len(output), ctypes.byref(size)))
     if size.value > len(output):
