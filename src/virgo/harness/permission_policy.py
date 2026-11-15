@@ -138,10 +138,13 @@ class Permissions:
             mode = saved or self._work_mode
         runtime.work_mode = mode
         runtime.work_mode_revision = 0
+        # Save the effective legacy startup ceiling for cold restoration while
+        # retaining the direct permission API's live independent-mode behavior.
+        persisted = "plan" if override is None and self.session.permission_mode == "plan" else mode
         # Fresh default sessions remain discardable. Persist meaningful startup
         # overrides and Plan state without creating a request or a wakeup.
-        if runtime.store is not None and (saved != mode and (saved is not None or mode != "default")):
-            runtime.store.append("custom", kind="work_mode", data={"mode": mode})
+        if runtime.store is not None and (saved != persisted and (saved is not None or persisted != "default")):
+            runtime.store.append("custom", kind="work_mode", data={"mode": persisted})
 
     def set_work_mode(self, mode: str, *, runtime=None) -> None:
         mode = normalize_work_mode(mode)
@@ -155,20 +158,34 @@ class Permissions:
                 raise ValueError(self.session.t("work_mode.busy"))
             if previous == mode and not legacy:
                 return
-            if root is not None and root.store is not None:
-                root.store.append("custom", kind="work_mode", data={"mode": mode})
-            # Publish only after the state write succeeds. Failed persistence
-            # must not relax the last effective execution ceiling.
+            updates = {}
+            if legacy:
+                # The legacy ceiling covers every originating conversation.
+                # Materialize it before clearing the global setting, including
+                # a removed conversation whose child runtime is still alive.
+                origins = [*self.session._main_runtimes.values(),
+                           *self.session._child_runtimes.values()]
+                for runtime in origins:
+                    origin = self._root_runtime(runtime)
+                    if origin is not root and origin.work_mode != "plan":
+                        updates[origin] = "plan"
+            if root is not None:
+                updates[root] = mode
+            for origin, selected in updates.items():
+                if origin.store is not None:
+                    origin.store.append("custom", kind="work_mode", data={"mode": selected})
+            # Publish only after every state write succeeds. Failed persistence
+            # must retain the global ceiling for all originating conversations.
             if root is None:
                 self._work_mode = mode
                 self._work_mode_revision += 1
-            else:
-                root.work_mode = mode
-                root.work_mode_revision += 1
+            for origin, selected in updates.items():
+                origin.work_mode = selected
+                origin.work_mode_revision += 1
             if legacy:
                 self.session.permission_mode = "auto-review"
-            if root is not None:
-                self.session.bus.emit("work_mode_changed", root, mode)
+            for origin, selected in updates.items():
+                self.session.bus.emit("work_mode_changed", origin, selected)
 
     def mode_for(self, agent: str, *, runtime=None) -> str:
         """Compatibility projection consumed by tool filtering and both gates."""
@@ -584,8 +601,8 @@ def install_permissions(session: AgentSession) -> Permissions:
                 return
         session.ui.command_result(session.t("work_mode.status", mode=session.t("work_mode." + perms.work_mode)))
         session.ui.command_result(session.t("work_mode.approval_unchanged"))
-        if value == "plan" and (session.busy or session.main.agent.running):
-            session.ui.print(session.t("work_mode.running"))
+        if perms.work_mode == "plan":
+            session.ui.command_result(session.t("work_mode.running"))
 
     session.commands.register(
         "mode",
