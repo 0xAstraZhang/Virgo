@@ -4,7 +4,7 @@
 
 ## Validation status
 
-The Windows backend is under development. At revision `5bcf5943929076ccbd6d54ec00afca3e958ffc28`, both real Windows acceptance jobs executed the payloads and reported 2 passed and 16 failed cases, with no fixture errors or skips. Remaining failures included combined-output parsing, a denied `NUL` open used by descendant processes and fixture errors. This is not a successful isolation result; the backend has no environment validated by the complete acceptance suite at that revision. See [the exact native run](https://github.com/0xAstraZhang/Virgo/actions/runs/43743623848).
+At revision `e52eeaa522b08f2202f343552d31306ce341a0d2`, both real Windows acceptance jobs reported 17 passed and 1 failed case, with no setup errors or skips. The remaining assertion expected Python's child exit code 7 to bypass the existing PowerShell wrapper, which catches unhandled native failures and returns 1. That fixture now performs its single write before an explicit PowerShell `exit 7`, retaining the exact exit/status, non-replay and cleanup assertions. The backend has not passed the complete acceptance suite at the recorded revision; see [the exact native run](https://github.com/0xAstraZhang/Virgo/actions/runs/43746201340).
 
 The following sections describe the implemented request and verification path. They do not turn the failed end-to-end run into a support claim.
 
@@ -29,7 +29,7 @@ Approval permits the Core tool to request execution. It cannot change an active 
 
 ## Host and path prerequisites
 
-Discovery requires a native x64 process on the Windows 10 version family and the native APIs used by the backend. This is a preliminary API check, not a promise that every Windows 10/11 or Server release works. The observed runners used Windows Server 2022 Datacenter build 20348 and Server 2025 Datacenter build 26100, x64 CPython 3.13.17. Neither run passed the complete security suite. Desktop Windows, ARM64/emulation and standard-account installations have not been validated.
+Discovery requires a native x64 process on the Windows 10 version family and the native APIs used by the backend. This is a preliminary API check, not a promise that every Windows 10/11 or Server release works. The observed runners used Windows Server 2022 Datacenter build 20348 with PowerShell 7.6.10, and Server 2025 Datacenter build 26100 with PowerShell 7.6.9; both used x64 CPython 3.13.17. Neither recorded run passed the complete security suite. Desktop Windows, ARM64/emulation and standard-account installations have not been validated.
 
 Active Windows execution accepts PowerShell 7 (`pwsh.exe`). Windows PowerShell 5.1, Git Bash and WSL are rejected by this backend. Selecting `disabled` retains the existing Windows shell executor and does not claim isolation.
 

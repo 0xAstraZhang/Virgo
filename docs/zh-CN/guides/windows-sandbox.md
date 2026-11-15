@@ -4,7 +4,7 @@
 
 ## 验证状态
 
-Windows 后端仍在开发中。在提交 `5bcf5943929076ccbd6d54ec00afca3e958ffc28` 上，两组真实 Windows 验收均执行了命令，结果各为 2 项通过、16 项失败，没有 fixture 初始化错误或跳过。剩余失败包括合并输出解析、后代进程使用的 `NUL` 打开被拒绝，以及测试 fixture 错误。这不属于隔离验收成功；该提交尚无经过完整验收的 Windows 环境。[对应的原生 CI 运行](https://github.com/0xAstraZhang/Virgo/actions/runs/43743623848)。
+在提交 `e52eeaa522b08f2202f343552d31306ce341a0d2` 上，两组真实 Windows 验收均为 17 项通过、1 项失败，没有初始化错误或跳过。剩余断言误认为 Python 子进程的退出码 7 会直接穿过既有 PowerShell 包装逻辑；该逻辑会捕获未处理的原生命令失败并返回 1。此 fixture 已改为执行一次写入后由 PowerShell 显式 `exit 7`，保留精确退出码、状态、禁止重放及清理断言。记录的提交尚未通过完整验收，参见[对应的原生 CI 运行](https://github.com/0xAstraZhang/Virgo/actions/runs/43746201340)。
 
 下面记录代码已经实现的权限请求与验证路径，不将尚未通过的端到端验收写成支持声明。
 
@@ -29,7 +29,7 @@ Windows 后端仍在开发中。在提交 `5bcf5943929076ccbd6d54ec00afca3e958ff
 
 ## 环境与路径要求
 
-后端发现要求 Windows 10 版本族上的原生 x64 进程，以及实现使用的原生接口。这只是接口预检查，不代表所有 Windows 10/11 或 Server 版本都兼容。已运行的 runner 为 Windows Server 2022 Datacenter build 20348 和 Server 2025 Datacenter build 26100，使用 x64 CPython 3.13.17；两组均未通过完整安全验收。桌面 Windows、ARM64／模拟执行及普通账户安装方式尚未验证。
+后端发现要求 Windows 10 版本族上的原生 x64 进程，以及实现使用的原生接口。这只是接口预检查，不代表所有 Windows 10/11 或 Server 版本都兼容。已运行的 runner 为 Windows Server 2022 Datacenter build 20348／PowerShell 7.6.10，以及 Server 2025 Datacenter build 26100／PowerShell 7.6.9；两者均使用 x64 CPython 3.13.17。记录的两组运行均未通过完整安全验收。桌面 Windows、ARM64／模拟执行及普通账户安装方式尚未验证。
 
 启用 Windows 沙箱时只接受 PowerShell 7（`pwsh.exe`）。Windows PowerShell 5.1、Git Bash 和 WSL 会被该后端拒绝。选择 `disabled` 时沿用现有 Windows Shell 执行器，不宣称隔离。
 
