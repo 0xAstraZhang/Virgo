@@ -187,7 +187,9 @@ def _open(name, access, *, parent=None, share_delete=True, share_write=True,
                           ctypes.byref(attributes), ctypes.byref(status), None, 0x80,
                           sharing, disposition, options, None, 0)
     if result < 0:
-        raise ctypes.WinError(RtlNtStatusToDosError(result))
+        error = ctypes.WinError(RtlNtStatusToDosError(result))
+        error.filename = name
+        raise error
     try:
         filesystem, flags = ctypes.create_unicode_buffer(32), DWORD()
         _check(GetVolumeInformation(handle, None, 0, None, None, ctypes.byref(flags),
@@ -195,8 +197,10 @@ def _open(name, access, *, parent=None, share_delete=True, share_write=True,
         if filesystem.value.upper() != "NTFS" or not flags.value & 0x8:  # PERSISTENT_ACLS
             raise _invalid(name, "a local NTFS volume with persistent ACLs is required")
         return FileHandle(handle.value, allow_reparse=allow_reparse)
-    except BaseException:
+    except BaseException as error:
         CloseHandle(handle)
+        if isinstance(error, OSError) and error.filename is None:
+            error.filename = name
         raise
 
 
