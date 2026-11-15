@@ -225,9 +225,9 @@ class DeviceSecurity:
         finally:
             self.free(value)
 
-    def leases(self, name):
-        sid = self.sid(name)
-        return [entry for entry in self.state()[2] if entry[0] == 0 and entry[8:] == sid]
+    def leases(self, *names):
+        sids = {self.sid(name) for name in names}
+        return [entry for entry in self.state()[2] if entry[0] == 0 and entry[8:] in sids]
 
     def assert_lease(self, name, *, present=True):
         sid = self.sid(name)
@@ -305,12 +305,16 @@ def process_sids(pid, information):
         assert size.value, ctypes.get_last_error()
         buffer = ctypes.create_string_buffer(size.value)
         assert advapi.GetTokenInformation(token, information, buffer, len(buffer), ctypes.byref(size)), ctypes.get_last_error()
-        count = 1 if information == 1 else w.DWORD.from_buffer(buffer).value
-        entries = (Entry * count).from_buffer(buffer, 0 if information == 1 else Groups.entries.offset)
+        if information == 31:  # TOKEN_APPCONTAINER_INFORMATION contains one PSID.
+            sids = [ctypes.c_void_p.from_buffer(buffer).value]
+        else:
+            count = 1 if information == 1 else w.DWORD.from_buffer(buffer).value
+            entries = (Entry * count).from_buffer(buffer, 0 if information == 1 else Groups.entries.offset)
+            sids = [entry.sid for entry in entries]
         result = []
-        for entry in entries:
+        for sid in sids:
             text = w.LPWSTR()
-            assert advapi.ConvertSidToStringSidW(entry.sid, ctypes.byref(text)), ctypes.get_last_error()
+            assert advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)), ctypes.get_last_error()
             result.append(text.value)
             kernel.LocalFree(text)
         return result
@@ -860,9 +864,11 @@ while not Path('child-ready').exists():
             assert (project / "child-ready").exists(), errors or [r.text() for r in results]
             lifetime = json.loads((project / "lifetime.json").read_text())
             restricting, = process_sids(lifetime["pid"], 11)
+            package, = process_sids(lifetime["pid"], 31)
             for name in DEVICE_ACCESS:
                 with DeviceSecurity(name) as device:
                     device.assert_lease(restricting)
+                    device.assert_lease(package, present=name == "Null")
             native.abort()
             worker.join(15)
             assert not worker.is_alive()
@@ -922,10 +928,15 @@ Path('shared.txt').write_text('second-still-authorized')
             wait_until(lambda: (project / "first-ready").exists() and (project / "second-ready").exists(), timeout=25)
             a_sid, = process_sids(a.proc.pid, 11)
             b_sid, = process_sids(b.proc.pid, 11)
+            a_package, = process_sids(a.proc.pid, 31)
+            b_package, = process_sids(b.proc.pid, 31)
             assert a_sid != b_sid
+            assert a_package != b_package
             for device in devices:
                 device.assert_lease(a_sid)
                 device.assert_lease(b_sid)
+                device.assert_lease(a_package, present=device.name == "Null")
+                device.assert_lease(b_package, present=device.name == "Null")
             with ExitStack() as markers:
                 marker_entries = [markers.enter_context(device.marker()) for device in devices]
                 try:
@@ -939,9 +950,11 @@ Path('shared.txt').write_text('second-still-authorized')
                     assert b.status == "running" and b.proc.poll() is None
                     for device, before, (marker_sid, entry) in zip(devices, before_devices, marker_entries, strict=True):
                         device.assert_lease(a_sid, present=False)
+                        device.assert_lease(a_package, present=False)
                         device.assert_lease(b_sid)
+                        device.assert_lease(b_package, present=device.name == "Null")
                         assert device.leases(marker_sid) == [entry]
-                        assert device.state() == (*before[:2], before[2] + tuple(device.leases(b_sid)) + (entry,))
+                        assert device.state() == (*before[:2], before[2] + tuple(device.leases(b_sid, b_package)) + (entry,))
                     (project / "release-second").touch()
                     assert b.done.wait(15) and b.status == "completed", jobs.output(b)
                     assert a.sandbox["backend"] == b.sandbox["backend"] == "windows-lpac"
