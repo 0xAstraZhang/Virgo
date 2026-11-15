@@ -1055,8 +1055,16 @@ def test_actual_start_failure_is_fail_closed_and_nonzero_payload_is_not_replayed
         assert device_state() == before_device
         assert not (project / "payload-started").exists()
         assert set((project / ".virgo" / "outputs").iterdir()) == before
-    result = run(native, "from pathlib import Path; p=Path('once.txt'); p.open('a').write('once'); raise SystemExit(7)")
-    assert result.is_error and result.details["status"] == "ok" and result.details["exit_code"] == 7
+    # The existing PowerShell wrapper turns an unhandled native failure into
+    # exit 1. An explicit shell exit preserves its code, so keep the successful
+    # single side effect followed by the precise nonzero lifecycle assertion.
+    source = "from pathlib import Path; p=Path('once.txt'); p.open('a').write('once')"
+    faux.script("test", faux.reply(tools=[(selected(native).tool_name, {
+        "command": command(source) + "\nexit 7",
+    })]), faux.reply("done"))
+    native.prompt("Run one side effect followed by an explicit nonzero shell exit")
+    result = tool_results(native)[-1]
+    assert result.is_error and result.details["status"] == "ok" and result.details["exit_code"] == 7, result.text()
     assert (project / "once.txt").read_text() == "once"
     assert device_state() == before_device
 
