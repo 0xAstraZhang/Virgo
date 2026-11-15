@@ -26,7 +26,7 @@ from virgo.ai.providers import faux
 from virgo.harness.extensions import ExtensionAPI
 from virgo.tools import sandbox
 
-from tests.support.harness import tool_results
+from tests.support.harness import tool_results, wait_until
 from tests.support.shell import selected
 
 
@@ -332,6 +332,193 @@ def test_native_detached_descendant_is_reaped_with_command(native, project, fini
     while not late.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not late.exists(), "A detached descendant retained write access after command completion"
+
+
+def test_native_posix_spawn_preserves_common_use_and_reaps_detached_child(native, project):
+    """Ordinary posix_spawn must work without leaving a detached child behind.
+
+    Failure modes: banning only setsid/setpgid syscalls misses posix_spawn's
+    setsid attribute; banning all posix_spawn breaks ordinary project commands;
+    the spawned child retains workspace writes after command completion. Only
+    detachment may be denied; every fixture process has a bounded lifetime.
+    """
+    import time
+
+    normal_source = (
+        "import signal; from pathlib import Path; signal.alarm(8); "
+        "Path('ordinary-posix-spawn').write_text('spawned')"
+    )
+    detached_source = """import signal, time
+from pathlib import Path
+signal.alarm(8)
+Path('spawn-detached-ready').write_text('ready')
+time.sleep(4)
+Path('spawn-detached-late-write').write_text('survived')
+"""
+    source = f"""import os, signal, sys, time
+from pathlib import Path
+signal.alarm(8)
+pid = os.posix_spawn(sys.executable, [sys.executable, '-c', {normal_source!r}], os.environ)
+assert os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0
+actions = [(os.POSIX_SPAWN_OPEN, fd, os.devnull, os.O_RDWR, 0) for fd in range(3)]
+try:
+    os.posix_spawn(sys.executable, [sys.executable, '-c', {detached_source!r}],
+                   os.environ, file_actions=actions, setsid=True)
+except PermissionError:
+    Path('spawn-detachment-denied').write_text('denied')
+    raise SystemExit(0)
+deadline = time.monotonic() + 3
+while not Path('spawn-detached-ready').exists():
+    assert time.monotonic() < deadline, 'The spawned child did not become ready'
+    time.sleep(0.02)
+"""
+    result = run(native, python_command(source), timeout=10)
+    assert not result.is_error and result.details["status"] == "ok", result.text()
+    assert (project / "ordinary-posix-spawn").read_text() == "spawned"
+    late = project / "spawn-detached-late-write"
+    if (project / "spawn-detachment-denied").exists():
+        assert not (project / "spawn-detached-ready").exists() and not late.exists()
+        return
+    assert (project / "spawn-detached-ready").exists(), result.text()
+    deadline = time.monotonic() + 4.2
+    while not late.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not late.exists(), "A posix_spawn setsid child retained workspace access after completion"
+
+
+def test_native_double_fork_descendant_is_reaped_after_intermediate_exit(native, project):
+    """A short-lived intermediate must not hide an orphaned detached descendant.
+
+    Failure modes: cleanup observes only the command's current process tree;
+    a double-forked child escapes that tree and its original process group;
+    completion removes scratch while the orphan can still write to the project.
+    Detachment may be denied; forked fixture children terminate on a short alarm.
+    """
+    import time
+
+    intermediate_source = """import os, signal, time
+from pathlib import Path
+signal.alarm(8)
+if os.fork():
+    os._exit(0)
+signal.alarm(8)
+try:
+    os.setsid()
+except PermissionError:
+    Path('double-fork-detachment-denied').write_text('denied')
+    os._exit(0)
+if os.fork():
+    os._exit(0)
+signal.alarm(8)
+Path('double-fork-ready').write_text('ready')
+time.sleep(4)
+Path('double-fork-late-write').write_text('survived')
+os._exit(0)
+"""
+    source = f"""import signal, subprocess, sys, time
+from pathlib import Path
+signal.alarm(10)
+subprocess.run([sys.executable, '-c', {intermediate_source!r}], check=True, timeout=4,
+               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+deadline = time.monotonic() + 3
+while not Path('double-fork-ready').exists() and not Path('double-fork-detachment-denied').exists():
+    assert time.monotonic() < deadline, 'The orphan did not reach a known state'
+    time.sleep(0.02)
+"""
+    result = run(native, python_command(source), timeout=12)
+    assert not result.is_error and result.details["status"] == "ok", result.text()
+    late = project / "double-fork-late-write"
+    if (project / "double-fork-detachment-denied").exists():
+        assert not (project / "double-fork-ready").exists() and not late.exists()
+        return
+    assert (project / "double-fork-ready").exists(), result.text()
+    deadline = time.monotonic() + 4.2
+    while not late.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not late.exists(), "An orphaned double-fork descendant retained workspace access after completion"
+
+
+def test_native_command_cleanup_preserves_independent_background_job(native, make_session, project):
+    """Completion and cancellation must clean only their own command envelope.
+
+    Failure modes: a shared containment identity kills another active command;
+    a stale running-job record conceals that collateral termination; normal
+    background completion leaves its process or private scratch behind. The
+    background process acknowledges each completed cleanup and self-terminates
+    on a short deadline even if an assertion or broker cleanup fails.
+    """
+    background_source = """import os, signal, time
+from pathlib import Path
+signal.alarm(15)
+Path('independent-background-scratch').write_text(os.environ['TMPDIR'])
+Path('independent-background-ready').write_text('ready')
+for stage in ('exit', 'cancel'):
+    while not Path('check-background-after-' + stage).exists():
+        time.sleep(0.02)
+    Path('background-alive-after-' + stage).write_text('alive')
+while not Path('finish-independent-background').exists():
+    time.sleep(0.02)
+Path('independent-background-finished').write_text('finished')
+"""
+    session = make_session(
+        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                  "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    jobs = session.services["jobs"]
+    job = worker = None
+    results, errors = [], []
+
+    def cancel_foreground():
+        try:
+            results.append(run(session, python_command(
+                "import signal,time; from pathlib import Path; signal.alarm(12); "
+                "Path('independent-cancel-ready').write_text('ready'); time.sleep(10)"
+            ), timeout=12))
+        except Exception as error:
+            errors.append(error)
+
+    try:
+        result = run(session, python_command(background_source), background=True, timeout=15)
+        assert not result.is_error, result.text()
+        assert len(jobs.jobs) == 1
+        job = next(iter(jobs.jobs.values()))
+        wait_until((project / "independent-background-ready").exists)
+
+        result = run(session, "printf foreground-completed")
+        assert not result.is_error and result.details["status"] == "ok", result.text()
+        assert "foreground-completed" in result.text()
+        (project / "check-background-after-exit").write_text('check')
+        wait_until((project / "background-alive-after-exit").exists)
+        assert not job.done.is_set() and job.proc.poll() is None
+
+        worker = threading.Thread(target=cancel_foreground, daemon=True)
+        worker.start()
+        wait_until(lambda: (project / "independent-cancel-ready").exists() or not worker.is_alive())
+        assert (project / "independent-cancel-ready").exists(), errors
+        session.abort()
+        worker.join(5)
+        assert not worker.is_alive() and not errors, errors
+        assert results and results[0].is_error and results[0].details["status"] == "aborted"
+        (project / "check-background-after-cancel").write_text('check')
+        wait_until((project / "background-alive-after-cancel").exists)
+        assert not job.done.is_set() and job.proc.poll() is None
+
+        (project / "finish-independent-background").write_text('finish')
+        assert job.done.wait(5), "The independent background command did not finish"
+        assert job.status == "completed" and job.exit_code == 0, jobs.output(job)
+        assert (project / "independent-background-finished").read_text() == "finished"
+        assert job.proc.poll() is not None
+        scratch = Path((project / "independent-background-scratch").read_text())
+        assert not scratch.exists(), "Normal background completion must remove its private scratch"
+    finally:
+        (project / "finish-independent-background").write_text('finish')
+        if worker is not None and worker.is_alive():
+            session.abort()
+            worker.join(5)
+        if job is not None and not job.done.is_set():
+            jobs.kill(job)
+            job.done.wait(5)
 
 
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native sandbox metadata paths")
