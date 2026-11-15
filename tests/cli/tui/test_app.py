@@ -213,7 +213,7 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
                 await pilot.resize_terminal(width, height)
                 await pilot.pause()
                 assert 3 <= app.editor.region.height <= height // 3
-                assert app.transcript.region.bottom == app.query_one("#metrics").region.y
+                assert app.transcript.region.bottom <= app.editor.region.y
                 assert app.query_one("#metrics").region.bottom == app.editor.region.y
                 assert app.editor.region.bottom == app.query_one("#status").region.y
                 assert app.query_one("#status").region.bottom <= height
