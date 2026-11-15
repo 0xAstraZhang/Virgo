@@ -15,6 +15,7 @@ import os
 import plistlib
 import secrets
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -159,9 +160,9 @@ while True:
         except OSError:
             broker_gone = True
     if broker_gone and not stopping:
-        # The broker can disappear abruptly. Ask launchd to remove this exact
-        # job using the supervisor's authority. The command never inherits the
-        # private control socket; its inherited bootstrap port is sandboxed.
+        # Best effort after abrupt broker loss: bootout alone does not reap
+        # detached members. Verified drain requires the live broker's versioned
+        # coalition scan. The command never inherits this private control socket.
         stopping = True
         try:
             subprocess.run(['/bin/launchctl', 'bootout', target], timeout=2,
@@ -187,6 +188,20 @@ def _check_cancel(cancellation) -> None:
         raise SandboxCancelled("Sandbox launch cancelled")
 
 
+class _ProcessIdentity(ctypes.Structure):
+    # XNU proc_info_private.h: PROC_PIDUNIQIDENTIFIERINFO is 56 bytes,
+    # with the signed pid generation at offset 32. Exec changes this generation.
+    _fields_ = [
+        ("uuid", ctypes.c_ubyte * 16),
+        ("unique_id", ctypes.c_uint64), ("parent_unique_id", ctypes.c_uint64),
+        ("version", ctypes.c_int32), ("parent_version", ctypes.c_int32),
+        ("reserved", ctypes.c_uint64 * 2),
+    ]
+
+
+_AuditToken = ctypes.c_uint32 * 8
+
+
 class _Kernel:
     def __init__(self):
         try:
@@ -196,6 +211,12 @@ class _Kernel:
             self.pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
                                     ctypes.c_void_p, ctypes.c_int]
             self.pidinfo.restype = ctypes.c_int
+            self.listpids = self.proc.proc_listallpids
+            self.listpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            self.listpids.restype = ctypes.c_int
+            self.signal_token = self.proc.proc_signal_with_audittoken
+            self.signal_token.argtypes = [ctypes.POINTER(_AuditToken), ctypes.c_int]
+            self.signal_token.restype = ctypes.c_int
             self.usage = self.system.coalition_info_resource_usage
             self.usage.argtypes = [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_size_t]
             self.usage.restype = ctypes.c_int
@@ -203,6 +224,9 @@ class _Kernel:
             self.peereid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint),
                                     ctypes.POINTER(ctypes.c_uint)]
             self.peereid.restype = ctypes.c_int
+            if ctypes.sizeof(_ProcessIdentity) != 56 or _ProcessIdentity.version.offset != 32:
+                raise _unavailable("Unsupported macOS process identity layout")
+            self.inspection_denials = 0
         except (OSError, AttributeError) as error:
             raise _unavailable(f"macOS coalition interfaces are unavailable: {error}") from error
 
@@ -230,6 +254,76 @@ class _Kernel:
         if counts[1] > counts[0]:
             raise _unavailable("Invalid macOS coalition task counters")
         return int(counts[0] - counts[1])
+
+    def _processes(self, deadline: float) -> list[int]:
+        ctypes.set_errno(0)
+        count = self.listpids(None, 0)
+        if count <= 0:
+            # libproc's proc_listpids maps a syscall failure to zero, so the
+            # proc_listallpids wrapper can also return zero rather than -1.
+            raise _unavailable(f"Could not enumerate macOS processes (errno {ctypes.get_errno()})")
+        capacity = max(256, count * 2)
+        while time.monotonic() < deadline:
+            pids = (ctypes.c_int * capacity)()
+            ctypes.set_errno(0)
+            count = self.listpids(pids, ctypes.sizeof(pids))
+            if count <= 0:
+                raise _unavailable(f"Could not enumerate macOS processes (errno {ctypes.get_errno()})")
+            if count < capacity:
+                return [pid for pid in pids[:count] if pid > 1]
+            capacity = max(capacity * 2, count + 64)
+        raise _unavailable("macOS process enumeration exceeded the cleanup deadline")
+
+    def _inspect(self, pid: int, flavor: int, info) -> bool:
+        ctypes.set_errno(0)
+        size = self.pidinfo(pid, flavor, 0, ctypes.byref(info), ctypes.sizeof(info))
+        if size == ctypes.sizeof(info):
+            return True
+        error = ctypes.get_errno()
+        if size == 0 and error == errno.ESRCH:
+            return False
+        if size == 0 and error in (errno.EACCES, errno.EPERM):
+            # A foreign protected process may be unreadable. Never infer that
+            # our coalition is empty from this snapshot: its counter decides.
+            self.inspection_denials += 1
+            return False
+        raise _unavailable(f"Could not inspect macOS process {pid} (flavor {flavor}, errno {error})")
+
+    def signal_members(self, coalition: int, deadline: float) -> None:
+        if coalition <= 1 or coalition == self.coalition(os.getpid()):
+            raise _unavailable("Refusing to signal a non-private macOS resource coalition")
+        self.inspection_denials = 0
+        failure = None
+        for pid in self._processes(deadline):
+            if time.monotonic() >= deadline:
+                break
+            identity = _ProcessIdentity()
+            # Read generation BEFORE coalition membership. If the PID is reused
+            # or exec changes its generation during either lookup, the old audit
+            # token cannot signal the replacement. Membership itself is immutable.
+            if not self._inspect(pid, 17, identity):
+                continue
+            memberships = (ctypes.c_uint64 * 5)()
+            if not self._inspect(pid, 20, memberships) or memberships[0] != coalition:
+                continue
+            # Other fields use XNU's INVALID_AUDIT_TOKEN_VALUE. This ordinary
+            # signalling API uses PID/generation for identity and the broker's
+            # actual credentials for authority; it does not delegate credentials.
+            token = _AuditToken(*([0xFFFFFFFF] * 8))
+            token[5], token[7] = pid, identity.version & 0xFFFFFFFF
+            stopped = self.signal_token(ctypes.byref(token), signal.SIGSTOP)
+            if stopped == errno.ESRCH:
+                continue
+            if stopped:
+                failure = failure or f"Could not stop macOS coalition member {pid} (errno {stopped})"
+            # Pair STOP with KILL even when the deadline passes between them.
+            # A bounded next scan catches children forked before STOP took effect
+            # and retries an exec-stale identity with its new kernel generation.
+            killed = self.signal_token(ctypes.byref(token), signal.SIGKILL)
+            if killed not in (0, errno.ESRCH):
+                failure = failure or f"Could not kill macOS coalition member {pid} (errno {killed})"
+        if failure:
+            raise _unavailable(failure)
 
     def peer(self, connection: socket.socket) -> int:
         uid, gid = ctypes.c_uint(), ctypes.c_uint()
@@ -566,7 +660,12 @@ class LaunchdProcess:
                     self._drained = True
                     return
             if time.monotonic() >= deadline:
-                raise _unavailable(f"macOS command coalition still contains {active} active task(s) after bootout")
+                raise _unavailable(
+                    f"macOS command coalition still contains {active} active task(s) after cleanup "
+                    f"({self._kernel.inspection_denials} process inspections denied)"
+                )
+            if active:
+                self._kernel.signal_members(self._coalition, deadline)
             time.sleep(0.02)
 
     def kill_tree(self) -> None:
