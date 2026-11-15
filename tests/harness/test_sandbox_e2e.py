@@ -643,3 +643,48 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(make_se
             assert "replacement-cwd-private-context" not in request["system"]
     finally:
         api.release_runtime(child)
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX executable shell discovery")
+@pytest.mark.parametrize("route", ["project", "path", "selection"])
+def test_sandbox_shell_discovery_does_not_execute_candidate_on_host(make_session, project, monkeypatch, route):
+    """Finding or selecting a shell must not run it outside the requested sandbox.
+
+    Failure modes: untrusted project shell.executable runs a version probe before
+    permissions exist; PATH discovery executes candidates that are never selected;
+    an explicit /shell command probes natively despite an unavailable backend.
+    The real fixture executable only writes a disposable local sentinel and
+    prints a valid version. It never reads credentials or accesses an external path.
+    """
+    directory = project / "candidate-shell"
+    directory.mkdir()
+    candidate = directory / "bash"
+    sentinel = directory / "executed-on-host.txt"
+    candidate.write_text(
+        "#!/bin/sh\n"
+        f"printf 'version probe executed\\n' >> {shlex.quote(str(sentinel))}\n"
+        "printf '5.2.0'\n",
+        encoding="utf-8",
+    )
+    candidate.chmod(0o755)
+
+    def missing():
+        raise sandbox.SandboxUnavailable("Native backend deliberately unavailable during shell selection")
+
+    monkeypatch.setattr(sandbox, "platform_backend", missing)
+    monkeypatch.delenv("VIRGO_SHELL", raising=False)
+    if route == "project":
+        config = project / ".virgo"
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps({"shell": {"executable": str(candidate)}}))
+    elif route == "path":
+        monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ.get("PATH", ""))
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False, trust_project_extensions=False,
+    )
+    assert session.services["sandbox"].mode == "workspace-write"
+    if route == "selection":
+        assert not sentinel.exists()
+        session.prompt(f"/shell {shlex.quote(str(candidate))}")
+    assert not sentinel.exists(), "Shell discovery/selection executed an unisolated candidate"
