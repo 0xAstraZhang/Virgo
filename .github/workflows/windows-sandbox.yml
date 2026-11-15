@@ -79,7 +79,7 @@ jobs:
             & $gflags /i pwsh.exe +sls
             if ($LASTEXITCODE -ne 0) { throw 'Could not enable PowerShell loader snaps' }
             # Diagnostic rerun only: preserve the original 18-case acceptance report.
-            & $cdb -o -g -G -hd -logo windows-loader.log -c 'sxn *; g' $python -m pytest -q tests/harness/test_windows_sandbox_e2e.py::test_private_host_files_denied_with_positive_workspace_control --junitxml=windows-loader-diagnostic.xml
+            & $cdb -o -g -G -hd -xn av -xn '*' -logo windows-loader.log $python -m pytest -q tests/harness/test_windows_sandbox_e2e.py::test_private_host_files_denied_with_positive_workspace_control --junitxml=windows-loader-diagnostic.xml
             Write-Output "Diagnostic debugger exit code: $LASTEXITCODE"
           } finally {
             & $gflags /i pwsh.exe -sls
