@@ -59,7 +59,9 @@ class SandboxManager:
         if not isinstance(path, str):
             return Block("Sandbox file operations require a path")
         target = (event.cwd / Path(path).expanduser()).resolve()
-        protected = any(target.is_relative_to((policy.workspace / name).resolve()) for name in PROTECTED_NAMES)
+        protected_roots = (*(policy.workspace / name for name in PROTECTED_NAMES),
+                           *policy.runtime_paths())
+        protected = any(target.is_relative_to(root.resolve()) for root in protected_roots)
         if policy.mode == "read-only" or not target.is_relative_to(policy.workspace) or protected:
             return Block(self.session.t("sandbox.file_denied", path=str(target)),
                          details={"sandbox": policy.describe(), "status": "sandbox_denied"})

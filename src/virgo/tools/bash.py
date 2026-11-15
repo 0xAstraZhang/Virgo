@@ -85,10 +85,15 @@ def run_command(
     if signal.is_set():
         return CommandOutput(""), None, "aborted"
     prefix = interpreter.tool_name if interpreter is not None else "bash"
-    path, output_file = open_output(cwd, prefix)
+    path, output_file = open_output(cwd, prefix, **({"sandbox_policy": sandbox_policy} if sandbox_policy else {}))
     with output_file:
-        proc = spawn(command, cwd, stdout=output_file, interpreter=interpreter,
-                     **({"sandbox_policy": sandbox_policy, "output_path": path, "cancellation": signal} if sandbox_policy else {}))
+        try:
+            proc = spawn(command, cwd, stdout=output_file, interpreter=interpreter,
+                         **({"sandbox_policy": sandbox_policy, "output_path": path, "cancellation": signal} if sandbox_policy else {}))
+        except BaseException:
+            if sandbox_policy is not None:
+                path.unlink(missing_ok=True)
+            raise
         deadline = time.monotonic() + timeout
         status = "ok"
         try:

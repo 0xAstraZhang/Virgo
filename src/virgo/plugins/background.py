@@ -20,7 +20,7 @@ from ..diagnostics import capture_error, error_summary, safe_text
 from ..harness.extensions import ExtensionAPI
 from ..tools.bash import kill_tree, spawn
 from ..tools.command_output import display_output, open_output, read_output
-from ..tools.sandbox import cleanup_process
+from ..tools.sandbox import SandboxCancelled, SandboxUnavailable, cleanup_process
 from ..tools.truncate import MAX_BYTES, budget
 
 
@@ -171,10 +171,12 @@ class JobManager:
         return True
 
     def _start_failed(self, job: Job, error: BaseException, fh) -> None:
-        job.status = "killed" if isinstance(error, KeyboardInterrupt) else "failed"
+        cancelled = isinstance(error, (KeyboardInterrupt, SandboxCancelled))
+        job.status = "killed" if cancelled else "failed"
         job.ended = time.time()
         if isinstance(error, Exception):
-            self._report(job, error, phase="background.start")
+            self._report(job, error, phase="background.start", kind="aborted" if cancelled else "fatal",
+                         code="SANDBOX_UNAVAILABLE" if isinstance(error, SandboxUnavailable) else None)
         self._stop_process(job)
         if fh is not None:
             try:
@@ -211,7 +213,8 @@ class JobManager:
         )
         fh = None
         try:
-            job.log, fh = open_output(cwd, job.id)
+            job.sandbox = sandbox_policy.describe() if sandbox_policy is not None else None
+            job.log, fh = open_output(cwd, job.id, **({"sandbox_policy": sandbox_policy} if sandbox_policy else {}))
             proc = spawn(command, cwd, stdout=fh, interpreter=shell,
                          **({"sandbox_policy": sandbox_policy, "output_path": job.log, "cancellation": cancellation} if sandbox_policy else {}))
         except BaseException as error:

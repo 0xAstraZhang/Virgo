@@ -11,17 +11,33 @@ import errno
 import json
 import os
 import platform
+import select
 import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 MODES = ("disabled", "read-only", "workspace-write")
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 _ENV_KEYS = frozenset({"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"})
+
+# This fixed trampoline runs inside the actual envelope, with isolated Python
+# startup. The status descriptor closes only on successful exec; setup/exec
+# failures cannot be confused with arbitrary user output or command exit codes.
+_EXEC_HANDSHAKE = """import os, sys
+fd = int(sys.argv[1])
+os.set_inheritable(fd, False)
+os.write(fd, b'\\0')
+try:
+    os.execvpe(sys.argv[2], sys.argv[2:], os.environ)
+except BaseException as error:
+    os.write(fd, str(error).encode('utf-8', errors='replace')[:1500])
+    os._exit(127)
+"""
 
 
 class SandboxCancelled(InterruptedError):
@@ -138,17 +154,65 @@ class SandboxPolicy:
     def describe(self) -> dict:
         return {"mode": self.mode, "network": "restricted", "workspace": str(self.workspace)}
 
-    def protected_paths(self) -> tuple[Path, ...]:
-        return tuple(dict.fromkeys((self.workspace / name).resolve() for name in PROTECTED_NAMES
-                                   if (self.workspace / name).exists()))
+    def runtime_paths(self) -> tuple[Path, ...]:
+        """Keep interpreter roots explicit even when a broader read mount covers them."""
+        return tuple(dict.fromkeys(path for value in (sys.base_prefix, sys.prefix)
+                                   for path in (Path(value).absolute(), Path(value).resolve())))
 
-    def _read_roots(self) -> list[Path]:
+    def protected_paths(self) -> tuple[Path, ...]:
+        paths = []
+        for name in PROTECTED_NAMES:
+            path = self.workspace / name
+            if path.is_symlink():
+                # A resolved metadata link must never become a new host read
+                # grant, and a writable link entry would bypass target mounts.
+                raise SandboxUnavailable(f"Protected sandbox metadata must not be a symbolic link: {path}")
+            if path.exists():
+                paths.append(path)
+        paths.extend(path for path in self.runtime_paths()
+                     if path != self.workspace and path.is_relative_to(self.workspace))
+        return tuple(dict.fromkeys(paths))
+
+    @staticmethod
+    def _system_roots() -> list[Path]:
         values = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"]
         if sys.platform == "darwin":
             values += ["/System/Library", "/System/Cryptexes",
                        "/System/Volumes/Preboot/Cryptexes/OS", "/Library", "/dev", "/private/etc"]
-        values += [sys.base_prefix, sys.prefix]
-        roots = sorted({Path(p).resolve() for p in values if Path(p).is_dir()}, key=lambda p: len(p.parts))
+        return list(dict.fromkeys(Path(value).resolve() for value in values if Path(value).is_dir()))
+
+    def validate(self, cwd: Path) -> Path:
+        """Check the envelope before the broker creates output directories/files."""
+        try:
+            cwd = Path(cwd).resolve(strict=True)
+            if not cwd.is_dir() or not cwd.is_relative_to(self.workspace):
+                raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
+            base = Path(sys.base_prefix).resolve(strict=True)
+            prefix = Path(sys.prefix).resolve(strict=True)
+            if any(path.is_relative_to(self.workspace) for path in (*self._system_roots(), base)):
+                raise SandboxUnavailable("Workspace must not contain a system or base interpreter installation")
+            if prefix.is_relative_to(self.workspace) and (prefix == self.workspace or prefix == base):
+                raise SandboxUnavailable("Only a nested virtual environment may be inside the sandbox workspace")
+            for value in (sys.base_prefix, sys.prefix):
+                name = Path(value).absolute()
+                for alias in (*name.parents, name):
+                    if alias.is_relative_to(self.workspace) and alias.is_symlink():
+                        # bin/python links inside a protected venv remain usable;
+                        # a writable alias of the installation directory does not.
+                        raise SandboxUnavailable(f"Interpreter directory alias is writable in the workspace: {alias}")
+            self.protected_paths()
+            for path in (cwd / ".virgo", cwd / ".virgo" / "outputs"):
+                if path.is_symlink() or not path.resolve().is_relative_to(self.workspace):
+                    raise SandboxUnavailable(f"Sandbox output directory must stay inside its workspace: {path}")
+            return cwd
+        except SandboxUnavailable:
+            raise
+        except (OSError, RuntimeError) as error:
+            raise SandboxUnavailable(f"Could not validate sandbox paths: {error}") from error
+
+    def _read_roots(self) -> list[Path]:
+        roots = sorted({*self._system_roots(), *(path.resolve() for path in self.runtime_paths())},
+                       key=lambda p: len(p.parts))
         # Avoid overlapping mounts, which could otherwise re-expose a writable subtree.
         result: list[Path] = []
         for root in roots:
@@ -156,11 +220,13 @@ class SandboxPolicy:
                 result.append(root)
         return result
 
-    def _linux(self, launcher: Path, scratch: Path, cwd: Path, seccomp_fd: int) -> list[str]:
+    def _linux(self, launcher: Path, scratch: Path, cwd: Path, seccomp_fd: int,
+               protected_mounts: tuple[tuple[int, Path], ...] | None = None) -> list[str]:
         args = [str(launcher), "--die-with-parent", "--new-session", "--unshare-all", "--unshare-user",
                 "--disable-userns", "--cap-drop", "ALL"]
         for root in self._read_roots():
-            args += ["--ro-bind", str(root), str(root)]
+            if not root.is_relative_to(self.workspace):
+                args += ["--ro-bind", str(root), str(root)]
         for alias in ("/bin", "/sbin", "/lib", "/lib64", "/etc"):
             if Path(alias).is_symlink():
                 args += ["--symlink", os.readlink(alias), alias]
@@ -183,14 +249,21 @@ class SandboxPolicy:
                 if any(alias.is_relative_to(root) for root in roots):
                     continue  # The alias is already present inside a mounted root.
                 resolved = alias.resolve(strict=True)
-                if not any(resolved.is_relative_to(root) for root in roots):
+                if not any(resolved.is_relative_to(root) for root in (*roots, self.workspace)):
                     raise SandboxUnavailable(f"Interpreter alias leaves permitted roots: {alias}")
                 args += ["--symlink", str(resolved), str(alias)]
         args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/run"]
         args += ["--bind" if self.mode == "workspace-write" else "--ro-bind",
                  str(self.workspace), str(self.workspace)]
-        for path in self.protected_paths():
-            args += ["--ro-bind", str(path), str(path)]
+        # Apply nested interpreter protection after the workspace bind so it
+        # cannot be hidden by that broader writable mount. Callers can pin the
+        # sources by descriptor to prevent replacement between check and mount.
+        if protected_mounts is None:
+            raise SandboxUnavailable("Protected sandbox mounts require pinned descriptors")
+        for descriptor, target in protected_mounts:
+            # bwrap verifies the mounted inode against this descriptor and
+            # closes it before exec; a /proc/self/fd path alone is insufficient.
+            args += ["--ro-bind-fd", str(descriptor), str(target)]
         args += ["--bind", str(scratch), str(scratch), "--chdir", str(cwd),
                  "--seccomp", str(seccomp_fd), "--"]
         return args
@@ -215,10 +288,8 @@ class SandboxPolicy:
                                   for name in PROTECTED_NAMES)
             # Explicit exclusions also protect metadata paths which do not exist yet.
             lines.append(f"(allow file-write* (require-all (subpath {quoted(self.workspace)}) {exclusions}))")
-            for name in PROTECTED_NAMES:
-                path = self.workspace / name
-                if path.exists() and path.resolve() != path:
-                    lines.append(f"(deny file-write* (subpath {quoted(path.resolve())}))")
+            for path in self.runtime_paths():
+                lines.append(f"(deny file-write* (subpath {quoted(path)}))")
         if output_path is not None:
             # The broker owns this exact spool file; do not open the output directory.
             lines.append(f"(allow file-write-data (literal {quoted(output_path.resolve())}))")
@@ -228,16 +299,16 @@ class SandboxPolicy:
               output_path: Path | None = None, cancellation=None) -> subprocess.Popen:
         if cancellation is not None and cancellation.is_set():
             raise SandboxCancelled("Sandbox launch cancelled")
-        cwd = Path(cwd).resolve(strict=True)
-        if not cwd.is_relative_to(self.workspace):
-            raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
+        cwd = self.validate(cwd)
         backend, launcher = platform_backend()
-        for runtime_root in (*self._read_roots(), launcher):
-            if runtime_root.is_relative_to(self.workspace):
-                raise SandboxUnavailable("Workspace must not contain the sandbox or interpreter installation")
+        if launcher.is_relative_to(self.workspace):
+            raise SandboxUnavailable("Workspace must not contain the sandbox launcher")
         scratch = tempfile.TemporaryDirectory(prefix="virgo-sandbox-")
         scratch_path = Path(scratch.name).resolve()
         filter_file = None
+        pinned = []
+        status_read = status_write = None
+        proc = None
         try:
             (scratch_path / "home").mkdir()
             clean_env = {key: value for key, value in env.items() if key in _ENV_KEYS}
@@ -245,11 +316,30 @@ class SandboxPolicy:
                              TMP=str(scratch_path), TEMP=str(scratch_path), VIRGO="1")
             if backend == "bubblewrap":
                 filter_file = _seccomp_file()
-                prefix = self._linux(launcher, scratch_path, cwd, filter_file.fileno())
-                extra = {"pass_fds": (filter_file.fileno(),)}
+                root = os.open(self.workspace, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    for path in self.protected_paths():
+                        descriptor = os.dup(root)
+                        try:
+                            for part in path.relative_to(self.workspace).parts:
+                                child = os.open(part, os.O_PATH | os.O_NOFOLLOW, dir_fd=descriptor)
+                                os.close(descriptor)
+                                descriptor = child
+                                mode = os.fstat(descriptor).st_mode
+                                if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                                    raise SandboxUnavailable(f"Unsafe protected sandbox mount: {path}")
+                            pinned.append((descriptor, path))
+                        except BaseException:
+                            os.close(descriptor)
+                            raise
+                finally:
+                    os.close(root)
+                prefix = self._linux(launcher, scratch_path, cwd, filter_file.fileno(), tuple(pinned))
+                inherited = (filter_file.fileno(), *(descriptor for descriptor, _ in pinned))
             else:
                 prefix = self._macos(launcher, scratch_path, output_path)
-                extra = {}
+                inherited = ()
+            extra = {"pass_fds": inherited}
             # Probe the exact envelope without invoking the user's shell or payload.
             # A launch denied by namespaces/Seatbelt is not permission to retry natively.
             true = str(_system_file(Path("/usr/bin/true")))
@@ -263,24 +353,52 @@ class SandboxPolicy:
                 raise SandboxCancelled("Sandbox launch cancelled before payload start")
             if filter_file is not None:
                 filter_file.seek(0)
-            proc = subprocess.Popen([*prefix, *argv], cwd=cwd, env=clean_env,
+            status_read, status_write = os.pipe()
+            proc = subprocess.Popen([*prefix, sys.executable, "-I", "-S", "-c", _EXEC_HANDSHAKE,
+                                     str(status_write), *argv], cwd=cwd, env=clean_env,
                                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.STDOUT,
-                                    start_new_session=True, **extra)
+                                    start_new_session=True, pass_fds=(*inherited, status_write))
             proc._virgo_sandbox_tmp = scratch
             proc._virgo_sandbox = {**self.describe(), "backend": backend}
+            os.close(status_write)
+            status_write = None
+            startup = bytearray()
+            deadline = time.monotonic() + 5
+            while True:
+                if cancellation is not None and cancellation.is_set():
+                    raise SandboxCancelled("Sandbox launch cancelled before command exec")
+                if time.monotonic() >= deadline:
+                    raise SandboxUnavailable(f"{backend} did not confirm command startup")
+                if not select.select([status_read], [], [], 0.05)[0]:
+                    continue
+                chunk = os.read(status_read, 1502)
+                if not chunk:
+                    break
+                startup.extend(chunk)
+                if len(startup) > 1501:
+                    raise SandboxUnavailable(f"{backend} returned an invalid startup acknowledgement")
+            if startup != b"\0":
+                reason = bytes(startup).lstrip(b"\0").decode("utf-8", errors="replace")
+                raise SandboxUnavailable(f"{backend} failed before command exec: {reason or 'no startup acknowledgement'}")
             return proc
-        except SandboxCancelled:
-            scratch.cleanup()
-            raise
         except (OSError, subprocess.TimeoutExpired) as error:
-            scratch.cleanup()
+            if isinstance(error, SandboxCancelled):
+                raise
             raise SandboxUnavailable(f"Could not launch native sandbox: {error}") from error
-        except BaseException:
-            scratch.cleanup()
-            raise
         finally:
+            failed = sys.exc_info()[0] is not None
+            for descriptor in (status_read, status_write):
+                if descriptor is not None:
+                    os.close(descriptor)
+            for descriptor, _ in pinned:
+                os.close(descriptor)
             if filter_file is not None:
                 filter_file.close()
+            if failed:
+                if proc is not None:
+                    cleanup_process(proc)
+                else:
+                    scratch.cleanup()
 
 
 def cleanup_process(proc) -> None:
@@ -292,5 +410,7 @@ def cleanup_process(proc) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        if proc.poll() is None:
+            proc.wait(timeout=5)
         scratch.cleanup()
         proc._virgo_sandbox_tmp = None
