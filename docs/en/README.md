@@ -33,3 +33,5 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 ## Keep documentation useful
 
 Maintain matching files under `docs/en/` and `docs/zh-CN/`. Explain the current behavior and link to code for implementation details. Update both editions in the same change when a command, setting, interface or path changes. Keep release-specific investigations in issues or PRs; reusable conclusions belong in the relevant guide. The root READMEs introduce the product and link here.
+
+[Native command sandbox](guides/sandbox.md) — opt-in process isolation and its limits.

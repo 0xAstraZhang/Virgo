@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..tools.sandbox import validate_config as validate_sandbox_config
 from .work_modes import normalize_work_mode
 
 PROFILES = ("minimal", "coding")
@@ -21,6 +22,7 @@ _FEATURE_ALIASES = {"diagnostics": "diagnostic_get", "permission": "auto_review"
 DEFAULTS: dict[str, Any] = {
     "language": "en",
     "workMode": "default",
+    "sandbox": {"mode": "disabled", "network": "restricted"},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
@@ -127,6 +129,7 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
 
 
 def _validate(data: dict) -> None:
+    validate_sandbox_config(data.get("sandbox", {}))
     normalize_work_mode(data.get("workMode", "default"))
     profile = data.get("profile", "coding")
     if profile not in PROFILES:
@@ -181,6 +184,9 @@ class Settings:
         user = _read_json(paths.user / "settings.json")
         project = _read_json(paths.project / "settings.json")
         trusted = _trusted_projects(user)
+        if "sandbox" in project:
+            project = {key: value for key, value in project.items() if key != "sandbox"}
+            notices.append("Project sandbox settings are ignored; use user settings or an explicit startup override.")
         for layer in (project, overrides or {}):
             extension_config = layer.get("extensions", {})
             if isinstance(extension_config, dict) and "trustedProjects" in extension_config:

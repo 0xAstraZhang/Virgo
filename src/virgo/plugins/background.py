@@ -20,6 +20,7 @@ from ..diagnostics import capture_error, error_summary, safe_text
 from ..harness.extensions import ExtensionAPI
 from ..tools.bash import kill_tree, spawn
 from ..tools.command_output import display_output, open_output, read_output
+from ..tools.sandbox import cleanup_process
 from ..tools.truncate import MAX_BYTES, budget
 
 
@@ -43,6 +44,7 @@ class Job:
     tool_call_id: str | None = None
     cwd: Path | None = None
     error_details: dict | None = None
+    sandbox: dict | None = None
     related_errors: list[dict] = field(default_factory=list)
 
     def elapsed(self) -> str:
@@ -110,6 +112,7 @@ class JobManager:
             "cwd": str(job.cwd),
             "output_path": str(job.log) if job.log else None,
             "duration": round((job.ended or time.time()) - job.started, 6),
+            **({"sandbox": job.sandbox} if job.sandbox is not None else {}),
             **(context or {}),
         }
         details = self.api.report_error(
@@ -161,6 +164,7 @@ class JobManager:
             if job.proc.poll() is None:
                 kill_tree(job.proc)
                 job.proc.wait(timeout=5)
+            cleanup_process(job.proc)
         except Exception as error:
             self._report(job, error, phase="background.cleanup")
             return False
@@ -196,6 +200,8 @@ class JobManager:
         store=None,
         agent="main",
         tool_call_id=None,
+        sandbox_policy=None,
+        cancellation=None,
     ) -> Job:
         shell = shell or self.api.services["shell"].current
         if shell is None:
@@ -206,12 +212,14 @@ class JobManager:
         fh = None
         try:
             job.log, fh = open_output(cwd, job.id)
-            proc = spawn(command, cwd, stdout=fh, interpreter=shell)
+            proc = spawn(command, cwd, stdout=fh, interpreter=shell,
+                         **({"sandbox_policy": sandbox_policy, "output_path": job.log, "cancellation": cancellation} if sandbox_policy else {}))
         except BaseException as error:
             # A job that never started must not count as pending work forever.
             self._start_failed(job, error, fh)
             raise
         job.proc = proc
+        job.sandbox = getattr(proc, "_virgo_sandbox", None)
 
         def watch():
             status = "failed"
@@ -460,6 +468,8 @@ def setup(api: ExtensionAPI) -> None:
         label = job.label if len(job.label) <= 300 else job.label[:300] + "…"
         head = f"{job.id} [{ctx.t('features.jobs.state.' + job.status)}] {ctx.t('features.jobs.kind.' + job.kind)}: {label} ({job.elapsed()})"
         details = {"job_id": job.id, "status": job.status, "exit_code": job.exit_code}
+        if job.sandbox is not None:
+            details["sandbox"] = job.sandbox
         if job.error_details is not None:
             details.update(error=job.error_details, related_errors=job.related_errors)
             head += "\n" + error_summary(job.error_details, t=api.t)

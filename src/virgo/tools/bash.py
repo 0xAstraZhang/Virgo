@@ -19,7 +19,7 @@ MAX_TIMEOUT = 3600
 SHELL = os.environ.get("VIRGO_SHELL") or ("bash" if os.name != "nt" else None)
 
 
-def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None) -> subprocess.Popen:
+def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, sandbox_policy=None, output_path=None, cancellation=None) -> subprocess.Popen:
     from .shell import shell_environment
 
     env = shell_environment()
@@ -34,6 +34,10 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None) 
         shell = False
     else:
         argv, shell = command, True
+    if sandbox_policy is not None:
+        if shell or isinstance(argv, str):
+            raise ValueError("Sandbox execution requires an explicit interpreter argv")
+        return sandbox_policy.spawn(argv, cwd, env, stdout, output_path, cancellation)
     if os.name == "nt":
         from .windows_process import WindowsProcess
 
@@ -75,7 +79,7 @@ def kill_tree(proc: subprocess.Popen) -> None:
 
 
 def run_command(
-    command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter=None
+    command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter=None, sandbox_policy=None
 ) -> tuple[CommandOutput, int | None, str]:
     """Spool stdout/stderr directly to disk, returning only a bounded tail and metadata."""
     if signal.is_set():
@@ -83,7 +87,8 @@ def run_command(
     prefix = interpreter.tool_name if interpreter is not None else "bash"
     path, output_file = open_output(cwd, prefix)
     with output_file:
-        proc = spawn(command, cwd, stdout=output_file, interpreter=interpreter)
+        proc = spawn(command, cwd, stdout=output_file, interpreter=interpreter,
+                     **({"sandbox_policy": sandbox_policy, "output_path": path, "cancellation": signal} if sandbox_policy else {}))
         deadline = time.monotonic() + timeout
         status = "ok"
         try:
@@ -102,6 +107,9 @@ def run_command(
             if proc.poll() is None:
                 kill_tree(proc)
                 proc.wait(timeout=5)
+            from .sandbox import cleanup_process
+
+            cleanup_process(proc)
     return read_output(path), proc.returncode, status
 
 

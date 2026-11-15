@@ -241,11 +241,26 @@ class ShellTool(AgentTool):
     shell: Shell | None = None
 
 
-def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
+def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
     from .bash import BASH_PARAMS, DEFAULT_TIMEOUT, MAX_TIMEOUT, format_output, run_command
     from .truncate import MAX_BYTES, MAX_LINES
 
     def execute(args, ctx):
+        from .sandbox import SandboxCancelled, SandboxUnavailable
+
+        policy = None
+        try:
+            policy = sandbox(ctx) if sandbox is not None else None
+            result = execute_with_policy(args, ctx, policy)
+        except SandboxCancelled as error:
+            result = ToolResult.error(str(error), details={"status": "aborted", "cancelled": True})
+        except SandboxUnavailable as error:
+            result = ToolResult.error(str(error), details={"status": "sandbox_unavailable"})
+        if policy is not None:
+            result.details = {**(result.details or {}), "sandbox": policy.describe()}
+        return result
+
+    def execute_with_policy(args, ctx, policy):
         timeout = min(float(args.get("timeout") or DEFAULT_TIMEOUT), MAX_TIMEOUT)
         if jobs is not None and args.get("background"):
             job = jobs.start_command(
@@ -256,11 +271,13 @@ def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
                 store=ctx.review_source.root if ctx.review_source is not None else None,
                 agent=ctx.agent,
                 tool_call_id=ctx.call_id,
+                **({"sandbox_policy": policy, "cancellation": ctx.signal} if policy is not None else {}),
             )
             return ToolResult.text(
                 ctx.t("tools.shell.job_started", id=job.id, kind=shell.kind, version=shell.version)
             )
-        out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell)
+        out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell,
+                                        **({"sandbox_policy": policy} if policy is not None else {}))
         result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name, t=ctx.t)
         result.details.update(shell=shell.kind, executable=shell.executable, version=shell.version)
         return result

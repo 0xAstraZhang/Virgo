@@ -40,9 +40,9 @@ class ShellSelection:
             s.replace_tools("shell", tools, owner="core.shell")
             return
         jobs = s.services.get("jobs")
-        tools.append((make_shell_tool(self.current), ("subagent",) if jobs else ROLES_ALL))
+        tools.append((make_shell_tool(self.current, sandbox=lambda ctx: s.services["sandbox"].for_context(ctx)), ("subagent",) if jobs else ROLES_ALL))
         if jobs:
-            tools.append((make_shell_tool(self.current, jobs), ("main",)))
+            tools.append((make_shell_tool(self.current, jobs, sandbox=lambda ctx: s.services["sandbox"].for_context(ctx)), ("main",)))
         s.replace_tools("shell", tools, owner="core.shell")
 
     def select(self, shell: Shell, *, automatic=False) -> None:

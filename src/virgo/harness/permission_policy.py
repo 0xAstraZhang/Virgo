@@ -480,6 +480,11 @@ def install_permissions(session: AgentSession) -> Permissions:
     """Construct the mandatory policy before loading any capability plugin."""
     perms = Permissions(session)
     session.register_permission_policy(perms)
+    from .sandbox import SandboxManager
+
+    sandbox = SandboxManager(session)
+    session.services["sandbox"] = sandbox
+    session.add_permission_policy(sandbox, owner="core.sandbox")
 
     def cmd(session, args):
         a = args.strip()

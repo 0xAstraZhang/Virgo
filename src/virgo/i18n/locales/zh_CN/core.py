@@ -18,4 +18,9 @@ MESSAGES = {
     "work_mode.plan": "计划（只读）",
     "work_mode.invalid": "无效的工作模式，可选：{modes}。",
     "work_mode.approval_unchanged": "使用 /permissions 查看审批策略。只有 /mode default 会退出独立的计划模式。",
+    "sandbox.description": "查看原生命令沙箱状态",
+    "sandbox.status": "沙箱：{mode}；后端：{backend}",
+    "sandbox.scope": "原生隔离覆盖 Core Shell 进程。Python 扩展和远程工具仍使用各自的信任边界。配置仅在启动时生效。",
+    "sandbox.file_denied": "沙箱禁止修改文件：{path}",
+    "sandbox.cli": "选择原生 Shell 隔离方式，独立于审批策略",
 }
