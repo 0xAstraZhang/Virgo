@@ -62,9 +62,16 @@ def run(session, source: str, **arguments):
     return tool_results(session)[-1]
 
 
+def payload_json(output: str):
+    # These fixed payloads emit one final JSON record. Shell retains combined
+    # stdout/stderr, including CPython's measured LPAC DOS-path warning; that
+    # diagnostic is not the payload record and must not be filtered by Shell.
+    return json.loads(output.rstrip().rsplit("\n", 1)[-1])
+
+
 def data(result):
     assert not result.is_error, result.text()
-    return json.loads(result.text())
+    return payload_json(result.text())
 
 
 @pytest.fixture
@@ -529,7 +536,7 @@ print(json.dumps(outcome))
     out, code, status = run_command(command(source), project, 30, threading.Event(),
                                     interpreter=selected(native), sandbox_policy=SandboxPolicy(mode, project))
     assert code == 0 and status == "ok", out.text
-    assert json.loads(out.text) == {"arap_read": "arap-canary", "denied": [True, True, True], "acl_denied": True}
+    assert payload_json(out.text) == {"arap_read": "arap-canary", "denied": [True, True, True], "acl_denied": True}
     assert aap.read_text() == "aap-canary" and arap.read_text() == "arap-canary"
 
 
@@ -562,7 +569,7 @@ print(json.dumps({'denied': denied, 'child_denied': p.returncode != 0}))
         out, code, status = run_command(command(source), project, 30, threading.Event(),
                                         interpreter=selected(native), sandbox_policy=policy)
         assert code == 0 and status == "ok", out.text
-        assert json.loads(out.text) == {"denied": [True] * 4, "child_denied": True}
+        assert payload_json(out.text) == {"denied": [True] * 4, "child_denied": True}
         assert target.read_text() == "readable"
         assert not any((project / name).exists() for name in ("new.txt", "renamed.txt", "child-write.txt"))
     finally:
