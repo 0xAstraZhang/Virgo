@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -26,6 +27,8 @@ MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024
 MAX_FILES = 10_000
 MAX_RESULT_BYTES = 45 * 1024
 MAX_RESULT_LINES = 400
+MAX_DIFF_MATCH_PAIRS = 1_000_000
+MAX_DIFF_SECONDS = 5
 
 
 class SnapshotError(RuntimeError):
@@ -45,6 +48,101 @@ def _json(value):
 
 def _digest(value: bytes):
     return hashlib.sha256(value).hexdigest()
+
+
+def _text_lines(text, *, keepends=False):
+    """Keep Git's LF-based line numbers, including embedded Unicode separators."""
+    lines = text.split("\n")
+    if keepends:
+        return [line + "\n" for line in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
+    return lines[:-1] if not lines[-1] else lines
+
+
+def _auto_text(raw):
+    """Git's automatic CRLF conversion excludes binary-looking byte sequences."""
+    if b"\x00" in raw or b"\r" in raw.replace(b"\r\n", b""):
+        return False
+    text_bytes = b"\b\t\n\f\r\x1b" + bytes(range(32, 127)) + bytes(range(128, 256))
+    nonprintable = len(raw.translate(None, text_bytes))
+    printable = len(raw) - raw.count(b"\n") - raw.count(b"\r") - nonprintable
+    # A final DOS EOF byte is not counted as either printable or nonprintable.
+    nonprintable -= raw.endswith(b"\x1a")
+    return nonprintable <= printable // 128
+
+
+class _BoundedMatcher(difflib.SequenceMatcher):
+    """Bound every quadratic match search and observe cancellation between them."""
+    def __init__(self, before, after, signal):
+        self.signal = signal
+        self.deadline = time.monotonic() + MAX_DIFF_SECONDS
+        self._check()
+        super().__init__(None, before, after, autojunk=False)
+        self._check()
+
+    def _check(self):
+        _check_cancel(self.signal)
+        if time.monotonic() >= self.deadline:
+            raise SnapshotError("Diff comparison exceeded its five-second review limit.", "incomplete")
+
+    def find_longest_match(self, alo=0, ahi=None, blo=0, bhi=None):
+        self._check()
+        ahi = len(self.a) if ahi is None else ahi
+        bhi = len(self.b) if bhi is None else bhi
+        # Equal boundaries need no quadratic search. Keep small edits to large
+        # repetitive files reviewable, with cancellation checks while scanning.
+        size = 0
+        while alo + size < ahi and blo + size < bhi and self.a[alo + size] == self.b[blo + size]:
+            size += 1
+            if size % 1024 == 0:
+                self._check()
+        if size:
+            return difflib.Match(alo, blo, size)
+        while ahi - size > alo and bhi - size > blo and self.a[ahi - size - 1] == self.b[bhi - size - 1]:
+            size += 1
+            if size % 1024 == 0:
+                self._check()
+        if size:
+            return difflib.Match(ahi - size, bhi - size, size)
+        # SequenceMatcher scans each line's full position list even when some
+        # positions precede blo, so count those entries in the work bound too.
+        pairs = sum(count * len(self.b2j.get(line, ())) for line, count in Counter(self.a[alo:ahi]).items())
+        self._check()
+        if pairs > MAX_DIFF_MATCH_PAIRS:
+            raise SnapshotError("Repetitive diff exceeds the 1,000,000 matching-pair review limit.", "incomplete")
+        result = super().find_longest_match(alo, ahi, blo, bhi)
+        self._check()
+        return result
+
+
+def _diff_range(start, stop):
+    count = stop - start
+    return str(start + 1) if count == 1 else f"{start + 1 if count else start},{count}"
+
+
+def _diff_lines(matcher, before, after, old_path, new_path):
+    """Render the same bounded opcodes that validate finding line locations."""
+    started = False
+    for group in matcher.get_grouped_opcodes(3):
+        matcher._check()
+        if not started:
+            yield f"--- {old_path or '/dev/null'}"
+            yield f"+++ {new_path or '/dev/null'}"
+            started = True
+        first, last = group[0], group[-1]
+        yield f"@@ -{_diff_range(first[1], last[2])} +{_diff_range(first[3], last[4])} @@"
+        for operation, a, b, c, d in group:
+            chunks = []
+            if operation == "equal":
+                chunks.append((" ", before[a:b]))
+            if operation in {"delete", "replace"}:
+                chunks.append(("-", before[a:b]))
+            if operation in {"insert", "replace"}:
+                chunks.append(("+", after[c:d]))
+            for prefix, lines in chunks:
+                for index, line in enumerate(lines):
+                    if index % 1024 == 0:
+                        matcher._check()
+                    yield prefix + line.removesuffix("\n")
 
 
 def _path(value: str, *, directory=False):
@@ -172,8 +270,9 @@ class _Git:
             raise SnapshotError("Base must name one unambiguous local or remote branch; use its full ref.")
         return self.commit(matches[0])
 
-    def config(self, name):
-        return self.run("config", "--get", name, allowed=(0, 1), configuration=True).decode("utf-8").strip().lower()
+    def config(self, name, *, boolean=False):
+        options = ("--type=bool",) if boolean else ()
+        return self.run("config", *options, "--get", name, allowed=(0, 1), configuration=True).decode("utf-8").strip().lower()
 
 
 @dataclass(frozen=True)
@@ -196,7 +295,8 @@ class _File:
 
     def lines(self):
         self.text()
-        return (self.comparison if self.comparison is not None else self.raw).decode("utf-8").splitlines(keepends=True)
+        return _text_lines((self.comparison if self.comparison is not None else self.raw).decode("utf-8"),
+                           keepends=True)
 
 
 def _metadata(raw):
@@ -400,7 +500,7 @@ class ReviewSnapshot:
                 self._allowed(path)
                 if path not in files:
                     raise SnapshotError(f"Path is absent from frozen {version}: {path}")
-                return self._page(files[path].text().splitlines(), args, path=path, version=version,
+                return self._page(_text_lines(files[path].text()), args, path=path, version=version,
                                   mode=files[path].mode)
             pattern = args.get("pattern", "*" if name == "glob" else None)
             if not isinstance(pattern, str) or not pattern or len(pattern) > 1024:
@@ -429,7 +529,7 @@ class ReviewSnapshot:
                         if reason not in self.incomplete_reasons:
                             self.incomplete_reasons.append(reason)
                         continue
-                    lines.extend(f"{path}:{number}: {line}" for number, line in enumerate(text.splitlines(), 1)
+                    lines.extend(f"{path}:{number}: {line}" for number, line in enumerate(_text_lines(text), 1)
                                  if pattern in line)
             return self._page(lines, args, version=version, operation=name,
                               skipped_paths=skipped[:20], skipped_count=len(skipped))
@@ -472,6 +572,8 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
     head = git.commit("HEAD", optional=True)
     index_raw = git.run("ls-files", "--stage", "-z")
     index_meta = _metadata(index_raw)
+    index_flags = git.run("ls-files", "-t", "-z")
+    skip_worktree = {_decode_path(row[2:]) for row in index_flags.split(b"\x00") if row.startswith(b"S ")}
     untracked_raw = git.run("ls-files", "--others", "--exclude-standard", "-z", configuration=True)
     untracked = [_decode_path(path) for path in untracked_raw.split(b"\x00") if path]
     if len(index_meta) + len(untracked) > MAX_FILES:
@@ -488,8 +590,14 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
         merge_base, selected, comparison = bases[0], head, "merge-base to HEAD"
     elif kind == "commit":
         selected = git.commit(target.get("ref"))
-        parents = git.run("rev-list", "--parents", "-n", "1", selected).decode().split()[1:]
+        # Revision walking hides parents at shallow boundaries; the commit's
+        # stored header distinguishes a true root from unavailable history.
+        header = git.run("cat-file", "commit", selected).split(b"\n\n", 1)[0]
+        parents = [line[7:].decode("ascii") for line in header.split(b"\n") if line.startswith(b"parent ")]
         base = parents[0] if parents else None
+        if base and git.commit(base, optional=True) is None:
+            raise SnapshotError("The selected commit's first parent is unavailable locally; obtain its history "
+                                "before reviewing this target.", "incomplete")
         comparison = "first parent to selected commit" if base else "empty tree to root commit"
 
     cache, decisions, spent = {}, {}, 0
@@ -532,12 +640,14 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
     versions["base"] = tree(merge_base if kind == "base" else base)
     versions["target"] = tree(selected) if selected != head else versions["head"]
     worktree, stamps, incomplete, unsupported = {}, {}, [], set()
-    filemode = git.config("core.filemode") != "false"
-    symlinks = git.config("core.symlinks") != "false"
+    filemode = git.config("core.filemode", boolean=True) != "false"
+    symlinks = git.config("core.symlinks", boolean=True) != "false"
     for path in sorted(set(index_meta) | set(untracked)):
         _check_cancel(signal)
         stamps[path] = _stamp(root / path)
         if stamps[path] is None:
+            if path in skip_worktree:
+                worktree[path] = versions["index"][path]
             continue
         old = versions["index"].get(path)
         if not permitted(path):
@@ -565,14 +675,19 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
     # are never executed. Their evidence remains explicitly incomplete.
     attributes = {}
     if worktree:
-        raw = git.run("check-attr", "-z", "--stdin", "filter", "working-tree-encoding", "ident", "text", "eol",
+        raw = git.run("check-attr", "-z", "--stdin", "filter", "working-tree-encoding", "ident", "text", "eol", "crlf",
                       data=b"\x00".join(path.encode() for path in worktree) + b"\x00", configuration=True)
         rows = raw.split(b"\x00")
         for index in range(0, len(rows) - 1, 3):
             path, name, value = rows[index:index + 3]
             attributes.setdefault(path.decode(), {})[name.decode()] = value.decode()
     autocrlf = git.config("core.autocrlf")
+    if autocrlf != "input":
+        autocrlf = git.config("core.autocrlf", boolean=True)
     for path, item in list(worktree.items()):
+        _check_cancel(signal)
+        if stamps[path] is None:
+            continue  # An absent sparse path contains index bytes, not checkout bytes.
         attrs = attributes.get(path, {})
         custom = [name for name in ("filter", "working-tree-encoding", "ident")
                   if attrs.get(name, "unspecified") not in {"unspecified", "unset"}]
@@ -582,13 +697,15 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
         if item.raw is None or item.mode == "120000":
             continue
         text, eol = attrs.get("text", "unspecified"), attrs.get("eol", "unspecified")
-        normalize = text == "set" or eol in {"lf", "crlf"} or text == "auto" or (
-            text != "unset" and autocrlf in {"true", "input"}
+        if text not in {"set", "unset", "input", "auto"}:
+            text = attrs.get("crlf", "unspecified")
+        normalize = text != "unset" and (
+            text in {"set", "input", "auto"} or eol in {"lf", "crlf"} or autocrlf in {"true", "input"}
         )
         old = versions["index"].get(path)
-        auto = text != "set" and eol not in {"lf", "crlf"}
-        if normalize and (not auto or (b"\x00" not in item.raw and b"\r" not in item.raw.replace(b"\r\n", b"")
-                                     and not (old and old.raw and b"\r\n" in old.raw))):
+        auto = text == "auto" or (text not in {"set", "input"} and eol not in {"lf", "crlf"})
+        if normalize and (not auto or (_auto_text(item.raw)
+                                     and not (old and old.raw and b"\r\n" in old.raw and _auto_text(old.raw)))):
             worktree[path] = _File(item.mode, item.identity, item.raw, item.unavailable,
                                    comparison=item.raw.replace(b"\r\n", b"\n"))
     versions["worktree"] = worktree
@@ -607,7 +724,8 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
                     raise SnapshotError(f"{path}: {error}", "incomplete") from error
         before, after = old.lines() if old else [], new.lines() if new else []
         old_changed, new_changed = [], []
-        for operation, a, b, c, d in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
+        matcher = _BoundedMatcher(before, after, signal)
+        for operation, a, b, c, d in matcher.get_opcodes():
             if operation != "equal":
                 old_changed.extend(range(a + 1, b + 1))
                 new_changed.extend(range(c + 1, d + 1))
@@ -619,9 +737,7 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
                         "old_changed_lines": old_changed, "new_changed_lines": new_changed,
                         "old_mode": old.mode if old else None, "new_mode": new.mode if new else None})
         patch = [f"change {identity} ({layer}, {status})"]
-        patch.extend(line.rstrip("\n") for line in difflib.unified_diff(
-            before, after, fromfile=old_path or "/dev/null", tofile=new_path or "/dev/null", n=3,
-        ))
+        patch.extend(_diff_lines(matcher, before, after, old_path, new_path))
         if len(patch) == 1:
             patch.append(f"Metadata change: {old_path} ({old.mode if old else '-'}) -> {new_path} ({new.mode if new else '-'})")
         patches[identity] = patch
@@ -653,6 +769,7 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
     # Detect changes during capture instead of claiming a mixed snapshot is one
     # coherent target. This does not lock out concurrent trusted host writers.
     if (git.commit("HEAD", optional=True) != head or git.run("ls-files", "--stage", "-z") != index_raw
+            or git.run("ls-files", "-t", "-z") != index_flags
             or git.run("ls-files", "--others", "--exclude-standard", "-z", configuration=True) != untracked_raw
             or any(_stamp(root / path) != stamp for path, stamp in stamps.items())):
         raise SnapshotError("Repository changed while its review snapshot was being captured; retry review.", "incomplete")

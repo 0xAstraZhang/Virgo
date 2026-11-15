@@ -223,8 +223,12 @@ class CodeReviews:
         try:
             runtime = self._runtime(parent, uuid.uuid4().hex[:12])
             self._freshness(report, runtime)
+            if runtime.agent.signal.is_set():
+                raise SnapshotError("Code review display was cancelled.", status="cancelled")
         except SnapshotError as error:
             report.update(freshness="unknown", freshness_reason=safe_text(error))
+            if error.status == "cancelled":
+                report["freshness_cancelled"] = True
         finally:
             if runtime is not None:
                 self.api.release_runtime(runtime)
@@ -246,7 +250,7 @@ def setup(api: ExtensionAPI) -> None:
         else:
             raise ValueError(f"Usage: {_USAGE}")
         session.command_exit_code = (
-            130 if report["status"] == "cancelled" else
+            130 if report["status"] == "cancelled" or report.get("freshness_cancelled") else
             0 if report["status"] == "completed" and report["freshness"] == "current" else 1
         )
         api.ui.review_result(report, render_report(report))
