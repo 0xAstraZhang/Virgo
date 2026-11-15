@@ -61,6 +61,10 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, 
 
 
 def kill_tree(proc: subprocess.Popen) -> None:
+    terminate_tree = getattr(proc, "kill_tree", None)
+    if terminate_tree is not None:
+        terminate_tree()
+        return
     if proc.poll() is not None:
         return
     try:
@@ -109,12 +113,14 @@ def run_command(
                 time.sleep(0.05)
             proc.wait(timeout=5)
         finally:
-            if proc.poll() is None:
-                kill_tree(proc)
-                proc.wait(timeout=5)
             from .sandbox import cleanup_process
 
-            cleanup_process(proc)
+            try:
+                if proc.poll() is None:
+                    kill_tree(proc)
+                    proc.wait(timeout=5)
+            finally:
+                cleanup_process(proc)
     return read_output(path), proc.returncode, status
 
 

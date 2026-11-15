@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import select
+import shutil
 import signal
 import stat
 import subprocess
@@ -46,6 +47,27 @@ class SandboxCancelled(InterruptedError):
 
 class SandboxUnavailable(RuntimeError):
     """The requested isolation could not be established; do not run natively."""
+
+
+class SandboxProcessError(RuntimeError):
+    """Native process control failed after the command may have started."""
+
+
+class _CommandScratch:
+    """Delete only after explicit cleanup, never merely because a handle is lost.
+
+    If native teardown cannot establish that every process exited, an implicit
+    TemporaryDirectory finalizer must not remove their still-writable storage.
+    """
+
+    def __init__(self):
+        self.name = tempfile.mkdtemp(prefix="virgo-sandbox-")
+
+    def cleanup(self):
+        try:
+            shutil.rmtree(self.name)
+        except FileNotFoundError:
+            pass
 
 
 def validate_config(value: object) -> None:
@@ -303,7 +325,7 @@ class SandboxPolicy:
         backend, launcher = platform_backend()
         if launcher.is_relative_to(self.workspace):
             raise SandboxUnavailable("Workspace must not contain the sandbox launcher")
-        scratch = tempfile.TemporaryDirectory(prefix="virgo-sandbox-")
+        scratch = _CommandScratch()
         scratch_path = Path(scratch.name).resolve()
         filter_file = None
         pinned = []
@@ -354,10 +376,21 @@ class SandboxPolicy:
             if filter_file is not None:
                 filter_file.seek(0)
             status_read, status_write = os.pipe()
-            proc = subprocess.Popen([*prefix, sys.executable, "-I", "-S", "-c", _EXEC_HANDSHAKE,
-                                     str(status_write), *argv], cwd=cwd, env=clean_env,
-                                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.STDOUT,
-                                    start_new_session=True, pass_fds=(*inherited, status_write))
+            command = [*prefix, sys.executable, "-I", "-S", "-c", _EXEC_HANDSHAKE,
+                       str(status_write), *argv]
+            if backend == "seatbelt" and sys.platform == "darwin":
+                from .macos_process import LaunchdProcess
+
+                proc = LaunchdProcess(self, cwd, clean_env)
+                # Attach scratch before startup so every partial launch goes
+                # through the same verified process-tree cleanup path.
+                proc._virgo_sandbox_tmp = scratch
+                proc._virgo_sandbox = {**self.describe(), "backend": backend}
+                proc.start(command, stdout, status_write, len(prefix) + 5, cancellation)
+            else:
+                proc = subprocess.Popen(command, cwd=cwd, env=clean_env,
+                                        stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.STDOUT,
+                                        start_new_session=True, pass_fds=(*inherited, status_write))
             proc._virgo_sandbox_tmp = scratch
             proc._virgo_sandbox = {**self.describe(), "backend": backend}
             os.close(status_write)
@@ -404,6 +437,22 @@ class SandboxPolicy:
 def cleanup_process(proc) -> None:
     scratch = getattr(proc, "_virgo_sandbox_tmp", None)
     if scratch is not None:
+        cleanup_tree = getattr(proc, "cleanup_tree", None)
+        if cleanup_tree is not None:
+            # The macOS adapter verifies that its complete resource coalition
+            # has drained before writable scratch can be removed.
+            try:
+                cleanup_tree()
+            except BaseException:
+                # A diagnostic/control-file error can follow verified drain.
+                # Preserve the error without leaking already-safe scratch.
+                if proc.tree_drained:
+                    scratch.cleanup()
+                    proc._virgo_sandbox_tmp = None
+                raise
+            scratch.cleanup()
+            proc._virgo_sandbox_tmp = None
+            return
         # The existing executor owns waiting/cancellation; reap remaining members
         # of its process group before releasing private scratch storage.
         # Darwin can report EPERM for a group containing only an unreaped zombie.

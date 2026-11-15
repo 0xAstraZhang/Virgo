@@ -250,7 +250,7 @@ def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
     from .truncate import MAX_BYTES, MAX_LINES
 
     def execute(args, ctx):
-        from .sandbox import SandboxCancelled, SandboxUnavailable
+        from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable
 
         policy = None
         try:
@@ -260,6 +260,8 @@ def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
             result = ToolResult.error(str(error), details={"status": "aborted", "cancelled": True})
         except SandboxUnavailable as error:
             result = ToolResult.error(str(error), details={"status": "sandbox_unavailable"})
+        except SandboxProcessError as error:
+            result = ToolResult.error(str(error), details={"status": "sandbox_failed"})
         if policy is not None:
             result.details = {**(result.details or {}), "sandbox": policy.describe()}
         return result

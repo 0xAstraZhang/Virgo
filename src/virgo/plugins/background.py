@@ -20,7 +20,7 @@ from ..diagnostics import capture_error, error_summary, safe_text
 from ..harness.extensions import ExtensionAPI
 from ..tools.bash import kill_tree, spawn
 from ..tools.command_output import display_output, open_output, read_output
-from ..tools.sandbox import SandboxCancelled, SandboxUnavailable, cleanup_process
+from ..tools.sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable, cleanup_process
 from ..tools.truncate import MAX_BYTES, budget
 
 
@@ -161,12 +161,16 @@ class JobManager:
         if job.proc is None:
             return True
         try:
-            if job.proc.poll() is None:
-                kill_tree(job.proc)
-                job.proc.wait(timeout=5)
-            cleanup_process(job.proc)
+            try:
+                if job.proc.poll() is None:
+                    kill_tree(job.proc)
+                    job.proc.wait(timeout=5)
+            finally:
+                cleanup_process(job.proc)
         except Exception as error:
-            self._report(job, error, phase="background.cleanup")
+            self._report(job, error, phase="background.cleanup",
+                         kind="fatal" if isinstance(error, SandboxProcessError) else None,
+                         code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
             return False
         return True
 
@@ -176,7 +180,8 @@ class JobManager:
         job.ended = time.time()
         if isinstance(error, Exception):
             self._report(job, error, phase="background.start", kind="aborted" if cancelled else "fatal",
-                         code="SANDBOX_UNAVAILABLE" if isinstance(error, SandboxUnavailable) else None)
+                         code="SANDBOX_UNAVAILABLE" if isinstance(error, SandboxUnavailable) else (
+                             "SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None))
         self._stop_process(job)
         if fh is not None:
             try:
@@ -253,11 +258,15 @@ class JobManager:
                         context={"timeout_seconds": timeout} if timed_out else None,
                     )
             except Exception as error:
-                status = "killed" if job.signal.is_set() else "failed"
-                details = self._report(job, error, phase="background.watch")
+                status = "killed" if job.signal.is_set() and not isinstance(error, SandboxProcessError) else "failed"
+                details = self._report(job, error, phase="background.watch",
+                                       kind="fatal" if isinstance(error, SandboxProcessError) else None,
+                                       code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
                 job.result = error_summary(details, t=self.api.t)
             finally:
-                if not self._stop_process(job) and status != "killed":
+                # A cancellation request is not proof of process termination.
+                # Failed native teardown must remain a failed job.
+                if not self._stop_process(job):
                     status = "failed"
                 try:
                     fh.close()
@@ -338,7 +347,9 @@ class JobManager:
             try:
                 kill_tree(job.proc)
             except Exception as error:
-                self._report(job, error, phase="background.cancel")
+                self._report(job, error, phase="background.cancel",
+                             kind="fatal" if isinstance(error, SandboxProcessError) else None,
+                             code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
                 raise
 
     def _finish(self, job: Job, status: str) -> None:
