@@ -337,8 +337,8 @@ def test_native_detached_descendant_is_reaped_with_command(native, project, fini
 def test_native_posix_spawn_preserves_common_use_and_reaps_detached_child(native, project):
     """Ordinary posix_spawn must work without leaving a detached child behind.
 
-    Failure modes: banning only setsid/setpgid syscalls misses posix_spawn's
-    setsid attribute; banning all posix_spawn breaks ordinary project commands;
+    Failure modes: banning the setpgid syscall misses posix_spawn's setpgroup
+    attribute; banning all posix_spawn breaks ordinary project commands;
     the spawned child retains workspace writes after command completion. Only
     detachment may be denied; every fixture process has a bounded lifetime.
     """
@@ -363,7 +363,7 @@ assert os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0
 actions = [(os.POSIX_SPAWN_OPEN, fd, os.devnull, os.O_RDWR, 0) for fd in range(3)]
 try:
     os.posix_spawn(sys.executable, [sys.executable, '-c', {detached_source!r}],
-                   os.environ, file_actions=actions, setsid=True)
+                   os.environ, file_actions=actions, setpgroup=0)
 except PermissionError:
     Path('spawn-detachment-denied').write_text('denied')
     raise SystemExit(0)
@@ -383,7 +383,7 @@ while not Path('spawn-detached-ready').exists():
     deadline = time.monotonic() + 4.2
     while not late.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert not late.exists(), "A posix_spawn setsid child retained workspace access after completion"
+    assert not late.exists(), "A posix_spawn child in a new process group retained workspace access after completion"
 
 
 def test_native_double_fork_descendant_is_reaped_after_intermediate_exit(native, project):
