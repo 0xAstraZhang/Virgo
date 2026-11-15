@@ -21,6 +21,8 @@ Core always provides the file and selected-shell tools. `web`, `todo`, `ask_user
 
 Reads and tool output have budgets; long results include a continuation or saved output path. File writes to the same file are serialized. Native web providers may expose server-side tools instead of the client names above. See [shells](../guides/shells.md) and [web capabilities](../guides/web.md).
 
+With a vision-capable model on the ChatGPT account connection, image results from tools such as `read` are attached to the originating tool response.
+
 ## Checklists and questions
 
 `todo_write` replaces the session checklist with the complete supplied list. Statuses are `pending`, `in_progress` and `completed`; multiple items can be in progress. Invalid input leaves the old list intact. `/todos` displays it. An incomplete checklist does not itself force another model turn.

@@ -34,6 +34,20 @@ from .openai import _client, classify_error
 from .reasoning import responses_effort
 
 
+def _input_content(blocks) -> list[dict]:
+    content = []
+    for block in blocks:
+        if isinstance(block, TextContent):
+            content.append({"type": "input_text", "text": block.text})
+        elif isinstance(block, ImageContent):
+            content.append({
+                "type": "input_image",
+                "image_url": f"data:{block.mime_type};base64,{block.data}",
+                "detail": "auto",
+            })
+    return content
+
+
 def convert_messages(messages: list, *, api: str = "openai-responses") -> list[dict]:
     result = []
     for message in messages:
@@ -41,18 +55,7 @@ def convert_messages(messages: list, *, api: str = "openai-responses") -> list[d
             if isinstance(message.content, str):
                 result.append({"role": "user", "content": message.content})
             else:
-                content = []
-                for block in message.content:
-                    if isinstance(block, TextContent):
-                        content.append({"type": "input_text", "text": block.text})
-                    elif isinstance(block, ImageContent):
-                        content.append(
-                            {
-                                "type": "input_image",
-                                "image_url": f"data:{block.mime_type};base64,{block.data}",
-                                "detail": "auto",
-                            }
-                        )
+                content = _input_content(message.content)
                 if content:
                     result.append({"role": "user", "content": content})
         elif isinstance(message, AssistantMessage):
@@ -93,7 +96,10 @@ def convert_messages(messages: list, *, api: str = "openai-responses") -> list[d
         elif isinstance(message, ToolResultMessage):
             output = message.text() or "(no output)"
             if any(isinstance(block, ImageContent) for block in message.content):
-                output += "\n[image output omitted]"
+                if api == "openai-codex":
+                    output = _input_content(message.content)
+                else:
+                    output += "\n[image output omitted]"
             result.append(
                 {
                     "type": "function_call_output",
