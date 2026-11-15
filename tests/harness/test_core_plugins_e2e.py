@@ -55,7 +55,10 @@ def test_minimal_coding_loop_and_resume_without_plugin_imports(make_session, pro
         session.prompt('hello')
         assert not any(name.startswith(('virgo.features.', 'virgo.plugins.')) for name in sys.modules)
         assert {t.ident for t in threading.enumerate()} == before
-        assert len(session.main.tools) == 6
+        # The Core planning artifact tool is registered without loading plugins;
+        # Default requests still publish only the original six coding tools.
+        assert len(session.main.tools) == 7
+        assert any(tool.name == 'propose_plan' for tool in session.main.tools)
         session.shutdown()
         print('isolated')
     """)

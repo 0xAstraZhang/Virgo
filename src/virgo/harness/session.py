@@ -59,6 +59,7 @@ from .extensions import (
 from .permission_context import ReviewSource
 from .permission_policy import install_permissions
 from .permissions import PermissionPolicy, normalize_permission_mode, plan_tool_allowed
+from .plans import install_plans
 from .prompt import RuntimeContext, build_system
 from .recovery import RuntimeDiagnostics, message_diagnostics
 from .retry import retry_after_seconds
@@ -68,6 +69,7 @@ from .shell_commands import ShellSelection
 from .store import SessionSaveError, SessionStore
 from .telemetry import record_call
 from .ui import UI
+from .work_modes import normalize_work_mode
 
 _DEFAULT_EFFORT = object()
 _TRANSCRIPT_STREAM_TYPES = {
@@ -98,6 +100,7 @@ class Runtime:
         review_parent: ReviewSource | None = None,
         accounting_store=None,
         request_budget: RequestBudget | None = None,
+        work_mode: str | None = None,
     ):
         self.session = session
         self.request_budget = request_budget or RequestBudget(session.settings.get("budget.maxModelCalls"))
@@ -109,6 +112,9 @@ class Runtime:
         if role != "main" and review_parent is None:
             review_parent = getattr(getattr(session, "main", None), "review_source", None)
         self.parent = review_parent.runtime if review_parent is not None else None
+        self.proposed_plan = None
+        if role == "main":
+            session.services["permissions"].restore_work_mode(self, work_mode)
         if review_parent is not None:
             review_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
             self.accounting_store = review_parent.root
@@ -167,6 +173,8 @@ class Runtime:
                         bound.failure_listeners.append(session.report_save_error)
                     if bound.save_error is not None:
                         self.agent.signal.set()
+        if role == "main":
+            session.services["plans"].restore(self)
 
     @property
     def messages(self) -> list:
@@ -396,11 +404,14 @@ class Runtime:
         """Assemble instructions and schemas; only actual requests report formatting failures."""
         s = self.session
         permissions = s.services.get("permissions")
-        mode = permissions.mode_for(self.name) if hasattr(permissions, "mode_for") else s.permission_mode
+        mode = (permissions.mode_for(self.name, runtime=self)
+                if hasattr(permissions, "mode_for") else s.permission_mode)
         system = self.system + "\n\n<language>\n" + s.t("harness.response_language") + "\n</language>"
         tools = []
         for tool in self.tools:
             if mode == "plan" and not plan_tool_allowed(tool):
+                continue
+            if tool.name == "propose_plan" and mode != "plan":
                 continue
             try:
                 tools.append(tool.spec(s.translator))
@@ -410,12 +421,9 @@ class Runtime:
                 if report_errors:
                     self.report_error(error, phase="i18n.tool", context={"tool_name": tool.name})
                 tools.append(tool.spec())
+        if instructions := s.services["plans"].instructions(self):
+            system += "\n\n" + instructions
         if mode == "plan":
-            system += (
-                "\n\n<permission_mode>\n"
-                "Plan mode is active: investigate and plan; file and system changes are not permitted. "
-                "Planning task records are allowed.\n</permission_mode>"
-            )
             for tool in tools:
                 if tool.name == "bash":
                     tool.description = s.t("harness.plan_shell_description")
@@ -581,6 +589,7 @@ class AgentSession:
         model: str | None = None,
         session: str | Path | None = "new",  # "new" | "continue" | path | None (in memory)
         permission_mode: str | None = None,
+        work_mode: str | None = None,
         settings: dict | None = None,
         extensions: bool = True,
         trust_project_extensions: bool = False,
@@ -604,6 +613,8 @@ class AgentSession:
         self._diagnostic_lock = threading.RLock()
         self._notified_errors: set[str] = set()
         self.settings = Settings.load(self.paths, settings)
+        if work_mode is not None:
+            normalize_work_mode(work_mode)
         self.trust_project_extensions = trust_project_extensions
         self.translator = Translator(self.settings.get("language", "en"))
         self.ui.set_translator(self.translator)
@@ -654,12 +665,13 @@ class AgentSession:
             install_permissions(self)
             if self.permission_policy is None:
                 raise RuntimeError("Core permission policy was not installed")
+            install_plans(self)
             load_builtin_features(self)
             if extensions:
                 load_user_extensions(self)
             install_command_hooks(self)
             self.templates = load_templates(self.paths.both("prompts"))
-            self.main = self._new_main(self.store)
+            self.main = self._new_main(self.store, work_mode=work_mode)
         except BaseException:
             self.cleanup_plugins()
             raise
@@ -1046,9 +1058,9 @@ class AgentSession:
             return None
         return runtime
 
-    def _new_main(self, store: SessionStore) -> Runtime:
+    def _new_main(self, store: SessionStore, *, work_mode: str | None = None) -> Runtime:
         messages, ids = store.build_context()
-        return self.create_runtime("main", "main", store=store, messages=messages, ids=ids)
+        return self.create_runtime("main", "main", store=store, messages=messages, ids=ids, work_mode=work_mode)
 
     def _prepare_main(self, store: SessionStore) -> Runtime:
         return self._new_main(store)
@@ -1377,13 +1389,18 @@ class AgentSession:
     def has_save_failure(self) -> bool:
         return bool(self._failed_stores) or any(store.save_error for store in self._visited_stores)
 
-    def run(self, prompts: list) -> None:
+    def run(self, prompts: list, *, plan_token: str | None = None) -> None:
         with self._lock:
             if self._shutdown_started:
                 return
             rt = self.main
+            if plan_token is not None:
+                # Confirmation, exact revision selection and the existing run
+                # admission share one lock; a session switch cannot interleave.
+                prompts = [self.services["plans"].prepare_execution(rt, plan_token)]
             if not rt.can_run():
-                self.wakeups.extend(prompts)
+                if plan_token is None:
+                    self.wakeups.extend(prompts)
                 return
             self.busy = True
         wake = False

@@ -54,7 +54,8 @@ class SandboxManager:
         workspace = Path(runtime.review_source.workspace).resolve()
         if self.session.paths.user.resolve().is_relative_to(workspace):
             raise SandboxUnavailable("Sandbox workspace must not contain Virgo's user credentials or session store")
-        mode = "read-only" if self.session.services["permissions"].mode_for(context.agent) == "plan" else self.mode
+        mode = ("read-only" if self.session.services["permissions"].mode_for(context.agent, runtime=runtime) == "plan"
+                else self.mode)
         return SandboxPolicy(mode, workspace)
 
     def _check(self, event):

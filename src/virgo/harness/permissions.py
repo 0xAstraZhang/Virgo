@@ -9,7 +9,7 @@ from ..i18n import Translator
 
 MODES = ("auto-review", "accept-all", "plan")
 _ALIASES = {"default": "auto-review", "accept-edits": "auto-review", "yolo": "accept-all"}
-_PLAN_SIDE_EFFECTS = {"job_kill"}
+_PLAN_SIDE_EFFECTS = {"job_kill", "todo_write"}
 
 
 def normalize_permission_mode(mode: str) -> str:

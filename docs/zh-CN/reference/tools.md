@@ -4,7 +4,7 @@
 
 模型只会获得当前角色、配置和能力允许的工具。扩展、MCP 连接和网页路由可能改变实际列表。工具名、参数名和枚举值不随界面语言变化。
 
-Core 始终提供文件和所选 Shell 工具。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供。可使用默认 `coding` 预设，或通过 `plugins.<id>.enabled` 选择能力；`--profile minimal --no-extensions` 仅暴露 Core 工具。详见[配置](configuration.md#预设与插件)。
+Core 负责文件、所选 Shell 和 ProposedPlan 工具。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供。可使用默认 `coding` 预设，或通过 `plugins.<id>.enabled` 选择能力；`--profile minimal --no-extensions` 仅暴露当前 WorkMode 允许的 Core 工具。详见[配置](configuration.md#预设与插件)。
 
 ## 文件、命令与网页
 
@@ -23,9 +23,11 @@ Core 始终提供文件和所选 Shell 工具。下列可选工具由 `web`、`t
 
 ## 清单与提问
 
-`todo_write` 使用传入的完整列表替换会话清单。状态为 `pending`、`in_progress` 和 `completed`，允许多个事项同时进行；输入不合法时保留旧列表。`/todos` 显示清单。未完成事项本身不会强制触发下一轮模型调用。
+`propose_plan(markdown)` 发布或替换完整 Markdown ProposedPlan。它属于 Core，仅对 Plan 中的主 Runtime 可用；保存带版本的对话元数据，不写项目文件，也不授权执行。修订会使旧确认失效。`/plan` 显示方案，`/plan execute <plan-id>:<revision>` 是用户明确开始执行的操作。编辑、恢复和权限边界见[先规划，再执行](../guides/planning.md)。
 
-`ask_user` 允许主 Agent 提问，提供最多三个选项加自定义输入，或仅使用自由输入。非交互、取消和超时结果会报告 `answered=false`，不会编造答案。无人值守运行使用 `askUser.unattendedTimeout`；用户加入对话后可以撤销该超时。
+`todo_write` 使用传入的完整列表替换现有执行清单。状态为 `pending`、`in_progress` 和 `completed`，允许多个事项同时进行；输入不合法时保留旧列表。`/todos` 显示清单，未完成事项本身不会强制触发下一轮模型调用。Plan 中隐藏并拒绝该工具：ProposedPlan 说明方案，Todo 在 Default 中跟踪执行进度。确认计划不会自动创建 Todo，也不引入第二套任务存储。
+
+`ask_user` 允许主 Agent 提问，提供最多三个选项加自定义输入，或仅使用自由输入。Plan 指令要求先调查仓库，只对仍无法解决、且实质影响方案的决策使用该工具；回答澄清问题不确认执行。非交互、取消和超时结果会报告 `answered=false`，不会编造答案。无人值守运行使用 `askUser.unattendedTimeout`；用户加入对话后可以撤销该超时。
 
 ## 聚焦的子 Agent
 
