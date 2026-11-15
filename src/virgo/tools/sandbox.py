@@ -145,7 +145,8 @@ class SandboxPolicy:
     def _read_roots(self) -> list[Path]:
         values = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"]
         if sys.platform == "darwin":
-            values += ["/System", "/Library", "/dev", "/private/etc"]
+            values += ["/System/Library", "/System/Cryptexes",
+                       "/System/Volumes/Preboot/Cryptexes/OS", "/Library", "/dev", "/private/etc"]
         values += [sys.base_prefix, sys.prefix]
         roots = sorted({Path(p).resolve() for p in values if Path(p).is_dir()}, key=lambda p: len(p.parts))
         # Avoid overlapping mounts, which could otherwise re-expose a writable subtree.
@@ -156,7 +157,7 @@ class SandboxPolicy:
         return result
 
     def _linux(self, launcher: Path, scratch: Path, cwd: Path, seccomp_fd: int) -> list[str]:
-        args = [str(launcher), "--die-with-parent", "--new-session", "--unshare-all",
+        args = [str(launcher), "--die-with-parent", "--new-session", "--unshare-all", "--unshare-user",
                 "--disable-userns", "--cap-drop", "ALL"]
         for root in self._read_roots():
             args += ["--ro-bind", str(root), str(root)]
@@ -180,9 +181,12 @@ class SandboxPolicy:
         lines = ["(version 1)", "(deny default)", "(allow process-exec)", "(allow process-fork)",
                  "(allow signal (target same-sandbox))", "(allow process-info* (target same-sandbox))",
                  "(allow sysctl-read)", "(allow file-read-metadata)",
+                 '(allow system-mac-syscall (mac-policy-name "vnguard"))',
+                 '(allow system-mac-syscall (require-all (mac-policy-name "Sandbox") (mac-syscall-number 67)))',
+                 '(allow file-read* (literal "/"))',
                  '(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))',
                  '(allow file-write-data (literal "/dev/null"))']
-        lines += [f"(allow file-read* (subpath {quoted(root)}))" for root in readable]
+        lines += [f"(allow file-read* file-map-executable (subpath {quoted(root)}))" for root in readable]
         lines.append(f"(allow file-write* (subpath {quoted(scratch)}))")
         if self.mode == "workspace-write":
             exclusions = " ".join(f"(require-not (subpath {quoted(self.workspace / name)}))"
@@ -232,7 +236,7 @@ class SandboxPolicy:
                                    start_new_session=True, **extra)
             if probe.returncode:
                 reason = probe.stdout.decode("utf-8", errors="replace")[-1500:].strip()
-                raise SandboxUnavailable(f"{backend} could not establish isolation: {reason}")
+                raise SandboxUnavailable(f"{backend} could not establish isolation (exit {probe.returncode}): {reason}")
             if cancellation is not None and cancellation.is_set():
                 raise SandboxCancelled("Sandbox launch cancelled before payload start")
             if filter_file is not None:
