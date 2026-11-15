@@ -12,19 +12,25 @@ USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)
 class ShellSelection:
     def __init__(self, session, catalog: tuple[Shell, ...] | None = None):
         self.session = session
+        # Capture the startup choice before discovery: approval/mode changes
+        # must never enable host execution of version probes in this session.
+        self._probe_versions = session.settings.get("sandbox.mode", "disabled") == "disabled"
         # Share only the startup snapshot; each session owns its selection and additions.
-        self.catalog = tuple(discover_shells()) if catalog is None else catalog
+        self.catalog = tuple(discover_shells(execute=self._probe_versions)) if catalog is None else catalog
         self.available = list(self.catalog)
         self.current: Shell | None = None
         choice = os.environ.get("VIRGO_SHELL") or session.settings.get("shell.executable", "auto")
         try:
-            self.current = default_shell(self.available, t=session.t) if choice == "auto" else probe_shell(choice, t=session.t)
+            self.current = default_shell(self.available, t=session.t) if choice == "auto" else self.probe(choice)
             if choice == "auto" and catalog is not None:
-                self.current = probe_shell(self.current.executable, t=session.t)
+                self.current = self.probe(self.current.executable)
             self.remember(self.current)
         except (ValueError, TypeError) as error:
             self.current = None
             session.ui.print(session.t("harness.shell.unavailable", error=error), "warn")
+
+    def probe(self, value: str) -> Shell:
+        return probe_shell(value, t=self.session.t, execute=self._probe_versions)
 
     def remember(self, shell: Shell) -> None:
         for index, item in enumerate(self.available):
@@ -40,9 +46,9 @@ class ShellSelection:
             s.replace_tools("shell", tools, owner="core.shell")
             return
         jobs = s.services.get("jobs")
-        tools.append((make_shell_tool(self.current), ("subagent",) if jobs else ROLES_ALL))
+        tools.append((make_shell_tool(self.current, sandbox=lambda ctx: s.services["sandbox"].for_context(ctx)), ("subagent",) if jobs else ROLES_ALL))
         if jobs:
-            tools.append((make_shell_tool(self.current, jobs), ("main",)))
+            tools.append((make_shell_tool(self.current, jobs, sandbox=lambda ctx: s.services["sandbox"].for_context(ctx)), ("main",)))
         s.replace_tools("shell", tools, owner="core.shell")
 
     def select(self, shell: Shell, *, automatic=False) -> None:
@@ -95,9 +101,9 @@ def configure_shell(session, args: str) -> None:
                 return
             shell = options[labels.index(label)]
             # It may have disappeared while the picker was open.
-            shell = probe_shell(shell.executable, t=session.t)
+            shell = service.probe(shell.executable)
         else:
-            shell = probe_shell(default_shell(service.available, t=session.t).executable, t=session.t) if automatic else probe_shell(choice, t=session.t)
+            shell = service.probe(default_shell(service.available, t=session.t).executable) if automatic else service.probe(choice)
         service.select(shell, automatic=automatic)
     except (ValueError, OSError) as error:
         session.ui.print(session.t("harness.shell.failed", error=error, usage=session.t("harness.shell.usage")), "error")

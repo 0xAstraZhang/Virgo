@@ -8,9 +8,12 @@ import fnmatch
 import os
 import re
 import threading
+from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult, image_result
+from .sandbox_files import SandboxFileDenied, open_mutation
 from .truncate import MAX_BYTES, MAX_LINES
 
 IGNORE_DIRS = {
@@ -136,12 +139,19 @@ READ = AgentTool(
 # ---------------------------------------------------------------------------
 
 
-def _write(args: dict, ctx: ToolContext) -> ToolResult:
+def _write(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
     p = resolve(args["path"], ctx.cwd)
     with file_lock(p):
-        existed = p.exists()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(args["content"], encoding="utf-8")
+        if sandbox_policy is not None:
+            data = args["content"].encode("utf-8")
+            with open_mutation(p, sandbox_policy, create=True) as (stream, existed, commit):
+                stream.write(data)
+                stream.truncate()
+                commit()
+        else:
+            existed = p.exists()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(args["content"], encoding="utf-8")
     n = len(args["content"].encode("utf-8"))
     verb = ctx.t("tools.fs.overwrite") if existed else ctx.t("tools.fs.create")
     return ToolResult.text(
@@ -253,12 +263,16 @@ def _prepare_edit(args: dict) -> dict:
     return a
 
 
-def _edit(args: dict, ctx: ToolContext) -> ToolResult:
+def _edit(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
     p = resolve(args["path"], ctx.cwd)
     if not p.is_file():
         return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
-    with file_lock(p):
-        raw = p.read_bytes().decode("utf-8")  # no newline translation: CRLF is preserved explicitly
+    with file_lock(p), ExitStack() as stack:
+        stream = None
+        if sandbox_policy is not None:
+            stream, _, commit = stack.enter_context(open_mutation(p, sandbox_policy, create=False))
+        raw = (stream.read() if stream is not None else p.read_bytes()).decode("utf-8")
+        # No newline translation: CRLF is preserved explicitly.
         bom = raw.startswith(BOM)
         if bom:
             raw = raw[1:]
@@ -288,7 +302,14 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
         if updated == content:
             return ToolResult.error(ctx.t("tools.fs.edit_unchanged"))
         final = updated.replace("\n", "\r\n") if crlf else updated
-        p.write_text((BOM if bom else "") + final, encoding="utf-8", newline="")
+        final = (BOM if bom else "") + final
+        if stream is not None:
+            stream.seek(0)
+            stream.write(final.encode("utf-8"))
+            stream.truncate()
+            commit()
+        else:
+            p.write_text(final, encoding="utf-8", newline="")
     diff = "".join(
         difflib.unified_diff(
             content.splitlines(keepends=True),
@@ -337,6 +358,18 @@ EDIT = AgentTool(
     prepare_arguments=_prepare_edit,
     i18n_key="tools.edit",
 )
+
+
+def make_file_tool(tool: AgentTool, sandbox) -> AgentTool:
+    """Bind Core write/edit I/O to the caller's policy without changing its schema."""
+    def execute(args, ctx):
+        policy = sandbox(ctx)
+        try:
+            return tool.execute(args, ctx, sandbox_policy=policy)
+        except SandboxFileDenied as error:
+            return ToolResult.error(str(error), details={"status": "sandbox_denied", "sandbox": policy.describe()})
+
+    return replace(tool, execute=execute)
 
 # ---------------------------------------------------------------------------
 # glob / grep

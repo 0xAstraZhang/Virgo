@@ -1,0 +1,66 @@
+name: Native sandbox boundaries
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/virgo/**'
+      - 'tests/harness/test_sandbox_e2e.py'
+      - '.github/workflows/native-sandbox.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+permissions:
+  contents: read
+concurrency:
+  group: native-sandbox-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      VIRGO_REQUIRE_SANDBOX_TESTS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+      - name: Install Linux sandbox requirements on the test host
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap libseccomp2
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - run: uv sync --locked --dev
+      - name: Record native interpreter paths
+        shell: bash
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os, sys
+          from pathlib import Path
+          from virgo.tools.sandbox import SandboxPolicy
+          for name, value in (("executable", sys.executable), ("prefix", sys.prefix), ("base_prefix", sys.base_prefix)):
+              print(name, value, "resolved", Path(value).resolve())
+              if Path(value).is_symlink():
+                  print("link", os.readlink(value))
+          print("read_roots", SandboxPolicy("read-only", Path.cwd())._read_roots())
+          PY
+      - name: Exercise real native boundaries without capability skips
+        run: uv run --no-sync pytest -q tests/harness/test_sandbox_e2e.py --junitxml=native-sandbox.xml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: native-sandbox-${{ matrix.os }}
+          path: native-sandbox.xml
+          if-no-files-found: error
+          retention-days: 7

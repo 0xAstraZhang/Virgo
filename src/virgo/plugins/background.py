@@ -20,6 +20,7 @@ from ..diagnostics import capture_error, error_summary, safe_text
 from ..harness.extensions import ExtensionAPI
 from ..tools.bash import kill_tree, spawn
 from ..tools.command_output import display_output, open_output, read_output
+from ..tools.sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable, cleanup_process
 from ..tools.truncate import MAX_BYTES, budget
 
 
@@ -43,6 +44,7 @@ class Job:
     tool_call_id: str | None = None
     cwd: Path | None = None
     error_details: dict | None = None
+    sandbox: dict | None = None
     related_errors: list[dict] = field(default_factory=list)
 
     def elapsed(self) -> str:
@@ -110,6 +112,7 @@ class JobManager:
             "cwd": str(job.cwd),
             "output_path": str(job.log) if job.log else None,
             "duration": round((job.ended or time.time()) - job.started, 6),
+            **({"sandbox": job.sandbox} if job.sandbox is not None else {}),
             **(context or {}),
         }
         details = self.api.report_error(
@@ -158,19 +161,27 @@ class JobManager:
         if job.proc is None:
             return True
         try:
-            if job.proc.poll() is None:
-                kill_tree(job.proc)
-                job.proc.wait(timeout=5)
+            try:
+                if job.proc.poll() is None:
+                    kill_tree(job.proc)
+                    job.proc.wait(timeout=5)
+            finally:
+                cleanup_process(job.proc)
         except Exception as error:
-            self._report(job, error, phase="background.cleanup")
+            self._report(job, error, phase="background.cleanup",
+                         kind="fatal" if isinstance(error, SandboxProcessError) else None,
+                         code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
             return False
         return True
 
     def _start_failed(self, job: Job, error: BaseException, fh) -> None:
-        job.status = "killed" if isinstance(error, KeyboardInterrupt) else "failed"
+        cancelled = isinstance(error, (KeyboardInterrupt, SandboxCancelled))
+        job.status = "killed" if cancelled else "failed"
         job.ended = time.time()
         if isinstance(error, Exception):
-            self._report(job, error, phase="background.start")
+            self._report(job, error, phase="background.start", kind="aborted" if cancelled else "fatal",
+                         code="SANDBOX_UNAVAILABLE" if isinstance(error, SandboxUnavailable) else (
+                             "SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None))
         self._stop_process(job)
         if fh is not None:
             try:
@@ -196,6 +207,8 @@ class JobManager:
         store=None,
         agent="main",
         tool_call_id=None,
+        sandbox_policy=None,
+        cancellation=None,
     ) -> Job:
         shell = shell or self.api.services["shell"].current
         if shell is None:
@@ -205,13 +218,16 @@ class JobManager:
         )
         fh = None
         try:
-            job.log, fh = open_output(cwd, job.id)
-            proc = spawn(command, cwd, stdout=fh, interpreter=shell)
+            job.sandbox = sandbox_policy.describe() if sandbox_policy is not None else None
+            job.log, fh = open_output(cwd, job.id, **({"sandbox_policy": sandbox_policy} if sandbox_policy else {}))
+            proc = spawn(command, cwd, stdout=fh, interpreter=shell,
+                         **({"sandbox_policy": sandbox_policy, "output_path": job.log, "cancellation": cancellation} if sandbox_policy else {}))
         except BaseException as error:
             # A job that never started must not count as pending work forever.
             self._start_failed(job, error, fh)
             raise
         job.proc = proc
+        job.sandbox = getattr(proc, "_virgo_sandbox", None)
 
         def watch():
             status = "failed"
@@ -242,11 +258,15 @@ class JobManager:
                         context={"timeout_seconds": timeout} if timed_out else None,
                     )
             except Exception as error:
-                status = "killed" if job.signal.is_set() else "failed"
-                details = self._report(job, error, phase="background.watch")
+                status = "killed" if job.signal.is_set() and not isinstance(error, SandboxProcessError) else "failed"
+                details = self._report(job, error, phase="background.watch",
+                                       kind="fatal" if isinstance(error, SandboxProcessError) else None,
+                                       code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
                 job.result = error_summary(details, t=self.api.t)
             finally:
-                if not self._stop_process(job) and status != "killed":
+                # A cancellation request is not proof of process termination.
+                # Failed native teardown must remain a failed job.
+                if not self._stop_process(job):
                     status = "failed"
                 try:
                     fh.close()
@@ -327,7 +347,9 @@ class JobManager:
             try:
                 kill_tree(job.proc)
             except Exception as error:
-                self._report(job, error, phase="background.cancel")
+                self._report(job, error, phase="background.cancel",
+                             kind="fatal" if isinstance(error, SandboxProcessError) else None,
+                             code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
                 raise
 
     def _finish(self, job: Job, status: str) -> None:
@@ -460,6 +482,8 @@ def setup(api: ExtensionAPI) -> None:
         label = job.label if len(job.label) <= 300 else job.label[:300] + "…"
         head = f"{job.id} [{ctx.t('features.jobs.state.' + job.status)}] {ctx.t('features.jobs.kind.' + job.kind)}: {label} ({job.elapsed()})"
         details = {"job_id": job.id, "status": job.status, "exit_code": job.exit_code}
+        if job.sandbox is not None:
+            details["sandbox"] = job.sandbox
         if job.error_details is not None:
             details.update(error=job.error_details, related_errors=job.related_errors)
             head += "\n" + error_summary(job.error_details, t=api.t)

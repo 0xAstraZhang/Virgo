@@ -103,8 +103,8 @@ def shell_environment() -> dict[str, str]:
     return env
 
 
-def probe_shell(value: str, *, t=None) -> Shell:
-    """Validate and probe an exact supported executable; never accept arguments as a path."""
+def probe_shell(value: str, *, t=None, execute: bool = True) -> Shell:
+    """Validate an exact supported path, optionally executing its version probe."""
     t = t or Translator()
     value = os.path.expanduser(value)
     kind = Path(value).name.lower().removesuffix(".exe")
@@ -121,6 +121,10 @@ def probe_shell(value: str, *, t=None) -> Shell:
         and Path(executable).parent.name.lower() in {"system32", "sysnative"}
     ):
         raise ValueError(t("tools.shell.wsl"))
+    if not execute:
+        # Discovery is broker work. An active sandbox must not execute a
+        # project/PATH candidate merely to learn its version before isolation.
+        return Shell(kind, executable, "unknown")
     if kind in {"pwsh", "powershell"}:
         args = [
             "-NoLogo",
@@ -178,7 +182,7 @@ def probe_shell(value: str, *, t=None) -> Shell:
     return Shell(kind, executable, version)
 
 
-def discover_shells(extra: str | None = None) -> list[Shell]:
+def discover_shells(extra: str | None = None, *, execute: bool = True) -> list[Shell]:
     candidates: list[str] = [extra] if extra else []
     folders = [p for p in os.get_exec_path() if p and Path(p).is_absolute()]
     if os.name == "nt":
@@ -207,7 +211,7 @@ def discover_shells(extra: str | None = None) -> list[Shell]:
 
     def probe(candidate):
         try:
-            return probe_shell(candidate)
+            return probe_shell(candidate, execute=execute)
         except ValueError:
             return None
 
@@ -241,11 +245,28 @@ class ShellTool(AgentTool):
     shell: Shell | None = None
 
 
-def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
+def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
     from .bash import BASH_PARAMS, DEFAULT_TIMEOUT, MAX_TIMEOUT, format_output, run_command
     from .truncate import MAX_BYTES, MAX_LINES
 
     def execute(args, ctx):
+        from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable
+
+        policy = None
+        try:
+            policy = sandbox(ctx) if sandbox is not None else None
+            result = execute_with_policy(args, ctx, policy)
+        except SandboxCancelled as error:
+            result = ToolResult.error(str(error), details={"status": "aborted", "cancelled": True})
+        except SandboxUnavailable as error:
+            result = ToolResult.error(str(error), details={"status": "sandbox_unavailable"})
+        except SandboxProcessError as error:
+            result = ToolResult.error(str(error), details={"status": "sandbox_failed"})
+        if policy is not None:
+            result.details = {**(result.details or {}), "sandbox": policy.describe()}
+        return result
+
+    def execute_with_policy(args, ctx, policy):
         timeout = min(float(args.get("timeout") or DEFAULT_TIMEOUT), MAX_TIMEOUT)
         if jobs is not None and args.get("background"):
             job = jobs.start_command(
@@ -256,11 +277,13 @@ def make_shell_tool(shell: Shell, jobs=None) -> ShellTool:
                 store=ctx.review_source.root if ctx.review_source is not None else None,
                 agent=ctx.agent,
                 tool_call_id=ctx.call_id,
+                **({"sandbox_policy": policy, "cancellation": ctx.signal} if policy is not None else {}),
             )
             return ToolResult.text(
                 ctx.t("tools.shell.job_started", id=job.id, kind=shell.kind, version=shell.version)
             )
-        out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell)
+        out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell,
+                                        **({"sandbox_policy": policy} if policy is not None else {}))
         result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name, t=ctx.t)
         result.details.update(shell=shell.kind, executable=shell.executable, version=shell.version)
         return result

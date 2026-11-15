@@ -45,6 +45,8 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `effort` | `medium`；界面支持 `low`、`medium`、`high`、`xhigh`、`max` |
 | `maxTokens` | 未设置，使用适配器／模型默认值 |
 | `shell.executable` | `auto`；受支持的解释器名称或可执行文件路径 |
+| `sandbox.mode` | `disabled`；可显式选择 `read-only` 或 `workspace-write`，仅用户／启动配置生效 |
+| `sandbox.network` | `restricted`；不支持活动网络例外 |
 | `workMode` | `default`；`plan` 增加独立的只读权限上限 |
 | `permissions.mode` | `auto-review` |
 | `permissions.allow`、`permissions.deny` | 工具规则列表 |
@@ -121,7 +123,7 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 旧 `permissions.mode=plan`、`--permission-mode plan` 和直接使用 `session.permission_mode` 的 API 仍被接受。`/permissions plan` 现在进入独立工作模式，不替换已选择的审批策略。审批命令改变旧启动配置中的 `plan` 前，会先将 Plan 保留为独立状态。若此前没有另外显式选择审批策略，`/mode default` 会将旧 Plan 启动恢复为 `auto-review`。集成代码应使用 `session.services["permissions"].set_work_mode(...)` 切换独立模式；旧的直接赋值 API 保留兼容行为。
 
-模式命令影响当前 `AgentSession`，包括其子运行时及在其中切换的历史对话。命令不保存用户默认值，重启时也不从会话历史恢复模式，而是重新读取 `workMode`。CLI 的 `--mode` 仍控制输出格式，不表示工作模式。本改动没有引入操作系统沙箱、结构化计划产物或代码审查任务。TUI 现有权限选择器仍显示审批设置；`/mode` 和 `/permissions` 会显示独立工作模式。
+模式命令影响当前 `AgentSession`，包括其子运行时及在其中切换的历史对话。命令不保存用户默认值，重启时也不从会话历史恢复模式，而是重新读取 `workMode`。CLI 的 `--mode` 仍控制输出格式，不表示工作模式。工作模式选择本身不会启用操作系统沙箱，也不生成结构化计划产物或代码审查任务。TUI 现有权限选择器仍显示审批设置；`/mode` 和 `/permissions` 会显示独立工作模式。
 
 ## 权限
 
@@ -131,7 +133,7 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 | `accept-all` | 默认工作模式下跳过审批及 allow/deny 规则；不能覆盖独立 Plan 上限 |
 | `plan` | 旧只读入口；建议使用独立的 `/mode plan` 或 `workMode` 配置 |
 
-`auto_review` 插件提供模型审查；禁用后 Core 仍执行规则，不确定操作需要人工确认，非交互会话无法批准。自动审查分别判断用户授权和风险，返回 `allow`、`ask` 或 `deny`。证据不足或审查失败时进入现有人工确认；非交互运行无法批准该问题。明确拒绝会阻止操作。参数变化后，在工具真正执行前还会再次检查。这些是应用层检查，Virgo 不提供操作系统级沙箱。
+`auto_review` 插件提供模型审查；禁用后 Core 仍执行规则，不确定操作需要人工确认，非交互会话无法批准。自动审查分别判断用户授权和风险，返回 `allow`、`ask` 或 `deny`。证据不足或审查失败时进入现有人工确认；非交互运行无法批准该问题。明确拒绝会阻止操作。参数变化后，在工具真正执行前还会再次检查。这些是应用层检查，与需要显式启用的[原生命令沙箱](../guides/sandbox.md)分离。`accept-all` 不会绕过已启用的沙箱。
 
 规则采用 `tool(pattern)`，其中 pattern 使用 fnmatch 风格，也可以只写工具名模式。文件工具匹配路径，命令工具匹配命令，网页工具匹配查询或 URL。例如 `edit(src/**)`、`read(~/.ssh/*)`、`bash(npm test*)` 和 `mcp__server__*`。PowerShell 使用独立的 `powershell(...)` 规则。顺序见 [`harness/permission_policy.py`](../../../src/virgo/harness/permission_policy.py)，边界判断见 [`permission_scope.py`](../../../src/virgo/harness/permission_scope.py)。
 

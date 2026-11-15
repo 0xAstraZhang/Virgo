@@ -18,4 +18,9 @@ MESSAGES = {
     "work_mode.plan": "Plan (read-only)",
     "work_mode.invalid": "Invalid work mode. Choose: {modes}.",
     "work_mode.approval_unchanged": "Use /permissions to inspect the approval strategy. Only /mode default leaves the independent Plan mode.",
+    "sandbox.description": "show native command sandbox status",
+    "sandbox.status": "Sandbox: {mode}; backend: {backend}",
+    "sandbox.scope": "Native isolation covers Core shell processes. Python extensions and remote tools remain separately trusted. Configuration is startup-only.",
+    "sandbox.file_denied": "Sandbox denies file mutation: {path}",
+    "sandbox.cli": "select native shell isolation; independent of approval strategy",
 }

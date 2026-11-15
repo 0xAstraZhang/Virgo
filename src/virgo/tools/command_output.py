@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +20,37 @@ class CommandOutput:
     total_bytes: int = 0
 
 
-def open_output(cwd: Path, prefix: str):
+def open_output(cwd: Path, prefix: str, *, sandbox_policy=None):
+    if sandbox_policy is not None:
+        from .sandbox import SandboxUnavailable
+
+        sandbox_policy.validate(cwd)
+        if os.name == "nt":
+            raise SandboxUnavailable("Native sandbox output requires a supported POSIX backend")
+        # Logs belong to the originating workspace. Walk by directory descriptor
+        # so a metadata symlink cannot redirect broker writes between check/open.
+        directory = None
+        try:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            directory = os.open(sandbox_policy.workspace, flags)
+            for part in (".virgo", "outputs"):
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass
+                child = os.open(part, flags, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            name = f"{prefix}-{uuid.uuid4().hex}.log"
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=directory)
+            path = sandbox_policy.workspace / ".virgo" / "outputs" / name
+            return path, os.fdopen(fd, "wb", buffering=0)
+        except OSError as error:
+            raise SandboxUnavailable(f"Could not open originating sandbox output: {error}") from error
+        finally:
+            if directory is not None:
+                os.close(directory)
     fd, name = tempfile.mkstemp(prefix=f"{prefix}-", suffix=".log", dir=outputs_dir(cwd))
     return Path(name), os.fdopen(fd, "wb", buffering=0)
 

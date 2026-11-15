@@ -45,6 +45,8 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `effort` | `medium`; supported UI levels are `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxTokens` | Unset; adapter/model defaults apply |
 | `shell.executable` | `auto`; adapted shell name or executable path |
+| `sandbox.mode` | `disabled`; opt-in `read-only` or `workspace-write`, user/startup configuration only |
+| `sandbox.network` | `restricted`; no active network exceptions |
 | `workMode` | `default`; `plan` adds an independent read-only ceiling |
 | `permissions.mode` | `auto-review` |
 | `permissions.allow`, `permissions.deny` | Lists of tool rules |
@@ -121,7 +123,7 @@ The same effective policy filters model-visible tools and checks calls before ho
 
 Legacy `permissions.mode=plan`, `--permission-mode plan` and the direct `session.permission_mode` API remain accepted. `/permissions plan` now enters the independent work mode without replacing the selected approval strategy. When an approval command changes a legacy startup's `plan`, it first preserves Plan as independent state. `/mode default` leaves a legacy startup with `auto-review` unless another approval strategy has already been explicitly selected. Integrations should use `session.services["permissions"].set_work_mode(...)` for independent mode changes; the old direct assignment API retains its compatibility behavior.
 
-Mode commands affect the current `AgentSession`, including its child runtimes and conversations switched within that session. They do not save a user preference or restore a mode from conversation history on restart; startup reads `workMode` again. The CLI `--mode` option still controls output formatting, not work mode. This change does not introduce an OS sandbox, a structured plan artifact or a code-review task. The TUI's existing permission selector still displays the approval setting; `/mode` and `/permissions` show the independent work mode.
+Mode commands affect the current `AgentSession`, including its child runtimes and conversations switched within that session. They do not save a user preference or restore a mode from conversation history on restart; startup reads `workMode` again. The CLI `--mode` option still controls output formatting, not work mode. Work-mode selection itself does not enable an OS sandbox or create a structured plan artifact or code-review task. The TUI's existing permission selector still displays the approval setting; `/mode` and `/permissions` show the independent work mode.
 
 ## Permissions
 
@@ -131,7 +133,7 @@ Mode commands affect the current `AgentSession`, including its child runtimes an
 | `accept-all` | Skips approval review and allow/deny rules in default work mode; cannot override the independent Plan ceiling |
 | `plan` | Legacy read-only entry point; prefer the independent `/mode plan` or `workMode` setting |
 
-The `auto_review` plugin supplies model review. Without it, the Core retains rules and requires human confirmation for uncertain operations. Noninteractive sessions cannot approve those requests. Auto-review distinguishes authorization from risk. Its verdict is `allow`, `ask` or `deny`. Missing evidence or review failure requires the existing human confirmation; noninteractive runs cannot approve that prompt. An explicit denial blocks the operation. Execution is checked again immediately before the tool runs, after argument changes. These are application-level checks; Virgo does not provide an operating-system sandbox.
+The `auto_review` plugin supplies model review. Without it, the Core retains rules and requires human confirmation for uncertain operations. Noninteractive sessions cannot approve those requests. Auto-review distinguishes authorization from risk. Its verdict is `allow`, `ask` or `deny`. Missing evidence or review failure requires the existing human confirmation; noninteractive runs cannot approve that prompt. An explicit denial blocks the operation. Execution is checked again immediately before the tool runs, after argument changes. These are application-level checks, separate from the opt-in [native command sandbox](../guides/sandbox.md). `accept-all` does not bypass an active sandbox.
 
 Rules use `tool(pattern)` with fnmatch-style patterns, or a tool-name pattern alone. Path tools match paths; command tools match commands; web tools match queries/URLs. Examples include `edit(src/**)`, `read(~/.ssh/*)`, `bash(npm test*)` and `mcp__server__*`. PowerShell uses separate `powershell(...)` rules. See [`harness/permission_policy.py`](../../../src/virgo/harness/permission_policy.py) for ordering and [`permission_scope.py`](../../../src/virgo/harness/permission_scope.py) for boundary detection.
 

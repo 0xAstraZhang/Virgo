@@ -305,7 +305,10 @@ class ExtensionAPI:
         return self._session._before_tool(event) or self._session._before_tool_execute(event)
 
     def has_tool_hooks(self):
-        return (bool(self._session._additional_permission_policies)
+        # The Core sandbox limits local execution, not provider-hosted tools.
+        sandbox = self._session.services.get("sandbox")
+        return (any(owner != "core.sandbox" or policy is not sandbox
+                    for owner, policy in self._session._additional_permission_policies)
                 or self._session.bus.has_handlers("tool_call") or self._session.bus.has_handlers("tool_result"))
 
     def report_error(self, error, **kwargs):
