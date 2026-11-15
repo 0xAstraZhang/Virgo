@@ -4,9 +4,16 @@
 
 ## Validation status
 
-At revision `e52eeaa522b08f2202f343552d31306ce341a0d2`, both real Windows acceptance jobs reported 17 passed and 1 failed case, with no setup errors or skips. The remaining assertion expected Python's child exit code 7 to bypass the existing PowerShell wrapper, which catches unhandled native failures and returns 1. That fixture now performs its single write before an explicit PowerShell `exit 7`, retaining the exact exit/status, non-replay and cleanup assertions. The backend has not passed the complete acceptance suite at the recorded revision; see [the exact native run](https://github.com/0xAstraZhang/Virgo/actions/runs/43746201340).
+The real Windows security suite passed all 18 scenarios on both environments below at revision `e2e5c94ca9cb4e336092963a11f977cfcc4ee52b`. Each job also validated its XML report with zero failures, errors or skips. See [the exact native run](https://github.com/0xAstraZhang/Virgo/actions/runs/43747132842).
 
-The following sections describe the implemented request and verification path. They do not turn the failed end-to-end run into a support claim.
+| Validated runner | OS build | PowerShell | Python | Native result |
+| --- | --- | --- | --- | --- |
+| Windows Server 2022 Datacenter, x64 | 20348 | 7.6.10 | CPython 3.13.17, x64 | 18 passed |
+| Windows Server 2025 Datacenter, x64 | 26100 | 7.6.9 | CPython 3.13.17, x64 | 18 passed |
+
+These results cover administrator-run GitHub-hosted runners using local NTFS. They do not establish desktop Windows, ARM64/emulation or standard-account compatibility. The complete cross-platform comparison is a separate gate; check the current PR revision as described in [testing and CI](../development/testing-and-ci.md).
+
+The following sections describe the exercised permission model, host prerequisites and remaining limitations.
 
 ## Permission model
 
@@ -17,7 +24,7 @@ Approval permits the Core tool to request execution. It cannot change an active 
 | LPAC | A fresh AppContainer identity, with `ALL_APPLICATION_PACKAGES` access disabled; the process receives `registryRead` and `lpacInstrumentation` capabilities | Windows still has ambient `ALL RESTRICTED APPLICATION PACKAGES` grants. This is object ACL isolation, not a filesystem namespace or an exact read-path allowlist. |
 | Write-restricted token | `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE \| WRITE_RESTRICTED)` with one independent, random restricting SID | The extra check restricts writes. It does not by itself confine reads or networking. No Everyone or logon SID is added as an alternative write grant. |
 | Temporary file ACLs | Per-command read/execute or write ACEs for the workspace, selected runtimes and private profile; explicit mutation denials for read-only/protected objects | This requires ACL-edit authority on the affected objects and modifies their DACLs temporarily. It does not mount or copy a private filesystem. |
-| AppContainer network policy | No network capability is supplied; startup requires the Base Filtering Engine and Windows Firewall services to be running | No allowlisted domains, proxy-based boundary or unrestricted active network mode is implemented. Real network acceptance must pass before this is claimed as validated. |
+| AppContainer network policy | No network capability is supplied; startup requires the Base Filtering Engine and Windows Firewall services to be running | No allowlisted domains, proxy-based boundary or unrestricted active network mode is implemented. |
 | Crypto device lease | A temporary `0x00100003` allow ACE for the command's unique write SID on the exact `\Device\KsecDD` object | Grants file read/write-data and synchronize access to this device. It is not a whitelist of BCrypt functions or individual IOCTLs. No ETW provider ACL is changed. |
 | Null device lease | Temporary `0x0012019F` allow ACEs for the command's package SID and write SID on the exact `\Device\Null` object | Allows the generic read/write access used by `NUL` redirection and `subprocess.DEVNULL`; it grants no device ownership, DACL mutation, deletion or access to other device objects. |
 | Private desktop | Each command has a separate Low-integrity desktop. Its identities receive only attributes/global-atom access on the current window station | This modifies the current station DACL temporarily. It does not grant clipboard, screen, host-desktop access or permission to change desktop security. |
@@ -29,7 +36,7 @@ Approval permits the Core tool to request execution. It cannot change an active 
 
 ## Host and path prerequisites
 
-Discovery requires a native x64 process on the Windows 10 version family and the native APIs used by the backend. This is a preliminary API check, not a promise that every Windows 10/11 or Server release works. The observed runners used Windows Server 2022 Datacenter build 20348 with PowerShell 7.6.10, and Server 2025 Datacenter build 26100 with PowerShell 7.6.9; both used x64 CPython 3.13.17. Neither recorded run passed the complete security suite. Desktop Windows, ARM64/emulation and standard-account installations have not been validated.
+Discovery requires a native x64 process on the Windows 10 version family and the native APIs used by the backend. This is a preliminary API check, not a promise that every Windows 10/11 or Server release works. The validated configurations are listed above. Desktop Windows, ARM64/emulation and standard-account installations have not been validated.
 
 Active Windows execution accepts PowerShell 7 (`pwsh.exe`). Windows PowerShell 5.1, Git Bash and WSL are rejected by this backend. Selecting `disabled` retains the existing Windows shell executor and does not claim isolation.
 
@@ -65,7 +72,7 @@ This avoids a separate native binary distribution, but the project owns the Wind
 
 ## Verification and references
 
-The 18 scenarios in `tests/harness/test_windows_sandbox_e2e.py` were committed before the production backend. They cover positive workspace access, outside/ambient ACL access, read-only and metadata limits, reparse/hardlink paths, credential/handle inheritance, descendant tokens and process access, live TCP/UDP access, timeout/cancellation, background and child-runtime origin, non-replay and resource cleanup. The dedicated workflow runs the exact PR head on `windows-2022` and `windows-2025` and rejects any failure, error or skip. A correction to its LPAC verifier replaced an unsupported token query with native `AccessCheck`; the original 18 scenarios and assertions were retained. The measured BCrypt failure prompted additional acceptance definitions within those cases, committed before the device-lease fix: root/child device rights, unrelated ACE preservation during concurrent commands, normal/timeout/cancel cleanup, bad-image rollback and rejection of an untrusted coordination mutex.
+The 18 scenarios in `tests/harness/test_windows_sandbox_e2e.py` were committed before the production backend. They cover positive workspace access, outside/ambient ACL access, read-only and metadata limits, reparse/hardlink paths, credential/handle inheritance, descendant tokens and process access, live TCP/UDP access, timeout/cancellation, background and child-runtime origin, non-replay and resource cleanup. The dedicated workflow runs the exact PR head on `windows-2022` and `windows-2025` and rejects any failure, error or skip. A correction to its LPAC verifier replaced an unsupported token query with native `AccessCheck`; the original 18 scenarios and assertions were retained. Measured BCrypt and null-stream failures prompted additional acceptance definitions within those cases, committed before their device-lease fixes: root/child device rights, unrelated ACE preservation during concurrent commands, normal/timeout/cancel cleanup, bad-image rollback and rejection of an untrusted coordination mutex.
 
 References used for the implementation:
 

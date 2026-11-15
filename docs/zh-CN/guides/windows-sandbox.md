@@ -4,9 +4,16 @@
 
 ## 验证状态
 
-在提交 `e52eeaa522b08f2202f343552d31306ce341a0d2` 上，两组真实 Windows 验收均为 17 项通过、1 项失败，没有初始化错误或跳过。剩余断言误认为 Python 子进程的退出码 7 会直接穿过既有 PowerShell 包装逻辑；该逻辑会捕获未处理的原生命令失败并返回 1。此 fixture 已改为执行一次写入后由 PowerShell 显式 `exit 7`，保留精确退出码、状态、禁止重放及清理断言。记录的提交尚未通过完整验收，参见[对应的原生 CI 运行](https://github.com/0xAstraZhang/Virgo/actions/runs/43746201340)。
+在提交 `e2e5c94ca9cb4e336092963a11f977cfcc4ee52b` 上，下面两组真实 Windows 环境均通过全部 18 项安全场景，且各自的 XML 报告确认零失败、零错误、零跳过。参见[对应的原生 CI 运行](https://github.com/0xAstraZhang/Virgo/actions/runs/43747132842)。
 
-下面记录代码已经实现的权限请求与验证路径，不将尚未通过的端到端验收写成支持声明。
+| 已验证 runner | OS build | PowerShell | Python | 原生验收结果 |
+| --- | --- | --- | --- | --- |
+| Windows Server 2022 Datacenter，x64 | 20348 | 7.6.10 | CPython 3.13.17，x64 | 18 项通过 |
+| Windows Server 2025 Datacenter，x64 | 26100 | 7.6.9 | CPython 3.13.17，x64 | 18 项通过 |
+
+这些结果对应使用本地 NTFS、以管理员身份运行的 GitHub 托管 runner，不能证明桌面 Windows、ARM64／模拟执行或普通账户兼容性。完整跨平台对比是另一个独立门禁；应按[测试与 CI](../development/testing-and-ci.md)检查当前 PR 修订。
+
+下面记录已执行验收的权限模型、宿主前提和剩余限制。
 
 ## 权限模型
 
@@ -17,7 +24,7 @@
 | LPAC | 每次命令创建独立 AppContainer 身份，关闭 `ALL_APPLICATION_PACKAGES` 授权，赋予 `registryRead` 和 `lpacInstrumentation` capability | Windows 仍有 `ALL RESTRICTED APPLICATION PACKAGES` 的系统授权。这是对象 ACL 隔离，不是文件系统命名空间，也不是精确的读取路径白名单。 |
 | 写受限 Token | 使用 `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE \| WRITE_RESTRICTED)`，仅加入一个独立随机限制 SID | 附加检查约束写入；它本身不约束读取和网络。不把 Everyone 或 logon SID 加为替代写授权。 |
 | 临时文件 ACL | 为工作区、选定运行时和私有 profile 添加每次命令独立的读／执行或写 ACE；对只读及受保护对象明确拒绝修改 | 宿主必须能修改相应对象的 ACL。这会临时修改 DACL，不会挂载或复制私有文件系统。 |
-| AppContainer 网络策略 | 不提供网络 capability；启动要求 Base Filtering Engine 和 Windows Firewall 服务正在运行 | 未实现域名白名单、代理隔离边界或启用沙箱时的无限制网络模式。必须通过真实网络验收后，才能声明已验证。 |
+| AppContainer 网络策略 | 不提供网络 capability；启动要求 Base Filtering Engine 和 Windows Firewall 服务正在运行 | 未实现域名白名单、代理隔离边界或启用沙箱时的无限制网络模式。 |
 | 加密设备临时授权 | 在精确的 `\Device\KsecDD` 对象上，为命令的独立写 SID 临时添加 `0x00100003` 允许 ACE | 授予该设备的文件读写数据与同步权限，不是 BCrypt 函数或单独 IOCTL 的白名单；不会修改 ETW provider 的 ACL。 |
 | Null 设备临时授权 | 在精确的 `\Device\Null` 对象上，为命令的 package SID 和写 SID 临时添加 `0x0012019F` 允许 ACE | 允许 `NUL` 重定向及 `subprocess.DEVNULL` 使用的通用读写访问；不授予设备所有权、DACL 修改、删除或其他设备对象的访问权限。 |
 | 私有桌面 | 每次命令拥有独立的 Low 完整性级别桌面；在当前 window station 上仅向命令身份授予属性／全局原子访问权限 | 临时修改当前 station 的 DACL；不授予剪贴板、屏幕、宿主桌面访问或修改桌面安全配置的权限。 |
@@ -29,7 +36,7 @@
 
 ## 环境与路径要求
 
-后端发现要求 Windows 10 版本族上的原生 x64 进程，以及实现使用的原生接口。这只是接口预检查，不代表所有 Windows 10/11 或 Server 版本都兼容。已运行的 runner 为 Windows Server 2022 Datacenter build 20348／PowerShell 7.6.10，以及 Server 2025 Datacenter build 26100／PowerShell 7.6.9；两者均使用 x64 CPython 3.13.17。记录的两组运行均未通过完整安全验收。桌面 Windows、ARM64／模拟执行及普通账户安装方式尚未验证。
+后端发现要求 Windows 10 版本族上的原生 x64 进程，以及实现使用的原生接口。这只是接口预检查，不代表所有 Windows 10/11 或 Server 版本都兼容；已验证组合见上表。桌面 Windows、ARM64／模拟执行及普通账户安装方式尚未验证。
 
 启用 Windows 沙箱时只接受 PowerShell 7（`pwsh.exe`）。Windows PowerShell 5.1、Git Bash 和 WSL 会被该后端拒绝。选择 `disabled` 时沿用现有 Windows Shell 执行器，不宣称隔离。
 
@@ -65,7 +72,7 @@ Core `write`／`edit`、可信扩展、hooks、远程工具和宿主本身在 LP
 
 ## 验收与参考
 
-`tests/harness/test_windows_sandbox_e2e.py` 的 18 个场景先于生产后端提交，覆盖工作区正向访问、工作区外与系统包 ACL、只读及元数据上限、重解析与硬链接、凭据与句柄继承、后代 Token 及进程访问、真实 TCP／UDP、超时／取消、后台与子 Runtime 来源、禁止重放及资源清理。专用 workflow 在 `windows-2022` 和 `windows-2025` 上运行精确 PR head，任何失败、错误或跳过都会拒绝验收。LPAC 验证器修正只将不受支持的 Token 查询换成原生 `AccessCheck`，保留原有 18 个场景与断言。针对实测 BCrypt 失败，又在这些场景中加入设备授权验收定义，并先于设备修复提交：父子进程设备权限、并发命令间无关 ACE 保留、正常／超时／取消清理、坏映像回滚，以及不可信协调 mutex 的拒绝。
+`tests/harness/test_windows_sandbox_e2e.py` 的 18 个场景先于生产后端提交，覆盖工作区正向访问、工作区外与系统包 ACL、只读及元数据上限、重解析与硬链接、凭据与句柄继承、后代 Token 及进程访问、真实 TCP／UDP、超时／取消、后台与子 Runtime 来源、禁止重放及资源清理。专用 workflow 在 `windows-2022` 和 `windows-2025` 上运行精确 PR head，任何失败、错误或跳过都会拒绝验收。LPAC 验证器修正只将不受支持的 Token 查询换成原生 `AccessCheck`，保留原有 18 个场景与断言。针对实测 BCrypt 及空设备流访问失败，又在这些场景中加入设备授权验收定义，并先于各自设备修复提交：父子进程设备权限、并发命令间无关 ACE 保留、正常／超时／取消清理、坏映像回滚，以及不可信协调 mutex 的拒绝。
 
 - [Microsoft：启动 AppContainer／LPAC](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)
 - [Restricted Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens) 与 [CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
