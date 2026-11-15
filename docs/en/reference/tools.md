@@ -31,6 +31,8 @@ With a vision-capable model on the ChatGPT account connection, image results fro
 
 ## Focused subagents
 
+The default system guidance tells Virgo to work directly and delegate only when the user explicitly requests delegation or parallel agents. The enabled `agent` tool remains available under the configured permissions.
+
 The `agent(description, prompt, read_only=false, background=false)` tool delegates a focused task with an independent context and returns its final answer; include relevant context in the task prompt. `read_only=true` limits tools to `read`, `glob`, `grep`, and `bash` under plan-mode command checks (no PowerShell). This is not an OS sandbox. By default, the child has no extra restrictions beyond its parent's permission ceiling. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. An exhausted turn limit, interrupted final response, or empty final answer is reported as **incomplete**, not success. On a child failure, the parent receives bounded recent tool-error reasons and explicitly linked diagnostics; a successful delegation still returns only the final answer. Calls with the removed `type` argument are rejected. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
 
 ## Background jobs

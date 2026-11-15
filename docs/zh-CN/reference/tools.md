@@ -31,6 +31,8 @@ Core 始终提供文件和所选 Shell 工具。下列可选工具由 `web`、`t
 
 ## 聚焦的子 Agent
 
+默认系统指导要求 Virgo 直接执行任务，仅在用户明确要求委派或并行代理时使用子代理。已启用的 `agent` 工具仍按配置的权限提供。
+
 `agent(description, prompt, read_only=false, background=false)` 使用独立上下文处理任务并返回最终答案，所需上下文必须包含在任务提示里。`read_only=true` 仅允许 `read`、`glob`、`grep`、`bash`，并通过 `plan` 模式限制 Shell 命令（无 PowerShell）；这不是操作系统沙箱。默认子代理不施加额外限制，但不能突破父代理权限上限。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。达到轮数上限、最终回答中断或最终回答为空时，会明确报告**未完成**，而不是成功。子代理失败时，父代理能收到有长度限制的近期工具错误原因及明确传递的诊断证据；成功时仍只返回最终回答。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 ## 后台任务
