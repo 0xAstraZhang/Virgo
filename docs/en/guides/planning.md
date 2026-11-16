@@ -107,7 +107,7 @@ The existing SessionStore holds `work_mode` and `proposed_plan` custom records. 
 
 ## Request and execution boundaries
 
-Entering Plan restricts calls that have not started. The next model request uses Plan instructions and tools, and the existing preflight and execution checkpoints enforce the mode for the originating Runtime. Leaving Plan while that conversation is running is rejected; wait for it to finish or stop it before relaxing the mode or confirming a plan.
+Entering Plan restricts calls that have not started. The next model request uses Plan instructions and tools, and the existing preflight and execution checkpoints enforce the mode for the originating Runtime. Leaving Plan or confirming execution is rejected while that conversation has an active request or a queued or running child agent, even if its main agent has finished. Wait for that work to finish or stop it before trying again. Work owned by another conversation does not block this one. A busy rejection does not save a confirmation.
 
 Already running processes retain the permissions and Sandbox policy used at launch. A mode change does not terminate them or retroactively revoke their access. The mode status distinguishes that limit; see [Command shells](shells.md) for cancellation behavior.
 

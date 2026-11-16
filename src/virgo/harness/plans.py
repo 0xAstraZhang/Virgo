@@ -117,7 +117,7 @@ class Plans:
         """Called inside Session.run's admission lock, before busy becomes true."""
         s = self.session
         rt = self._main(runtime)
-        if rt is not s.main or s.busy or rt.agent.running:
+        if rt is not s.main or s.runtime_is_busy(rt):
             raise ValueError(s.t("plan.busy"))
         proposal = rt.proposed_plan
         if proposal is None:
@@ -133,9 +133,11 @@ class Plans:
         # listener may revise the plan or switch conversations reentrantly.
         # Never overwrite that newer selection or execute the stale proposal.
         def still_selected(current):
-            return (rt is s.main and rt.proposed_plan is current
-                    and s.services["permissions"].work_mode_for(rt) == "default"
-                    and not s.busy and not rt.agent.running)
+            # Pending-work inspection also calls synchronous plugins. Recheck
+            # the selection after those callbacks, with no further dispatch.
+            return (not s.runtime_is_busy(rt)
+                    and rt is s.main and rt.proposed_plan is current
+                    and s.services["permissions"].work_mode_for(rt) == "default")
 
         if not still_selected(proposal):
             raise ValueError(s.t("plan.stale"))

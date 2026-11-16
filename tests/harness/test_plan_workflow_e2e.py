@@ -5,7 +5,8 @@ plan retains an earlier confirmation; a missing, stale, or foreign token starts
 execution; explicit execution loses the exact plan or broadens approvals or the
 sandbox; replay starts a run or restores a grant; a conversation switch lends its
 mode or plan to an older runtime/child; startup defaults discard saved Plan; a
-busy model request admits a second execution. These scenarios exercise assembled
+busy model request or queued/running descendant admits execution or loses Plan.
+These scenarios exercise assembled
 sessions, the real tool loop, disk persistence, and actual file side effects.
 """
 from __future__ import annotations
@@ -358,3 +359,121 @@ def test_busy_request_cannot_confirm_or_queue_an_execution(make_session):
         worker.join(5)
     assert not worker.is_alive() and not failures
     assert not session.run_pending()
+
+
+@pytest.mark.parametrize("action", ["mode", "execute"])
+@pytest.mark.parametrize("stage", ["queued", "running"])
+def test_background_planning_child_blocks_only_its_origin_before_confirmation(
+    make_session, project, monkeypatch, action, stage,
+):
+    session = make_session(persist=True, settings={
+        "profile": "minimal", "workMode": "plan",
+        "plugins": {"subagent": {"enabled": True}, "background": {"enabled": True}},
+    }, refresh_models=False, extensions=False)
+    plan = propose(session)
+    origin, origin_path = session.main, session.store.path
+    entered, release = threading.Event(), threading.Event()
+    child_results = []
+
+    def record_child(event, runtime):
+        if (runtime.role != "main" and event.type == "message_end"
+                and isinstance(event.message, ToolResultMessage)):
+            child_results.append(event.message)
+
+    session.bus.on("agent_event", record_child)
+    subagents = session.services["subagents"]
+    run_child = subagents.run
+
+    def delayed_child(*args, **kwargs):
+        if stage == "queued":
+            entered.set()
+            assert release.wait(5), "Release the job before its child Runtime is created"
+        return run_child(*args, **kwargs)
+
+    monkeypatch.setattr(subagents, "run", delayed_child)
+
+    def respond(context):
+        if context.messages[0].text() == "Investigate the source in Plan":
+            if isinstance(context.messages[-1], ToolResultMessage):
+                return faux.reply("The investigation is complete.")
+            if stage == "running":
+                entered.set()
+                assert release.wait(5), "Release the child's in-flight Plan request"
+            return faux.reply(tools=[("write", {"path": "child.txt", "content": "unauthorized"})])
+        if context.messages[-1].text() == "Start a background investigation":
+            return faux.reply(tools=[("agent", {
+                "description": "Investigate the source", "prompt": "Investigate the source in Plan",
+                "background": True,
+            })])
+        return faux.reply("The lead is idle.")
+
+    faux.handler("test", respond)
+    job = None
+    try:
+        session.prompt("Start a background investigation")
+        assert entered.wait(5)
+        job = next(iter(session.services["jobs"].jobs.values()))
+        assert not session.busy and not origin.agent.running
+        assert bool(session._child_runtimes) == (stage == "running")
+
+        # Work owned by another conversation must not prevent this one executing.
+        session.new_session()
+        session.prompt("/plan edit # A separate conversation's proposal")
+        other = session.services["plans"].current
+        session.prompt(f"/plan execute {other.token}")
+        assert session.services["plans"].current.confirmed_revision == other.revision
+        assert session.services["permissions"].work_mode == "default"
+        session.open_session(origin_path)
+
+        count = len(calls())
+        saved = session.store.custom("proposed_plan")
+        session.prompt("/mode default" if action == "mode" else f"/plan execute {plan.token}")
+        selected_mode = session.services["permissions"].work_mode
+        selected_plan = session.services["plans"].current
+        saved_after = SessionStore.load(origin_path).custom("proposed_plan")
+        calls_after = len(calls())
+    finally:
+        release.set()
+        if job is not None:
+            assert job.done.wait(5)
+
+    assert not (project / "child.txt").exists(), "An outstanding Plan task must not gain write access"
+    assert child_results and child_results[0].is_error
+    assert selected_mode == "plan" and selected_plan is plan
+    assert saved_after == saved, "Rejected execution must not persist a confirmation"
+    assert calls_after == count
+    assert session.t("plan.busy" if action == "execute" else "work_mode.busy") in session.ui.text
+
+    # Completion releases admission without removing the existing job record.
+    session.prompt(f"/plan execute {plan.token}")
+    assert session.services["plans"].current.confirmed_revision == plan.revision
+    assert session.services["permissions"].work_mode == "default"
+
+
+def test_reentrant_pending_work_inspection_cannot_execute_a_revised_plan(make_session):
+    session = make_session(settings={"profile": "minimal", "workMode": "plan"},
+                           refresh_models=False, extensions=False)
+    original = propose(session)
+    revised = []
+
+    def inspect(runtime):
+        if runtime.proposed_plan.confirmed_revision is not None and not revised:
+            revised.append(session.services["plans"].replace(REVISED_PLAN, runtime=runtime))
+        return False
+
+    unsubscribe = session.bus.on("runtime_pending_work", inspect)
+    count = len(calls())
+    faux.push("test", faux.reply("Only the current explicitly selected plan may execute."))
+    session.prompt(f"/plan execute {original.token}")
+    unsubscribe()
+
+    assert session.services["plans"].current is revised[0]
+    assert revised[0].revision == original.revision + 1
+    assert revised[0].confirmed_revision is None
+    assert session.services["permissions"].work_mode == "plan"
+    assert len(calls()) == count and session.t("plan.stale") in session.ui.text
+
+    session.prompt(f"/plan execute {revised[0].token}")
+    assert len(calls()) == count + 1
+    latest = [message for message in session.main.messages if isinstance(message, UserMessage)][-1]
+    assert REVISED_PLAN in latest.text()

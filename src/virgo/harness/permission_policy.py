@@ -152,9 +152,8 @@ class Permissions:
             root = self._root_runtime(runtime or getattr(self.session, "main", None))
             previous = self.work_mode_for(root)
             legacy = self.session.permission_mode == "plan"
-            if mode == "default" and previous == "plan" and root is not None and (
-                root.agent.running or (root is self.session.main and self.session.busy)
-            ):
+            if (mode == "default" and previous == "plan" and root is not None
+                    and self.session.runtime_is_busy(root)):
                 raise ValueError(self.session.t("work_mode.busy"))
             if previous == mode and not legacy:
                 return
