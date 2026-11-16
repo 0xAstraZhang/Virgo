@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -184,9 +185,13 @@ def test_search_review_selects_the_same_files_as_the_glob_tools(make_session, tm
     ]), faux.reply("done"))
     session.prompt("Keep glob selection and content reads distinct")
     results = tool_results(session)
-    assert not results[0].is_error and "src/link.py" in results[0].text()
+    assert not results[0].is_error
+    assert {Path(line) for line in results[0].text().splitlines()} == {
+        Path("src/link.py"), Path("src/pkg/inside.py"),
+    }
     assert results[1].is_error
-    assert not results[2].is_error and "src/pkg/inside.py" in results[2].text()
+    assert not results[2].is_error
+    assert {Path(line) for line in results[2].text().splitlines()} == {Path("src/pkg/inside.py")}
     assert not results[3].is_error and "value = 1" in results[3].text()
     assert "OUTSIDE_SECRET" not in repr(results)
 
