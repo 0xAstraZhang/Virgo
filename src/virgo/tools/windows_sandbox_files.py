@@ -265,14 +265,15 @@ def open_output(policy, prefix):
     workspace = Path(normalize_path(policy.workspace))
     with ExitStack() as pins:
         directory = pins.enter_context(open_path(workspace, 0x1, directory=True,
-                                                  share_delete=False, share_write=False))
+                                                  share_delete=False))
         for part in (".virgo", "outputs"):
-            # Deny deletion/rename while retaining the directory. Share flags
-            # alone do not block FILE_WRITE_ATTRIBUTES reparse conversion;
-            # every child open also uses the native no-reparse path checks.
+            # Pin the directory name without blocking child renames, whose
+            # destination-directory opens need write sharing. Share flags alone
+            # do not block FILE_WRITE_ATTRIBUTES reparse conversion; every child
+            # open also uses the native no-reparse path checks.
             directory = pins.enter_context(open_child(directory, part, 0x1, directory=True,
                                                        disposition=FILE_OPEN_IF,
-                                                       share_delete=False, share_write=False))
+                                                       share_delete=False))
         name = f"{prefix}-{uuid.uuid4().hex}.log"
         with open_child(directory, name, 0x2, directory=False, disposition=FILE_CREATE,
                         share_delete=False) as handle:

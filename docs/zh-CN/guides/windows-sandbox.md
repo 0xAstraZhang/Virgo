@@ -58,6 +58,8 @@
 
 只继承明确列出的 stdin/stdout 句柄。环境变量白名单忽略大小写，保留可执行文件搜索和区域设置，补充固定 Windows 运行时变量，并将 home/temp 指向私有 profile；不会转发厂商密钥、代理凭据或任意继承变量。明确放入已授权工作区的凭据不因此隐藏。
 
+工作区、cwd 和输出目录的保留句柄禁止删除对应目录，但允许写共享。[Windows 在重命名时以 `FILE_ADD_FILE` 打开目标目录](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/87f86c9b-6c2a-4803-84b7-131a74a434fa)；禁止写共享也会阻止对普通子文件的合法替换。这些共享标志不替代禁止 reparse 的路径检查或受保护元数据的只读 ACL。精确输出文件句柄仍禁止删除共享。
+
 根进程正常退出、超时和取消均清空同一个 Job，包括比根进程存活更久的后代。只有根进程对象已发出退出信号、内核 Job 计数为零时，才释放 ACL／profile 资源。并发命令使用不同身份；清理从当前 DACL 中仅移除本次命令的 ACE，不回写旧的完整 ACL 快照。文件／station 更新由每用户 mutex 协调，KsecDD 和 Null 更新各自由另外经过校验的机器范围 mutex 协调。这些锁协调 Virgo 实例；ACL 读取、合并、写入不是对外部管理员策略变更的事务。每个设备及其协调句柄会一直保留到 Job 清空且本命令的设备 ACE 已移除。启动或清理失败会报告错误，不能回退到普通进程或自动重放命令。
 
 宿主突然退出会关闭 Job 句柄，由 `KILL_ON_JOB_CLOSE` 请求内核终止进程；但崩溃后不会运行 Python ACL／profile 清理。临时文件、window station 或设备 ACE 及 AppContainer profile 可能保留。当前没有恢复日志或持久清理服务，每次命令身份独立且不复用。未提供资源配额，也不防御有特权的管理员修改宿主安全配置。

@@ -361,11 +361,12 @@ class WindowsSandbox:
                 raise SandboxUnavailable("Windows sandbox execution requires PowerShell 7 (select /shell pwsh)")
             with open_path(executable, 0x1, directory=False):
                 pass
-            # Pins preserve the originating root, cwd and protected runtime names.
+            # Deny deletion of the root/cwd themselves, but permit write sharing:
+            # native child renames open their destination directory for ADD_FILE.
             self._pins.enter_context(open_path(policy.workspace, 0x1, directory=True,
-                                                share_delete=False, share_write=False))
+                                                share_delete=False))
             self._pins.enter_context(open_path(self.cwd, 0x1, directory=True,
-                                                share_delete=False, share_write=False))
+                                                share_delete=False))
             # These capabilities use Windows' existing token-wide grants.
             # lpacInstrumentation permits ETW registrations wherever its SID is
             # authorized; this is not a per-provider whitelist or an ETW ACL edit.
