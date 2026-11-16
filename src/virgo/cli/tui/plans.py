@@ -17,7 +17,7 @@ class PlanEditor(ModalScreen[str | None]):
     PlanEditor { align: center middle; }
     PlanEditor > Vertical {
         width: 90%; height: 90%; padding: 1 2; border: solid #7C3AED;
-        background: $background; color: $foreground;
+        background: $background; color: $foreground; overflow-y: auto;
     }
     PlanEditor #plan-title { height: 1; text-style: bold; color: #7C3AED; }
     PlanEditor #plan-version { height: auto; text-style: dim; margin-bottom: 1; }
@@ -26,7 +26,7 @@ class PlanEditor(ModalScreen[str | None]):
         background: $background; color: $foreground; scrollbar-size-vertical: 1;
     }
     PlanEditor #plan-hints { height: auto; margin-top: 1; text-style: dim; }
-    PlanEditor #plan-actions { height: 3; margin-top: 1; }
+    PlanEditor #plan-actions { height: auto; margin-top: 1; }
     PlanEditor Button { width: 1fr; min-width: 0; margin-right: 1; }
     """
     BINDINGS = [

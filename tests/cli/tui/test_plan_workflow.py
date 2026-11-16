@@ -65,6 +65,55 @@ def test_plan_editor_saves_revision_then_requires_explicit_execution(make_sessio
     asyncio.run(scenario())
 
 
+def test_plan_editor_actions_remain_usable_after_compact_resize(make_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(faux.reply("compact plan executed"), ui=ui)
+        session.prompt("/plan edit " + PLAN)
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.editor.load_text("unsent conversation draft")
+            await pilot.press("ctrl+g")
+            await wait_for(pilot, lambda: app.has_modal)
+            app.screen.query_one("#plan-markdown", TextArea).load_text(REVISED)
+            await pilot.resize_terminal(36, 14)
+            await pilot.press("tab")
+            save = app.screen.query_one("#plan-save", Button)
+            assert app.focused is save
+            assert 0 <= save.region.y < save.region.bottom <= app.size.height
+            assert await pilot.click("#plan-save", offset=(save.region.width // 2, save.region.height // 2))
+            await wait_for(pilot, lambda: not app.has_modal and not app.controller.busy)
+            proposal = session.services["plans"].current
+            assert proposal.markdown == REVISED and proposal.confirmed_revision is None
+            assert app.editor.text == "unsent conversation draft"
+            assert not faux.CALLS["test"]
+
+            await pilot.press("ctrl+g")
+            await wait_for(pilot, lambda: app.has_modal)
+            await pilot.press("tab", "tab")
+            close = app.screen.query_one("#plan-cancel", Button)
+            assert app.focused is close
+            assert 0 <= close.region.y < close.region.bottom <= app.size.height
+            assert await pilot.click("#plan-cancel", offset=(close.region.width // 2, close.region.height // 2))
+            await wait_for(pilot, lambda: not app.has_modal)
+            assert not faux.CALLS["test"]
+
+            await pilot.press("ctrl+g")
+            await wait_for(pilot, lambda: app.has_modal)
+            await pilot.press("tab")
+            execute = app.screen.query_one("#plan-execute", Button)
+            assert app.focused is execute
+            assert 0 <= execute.region.y < execute.region.bottom <= app.size.height
+            assert await pilot.click("#plan-execute", offset=(execute.region.width // 2, execute.region.height // 2))
+            await wait_for(pilot, lambda: has_reply(app, "compact plan executed") and not app.controller.busy)
+            assert session.services["plans"].current.confirmed_revision == proposal.revision
+            assert app.editor.text == "unsent conversation draft"
+            await pilot.resize_terminal(80, 24)
+            assert session.services["plans"].current.markdown == REVISED
+
+    asyncio.run(scenario())
+
+
 def test_stale_plan_view_cannot_execute_or_overwrite_replacement(make_session):
     async def scenario():
         ui = FullscreenUI()
