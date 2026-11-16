@@ -125,7 +125,7 @@ def test_noninteractive_sessions_report_no_answer_without_a_prompt(make_session)
 
 def test_only_the_lead_agent_gets_the_tool_and_plan_mode_allows_it(make_session):
     ui = AskingUI(picks=[0])
-    s = make_session(faux.reply(tools=[("ask_user", ASK)]), faux.reply("ok"), ui=ui, mode="plan")
+    s = make_session(faux.reply(tools=[("ask_user", ASK)]), faux.reply("ok"), ui=ui, work_mode="plan")
     assert s.tool("ask_user") is not None
     assert s.tool("ask_user", "subagent") is None and s.tool("ask_user", "teammate") is None
     s.prompt("plan storage")
@@ -216,7 +216,7 @@ faux.script("t", faux.reply(tools=[("ask_user", ask)]), answer, faux.reply(tools
 faux.handler("t", lambda ctx: faux.reply("echo: " + ctx.messages[-1].text()))
 broker = ConsoleBroker()
 ui = TerminalUI(broker)
-session = AgentSession(ui=ui, model="faux/t", session=None, extensions=False, permission_mode="accept-all")
+session = AgentSession(ui=ui, model="faux/t", session=None, extensions=False, approval_policy="never")
 run_repl(session, ui, broker)
 """
 

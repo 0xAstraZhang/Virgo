@@ -215,12 +215,16 @@ class ExtensionAPI:
 
     def register_command(
         self, name: str, fn: Callable, description: str = "", concurrent: bool = False, *, argument_hint: str = "",
-        description_key: str = "", argument_hint_key: str = "",
+        description_key: str = "", argument_hint_key: str = "", isolated: bool = False,
     ) -> None:
-        """concurrent=True for commands that only read state (they may run while the agent works)."""
+        """concurrent=True permits read-only state queries during another run.
+
+        isolated=True bypasses prompt hooks and passes the captured source Runtime
+        as the callback's third argument. It still uses Core permission checks.
+        """
         self.session.commands.register(name, fn, description, source=self.name, concurrent=concurrent,
                                        argument_hint=argument_hint, description_key=description_key,
-                                       argument_hint_key=argument_hint_key)
+                                       argument_hint_key=argument_hint_key, isolated=isolated)
 
     def add_system_section(self, name: str, fn: Callable[[str], str | None], order: int = 50) -> None:
         """fn(role) -> text for the system prompt."""
@@ -229,15 +233,6 @@ class ExtensionAPI:
     def register_permission_policy(self, policy) -> None:
         """Add restrictions without replacing the mandatory Core policy."""
         self._undos.append(self._session.add_permission_policy(policy, owner=self.name))
-
-    def register_permission_reviewer(self, reviewer) -> None:
-        policy = self._session.permission_policy
-        if not callable(reviewer) or not callable(getattr(policy, "set_reviewer", None)):
-            raise TypeError("The Core policy requires a callable permission reviewer")
-        if getattr(policy, "reviewer", None) is not None:
-            raise ValueError("A permission reviewer is already registered")
-        policy.set_reviewer(reviewer)
-        self.on_cleanup(lambda: policy.set_reviewer(None))
 
     def add_runtime_system_section(self, name: str, fn: Callable, order: int = 50) -> None:
         """fn(RuntimeContext) -> text; construction errors reject the candidate."""
@@ -271,13 +266,13 @@ class ExtensionAPI:
     def runtime_for(self, event):
         return self.runtime_for_context(event)
 
-    def create_runtime(self, name: str, role: str, *, parent=None, permission=None, **kwargs):
+    def create_runtime(self, name: str, role: str, *, parent=None, read_only=False, **kwargs):
         if role == "main":
             raise ValueError("Plugins create child runtimes; the Host owns main sessions")
         parent = parent or self.current_runtime()
         if parent.session is not self._session:
             raise ValueError("Child runtime parent belongs to another session")
-        return self._session.create_runtime(name, role, parent=parent, permission=permission, **kwargs)
+        return self._session.create_runtime(name, role, parent=parent, read_only=read_only, **kwargs)
 
     def release_runtime(self, runtime):
         self._session.release_runtime(runtime)
@@ -294,16 +289,6 @@ class ExtensionAPI:
 
     def complete(self, *args, **kwargs):
         return self._session.complete(*args, **kwargs)
-
-    def review_input(self, event, reason):
-        from .permission_context import build_review_input
-
-        return build_review_input(self._session, event, reason)
-
-    def review_context_key(self, event):
-        from .permission_context import review_context_key
-
-        return review_context_key(self._session, event)
 
     def authorize_tool(self, event):
         return self._session._before_tool(event) or self._session._before_tool_execute(event)
@@ -486,7 +471,7 @@ def install_command_hooks(session: AgentSession) -> None:
                                                                         store=store))
 
     def source(ev):
-        return ev.review_source.root if ev.review_source is not None else session.store
+        return ev.origin.root if ev.origin is not None else session.store
 
     for index, hook in enumerate(hooks.get("PreToolUse", []), 1):
 

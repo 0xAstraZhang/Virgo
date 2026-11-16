@@ -196,6 +196,159 @@ def check_product_retirements(root):
         assert not report["retired_products"] and report[category] == [retired]
 
 
+def check_execution_policy_retirements(root):
+    """A second policy must not inherit another baseline's exceptions or gates.
+
+    Reproduce before implementation: exactly reviewed removals are rejected by
+    the old single-policy comparator. Wrong baselines/modules/parameters, failed
+    originals, every missing gate, failed/skipped/relocated gates, unrelated
+    removals and still-present failures must remain ordinary CI blockers.
+    """
+    baseline = "45bb6d52cffa4726e31329ba8f9c421b7b81d9a7"
+    retired = "test_failed_review_is_not_a_safety_denial[reply0-invalid-json]"
+    module = "tests.features.test_permission_verdicts"
+    preservation = {
+        "test_direct_main_event_binds_once_across_chat_switch": "tests.features.test_permission_context",
+        "test_unbound_nonmain_event_cannot_borrow_main_authorization": "tests.features.test_permission_context",
+        "test_background_subagent_captures_origin_before_worker_starts": "tests.features.test_permission_context",
+        "test_execution_rechecks_mode_arguments_and_symlink_boundary": "tests.features.test_permission",
+        "test_new_user_restriction_invalidates_session_approval": "tests.features.test_permission_verdicts",
+        "test_permission_hook_errors_cannot_fall_through_event_bus": "tests.features.test_permission_verdicts",
+        "test_background_job_notifies_idle_session": "tests.features.test_background",
+        "test_children_share_budget_permission_ceiling_and_cancellation": "tests.harness.test_core_plugins_e2e",
+    }
+    acceptance = {name: "tests.features.test_permission_policy_e2e" for name in (
+        "test_hard_sandbox_denial_does_not_request_approval",
+        "test_never_rejects_unknown_operations_without_blocking_workspace_writes",
+        "test_project_cannot_mark_a_mutating_command_read_only",
+        "test_project_cannot_select_authorization_grants[permission0]",
+        "test_project_cannot_select_authorization_grants[permission1]",
+        "test_project_cannot_turn_user_deny_into_accept_all",
+        "test_project_deny_rules_cannot_erase_user_restrictions[project_denies0]",
+        "test_project_deny_rules_cannot_erase_user_restrictions[project_denies1]",
+        "test_requested_config_cannot_pretend_host_shell_is_isolated",
+    )}
+    policy = json.loads((RUNNER.parent / "pipeline" / "execution_policy_retirements.json").read_text())
+    inventory = {case["name"]: case for case in policy["retired_cases"]}
+    assert policy["baseline_sha"] == baseline
+    assert len(inventory) == len(policy["retired_cases"]) == 42
+    assert inventory[retired]["classname"] == module
+
+    def run(label, *, old=None, original=retired, original_module=module, sha=None,
+            changed=None, moved=(), unrelated=None):
+        project = root / label
+        shutil.rmtree(project, ignore_errors=True)
+        project.mkdir(parents=True)
+        identities = {**preservation, **(acceptance if label == "head" else {})}
+        cases = {name: (path, "pass") for name, path in identities.items()}
+        if label == "base":
+            cases.update({name: (case["classname"], "pass") for name, case in inventory.items()})
+        if label == "base" or old is not None:
+            cases.pop(retired, None)
+            cases[original] = (original_module, old or "pass")
+        if unrelated is not None:
+            cases["test_unrelated_permission_guard"] = (module, unrelated)
+        for name, body in (changed or {}).items():
+            if body is None:
+                cases.pop(name, None)
+            else:
+                cases[name] = (identities[name], body)
+        for name in moved:
+            cases[name] = ("test_wrong_module", cases[name][1])
+        sources = {}
+        for name, (path, body) in cases.items():
+            function, separator, parameter = name.partition("[")
+            rows = sources.setdefault(path, {}).setdefault(function, [])
+            rows.append((parameter[:-1] if separator else None, body))
+        for path, functions in sources.items():
+            source = ["import pytest\n"]
+            for function, rows in functions.items():
+                if rows[0][0] is None:
+                    assert len(rows) == 1
+                    source.append(f"def {function}(): {rows[0][1]}\n")
+                else:
+                    parameters, bodies = map(list, zip(*rows, strict=True))
+                    source.append(f"@pytest.mark.parametrize('_outcome', {bodies!r}, ids={parameters!r})\n"
+                                  f"def {function}(_outcome): exec(_outcome)\n")
+            target = project / (path.replace(".", "/") + ".py")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("\n".join(source), encoding="utf-8")
+        subprocess.run([
+            sys.executable, str(RUNNER), "run", "--project", str(project),
+            "--output", str(root / "reports" / label), "--platform", "local",
+            "--label", label, "--sha", sha or (baseline if label == "base" else "head"),
+        ], check=False, stdout=subprocess.DEVNULL)
+
+    def compare(expected):
+        result = subprocess.run([
+            sys.executable, str(RUNNER), "compare", "--reports", str(root / "reports"),
+            "--output", str(root / "comparison"), "--platforms", "local",
+        ], check=False, stdout=subprocess.DEVNULL)
+        text = (root / "comparison.md").read_text(encoding="utf-8")
+        assert result.returncode == expected, text
+        report = json.loads((root / "comparison.json").read_text(encoding="utf-8"))["platforms"]["local"]
+        return report, text
+
+    run("base")
+    run("head")
+    report, text = compare(0)
+    assert report["removed"] == sorted(inventory)
+    assert report["retired_products"] == {
+        name: {key: case[key] for key in ("classname", "product")} for name, case in inventory.items()
+    }
+    assert not report["retired"] and not report["problems"]
+    assert policy["reason"] in text
+    assert "The six official non-coding product subsystems are removed." not in text
+    for name, path in {**preservation, **acceptance}.items():
+        assert f"`{path}::{name}`" in text
+    assert set(acceptance) <= set(report["added"])
+
+    # Selecting the historical baseline must never union both policy inventories.
+    for sha in ("other-baseline", "47e1757bda5c5cfafb3a5a508a1a6ec4d629bfaf"):
+        run("base", sha=sha)
+        report, text = compare(1)
+        assert not report["retired_products"] and policy["reason"] not in text
+    for options in ({"original_module": "test_same_name"},
+                    {"original": "test_failed_review_is_not_a_safety_denial[reply99-invalid-json]"},
+                    {"old": "assert False"}):
+        run("base", **options)
+        assert retired not in compare(1)[0]["retired_products"]
+    run("base", old="pytest.skip('old skip')")
+    assert retired not in compare(0)[0]["retired_products"]
+
+    # Each declared safety/acceptance gate is required, at the exact revision.
+    gates = [(label, name) for label in ("base", "head") for name in preservation]
+    gates += [("head", name) for name in acceptance]
+    for label, gate in gates:
+        run("base")
+        run("head")
+        run(label, changed={gate: None})
+        assert not compare(1)[0]["retired_products"]
+    for label, gate in (("base", next(iter(preservation))), ("head", next(iter(preservation))),
+                        ("head", next(iter(acceptance)))):
+        for options in ({"changed": {gate: "assert False"}},
+                        {"changed": {gate: "pytest.skip('not executed')"}}, {"moved": [gate]}):
+            run("base")
+            run("head")
+            run(label, **options)
+            assert not compare(1)[0]["retired_products"]
+
+    run("base", unrelated="pass")
+    run("head")
+    report, _ = compare(1)
+    assert set(report["retired_products"]) == set(inventory) and report["problems"]
+    assert "test_unrelated_permission_guard" in report["removed"]
+    for body, category in (("assert False", "regressions"), ("pytest.skip('new skip')", "new_skips")):
+        run("head", unrelated=body)
+        assert compare(1)[0][category] == ["test_unrelated_permission_guard"]
+    run("base")
+    for old, category in (("assert False", "regressions"), ("pytest.skip('new skip')", "new_skips")):
+        run("head", old=old)
+        report, _ = compare(1)
+        assert retired not in report["retired_products"] and retired not in report["removed"]
+        assert report[category] == [retired]
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="virgo-ci-check-") as directory:
         root = Path(directory)
@@ -395,6 +548,7 @@ def main():
         compare(1, "--target", str(target_path))
         check_retirements(root / "retirements")
         check_product_retirements(root / "product-retirements")
+        check_execution_policy_retirements(root / "execution-policy-retirements")
     print("CLI end-to-end checks passed")
 
 

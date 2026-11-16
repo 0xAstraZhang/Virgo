@@ -23,8 +23,6 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
   "effort": "medium",
   "shell": {"executable": "auto"},
   "permissions": {
-    "mode": "auto-review",
-    "allow": ["bash(uv run pytest*)"],
     "deny": ["bash(git push*)"]
   }
 }
@@ -45,12 +43,10 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `effort` | `medium`；界面支持 `low`、`medium`、`high`、`xhigh`、`max` |
 | `maxTokens` | 未设置，使用适配器／模型默认值 |
 | `shell.executable` | `auto`；受支持的解释器名称或可执行文件路径 |
-| `sandbox.mode` | `disabled`；可显式选择 `read-only` 或 `workspace-write`，仅用户／启动配置生效 |
-| `sandbox.network` | `restricted`；不支持活动网络例外 |
+| `sandbox.mode` | `workspace-write`；可选择 `read-only` 或显式 `disabled`，仅用户／启动配置生效 |
 | `workMode` | `default`；`plan` 增加独立的只读权限上限 |
-| `permissions.mode` | `auto-review` |
+| `permissions.approval` | `ask`；`never` 拒绝需要新增批准的操作 |
 | `permissions.allow`、`permissions.deny` | 工具规则列表 |
-| `permissions.readOnlyCommands` | 额外纳入只读执行判断的命令 |
 | `compaction.enabled` | `true` |
 | `compaction.triggerRatio` | 模型上下文窗口的 `0.8` |
 | `compaction.triggerTokens` | 未设置；提供时优先于比例阈值 |
@@ -66,7 +62,7 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 
 ## 预设与插件
 
-默认 `coding` 启用 `skills`、`todo`、`ask_user`、`diagnostic_get`、`subagent`、`background`、`web`、`auto_review`。MCP 仅在存在服务器配置时启用。`minimal` 默认无官方能力；显式 `plugins.<id>.enabled` 可覆盖任一预设。未知插件名和非法值会报告配置错误，不会静默启用能力。
+默认 `coding` 启用 `skills`、`todo`、`ask_user`、`diagnostic_get`、`subagent`、`background`、`web`、`code_review`。MCP 仅在存在服务器配置时启用。`minimal` 默认无官方能力；显式 `plugins.<id>.enabled` 可覆盖任一预设。未知插件名和非法值会报告配置错误，不会静默启用能力。
 
 ```json
 {
@@ -78,7 +74,7 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 
 示例仅选择 Skills 和 Todo 两个官方插件。权限、会话和诊断仍属于 Core。Python 扩展是单独的可信代码路径；使用 `--no-extensions` 禁用。项目不能自行授予信任；应使用 `--trust-project-extensions`，或将绝对目录加入用户 `extensions.trustedProjects`。
 
-旧 `features` 按配置层转换并提示；同层 `plugins` 优先，再应用通常的用户／项目／运行时顺序。`features.permission=false` 只关闭模型审查，不会关闭 Core 权限门。退役产品不再运行，原文件保留。别名、数据位置和兼容期限见[迁移](../guides/migrating-to-core-plugins.md)。
+旧 `features` 按配置层转换并提示；同层 `plugins` 优先，再应用通常的用户／项目／运行时顺序。`features.permission`、`plugins.auto_review` 和旧权限模式已退休，会报告迁移错误。退役产品不再运行，原文件保留。别名、数据位置和兼容期限见[迁移](../guides/migrating-to-core-plugins.md)。
 
 ## 模型与凭据
 
@@ -108,36 +104,50 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 ## 工作模式
 
-`/mode plan` 进入只读规划，`/mode default` 返回 Default，不执行方案；`/mode` 查看当前工作模式。这些 Core 命令在 `--profile minimal --no-extensions` 下也可用，不会请求模型。`/plan` 显示当前 ProposedPlan，`/plan edit` 替换 Markdown，`/plan execute <plan-id>:<revision>` 明确开始执行该版本。完整操作与编辑示例见[先规划，再执行](../guides/planning.md)。
-
-工作模式与审批策略分别保存。`/permissions accept-all` 或 `/permissions auto-review` 只改变审批策略，不会退出独立的 Plan 模式。返回 `default` 时保留已选择的审批策略，不会自行授予 `accept-all`。两个维度可分别配置：
+`/mode plan` 进入规划，`/mode default` 返回普通工作，不会直接执行提案。`--work-mode default|plan` 选择初始对话的工作意图，`--format text|json` 控制输出格式。它们独立于 `--approval ask|never` 和 `--sandbox`。详见[规划变更](../guides/planning.md)。
 
 ```json
 {
   "workMode": "plan",
-  "permissions": {"mode": "auto-review"}
+  "permissions": {"approval": "ask"},
+  "sandbox": {"mode": "workspace-write"}
 }
 ```
 
-同一套有效策略用于过滤模型可见工具、钩子前预检和执行前复检。Plan 上限跟随来源主 Runtime 及其子运行时，在切换对话后仍然有效；退出 Plan 不会移除子运行时自身的只读限制。进入 Plan 会约束尚未开始的调用；来源对话还有进行中的请求，或排队、运行中的子代理时，拒绝退出 Plan 或执行计划，其他对话的工作不会阻止它。已经运行的进程保留启动时策略。权限审计保留有效 `mode`，并分别记录 `work_mode` 和 `permission_mode`。
+此示例属于用户设置。项目可以请求 Plan，但不能用 `workMode=default` 放宽用户配置的 Plan 上限；用户可通过显式启动参数选择其他模式。已有对话保存自己的工作模式，新对话使用配置默认值。切换工作模式要求来源对话及其排队、运行中的后代任务空闲。通知只观察提交后的状态，不能重入模式、计划或运行准入变更。
 
-旧 `permissions.mode=plan`、`--permission-mode plan` 和直接使用 `session.permission_mode` 的 API 仍被接受。`/permissions plan` 现在进入独立工作模式，不替换已选择的审批策略。没有显式传入构造参数 `work_mode` 时，旧 Plan 启动也会为历史恢复保存 Plan 限制，即使尚未产生提案。模式或审批命令移除旧的全局限制前，会先为其他所有来源对话及其后代保留 Plan；状态保存失败时继续保留全局限制。`/mode default` 只解除所选对话的 Plan；若此前没有另外显式选择审批策略，旧 Plan 启动会恢复为 `auto-review`。集成代码应使用 `session.services["permissions"].set_work_mode(...)` 切换独立模式；旧的直接赋值 API 保留兼容行为。
+Plan 与只读子运行时只暴露只读工具，包括受控 `git_read`，不提供任意 Bash/PowerShell。子运行时只读能力独立于工作意图；只读调查或 Code Review 不会因此收到 Plan 指令。子运行时继承来源工作区，只能进一步收紧父级能力和审批上限。
 
-工作模式和当前 ProposedPlan 是通过 SessionStore 保存的对话状态。新对话使用配置的 `workMode`；切回已保留对话时使用其原 Runtime 和模式。打开保存的历史会恢复已保存的模式，但配置 `workMode: "plan"` 会保留 Plan 上限。显式 `AgentSession(work_mode="plan" | "default")` 覆盖初始对话的独立模式，不改变后续新对话的默认值。模式命令不保存用户偏好。
-
-恢复计划会清除本次会话的确认，不开始或排队执行。审批策略和 Sandbox 来自当前配置，不从历史计划元数据恢复。修改 Markdown 会递增版本并使旧确认失效；执行需要准确的当前 token，且对话必须空闲。计划确认不等于对后续工具调用的预先批准，也不解除 Sandbox。CLI 的 `--mode` 仍控制输出格式。选择 WorkMode 本身不启用操作系统沙箱，也不开始代码审查任务。
+计划在 SessionStore 中保存版本化 Markdown。`/plan execute <id>:<revision>` 将准确版本绑定到一次执行请求；保存或恢复提案不会执行。执行保留审批及 Sandbox 限制；返回 Default 不会把配置为只读的沙箱改成可写。已退休入口见[执行策略迁移](../guides/migrating-execution-policy.md)。
 
 ## 权限
 
-| 模式 | 行为 |
+| 审批策略 | 行为 |
 | --- | --- |
-| `auto-review` | 放行能确认工作区边界的操作；用小模型审查目录外、联网和边界不明的操作 |
-| `accept-all` | 默认工作模式下跳过审批及 allow/deny 规则；不能覆盖独立 Plan 上限 |
-| `plan` | 旧只读入口；建议使用独立的 `/mode plan` 或 `workMode` 配置 |
+| `ask` | 执行已经获授权的操作；不确定或尚未获授权的操作询问用户 |
+| `never` | 执行已经获授权的操作；需要新增批准的操作直接拒绝 |
 
-`auto_review` 插件提供模型审查；禁用后 Core 仍执行规则，不确定操作需要人工确认，非交互会话无法批准。自动审查分别判断用户授权和风险，返回 `allow`、`ask` 或 `deny`。证据不足或审查失败时进入现有人工确认；非交互运行无法批准该问题。明确拒绝会阻止操作。参数变化后，在工具真正执行前还会再次检查。这些是应用层检查，与需要显式启用的[原生命令沙箱](../guides/sandbox.md)分离。`accept-all` 不会绕过已启用的沙箱。
+Core 授权检查始终启用。不会再调用模型从对话历史、工具输出或摘要推断授权。两种策略均保留显式 deny、只读能力和 Sandbox 上限。`/permissions ask` 与 `/permissions never` 选择策略，`/permissions revoke` 清除记住的批准和拒绝；这些命令不改变 WorkMode 或 Sandbox。
 
-规则采用 `tool(pattern)`，其中 pattern 使用 fnmatch 风格，也可以只写工具名模式。文件工具匹配路径，命令工具匹配命令，网页工具匹配查询或 URL。例如 `edit(src/**)`、`read(~/.ssh/*)`、`bash(npm test*)` 和 `mcp__server__*`。PowerShell 使用独立的 `powershell(...)` 规则。顺序见 [`harness/permission_policy.py`](../../../src/virgo/harness/permission_policy.py)，边界判断见 [`permission_scope.py`](../../../src/virgo/harness/permission_scope.py)。
+工作区文件操作使用确定性路径策略。简单本地 Shell 形式仅在原生沙箱启用时可自动允许；命令分类只是便利判断，不能证明隔离。无隔离宿主 Shell、网络、工作区外和未知操作需要明确规则或人工批准。沙箱失败不授予宿主重试权；没有交互审批者时，未解决的批准请求会拒绝执行。
+
+只有用户设置和显式启动覆盖可授予权限或选择审批策略。项目 `permissions` 只接受 `deny`，并与用户拒绝列表合并。项目 `allow`、`approval`、旧 `mode` 或 `readOnlyCommands` 会报告配置错误；项目空列表不能清空用户 deny。
+
+规则采用 `tool(pattern)` 或单独的工具名称模式。文件路径和 Web 规则使用 fnmatch。Shell allow 规则匹配**完整、准确的命令**，包含通配符的命令授权会报错；只有确实授权整个能力时才使用单独的 `bash` 或 `powershell`。Shell deny 仍可使用宽范围模式。用户设置示例：
+
+```json
+{
+  "permissions": {
+    "approval": "ask",
+    "allow": ["bash(uv run --no-sync pytest -q)", "read(/opt/reference/**)"],
+    "deny": ["bash(git push*)", "read(~/.ssh/*)"]
+  }
+}
+```
+
+Deny 和能力检查先于授权与询问。参数变化后，执行前再次核验。记住的批准绑定来源任务、准确参数、cwd、可静态解析的路径目标、Shell 环境和显式策略状态。动态 Shell 路径与 PowerShell 脚本仅获得单次批准。策略变化或 `/permissions revoke` 使旧决定失效；新增自然语言消息本身不属于授权系统状态变更。
+
+审计记录保留来源任务、工作模式、只读上限、审批策略、决定和参数摘要。权限模型的风险及证据记录已退休。应用层检查与[原生 Shell 沙箱](../guides/sandbox.md)相互独立；后者不隔离可信 Python 扩展或远程工具。
 
 ## 上下文与重试
 

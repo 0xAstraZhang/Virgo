@@ -7,9 +7,9 @@ import os
 from .io import read_json, write_json
 from .reports import (
     BAD,
-    PRODUCT_RETIREMENTS,
     approved_product_retirements,
     approved_retirements,
+    product_retirement_policy,
     validate_report,
 )
 
@@ -155,12 +155,13 @@ def compare(args):
         markdown += [f"- `{identity['classname']}::{name}` — retired product: `{identity['product']}`."
                      for name, identity in sorted(result["retired_products"].items())] or ["No retired product cases."]
         if result["retired_products"]:
-            markdown += ["", PRODUCT_RETIREMENTS["reason"], "", "Preservation checks passed in base and head:", ""]
+            policy = product_retirement_policy(base["sha"])
+            markdown += ["", policy["reason"], "", "Preservation checks passed in base and head:", ""]
             markdown += [f"- `{identity['classname']}::{identity['name']}`"
-                         for identity in PRODUCT_RETIREMENTS["preservation_gates"]]
+                         for identity in policy["preservation_gates"]]
             markdown += ["", "Migration acceptance checks passed in head:", ""]
             markdown += [f"- `{identity['classname']}::{identity['name']}`"
-                         for identity in PRODUCT_RETIREMENTS["acceptance_gates"]]
+                         for identity in policy["acceptance_gates"]]
         markdown.append("")
         if base and head:
             markdown += ["Module-level collection skips:", "",

@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .. import __version__
-from ..harness.permissions import permission_mode_label
+from ..harness.permissions import approval_policy_label
 from ..harness.session import AgentSession
 from .console import ConsoleBroker, TerminalUI
 from .i18n import tr
@@ -54,7 +54,11 @@ def run_repl(
             version=__version__,
             model=session.model.spec,
             effort=session.effort,
-            permissions=permission_mode_label(session.permission_mode, session.t),
+            permissions=approval_policy_label(
+                session.approval_policy, session.t
+            ),
+            work_mode=session.t("work_mode." + session.services["permissions"].work_mode),
+            sandbox=session.services["sandbox"].effective_mode(session.main),
             cwd=session.cwd,
         ),
         "dim",
@@ -125,9 +129,14 @@ def run_repl(
                     session.abort()
                 break
             cmd = session.commands.get(line[1:].split(" ", 1)[0]) if line.startswith("/") else None
+            if (cmd is not None and cmd.name == "plan"
+                    and line.partition(" ")[2].split(maxsplit=1)[:1] in (["edit"], ["execute"]) and busy()):
+                ui.print(tr(session, "plan.busy"), "warn")
+                broker.resume_reading()
+                continue
             if cmd is not None and cmd.concurrent:
                 try:
-                    cmd.fn(session, line.partition(" ")[2])  # read-only: run inline, even while busy
+                    cmd.fn(session, line.partition(" ")[2])  # concurrent commands enforce their own admission
                 except Exception as e:  # noqa: BLE001 - a failing command must not end the REPL
                     session.report_error(e, phase="cli.command", context={"command": cmd.name})
                 if not busy():

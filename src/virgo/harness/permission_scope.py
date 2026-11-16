@@ -1,4 +1,4 @@
-"""Conservative shell classification for workspace access and planning mode."""
+"""Conservative shell scope hints for sandboxed default-mode approvals."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from ..i18n import Translator
 
 
 @dataclass(frozen=True)
-class ReviewBoundary:
+class ApprovalBoundary:
     """A policy result whose identity never depends on translated display text."""
 
     key: str
@@ -198,7 +198,7 @@ def _git_read_only(args: list[str]) -> bool:
     return sub == "config" and len(rest) == 2 and rest[0] in {"--get", "--get-all", "--get-regexp"}
 
 
-def _safe_read_words(words: list[str], extra: set[str]) -> bool:
+def _simple_read_words(words: list[str]) -> bool:
     words = _strip_assignments(words)
     if not words:
         return False
@@ -247,72 +247,13 @@ def _safe_read_words(words: list[str], extra: set[str]) -> bool:
         return False
     if name in READ_ONLY_COMMANDS:
         return True
-    candidates = {name, " ".join([name, *args[:1]]), " ".join([name, *args[:2]])}
-    return bool(candidates & extra)
+    return False
 
 
-def is_read_only_command(command: str, extra: set[str] | None = None) -> bool:
+def is_simple_read_command(command: str) -> bool:
+    """A default-mode convenience hint; never an execution or Plan boundary."""
     segments = split_segments(command)
-    return bool(segments) and all(_safe_read_words(words, extra or set()) for words in segments)
-
-
-def read_only_command_rejection(command: str, extra: set[str] | None = None) -> ReviewBoundary | None:
-    """Explain the first rejected segment, without changing the allow/deny classifier."""
-    segments = split_segments(command)
-    if not segments:
-        if ">" in command or "<" in command:
-            return ReviewBoundary("features.permission.readonly.redirection")
-        return ReviewBoundary("features.permission.readonly.shell_syntax")
-
-    for raw_words in segments:
-        if _safe_read_words(raw_words, extra or set()):
-            continue
-        words = _strip_assignments(raw_words)
-        if not words:
-            return ReviewBoundary("features.permission.readonly.environment")
-        executable, *args = words
-        name = PurePosixPath(executable).name
-        if "/" in executable and str(PurePosixPath(executable).parent) not in {"/bin", "/usr/bin"}:
-            return ReviewBoundary("features.permission.readonly.executable", {"command": executable})
-        if name == "git":
-            while len(args) >= 2 and args[0] == "-C":
-                args = args[2:]
-            risky_git_options = (
-                "--output", "--ext-diff", "--textconv", "--exec-path", "-O", "--open-files-in-pager"
-            )
-            option = next((arg for arg in args if arg.startswith(risky_git_options)), None)
-            if option:
-                return ReviewBoundary(
-                    "features.permission.readonly.option",
-                    {"command": "git", "option": option.split("=", 1)[0]},
-                )
-            return ReviewBoundary(
-                "features.permission.readonly.git", {"subcommand": args[0] if args else "(none)"}
-            )
-        if name in _LOCAL_WRITES:
-            return ReviewBoundary("features.permission.readonly.mutating", {"command": name})
-        if name in _NETWORK:
-            return ReviewBoundary("features.permission.readonly.network", {"command": name})
-        if name == "env" and args:
-            return ReviewBoundary("features.permission.readonly.env_execution")
-        risky_options = {
-            "find": ("-delete", "-exec", "-ok", "-fprint", "-fls"),
-            "sed": ("-i", "-f", "-e", "--file", "--in-place", "--expression"),
-            "sort": ("-o", "--output", "--compress-program"),
-            "rg": ("--pre", "--hostname-bin"),
-        }
-        option = next((a for a in args if a.startswith(risky_options.get(name, ()))), None)
-        if option:
-            return ReviewBoundary(
-                "features.permission.readonly.option",
-                {"command": name, "option": option.split("=", 1)[0]},
-            )
-        if name == "uniq" and len([a for a in args if not a.startswith("-")]) > 1:
-            return ReviewBoundary("features.permission.readonly.output_operand", {"command": name})
-        if name in READ_ONLY_COMMANDS or name == "date":
-            return ReviewBoundary("features.permission.readonly.unsupported_form", {"command": name})
-        return ReviewBoundary("features.permission.readonly.unverified", {"command": name})
-    return None
+    return bool(segments) and all(_simple_read_words(words) for words in segments)
 
 
 def _argument_value(name: str, argument: str) -> str:
@@ -374,26 +315,26 @@ def command_path_targets(command: str, cwd: Path) -> tuple[str, ...] | None:
         return None
 
 
-def command_review_reason(command: str, cwd: Path, workspace: Path, t=None) -> str:
-    """Empty means statically confined to the workspace; anything else goes to the reviewer."""
+def command_approval_reason(command: str, cwd: Path, workspace: Path, t=None) -> str:
+    """Empty is a convenience hint for sandboxed commands, never a proof of confinement."""
     boundary = command_boundary(command, cwd, workspace)
     return boundary.describe(t) if boundary is not None else ""
 
 
-def command_boundary(command: str, cwd: Path, workspace: Path) -> ReviewBoundary | None:
+def command_boundary(command: str, cwd: Path, workspace: Path) -> ApprovalBoundary | None:
     """Classify shell scope before resolving any human-readable explanation."""
     if not inside(str(cwd), cwd, workspace):
-        return ReviewBoundary("features.permission.scope.command_outside")
+        return ApprovalBoundary("features.permission.scope.command_outside")
     segments = split_segments(command, redirects=True)
     if not segments:
-        return ReviewBoundary("features.permission.scope.expansion")
+        return ApprovalBoundary("features.permission.scope.expansion")
     if any(char in command for char in "*?["):
-        return ReviewBoundary("features.permission.scope.wildcard")
+        return ApprovalBoundary("features.permission.scope.wildcard")
     current = cwd.resolve()
     for raw_words in segments:
         words = _strip_assignments(raw_words)
         if not words:
-            return ReviewBoundary("features.permission.scope.environment")
+            return ApprovalBoundary("features.permission.scope.environment")
         executable, *args = words
         name = PurePosixPath(executable).name
         # Inspect assignments too: an output directory can be supplied through an environment variable.
@@ -401,13 +342,13 @@ def command_boundary(command: str, cwd: Path, workspace: Path) -> ReviewBoundary
         for index, arg in enumerate(raw_words):
             value = _argument_value(name, arg)
             if re.search(r"(?:https?|ftp|ssh)://|^[^/\s]+@[^:\s]+:", value):
-                return ReviewBoundary("features.permission.scope.possible_network")
+                return ApprovalBoundary("features.permission.scope.possible_network")
             if (
                 value.startswith(("/", "~", ".."))
                 and index != command_index
                 and not inside(value, current, workspace)
             ):
-                return ReviewBoundary(
+                return ApprovalBoundary(
                     "features.permission.scope.command_path",
                     {"path": (current / os.path.expanduser(value)).resolve()},
                 )
@@ -416,14 +357,14 @@ def command_boundary(command: str, cwd: Path, workspace: Path) -> ReviewBoundary
                 "/" in value or (not value.startswith("-") and (candidate.exists() or candidate.is_symlink()))
             ) and index != command_index:
                 if not inside(value, current, workspace):
-                    return ReviewBoundary(
+                    return ApprovalBoundary(
                         "features.permission.scope.command_path",
                         {"path": (current / os.path.expanduser(value)).resolve()},
                     )
         if "/" in executable and str(PurePosixPath(executable).parent) not in {"/bin", "/usr/bin"}:
-            return ReviewBoundary("features.permission.scope.script")
+            return ApprovalBoundary("features.permission.scope.script")
         if name in _NETWORK:
-            return ReviewBoundary("features.permission.scope.network")
+            return ApprovalBoundary("features.permission.scope.network")
         # Redirections are allowed only when their targets resolve inside the workspace.
         plain = []
         index = 0
@@ -431,7 +372,7 @@ def command_boundary(command: str, cwd: Path, workspace: Path) -> ReviewBoundary
             word = words[index]
             if word in {"<", ">", ">>", "<>"}:
                 if index + 1 == len(words) or not inside(words[index + 1], current, workspace):
-                    return ReviewBoundary("features.permission.scope.redirection")
+                    return ApprovalBoundary("features.permission.scope.redirection")
                 index += 2
                 continue
             plain.append(word)
@@ -439,33 +380,33 @@ def command_boundary(command: str, cwd: Path, workspace: Path) -> ReviewBoundary
         args = plain[1:]
         if name == "cd":
             if os.environ.get("CDPATH"):
-                return ReviewBoundary("features.permission.scope.cdpath")
+                return ApprovalBoundary("features.permission.scope.cdpath")
             if any(token in command for token in (";", "\n", "|")) or re.search(r"(?<!&)&(?!&)", command):
-                return ReviewBoundary("features.permission.scope.conditional_cd")
+                return ApprovalBoundary("features.permission.scope.conditional_cd")
             if len(args) != 1 or args[0].startswith("-") or not inside(args[0], current, workspace):
-                return ReviewBoundary("features.permission.scope.outside_cd")
+                return ApprovalBoundary("features.permission.scope.outside_cd")
             current = (current / args[0]).resolve()
             continue
         if name == "git":
             git_cwd = current
             while len(args) >= 2 and args[0] == "-C":
                 if not inside(args[1], git_cwd, workspace):
-                    return ReviewBoundary("features.permission.scope.git_outside")
+                    return ApprovalBoundary("features.permission.scope.git_outside")
                 git_cwd = (git_cwd / args[1]).resolve()
                 args = args[2:]
             if not args:
-                return ReviewBoundary("features.permission.scope.git_review")
+                return ApprovalBoundary("features.permission.scope.git_review")
             if args[0] in {"fetch", "pull", "push", "clone", "ls-remote", "submodule"}:
-                return ReviewBoundary("features.permission.scope.git_network")
+                return ApprovalBoundary("features.permission.scope.git_network")
             if _git_read_only(args):
                 continue
-            return ReviewBoundary("features.permission.scope.git_hooks")
+            return ApprovalBoundary("features.permission.scope.git_hooks")
         if (
             name in _LOCAL_WRITES
             or name in {"echo", "printf"}
-            or _safe_read_words(plain, set())
+            or _simple_read_words(plain)
             or _local_check(plain)
         ):
             continue
-        return ReviewBoundary("features.permission.scope.unknown_command")
+        return ApprovalBoundary("features.permission.scope.unknown_command")
     return None

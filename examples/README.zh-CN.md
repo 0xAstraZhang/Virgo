@@ -12,7 +12,7 @@
 | [配置](project/.virgo/settings.json) | `.virgo/settings.json` | 语言、推理强度、Shell、权限及可选本地 API |
 | [MCP 配置](project/.virgo/mcp.json) | `.virgo/mcp.json` | 默认禁用的 stdio 服务占位示例 |
 | [敏感文件保护](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | 工具钩子与 `/stats` 命令 |
-| [审查模板](project/.virgo/prompts/review.md) | `.virgo/prompts/review.md` | 支持参数的 `/review` |
+| [审查模板](project/.virgo/prompts/inspect.md) | `.virgo/prompts/inspect.md` | 支持参数的 `/inspect` |
 | [代码审查技能](project/.virgo/skills/code-review/SKILL.md) | `.virgo/skills/code-review/` | 技能与单独的检查清单 |
 
 `project/.virgo/` 对应 Virgo 实际使用的项目配置目录。外层 `project/` 用于清楚展示示例，不属于目标路径。`AGENTS.example.md` 应放到项目根目录，而不是 `.virgo/` 内。
@@ -23,7 +23,7 @@
 
 ```bash
 mkdir -p /path/to/project/.virgo/prompts
-cp examples/project/.virgo/prompts/review.md /path/to/project/.virgo/prompts/review.md
+cp examples/project/.virgo/prompts/inspect.md /path/to/project/.virgo/prompts/inspect.md
 ```
 
 如果希望审查模板提到的技能可用，还需要复制 code-review 技能。新增扩展、模板、技能或 Agent 类型后，重启 Virgo。

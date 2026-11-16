@@ -11,7 +11,6 @@ from virgo.ai.stream import StreamEvent
 from virgo.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.controller import RunController
-from virgo.harness.permission_policy import ReviewDecision
 
 from tests.support.harness import wait_until
 from tests.support.tui import pump
@@ -228,11 +227,7 @@ def test_background_notification_wakes_idle_session(make_session):
     assert any(u.kind == "event" and u.payload.type == "message_end" for u in updates)
 
 
-def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, project, monkeypatch):
-    monkeypatch.setattr(
-        "virgo.plugins.auto_review.review_tool_call",
-        lambda *_: ReviewDecision("ask", "external file write needs approval"),
-    )
+def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, project):
     first, second = project.parent / "one.txt", project.parent / "two.txt"
     ui = FullscreenUI()
     session = make_session(
@@ -243,7 +238,7 @@ def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, 
             ]
         ),
         ui=ui,
-        mode="auto-review",
+        allow=False,
     )
     controller = RunController(session, ui)
     controller.start("write two files")

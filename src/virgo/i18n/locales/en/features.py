@@ -30,7 +30,7 @@ MESSAGES = {
     "features.commands.fetch": "choose page reader (/fetch [auto|http|deepseek|off])",
     "features.commands.jobs": "list background jobs",
     "features.commands.mcp": "show MCP servers (/mcp reconnect)",
-    "features.commands.permissions": "show or set permissions (auto-review|accept-all|plan)",
+    "features.commands.permissions": "show approval policy or select ask|never|revoke",
     "features.commands.search": "choose search backend (/search [auto|duckduckgo|deepseek|off])",
     "features.commands.skills": "list available skills (/skill:name to use one)",
     "features.commands.todos": "show the todo list",
@@ -99,50 +99,16 @@ MESSAGES = {
     "features.mcp.tools": "{count} tools",
     "features.permission.allow": "allow",
     "features.permission.allow_suffix": "  Allow? [y]es / [n]o / [a]lways this session",
-    "features.permission.approval_required": "automatic review requires approval: {reason}",
     "features.permission.cannot_remember": "Allowed once; dynamic shell paths cannot be remembered for this "
     "session.",
     "features.permission.check_failed": "Permission checking failed; the action was not executed.",
-    "features.permission.denied": "Automatic review denied this action: {reason}. Do not pursue the same "
-    "outcome by workaround or indirect execution. Use a materially safer "
-    "alternative or ask the user.",
     "features.permission.denied_rule": "Denied by permission rule {rule!r}.",
     "features.permission.deny": "deny",
-    "features.permission.interrupted": "Permission review was interrupted.",
-    "features.permission.invalid_mode": "permission mode must be one of {modes}",
-    "features.permission.mode.accept-all": "accept all",
-    "features.permission.mode.auto-review": "auto review",
-    "features.permission.mode.plan": "plan",
     "features.permission.no_approver": "Permission required ({reason}) but nobody is available to approve it. "
-    "Ask the user to rerun with an allow rule or a different "
-    "--permission-mode.",
-    "features.permission.plan_command_denied": "Read-only mode rejected this shell command: {reason} "
-    "Do not retry the same action using different syntax. Use read/glob/grep or a recognized "
-    "read-only command; if changes are required, report that write access is needed.",
-    "features.permission.readonly.redirection": "Shell redirection cannot be verified as read-only.",
-    "features.permission.readonly.shell_syntax": "Shell expansion, substitution, or syntax cannot "
-    "be verified as read-only.",
-    "features.permission.readonly.environment": "An environment override may change command behavior.",
-    "features.permission.readonly.executable": "Executable path {command!r} is not trusted for "
-    "read-only classification.",
-    "features.permission.readonly.git": "Git subcommand {subcommand!r} or its arguments are not "
-    "recognized as read-only.",
-    "features.permission.readonly.mutating": "Command {command!r} can modify files.",
-    "features.permission.readonly.network": "Command {command!r} can access the network.",
-    "features.permission.readonly.env_execution": "The env command can execute another program.",
-    "features.permission.readonly.option": "Option {option!r} of {command!r} can cause side effects "
-    "or cannot be verified as read-only.",
-    "features.permission.readonly.output_operand": "Command {command!r} uses a positional output file.",
-    "features.permission.readonly.unsupported_form": "The arguments to {command!r} are not a "
-    "recognized read-only form.",
-    "features.permission.readonly.unverified": "Command {command!r} is not recognized as read-only.",
-    "features.permission.plan_readonly": "Plan mode is read-only: investigate and plan, but do not modify "
-    "anything yet.",
-    "features.permission.review_failed": "automatic review could not complete ({failure}); this is not a safety "
-    "denial: {reason}",
+    "Ask the user to rerun with an allow rule or "
+    "--approval ask.",
     "features.permission.scope.action_path": "action accesses a path outside the workspace: {path}",
     "features.permission.scope.cdpath": "CDPATH makes directory changes ambiguous",
-    "features.permission.scope.code": "action can execute code or modify data outside the workspace",
     "features.permission.scope.command_outside": "command runs outside the workspace",
     "features.permission.scope.command_path": "command accesses a path outside the workspace: {path}",
     "features.permission.scope.conditional_cd": "conditional or subshell directory changes need review",
@@ -160,8 +126,6 @@ MESSAGES = {
     "features.permission.scope.possible_network": "command may use the network",
     "features.permission.scope.powershell": "PowerShell scripts require review; POSIX command boundary checks "
     "do not apply",
-    "features.permission.scope.previous_denial": "An earlier action was denied in this task; verify this action "
-    "is a materially safer alternative. ",
     "features.permission.scope.redirection": "redirection accesses a path outside the workspace",
     "features.permission.scope.script": "executing a script or nonstandard executable needs review",
     "features.permission.scope.search": "web search sends queries to an external search service",
@@ -173,7 +137,7 @@ MESSAGES = {
     "features.permission.scope.unknown_tool": "tool effects cannot be confined to the workspace without review",
     "features.permission.scope.wildcard": "wildcard paths may follow links outside the workspace",
     "features.permission.session_rules": "approved this session: {rules}",
-    "features.permission.status": "permission mode: {label}",
+    "features.permission.status": "approval policy: {label}",
     "features.permission.user_denied": "The user denied this tool call. Use a materially safer alternative or "
     "ask what they want instead.",
     "features.search.key": "DeepSeek search requires an official API key. Use /login api deepseek with "
@@ -212,4 +176,9 @@ MESSAGES = {
     "features.web.budget_requires_client": "An explicit shared web call budget requires client tools.",
     "features.search.max_uses": "search.maxUses must be null or a positive integer.",
     "features.fetch.max_uses": "fetch.maxUses must be null or a positive integer.",
+    'features.permission.approval.ask': 'ask when needed',
+    'features.permission.approval.never': 'never ask',
+    'features.permission.never': 'This operation requires new approval, but approval policy is never.',
+    'features.permission.read_only': 'This runtime permits only read-only tools; arbitrary shell commands and mutations are unavailable.',
+    'features.permission.scope.host_shell': 'host shell execution requires explicit authorization',
 }

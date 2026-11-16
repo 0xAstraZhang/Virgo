@@ -1,33 +1,37 @@
-"""Settings: defaults ⊕ ~/.virgo/settings.json ⊕ <project>/.virgo/settings.json (deep merge, project wins)."""
+"""Settings precedence with user-owned authorization and project-only restrictions."""
 
 from __future__ import annotations
 
 import copy
+import fnmatch
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from ..tools.sandbox import validate_config as validate_sandbox_config
+from .permissions import normalize_approval_policy
 from .work_modes import normalize_work_mode
 
 PROFILES = ("minimal", "coding")
 PLUGIN_IDS = (
-    "auto_review", "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web", "mcp",
+    "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web", "mcp",
+    "code_review",
 )
 REMOVED_FEATURES = frozenset({"schedule", "workflow", "team", "tasks", "memory", "goal"})
-_FEATURE_ALIASES = {"diagnostics": "diagnostic_get", "permission": "auto_review"}
+_FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
     "workMode": "default",
-    "sandbox": {"mode": "disabled", "network": "restricted"},
+    "sandbox": {"mode": "workspace-write"},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
     "providers": {},
-    "permissions": {"mode": "auto-review", "allow": [], "deny": [], "readOnlyCommands": []},
+    "permissions": {"approval": "ask", "allow": [], "deny": []},
     "hooks": {},
     "shell": {"executable": "auto"},
     "profile": "coding",
@@ -92,11 +96,17 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     if not isinstance(layer, dict):
         raise ValueError("settings must be a JSON object")
     out = copy.deepcopy(layer)
+    if "permissions" in out:
+        _validate_permissions(out["permissions"])
+    if isinstance(out.get("plugins"), dict) and "auto_review" in out["plugins"]:
+        raise ValueError("plugins.auto_review is retired; remove it and select permissions.approval=ask or never")
     legacy = out.pop("features", {})
     if not isinstance(legacy, dict):
         raise ValueError("features must be an object of boolean flags")
     translated: dict[str, dict] = {}
     for name, enabled in legacy.items():
+        if name in {"permission", "auto_review"}:
+            raise ValueError(f"features.{name} is retired; use permissions.approval=ask or never")
         if not isinstance(enabled, bool):
             raise ValueError(f"features.{name} must be a boolean")
         if name in REMOVED_FEATURES:
@@ -114,8 +124,6 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
             raise ValueError(f"Unknown legacy feature {name!r}; known plugins: {', '.join(PLUGIN_IDS)}")
         translated.setdefault(canonical, {})["enabled"] = enabled
         notices.append(f"features.{name} is deprecated; use plugins.{canonical}.enabled instead.")
-        if name == "permission" and not enabled:
-            notices.append("Core permission checks cannot be disabled by features.permission. Only automatic review is disabled; permissions.mode=accept-all remains an explicit opt-in.")
     web = translated.get("web", {})
     if web.get("searchEnabled") is False and web.get("fetchEnabled") is False:
         web["enabled"] = False
@@ -128,7 +136,34 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     return out
 
 
+def _validate_permissions(value: object) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("permissions must be an object")
+    if "mode" in value:
+        raise ValueError("permissions.mode is retired; use workMode for Plan and permissions.approval=ask or never")
+    if "readOnlyCommands" in value:
+        raise ValueError("permissions.readOnlyCommands is retired; read-only runtimes do not expose arbitrary Shell")
+    unknown = set(value) - {"approval", "allow", "deny"}
+    if unknown:
+        raise ValueError(f"Unknown permissions setting(s): {', '.join(sorted(unknown))}")
+    if "approval" in value:
+        normalize_approval_policy(value["approval"])
+    for name in ("allow", "deny"):
+        rules = value.get(name, [])
+        if not isinstance(rules, list) or any(not isinstance(rule, str) or not rule.strip() for rule in rules):
+            raise ValueError(f"permissions.{name} must be a list of nonempty tool rules")
+        for rule in rules:
+            parsed = re.fullmatch(r"\s*([^()\s]+)\s*(?:\((.*)\))?\s*", rule)
+            if parsed is None:
+                raise ValueError(f"Invalid permissions.{name} rule: {rule!r}")
+            tool, pattern = parsed.groups()
+            if (name == "allow" and pattern is not None and any(char in pattern for char in "*?[")
+                    and any(fnmatch.fnmatchcase(shell, tool) for shell in ("bash", "powershell"))):
+                raise ValueError("Shell allow rules require an exact full command or a tool-only grant; wildcard command patterns are retired")
+
+
 def _validate(data: dict) -> None:
+    _validate_permissions(data.get("permissions", {}))
     validate_sandbox_config(data.get("sandbox", {}))
     normalize_work_mode(data.get("workMode", "default"))
     profile = data.get("profile", "coding")
@@ -191,9 +226,18 @@ class Settings:
             extension_config = layer.get("extensions", {})
             if isinstance(extension_config, dict) and "trustedProjects" in extension_config:
                 notices.append("Project/runtime extensions.trustedProjects is ignored. Trust must come from user settings or --trust-project-extensions.")
-        data = copy.deepcopy(DEFAULTS)
-        for layer in (user, project):
-            data = deep_merge(data, _normalize_layer(layer, notices))
+        data = deep_merge(DEFAULTS, _normalize_layer(user, notices))
+        project = _normalize_layer(project, notices)
+        project_permissions = project.pop("permissions", {})
+        if set(project_permissions) - {"deny"}:
+            raise ValueError("Project permissions may only add deny rules; grants and approval policy belong in user settings or explicit startup overrides")
+        # A project cannot erase user restrictions through ordinary deep merging.
+        denied = list(dict.fromkeys([*data["permissions"]["deny"], *project_permissions.get("deny", [])]))
+        if data["workMode"] == "plan" and project.get("workMode") == "default":
+            project.pop("workMode")
+            notices.append("Project workMode=default cannot relax a user-configured Plan ceiling.")
+        data = deep_merge(data, project)
+        data["permissions"]["deny"] = denied
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         normalized_overrides = _normalize_layer(overrides or {}, notices)
@@ -253,8 +297,8 @@ class Settings:
 
     def feature_enabled(self, name: str) -> bool:
         """Compatibility read for extensions migrating from the old feature flags."""
-        if name == "permission":
-            return True
+        if name in {"permission", "auto_review"}:
+            raise ValueError("The legacy permission feature is retired; Core authorization is always enabled")
         if name in REMOVED_FEATURES:
             return False
         if name in {"search", "fetch"}:

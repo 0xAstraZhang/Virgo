@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from virgo import ai
-from virgo.agent.types import ToolCallEvent
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, TextContent, UserMessage
-from virgo.harness.extensions import ExtensionAPI
-from virgo.plugins.auto_review import review_tool_call
 
 
 @pytest.mark.parametrize("levels,default,expected", [
@@ -20,7 +15,7 @@ from virgo.plugins.auto_review import review_tool_call
     pytest.param(("high", "max"), "high", "high", id="model-default"),
     pytest.param(None, None, None, id="server-default"),
 ])
-@pytest.mark.parametrize("consumer", ["permission", "compaction"])
+@pytest.mark.parametrize("consumer", ["compaction"])
 def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consumer, levels, default, expected):
     session = make_session(settings={"compaction": {"keepRecentTokens": 1}})
     session.effort = "max"
@@ -36,16 +31,7 @@ def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consu
         return stream(model, context, options)
 
     monkeypatch.setattr(ai, "stream", record_stream)
-    if consumer == "permission":
-        faux.script("small", faux.reply(json.dumps({
-            "decision": "allow", "reason": "public file", "risk": "low", "authorization": "implicit",
-            "evidence_ids": [],
-        })))
-        event = ToolCallEvent("review", "read", {"path": "/etc/hosts"}, session.tool("read"), "main", session.cwd)
-        verdict = review_tool_call(ExtensionAPI(session, "review-test"), event, "outside workspace")
-        assert verdict.decision == "allow"
-        assert verdict.reason == "public file"
-    elif consumer == "compaction":
+    if consumer == "compaction":
         session.main.messages.extend([
             UserMessage("Earlier request"),
             AssistantMessage([TextContent("Earlier work. " * 1000)]),

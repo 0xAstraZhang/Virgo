@@ -1,4 +1,4 @@
-"""Settings locations, environment overrides, and permission-mode migration."""
+"""Settings locations, environment overrides, and explicit approval migration."""
 
 from __future__ import annotations
 
@@ -38,15 +38,23 @@ def test_home_and_model_overrides(project, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("configured", "expected"),
-    [(None, "auto-review"), ("default", "auto-review"), ("accept-edits", "auto-review"), ("yolo", "accept-all")],
+    "configured",
+    [pytest.param(None, id="None-auto-review"), pytest.param("default", id="default-auto-review"),
+     pytest.param("accept-edits", id="accept-edits-auto-review"), pytest.param("yolo", id="yolo-accept-all")],
 )
-def test_permission_defaults_and_saved_mode_migration(project, configured, expected):
-    settings = {"permissions": {"mode": configured}} if configured else None
-    session = AgentSession(project, model="faux/test", session=None, settings=settings)
+def test_permission_defaults_and_saved_mode_migration(project, configured):
+    """Retain historical case identities while retiring silent mode aliases."""
+    if configured is not None:
+        with pytest.raises(ValueError, match=r"permissions\.mode.*retired"):
+            AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False,
+                         settings={"permissions": {"mode": configured}})
+        return
+    session = AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False)
     try:
-        assert session.permission_mode == expected
-        session.permission_mode = "plan"
-        assert session.permission_mode == "plan"
+        assert session.approval_policy == "ask"
+        assert session.services["sandbox"].mode == "workspace-write"
+        session.services["permissions"].set_work_mode("plan")
+        assert session.services["permissions"].work_mode == "plan"
+        assert session.approval_policy == "ask"
     finally:
         session.shutdown()

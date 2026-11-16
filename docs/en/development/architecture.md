@@ -23,7 +23,7 @@ Virgo separates model transport, the agent loop and application policy. Official
 
 The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). The small root `main.py` is a compatibility launcher. Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
 
-Shared rules live in the layer that owns their meaning. `ai/providers/reasoning.py` supplies OpenAI reasoning-effort mapping to request construction and diagnostic metadata. `harness/permissions.py` owns permission modes, localized labels and plan-mode tool filtering; the mandatory guard stays in `harness/permission_policy.py`, with scope and review-source contracts in the harness. The optional `plugins/auto_review.py` only supplies the model reviewer. Plugins resolve trusted callers through `api.runtime_for_context()` instead of duplicating identity checks or borrowing the currently selected runtime. See [Abstraction boundaries](abstraction-boundaries.md) and [Core/plugin boundaries](core-plugin-boundaries.md) for ownership and invariants.
+Shared rules live with their semantics: `ai/providers/reasoning.py` maps reasoning levels; `harness/permissions.py` defines approval and read-only capability; `permission_policy.py` enforces rules and explicit grants. `origin_context.py` binds the Runtime, workspace and source branch. Plan is work intent and Review is an isolated task; both reuse the existing Agent Loop. Sandbox enforces Shell boundaries while file tools retain application-level write protection.
 
 ## Core and plugin assembly
 

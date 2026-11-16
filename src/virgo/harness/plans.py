@@ -1,16 +1,17 @@
 """One versioned Markdown proposal per conversation, carried by the existing Runtime.
 
-SessionStore custom entries are the only persistence. A confirmation is a live
-user action, never a resumable job or an approval for subsequent tool calls.
+SessionStore custom entries are the only persistence. An execution request binds
+one existing run to a version; the plan never carries a reusable authorization.
 """
 from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 
 from ..agent import AgentTool, ToolResult
 from ..ai.types import UserMessage
+from ..tools.git_read import GIT_READ
 
 PLAN_INSTRUCTIONS = """Plan mode is active. Investigate the repository and produce a decision-complete
 proposal; do not implement changes. File and system changes are not permitted.
@@ -46,7 +47,6 @@ class ProposedPlan:
     plan_id: str
     revision: int
     markdown: str
-    confirmed_revision: int | None = None
 
     @property
     def token(self) -> str:
@@ -74,6 +74,7 @@ class Plans:
 
     def restore(self, runtime) -> None:
         runtime.proposed_plan = None
+        runtime.active_plan = None
         if runtime.role == "main" and runtime.store is not None:
             records = runtime.store.custom("proposed_plan")
             if records:
@@ -89,20 +90,17 @@ class Plans:
         if not isinstance(markdown, str) or not markdown.strip():
             raise ValueError(s.t("plan.empty_body"))
         with s._lock:
+            s.assert_state_change_allowed()
             rt = self._main(runtime or s.main)
             previous = rt.proposed_plan
             if expected_token is not None and (previous is None or expected_token != previous.token):
                 raise ValueError(s.t("plan.stale"))
             if not rt.can_run():
                 raise ValueError(s.t("harness.session.unsaved"))
-            # Tighten before writing, then re-read after synchronous mode
-            # observers. An observer may replace the plan or leave Plan again.
+            # State notifications cannot reenter a state-changing operation.
+            # The selected version remains stable while the admission lock is held.
             permissions = s.services["permissions"]
             permissions.set_work_mode("plan", runtime=rt)
-            previous = rt.proposed_plan
-            if (permissions.work_mode_for(rt) != "plan"
-                    or expected_token is not None and (previous is None or expected_token != previous.token)):
-                raise ValueError(s.t("plan.stale"))
             proposal = ProposedPlan(
                 previous.plan_id if previous else uuid.uuid4().hex[:12],
                 previous.revision + 1 if previous else 1,
@@ -110,12 +108,13 @@ class Plans:
             )
             rt.store.append("custom", kind="proposed_plan", data=asdict(proposal))
             rt.proposed_plan = proposal
-            s.bus.emit("proposed_plan_changed", rt, proposal)
+            s.notify_state_change("proposed_plan_changed", rt, proposal)
             return proposal
 
     def prepare_execution(self, runtime, token: str) -> UserMessage:
         """Called inside Session.run's admission lock, before busy becomes true."""
         s = self.session
+        s.assert_state_change_allowed()
         rt = self._main(runtime)
         if rt is not s.main or s.runtime_is_busy(rt):
             raise ValueError(s.t("plan.busy"))
@@ -124,49 +123,40 @@ class Plans:
             raise ValueError(s.t("plan.missing"))
         if not _TOKEN.fullmatch(token) or token != proposal.token:
             raise ValueError(s.t("plan.stale"))
-        confirmed = replace(proposal, confirmed_revision=proposal.revision)
-        # Save confirmation first. An unconfirmed write must leave both the
-        # in-memory proposal and work mode untouched, and must not start a run.
-        rt.store.append("custom", kind="proposed_plan", data=asdict(confirmed))
-        s.services["permissions"].set_work_mode("default", runtime=rt)
-        # Mode and plan events use the existing synchronous extension bus. A
-        # listener may revise the plan or switch conversations reentrantly.
-        # Never overwrite that newer selection or execute the stale proposal.
-        def still_selected(current):
-            # Pending-work inspection also calls synchronous plugins. Recheck
-            # the selection after those callbacks, with no further dispatch.
-            return (not s.runtime_is_busy(rt)
-                    and rt is s.main and rt.proposed_plan is current
-                    and s.services["permissions"].work_mode_for(rt) == "default")
-
-        if not still_selected(proposal):
-            raise ValueError(s.t("plan.stale"))
-        rt.proposed_plan = confirmed
-        s.bus.emit("proposed_plan_changed", rt, confirmed)
-        if not still_selected(confirmed):
-            raise ValueError(s.t("plan.stale"))
+        # Persist the selected version before changing execution intent. This
+        # audit event is never replayed as a grant when opening saved history.
+        rt.store.append("custom", kind="plan_execution", data={"plan_id": proposal.plan_id,
+                                                               "revision": proposal.revision})
+        rt.active_plan = proposal
+        try:
+            s.services["permissions"].set_work_mode("default", runtime=rt)
+        except BaseException:
+            rt.active_plan = None
+            raise
         return UserMessage(
-            f"Execute the proposed plan {proposal.token} that I explicitly selected.\n\n"
-            f"{proposal.markdown}\n\n"
+            f"Execute the proposed plan {proposal.token} that I explicitly selected. "
+            "Its selected Markdown is attached once in the current plan context.\n\n"
             "Keep the current approval policy and sandbox restrictions. This plan confirmation "
             "does not preapprove tool calls; apply the usual permissions to each operation."
         )
 
     def instructions(self, runtime) -> str:
+        if runtime.role == "review":
+            return ""
         permissions = self.session.services["permissions"]
-        mode = (permissions.mode_for(runtime.name, runtime=runtime)
-                if hasattr(permissions, "mode_for") else self.session.permission_mode)
+        mode = permissions.work_mode_for(runtime)
         parts = []
         if mode == "plan":
             publishing = (PROPOSAL_INSTRUCTIONS if runtime.role == "main" else
                           "Report your investigation and remaining decisions to the parent. "
                           "You cannot publish, confirm, or execute the main runtime's plan.")
-            parts.append(f"<permission_mode>\n{PLAN_INSTRUCTIONS}\n\n{publishing}\n</permission_mode>")
-        if runtime.role == "main" and (proposal := runtime.proposed_plan) is not None:
+            parts.append(f"<work_mode>\n{PLAN_INSTRUCTIONS}\n\n{publishing}\n</work_mode>")
+        active = getattr(runtime, "active_plan", None)
+        if runtime.role == "main" and (proposal := active or runtime.proposed_plan) is not None:
             confirmation = (
-                "The user explicitly selected this version in this live conversation. "
+                "The user explicitly selected this version for the current run. "
                 "Tool calls still require their normal permissions."
-                if proposal.confirmed_revision == proposal.revision else
+                if active is not None else
                 "This is a proposal for review, not an execution request. Historical execution messages "
                 "and confirmations do not renew approval. Do not implement it merely because it is present."
             )
@@ -182,7 +172,7 @@ class Plans:
         proposal = self.current
         if proposal is None:
             return s.t("plan.missing")
-        status = s.t("plan.confirmed" if proposal.confirmed_revision == proposal.revision else "plan.proposed")
+        status = s.t("plan.proposed")
         return f"{s.t('plan.heading', token=proposal.token, status=status)}\n\n{proposal.markdown}\n\n" + s.t(
             "plan.actions", token=proposal.token,
         )
@@ -223,11 +213,12 @@ class Plans:
 def install_plans(session) -> Plans:
     plans = Plans(session)
     session.services["plans"] = plans
+    session.register_tool(GIT_READ, roles=("main", "subagent"), owner="core")
 
     def propose(args, context):
         runtime = session.runtime_for_context(context)
         if (runtime is None or runtime.role != "main"
-                or session.services["permissions"].mode_for(runtime.name, runtime=runtime) != "plan"):
+                or session.services["permissions"].work_mode_for(runtime) != "plan"):
             return ToolResult.error(session.t("plan.plan_only"))
         try:
             proposal = plans.replace(args["markdown"], runtime=runtime)
@@ -242,7 +233,7 @@ def install_plans(session) -> Plans:
             "Publish or replace the complete ProposedPlan Markdown while in Plan mode. Include the goal, "
             "change scope, key decisions, implementation steps, acceptance criteria, and known constraints. "
             "This saves conversation metadata only; it does not write a project file, change approval policy, "
-            "or authorize execution. Each replacement creates an unconfirmed revision."
+            "or authorize execution. Each replacement creates a new version requiring explicit execution."
         ),
         parameters={"type": "object", "properties": {"markdown": {"type": "string", "minLength": 1}},
                     "required": ["markdown"], "additionalProperties": False},

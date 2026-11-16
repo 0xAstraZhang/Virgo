@@ -45,7 +45,7 @@ def setup(api):
     )
 ```
 
-`execute(args, ctx)` returns `ToolResult` or a string. `ToolContext` supplies `cwd`, `call_id`, `signal`, `agent`, an optional progress callback and bound review source. Respect cancellation. `content` is model-visible; `details` is structured state/UI data. Return `ToolResult.error(...)` for a known failure, or let an exception retain its type and stack through Core diagnostics.
+`execute(args, ctx)` returns `ToolResult` or a string. `ToolContext` supplies `cwd`, `call_id`, `signal`, `agent`, an optional progress callback and `origin`, the bound `ExecutionOrigin`. Preserve `ctx.origin` when adapting or deferring an operation; it identifies the caller even if another conversation is selected. Respect cancellation. `content` is model-visible; `details` is structured state/UI data. Return `ToolResult.error(...)` for a known failure, or let an exception retain its type and stack through Core diagnostics.
 
 `AgentTool` supports `sequential`, `prepare_arguments` and localization metadata. Tool names, argument keys and enum values are protocol contracts and must not be translated. See [Localization](localization.md) for `i18n_key`, `api.t` and `ctx.t`.
 
@@ -75,8 +75,8 @@ def setup(api):
 | `api.settings`, `api.paths`, `api.cwd`, `api.ui`, `api.t` | Effective configuration, resource paths and host services |
 | `api.current_runtime()`, `api.current_store()` | Capture the current owner at command/initialization time |
 | `api.runtime_for_context(ctx)` | Resolve a tool caller without borrowing the currently selected conversation |
-| `api.create_runtime(name, role, parent=..., permission=..., ...)` | Construct a child with inherited permission ceiling, accounting, cancellation and shared request budget |
-| `api.release_runtime(runtime)` | Release a completed child's registration and associated policy state |
+| `api.create_runtime(name, role, parent=..., read_only=True, ...)` | Construct a restricted child with inherited capability and approval ceilings, accounting, cancellation and shared request budget |
+| `api.release_runtime(runtime)` | Release a completed child's registration and store failure-signal bindings |
 | `api.reserve_child_work(store)` | Register pending agent work for its captured owner and return an idempotent release callback |
 | `api.tools_for(role)`, `api.resolve(spec)` | Resolve permitted tool roles and model configuration |
 | `api.authorize_tool(event)` | Apply the Core preflight/hooks/execution gate to an adapted operation |
@@ -84,15 +84,15 @@ def setup(api):
 | `api.report_error(..., store=owner)`, `api.retain_diagnostics(owner, records)` | Preserve owner-bound diagnostic evidence |
 | `api.complete(...)` | Make an accounted auxiliary model request using Core request policy |
 
-`runtime_for_context` validates the real Runtime, owning Session, original review-source identity and agent name. Invalid or foreign sources return `None`; fail the requested operation explicitly. Resolving a runtime does not grant access to unrelated diagnostic records. For tool calls, use this identity resolution rather than `current_runtime()`; the latter is for deliberately capturing the current conversation at entry time.
+`runtime_for_context` validates the real Runtime, owning Session, exact original `ExecutionOrigin` object and agent name. Invalid or foreign sources return `None`; fail the requested operation explicitly. Resolving a runtime does not grant access to unrelated diagnostic records. For tool calls, use this identity resolution rather than `current_runtime()`; the latter is for deliberately capturing the current conversation at entry time.
 
-The child factory takes an explicit trusted parent and prevents a child from increasing that parent's permission level. `budget.maxModelCalls`, when configured, limits model requests shared with children; `subagents.maxTurns` remains the focused child turn limit. Do not build an independent AgentSession inside a plugin to escape ownership or budgets.
+Pass the captured trusted parent to the child factory. `read_only=True` narrows its tools independently of WorkMode; the child inherits a parent's read-only ceiling even if the argument is omitted or false. A child may also select `approval_policy="never"`; a parent's `never` ceiling cannot be loosened. The factory binds `origin_parent` to `parent.origin`, shares accounting and the request budget, and propagates cancellation. `budget.maxModelCalls`, when configured, limits model requests shared with children; `subagents.maxTurns` remains the focused child turn limit. Do not build an independent AgentSession inside a plugin to escape ownership or budgets.
 
-Use `api.services` only for an explicit shared service contract. The compatibility `api.session` escape hatch exists through the 0.2 series; official plugins use the facade. Do not mutate `_tools`, `_lock`, `main` or selected UI state. Retained `virgo.features` implementation imports are also temporary aliases; migrate before 0.3.
+Use `api.services` only for an explicit shared service contract. The compatibility `api.session` escape hatch exists through the 0.2 series; official plugins use the facade. Do not mutate `_tools`, `_lock`, `main` or selected UI state. Retained `virgo.features` implementation imports are temporary aliases; migrate before 0.3. The former `virgo.features.permission*` imports have already been removed; use the Core APIs described here.
 
 ## Events and permissions
 
-`api.on(event, handler, priority=0)` returns an unsubscribe callback. Higher priorities run first; ties preserve registration order. Existing event signatures remain:
+`api.on(event, handler, priority=0)` returns an unsubscribe callback. Higher priorities run first; ties preserve registration order. Important event contracts are:
 
 | Event | Handler contract |
 | --- | --- |
@@ -100,7 +100,6 @@ Use `api.services` only for an explicit shared service contract. The compatibili
 | `input` | `(text, session)` → replacement text, `Handled`, or `None` |
 | `user_steer` | `(text, session)` |
 | `before_agent_start` | `(runtime, prompts)` |
-| `runtime_pending_work` | `(runtime)` → `True` for queued or running child-agent work owned by this origin, otherwise `False` |
 | `agent_event`, `turn_end` | `(event, runtime)` |
 | `tool_call` | `(event, session)` → `Block` or `None`; arguments may be adjusted |
 | `tool_result` | `(result, event, session)` → replacement result or `None` |
@@ -108,22 +107,24 @@ Use `api.services` only for an explicit shared service contract. The compatibili
 | `agent_stop` | `(runtime)` → `Continue` or `None` |
 | `agent_end`, `before_compact` | `(runtime)` |
 | `compact` | `(runtime, summary)` |
+| `work_mode_changed` | `(origin_runtime, mode)`; observe committed mode state |
+| `proposed_plan_changed` | `(origin_runtime, proposal)`; observe the committed proposal |
 
 Use `Block(reason)` to stop a tool and `Continue(text)` only for an explicitly enabled continuation policy. Handler failure is diagnosed and isolated from later handlers. Context views should preserve append-only message prefixes.
 
 Before publishing queued agent work or starting its worker, call `api.reserve_child_work(owner)` with the captured originating accounting store. Release it on completion or startup failure, outside plugin locks and before signaling completion to callers. Registration and release use the same Core lock as mode admission. The reservation retains the originating Runtime for policy checks until its last pending job releases, including after conversation deletion. The official background service reserves callable agent jobs; subprocesses retain their launch policy.
 
-Core also calls `runtime_pending_work` when leaving Plan or confirming execution; a failed handler or any result other than explicit `False` keeps admission blocked. Restrict the answer to the supplied origin. After synchronous handlers return, Core checks the selected conversation, proposal and mode, then pending reservations and active runtimes. Work registered by a later observer is therefore visible without repeating callbacks. A changed selection rejects the older admission without rolling back the handler's newer choice.
+Core determines whether the origin is busy from its own pending reservations and running runtimes, including descendants. Mode transitions and explicit plan execution require that origin to be idle; the former `runtime_pending_work` inspection hook is retired. State-change notifications run after persistence and state publication. Observers may refresh UI, but cannot synchronously change mode or plan, select a conversation, or admit new work. Start any subsequent explicit action through the normal admission path after notification returns.
 
-`api.register_permission_policy(policy)` adds restrictions after the mandatory Core policy; it cannot replace the Core gate. A policy implements both `preflight(event)` and `before_execute(event)`. The second checkpoint catches changes after preflight. Hosted/adapted operations must use `api.authorize_tool`; a truthy `read_only` flag is not authorization. Python itself remains trusted code, not sandboxed execution.
+`api.register_permission_policy(policy)` adds a hard restriction without replacing the mandatory Core authorization policy. Implement both `preflight(event)` and `before_execute(event)`, returning `Block(reason)` to deny or `None` to continue. At both checkpoints, Sandbox and additional policies run before Core evaluates capability ceilings, deny rules, existing grants and possible human approval. This prevents an approval question for an operation a hard boundary forbids. Core runs the second checkpoint after tool-call hooks and argument changes. Hosted/adapted operations must use `api.authorize_tool(event)` and carry the original caller context. `AgentTool.read_only` declares a trusted tool's capability; it neither grants all operations nor bypasses other policies. Python extensions themselves remain trusted code outside the Shell sandbox.
 
-Permission modes and helpers live in `virgo.harness.permissions`; concrete guards, scope detection and review-source contracts also belong to the harness. `auto_review` supplies an optional reviewer through `register_permission_reviewer`. Disabling it retains rules and human approval for uncertain operations.
+Core enforces deterministic authorization in `harness/permission_policy.py`. `harness/permissions.py` defines ask/never approval and read-only capability checks; `harness/origin_context.py` binds the Runtime, workspace and accounting branch. Model approval and `register_permission_reviewer` are retired. Plugins may add restrictions through `register_permission_policy`.
 
 Settings command hooks support `PreToolUse`, `PostToolUse`, `UserPromptSubmit` and `Stop`; JSON is delivered on stdin. Exit `2` is the event's block/continue control result, with stderr feedback. Other failures are diagnosed. See [`extensions.py`](../../../src/virgo/harness/extensions.py) for matching and exact semantics.
 
 ## Prompt sections and state
 
-`api.add_system_section(name, fn, order=50)` calls `fn(role)`. `add_runtime_system_section(name, fn, order=50)` supplies a candidate's `RuntimeContext` with role, cwd, store, accounting store and review parent. A construction failure rejects the candidate; do not temporarily swap active session state.
+`api.add_system_section(name, fn, order=50)` calls `fn(role)`. `add_runtime_system_section(name, fn, order=50)` supplies a candidate's `RuntimeContext` with `role`, `cwd`, `store`, `accounting_store` and `origin_parent`. The last field is the captured parent `ExecutionOrigin`, or `None` for a root. A construction failure rejects the candidate; do not temporarily swap active session state.
 
 `api.append_entry(kind, data)` and `api.entries(kind)` access custom state on the current store. Background work should capture its actual owner first, then use that store and `api.notify(..., store=owner)`. Save failure is a real execution boundary, not successful persistence. Todo remains conversation state, not a durable task graph.
 
@@ -131,15 +132,21 @@ Settings command hooks support `PreToolUse`, `PostToolUse`, `UserPromptSubmit` a
 
 Skills contain YAML frontmatter (`name`, `description`) followed by Markdown. Discovery exposes the index; the model reads content when needed. `/skill:name args` explicitly expands one. Relative references resolve from the skill directory.
 
-A `prompts/review.md` template becomes `/review`:
+A `prompts/inspect.md` template becomes `/inspect`:
 
 ```markdown
 ---
-description: review the current diff
+description: inspect the current changes
 ---
-Review the current diff. Focus on: ${1:-correctness}. Additional context: $@
+Inspect the current changes. Focus on: ${1:-correctness}. Additional context: $@
 ```
 
-Templates support `$1`, `$@` / `$ARGUMENTS`, `${1:-value}` and `${@:2}`. Without placeholders, arguments append to the body. Specialized instructions belong in a [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) or delegated task prompt; set `read_only=true` for inspection. Custom model or tool policies belong in trusted extensions. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
+Templates support `$1`, `$@` / `$ARGUMENTS`, `${1:-value}` and `${@:2}`. Without placeholders, arguments append to the body.
+
+When enabled, the [independent code-review plugin](../guides/code-review.md) owns `/review`. A `review.md` template causes a startup error and must be renamed; an extension cannot register another command under that name. There is no official `/code-review` alias. An `/inspect` prompt template uses the ordinary conversation and its tools, while `/review` runs an isolated review task.
+
+Specialized instructions belong in a [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) or delegated task prompt; create inspection children with `read_only=True`. Custom model or tool policies belong in trusted extensions. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
 
 For caught exceptions use `virgo.diagnostics.capture_error` and retain structured errors in tool results; on successful recovery keep original evidence under `related_errors`. Prefer the original runtime's `report_error()` for runtime-owned evidence. Propagated results/notifications can grant parent access; an error-ID string alone cannot. See [Troubleshooting](../guides/troubleshooting.md).
+
+Isolated commands use `api.register_command(..., isolated=True)` and `fn(session, args, origin_runtime)`. The Host binds the origin and owns busy/cancellation; create children with `parent=origin_runtime, read_only=True`. Review uses fixed snapshot tools and review instructions. Command-name duplicates are rejected; templates cannot occupy the enabled Review plugin's reserved `/review` name.

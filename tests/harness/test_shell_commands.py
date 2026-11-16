@@ -21,7 +21,6 @@ from virgo.ai.types import ToolResultMessage
 from virgo.cli.console import ConsoleBroker, TerminalUI
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
-from virgo.harness.permission_policy import ReviewDecision
 from virgo.harness.session import Runtime
 
 from tests.support.harness import calls
@@ -235,19 +234,15 @@ def test_powershell_failure_and_permission_boundaries(make_session, monkeypatch,
     assert selected(session) is not None and selected(session).kind == name, session.ui.text
     res = invoke(session, "Write-Error 'failure'; Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()
-    reviews = []
-    def deny(s, ev, reason):
-        reviews.append((ev.tool_name, ev.args, reason))
-        return ReviewDecision("deny", "test denial")
-    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", deny)
-    session.permission_mode = "auto-review"
+    session.settings.set("permissions.allow", [])
+    session.approval_policy = "never"
     res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
-    assert res.is_error and reviews and not (session.cwd / "unexpected").exists()
-    session.permission_mode = "plan"
+    assert res.is_error and not (session.cwd / "unexpected").exists()
+    session.services["permissions"].set_work_mode("plan")
     assert "powershell" not in [t.name for t in session.main.request_context([]).tools]
     res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()
-    session.permission_mode = "auto-review"
+    session.approval_policy = "ask"
     session.settings.set("permissions.deny", ["powershell(Write-Output*)"])
     assert invoke(session, "Write-Output denied").is_error
 

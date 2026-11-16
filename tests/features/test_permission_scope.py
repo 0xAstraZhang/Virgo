@@ -1,10 +1,9 @@
-"""Shell command classification: read-only, inside the workspace, or needing review."""
-
+"""Convenience shell hints; none of these classifiers grants read-only execution."""
 from __future__ import annotations
 
 import pytest
 
-from virgo.harness.permission_scope import command_review_reason, is_read_only_command
+from virgo.harness.permission_scope import command_approval_reason, is_simple_read_command
 
 
 @pytest.mark.parametrize("command", [
@@ -12,7 +11,7 @@ from virgo.harness.permission_scope import command_review_reason, is_read_only_c
     "find . -name '*.py'", "sed -n '1,200p' README.md", "git branch --list", "git tag --list v*",
 ])
 def test_read_only_command_classifier(command):
-    assert is_read_only_command(command)
+    assert is_simple_read_command(command)
 
 
 @pytest.mark.parametrize("command", [
@@ -26,7 +25,7 @@ def test_read_only_command_classifier(command):
     "hostname -Fhosts.txt", "file -Cmcustom.magic", "uniq input output",
 ])
 def test_plan_rejects_side_effects_and_opaque_shell(command):
-    assert not is_read_only_command(command)
+    assert not is_simple_read_command(command)
 
 
 @pytest.mark.parametrize("command", [
@@ -36,7 +35,7 @@ def test_plan_rejects_side_effects_and_opaque_shell(command):
     "uv run --offline pytest -q", "uv --offline run python -m mypy src", "uv run --no-sync ruff check",
 ])
 def test_workspace_commands_need_no_review(project, command):
-    assert command_review_reason(command, project, project) == ""
+    assert command_approval_reason(command, project, project) == ""
 
 
 @pytest.mark.parametrize("command", [
@@ -50,15 +49,15 @@ def test_workspace_commands_need_no_review(project, command):
     "CDPATH=sub cd name && rm victim",
 ])
 def test_external_network_and_unknown_commands_need_review(project, command):
-    assert command_review_reason(command, project, project)
+    assert command_approval_reason(command, project, project)
 
 
 def test_git_c_does_not_change_following_shell_directory(project):
     (project / "sub").mkdir()
-    assert command_review_reason("git -C sub status; rm ../victim", project, project)
-    assert command_review_reason("cd sub; rm ../victim", project, project)
-    assert command_review_reason("cd sub || rm ../victim", project, project)
-    assert command_review_reason("cd sub && touch inside.txt", project, project) == ""
+    assert command_approval_reason("git -C sub status; rm ../victim", project, project)
+    assert command_approval_reason("cd sub; rm ../victim", project, project)
+    assert command_approval_reason("cd sub || rm ../victim", project, project)
+    assert command_approval_reason("cd sub && touch inside.txt", project, project) == ""
 
 
 def test_symlinks_and_attached_path_options_need_review(project, tmp_path):
@@ -66,7 +65,7 @@ def test_symlinks_and_attached_path_options_need_review(project, tmp_path):
     outside.mkdir()
     (project / "linked").symlink_to(outside, target_is_directory=True)
     for command in ("cp input linked/file", "cp input -tlinked", "touch -rlinked local", "truncate -rlinked local"):
-        assert command_review_reason(command, project, project), command
+        assert command_approval_reason(command, project, project), command
 
 
 # -- date ----------------------------------------------------------------------------------
@@ -77,8 +76,8 @@ def test_symlinks_and_attached_path_options_need_review(project, tmp_path):
     "date -u '+%Y-%m-%d %H:%M:%S'", "date +", "ls -d . && date", "date | cat",
 ])
 def test_date_query_forms_are_read_only(project, command):
-    assert is_read_only_command(command)
-    assert command_review_reason(command, project, project) == ""
+    assert is_simple_read_command(command)
+    assert command_approval_reason(command, project, project) == ""
 
 
 @pytest.mark.parametrize("command", [
@@ -88,17 +87,17 @@ def test_date_query_forms_are_read_only(project, command):
     "./date", "/tmp/date", "date $(whoami)", "date; curl https://example.test",
 ])
 def test_date_mutations_and_unknown_forms_still_need_review(project, command):
-    assert not is_read_only_command(command)
-    assert command_review_reason(command, project, project)
+    assert not is_simple_read_command(command)
+    assert command_approval_reason(command, project, project)
 
 
 def test_date_query_preserves_workspace_boundaries(project, tmp_path):
-    assert command_review_reason("date", tmp_path, project)
-    assert command_review_reason("date > ../outside.txt", project, project)
-    assert command_review_reason("ls -d /etc && date", project, project)
-    assert command_review_reason("PATH=/tmp date", project, project)
-    assert not is_read_only_command("date > output.txt")
-    assert command_review_reason("date > output.txt", project, project) == ""
+    assert command_approval_reason("date", tmp_path, project)
+    assert command_approval_reason("date > ../outside.txt", project, project)
+    assert command_approval_reason("ls -d /etc && date", project, project)
+    assert command_approval_reason("PATH=/tmp date", project, project)
+    assert not is_simple_read_command("date > output.txt")
+    assert command_approval_reason("date > output.txt", project, project) == ""
 
 
 @pytest.mark.parametrize("command", [
@@ -106,12 +105,12 @@ def test_date_query_preserves_workspace_boundaries(project, tmp_path):
     "'/bin\\date'", "'C:\\bin\\date.exe'", "C:/bin/date.exe",
 ])
 def test_posix_command_paths_do_not_trust_other_executables(project, command):
-    assert not is_read_only_command(command)
-    assert command_review_reason(command, project, project)
+    assert not is_simple_read_command(command)
+    assert command_approval_reason(command, project, project)
 
 
 def test_home_desktop_and_date_need_no_review():
     from pathlib import Path
 
     home = Path.home()
-    assert command_review_reason("ls -d ~/Desktop && date", home, home) == ""
+    assert command_approval_reason("ls -d ~/Desktop && date", home, home) == ""

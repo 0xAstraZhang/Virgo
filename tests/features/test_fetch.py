@@ -92,13 +92,13 @@ def test_private_dns_answer_never_connects(make_session, monkeypatch, http):
 
 
 def test_exact_url_permission_blocks_before_network(make_session, monkeypatch, http):
-    s = make_session(mode="plan", settings={"permissions": {"deny": ["web_fetch(https://example.com/*)"]}})
+    s = make_session(work_mode="plan", settings={"permissions": {"deny": ["web_fetch(https://example.com/*)"]}})
     result, _ = fetch(s, monkeypatch)
     assert result.is_error and not http["requests"]
 
 
 def test_redirect_rechecks_permission(make_session, monkeypatch, http):
-    s = make_session(mode="plan", settings={"permissions": {"deny": ["web_fetch(https://blocked.example/*)"]}})
+    s = make_session(work_mode="plan", settings={"permissions": {"deny": ["web_fetch(https://blocked.example/*)"]}})
     http.update(status=302, headers={"location": "https://blocked.example/private"})
     result, _ = fetch(s, monkeypatch)
     assert result.is_error and len(http["requests"]) == 1

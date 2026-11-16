@@ -114,7 +114,7 @@ class Web:
                     paths[c] = offer.backend
                     backends[c] = offer.backend
             else:
-                if not all(services[c]._permitted(runtime, model, cache_key) for c in sorted(caps)):
+                if not all(services[c]._permitted(runtime, model) for c in sorted(caps)):
                     for c in caps:
                         reasons[c] = self.api.t("features.web.permissions")
                     continue

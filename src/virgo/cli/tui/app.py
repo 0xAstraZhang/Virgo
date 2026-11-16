@@ -21,7 +21,7 @@ from textual.widgets.option_list import Option
 
 from ... import __version__
 from ...ai.types import Usage
-from ...harness.permissions import MODES, normalize_permission_mode, permission_mode_label
+from ...harness.permissions import approval_policy_label
 from ...harness.preferences import PreferenceChoice
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
@@ -33,12 +33,13 @@ from .controller import RunController
 from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .forms import MultilineInput
+from .plans import PlanEditor
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
 from .transcript import EventView, Transcript, update_static
 
 PURPLE = "#7C3AED"
-PERMISSION_COLORS = {"auto-review": "#B8860B", "accept-all": "#DC2626", "plan": "#2563EB"}
+PERMISSION_COLORS = {"ask": "#B8860B", "never": "#DC2626"}
 
 
 def terminal_theme() -> Theme:
@@ -213,11 +214,13 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         Binding("pageup", "page(-1)", priority=True, show=False),
         Binding("pagedown", "page(1)", priority=True, show=False),
         Binding("ctrl+home", "top", priority=True, show=False),
-        Binding("shift+tab", "cycle_permissions", priority=True, show=False),
+        Binding("shift+tab", "cycle_work_mode", priority=True, show=False),
+        Binding("ctrl+g", "plan", priority=True, show=False),
         Binding("ctrl+r", "sessions", priority=True, show=False),
     ]
 
-    def __init__(self, session, ui: FullscreenUI, initial: str | None = None, pick_session=False):
+    def __init__(self, session, ui: FullscreenUI, initial: str | None = None, pick_session=False,
+                 work_mode: str | None = None):
         super().__init__(ansi_color=True)
         self.session = session
         self.ui = ui
@@ -225,6 +228,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.activity = RunActivity(session.translator)
         self.initial = initial
         self.pick_session = pick_session
+        self.startup_work_mode = work_mode if pick_session else None
         self.session_grouped = session.settings.get("tui.sessionGrouping", "workspace") != "none"
         self._session_picker: SessionPicker | None = None
         self.exit_code = 0
@@ -286,6 +290,31 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         )
         self._session_picker = picker
         self.push_screen(picker, self.session_picked)
+
+    def action_plan(self) -> None:
+        if self.controller.closing or self.has_modal:
+            return
+        plan = self.session.services["plans"].current
+        if plan is None:
+            self.notify(tr(self, "ui.plan.missing"))
+            return
+        controller, runtime = self.controller, self.session.main
+        self.hide_completions()
+        controller.browsing = True
+
+        def selected(command: str | None) -> None:
+            controller.browsing = False
+            if command:
+                if self.controller is not controller or controller.session.main is not runtime:
+                    self.notify(tr(self, "ui.plan.changed"), severity="warning")
+                elif not controller.can_switch:
+                    self.notify(tr(self, "ui.plan.busy"), severity="warning")
+                else:
+                    controller.submit(command)
+            self.focus_composer()
+            self.update_status()
+
+        self.push_screen(PlanEditor(plan, translator=self.session.translator), selected)
 
     def session_browser_items(self) -> list[dict]:
         items = SessionStore.list_all(self.session.paths.user / "sessions")
@@ -396,6 +425,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self._session_picker = None
         startup = self.pick_session
         self.pick_session = False
+        work_mode = self.startup_work_mode
+        self.startup_work_mode = None
         self.controller.browsing = False
         if path is None:
             if startup:
@@ -406,12 +437,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             return
         initial = self.initial if startup else None
         self.initial = None
-        if not startup and path == self._pane.key:
+        if path == self._pane.key:
+            if initial:
+                self.controller.submit(initial)
             self.focus_composer()
             return
-        self._pending_switch = (path, initial)
+        self._pending_switch = (path, initial, work_mode)
 
-    async def change_conversation(self, path, initial=None) -> None:
+    async def change_conversation(self, path, initial=None, *, work_mode=None) -> None:
         target = next((pane for pane in self._panes if pane.key == path), None)
         if target is None and path != "new":
             owner = next(
@@ -420,7 +453,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             if owner is not None:
                 # Never create a disk-backed duplicate of a retained conversation.
                 if owner.controller.ui.has_pending_requests or not owner.controller.open_session(
-                    path, initial=initial
+                    path, initial=initial, work_mode=work_mode
                 ):
                     self.notify(tr(self, "ui.session.other_active"), severity="warning")
                     return
@@ -443,7 +476,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 options = dict(previous.session_options)
                 if cwd.resolve() != previous.cwd:
                     options["trust_project_extensions"] = False
-                return AgentSession(cwd, ui=ui, session=storage, **options)
+                return AgentSession(cwd, ui=ui, session=storage, work_mode=work_mode, **options)
 
             try:
                 candidate = await asyncio.to_thread(construct)
@@ -487,9 +520,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.focus_composer()
             return
         if path == "new":
-            changed = self.controller.new_session(initial=initial)
+            changed = self.controller.new_session(initial=initial, work_mode=work_mode)
         else:
-            changed = self.controller.open_session(path, initial=initial)
+            changed = self.controller.open_session(path, initial=initial, work_mode=work_mode)
         if changed:
             self.editor.clear()
             self.history.reset()
@@ -501,10 +534,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self._polling = True
         try:
             if self._pending_switch is not None:
-                path, initial = self._pending_switch
+                path, initial, work_mode = self._pending_switch
                 self._pending_switch = None
                 if not self.controller.closing:
-                    await self.change_conversation(path, initial)
+                    await self.change_conversation(path, initial, work_mode=work_mode)
             for pane in self._panes:
                 if pane is not self._pane:
                     pane.updates.extend(pane.controller.poll())
@@ -525,6 +558,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 elif update.kind == "reset":
                     self.activity.reset()
                     await self.transcript.load_history(update.payload)
+                    # History rendering can yield until after the screen closes.
+                    # Refresh below, after the existing lifecycle checks.
+                    self.last_status = 0.0
+                elif update.kind == "state_changed":
+                    self.update_status()
                 elif update.kind == "run_start":
                     self.activity.begin(update.created_at, self.session.effort)
                 elif update.kind == "done":
@@ -810,19 +848,26 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
         metrics.truncate(width, overflow="ellipsis")
         update_static(root.query_one("#metrics", Static), metrics)
-        mode = normalize_permission_mode(self.session.permission_mode)
+        approval = self.session.approval_policy
+        work_mode = self.session.services["permissions"].work_mode
         footer = Text(no_wrap=True, overflow="ellipsis")
         if self.session.store.save_error is not None:
             footer.append(tr(self, "ui.state.unsaved_footer"), style="bold red")
-        footer.append(permission_mode_label(mode, self.session.t), style=PERMISSION_COLORS[mode])
+        footer.append(tr(self, "work_mode." + work_mode),
+                      style="#2563EB" if work_mode == "plan" else PURPLE)
+        footer.append(" · ")
+        footer.append(approval_policy_label(approval, self.session.t), style=PERMISSION_COLORS[approval])
+        footer.append(" · " + tr(self, "ui.status.sandbox", mode=self.session.services["sandbox"].effective_mode(self.session.main)))
         effort = f" · {self.session.effort}"
-        available = max(1, width - footer.cell_len - 2)
-        model = Text(self.session.main.model.id, style="dim", no_wrap=True, overflow="ellipsis")
-        model.truncate(max(1, available - cell_len(effort)), overflow="ellipsis")
-        model.append(effort)
-        model.truncate(available, overflow="ellipsis")
-        footer.append(" " * max(2, width - footer.cell_len - model.cell_len))
-        footer.append(model)
+        available = width - footer.cell_len - 2
+        if available >= cell_len(effort) + 1:
+            model = Text(self.session.main.model.id, style="dim", no_wrap=True, overflow="ellipsis")
+            model.truncate(available - cell_len(effort), overflow="ellipsis")
+            model.append(effort)
+            footer.append(" " * max(2, width - footer.cell_len - model.cell_len))
+            footer.append(model)
+        else:
+            footer.pad_right(max(0, width - footer.cell_len))
         footer.truncate(width, overflow="ellipsis")
         update_static(root.query_one("#status", Static), footer)
 
@@ -843,7 +888,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if event.text.strip() == "/sessions":
             self.action_sessions()
         elif event.text.strip() == "/new":
-            self._pending_switch = ("new", None)
+            self._pending_switch = ("new", None, None)
         else:
             self.controller.submit(event.text)
         self.update_status()
@@ -928,7 +973,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.accept_completion()
 
     def action_escape(self) -> None:
-        if isinstance(self.screen, SessionPicker):
+        if isinstance(self.screen, (SessionPicker, PlanEditor)):
             self.screen.dismiss(None)
         elif self.active_confirmation is not None:
             self.finish_confirmation("n")
@@ -950,7 +995,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             return True
         if (
             self.has_modal or self.active_input is not None or self.active_confirmation is not None
-        ) and action in {"page", "top", "tools", "thinking", "cycle_permissions"}:
+        ) and action in {"page", "top", "tools", "thinking", "cycle_work_mode", "plan"}:
             return False
         return True
 
@@ -975,11 +1020,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 shortcut_hints(tr(self, "ui.hints.exit")),
             )
 
-    def action_cycle_permissions(self) -> None:
+    def action_cycle_work_mode(self) -> None:
         if self.controller.closing:
             return
-        mode = normalize_permission_mode(self.session.permission_mode)
-        self.session.permission_mode = MODES[(MODES.index(mode) + 1) % len(MODES)]
+        mode = self.session.services["permissions"].work_mode
+        self.controller.submit("/mode " + ("default" if mode == "plan" else "plan"))
         self.update_status()
 
     def action_eof(self) -> None:

@@ -5,11 +5,6 @@
     "executable": "auto"
   },
   "permissions": {
-    "mode": "auto-review",
-    "allow": [
-      "bash(uv run pytest*)",
-      "edit(src/**)"
-    ],
     "deny": [
       "read(~/.ssh/*)",
       "bash(git push*)"

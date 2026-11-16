@@ -178,7 +178,7 @@ def test_windows_supervisor_crash_cleans_tree_without_inherited_job_handle(proje
     code = (
         "import os,time; from pathlib import Path; "
         "from virgo.harness.session import AgentSession; "
-        f"s=AgentSession({str(project)!r}, model='faux/demo', session=None, permission_mode='accept-all', "
+        f"s=AgentSession({str(project)!r}, model='faux/demo', session=None, approval_policy='never', "
         f"settings={{'shell':{{'executable':{shutil.which(engine)!r}}}}}); "
         "shell=s.services['shell'].current; "
     )

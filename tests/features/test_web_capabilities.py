@@ -48,7 +48,7 @@ def test_unknown_vendor_adapts_without_planner_changes(make_session, monkeypatch
     {"permissions": {"deny": ["web_fetch(*private*)"]}},
 ])
 def test_bundled_offer_is_removed_when_any_capability_conflicts(make_session, settings):
-    ctx = context(make_session(settings=settings, mode="plan"), Model("openai", "gpt-6-luna", "openai"))
+    ctx = context(make_session(settings=settings, work_mode="plan"), Model("openai", "gpt-6-luna", "openai"))
     assert ctx.web_tools == []
     assert ctx.web_search is None
     assert ("web_fetch" in {t.name for t in ctx.tools}) is not (

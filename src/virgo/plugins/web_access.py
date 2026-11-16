@@ -76,15 +76,12 @@ class WebAccess:
         return (model.provider, endpoint(model), model.api, model.id,
                 hashlib.sha256(identity.encode()).hexdigest())
 
-    def _permitted(self, runtime, model, key) -> bool:
+    def _permitted(self, runtime, model) -> bool:
         permissions = self.api.services.get("permissions")
         if self.api.has_tool_hooks():
             return False  # Native queries cannot pass through client-tool hooks.
         if permissions is None:
             return False  # Missing Core policy must never authorize provider-side operations.
-        mode = permissions.mode_for(runtime.name, runtime=runtime)
-        if mode == "accept-all":
-            return True
         rules = self.api.settings.get("permissions", {})
         # The provider chooses queries internally. Scoped rules must be enforced on
         # actual queries through the client tool, never guessed from the user's prompt.
@@ -98,17 +95,13 @@ class WebAccess:
             args={"native": True, "provider": model.provider, "request": request.text() if request else "",
              "scope": f"Allow the provider to perform public web {self.operation} operations for this user request."},
             tool=self.tool, cwd=runtime.cwd, agent=runtime.name, signal=runtime.agent.signal,
-            review_source=runtime.review_source,
+            origin=runtime.origin,
         )
-        cache_key = (key, mode, json.dumps(rules, sort_keys=True), id(request), self.api.review_context_key(ev))
-        if getattr(runtime, "_web_reviews", {}).get(self.operation) is not None and runtime._web_reviews[self.operation][0] == cache_key:
-            return runtime._web_reviews[self.operation][1]
-        # Review once per user request. If the broad scope cannot be approved,
-        # auto mode offers the builtin tool for exact-query review instead.
+        # Reevaluate the current deterministic policy for every model request.
+        # If the provider's broad scope is not already authorized, expose the
+        # client tool so the user can approve its actual query or URL.
         decision, _reason = permissions.decide(ev)
-        approved = decision == "allow"
-        runtime._web_reviews = {**getattr(runtime, "_web_reviews", {}), self.operation: (cache_key, approved)}
-        return approved
+        return decision == "allow"
 
     def execution_backend(self, ctx):
         runtime = self._runtime(ctx)

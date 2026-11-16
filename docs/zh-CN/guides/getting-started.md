@@ -63,7 +63,7 @@ uv run virgo --ui fullscreen
 
 ```bash
 uv run virgo -p "总结 README.md"
-uv run virgo -p --mode json "列出公开的程序入口"
+uv run virgo -p --format json "列出公开的程序入口"
 git diff | uv run virgo -p "检查这份 diff 中的正确性问题"
 ```
 

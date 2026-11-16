@@ -39,7 +39,7 @@ class ToolContext:
     signal: threading.Event
     agent: str = "main"
     on_update: Callable[[str], None] | None = None
-    review_source: Any = None  # Bound task/runtime source, never the currently selected chat.
+    origin: Any = None  # Bound task/runtime source, never the currently selected chat.
     translator: Translator | None = field(default=None, kw_only=True)
 
     def t(self, key: str, /, **values: object) -> str:
@@ -73,7 +73,7 @@ class ToolCallEvent:
     agent: str
     cwd: Path
     signal: threading.Event | None = None
-    review_source: Any = None
+    origin: Any = None
 
 
 @dataclass

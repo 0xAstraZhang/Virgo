@@ -18,7 +18,7 @@ import pytest
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage, UserMessage
 from virgo.harness.extensions import ExtensionAPI
-from virgo.harness.store import SessionStore
+from virgo.harness.store import SessionSaveError, SessionStore
 
 from tests.support.harness import calls, tool_results
 from tests.support.persistence import fail_session_write
@@ -73,9 +73,10 @@ def test_proposal_is_a_separate_artifact_and_cannot_write_or_replace_todos(make_
     plan = session.services["plans"].current
     assert plan.markdown == PLAN and plan.revision == 1
     assert plan.plan_id and plan.token == f"{plan.plan_id}:1"
-    assert plan.confirmed_revision is None
+    assert set(vars(plan)) == {"plan_id", "revision", "markdown"}
+    assert session.main.active_plan is None
     assert session.services["permissions"].work_mode == "plan"
-    assert session.permission_mode == "accept-all"
+    assert session.approval_policy == "ask"
     assert (project / "source.txt").read_text(encoding="utf-8") == "existing source"
     assert not (project / "answer.txt").exists()
     assert not (project / "plan.md").exists()
@@ -100,14 +101,16 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     first = propose(session)
     faux.push("test", faux.reply("Execution started with the selected plan."))
     session.prompt(f"/plan execute {first.token}")
-    assert session.services["plans"].current.confirmed_revision == first.revision
+    assert session.store.custom("plan_execution")[-1] == {"plan_id": first.plan_id, "revision": first.revision}
+    assert session.main.active_plan is None
     assert session.services["permissions"].work_mode == "default"
 
     count = len(calls())
     session.prompt(f"/plan edit {first.token}\n{REVISED_PLAN}")
     revised = session.services["plans"].current
     assert revised.plan_id == first.plan_id and revised.revision == first.revision + 1
-    assert revised.markdown == REVISED_PLAN and revised.confirmed_revision is None
+    assert revised.markdown == REVISED_PLAN
+    assert session.main.active_plan is None
     assert session.services["permissions"].work_mode == "plan"
     session.prompt(f"/plan edit {first.token}\n{PLAN}")
     assert session.services["plans"].current == revised, "A stale editor must not overwrite the new revision"
@@ -115,7 +118,7 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     session.prompt("/plan execute")
     session.prompt("/mode default")
     assert len(calls()) == count and not session.run_pending()
-    assert session.services["plans"].current.confirmed_revision is None
+    assert session.main.active_plan is None
     assert not (project / "answer.txt").exists()
 
     session.prompt("/mode plan")
@@ -125,12 +128,13 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     assert (project / "answer.txt").read_text(encoding="utf-8") == "revised answer"
     assert not tool_results(session)[-1].is_error
     assert session.services["permissions"].work_mode == "default"
-    assert session.permission_mode == "accept-all"
-    assert session.services["plans"].current.confirmed_revision == revised.revision
+    assert session.approval_policy == "ask"
+    assert session.store.custom("plan_execution")[-1] == {"plan_id": revised.plan_id, "revision": revised.revision}
+    assert session.main.active_plan is None
     request = calls()[count]
     messages = [message for message in session.main.messages if isinstance(message, UserMessage)]
-    assert REVISED_PLAN in messages[-1].text()
-    assert REVISED_PLAN in str(request["messages"][-1]["content"])
+    assert revised.token in messages[-1].text() and REVISED_PLAN not in messages[-1].text()
+    assert request["system"].count(REVISED_PLAN) == 1
     assert "write" in request["tools"] and "propose_plan" not in request["tools"]
 
 
@@ -140,12 +144,14 @@ def test_reentrant_mode_edit_preserves_version_bound_execution(make_session, con
                            refresh_models=False, extensions=False)
     original = propose(session)
     session.prompt("/mode default")
-    published = []
+    published, rejected = [], []
     session.bus.on("proposed_plan_changed", lambda _runtime, plan: published.append(plan))
 
-    def revise_on_plan(_runtime, mode):
+    def revise_on_plan(runtime, mode):
         if mode == "plan":
-            session.prompt(f"/plan edit {original.token}\n{REVISED_PLAN}")
+            with pytest.raises(ValueError) as error:
+                session.services["plans"].replace(REVISED_PLAN, runtime=runtime)
+            rejected.append(str(error.value))
 
     unsubscribe = session.bus.on("work_mode_changed", revise_on_plan)
     count = len(calls())
@@ -153,29 +159,22 @@ def test_reentrant_mode_edit_preserves_version_bound_execution(make_session, con
     session.prompt(command)
     unsubscribe()
 
-    intervening = published[0]
     current = session.services["plans"].current
-    assert intervening.markdown == REVISED_PLAN
-    assert len({plan.token for plan in published}) == len(published)
+    assert rejected and published == [current]
+    assert current.markdown == PLAN and current.revision == original.revision + 1
     saved = SessionStore.load(session.store.path).custom("proposed_plan")
     assert len({(plan["plan_id"], plan["revision"]) for plan in saved}) == len(saved)
-    if conditional:
-        assert current == intervening
-        assert session.t("plan.stale") in session.ui.text
-    else:
-        assert current.markdown == PLAN and current.revision == intervening.revision + 1
-        session.prompt(f"/plan execute {intervening.token}")
     session.prompt(f"/plan execute {original.token}")
     assert len(calls()) == count and not session.run_pending()
-    assert current.confirmed_revision is None
+    assert session.main.active_plan is None
     assert session.services["permissions"].work_mode == "plan"
 
     faux.push("test", faux.reply("Execution received the selected proposal."))
     session.prompt(f"/plan execute {current.token}")
     assert len(calls()) == count + 1
     message = [message for message in session.main.messages if isinstance(message, UserMessage)][-1]
-    assert current.markdown in message.text()
-    assert current.markdown in str(calls()[count]["messages"][-1]["content"])
+    assert current.token in message.text() and current.markdown not in message.text()
+    assert calls()[count]["system"].count(current.markdown) == 1
 
 
 def test_reentrant_mode_exit_does_not_publish_a_plan_in_default(make_session):
@@ -183,25 +182,31 @@ def test_reentrant_mode_exit_does_not_publish_a_plan_in_default(make_session):
                            refresh_models=False, extensions=False)
     original = propose(session)
     session.prompt("/mode default")
+    rejected = []
 
-    def leave_plan(_runtime, mode):
+    def leave_plan(runtime, mode):
         if mode == "plan":
-            session.prompt("/mode default")
+            with pytest.raises(ValueError) as error:
+                session.services["permissions"].set_work_mode("default", runtime=runtime)
+            rejected.append(str(error.value))
 
     session.bus.on("work_mode_changed", leave_plan)
     count = len(calls())
     session.prompt(f"/plan edit {original.token}\n{REVISED_PLAN}")
-    assert session.services["plans"].current == original
-    assert len(session.store.custom("proposed_plan")) == 1
-    assert session.services["permissions"].work_mode == "default"
+    assert rejected
+    assert session.services["plans"].current.markdown == REVISED_PLAN
+    assert len(session.store.custom("proposed_plan")) == 2
+    assert session.services["permissions"].work_mode == "plan"
     assert len(calls()) == count and not session.run_pending()
 
 
-@pytest.mark.parametrize("approval,sandbox", [("auto-review", "disabled"), ("accept-all", "read-only")])
+# Preserve historical scenario IDs for cross-platform regression comparison.
+@pytest.mark.parametrize("approval,sandbox", [("ask", "disabled"), ("never", "read-only")],
+                         ids=["auto-review-disabled", "accept-all-read-only"])
 def test_execution_confirmation_and_leaving_plan_preserve_approval_and_sandbox(
     make_session, project, approval, sandbox,
 ):
-    session = make_session(mode=approval, settings={
+    session = make_session(approval=approval, settings={
         "profile": "minimal", "workMode": "plan", "sandbox": {"mode": sandbox},
         "permissions": {"deny": ["write(answer.txt)"]},
     }, refresh_models=False, extensions=False)
@@ -210,34 +215,36 @@ def test_execution_confirmation_and_leaving_plan_preserve_approval_and_sandbox(
               faux.reply("The existing restriction prevented the write."))
     session.prompt(f"/plan execute {plan.token}")
     assert session.services["permissions"].work_mode == "default"
-    assert session.permission_mode == approval
+    assert session.approval_policy == approval
     assert session.services["sandbox"].mode == sandbox
     assert not (project / "answer.txt").exists() and tool_results(session)[-1].is_error
     count = len(calls())
     session.prompt("/mode plan")
     session.prompt("/mode default")
-    assert session.permission_mode == approval and session.services["sandbox"].mode == sandbox
+    assert session.approval_policy == approval and session.services["sandbox"].mode == sandbox
     assert len(calls()) == count and not session.run_pending()
 
 
 def test_saved_confirmation_is_not_replayed_or_restored_as_an_execution_grant(make_session, project):
-    session = make_session(mode="auto-review", persist=True, settings={
+    session = make_session(approval="ask", allow=False, persist=True, settings={
         "profile": "minimal", "workMode": "plan", "sandbox": {"mode": "read-only"},
     }, refresh_models=False, extensions=False)
     plan = propose(session)
     faux.push("test", faux.reply("The plan was selected; no file changes were made."))
     session.prompt(f"/plan execute {plan.token}")
-    assert session.services["plans"].current.confirmed_revision == plan.revision
+    assert session.store.custom("plan_execution")[-1] == {"plan_id": plan.plan_id, "revision": plan.revision}
+    assert session.main.active_plan is None
     path = session.store.path
     session.shutdown()
 
-    restored = make_session(mode="auto-review", session=path, settings={
+    restored = make_session(approval="ask", allow=False, session=path, settings={
         "profile": "minimal", "sandbox": {"mode": "read-only"},
     }, refresh_models=False, extensions=False)
     current = restored.services["plans"].current
     assert current.plan_id == plan.plan_id and current.revision == plan.revision
-    assert current.markdown == PLAN and current.confirmed_revision is None
-    assert restored.permission_mode == "auto-review" and restored.services["sandbox"].mode == "read-only"
+    assert current.markdown == PLAN
+    assert restored.main.active_plan is None
+    assert restored.approval_policy == "ask" and restored.services["sandbox"].mode == "read-only"
     assert not calls() and not restored.wakeups and not restored.run_pending()
     restored.prompt("/plan show")
     assert not calls() and not (project / "answer.txt").exists()
@@ -254,9 +261,27 @@ def test_unsaved_confirmation_cannot_leave_plan_or_start_execution(make_session,
         session.prompt(f"/plan execute {plan.token}")
     assert session.store.save_error is not None
     assert session.services["permissions"].work_mode == "plan"
-    assert session.services["plans"].current.confirmed_revision is None
+    assert session.main.active_plan is None
     assert len(calls()) == count and not session.run_pending()
     assert not (project / "answer.txt").exists()
+
+    # A notification can encounter a later disk error after execution intent
+    # was persisted. Admission still must not retain a plan for a run that never starts.
+    notified = make_session(persist=True, settings={"profile": "minimal", "workMode": "plan"},
+                            refresh_models=False, extensions=False)
+    selected = propose(notified)
+    count, previous_run = len(calls()), notified.main.run_id
+    unsubscribe = notified.bus.on("work_mode_changed", lambda runtime, _mode: runtime.store.append(
+        "custom", kind="mode_observation", data={},
+    ))
+    with fail_session_write(monkeypatch, notified.store.path, containing="mode_observation"):
+        notified.prompt(f"/plan execute {selected.token}")
+    unsubscribe()
+    assert notified.store.save_error is not None
+    assert notified.services["permissions"].work_mode == "default"
+    assert notified.main.active_plan is None
+    assert len(calls()) == count and notified.main.run_id == previous_run
+    assert not notified.busy and not notified.run_pending()
 
 
 @pytest.mark.parametrize("saved,configured,explicit,expected", [
@@ -280,8 +305,29 @@ def test_saved_mode_startup_floor_and_explicit_override_do_not_execute(
                             refresh_models=False, extensions=False, **options)
     assert restored.services["permissions"].work_mode == expected
     assert restored.services["plans"].current.markdown == PLAN
-    assert restored.services["plans"].current.confirmed_revision is None
+    assert restored.main.active_plan is None
     assert not calls() and not restored.run_pending()
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_failed_startup_override_keeps_the_original_plan_ceiling(make_session, monkeypatch, retained):
+    session = make_session(persist=True, settings={"profile": "minimal", "workMode": "plan"},
+                           refresh_models=False, extensions=False)
+    propose(session)
+    origin, path = session.main, session.store.path
+    if retained:
+        session.new_session()
+    selected = session.main
+    revision = origin.work_mode_revision
+
+    with fail_session_write(monkeypatch, path), pytest.raises(SessionSaveError):
+        session.open_session(path, work_mode="default")
+
+    assert session.main is selected
+    assert origin.work_mode == "plan"
+    assert origin.work_mode_revision == revision
+    assert session.services["permissions"].work_mode_for(origin) == "plan"
+    assert not session.run_pending()
 
 
 def test_conversation_switches_keep_plan_and_child_permissions_with_the_origin(make_session, project):
@@ -292,7 +338,7 @@ def test_conversation_switches_keep_plan_and_child_permissions_with_the_origin(m
     original_path = session.store.path
     first = propose(session)
     api = ExtensionAPI(session, "planning-origin")
-    child = api.create_runtime("planning-child", "subagent", parent=original, permission="accept-all")
+    child = api.create_runtime("planning-child", "subagent", parent=original, read_only=False)
     try:
         session.new_session()
         second = session.main
@@ -310,7 +356,7 @@ def test_conversation_switches_keep_plan_and_child_permissions_with_the_origin(m
         child_results = [message for message in child.messages if isinstance(message, ToolResultMessage)]
         assert len(child_results) == 2 and all(message.is_error for message in child_results)
         assert original.proposed_plan.markdown == PLAN
-        assert session.services["permissions"].mode_for("main", runtime=original) == "plan"
+        assert session.services["permissions"].work_mode_for(original) == "plan"
 
         faux.push("test", faux.reply(tools=[("propose_plan", {"markdown": REVISED_PLAN})]),
                   faux.reply("Only the originating proposal was revised."))
@@ -351,7 +397,7 @@ def test_busy_request_cannot_confirm_or_queue_an_execution(make_session):
         assert started.wait(5) and session.busy
         count = len(calls())
         session.prompt(f"/plan execute {plan.token}")
-        assert session.services["plans"].current.confirmed_revision is None
+        assert session.main.active_plan is None
         assert session.services["permissions"].work_mode == "plan"
         assert len(calls()) == count and not session.wakeups
     finally:
@@ -421,7 +467,8 @@ def test_background_planning_child_blocks_only_its_origin_before_confirmation(
         session.prompt("/plan edit # A separate conversation's proposal")
         other = session.services["plans"].current
         session.prompt(f"/plan execute {other.token}")
-        assert session.services["plans"].current.confirmed_revision == other.revision
+        assert session.store.custom("plan_execution")[-1] == {"plan_id": other.plan_id, "revision": other.revision}
+        assert session.main.active_plan is None
         assert session.services["permissions"].work_mode == "default"
         session.open_session(origin_path)
 
@@ -446,7 +493,8 @@ def test_background_planning_child_blocks_only_its_origin_before_confirmation(
 
     # Completion releases admission without removing the existing job record.
     session.prompt(f"/plan execute {plan.token}")
-    assert session.services["plans"].current.confirmed_revision == plan.revision
+    assert session.store.custom("plan_execution")[-1] == {"plan_id": plan.plan_id, "revision": plan.revision}
+    assert session.main.active_plan is None
     assert session.services["permissions"].work_mode == "default"
 
 
@@ -454,122 +502,95 @@ def test_reentrant_pending_work_inspection_cannot_execute_a_revised_plan(make_se
     session = make_session(settings={"profile": "minimal", "workMode": "plan"},
                            refresh_models=False, extensions=False)
     original = propose(session)
-    revised = []
+    inspected = []
 
     def inspect(runtime):
-        if runtime.proposed_plan.confirmed_revision is not None and not revised:
-            revised.append(session.services["plans"].replace(REVISED_PLAN, runtime=runtime))
+        inspected.append(runtime)
+        session.services["plans"].replace(REVISED_PLAN, runtime=runtime)
         return False
 
     unsubscribe = session.bus.on("runtime_pending_work", inspect)
     count = len(calls())
-    faux.push("test", faux.reply("Only the current explicitly selected plan may execute."))
+    faux.push("test", faux.reply("The selected plan is stable throughout admission."))
     session.prompt(f"/plan execute {original.token}")
     unsubscribe()
 
-    assert session.services["plans"].current is revised[0]
-    assert revised[0].revision == original.revision + 1
-    assert revised[0].confirmed_revision is None
-    assert session.services["permissions"].work_mode == "plan"
-    assert len(calls()) == count and session.t("plan.stale") in session.ui.text
-
-    session.prompt(f"/plan execute {revised[0].token}")
+    assert not inspected, "Core admission does not dispatch mutable extension inspection callbacks"
+    assert session.services["plans"].current is original
+    assert session.main.active_plan is None
+    assert session.services["permissions"].work_mode == "default"
     assert len(calls()) == count + 1
-    latest = [message for message in session.main.messages if isinstance(message, UserMessage)][-1]
-    assert REVISED_PLAN in latest.text()
+    assert calls()[count]["system"].count(PLAN) == 1
 
 
 @pytest.mark.parametrize("phase", [1, 2])
-@pytest.mark.parametrize("change", ["revise", "mode", "switch", "new_default"])
+@pytest.mark.parametrize("change", ["revise", "mode", "switch", "new_default", "review"])
 def test_early_admission_observers_preserve_newer_selection(make_session, project, phase, change):
-    session = make_session(persist=True, settings={"profile": "minimal", "workMode": "plan"},
+    session = make_session(persist=True, settings={"profile": "minimal", "workMode": "plan",
+                                                  "plugins": {"code_review": {"enabled": True}}},
                            refresh_models=False, extensions=False)
     original = propose(session)
     origin, origin_path = session.main, session.store.path
     permissions = session.services["permissions"]
-    inspections = 0
-    changed = False
+    rejected = []
 
-    def inspect(runtime):
-        nonlocal inspections, changed
-        inspections += 1
-        if inspections == phase and not changed:
-            changed = True
-            if change in {"revise", "new_default"}:
-                session.services["plans"].replace(REVISED_PLAN, runtime=runtime)
-                if change == "new_default":
-                    permissions.set_work_mode("default", runtime=runtime)
+    def observe(runtime, _value):
+        session.prompt("/plan show")  # Read-only presentation remains available during notifications.
+        if change == "review":
+            try:
+                session.prompt("/review")
+            except ValueError as error:
+                rejected.append(str(error))
+            return
+        with pytest.raises(ValueError) as error:
+            if change == "revise":
+                session.services["plans"].replace("# Reentrant replacement", runtime=runtime)
             elif change == "mode":
                 permissions.set_work_mode("default", runtime=runtime)
-                permissions.set_work_mode("plan", runtime=runtime)
+            elif change == "new_default":
+                session.new_session(work_mode="default")
             else:
-                session.new_session()
-        return False
+                session.open_session(origin_path)
+        rejected.append(str(error.value))
 
-    unsubscribe = session.bus.on("runtime_pending_work", inspect)
+    event = "work_mode_changed" if phase == 1 else "proposed_plan_changed"
+    unsubscribe = session.bus.on(event, observe)
     count = len(calls())
-    faux.push("test", faux.reply("The superseded execution must not start."))
-    session.prompt(f"/plan execute {original.token}")
+    faux.push("test", faux.reply("Execute only the version selected outside the notification."))
+    session.prompt(f"/plan execute {original.token}" if phase == 1 else f"/plan edit {REVISED_PLAN}")
     unsubscribe()
 
-    assert changed and len(calls()) == count
-    assert origin.proposed_plan.confirmed_revision is None
-    if change in {"revise", "new_default"}:
-        assert origin.proposed_plan.markdown == REVISED_PLAN
-        assert origin.proposed_plan.revision == original.revision + 1
-    if change == "switch":
-        assert session.main is not origin and permissions.work_mode == "plan"
-    expected_mode = "default" if change == "new_default" else "plan"
-    assert permissions.work_mode_for(origin) == expected_mode
-
-    # A later ordinary prompt must not use a ceiling lost during stale admission.
-    session.open_session(origin_path)
+    assert not origin.store.custom("code_review"), "Rejected tasks cannot publish a review lifecycle"
+    assert rejected and session.main is origin
+    assert len(calls()) == count + (phase == 1)
+    assert origin.proposed_plan.markdown == (PLAN if phase == 1 else REVISED_PLAN)
+    assert origin.active_plan is None
+    assert permissions.work_mode_for(origin) == ("default" if phase == 1 else "plan")
+    # The committed selection controls later work; notification attempts cannot change it.
     faux.script("test", faux.reply(tools=[("write", {"path": "observer.txt", "content": "answer"})]),
-                faux.reply("The current selected mode controls this operation."))
+                faux.reply("The committed mode controls this operation."))
     session.prompt("Report the current investigation status.")
-    assert (project / "observer.txt").exists() == (change == "new_default")
-    assert tool_results(session)[-1].is_error == (change != "new_default")
+    assert (project / "observer.txt").exists() == (phase == 1)
+    assert tool_results(session)[-1].is_error == (phase != 1)
 
 
 def test_admission_inspection_rechecks_a_child_started_by_its_observer(make_session, project):
     session = make_session(settings={"profile": "minimal", "workMode": "plan"},
                            refresh_models=False, extensions=False)
-    api = ExtensionAPI(session, "pending-inspection-child")
-    started = threading.Event()
-    children, workers, failures = [], [], []
+    api = ExtensionAPI(session, "notification-child")
+    rejected = []
 
-    def inspect(runtime):
-        child = api.create_runtime("new-investigator", "subagent", parent=runtime)
-        children.append(child)
-        child.agent.subscribe(lambda event: started.set() if event.type == "agent_start" else None)
+    def observe(runtime, _mode):
+        with pytest.raises(ValueError) as error:
+            api.create_runtime("new-investigator", "subagent", parent=runtime)
+        rejected.append(str(error.value))
 
-        def run_child():
-            try:
-                child.agent.prompt("Investigate without changing files.")
-            except BaseException as error:
-                failures.append(error)
-
-        worker = threading.Thread(target=run_child)
-        workers.append(worker)
-        worker.start()
-        assert started.wait(5), "The child must start before admission resumes"
-        return False
-
-    unsubscribe = session.bus.on("runtime_pending_work", inspect)
-    faux.push("test", faux.reply(tools=[("write", {"path": "observer-child.txt", "content": "blocked"})]),
-              faux.reply("Investigation complete."))
-    try:
-        session.prompt("/mode default")
-        selected_mode = session.services["permissions"].work_mode
-    finally:
-        unsubscribe()
-        for worker in workers:
-            worker.join(5)
-        for child in children:
-            api.release_runtime(child)
-
-    assert workers and all(not worker.is_alive() for worker in workers) and not failures
-    assert selected_mode == "plan" and not (project / "observer-child.txt").exists()
+    unsubscribe = session.bus.on("work_mode_changed", observe)
+    session.prompt("/mode default")
+    unsubscribe()
+    assert rejected and not session._child_runtimes
+    assert session.services["permissions"].work_mode == "default"
+    assert not calls() and not (project / "observer-child.txt").exists()
 
 
 @pytest.mark.parametrize("action", ["mode", "execute"])
@@ -579,59 +600,31 @@ def test_admission_observer_cannot_queue_untracked_plan_work(make_session, proje
         "plugins": {"subagent": {"enabled": True}, "background": {"enabled": True}},
     }, refresh_models=False, extensions=False)
     plan = propose(session)
-    jobs, subagents = session.services["jobs"], session.services["subagents"]
-    entered, release = threading.Event(), threading.Event()
-    queued = []
-    inspections = 0
+    jobs = session.services["jobs"]
+    rejected = []
 
-    def inspect(runtime):
-        nonlocal inspections
-        inspections += 1
-        if inspections == (1 if action == "mode" else 2):
-            def investigate(signal):
-                entered.set()
-                assert release.wait(5), "Release the queued investigation before creating its Runtime"
-                return subagents.run("Queued Plan investigation", "Investigate", signal,
-                                     runtime.cwd, runtime.review_source)
+    def observe(runtime, _mode):
+        with pytest.raises(ValueError) as error:
+            jobs.start_callable("Unrequested investigation", lambda _signal: "must not run",
+                                store=runtime.origin.root, agent=runtime.name, cwd=runtime.cwd)
+        rejected.append(str(error.value))
 
-            queued.append(jobs.start_callable("Queued investigation", investigate,
-                                             store=runtime.review_source.root, agent=runtime.name,
-                                             cwd=runtime.cwd))
-            assert entered.wait(5)
-        return False
+    unsubscribe = session.bus.on("work_mode_changed", observe)
+    count = len(calls())
+    faux.push("test", faux.reply("The committed selection controls this request."))
+    session.prompt("/mode default" if action == "mode" else f"/plan execute {plan.token}")
+    unsubscribe()
 
-    # This observer is deliberately registered after the background plugin.
-    unsubscribe = session.bus.on("runtime_pending_work", inspect)
-
-    def respond(context):
-        if context.messages[0].text() == "Queued Plan investigation" and isinstance(
-            context.messages[-1], UserMessage,
-        ):
-            return faux.reply(tools=[("write", {"path": "queued-observer.txt", "content": "blocked"})])
-        return faux.reply("The current permission boundary was applied.")
-
-    faux.handler("test", respond)
-    try:
-        session.prompt("/mode default" if action == "mode" else f"/plan execute {plan.token}")
-        selected_mode = session.services["permissions"].work_mode
-        assert queued and not session._child_runtimes
-        assert session.services["plans"].current.confirmed_revision is None
-    finally:
-        unsubscribe()
-        release.set()
-        for job in queued:
-            assert job.done.wait(5)
-
-    assert selected_mode == "plan" and not (project / "queued-observer.txt").exists()
-    # Completion must release the admission reservation before signaling done.
-    session.prompt(f"/plan execute {plan.token}")
-    assert session.services["plans"].current.confirmed_revision == plan.revision
+    assert rejected and not jobs.jobs and not session._child_runtimes
+    assert not session._pending_child_work and not (project / "queued-observer.txt").exists()
     assert session.services["permissions"].work_mode == "default"
+    assert len(calls()) == count + (action == "execute")
+    assert session.main.active_plan is None
 
 
 def test_legacy_migration_preserves_a_trashed_origin_with_queued_child_work(make_session, project, trash):
-    session = make_session(mode="plan", persist=True, settings={
-        "profile": "minimal",
+    session = make_session(persist=True, settings={
+        "profile": "minimal", "workMode": "plan",
         "plugins": {"subagent": {"enabled": True}, "background": {"enabled": True}},
     }, refresh_models=False, extensions=False)
     origin, origin_path = session.main, session.store.path
@@ -639,12 +632,12 @@ def test_legacy_migration_preserves_a_trashed_origin_with_queued_child_work(make
 
     def investigate(signal):
         entered.set()
-        assert release.wait(5), "Release the queued investigation after legacy migration"
+        assert release.wait(5), "Release the queued investigation after its origin was removed"
         return session.services["subagents"].run("Investigate only", "Queued investigation", signal,
-                                                project, origin.review_source)
+                                                project, origin.origin)
 
     job = session.services["jobs"].start_callable("Queued investigation", investigate,
-                                               store=origin.review_source.root)
+                                               store=origin.origin.root)
     try:
         assert entered.wait(5) and not session._child_runtimes
         session.trash_session(origin_path)

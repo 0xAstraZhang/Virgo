@@ -56,9 +56,9 @@ from .extensions import (
     load_builtin_features,
     load_user_extensions,
 )
-from .permission_context import ReviewSource
+from .origin_context import ExecutionOrigin, source_for
 from .permission_policy import install_permissions
-from .permissions import PermissionPolicy, normalize_permission_mode, plan_tool_allowed
+from .permissions import PermissionPolicy, normalize_approval_policy, read_only_tool_allowed
 from .plans import install_plans
 from .prompt import RuntimeContext, build_system
 from .recovery import RuntimeDiagnostics, message_diagnostics
@@ -97,10 +97,12 @@ class Runtime:
         max_turns: int | None = None,
         signal: threading.Event | None = None,
         compaction: bool = True,
-        review_parent: ReviewSource | None = None,
+        origin_parent: ExecutionOrigin | None = None,
         accounting_store=None,
         request_budget: RequestBudget | None = None,
         work_mode: str | None = None,
+        read_only: bool = False,
+        approval_policy: str | None = None,
     ):
         self.session = session
         self.request_budget = request_budget or RequestBudget(session.settings.get("budget.maxModelCalls"))
@@ -109,16 +111,19 @@ class Runtime:
         self.cwd = Path(cwd or session.cwd)
         self.store = store
         self.accounting_store = accounting_store if accounting_store is not None else (store if role == "main" and store is not None else session.store)
-        if role != "main" and review_parent is None:
-            review_parent = getattr(getattr(session, "main", None), "review_source", None)
-        self.parent = review_parent.runtime if review_parent is not None else None
+        if role != "main" and origin_parent is None:
+            origin_parent = getattr(getattr(session, "main", None), "origin", None)
+        self.parent = origin_parent.runtime if origin_parent is not None else None
+        self.read_only = bool(read_only)
+        self.approval_policy = approval_policy
+        self.active_plan = None
         self.proposed_plan = None
         if role == "main":
             session.services["permissions"].restore_work_mode(self, work_mode)
-        if review_parent is not None:
-            review_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
-            self.accounting_store = review_parent.root
-        self.construction_context = RuntimeContext(role, self.cwd, store, self.accounting_store, review_parent)
+        if origin_parent is not None:
+            origin_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
+            self.accounting_store = origin_parent.root
+        self.construction_context = RuntimeContext(role, self.cwd, store, self.accounting_store, origin_parent)
         self.ids: list = list(ids or [])
         self.model = model or session.model
         self.system_extra = system_extra
@@ -152,7 +157,7 @@ class Runtime:
             before_tool_call=self._before_tool,
             before_tool_execute=session._before_tool_execute,
             after_tool_call=session._after_tool,
-            should_stop=lambda _msgs: session.bus.first("agent_stop", self),
+            should_stop=(None if role == "review" else lambda _msgs: session.bus.first("agent_stop", self)),
             max_turns=max_turns,
             can_run=self.can_run,
             on_error=lambda details: self.report_error(details, phase="agent.listener"),
@@ -160,9 +165,7 @@ class Runtime:
             translator=session.translator,
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
-        self.review_source = ReviewSource(self, review_parent)
-        for message in self.agent.messages:
-            self.review_source.remember(message)
+        self.origin = ExecutionOrigin(self, origin_parent)
         self.agent.subscribe(self._on_event)
         for bound in (self.store, self.accounting_store):
             if bound is not None:
@@ -181,6 +184,11 @@ class Runtime:
         return self.agent.messages
 
     def rebuild_system(self) -> None:
+        if self.role == "review":
+            # A review consumes an explicit snapshot, not live project instructions
+            # or another capability's system sections.
+            self.system = self.system_extra or "Review the supplied code snapshot using only its read-only tools."
+            return
         self.system = build_system(self.session, self.role, self.system_extra, self.cwd,
                                    tools=self.tools, context=self.construction_context)
 
@@ -192,7 +200,7 @@ class Runtime:
         return not errors
 
     def _before_tool(self, ev: ToolCallEvent):
-        ev.review_source = self.review_source
+        ev.origin = self.origin
         return self.session._before_tool(ev)
 
     def _project_tool_result(self, call, result):
@@ -218,9 +226,12 @@ class Runtime:
             self.session.report_save_error(error)
         self.can_run()
         self.session.bus.emit("agent_event", ev, self)
-        if ev.type == "turn_end":
+        if ev.type == "turn_end" and self.role != "review":
             self.session.bus.emit("turn_end", ev, self)
-        self.session.ui.on_event(ev)
+        # The task publishes its validated report. Raw assistant JSON (including
+        # malformed or interrupted output) must not look like a final conclusion.
+        if self.role != "review" or ev.type not in {"message_start", "message_update", "message_end"}:
+            self.session.ui.on_event(ev)
 
     def diagnostic_context(self, **extra) -> dict:
         owner = self.store if self.store is not None else self.accounting_store
@@ -346,7 +357,6 @@ class Runtime:
                 entry_id = error.entry["id"]
                 self.session.report_save_error(error)
             self.ids.append(entry_id)
-            self.review_source.remember(ev.message, self.ids[-1])
             if isinstance(ev.message, ToolResultMessage):
                 self.recovery.safely("presented", message_diagnostics(ev.message))
             if self._native_source is not None:
@@ -404,14 +414,14 @@ class Runtime:
         """Assemble instructions and schemas; only actual requests report formatting failures."""
         s = self.session
         permissions = s.services.get("permissions")
-        mode = (permissions.mode_for(self.name, runtime=self)
-                if hasattr(permissions, "mode_for") else s.permission_mode)
+        read_only = permissions.is_read_only(self)
+        work_mode = permissions.work_mode_for(self)
         system = self.system + "\n\n<language>\n" + s.t("harness.response_language") + "\n</language>"
         tools = []
         for tool in self.tools:
-            if mode == "plan" and not plan_tool_allowed(tool):
+            if read_only and not read_only_tool_allowed(tool):
                 continue
-            if tool.name == "propose_plan" and mode != "plan":
+            if tool.name == "propose_plan" and (work_mode != "plan" or self.role != "main"):
                 continue
             try:
                 tools.append(tool.spec(s.translator))
@@ -423,19 +433,15 @@ class Runtime:
                 tools.append(tool.spec())
         if instructions := s.services["plans"].instructions(self):
             system += "\n\n" + instructions
-        if mode == "plan":
-            for tool in tools:
-                if tool.name == "bash":
-                    tool.description = s.t("harness.plan_shell_description")
         return Context(system, messages, tools)
 
     def request_context(self, messages: list, model=None) -> Context:
         """Use the same instructions, tools and extension view for generation and compaction."""
         s = self.session
-        view = s.bus.chain("context", list(messages), self)
+        view = list(messages) if self.role == "review" else s.bus.chain("context", list(messages), self)
         context = self._base_context(view, report_errors=True)
         web = s.services.get("web")
-        if web is not None:
+        if web is not None and self.role != "review":
             web.prepare(self, context, model or self.model)
         if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):
             context.messages = strip_thinking(view)
@@ -444,6 +450,8 @@ class Runtime:
     # -- model calls ---------------------------------------------------------
     def refresh_tools(self) -> None:
         """Adopt registered tools at a request boundary while retaining local restrictions."""
+        if self.role == "review":
+            return  # Only the task's frozen snapshot tools belong to this runtime.
         version, registered = self.session.tool_snapshot(self.role)
         if version == self._tool_version:
             return
@@ -461,7 +469,8 @@ class Runtime:
 
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
         if self.can_run() and not signal.is_set():
-            self.session.bus.emit("runtime_request", self)
+            if self.role != "review":
+                self.session.bus.emit("runtime_request", self)
             self.refresh_tools()
         self._call_started = time.monotonic()
         self._model_call_id = uuid.uuid4().hex
@@ -521,7 +530,7 @@ class Runtime:
                 "max_retries": max_retries, "duration": round(duration, 6),
             })
             web = s.services.get("web")
-            if (web_fallbacks < 2 and not signal.is_set() and web
+            if (self.role != "review" and web_fallbacks < 2 and not signal.is_set() and web
                     and web.fallback(request_model, ctx, failed)):
                 web_fallbacks += 1
                 record_call(self.accounting_store, request_model, failed, purpose="fetch-fallback" if failed.error_kind == "fetch_unsupported" else "search-fallback",
@@ -588,7 +597,7 @@ class AgentSession:
         ui: UI | None = None,
         model: str | None = None,
         session: str | Path | None = "new",  # "new" | "continue" | path | None (in memory)
-        permission_mode: str | None = None,
+        approval_policy: str | None = None,
         work_mode: str | None = None,
         settings: dict | None = None,
         extensions: bool = True,
@@ -599,7 +608,7 @@ class AgentSession:
     ):
         self.session_options = {
             "model": model,
-            "permission_mode": permission_mode,
+            "approval_policy": approval_policy,
             "settings": settings,
             "extensions": extensions,
             "trust_project_extensions": trust_project_extensions,
@@ -620,6 +629,7 @@ class AgentSession:
         self.ui.set_translator(self.translator)
         self.auth = AuthStore(self.paths.user / "auth.json")
         self.bus = EventBus(on_error=lambda m: self.ui.print(m, "error"), on_diagnostic=self._extension_error)
+        self.templates: dict = {}
         self.commands = Commands(self.translator)
         self.services: dict = {}
         self.sections: list = []
@@ -637,12 +647,14 @@ class AgentSession:
         self._plugin_cleanups: list[tuple[str, object]] = []
         self.loaded_plugins: list[str] = []
         self._child_runtimes: dict[str, Runtime] = {}
-        self.templates: dict = {}
-        self.permission_mode = permission_mode or self.settings.get("permissions.mode", "auto-review")
+        self._notification_depth = 0
+        self.approval_revision = 0
+        self.approval_policy = approval_policy or self.settings.get("permissions.approval", "ask")
         self.effort = self.settings.get("effort", "medium")
         self._lock = threading.RLock()
         self._shutdown_started = False
         self.busy = False
+        self.command_exit_code = 0
         self.wakeups: deque = deque()
         self.discovered_models: dict[str, dict] = {}
         self._metadata_paths: dict[str, Path] = {}
@@ -671,7 +683,10 @@ class AgentSession:
             if extensions:
                 load_user_extensions(self)
             install_command_hooks(self)
-            self.templates = load_templates(self.paths.both("prompts"))
+            self.templates.update(load_templates(
+                self.paths.both("prompts"),
+                reserved=frozenset({"review"}) if "code_review" in self.services else frozenset(),
+            ))
             self.main = self._new_main(self.store, work_mode=work_mode)
         except BaseException:
             self.cleanup_plugins()
@@ -780,8 +795,8 @@ class AgentSession:
             if isinstance(value, Runtime):
                 runtime = value
                 break
-            if isinstance(value, ToolCallEvent) and value.review_source is not None:
-                runtime = value.review_source.runtime
+            if isinstance(value, ToolCallEvent) and value.origin is not None:
+                runtime = value.origin.runtime
                 break
         if runtime is not None:
             runtime.report_error(details, phase="extension.handler")
@@ -794,12 +809,14 @@ class AgentSession:
 
     # -- setup helpers ---------------------------------------------------------
     @property
-    def permission_mode(self) -> str:
-        return self._permission_mode
+    def approval_policy(self) -> str:
+        return self._approval_policy
 
-    @permission_mode.setter
-    def permission_mode(self, mode: str) -> None:
-        self._permission_mode = normalize_permission_mode(mode)
+    @approval_policy.setter
+    def approval_policy(self, mode: str) -> None:
+        self.assert_state_change_allowed()
+        self._approval_policy = normalize_approval_policy(mode)
+        self.approval_revision += 1
 
     def resolve(self, spec: str) -> ai.Model:
         with self._lock:
@@ -993,44 +1010,40 @@ class AgentSession:
             return SessionStore.new(self.paths.sessions, self.cwd)
         return SessionStore.load(Path(session))
 
-    def create_runtime(self, name: str, role: str, *, parent=None, permission=None, **kwargs) -> Runtime:
+    def create_runtime(self, name: str, role: str, *, parent=None, read_only=False, **kwargs) -> Runtime:
         with self._lock:
-            review_parent = kwargs.get("review_parent")
+            self.assert_state_change_allowed()
+            origin_parent = kwargs.get("origin_parent")
             if role != "main":
-                parent = parent or (review_parent.runtime if review_parent is not None else self.main)
+                parent = parent or (origin_parent.runtime if origin_parent is not None else self.main)
                 if not isinstance(parent, Runtime) or parent.session is not self:
                     raise ValueError("Runtime parent must belong to this session")
-                if review_parent is not None and review_parent is not parent.review_source:
-                    raise ValueError("Runtime permission source must match its parent")
+                if origin_parent is not None and origin_parent is not parent.origin:
+                    raise ValueError("Runtime origin must match its parent")
                 if name in self._child_runtimes or name == "main":
                     raise ValueError(f"Runtime name {name!r} is already in use")
-                review_parent = parent.review_source
-                kwargs["review_parent"] = review_parent
+                origin_parent = parent.origin
+                kwargs["origin_parent"] = origin_parent
                 kwargs["request_budget"] = parent.request_budget
                 kwargs["signal"] = ChildCancellation(parent.agent.signal, kwargs.get("signal"))
+                read_only = bool(read_only or self.services["permissions"].is_read_only(parent))
+                parent_approval = self.services["permissions"].approval_for(parent)
+                if parent_approval == "never":
+                    kwargs["approval_policy"] = "never"
                 parent_limit = parent.agent.cfg.max_turns
                 if parent_limit is not None:
                     kwargs["max_turns"] = min(parent_limit, kwargs.get("max_turns") or parent_limit)
-                permissions = self.permission_policy
-                if hasattr(permissions, "set_agent_parent"):
-                    if permission is not None:
-                        permission = normalize_permission_mode(permission)
-                    permissions.set_agent_parent(name, parent.name)
-                    permissions.set_agent_mode(name, permission)
-            if review_parent is not None:
-                review_parent.root.entries()
-            kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else review_parent.root)
+            if origin_parent is not None:
+                origin_parent.root.entries()
+            kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else origin_parent.root)
             try:
-                runtime = Runtime(self, name, role, **kwargs)
+                runtime = Runtime(self, name, role, read_only=read_only, **kwargs)
                 if role == "main" and runtime.store is not None:
                     self._main_runtimes[runtime.store.id] = runtime
                 elif role != "main":
                     self._child_runtimes[name] = runtime
                 return runtime
             except Exception as error:
-                if role != "main" and hasattr(self.permission_policy, "set_agent_parent"):
-                    self.permission_policy.set_agent_mode(name, None)
-                    self.permission_policy.set_agent_parent(name, None)
                 owner = kwargs.get("store") or kwargs.get("accounting_store")
                 self.report_error(error, phase="runtime.create", store=owner,
                                   context={"agent": name, "role": role})
@@ -1041,9 +1054,6 @@ class AgentSession:
             if self._child_runtimes.get(runtime.name) is not runtime:
                 return
             self._child_runtimes.pop(runtime.name)
-            if hasattr(self.permission_policy, "set_agent_parent"):
-                self.permission_policy.set_agent_mode(runtime.name, None)
-                self.permission_policy.set_agent_parent(runtime.name, None)
             for store in (runtime.store, runtime.accounting_store):
                 if store is not None:
                     with store._lock:
@@ -1052,10 +1062,10 @@ class AgentSession:
 
     def runtime_for_context(self, ctx: ToolContext) -> Runtime | None:
         """Resolve a trusted caller without borrowing the currently selected runtime."""
-        source = ctx.review_source
-        runtime = source.runtime if isinstance(source, ReviewSource) else None
+        source = ctx.origin
+        runtime = source.runtime if isinstance(source, ExecutionOrigin) else None
         if (not isinstance(runtime, Runtime) or runtime.session is not self
-                or source is not runtime.review_source or ctx.agent != runtime.name):
+                or source is not runtime.origin or ctx.agent != runtime.name):
             return None
         return runtime
 
@@ -1063,8 +1073,8 @@ class AgentSession:
         messages, ids = store.build_context()
         return self.create_runtime("main", "main", store=store, messages=messages, ids=ids, work_mode=work_mode)
 
-    def _prepare_main(self, store: SessionStore) -> Runtime:
-        return self._new_main(store)
+    def _prepare_main(self, store: SessionStore, *, work_mode: str | None = None) -> Runtime:
+        return self._new_main(store, work_mode=work_mode)
 
     def live_store(self, path: str | Path) -> SessionStore | None:
         """Resolve an owned conversation before consulting its possibly damaged file."""
@@ -1091,25 +1101,31 @@ class AgentSession:
                 items[store.path] = store.describe()
         return sorted(items.values(), key=lambda item: (-item["mtime"], str(item["path"])))
 
-    def open_session(self, path: str | Path) -> None:
+    def open_session(self, path: str | Path, *, work_mode: str | None = None) -> None:
         path = Path(path).absolute()
         with self._lock:
+            self.assert_state_change_allowed()
             if self.store.path == path:
+                if work_mode is not None:
+                    self._activate_store(self.store, runtime=self.main, pending=self.wakeups, work_mode=work_mode)
                 return
             retained = self._retained_sessions.get(path)
             if retained is not None:
                 runtime, pending = retained
-                self._activate_store(runtime.store, runtime=runtime, pending=pending)
+                self._activate_store(runtime.store, runtime=runtime, pending=pending, work_mode=work_mode)
                 return
-            self._activate_store(SessionStore.load(path))
+            self._activate_store(SessionStore.load(path), work_mode=work_mode)
 
-    def new_session(self) -> None:
-        self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd))
+    def new_session(self, *, work_mode: str | None = None) -> None:
+        self.assert_state_change_allowed()
+        self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd),
+                             work_mode=work_mode)
 
     def trash_session(self, path: str | Path) -> None:
         """Trash a conversation, replacing the active one with a new saved session."""
         path = Path(path).absolute()
         with self._lock:
+            self.assert_state_change_allowed()
             if self._shutdown_started:
                 return
             stores = [store for store in self._visited_stores if store.path == path]
@@ -1141,11 +1157,19 @@ class AgentSession:
                 self._activate_store(replacement, runtime=runtime)
 
     def _activate_store(self, store: SessionStore, *, runtime: Runtime | None = None,
-                        pending: deque | None = None) -> None:
+                        pending: deque | None = None, work_mode: str | None = None) -> None:
         with self._lock:
+            self.assert_state_change_allowed()
             if self._shutdown_started:
                 return
-            runtime = runtime if runtime is not None else self._prepare_main(store)
+            # Apply the startup selection before session_start observers can
+            # inspect tools or begin the initial request.
+            if runtime is None:
+                runtime = self._prepare_main(store, work_mode=work_mode)
+            elif work_mode is not None:
+                if self.busy or self.runtime_is_busy(runtime):
+                    raise ValueError(self.t("work_mode.busy"))
+                self.services["permissions"].restore_work_mode(runtime, work_mode)
             if self._shutdown_started:
                 return
             old = self.main
@@ -1260,8 +1284,10 @@ class AgentSession:
     def register_permission_policy(self, policy: PermissionPolicy) -> None:
         if not callable(getattr(policy, "preflight", None)) or not callable(getattr(policy, "before_execute", None)):
             raise TypeError("Policy requires preflight(event) and before_execute(event)")
-        if self._permission_boundary is None:
-            self._permission_boundary = self.bus.boundary(100)
+        if self.permission_policy is not None:
+            self.add_permission_policy(policy, owner="host")
+            return
+        self._permission_boundary = self.bus.boundary(100)
         self.permission_policy = policy
         self.services["permissions"] = policy
 
@@ -1278,24 +1304,21 @@ class AgentSession:
         return remove
 
     def _persistence_block(self, ev):
-        runtime = ev.review_source.runtime if ev.review_source is not None else self.main
+        runtime = ev.origin.runtime if ev.origin is not None else self.main
         return None if runtime.can_run() else Block(self.t("harness.session.unsaved"))
 
     def _check_policy(self, method, ev):
         if block := self._persistence_block(ev):
             return block
         try:
+            policies = getattr(ev, "_additional_permission_policies", tuple(self._additional_permission_policies))
+            for _, policy in policies:
+                if result := getattr(policy, method)(ev):
+                    return result
             policy = getattr(ev, "_permission_policy", self.permission_policy)
-            result = getattr(policy, method)(ev)
-            if result is None:
-                policies = getattr(ev, "_additional_permission_policies", tuple(self._additional_permission_policies))
-                for _, policy in policies:
-                    result = getattr(policy, method)(ev)
-                    if result is not None:
-                        break
-            return result or self._persistence_block(ev)
+            return getattr(policy, method)(ev) or self._persistence_block(ev)
         except Exception as error:
-            runtime = ev.review_source.runtime if ev.review_source is not None else self.main
+            runtime = ev.origin.runtime if ev.origin is not None else self.main
             details = runtime.report_error(error, phase=f"permission.{method}", context={
                 "tool_name": ev.tool_name, "tool_call_id": ev.call_id,
                 "policy": type(policy).__qualname__,
@@ -1303,10 +1326,16 @@ class AgentSession:
             return Block(self.t("harness.permission.failed", error=safe_text(error)), details={"error": details})
 
     def _before_tool(self, ev: ToolCallEvent):
+        source_for(self, ev)  # Bind direct main integrations before policies or hooks can observe them.
         if block := self._persistence_block(ev):
             return block
         ev._permission_policy = self.permission_policy
         ev._additional_permission_policies = tuple(self._additional_permission_policies)
+        runtime = self.runtime_for_context(ev)
+        if runtime is not None and runtime.role == "review":
+            # Preserve both mandatory permission gates while excluding executable
+            # tool hooks from an otherwise read-only task.
+            return self._check_policy("preflight", ev)
         snapshot = self.bus.snapshot("tool_call")
         boundary = self._permission_boundary
         if boundary is None:
@@ -1323,6 +1352,13 @@ class AgentSession:
         return self._check_policy("before_execute", ev)
 
     def _after_tool(self, ev: ToolCallEvent, res: ToolResult) -> ToolResult:
+        runtime = self.runtime_for_context(ev)
+        if runtime is not None and runtime.role == "review":
+            if any(isinstance(block, TextContent) and len(block.text.encode("utf-8")) > MAX_BYTES
+                   for block in res.content):
+                return ToolResult.error("Review output exceeds the in-memory limit; request a smaller range.",
+                                        details={"status": "incomplete"})
+            return res  # No post-tool hooks or .virgo/outputs spill files.
         res = self.bus.chain("tool_result", res, ev, self)
         bounded = []
         for b in res.content:
@@ -1335,6 +1371,7 @@ class AgentSession:
     # -- running -----------------------------------------------------------------
     def prompt(self, text: str) -> None:
         """Handle one line of user input without disguising persistence failures."""
+        self.command_exit_code = 0
         try:
             self._prompt(text)
         except SessionSaveError as error:
@@ -1346,6 +1383,30 @@ class AgentSession:
             raise
 
     def _prompt(self, text: str) -> None:
+        if text.startswith("/") and not text.startswith("//"):
+            name, _, args = text[1:].partition(" ")
+            command = self.commands.get(name)
+            if command is not None and command.isolated:
+                # Explicit host tasks bypass UserPromptSubmit hooks. Capture the
+                # owner before any worker or UI can select another conversation.
+                with self._lock:
+                    self.assert_state_change_allowed()
+                    if self._shutdown_started or not self.main.can_run():
+                        self.command_exit_code = 1
+                        return
+                    if self.busy:
+                        raise RuntimeError("An isolated task cannot overlap another run in this session")
+                    runtime = self.main
+                    self.busy = True
+                    runtime.agent.signal.clear()
+                try:
+                    self.bus.emit("command_start", command, runtime)
+                    command.fn(self, args, runtime)
+                finally:
+                    with self._lock:
+                        self.busy = False
+                        self._apply_model_metadata()
+                return
         result = self.bus.chain("input", text, self)
         if isinstance(result, Handled):
             if result.message:
@@ -1394,6 +1455,7 @@ class AgentSession:
         """Reserve queued agent work before a plugin publishes or starts it."""
         owner = store.id
         with self._lock:
+            self.assert_state_change_allowed()
             if pending := self._pending_child_work.get(owner):
                 origin, count = pending
             else:
@@ -1403,7 +1465,7 @@ class AgentSession:
                         candidate = child
                         while candidate.parent is not None:
                             candidate = candidate.parent
-                        if candidate.review_source.root.id == owner:
+                        if candidate.origin.root.id == owner:
                             origin = candidate
                             break
                 if origin is None:
@@ -1425,46 +1487,43 @@ class AgentSession:
 
         return release
 
+    def assert_state_change_allowed(self) -> None:
+        if self._notification_depth:
+            raise ValueError("State observers cannot start work or change session state reentrantly")
+
+    def notify_state_change(self, event: str, *args) -> None:
+        """Publish committed state; observers cannot reenter admission or mutation."""
+        self._notification_depth += 1
+        try:
+            self.bus.emit(event, *args)
+        finally:
+            self._notification_depth -= 1
+
     def runtime_is_busy(self, runtime: Runtime) -> bool:
-        """Require an idle origin and a stable selection across plugin inspection."""
+        """Inspect Core-owned running/queued work without invoking mutable observers."""
         if runtime.session is not self:
             raise ValueError("Cannot inspect a runtime owned by another session")
         with self._lock:
-            if runtime.agent.running or (runtime is self.main and self.busy):
-                return True
             origin = runtime
             while origin.parent is not None:
                 origin = origin.parent
-            selected, proposal = self.main, origin.proposed_plan
-            mode = (origin.work_mode, origin.work_mode_revision, self.permission_mode)
-            for handler in self.bus.snapshot("runtime_pending_work"):
-                pending = self.bus.first_snapshot("runtime_pending_work", (handler,), runtime)
-                # A failed or incomplete inspection must not relax Plan.
-                if pending is not False:
-                    return True
-            # Observers may revise, switch, or select a mode synchronously.
-            # Reject the older admission without undoing the newer selection.
-            if (self.main is not selected or origin.proposed_plan is not proposal
-                    or mode != (origin.work_mode, origin.work_mode_revision, self.permission_mode)):
+            if origin.agent.running or (origin is self.main and self.busy):
                 return True
-            # A later observer can queue work after its plugin was inspected.
-            # Registrations share this lock, so no queue can slip past admission.
-            if self._pending_child_work.get(origin.review_source.root.id):
-                return True
-            if runtime.agent.running or (runtime is self.main and self.busy):
+            if self._pending_child_work.get(origin.origin.root.id):
                 return True
             for child in self._child_runtimes.values():
                 if not child.agent.running:
                     continue
                 parent = child.parent
                 while parent is not None:
-                    if parent is runtime:
+                    if parent is origin:
                         return True
                     parent = parent.parent
             return False
 
     def run(self, prompts: list, *, plan_token: str | None = None) -> None:
         with self._lock:
+            self.assert_state_change_allowed()
             if self._shutdown_started:
                 return
             rt = self.main
@@ -1475,6 +1534,8 @@ class AgentSession:
             if not rt.can_run():
                 if plan_token is None:
                     self.wakeups.extend(prompts)
+                else:
+                    rt.active_plan = None
                 return
             self.busy = True
         wake = False
@@ -1487,6 +1548,7 @@ class AgentSession:
             raise
         finally:
             with self._lock:
+                rt.active_plan = None
                 self.busy = False
                 self._apply_model_metadata()
                 left = rt.agent.drain_queues()

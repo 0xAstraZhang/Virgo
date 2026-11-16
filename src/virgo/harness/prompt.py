@@ -21,7 +21,7 @@ class RuntimeContext:
     cwd: Path
     store: object
     accounting_store: object
-    review_parent: object
+    origin_parent: object
 
 
 IDENTITY = {
@@ -54,8 +54,8 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict") -> str
     directory = descriptor = None
     try:
         if os.name == "nt":
-            # Native command execution is unavailable on Windows. Retain the
-            # application-level context boundary without requiring POSIX flags.
+            # Automatic context reads run in the broker. Retain their
+            # application-level path boundary without requiring POSIX flags.
             if any(workspace.joinpath(*parts[:index]).is_symlink() for index in range(1, len(parts) + 1)):
                 return None
             if not path.resolve(strict=True).is_relative_to(workspace) or not path.is_file():
@@ -122,10 +122,10 @@ def build_system(
     cwd = Path(cwd or session.cwd)
     workspace = None
     if getattr(session.services.get("sandbox"), "mode", "disabled") != "disabled":
-        # Runtime construction precedes ReviewSource creation. Its captured
+        # Runtime construction precedes ExecutionOrigin creation. Its captured
         # parent/store already identifies the owner, including detached children.
-        if context is not None and context.review_parent is not None:
-            workspace = Path(context.review_parent.workspace).resolve()
+        if context is not None and context.origin_parent is not None:
+            workspace = Path(context.origin_parent.workspace).resolve()
         elif context is not None and (context.store is not None or context.accounting_store is not None):
             workspace = Path((context.store or context.accounting_store).cwd).resolve()
         else:

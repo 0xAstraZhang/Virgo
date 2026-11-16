@@ -64,10 +64,10 @@ uv run virgo -p "Review the current diff for correctness issues"
 uv run virgo --continue
 
 # Integrate with other programs
-uv run virgo -p --mode json "Summarize the README"
+uv run virgo -p --format json "Summarize the README"
 ```
 
-The default `auto-review` approval strategy reviews operations that cross workspace or network boundaries. `/mode plan` enters read-only investigation with a versioned proposal that you can view, revise and explicitly execute. Follow the [planning guide](docs/en/guides/planning.md); plan confirmation preserves the current [approval policy](docs/en/reference/configuration.md#permissions) and Sandbox.
+The default uses `ask` approval and a `workspace-write` native Shell sandbox. `/mode plan` investigates with read-only tools; execution requires the user to select an exact proposal revision. `/review` runs an independent code-review task. See [Planning](docs/en/guides/planning.md), [Sandbox boundaries](docs/en/guides/sandbox.md), and [breaking migration](docs/en/guides/migrating-execution-policy.md).
 
 ## Explore
 

@@ -27,7 +27,7 @@ def test_fullscreen_pty_history_round_trip_past_slash_command(project, tmp_path,
         "".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8"
     )
     with PtyClient(project, home) as terminal:
-        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"ask when needed" in data)
         if draft:
             terminal.send(draft.encode())
             terminal.wait_for(lambda data: draft in plain(data))
@@ -57,18 +57,19 @@ def test_fullscreen_pty_history_round_trip_past_slash_command(project, tmp_path,
 
 def test_fullscreen_pty_paste_resize_and_clean_exit(project, tmp_path):
     with PtyClient(project, tmp_path / "pty-home") as terminal:
-        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"ask when needed" in data)
         assert b"\x1b[?2004h" in terminal.output
         assert b"V_" in terminal.output
         assert not termios.tcgetattr(terminal.slave)[3] & termios.ICANON
         assert not termios.tcgetattr(terminal.slave)[3] & termios.ECHO
         assert re.search(rb"\x1b\[24;\d+H", terminal.output)
 
-        # Terminal.app emits CSI Z for Shift+Tab; cycle all three permissions.
-        for label in ("accept all", "plan", "auto review"):
+        # Terminal.app emits CSI Z for Shift+Tab; change WorkMode only.
+        for label in ("Plan (read-only)", "Default"):
             before_switch = len(terminal.output)
             terminal.send(b"\x1b[Z")
             terminal.wait_for(lambda data, label=label: label in plain(data), start=before_switch)
+        assert "never ask" not in plain(bytes(terminal.output))
 
         # A single bracketed paste contains a newline but must remain in the editor.
         before_paste = len(terminal.output)
@@ -154,7 +155,7 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
     home = tmp_path / "pty-session-home"
     argv = [sys.executable, "-m", "virgo", "--ui", "fullscreen", "--no-extensions", "--model", "faux/demo"]
     with PtyClient(project, home, argv) as terminal:
-        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"ask when needed" in data)
         before_browser = len(terminal.output)
         terminal.send(b"/sessions\r")
         browser = terminal.wait_for(
@@ -174,7 +175,7 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
 
         before_new = len(terminal.output)
         terminal.send(b"n")
-        terminal.wait_for(lambda data: "auto review" in plain(data), start=before_new)
+        terminal.wait_for(lambda data: "ask when needed" in plain(data), start=before_new)
         before_model = len(terminal.output)
         terminal.send(b"/model faux/demo\r")
         terminal.wait_for(lambda data: "model: faux/demo" in plain(data), start=before_model)
@@ -188,7 +189,7 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
         assert not list(home.glob("sessions/**/*.jsonl"))
 
     with PtyClient(project, home, argv) as terminal:
-        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"auto review" in data)
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"ask when needed" in data)
         terminal.send(b"/sessions\r")
         terminal.wait_for(lambda data: "G Group by workspace" in plain(data))
         terminal.send(b"\x04")
@@ -226,7 +227,7 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--model', 'faux
         # Dismissing the picker repaints the old status before asynchronous
         # construction finishes. Observe completion without changing its timing.
         terminal.wait_for(
-            lambda data: (project / "conversation-ready").exists() and "auto review" in plain(data),
+            lambda data: (project / "conversation-ready").exists() and "ask when needed" in plain(data),
             start=before_new,
         )
         before_reply = len(terminal.output)

@@ -64,10 +64,10 @@ uv run virgo -p "检查当前 diff 中的正确性问题"
 uv run virgo --continue
 
 # 与其他程序集成
-uv run virgo -p --mode json "总结 README"
+uv run virgo -p --format json "总结 README"
 ```
 
-默认的 `auto-review` 审批策略会审查涉及工作区外部或网络边界的操作。`/mode plan` 进入只读调查，并生成可查看、修订和明确执行的带版本方案。操作见[规划指南](docs/zh-CN/guides/planning.md)；计划确认保留当前[审批策略](docs/zh-CN/reference/configuration.md#权限)与 Sandbox。
+默认采用 `ask` 审批和 `workspace-write` 原生 Shell 沙箱。`/mode plan` 进入只读调查，计划必须由用户选择准确版本后执行；`/review` 是独立代码审查任务。见[规划指南](docs/zh-CN/guides/planning.md)、[沙箱范围](docs/zh-CN/guides/sandbox.md)和[不兼容迁移说明](docs/zh-CN/guides/migrating-execution-policy.md)。
 
 ## 继续了解
 

@@ -63,7 +63,7 @@ Try a small request first: “Find the entry point and explain how commands are 
 
 ```bash
 uv run virgo -p "Summarize README.md"
-uv run virgo -p --mode json "List the public entry points"
+uv run virgo -p --format json "List the public entry points"
 git diff | uv run virgo -p "Review this diff for correctness issues"
 ```
 

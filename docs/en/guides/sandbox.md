@@ -4,32 +4,37 @@
 
 ## Enable and inspect
 
-Native isolation is opt-in. The default `disabled` preserves existing execution; it does not claim OS protection. Select an envelope at startup:
+Native Shell isolation defaults to `workspace-write`. A missing or unusable backend refuses the command; it never switches to host execution. Select a stricter envelope, or explicitly opt out for a trusted host session:
 
 ```bash
-uv run virgo --sandbox workspace-write
+uv run virgo
 uv run virgo --sandbox read-only
+uv run virgo --sandbox disabled
 ```
 
 User settings (`$VIRGO_HOME/settings.json`, normally `~/.virgo/settings.json`) can set:
 
 ```json
-{"sandbox": {"mode": "workspace-write", "network": "restricted"}}
+{"sandbox": {"mode": "workspace-write"}}
 ```
 
-Project `sandbox` settings are ignored with a notice. An explicit startup override wins over user settings. Unknown modes, keys and network values fail configuration. `/sandbox` displays the requested mode and discovered launcher; it does not change permissions or certify that the host kernel permits isolation. Every launch checks its native boundary before releasing the command; Windows also verifies the actual suspended process token and Job assignment.
+Project `sandbox` settings are ignored with a notice. An explicit startup override wins over user settings. Unknown modes and keys fail configuration. The former `sandbox.network` field is rejected with migration guidance: active Shell sandboxes always block network access, so there is no network switch.
+
+`/sandbox` displays the configured mode, the current Runtime's effective mode, and backend discovery. A discovered launcher is explicitly shown as launch-unverified; this status command neither executes a probe nor certifies that the host kernel permits isolation. Every actual launch checks its native boundary before releasing the command; Windows also verifies the suspended process token and Job assignment. `disabled` is displayed as host execution without OS isolation. It does not bypass approvals or a task's read-only capability.
+
+The default intentionally supports restricted workspace development. Network-dependent dependency installation and remote Git operations cannot run in the active Shell sandbox. Protected Git metadata also prevents ordinary commit operations, and external SDKs or caches can be inaccessible. Approval cannot expand these boundaries. Prepare the needed dependencies outside the session or explicitly choose the host-execution mode when that is the intended authority; a failed command is never replayed automatically. Windows support remains experimental outside the specifically validated administrative runner configurations described below.
 
 ## Execution boundaries
 
 `workspace-write` requests a writable originating workspace and read-only interpreter roots. Linux/macOS expose their documented system roots; Windows uses object ACLs with ambient LPAC reads, described separately in [Windows command sandbox](windows-sandbox.md). `read-only` also makes the workspace read-only. Each command gets private writable scratch and a private `HOME`. Output logs belong to `.virgo/outputs` under the originating workspace root, including commands run from a nested directory. The broker validates the working directory and output paths before spooling and opens the output directories without following symbolic links; it retains the exact output-log descriptor. The child environment contains only `PATH`, locale/timezone/terminal variables, private home/temp paths and `VIRGO=1` (Windows also supplies fixed native runtime variables); provider keys and other inherited credentials are not forwarded.
 
-The only supported active network policy is `restricted`. Linux uses a private network namespace and a seccomp filter that denies sockets, including pathname Unix sockets, and io_uring. macOS uses a deny-by-default Seatbelt profile without a network grant. The Windows implementation requests an LPAC without network capabilities; its current verification status is recorded in the Windows guide. Disabling isolation is an explicit startup choice, not an approval result or automatic retry.
+Network access is blocked for every active Shell sandbox. Linux uses a private network namespace and a seccomp filter that denies sockets, including pathname Unix sockets, and io_uring. macOS uses a deny-by-default Seatbelt profile without a network grant. The Windows implementation requests an LPAC without network capabilities; its current verification status is recorded in the Windows guide. Disabling isolation is an explicit startup choice, not an approval result or automatic retry. This Shell restriction does not cover provider transport, Web plugins or remote MCP services; those use their own application authorization.
 
-Foreground shell tools, model-requested background commands and child-runtime shell tools use the same launcher. The workspace comes from the originating runtime, not the currently selected conversation or a child's replacement working directory. Plan and read-only child restrictions narrow each new launch to read-only. Already running processes keep their launch envelope; mode changes do not retroactively revoke their rights.
+Foreground shell tools, model-requested background commands and child-runtime shell tools use the same launcher. The workspace comes from the originating runtime, not the currently selected conversation or a child's replacement working directory. Plan and read-only child runtimes do not expose arbitrary Shell tools. Their inherited read-only capability also narrows Core file operations and native policies requested by trusted integrations; the sandbox consumes that capability without interpreting a planning or approval mode. Already running processes keep their launch envelope; mode changes do not retroactively revoke their rights.
 
 An active sandbox also prevents host execution during shell discovery and selection. Startup configuration, PATH candidates, cached choices and `/shell` commands use executable-path checks without running version probes. The version remains `unknown`; the actual isolated launch determines whether the selected interpreter can execute. A missing backend never causes a host-side version probe. See [command shells](shells.md) for the resulting version and compatibility reporting.
 
-`accept-all`, allow rules, model review and human approval do not disable an active sandbox. Missing launchers/libraries, unsupported platforms, a denied namespace or a rejected Seatbelt profile return `sandbox_unavailable` without running the payload natively. A successful probe alone does not establish that the actual launch succeeded: Linux/macOS run a fixed Python launcher inside the actual envelope, with isolated startup and a pipe acknowledgement that confirms command exec. Windows creates the actual process suspended, verifies its token and Job assignment, then resumes it once. Native setup failures before resume are reported separately. Windows has no payload-start acknowledgement: a later DLL or runtime initialization failure is reported as the process exit, like other nonzero exits. Neither path guesses from stderr text. Timeouts and cancellation retain their separate statuses, and potentially partial operations are not automatically replayed. Shell results include the effective mode and workspace; background job results also retain backend metadata.
+Allow rules and human approval do not disable an active sandbox. Missing launchers/libraries, unsupported platforms, a denied namespace or a rejected Seatbelt profile return `sandbox_unavailable` without running the payload natively. A successful probe alone does not establish that the actual launch succeeded: Linux/macOS run a fixed Python launcher inside the actual envelope, with isolated startup and a pipe acknowledgement that confirms command exec. Windows creates the actual process suspended, verifies its token and Job assignment, then resumes it once. Native setup failures before resume are reported separately. Windows has no payload-start acknowledgement: a later DLL or runtime initialization failure is reported as the process exit, like other nonzero exits. Neither path guesses from stderr text. Timeouts and cancellation retain their separate statuses, and potentially partial operations are not automatically replayed. Shell results include the effective mode and workspace; background job results also retain backend metadata.
 
 ## Host requirements and limits
 

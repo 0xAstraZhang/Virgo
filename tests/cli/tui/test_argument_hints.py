@@ -40,11 +40,11 @@ def test_hint_resolution_and_clipping(make_session):
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui)
-        session.templates['review'] = ('review', '$ARGUMENTS')
+        session.templates['inspect'] = ('inspect', '$ARGUMENTS')
         session.templates['help'] = ('collision', '$ARGUMENTS')
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
-            for command, hint in [('model', '[provider/id]'), ('review', '[arguments]'),
+            for command, hint in [('model', '[provider/id]'), ('inspect', '[arguments]'),
                                   ('help', ''), ('unknown', '')]:
                 app.editor.load_text('/' + command)
                 app.editor.move_cursor(app.editor.document.end)

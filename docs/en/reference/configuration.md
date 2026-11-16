@@ -11,7 +11,7 @@ Virgo deep-merges built-in defaults, user settings and project settings, in that
 3. `<working-directory>/.virgo/settings.json`.
 4. Supported environment and runtime/CLI overrides.
 
-Nested objects merge; a higher-priority value replaces the lower-priority value. CLI model selection overrides `VIRGO_MODEL`, which overrides settings. `VIRGO_SHELL` overrides the shell selected by user, project and runtime settings. Commands that save a user default preserve unrelated fields; a project or startup override can still win on the next launch.
+Nested objects merge; a higher-priority value replaces the lower-priority value, except that project authorization settings may only add deny rules. User deny rules cannot be removed by a project. CLI model selection overrides `VIRGO_MODEL`, which overrides settings. `VIRGO_SHELL` overrides the shell selected by user, project and runtime settings. Commands that save a user default preserve unrelated fields; a project or startup override can still win on the next launch.
 
 Language follows defaults → user settings → project settings → `--language`/runtime settings. `/language` saves a user preference and applies it now; a failed save keeps the active language. No `VIRGO_LANGUAGE` variable is defined. See [Localization](../development/localization.md) for aliases and live-session behavior.
 
@@ -23,8 +23,6 @@ A minimal project configuration:
   "effort": "medium",
   "shell": {"executable": "auto"},
   "permissions": {
-    "mode": "auto-review",
-    "allow": ["bash(uv run pytest*)"],
     "deny": ["bash(git push*)"]
   }
 }
@@ -45,12 +43,10 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `effort` | `medium`; supported UI levels are `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxTokens` | Unset; adapter/model defaults apply |
 | `shell.executable` | `auto`; adapted shell name or executable path |
-| `sandbox.mode` | `disabled`; opt-in `read-only` or `workspace-write`, user/startup configuration only |
-| `sandbox.network` | `restricted`; no active network exceptions |
+| `sandbox.mode` | `workspace-write`; choose `read-only` or explicitly select `disabled`, user/startup configuration only |
 | `workMode` | `default`; `plan` adds an independent read-only ceiling |
-| `permissions.mode` | `auto-review` |
+| `permissions.approval` | `ask`; use `never` to reject operations needing a new approval |
 | `permissions.allow`, `permissions.deny` | Lists of tool rules |
-| `permissions.readOnlyCommands` | Additional commands considered for read-only execution |
 | `compaction.enabled` | `true` |
 | `compaction.triggerRatio` | `0.8` of the model's context window |
 | `compaction.triggerTokens` | Unset; when supplied, takes precedence over the ratio |
@@ -66,7 +62,7 @@ Web-specific fields are documented in [Web search and reading](../guides/web.md)
 
 ## Profiles and plugins
 
-`coding` is the default. It enables `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background`, `web` and `auto_review`. MCP is enabled only when server configuration exists. `minimal` starts with no official capabilities; explicit `plugins.<id>.enabled` overrides either preset. Unknown plugin names and malformed values fail configuration rather than silently enabling something.
+`coding` is the default. It enables `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background`, `web` and `code_review`. MCP is enabled only when server configuration exists. `minimal` starts with no official capabilities; explicit `plugins.<id>.enabled` overrides either preset. Unknown plugin names and malformed values fail configuration rather than silently enabling something.
 
 ```json
 {
@@ -78,7 +74,7 @@ Web-specific fields are documented in [Web search and reading](../guides/web.md)
 
 The example selects only Skills and Todo from the official set. Permissions, sessions and diagnostics stay in Core. Python extensions are a separate trusted-code path: use `--no-extensions` to disable them. A project cannot grant itself trust; use `--trust-project-extensions` or add its absolute directory to user `extensions.trustedProjects`.
 
-Legacy `features` keys are translated per configuration layer with a notice; same-layer `plugins` values win, then normal user/project/runtime precedence applies. `features.permission=false` only disables the automatic reviewer, never the Core guard. Removed products no longer execute and their files are retained. See [Migration](../guides/migrating-to-core-plugins.md) for aliases, storage locations and the compatibility window.
+Legacy `features` keys are translated per configuration layer with a notice; same-layer `plugins` values win, then normal user/project/runtime precedence applies. `features.permission`, `plugins.auto_review` and the old permission modes are retired and report a migration error. Removed products no longer execute and their files are retained. See [Migration](../guides/migrating-to-core-plugins.md) for aliases, storage locations and the compatibility window.
 
 ## Models and credentials
 
@@ -108,36 +104,50 @@ Auxiliary requests automatically choose a small model on the same connection: `c
 
 ## Work mode
 
-`/mode plan` enters read-only planning; `/mode default` returns to Default without executing a proposal. `/mode` shows the current work mode. These Core commands are available with `--profile minimal --no-extensions` and do not make a model request. `/plan` displays the current ProposedPlan; `/plan edit` replaces its Markdown; `/plan execute <plan-id>:<revision>` explicitly starts that version. See [Planning a change](../guides/planning.md) for the complete operation and editing examples.
-
-Work mode is separate from the approval strategy. `/permissions accept-all` or `/permissions auto-review` changes that strategy without leaving the independent Plan mode. Returning to `default` retains the selected strategy; it does not grant `accept-all` by itself. Configure the two dimensions independently:
+`/mode plan` enters planning and `/mode default` returns to ordinary work without executing a proposal. `--work-mode default|plan` selects the initial conversation's intent; `--format text|json` controls output formatting. These are separate from `--approval ask|never` and `--sandbox`. See [Planning a change](../guides/planning.md).
 
 ```json
 {
   "workMode": "plan",
-  "permissions": {"mode": "auto-review"}
+  "permissions": {"approval": "ask"},
+  "sandbox": {"mode": "workspace-write"}
 }
 ```
 
-The same effective policy filters model-visible tools and checks calls before hooks and again before execution. The Plan ceiling follows the originating main Runtime and its children, including after a conversation switch; leaving Plan does not remove a child's own read-only restriction. Entering Plan restricts calls that have not started. Leaving it or executing a plan is rejected while that originating conversation has an active request or queued or running child agents; another conversation's work does not block it. Already running processes keep their launch policy. Permission audit records retain the effective `mode` and separately record `work_mode` and `permission_mode`.
+The example belongs in user settings. Project settings may request Plan but cannot relax a user-configured Plan ceiling. A user may explicitly select a different startup mode. Existing conversations keep their own saved mode; new conversations use the configured default. Mode changes require that originating conversation and its queued/running descendants to be idle. Notifications observe committed state and cannot reenter mode, plan or runtime admission changes.
 
-Legacy `permissions.mode=plan`, `--permission-mode plan` and the direct `session.permission_mode` API remain accepted. `/permissions plan` now enters the independent work mode without replacing the selected approval strategy. Without an explicit `work_mode` constructor override, legacy Plan startup saves a Plan ceiling for history restoration, even before a proposal exists. Before a mode or approval command removes the global legacy ceiling, it preserves Plan for every other originating conversation and its descendants; a failed state write keeps the global ceiling. `/mode default` relaxes only the selected conversation and leaves a legacy startup with `auto-review` unless another approval strategy has already been explicitly selected. Integrations should use `session.services["permissions"].set_work_mode(...)` for independent mode changes; the old direct assignment API retains its compatibility behavior.
+Plan and read-only children expose read-only tools, including controlled `git_read`, instead of arbitrary Bash/PowerShell. A child's read-only capability is independent of planning intent: a read-only investigation or Code Review is not automatically given Plan instructions. Children inherit their originating workspace and can only narrow their parent's capability and approval ceiling.
 
-Work mode and the current ProposedPlan are conversation state saved through SessionStore. New conversations use configured `workMode`; a retained conversation keeps its original Runtime and mode. Opening saved history restores its mode unless configured `workMode: "plan"` imposes a Plan ceiling. An explicit `AgentSession(work_mode="plan" | "default")` overrides the initial conversation's independent mode; it does not change subsequent new-conversation defaults. Mode commands do not save a user preference.
-
-Restoring a plan clears its live confirmation and never starts or queues execution. Approval strategy and Sandbox come from current configuration, not historical plan metadata. Revising the Markdown increments its revision and invalidates an earlier confirmation; execution requires the exact current token and an idle conversation. Confirming a plan does not preapprove its tool calls or remove Sandbox restrictions. The CLI `--mode` option still controls output formatting. Selecting WorkMode does not itself enable an OS sandbox or start a code-review task.
+Plans keep versioned Markdown in SessionStore. `/plan execute <id>:<revision>` selects the exact version for an execution request; saving or reopening a proposal does not execute it. Execution preserves approval and Sandbox restrictions. Returning to Default cannot make a configured read-only sandbox writable. See [the migration guide](../guides/migrating-execution-policy.md) for retired mode APIs.
 
 ## Permissions
 
-| Mode | Behavior |
+| Approval policy | Behavior |
 | --- | --- |
-| `auto-review` | Allows operations whose workspace boundary can be established; reviews external, network and uncertain operations with the small model |
-| `accept-all` | Skips approval review and allow/deny rules in default work mode; cannot override the independent Plan ceiling |
-| `plan` | Legacy read-only entry point; prefer the independent `/mode plan` or `workMode` setting |
+| `ask` | Execute already authorized operations; ask a person for uncertain or ungranted operations |
+| `never` | Execute already authorized operations; reject anything needing a new approval |
 
-The `auto_review` plugin supplies model review. Without it, the Core retains rules and requires human confirmation for uncertain operations. Noninteractive sessions cannot approve those requests. Auto-review distinguishes authorization from risk. Its verdict is `allow`, `ask` or `deny`. Missing evidence or review failure requires the existing human confirmation; noninteractive runs cannot approve that prompt. An explicit denial blocks the operation. Execution is checked again immediately before the tool runs, after argument changes. These are application-level checks, separate from the opt-in [native command sandbox](../guides/sandbox.md). `accept-all` does not bypass an active sandbox.
+Core authorization is always installed. No model infers a grant from conversation history, tool output or summaries. Both choices retain explicit deny rules, read-only ceilings and configured Sandbox boundaries. `/permissions ask` and `/permissions never` select the policy; `/permissions revoke` clears remembered grants and denials. These commands do not alter WorkMode or Sandbox.
 
-Rules use `tool(pattern)` with fnmatch-style patterns, or a tool-name pattern alone. Path tools match paths; command tools match commands; web tools match queries/URLs. Examples include `edit(src/**)`, `read(~/.ssh/*)`, `bash(npm test*)` and `mcp__server__*`. PowerShell uses separate `powershell(...)` rules. See [`harness/permission_policy.py`](../../../src/virgo/harness/permission_policy.py) for ordering and [`permission_scope.py`](../../../src/virgo/harness/permission_scope.py) for boundary detection.
+Workspace file operations use the deterministic path policy. Simple local Shell forms can be allowed automatically only with an active native sandbox; classification is a convenience, not proof of confinement. Unisolated host Shell, network, outside-workspace and unknown operations need an explicit rule or human approval. A failed sandbox does not authorize a host retry. Without an interactive approver, an unresolved request fails closed.
+
+Only user settings and explicit startup overrides can grant permissions or select the approval policy. Project `permissions` accepts only `deny`, merged with user denials. Project `allow`, `approval`, old `mode` or `readOnlyCommands` entries report a configuration error. A project cannot erase the user's deny list with an empty list.
+
+Rules use `tool(pattern)` or a tool-name pattern alone. Path and web rules use fnmatch patterns. Shell allow rules match an **exact complete command**, and wildcard command patterns are rejected; use a tool-only `bash` or `powershell` grant only when that entire capability is intentionally authorized. Shell deny patterns may remain broad. Examples for user settings:
+
+```json
+{
+  "permissions": {
+    "approval": "ask",
+    "allow": ["bash(uv run --no-sync pytest -q)", "read(/opt/reference/**)"],
+    "deny": ["bash(git push*)", "read(~/.ssh/*)"]
+  }
+}
+```
+
+Deny and capability checks precede grants and questions. Approval is checked again immediately before execution after argument changes. A remembered approval binds the originating task, exact arguments, cwd, statically resolved path targets, shell environment and explicit policy state. Dynamic Shell paths and PowerShell scripts receive only one-shot approval. Policy changes or `/permissions revoke` invalidate remembered decisions; a new natural-language message alone is not an authorization-system mutation.
+
+Audit records retain the source task, work mode, read-only ceiling, approval policy, decision and argument digest. Permission-model risk and evidence records are retired. These application checks are separate from the [native Shell sandbox](../guides/sandbox.md), which does not isolate trusted Python extensions or remote tools.
 
 ## Context and retries
 
