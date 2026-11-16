@@ -65,7 +65,7 @@ class CodeReviews:
 
     def _runtime(self, parent, identifier):
         runtime = self.api.create_runtime(
-            f"review#{identifier}", "review", parent=parent, read_only=True,
+            f"review#{identifier}", "review", parent=parent, read_only=True, approval_policy="never",
             cwd=Path(parent.origin.workspace), tools=[], model=parent.model,
             system_extra=REVIEW_INSTRUCTIONS,
             max_turns=int(self.api.settings.get("subagents.maxTurns", 50)), compaction=False,

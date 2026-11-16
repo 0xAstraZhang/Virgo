@@ -202,7 +202,8 @@ def _stamp(path):
     try:
         info = path.lstat()
         return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
+        # A tracked directory replaced by a regular file removes its children.
         return None
 
 

@@ -55,6 +55,8 @@ JSON 模式输出包含 `report` 对象的 `code_review` 事件。报告完成�
 
 每次审查创建来源 Runtime 的独立子 Runtime，设置 `read_only=True`，复用现有 Agent Loop，继承来源工作区、模型、共享请求预算、取消信号和权限关系，不复制父对话。只读能力不等于 Plan 工作意图；即使来源对话正在 Plan，审查也只接收审查任务指令。`subagents.maxTurns` 限制轮数；审查关闭压缩，上下文溢出会成为不完整结果。
 
+子运行时固定使用 `approval_policy="never"`，不改变父运行时的审批策略。快照捕获、工具调用和 freshness 检查都不会弹出审批。已有 allow 规则继续生效，同时受 deny 与硬边界限制。必要证据需要新的批准时，捕获返回 `incomplete`；无法完成 freshness 检查时显示 `unknown`。
+
 审查仅提供 `read`、`glob`、字面量 `grep` 和 `review_git`。`review_git` 只分页返回冻结的 status/diff，不接受任意命令或 Git 参数。工具集合不包含文件修改、Shell、联网、MCP、后台任务或委派能力，任务不能修复、提交或合并代码。
 
 命令绕过 Prompt hooks；Runtime 排除可执行的工具/停止 hooks、上下文/系统提示注入、动态工具注册和模型托管联网能力。Core 的两个权限检查点仍生效，快照内容遵守继承的读取限制。审批策略、allow 规则和批准不能增加工具。结果在内存中分页，不创建 `.virgo/outputs` 文件。

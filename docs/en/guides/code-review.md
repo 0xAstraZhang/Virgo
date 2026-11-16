@@ -55,6 +55,8 @@ Saved snapshots record the requested target, resolved commits, comparison, chang
 
 Each review creates a fresh child of its originating Runtime with `read_only=True` and uses the existing Agent Loop. The source workspace, model, shared request budget, cancellation and permission ancestry are inherited. Parent messages are not copied. A read-only capability does not select Plan intent: the review receives reviewer instructions even when its originating conversation is in Plan. `subagents.maxTurns` bounds the child; compaction is disabled, so context overflow becomes an incomplete result.
 
+The child uses `approval_policy="never"` without changing the parent's approval policy. Review never opens an approval dialog during snapshot capture, tool use or freshness checks. Existing allow rules remain effective, subject to deny rules and hard boundaries. If required evidence needs a new approval, capture returns `incomplete`; an unavailable freshness check reports `unknown`.
+
 Only `read`, `glob`, literal `grep` and `review_git` are offered. `review_git` pages through frozen status/diff and accepts no arbitrary commands or Git arguments. There are no file mutation, shell, network, MCP, background or delegation tools. The task cannot fix, commit or merge code.
 
 The command bypasses prompt hooks. Its Runtime excludes executable tool/stop hooks, context/system-section injection, dynamic tool registration and hosted web preparation. Both Core permission gates remain active, and snapshot content respects inherited read restrictions. Approval policies, allow rules and approvals cannot add tools. Results are bounded in memory; the review does not create `.virgo/outputs` files.

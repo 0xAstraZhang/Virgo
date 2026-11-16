@@ -20,6 +20,8 @@ import io
 import json
 import os
 import subprocess
+import threading
+import tracemalloc
 from importlib import import_module
 
 import pytest
@@ -28,6 +30,7 @@ from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage, UserMessage
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.controller import RunController
+from virgo.tools.git_read import MAX_GIT_BYTES
 
 from tests.support.harness import calls, wait_until
 from tests.support.tui import pump
@@ -203,6 +206,87 @@ def test_review_file_replaced_by_directory_keeps_deletion_and_children(make_sess
     assert removed["status"] == "D" and removed["new_path"] is None
     assert added["status"] == "A" and added["old_path"] is None
     assert _filesystem(project) == before
+
+    # The reverse replacement also keeps the removed child and new parent file.
+    reverse = project.parent / "reverse-replacement"
+    reverse.mkdir()
+    _repository(reverse)
+    _write(reverse, "package/old.py", "old = True\n")
+    _git(reverse, "add", "--", "package/old.py")
+    _git(reverse, "commit", "-m", "fixture: tracked directory")
+    (reverse / "package/old.py").unlink()
+    (reverse / "package").rmdir()
+    _write(reverse, "package", "replacement file\n")
+    before = _filesystem(reverse)
+    session = make_session(_answer(), cwd=reverse, refresh_models=False)
+    session.prompt("/review")
+
+    report = _latest(session)
+    assert report["status"] == "completed", report
+    removed = _change(report["snapshot"], "package/old.py", "unstaged")
+    added = _change(report["snapshot"], "package", "untracked")
+    assert removed["status"] == "D" and removed["new_path"] is None
+    assert added["status"] == "A" and added["old_path"] is None
+    assert _filesystem(reverse) == before
+
+
+@pytest.mark.parametrize("output", ["stdout", "stderr", "combined"])
+def test_plan_git_output_budget_stops_oversized_streams_and_releases_resources(make_session, project, monkeypatch, output):
+    _repository(project)
+    if output != "stderr":
+        # Large committed text is produced by real Git, without a fake pipe or
+        # an arbitrary command in the read-only tool's argv.
+        with (project / "large.txt").open("wb") as stream:
+            block = (b"x" * 1023 + b"\n") * 1024
+            for _ in range(40 if output == "stdout" else 20):
+                stream.write(block)
+        _git(project, "add", "--", "large.txt")
+        _git(project, "commit", "-m", "fixture: large committed output")
+    if output != "stdout":
+        # Git itself emits a warning per invalid attribute line. The combined
+        # case keeps each stream below 32 MiB while exceeding their shared budget.
+        _write(project, ".gitattributes", "* invalid!name\n" * (300_000 if output == "stderr" else 150_000))
+    session = make_session(
+        faux.reply(tools=[("git_read", {"operation": "show", "revision": "HEAD"})]),
+        faux.reply("The selected evidence exceeds the bounded reader."),
+        settings={"profile": "minimal", "workMode": "plan"}, refresh_models=False,
+    )
+    started = []
+    spawn = subprocess.Popen
+
+    def observe_process(*args, **kwargs):
+        process = spawn(*args, **kwargs)  # Observe lifecycle; execution and pipes stay real.
+        started.append(process)
+        return process
+
+    threads_before = {thread.ident for thread in threading.enumerate()}
+    with monkeypatch.context() as patch:
+        patch.setattr("virgo.tools.git_read.subprocess.Popen", observe_process)
+        tracemalloc.start()
+        try:
+            session.prompt("Read the committed patch.")
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+    result = next(message for message in session.main.messages if isinstance(message, ToolResultMessage))
+    assert result.is_error and "read limit" in result.text(), result.text()[:500]
+    assert peak < MAX_GIT_BYTES + 16 * 1024 * 1024, f"Git reader allocated {peak} bytes before rejecting output"
+    shown = next(process for process in started if "show" in process.args)
+    assert shown.returncode is not None, "Over-budget Git must be reaped"
+    if output == "stdout":
+        # This patch still has several MiB to write when the reader closes it.
+        # A warning-only producer may already have exited when its cap is seen.
+        assert shown.returncode != 0, "The oversized patch producer must stop early"
+    assert all(process.returncode is not None for process in started)
+    assert all(stream is None or stream.closed for process in started
+               for stream in (process.stdin, process.stdout, process.stderr))
+    assert {thread.ident for thread in threading.enumerate()} <= threads_before
+
+    faux.script("test", faux.reply(tools=[("git_read", {"operation": "log"})]), faux.reply("History remains usable."))
+    session.prompt("Read the bounded log after the rejected patch.")
+    results = [message for message in session.main.messages if isinstance(message, ToolResultMessage)]
+    assert not results[-1].is_error
 
 
 def test_plan_git_reads_committed_objects_without_worktree_helpers(make_session, project, python_command):
@@ -601,6 +685,49 @@ def test_review_tui_cancellation_releases_runtime_and_the_next_review_works(make
         assert not session._child_runtimes
     finally:
         controller.abort()
+        if controller._worker is not None:
+            controller._worker.join(3)
+
+
+def test_review_tui_capture_never_waits_for_new_approval(make_session, project):
+    _changed_repository(project)
+    outside = project.parent / "outside-review.txt"
+    outside.write_text("EXTERNAL_CONTENT_IS_NOT_REVIEW_EVIDENCE\n", encoding="utf-8")
+    (project / "outside-link.txt").symlink_to(outside)
+    ui = FullscreenUI()
+    session = make_session(ui=ui, refresh_models=False, approval="ask", allow=False)
+    controller = RunController(session, ui)
+    baseline_signals = tuple(session.store.failure_signals)
+    controller.start()
+    try:
+        for allow, deny, expected in (
+            ([], [], "incomplete"),
+            (["read(outside-link.txt)"], [], "completed"),
+            (["read(outside-link.txt)"], ["read(outside-link.txt)"], "incomplete"),
+        ):
+            session.settings.set("permissions.allow", allow)
+            session.settings.set("permissions.deny", deny)
+            faux.script("test", _answer())
+            controller.submit("/review")
+            updates = pump(controller, lambda c: not c.busy or ui.has_pending_requests)
+            if ui.has_pending_requests:
+                # The original bug waits before agent_start has bound a signal.
+                # Interrupting the real TUI must not leave this waiter stranded.
+                controller.abort()
+                controller._worker.join(0.25)
+            assert not ui.has_pending_requests, "Review capture stranded an approval waiter after abort"
+            assert not any(update.kind == "confirmation" for update in updates)
+            updates.extend(pump(controller))
+            assert _latest(session)["status"] == expected
+            assert len(calls()) == (1 if expected == "completed" else 0)
+            assert not session._child_runtimes and not session.busy
+            assert tuple(session.store.failure_signals) == baseline_signals
+            assert session.approval_policy == "ask"
+            assert session.services["permissions"].approval_for(session.main) == "ask"
+            assert "EXTERNAL_CONTENT_IS_NOT_REVIEW_EVIDENCE" not in repr(calls())
+    finally:
+        controller.abort()
+        ui.cancel_confirmations()
         if controller._worker is not None:
             controller._worker.join(3)
 

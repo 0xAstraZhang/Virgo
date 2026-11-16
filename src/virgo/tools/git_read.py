@@ -5,9 +5,11 @@ reads; live-worktree diff/status and repository-provided helpers are not exposed
 """
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -85,34 +87,99 @@ class ControlledGit:
         except OSError as error:
             raise GitReadError(f"Cannot start controlled Git operation: {error}") from error
         deadline = time.monotonic() + 30
+        output, errors = bytearray(), bytearray()
+        total = 0
+        lock = threading.Lock()
+        changed, exceeded, stopping = threading.Event(), threading.Event(), threading.Event()
+        failures, workers = [], []
+
+        def read(stream, destination, diagnostic=False):
+            nonlocal total
+            try:
+                with stream:
+                    while not stopping.is_set():
+                        chunk = stream.read1(64 * 1024)
+                        if not chunk:
+                            break
+                        with lock:
+                            total += len(chunk)
+                            if total > MAX_GIT_BYTES:
+                                exceeded.set()
+                                break
+                            # Count all stderr against the same budget while
+                            # retaining only the prefix needed for diagnostics.
+                            destination.extend(chunk[:max(0, 4096 - len(destination))] if diagnostic else chunk)
+            except Exception as error:
+                failures.append(error)
+            finally:
+                changed.set()
+
+        def write():
+            try:
+                with proc.stdin:
+                    proc.stdin.write(data)
+            except BrokenPipeError:
+                pass  # A Git error can close stdin before consuming all input.
+            except OSError as error:
+                # Windows pipes can report EINVAL when the child closes stdin.
+                if os.name != "nt" or error.errno != errno.EINVAL:
+                    failures.append(error)
+            except Exception as error:
+                failures.append(error)
+            finally:
+                changed.set()
+
         try:
+            # Pipes must be drained concurrently on Windows as well as POSIX;
+            # communicate() buffers entire streams before its caller can cap them.
+            operations = [(read, (proc.stdout, output)), (read, (proc.stderr, errors, True))]
+            if data is not None:
+                operations.append((write, ()))
+            for target, arguments in operations:
+                worker = threading.Thread(target=target, args=arguments, daemon=True,
+                                          name=f"virgo-git-{proc.pid}-{len(workers)}")
+                worker.start()
+                workers.append(worker)
             while True:
+                # Once every worker has stopped, its terminal flags are final.
+                # Check those flags after the liveness snapshot, never before it.
+                finished = all(not worker.is_alive() for worker in workers) and proc.poll() is not None
                 check_cancel(self.signal)
+                if exceeded.is_set():
+                    raise GitReadError("Git output exceeds the controlled read limit.", "incomplete")
+                if failures:
+                    raise GitReadError(f"Controlled Git pipe I/O failed: {failures[0]}") from failures[0]
                 if time.monotonic() >= deadline:
                     raise GitReadError("Controlled Git operation timed out.", "incomplete")
-                try:
-                    stdout, stderr = proc.communicate(input=data, timeout=0.05)
+                if finished:
                     break
-                except subprocess.TimeoutExpired:
-                    data = None
+                changed.wait(0.05)
+                changed.clear()
             check_cancel(self.signal)
             if proc.returncode not in allowed:
-                reason = stderr.decode("utf-8", errors="replace").strip()[:800]
+                reason = errors.decode("utf-8", errors="replace").strip()[:800]
                 raise GitReadError(f"Git {args[0]} failed: {reason or proc.returncode}")
-            if len(stdout) > MAX_GIT_BYTES:
-                raise GitReadError("Git output exceeds the controlled read limit.", "incomplete")
-            return stdout
+            return bytes(output)
         finally:
+            stopping.set()
             if proc.poll() is None:
                 kill_tree(proc)
-                try:
-                    proc.communicate(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.communicate()
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                if stream is not None:
-                    stream.close()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+            finally:
+                # Reaping Git closes its pipe ends and releases blocked readers
+                # and the optional stdin writer. Never drain through communicate.
+                for worker in workers:
+                    worker.join(timeout=2)
+                unfinished = any(worker.is_alive() for worker in workers)
+                if unfinished:
+                    raise GitReadError("Controlled Git pipe cleanup did not finish.", "incomplete")
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
 
     def commit(self, ref, *, optional=False):
         if not isinstance(ref, str) or not ref or ref.startswith("-") or any(c in ref for c in "\x00\r\n"):
