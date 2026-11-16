@@ -23,7 +23,7 @@ Virgo separates model transport, the agent loop and application policy. Official
 
 The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). The small root `main.py` is a compatibility launcher. Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
 
-Shared rules live with their semantics: `ai/providers/reasoning.py` maps reasoning levels; `harness/permissions.py` defines approval and read-only capability; `permission_policy.py` enforces rules and explicit grants. `origin_context.py` binds the Runtime, workspace and source branch. Plan is work intent and Review is an isolated task; both reuse the existing Agent Loop. Sandbox enforces Shell boundaries while file tools retain application-level write protection.
+Canonical user-facing terms are defined in [Vocabulary](vocabulary.md). Shared rules live with their semantics: `ai/providers/reasoning.py` maps reasoning levels; `harness/permissions.py` defines approval and read-only capability; `permission_policy.py` enforces rules and explicit grants. `origin_context.py` binds the Runtime, workspace and source branch. Plan is work intent and Review is an isolated task; both reuse the existing Agent Loop. Sandbox enforces Shell boundaries while file tools retain application-level write protection.
 
 ## Core and plugin assembly
 

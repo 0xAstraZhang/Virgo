@@ -146,6 +146,7 @@ class Runtime:
         self._model_call_id: str | None = None
         self._attempt_number = 0
         self.wakeups: deque = deque()
+        self.permission_snapshot = None
         self.diagnostic_id = uuid.uuid4().hex
         self.recovery = RuntimeDiagnostics(self, messages or ())
         self.diagnostic_access = self.recovery.access
@@ -206,9 +207,17 @@ class Runtime:
         return project_tool_result(call, result,
                                    query_available=any(tool.name == "diagnostic_get" for tool in self.tools))
 
+    def refresh_permission_snapshot(self) -> None:
+        """Capture the current selection for a new task, not an older run."""
+        sandbox = self.session.services["sandbox"]
+        # Drop the previous task's decision before reading live selection.
+        self.permission_snapshot = None
+        sandbox.capture_runtime(self)
+        self.permission_snapshot = sandbox.snapshot(self)
+
     def prepare_run(self) -> None:
         """Bind startup hooks to this run before its first model request exists."""
-        self.session.services["sandbox"].capture_runtime(self)
+        self.refresh_permission_snapshot()
         self.run_id = uuid.uuid4().hex
         self._model_call_id = None
         self._attempt_number = 0
@@ -658,9 +667,8 @@ class AgentSession:
         self.model = self.resolve(model or self.settings.get("model"))
         self.small_model = self._small_model(self.model)
 
-        for t in BASE_TOOLS:
-            if t.name != "bash":
-                self.register_tool(t, ROLES_ALL, owner="core")
+        for tool in BASE_TOOLS:
+            self.register_tool(tool, ROLES_ALL, owner="core")
         self.services["shell"] = ShellSelection(self, shell_catalog)
         self.session_options["shell_catalog"] = self.services["shell"].catalog
         self.services["shell"].install_tools()
@@ -1380,12 +1388,13 @@ class AgentSession:
                     runtime = self.main
                     # A user selection made during the previous run applies to
                     # this new task; existing descendants keep their snapshots.
-                    self.services["sandbox"].capture_runtime(runtime)
+                    runtime.refresh_permission_snapshot()
                     self.busy = True
                     runtime.agent.signal.clear()
                 try:
                     self.bus.emit("command_start", command, runtime)
-                    command.fn(self, args, runtime)
+                    with self.ui.command_scope():
+                        command.fn(self, args, runtime)
                 finally:
                     with self._lock:
                         self.busy = False
@@ -1401,12 +1410,13 @@ class AgentSession:
             name, _, args = text[1:].partition(" ")
             cmd = self.commands.get(name)
             if cmd is not None:
-                cmd.fn(self, args)
+                with self.ui.command_scope():
+                    cmd.fn(self, args)
                 return
             if name in self.templates:
                 text = expand_template(self.templates[name][1], args)
             else:
-                if name in {"schedule", "schedules", "workflow", "team", "tasks", "task", "memory", "goal"}:
+                if name in {"schedule", "schedules", "team", "tasks", "task", "memory", "goal"}:
                     self.ui.print(self.t("harness.commands.retired", name=name), "error")
                 else:
                     self.ui.print(self.t("harness.commands.unknown", name=name), "error")
@@ -1522,9 +1532,10 @@ class AgentSession:
             self.busy = True
         wake = False
         try:
-            rt.prepare_run()
-            self.bus.emit("before_agent_start", rt, prompts)
-            rt.agent.prompt(prompts)
+            with self.ui.command_suspended():
+                rt.prepare_run()
+                self.bus.emit("before_agent_start", rt, prompts)
+                rt.agent.prompt(prompts)
         except Exception as error:
             rt.report_error(error, phase="session.run")
             raise

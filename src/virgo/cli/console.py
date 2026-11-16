@@ -14,6 +14,7 @@ import shutil
 import sys
 import threading
 import time
+from contextlib import contextmanager
 
 from ..agent.types import AgentEvent
 from ..ai.web import native_event
@@ -416,7 +417,22 @@ class PrintUI(UI):
     def __init__(self, json_mode: bool = False):
         self.json_mode = json_mode
         self.command_output = False
+        self._command_depth = 0
         self._lock = threading.Lock()  # sub-agents emit from other threads
+
+    def command_begin(self) -> None:
+        self._command_depth += 1
+
+    def command_end(self) -> None:
+        self._command_depth = max(0, self._command_depth - 1)
+
+    @contextmanager
+    def command_suspended(self):
+        depth, self._command_depth = self._command_depth, 0
+        try:
+            yield
+        finally:
+            self._command_depth = depth
 
     def command_result(self, text: str) -> None:
         with self._lock:
@@ -437,6 +453,8 @@ class PrintUI(UI):
         if style in ("error", "warn"):
             with self._lock:
                 print(text, file=sys.stderr)
+        elif self._command_depth:
+            self.command_result(text)
 
     def save_failed(self, session_id: str, path: str, message: str) -> None:
         self.print(message, "error")

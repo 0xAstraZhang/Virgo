@@ -12,7 +12,7 @@ APPROVAL_POLICIES = ("ask", "never")
 
 def normalize_approval_policy(value: str) -> str:
     if value not in APPROVAL_POLICIES:
-        raise ValueError("approval policy must be ask or never; legacy permission modes are retired")
+        raise ValueError("approval policy must be ask or never; legacy permission presets are retired")
     return value
 
 

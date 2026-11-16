@@ -9,7 +9,7 @@ The AI, Agent, Harness/Plugins and CLI layers separate transport, execution and 
 | Rule | Owner | Callers and boundaries |
 | --- | --- | --- |
 | OpenAI reasoning-effort mapping | `ai/providers/reasoning.py` | Chat, Responses, Codex and `completion_request_metadata()` share pure functions. Explicit maps, model declarations and default fallbacks retain their precedence. Adapters still own HTTP clients, authentication and stream events. |
-| Approval and read-only capability | `harness/permissions.py` | ask/never is separate from WorkMode. `permission_policy.py` owns deterministic rules, explicit grants, execution rechecks and audit. `origin_context.py` owns provenance without a second approval transcript. |
+| Approval and read-only capability | `harness/permissions.py` | ask/never is separate from Plan instructions. `permission_policy.py` owns deterministic rules, explicit grants, execution rechecks and audit. `origin_context.py` owns provenance without a second approval transcript. |
 | Trusted Runtime for a tool context | `AgentSession.runtime_for_context()` | Diagnostics and MCP share identity validation; each feature handles denial and its subsequent operation. Resolution does not consult the selected UI conversation or grant diagnostic access. |
 
 Reasoning mapping shares only equivalent semantics: Chat-compatible APIs support `reasoningEffortMap`, while Responses/Codex retain their `max → xhigh` fallback. Keep protocol differences explicit instead of hiding them in a generic provider with many branches. Diagnostic metadata must use the same request policy.

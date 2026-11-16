@@ -67,7 +67,7 @@ uv run virgo --continue
 uv run virgo -p --format json "Summarize the README"
 ```
 
-The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/mode` selects or edits permission presets. `/plan` and `/review` are optional prompt workflows using the normal tools; choose Read-Only separately when file protection is required. The model can request a single-operation permission exception. See [Planning](docs/en/guides/planning.md), [Sandbox boundaries](docs/en/guides/sandbox.md), and [breaking migration](docs/en/guides/migrating-execution-policy.md).
+The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/permissions` selects or edits permission presets and approval policy. `/plan` and `/review` are optional tasks using the normal tools; choose Read-Only separately when file protection is required. The model can request a single-operation permission exception. See [Planning](docs/en/guides/planning.md), [Sandbox boundaries](docs/en/guides/sandbox.md), and [breaking migration](docs/en/guides/migrating-execution-policy.md).
 
 ## Explore
 

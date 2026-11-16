@@ -9,7 +9,6 @@ import pytest
 from virgo.agent.types import Block, ToolCallEvent, ToolContext, ToolResult
 from virgo.ai.providers import faux
 from virgo.harness.permission_policy import rule_matches
-from virgo.harness.permission_scope import command_approval_reason
 from virgo.harness.permissions import APPROVAL_POLICIES, approval_policy_label, normalize_approval_policy
 
 from tests.support.harness import RecordingUI, tool_call_event, tool_results
@@ -69,7 +68,7 @@ def test_risky_review_respects_allow_once_and_exact_session_approval(make_sessio
     assert session.services["sandbox"].mode_for(session.main).workspace_only
 
 
-def test_plan_mode_only_allows_reads_and_dominates_agent_override(make_session):
+def test_planning_task_does_not_restrict_writes_and_child_ceiling_still_applies(make_session):
     session = make_session(settings={"workMode": "plan"})
     permissions = session.services["permissions"]
     child = session.create_runtime("child", "subagent", parent=session.main, read_only=False)
@@ -242,7 +241,6 @@ def test_dynamic_shell_approval_is_once_and_inherited_cdpath_needs_review(make_s
     assert not session.services["permissions"].session_approvals
     assert request(session, "bash", args, permissions=expanded, call_id="denied").is_error
     monkeypatch.setenv("CDPATH", "sub")
-    assert command_approval_reason("cd name && cat file", session.cwd, session.cwd)
 
 
 def test_rule_matching_paths(project):

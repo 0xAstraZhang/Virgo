@@ -136,7 +136,8 @@ def run_repl(
                 continue
             if cmd is not None and cmd.concurrent:
                 try:
-                    cmd.fn(session, line.partition(" ")[2])  # concurrent commands enforce their own admission
+                    with session.ui.command_scope():
+                        cmd.fn(session, line.partition(" ")[2])  # concurrent commands enforce their own admission
                 except Exception as e:  # noqa: BLE001 - a failing command must not end the REPL
                     session.report_error(e, phase="cli.command", context={"command": cmd.name})
                 if not busy():

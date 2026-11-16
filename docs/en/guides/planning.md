@@ -6,10 +6,10 @@ Plan is an optional task plugin. It adds investigation and planning instructions
 keeps one versioned Markdown proposal, and lets the user select a version for
 implementation. It uses the existing Runtime and Agent Loop.
 
-Plan does not select a permission Mode, hide normal tools, or impose a read-only
+Plan does not select a permission preset, hide normal tools, or impose a read-only
 execution ceiling. The model is instructed to investigate and propose changes;
-the selected permission Mode determines what its tools can actually do. Select
-Read-Only separately when project writes must be prevented. A writable Mode does
+the selected permission preset determines what its tools can actually do. Select
+Read-Only separately when project writes must be prevented. A writable permission preset does
 not make the planning task an instruction to implement its proposal.
 
 ## Start and revise a plan
@@ -20,19 +20,19 @@ The `coding` preset enables `plan`. To enable it in the minimal preset:
 {"profile": "minimal", "plugins": {"plan": {"enabled": true}}}
 ```
 
-Use either the direct task command or a workflow selection followed by a message:
+Use either the direct Plan command or a startup selection followed by a message:
 
 ```text
 /plan Investigate the configuration loader and plan an optional timeout.
-/workflow plan
+/plan
 Investigate the configuration loader and propose an optional timeout.
 /plan show
 ```
 
 `/plan` without arguments selects planning instructions and displays the current
-proposal when present. `/workflow default` leaves the planning task without
-executing a proposal or changing permissions. `/mode` selects permissions; it is
-not the workflow selector.
+proposal when present. `/plan off` leaves the planning task without
+executing a proposal or changing permissions. `/permissions` selects permissions; it is
+not the Plan selector.
 
 The instructions ask the model to inspect project instructions, relevant code,
 existing tests and behavior before deciding. With `ask_user` available, it should
@@ -73,7 +73,7 @@ one command. The interactive edit path also checks the version it opened.
 Execution requires the exact current token. A missing, stale or foreign token is
 rejected. The user command selects that version for one run, changes the task
 instructions to Default, and starts the existing Runtime. The selected Markdown
-appears once in its current request context. The permission Mode and approval
+appears once in its current request context. The permission preset and approval
 policy remain unchanged. If a required operation exceeds those permissions, the
 normal failure and permission-request path applies.
 
@@ -90,7 +90,7 @@ reenter these operations.
 | Plan task | Investigation and proposal instructions; no additional authority restriction |
 | ProposedPlan | One Markdown body with `plan_id` and `revision` |
 | Todo | The existing implementation checklist; publishing a plan does not create or replace it |
-| Permission Mode | Read-only, workspace scope and network settings enforced during tool execution |
+| Permission preset | Read-only, workspace scope and network settings enforced during tool execution |
 | Explicit read-only child | A permission ceiling selected for a delegated task, independent of Plan |
 
 The Plan instructions discourage replacing the proposal with Todo items, but
@@ -100,7 +100,7 @@ permission will never issue a write.
 
 The optional `git_read` helper supplies bounded local log/show/commit comparisons
 without repository helpers or implicit network access. Ordinary Shell tools are
-also available under the current permission Mode. Independent Code Review uses
+also available under the current permission preset. Independent Code Review uses
 its own reviewer instructions even when launched from a Plan conversation.
 
 ## History and request boundaries
@@ -110,7 +110,7 @@ not lend the visible conversation's proposal to an older runtime or child.
 Saved history restores the proposal and workflow, with no active execution.
 Historical execution records do not queue another run or restore authorization.
 
-`workMode` and `--work-mode` remain workflow startup inputs. An explicit startup
+`plan` and `--plan` are startup inputs. An explicit startup
 override applies to the selected initial conversation, including the resume
 picker, before an initial prompt runs. It does not rewrite the user default for
 later conversations. A retained origin with active work rejects such an override.

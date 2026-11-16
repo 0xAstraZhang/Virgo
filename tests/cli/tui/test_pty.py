@@ -69,7 +69,7 @@ def test_fullscreen_pty_paste_resize_and_clean_exit(project, tmp_path):
         for _ in range(2):
             before_switch = len(terminal.output)
             terminal.send(b"\x1b[Z")
-            terminal.wait_for(lambda data: "Permission modes" in plain(data), start=before_switch)
+            terminal.wait_for(lambda data: "Permission presets" in plain(data), start=before_switch)
             before_close = len(terminal.output)
             terminal.send(b"\x1b")
             terminal.wait_for(lambda data: "Workspace-Edit" in plain(data), start=before_close)

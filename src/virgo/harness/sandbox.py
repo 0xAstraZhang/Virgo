@@ -17,7 +17,7 @@ from ..tools.sandbox import (
     platform_backend,
     validate_config,
 )
-from .execution_modes import PermissionMode, configured_modes, legacy_mode, parse_mode
+from .execution_modes import PermissionMode, PermissionSnapshot, configured_modes, legacy_mode, parse_mode
 from .origin_context import origin_key, source_for
 
 
@@ -31,8 +31,8 @@ class _Grant:
 class SandboxManager:
     def __init__(self, session):
         self.session = session
-        self.modes = configured_modes(session.settings.get("permissions.modes", {}))
-        self._selected_mode_id = session.settings.get("permissions.mode", "workspace-edit")
+        self.modes = configured_modes(session.settings.get("permissions.presets", {}))
+        self._selected_mode_id = session.settings.get("permissions.preset", "workspace-edit")
         config = session.settings.get("sandbox", {})
         validate_config(config)
         if "mode" in config:
@@ -51,10 +51,6 @@ class SandboxManager:
         for tool in (READ, GLOB, GREP, WRITE, EDIT):
             session.replace_tools(f"tool:{tool.name}", [(make_file_tool(tool, self.for_context), ROLES_ALL)], owner="core")
         session.bus.on("tool_result", self._result, owner="core.sandbox")
-        session.commands.register("sandbox", self.status, "show execution policy and backend support",
-                                  source="core", concurrent=True, description_key="sandbox.description")
-        session.commands.register("mode", self.mode_command, "select a permission preset",
-                                  source="core", concurrent=True, argument_hint="[preset-id|list|save <id> <JSON>]")
         session.register_tool(AgentTool(
             name="request_permissions", label="Request permissions",
             description=("Ask the user for one exact tool operation with additional filesystem/network permissions. "
@@ -95,7 +91,7 @@ class SandboxManager:
         with self.session._lock:
             self.session.assert_state_change_allowed()
             if identifier not in self.modes:
-                raise ValueError(f"Unknown permission mode: {identifier}")
+                raise ValueError(f"Unknown permission preset: {identifier}. Use /permissions list; approval uses ask or never.")
             runtime = getattr(self.session, "main", None)
             if runtime is None:
                 self._selected_mode_id = identifier
@@ -112,11 +108,11 @@ class SandboxManager:
                                      "workspaceOnly": workspace_only, "networkAllowed": network_allowed})
         with self.session._lock:
             self.session.assert_state_change_allowed()
-            patch = {"permissions": {"modes": {identifier: mode.config()}}}
+            patch = {"permissions": {"presets": {identifier: mode.config()}}}
             if persist:
                 self.session.settings.save_user(patch)
             else:
-                self.session.settings.set(f"permissions.modes.{identifier}", mode.config())
+                self.session.settings.set(f"permissions.presets.{identifier}", mode.config())
             self.modes[identifier] = mode
             self.revoke()
             runtime = getattr(self.session, "main", None)
@@ -155,6 +151,10 @@ class SandboxManager:
                 mode = replace(mode, read_only=True)
             current = current.parent
         return mode
+
+    def snapshot(self, runtime) -> PermissionSnapshot:
+        permissions = self.session.services["permissions"]
+        return PermissionSnapshot(self.mode_for(runtime), permissions.approval_for(runtime), self.revision)
 
     def effective_mode(self, runtime) -> str:
         return self.mode_for(runtime).legacy_mode
@@ -198,7 +198,7 @@ class SandboxManager:
                 identifier, _, raw = value[5:].partition(" ")
                 mode = parse_mode(identifier, json.loads(raw))
                 self.save_mode(mode.id, mode.name, **mode.flags())
-                session.ui.command_result(f"Saved permission mode {mode.id}.")
+                session.ui.command_result(f"Saved permission preset {mode.id}.")
             else:
                 self.select_mode(value)
                 self.status(session, "")

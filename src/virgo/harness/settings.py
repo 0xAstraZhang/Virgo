@@ -26,13 +26,13 @@ _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
-    "workMode": "default",
+    "plan": False,
     "sandbox": {},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
     "providers": {},
-    "permissions": {"mode": "workspace-edit", "modes": {}, "approval": "ask", "allow": [], "deny": []},
+    "permissions": {"preset": "workspace-edit", "presets": {}, "approval": "ask", "allow": [], "deny": []},
     "hooks": {},
     "shell": {"executable": "auto"},
     "profile": "coding",
@@ -97,6 +97,18 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     if not isinstance(layer, dict):
         raise ValueError("settings must be a JSON object")
     out = copy.deepcopy(layer)
+    permissions = out.get("permissions")
+    if isinstance(permissions, dict):
+        _canonicalize_permissions(permissions, notices)
+    if "workMode" in out:
+        legacy_mode = out.pop("workMode")
+        plan = normalize_work_mode(legacy_mode) == "plan"
+        if "plan" in out and type(out["plan"]) is not bool:
+            raise ValueError("plan must be true or false")
+        if "plan" in out and out["plan"] != plan:
+            raise ValueError("workMode and plan disagree; remove workMode and use plan")
+        out["plan"] = plan
+        notices.append("workMode is deprecated; use plan: true or false.")
     if "permissions" in out:
         _validate_permissions(out["permissions"])
     if isinstance(out.get("plugins"), dict) and "auto_review" in out["plugins"]:
@@ -137,20 +149,41 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     return out
 
 
+def _canonicalize_permissions(value: dict, notices: list[str]) -> None:
+    """Translate the 0.2 ``mode``/``modes`` spelling before merging layers."""
+    if "mode" in value:
+        legacy_mode = value.pop("mode")
+        if "preset" in value and value["preset"] != legacy_mode:
+            raise ValueError("permissions.mode and permissions.preset disagree; remove the retired key")
+        value["preset"] = legacy_mode
+        notices.append("permissions.mode is deprecated; use permissions.preset.")
+    if "modes" in value:
+        legacy_modes = value.pop("modes")
+        if not isinstance(legacy_modes, dict):
+            raise ValueError("permissions.modes must be an object keyed by stable preset ID")
+        if "presets" in value and not isinstance(value["presets"], dict):
+            raise ValueError("permissions.presets must be an object keyed by stable preset ID")
+        if "presets" in value:
+            value["presets"] = deep_merge(legacy_modes, value["presets"])
+        else:
+            value["presets"] = legacy_modes
+        notices.append("permissions.modes is deprecated; use permissions.presets.")
+
+
 def _validate_permissions(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("permissions must be an object")
     if "readOnlyCommands" in value:
         raise ValueError("permissions.readOnlyCommands is retired; permission presets enforce Shell file and network boundaries")
-    unknown = set(value) - {"mode", "modes", "approval", "allow", "deny"}
+    unknown = set(value) - {"preset", "presets", "approval", "allow", "deny"}
     if unknown:
         raise ValueError(f"Unknown permissions setting(s): {', '.join(sorted(unknown))}")
     if "approval" in value:
         normalize_approval_policy(value["approval"])
-    configured_modes(value.get("modes", {}))
-    selected = value.get("mode")
+    configured_modes(value.get("presets", {}))
+    selected = value.get("preset")
     if selected is not None and (not isinstance(selected, str) or not selected.strip()):
-        raise ValueError("permissions.mode must be a permission preset ID")
+        raise ValueError("permissions.preset must be a permission preset ID")
     for name in ("allow", "deny"):
         rules = value.get(name, [])
         if not isinstance(rules, list) or any(not isinstance(rule, str) or not rule.strip() for rule in rules):
@@ -167,11 +200,14 @@ def _validate_permissions(value: object) -> None:
 
 def _validate(data: dict) -> None:
     _validate_permissions(data.get("permissions", {}))
-    modes = configured_modes(data.get("permissions", {}).get("modes", {}))
-    if data.get("permissions", {}).get("mode", "workspace-edit") not in modes:
-        raise ValueError("permissions.mode is retired or unknown; choose a configured permission preset ID")
+    modes = configured_modes(data.get("permissions", {}).get("presets", {}))
+    if data.get("permissions", {}).get("preset", "workspace-edit") not in modes:
+        raise ValueError("permissions.preset is unknown; the legacy key permissions.mode is retired. Choose a configured permission preset ID")
+    if data.get("permissions", {}).get("mode") is not None or data.get("permissions", {}).get("modes") is not None:
+        raise ValueError("permissions.mode and permissions.modes are retired; use permissions.preset and permissions.presets")
     validate_sandbox_config(data.get("sandbox", {}))
-    normalize_work_mode(data.get("workMode", "default"))
+    if type(data.get("plan", False)) is not bool:
+        raise ValueError("plan must be true or false")
     profile = data.get("profile", "coding")
     if profile not in PROFILES:
         raise ValueError(f"profile must be one of {', '.join(PROFILES)}")
@@ -211,6 +247,19 @@ def _trusted_projects(user: dict) -> set[Path]:
     return resolved
 
 
+def _canonical_key(dotted: str) -> str:
+    """Read the 0.2 permission keys through the canonical spelling."""
+    if dotted == "permissions.mode":
+        return "permissions.preset"
+    if dotted == "permissions.modes":
+        return "permissions.presets"
+    if dotted.startswith("permissions.modes."):
+        return "permissions.presets." + dotted[len("permissions.modes."):]
+    if dotted == "workMode":
+        return "plan"
+    return dotted
+
+
 class Settings:
     def __init__(self, data: dict, paths: Paths):
         self.data = data
@@ -246,7 +295,7 @@ class Settings:
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         normalized_overrides = _normalize_layer(overrides or {}, notices)
         data = deep_merge(data, normalized_overrides)
-        if "mode" in normalized_overrides.get("permissions", {}) and "sandbox" not in normalized_overrides:
+        if "preset" in normalized_overrides.get("permissions", {}) and "sandbox" not in normalized_overrides:
             # An explicit new preset override wins over an older user's sandbox setting.
             data["sandbox"] = {}
         _validate(data)
@@ -257,6 +306,9 @@ class Settings:
         return settings
 
     def get(self, dotted: str, default: Any = None) -> Any:
+        if dotted == "workMode":
+            return "plan" if self.get("plan") else "default"
+        dotted = _canonical_key(dotted)
         cur: Any = self.data
         for part in dotted.split("."):
             if not isinstance(cur, dict) or part not in cur:
@@ -265,6 +317,9 @@ class Settings:
         return cur if cur is not None else default
 
     def set(self, dotted: str, value: Any) -> None:
+        if dotted == "workMode":
+            dotted, value = "plan", normalize_work_mode(value) == "plan"
+        dotted = _canonical_key(dotted)
         cur = self.data
         parts = dotted.split(".")
         for part in parts[:-1]:

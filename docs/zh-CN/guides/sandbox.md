@@ -8,19 +8,19 @@
 
 ```bash
 uv run virgo
-uv run virgo --mode read-only
-uv run virgo --mode no-limit
+uv run virgo --permission read-only
+uv run virgo --permission no-limit
 ```
 
 用户配置（`$VIRGO_HOME/settings.json`，默认 `~/.virgo/settings.json`）可以选择或自定义预设：
 
 ```json
-{"permissions": {"mode": "workspace-edit", "modes": {"offline": {"name": "Offline", "readOnly": false, "workspaceOnly": true, "networkAllowed": false}}}}
+{"permissions": {"preset": "workspace-edit", "presets": {"offline": {"name": "Offline", "readOnly": false, "workspaceOnly": true, "networkAllowed": false}}}}
 ```
 
-使用 `/mode` 查看、切换预设；权限编辑器可以修改名称和三个开关。项目配置不能扩大用户权限。显式旧配置 `--sandbox read-only`、`--sandbox workspace-write` 或 `sandbox.mode` 保留原有禁网行为；`disabled` 对应 No-Limit。旧 `sandbox.network` 被拒绝，并提示改用 `permissions.modes.<id>.networkAllowed`。未知模式和字段会导致配置失败。
+使用 `/permissions` 查看、切换预设；权限编辑器可以修改名称和三个开关。项目配置不能扩大用户权限。显式旧配置 `--sandbox read-only`、`--sandbox workspace-write` 或 `sandbox.mode` 保留原有禁网行为；`disabled` 对应 No-Limit。旧 `sandbox.network` 被拒绝，并提示改用 `permissions.presets.<id>.networkAllowed`。未知模式和字段会导致配置失败。
 
-`/sandbox` 显示当前 Runtime 的实际权限与后端发现状态；如果运行中任务与新选中的预设不同，还会显示下次运行的预设。找到启动器只表示发现后端，不能证明内核允许隔离。每次实际启动都要验证边界；Windows 还验证挂起进程的 Token 和 Job 归属。显式拒绝规则与只读子任务上限仍然适用。
+`/permissions show` 显示当前 Runtime 的实际权限与后端发现状态；如果运行中任务与新选中的预设不同，还会显示下次运行的预设。找到启动器只表示发现后端，不能证明内核允许隔离。每次实际启动都要验证边界；Windows 还验证挂起进程的 Token 和 Job 归属。显式拒绝规则与只读子任务上限仍然适用。
 
 Workspace-Edit 允许文件访问范围内的联网操作。外部 SDK／缓存和受保护 Git 元数据仍可能阻止命令。模型可以调用 `request_permissions` 为一个参数确定的操作申请额外权限；批准不会修改整个对话的预设，也不会执行或重放命令。修改受保护控制路径需要明确申请单次 No-Limit 操作。Windows 在已验证 runner 配置之外仍是实验性支持。
 

@@ -9,24 +9,24 @@
 
 | 原入口 | 当前入口 |
 | --- | --- |
-| `/mode plan` / `/mode default` | `/plan` / `/workflow default` |
-| `workMode=plan`、`--work-mode plan` | Plan 插件启用时，继续选择规划指令 |
-| `/mode` | 查看／选择可编辑的**权限**预设 |
-| `--mode text|json` | `--format text|json`；`--mode` 现在接收权限预设 ID |
+| `/mode plan` / `/mode default` | `/plan` / `/plan off` |
+| `workMode=plan`、`--work-mode plan` | 改用 `plan: true` / `--plan`；Plan 插件启用时选择规划指令 |
+| `/mode` | `/permissions` 的弃用别名；查看／选择可编辑的**权限**预设 |
+| `--mode text|json` | `--format text|json`；旧 `--mode` 预设写法是 `--permission` 的弃用别名 |
 | `sandbox.mode=workspace-write` / `read-only` | 显式保留旧禁网策略；删除后使用新默认值 |
 | `sandbox.mode=disabled` | 显式选择 No-Limit 文件／网络权限 |
 | `sandbox.network` | 改用预设的 `networkAllowed` 布尔值 |
-| `permissions.mode=plan|default|accept-edits|accept-all|yolo|auto-review` | 旧审批别名已删除；选择 `read-only`、`workspace-edit`、`no-limit` 或自定义 ID |
+| `permissions.mode=plan|default|accept-edits|accept-all|yolo|auto-review` | 旧审批别名已删除；`permissions.preset` 选择 `read-only`、`workspace-edit`、`no-limit` 或自定义 ID |
 | `permissions.readOnlyCommands`、`plugins.auto_review` | 已删除；Shell 字符串分类和模型裁决不构成执行边界 |
 
-新默认值为 `permissions.mode=workspace-edit`，允许编辑工作区及任务联网。Read-Only 也允许
-联网；离线工作通过自定义三开关预设表达。名称与权限可独立编辑。完整 JSON 及 `/mode save`
+新默认值为 `permissions.preset=workspace-edit`，允许编辑工作区及任务联网。Read-Only 也允许
+联网；离线工作通过自定义三开关预设表达。名称与权限可独立编辑。完整 JSON 及 `/permissions save`
 语法见[配置](../reference/configuration.md#权限)。权限预设和授权由用户设置管理，项目只能增加 deny。
 
 ## 审批与记住的决定
 
 所选权限范围内的受管操作直接执行。`request_permissions` 为一个准确操作申请明确的权限
-变化；批准本身不执行操作，下一次相同工具调用消费例外，Mode 不变。不同参数、来源 Runtime／
+变化；批准本身不执行操作，下一次相同工具调用消费例外，权限预设不变。不同参数、来源 Runtime／
 运行、解析路径、Shell 环境、策略版本或工具实例不能复用它。
 
 `ask` 允许交互申请，`never` 拒绝新增申请，而非拒绝全部操作。`/permissions revoke` 清除

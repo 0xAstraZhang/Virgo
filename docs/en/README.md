@@ -31,6 +31,7 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 
 - [Core and plugin boundaries](development/core-plugin-boundaries.md): ownership, capability inventory and acceptance.
 - [Architecture](development/architecture.md): module responsibilities, execution flow and stable boundaries.
+- [Vocabulary](development/vocabulary.md): canonical terms for capabilities, permissions, Plan and Review.
 - [Extensions](development/extensions.md): Python tools and commands, events, lifecycle, runtime services, skills and templates.
 - [Localization](development/localization.md): language packs, session ownership, fallback and adding a language.
 - [Development and CI](development/testing-and-ci.md): local commands, end-to-end checks, result comparison and runner maintenance.

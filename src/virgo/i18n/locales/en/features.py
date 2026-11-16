@@ -30,7 +30,11 @@ MESSAGES = {
     "features.commands.fetch": "choose page reader (/fetch [auto|http|deepseek|off])",
     "features.commands.jobs": "list background jobs",
     "features.commands.mcp": "show MCP servers (/mcp reconnect)",
-    "features.commands.permissions": "show approval policy or select ask|never|revoke",
+    "features.commands.permissions": "show or change permission presets, approval policy and remembered decisions",
+    "features.commands.mode_alias": "deprecated alias for /permissions",
+    "features.commands.mode_deprecated": 'virgo: /mode is deprecated; use /permissions',
+    "features.commands.sandbox_deprecated": 'virgo: /sandbox is deprecated; use /permissions sandbox',
+    "features.commands.sandbox_alias": "deprecated alias for /permissions show",
     "features.commands.search": "choose search backend (/search [auto|duckduckgo|deepseek|off])",
     "features.commands.skills": "list available skills (/skill:name to use one)",
     "features.commands.todos": "show the todo list",
@@ -138,6 +142,7 @@ MESSAGES = {
     "features.permission.scope.wildcard": "wildcard paths may follow links outside the workspace",
     "features.permission.session_rules": "approved this session: {rules}",
     "features.permission.status": "approval policy: {label}",
+    "features.permission.captured": 'current run: {label}',
     "features.permission.user_denied": "The user denied this tool call. Use a materially safer alternative or "
     "ask what they want instead.",
     "features.search.key": "DeepSeek search requires an official API key. Use /login api deepseek with "

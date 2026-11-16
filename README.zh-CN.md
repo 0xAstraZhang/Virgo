@@ -67,7 +67,7 @@ uv run virgo --continue
 uv run virgo -p --format json "总结 README"
 ```
 
-默认权限预设为 Workspace-Edit：允许编辑工作区、允许任务联网。`/mode` 选择或编辑权限预设。`/plan` 和 `/review` 是使用正常工具的可选提示词工作流；需要强制保护文件时另选 Read-Only。模型可以申请单次操作的权限例外。见[规划指南](docs/zh-CN/guides/planning.md)、[沙箱范围](docs/zh-CN/guides/sandbox.md)和[不兼容迁移说明](docs/zh-CN/guides/migrating-execution-policy.md)。
+默认权限预设为 Workspace-Edit：允许编辑工作区、允许任务联网。`/permissions` 选择或编辑权限预设与审批策略。`/plan` 和 `/review` 是使用正常工具的可选任务；需要强制保护文件时另选 Read-Only。模型可以申请单次操作的权限例外。见[规划指南](docs/zh-CN/guides/planning.md)、[沙箱范围](docs/zh-CN/guides/sandbox.md)和[不兼容迁移说明](docs/zh-CN/guides/migrating-execution-policy.md)。
 
 ## 继续了解
 

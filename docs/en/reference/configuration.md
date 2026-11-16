@@ -43,10 +43,10 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `effort` | `medium`; supported UI levels are `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxTokens` | Unset; adapter/model defaults apply |
 | `shell.executable` | `auto`; adapted shell name or executable path |
-| `permissions.mode` | `workspace-edit`; select a user-owned execution preset |
-| `permissions.modes` | Editable names and three flags, keyed by stable ID |
+| `permissions.preset` | `workspace-edit`; select a user-owned permission preset |
+| `permissions.presets` | Editable names and three flags, keyed by stable ID |
 | `sandbox.mode` | Optional legacy offline compatibility setting |
-| `workMode` | `default`; `plan` selects the optional planning prompt |
+| `plan` | `false`; `true` starts the optional planning task |
 | `permissions.approval` | `ask`; use `never` to reject operations needing a new approval |
 | `permissions.allow`, `permissions.deny` | Lists of tool rules |
 | `compaction.enabled` | `true` |
@@ -104,19 +104,19 @@ Catalog caches are scoped to provider, protocol and endpoint and do not store ke
 
 Auxiliary requests automatically choose a small model on the same connection: `claude-haiku-5-5` for official Anthropic connections, `gpt-6-luna` for official OpenAI/Codex connections, and otherwise the main model. Reasoning prefers `low`, then a supported default, otherwise omits the control. The old `smallModel` field is not consulted.
 
-## Work mode
+## Plan task
 
-Plan and Code Review are optional prompt workflows. `/plan <task>` starts planning;
-`/workflow default` leaves planning without implementing it. `/review` runs an independent
+Plan and Code Review are optional tasks. `/plan <task>` starts planning;
+`/plan off` leaves planning without implementing it. `/review` runs an independent
 review using the normal tools and fixed review evidence. Neither workflow changes permissions.
 Their prompts request a plan/report without making changes; use Read-Only when enforced file
-protection is needed. `--work-mode default|plan` selects initial task instructions, while
+protection is needed. `--plan` selects initial planning instructions, while
 `--format text|json` controls output. See [Planning](../guides/planning.md) and
 [Code Review](../guides/code-review.md).
 
 ## Permissions
 
-`--mode <id>` and `/mode <id>` select an execution preset. Shift+Tab opens the TUI picker,
+`--permission <id>` and `/permissions <id>` select a permission preset. Shift+Tab opens the TUI picker,
 where preset names and all three switches can be edited or a new preset created. Selection
 is conversation-local; Save persists the preset in user settings. The current task captures
 its permissions; changes during a run are shown as the next selection and do not revoke
@@ -133,8 +133,8 @@ Workspace-Edit is the default. Names are editable labels, never permission check
 ```json
 {
   "permissions": {
-    "mode": "workspace-edit",
-    "modes": {
+    "preset": "workspace-edit",
+    "presets": {
       "offline-inspection": {
         "name": "Offline inspection",
         "readOnly": true,
@@ -149,10 +149,10 @@ Workspace-Edit is the default. Names are editable labels, never permission check
 }
 ```
 
-The stable ID is 1–64 letters/digits/underscores/hyphens. Custom entries require all three
+The stable ID is 1–64 letters/digits/underscores/hyphens. `ask`, `never`, `revoke`, `show`, `status`, `sandbox`, `list` and `save` are reserved by `/permissions`. Custom entries require all three
 boolean fields; built-in entries may override individual fields. A name is 1–100 printable
-characters. `/mode save <id> <JSON>` provides the same editing path in plain/noninteractive
-clients. `/mode list` lists actual values; `/sandbox` shows the selected/effective policy and
+characters. `/permissions save <id> <JSON>` provides the same editing path in plain/noninteractive
+clients. `/permissions list` lists actual values; `/permissions show` reports the selected/effective policy and
 backend discovery separately. Unsupported backend combinations fail closed.
 
 Read-only protects managed host file data, with private scratch and broker records allowed;
@@ -167,7 +167,7 @@ single-operation exception under constrained file profiles. See [Sandbox](../gui
 Managed operations within the profile run without Shell syntax classification. Explicit deny
 rules remain binding. `request_permissions(tool, arguments, permissions, reason)` asks for one
 exact operation, then the model must call that tool with identical arguments. It does not run
-or replay the command, change Mode, grant sibling tasks access, or persist authorization in
+or replay the command, change the permission preset, grant sibling tasks access, or persist authorization in
 history. Approval is bound to the runtime/run, arguments, cwd, resolved paths, tool generation,
 shell environment and current policy revision; changes invalidate it. A repeated denied
 request does not prompt again until decisions are revoked or a new run starts.
@@ -183,7 +183,7 @@ Only user settings and explicit startup overrides may select/edit modes or grant
 Project `permissions` accepts only additional `deny` rules; it cannot clear user denials.
 Legacy explicit `sandbox.mode=read-only|workspace-write` / `--sandbox` preserve their offline
 behavior; `disabled` maps to No-Limit. Remove the legacy setting to use network-enabled defaults.
-Do not combine `--mode` and `--sandbox`. `sandbox.network`, model permission approval and old
+Do not combine `--permission` and `--sandbox`. `sandbox.network`, model permission approval and old
 approval-mode aliases remain unsupported.
 
 ## Context and retries

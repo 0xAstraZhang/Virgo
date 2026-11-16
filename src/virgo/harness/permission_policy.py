@@ -66,7 +66,7 @@ def rule_matches(rule: str, ev: ToolCallEvent, *, allow: bool = False) -> bool:
 class Permissions:
     def __init__(self, session: AgentSession):
         self.session = session
-        self._work_mode = normalize_work_mode(session.settings.get("workMode", "default"))
+        self._work_mode = "plan" if session.settings.get("plan", False) else "default"
         self.revision = 0
         self.session_rules: list[str] = []
         self.session_approvals: set[str] = set()
@@ -87,6 +87,9 @@ class Permissions:
         root = self._root_runtime(runtime)
         return root.work_mode if root is not None else self._work_mode
 
+    def planning_for(self, runtime) -> bool:
+        return self.work_mode_for(runtime) == "plan"
+
     def is_read_only(self, runtime) -> bool:
         sandbox = self.session.services.get("sandbox")
         if sandbox is not None:
@@ -98,7 +101,15 @@ class Permissions:
         return False
 
     def approval_for(self, runtime=None) -> str:
+        """Read the captured policy for a run, never a later selection."""
         approval = normalize_approval_policy(self.session.approval_policy)
+        snapshot = getattr(runtime, "permission_snapshot", None) if runtime is not None else None
+        if snapshot is not None:
+            approval = normalize_approval_policy(snapshot.approval)
+        elif runtime is not None and runtime.parent is not None:
+            parent_snapshot = getattr(runtime.parent, "permission_snapshot", None)
+            if parent_snapshot is not None:
+                approval = normalize_approval_policy(parent_snapshot.approval)
         while runtime is not None:
             if runtime.session is not self.session:
                 raise ValueError("Approval runtime must belong to this session")
@@ -109,14 +120,21 @@ class Permissions:
         return approval
 
     def restore_work_mode(self, runtime, override: str | None = None) -> None:
-        """Restore work intent only, publishing it after persistence succeeds."""
-        records = runtime.store.custom("work_mode") if runtime.store is not None else []
-        saved = normalize_work_mode(records[-1]["mode"]) if records else None
+        """Restore task intent only, publishing it after persistence succeeds."""
+        saved: bool | None = None
+        if runtime.store is not None:
+            records = runtime.store.custom("plan")
+            if records:
+                saved = bool(records[-1].get("plan"))
+            else:
+                legacy = runtime.store.custom("work_mode")
+                if legacy:
+                    saved = normalize_work_mode(legacy[-1].get("mode", "default")) == "plan"
         mode = normalize_work_mode(override) if override is not None else (
-            "plan" if self._work_mode == "plan" else saved or self._work_mode
+            "plan" if self._work_mode == "plan" or saved else "default"
         )
-        if runtime.store is not None and saved != mode and (saved is not None or mode != "default"):
-            runtime.store.append("custom", kind="work_mode", data={"mode": mode})
+        if runtime.store is not None and saved != (mode == "plan") and (saved is not None or mode != "default"):
+            runtime.store.append("custom", kind="plan", data={"plan": mode == "plan"})
         runtime.work_mode = mode
         runtime.work_mode_revision = getattr(runtime, "work_mode_revision", -1) + 1
 
@@ -130,7 +148,7 @@ class Permissions:
             if root is not None and self.session.runtime_is_busy(root):
                 raise ValueError(self.session.t("work_mode.busy"))
             if root is not None and root.store is not None:
-                root.store.append("custom", kind="work_mode", data={"mode": mode})
+                root.store.append("custom", kind="plan", data={"plan": mode == "plan"})
             if root is None:
                 self._work_mode = mode
             else:
@@ -322,25 +340,71 @@ def install_permissions(session: AgentSession) -> Permissions:
     session.services["sandbox"] = sandbox
     session.add_permission_policy(sandbox, owner="core.sandbox")
 
-    def approvals_command(session, args):
+    def permission_command(session, args):
         value = args.strip()
-        try:
-            if value == "revoke":
-                permissions.revoke()
-            elif value:
-                session.approval_policy = normalize_approval_policy(value)
-        except ValueError as error:
-            session.ui.print(str(error), "error")
-            return
-        lines = [session.t("features.permission.status", label=approval_policy_label(session.approval_policy, session.t)),
-                 session.t("work_mode.status", mode=session.t("work_mode." + permissions.work_mode))]
-        for key in ("allow", "deny"):
-            if rules := session.settings.get(f"permissions.{key}", []):
-                lines.append(f"{session.t('features.permission.' + key)}: {', '.join(rules)}")
-        if permissions.session_rules:
-            lines.append(session.t("features.permission.session_rules", rules=", ".join(permissions.session_rules)))
-        session.ui.command_result("\n".join(lines))
+        sandbox = session.services["sandbox"]
 
-    session.commands.register("permissions", approvals_command, "show approval policy, select ask|never or revoke remembered approvals",
-                              argument_hint="[ask|never|revoke]", description_key="features.commands.permissions", source="core")
+        def show():
+            selected = normalize_approval_policy(session.approval_policy)
+            lines = [
+                session.t("features.permission.status",
+                          label=approval_policy_label(selected, session.t)),
+                session.t("work_mode.status", mode=session.t("work_mode." + permissions.work_mode)),
+            ]
+            snapshot = getattr(session.main, "permission_snapshot", None)
+            if snapshot is not None and snapshot.approval != selected:
+                lines.append(session.t("features.permission.captured",
+                                       label=approval_policy_label(snapshot.approval, session.t)))
+            for key in ("allow", "deny"):
+                if rules := session.settings.get(f"permissions.{key}", []):
+                    lines.append(f"{session.t('features.permission.' + key)}: {', '.join(rules)}")
+            if permissions.session_rules:
+                lines.append(session.t("features.permission.session_rules",
+                                       rules=", ".join(permissions.session_rules)))
+            session.ui.command_result("\n".join(lines))
+
+        try:
+            if value.startswith("save "):
+                sandbox.mode_command(session, value)
+                return
+            if value in {"ask", "never", "revoke"}:
+                if value == "revoke":
+                    permissions.revoke()
+                else:
+                    session.approval_policy = normalize_approval_policy(value)
+                show()
+                return
+            if value in {"", "show", "status", "sandbox"}:
+                show()
+                if value != "sandbox":
+                    sandbox.mode_command(session, "list")
+                sandbox.status(session, "")
+                return
+            sandbox.mode_command(session, value)
+        except (ValueError, TypeError) as error:
+            session.ui.print(str(error), "error")
+
+    hint = "[preset-id|list|save <id> <JSON>|ask|never|revoke|show]"
+    session.commands.register(
+        "permissions", permission_command,
+        "show or change permission presets, approval policy and remembered decisions",
+        argument_hint=hint, description_key="features.commands.permissions", source="core", concurrent=True,
+    )
+    def mode_alias(session, args):
+        session.ui.print(session.t("features.commands.mode_deprecated"), "warn")
+        permission_command(session, args)
+
+    session.commands.register(
+        "mode", mode_alias, "deprecated alias for /permissions", argument_hint=hint,
+        description_key="features.commands.mode_alias", source="core", concurrent=True,
+    )
+
+    def sandbox_alias(session, args):
+        session.ui.print(session.t("features.commands.sandbox_deprecated"), "warn")
+        permission_command(session, "sandbox")
+
+    session.commands.register(
+        "sandbox", sandbox_alias, "deprecated alias for /permissions show",
+        description_key="features.commands.sandbox_alias", source="core", concurrent=True,
+    )
     return permissions

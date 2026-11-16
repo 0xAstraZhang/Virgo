@@ -46,6 +46,6 @@ Zsh 仍遵守系统级启动规则。PowerShell 使用编码命令，不修改�
 
 PowerShell 使用独立的 `powershell(...)` 规则，已有 `bash(...)` 规则不会自动授权它。自动审查会接收实际 Shell 信息。计划模式不提供 PowerShell，使用文件工具调查。动态 PowerShell 路径不能可靠缓存为“本会话允许”。更换解释器后，不会复用另一解释器的审批缓存。
 
-配置与平台验收范围见[权限模式](../reference/configuration.md#权限)和[开发检查](../development/testing-and-ci.md)。
+配置与平台验收范围见[权限预设](../reference/configuration.md#权限)和[开发检查](../development/testing-and-ci.md)。
 
 实现：[Shell 适配器](../../../src/virgo/tools/shell.py)、[Shell 选择](../../../src/virgo/harness/shell_commands.py)、[Windows 进程管理](../../../src/virgo/tools/windows_process.py)。

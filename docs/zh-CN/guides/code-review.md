@@ -59,9 +59,9 @@ JSON 模式输出包含 `report` 对象的 `code_review` 事件。报告完成�
 指令。`subagents.maxTurns` 限制轮数，正常的上下文压缩仍然可用。
 
 子 Runtime 的正常工具集合全部保留。审查指令要求调查并报告问题，不实施
-修复、提交或合并。实际文件、Shell、网络访问由当前权限 Mode 决定。需要
+修复、提交或合并。实际文件、Shell、网络访问由当前权限预设 决定。需要
 阻止源文件写入时，应独立选择 Read-Only。模型如果违反审查指令，在可写
-Mode 中仍可能执行获准写入；Review 不构成另一层安全边界。
+权限预设中仍可能执行获准写入；Review 不构成另一层安全边界。
 
 冻结证据通过 `review_read`、`review_glob`、字面量 `review_grep` 和 `review_git`
 提供，与读取实时文件的普通工具名称区分。`review_git` 只分页读取快照的

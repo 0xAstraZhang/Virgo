@@ -43,6 +43,15 @@ PARAMETER_ALIASES = {
         "test_single_click_anywhere_toggles_only_once[padding]",
     "test_web_search_result_header_toggles_and_body_keeps_details_open":
         "test_web_search_result_body_click_collapses_only_result",
+    "test_plan_mode_only_allows_reads_and_dominates_agent_override":
+        "test_planning_task_does_not_restrict_writes_and_child_ceiling_still_applies",
+    "test_work_mode_command_is_localized_and_available_without_plugins[en-Work mode]":
+        "test_work_mode_command_is_localized_and_available_without_plugins[en-Plan task]",
+    "test_work_mode_command_is_localized_and_available_without_plugins[zh-CN-工作模式]":
+        "test_work_mode_command_is_localized_and_available_without_plugins[zh-CN-Plan 任务]",
+    # JUnit escapes non-ASCII parameter IDs; keep the escaped identity too.
+    "test_work_mode_command_is_localized_and_available_without_plugins[zh-CN-\\u5de5\\u4f5c\\u6a21\\u5f0f]":
+        "test_work_mode_command_is_localized_and_available_without_plugins[zh-CN-Plan \\u4efb\\u52a1]",
 }
 
 
@@ -95,6 +104,7 @@ APPROVED_RETIREMENTS = {
 PRODUCT_RETIREMENTS = tuple(read_json(Path(__file__).with_name(filename)) for filename in (
     "core_plugin_retirements.json",
     "execution_policy_retirements.json",
+    "shell_scope_retirements.json",
 ))
 
 

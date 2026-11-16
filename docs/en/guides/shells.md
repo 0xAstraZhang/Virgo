@@ -46,6 +46,6 @@ Foreground commands default to a 300-second timeout. The maximum is 3600 seconds
 
 PowerShell has independent `powershell(...)` rules; existing `bash(...)` rules do not automatically authorize it. Auto-review receives the actual shell information. Plan mode omits PowerShell and uses file tools for investigation. Dynamic PowerShell paths cannot be safely cached as “allow for this session.” Changing the interpreter does not reuse approval cached for a different interpreter.
 
-See [permission modes](../reference/configuration.md#permissions) and [development checks](../development/testing-and-ci.md) for configuration and platform coverage.
+See [permission presets](../reference/configuration.md#permissions) and [development checks](../development/testing-and-ci.md) for configuration and platform coverage.
 
 Implementation: [shell adapters](../../../src/virgo/tools/shell.py), [shell selection](../../../src/virgo/harness/shell_commands.py), [Windows process management](../../../src/virgo/tools/windows_process.py).

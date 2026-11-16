@@ -8,19 +8,19 @@ The default permission preset is `Workspace-Edit`: writable workspace, workspace
 
 ```bash
 uv run virgo
-uv run virgo --mode read-only
-uv run virgo --mode no-limit
+uv run virgo --permission read-only
+uv run virgo --permission no-limit
 ```
 
 User settings (`$VIRGO_HOME/settings.json`, normally `~/.virgo/settings.json`) can select or customize presets:
 
 ```json
-{"permissions": {"mode": "workspace-edit", "modes": {"offline": {"name": "Offline", "readOnly": false, "workspaceOnly": true, "networkAllowed": false}}}}
+{"permissions": {"preset": "workspace-edit", "presets": {"offline": {"name": "Offline", "readOnly": false, "workspaceOnly": true, "networkAllowed": false}}}}
 ```
 
-Use `/mode` to inspect/select presets and the permission editor to change their names and flags. Project configuration cannot expand user permissions. Explicit legacy `--sandbox read-only` / `--sandbox workspace-write` or `sandbox.mode` settings retain their original offline behavior; `disabled` maps to No-Limit. `sandbox.network` is rejected with guidance to use `permissions.modes.<id>.networkAllowed`. Unknown modes and keys fail configuration.
+Use `/permissions` to inspect/select presets and the permission editor to change their names and flags. Project configuration cannot expand user permissions. Explicit legacy `--sandbox read-only` / `--sandbox workspace-write` or `sandbox.mode` settings retain their original offline behavior; `disabled` maps to No-Limit. `sandbox.network` is rejected with guidance to use `permissions.presets.<id>.networkAllowed`. Unknown modes and keys fail configuration.
 
-`/sandbox` displays the current Runtime's flags and backend discovery, plus a pending preset when it differs from the running task. A discovered launcher is shown as launch-unverified; inspection does not execute a probe or certify that the kernel permits isolation. Every actual launch checks the boundary before releasing the command; Windows also checks the suspended process token and Job assignment. Explicit deny rules and read-only child ceilings remain applicable.
+`/permissions show` displays the current Runtime's flags and backend discovery, plus a pending preset when it differs from the running task. A discovered launcher is shown as launch-unverified; inspection does not execute a probe or certify that the kernel permits isolation. Every actual launch checks the boundary before releasing the command; Windows also checks the suspended process token and Job assignment. Explicit deny rules and read-only child ceilings remain applicable.
 
 Workspace-Edit permits network-dependent operations when their file accesses fit the policy. External SDK/cache access and protected Git metadata can still block an operation. The model can use `request_permissions` to ask for one exact operation with additional flags; approval does not change the conversation preset or automatically execute/replay it. Editing protected control paths requires an explicit No-Limit operation. Windows remains experimental outside the validated runner configurations described in its guide.
 

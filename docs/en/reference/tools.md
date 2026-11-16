@@ -29,7 +29,7 @@ The three optional flags are `read_only`, `workspace_only`, `network_allowed`. A
 execute or replay the operation; the next identical call consumes the grant in its originating run.
 Supported targets are managed file, Shell, Web and MCP operations. Child tasks and workflows
 keep their originating permissions and can request exact operations inside their own run.
-Explicit deny rules and explicit read-only child ceilings remain binding. Mode is unchanged.
+Explicit deny rules and explicit read-only child ceilings remain binding. The permission preset is unchanged.
 Structured refusals expose the failed dimension, target, payload-start and side-effect facts in
 model-visible content and the TUI. Backend-unavailable errors are distinct from permission denial.
 

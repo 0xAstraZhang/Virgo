@@ -43,10 +43,10 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `effort` | `medium`；界面支持 `low`、`medium`、`high`、`xhigh`、`max` |
 | `maxTokens` | 未设置，使用适配器／模型默认值 |
 | `shell.executable` | `auto`；受支持的解释器名称或可执行文件路径 |
-| `permissions.mode` | `workspace-edit`；选择用户所有的权限预设 |
-| `permissions.modes` | 按稳定 ID 保存可编辑名称与三个开关 |
+| `permissions.preset` | `workspace-edit`；选择用户所有的权限预设 |
+| `permissions.presets` | 按稳定 ID 保存可编辑名称与三个开关 |
 | `sandbox.mode` | 可选的旧禁网兼容配置 |
-| `workMode` | `default`；`plan` 选择可选规划提示词 |
+| `plan` | `false`；`true` 启动可选规划任务 |
 | `permissions.approval` | `ask`；`never` 拒绝需要新增批准的操作 |
 | `permissions.allow`、`permissions.deny` | 工具规则列表 |
 | `compaction.enabled` | `true` |
@@ -104,17 +104,17 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 辅助请求自动选择同一连接的小模型：官方 Anthropic 连接使用 `claude-haiku-5-5`，官方 OpenAI/Codex 连接使用 `gpt-6-luna`，其余使用主模型。推理强度优先 `low`，其次为受支持的默认值，否则省略控制参数。旧 `smallModel` 字段不再参与选择。
 
-## 工作模式
+## Plan 任务
 
-Plan 和 Code Review 是可选的提示词工作流。`/plan <任务>` 开始规划，`/workflow default`
+Plan 和 Code Review 是可选的规划与审查任务。`/plan <任务>` 开始规划，`/plan off`
 退出规划但不实施。`/review` 使用正常工具与固定审查证据启动独立审查。两者都不改变权限。
 提示词要求输出计划或报告；需要强制保护文件时，另选 Read-Only。
-`--work-mode default|plan` 选择初始任务指令，`--format text|json` 控制输出格式。
+`--plan` 选择初始 Plan 指令，`--format text|json` 控制输出格式。
 见[规划](../guides/planning.md)和[代码审查](../guides/code-review.md)。
 
 ## 权限
 
-`--mode <id>` 和 `/mode <id>` 选择执行权限预设。Shift+Tab 打开 TUI 选择器，可以修改
+`--permission <id>` 和 `/permissions <id>` 选择权限预设。Shift+Tab 打开 TUI 选择器，可以修改
 名称和三个开关，或新建预设。使用只影响当前对话；保存将预设写入用户设置。
 任务开始时捕获权限；运行中修改显示为下次生效，不声称撤销已启动进程的权限。
 子 Agent 和后台任务保留来源工作区及权限。
@@ -130,8 +130,8 @@ Plan 和 Code Review 是可选的提示词工作流。`/plan <任务>` 开始规
 ```json
 {
   "permissions": {
-    "mode": "workspace-edit",
-    "modes": {
+    "preset": "workspace-edit",
+    "presets": {
       "offline-inspection": {
         "name": "离线检查",
         "readOnly": true,
@@ -146,9 +146,9 @@ Plan 和 Code Review 是可选的提示词工作流。`/plan <任务>` 开始规
 }
 ```
 
-稳定 ID 使用 1–64 个字母、数字、下划线或连字符。自定义预设必须提供三个布尔值；
+稳定 ID 使用 1–64 个字母、数字、下划线或连字符。`ask`、`never`、`revoke`、`show`、`status`、`sandbox`、`list`、`save` 由 `/permissions` 保留。自定义预设必须提供三个布尔值；
 内置预设可只覆盖部分字段。名称使用 1–100 个可打印字符。
-逐行客户端使用 `/mode save <id> <JSON>` 编辑，`/mode list` 查看实际值，`/sandbox`
+逐行客户端使用 `/permissions save <id> <JSON>` 编辑，`/permissions list` 查看实际值，`/permissions show`
 分别显示有效权限和后端发现状态。后端不支持所选组合时拒绝执行。
 
 只读保护受管宿主文件数据，私有临时目录和宿主记录仍可写；它不保证远程系统没有副作用。
@@ -171,7 +171,7 @@ Plan 和 Code Review 是可选的提示词工作流。`/plan <任务>` 开始规
 
 只有用户设置及显式启动覆盖可以选择／编辑权限预设。项目 `permissions` 只接受额外 deny，
 不能清空用户拒绝。显式旧 `sandbox.mode=read-only|workspace-write`／`--sandbox` 保留禁网行为；
-`disabled` 映射到 No-Limit。删除旧设置后使用新的默认联网预设。不要同时使用 `--mode` 和
+`disabled` 映射到 No-Limit。删除旧设置后使用新的默认联网预设。不要同时使用 `--permission` 和
 `--sandbox`。`sandbox.network`、模型权限审批和旧审批模式别名仍不支持。
 
 ## 上下文与重试

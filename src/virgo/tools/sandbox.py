@@ -81,7 +81,7 @@ def validate_config(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("sandbox must be an object")
     if "network" in value:
-        raise ValueError("sandbox.network is not supported; use permissions.modes.<id>.networkAllowed. "
+        raise ValueError("sandbox.network is not supported; use permissions.presets.<id>.networkAllowed. "
                          "Explicit legacy sandbox modes retain their offline behavior.")
     if set(value) - {"mode"}:
         raise ValueError("sandbox supports only mode")
