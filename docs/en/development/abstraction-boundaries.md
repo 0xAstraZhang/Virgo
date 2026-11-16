@@ -9,12 +9,12 @@ The AI, Agent, Harness/Plugins and CLI layers separate transport, execution and 
 | Rule | Owner | Callers and boundaries |
 | --- | --- | --- |
 | OpenAI reasoning-effort mapping | `ai/providers/reasoning.py` | Chat, Responses, Codex and `completion_request_metadata()` share pure functions. Explicit maps, model declarations and default fallbacks retain their precedence. Adapters still own HTTP clients, authentication and stream events. |
-| Permission modes, labels and plan-mode tool filtering | `harness/permissions.py` | Harness and CLI use the shared contract. `harness/permission_policy.py` implements mandatory rules, approval fallback, caches and auditing; `plugins/auto_review.py` supplies optional model review. Labels accept an optional session translator. |
+| Approval and read-only capability | `harness/permissions.py` | ask/never is separate from WorkMode. `permission_policy.py` owns deterministic rules, explicit grants, execution rechecks and audit. `origin_context.py` owns provenance without a second approval transcript. |
 | Trusted Runtime for a tool context | `AgentSession.runtime_for_context()` | Diagnostics and MCP share identity validation; each feature handles denial and its subsequent operation. Resolution does not consult the selected UI conversation or grant diagnostic access. |
 
 Reasoning mapping shares only equivalent semantics: Chat-compatible APIs support `reasoningEffortMap`, while Responses/Codex retain their `max → xhigh` fallback. Keep protocol differences explicit instead of hiding them in a generic provider with many branches. Diagnostic metadata must use the same request policy.
 
-Runtime resolution requires a `ReviewSource` whose runtime is a real `Runtime` owned by this Session, whose source object is the Runtime's original binding, and whose agent name matches the tool context. Any mismatch returns `None`; missing context must never fall back to `session.main`.
+Runtime resolution requires a `ExecutionOrigin` whose runtime is a real `Runtime` owned by this Session, whose source object is the Runtime's original binding, and whose agent name matches the tool context. Any mismatch returns `None`; missing context must never fall back to `session.main`.
 
 ## Layers to retain
 
@@ -28,9 +28,9 @@ Runtime resolution requires a `ReviewSource` whose runtime is a real `Runtime` o
 
 ### Custom permission policy capabilities
 
-`PermissionPolicy` declares `preflight()` and `before_execute()`, the ordinary tool checkpoints. `api.register_permission_policy()` composes extra restrictions with the mandatory Core policy. Hosted web calls use `api.authorize_tool`; child creation uses `api.create_runtime(parent=..., permission=...)`. Official plugins do not replace the Core guard or set another runtime's mode directly.
+`PermissionPolicy` declares `preflight()` and `before_execute()`, the ordinary tool checkpoints. `api.register_permission_policy()` composes extra restrictions with the mandatory Core policy. Hosted web calls use `api.authorize_tool`; child creation uses `api.create_runtime(parent=..., read_only=...)`. Official plugins do not replace the Core guard or set another runtime's mode directly.
 
-Core scope detection and `ReviewSource` live in the harness. A disabled or failed optional model reviewer leaves human approval as the fallback for uncertain operations. Unknown caller identity fails explicitly; it does not select the current UI conversation.
+Core scope detection and `ExecutionOrigin` live in the harness. Operations needing new authorization ask the user under `ask` and are refused under `never`. Unknown caller identity fails explicitly; it does not select the current UI conversation.
 
 ### MCP tool registry publication
 

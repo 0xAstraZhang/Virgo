@@ -248,7 +248,8 @@ def test_restored_native_thinking_checks_system_and_tools(make_session, monkeypa
            AssistantMessage([ThinkingContent("reason", "sig"), TextContent("r" * 100)], api="anthropic"))
     monkeypatch.setattr(compaction, "native_compact", lambda model, *a, **kw: native_result(model))
     session.compact()
-    restored = AgentSession(project, model=session.model.spec, session=session.store.path, permission_mode="accept-all")
+    restored = AgentSession(project, model=session.model.spec, session=session.store.path,
+                            approval_policy=session.approval_policy, settings=session.settings.data)
     try:
         context = restored.main.request_context(restored.main.messages)
         assert any(isinstance(block, ThinkingContent) for block in context.messages[-1].content)

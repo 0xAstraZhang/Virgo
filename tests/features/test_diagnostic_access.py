@@ -32,7 +32,7 @@ def diagnostic_tool(session):
 
 def query(tool, runtime, error_id, **args):
     context = ToolContext("diagnostic-call", runtime.cwd, threading.Event(), agent=runtime.name,
-                          review_source=runtime.review_source)
+                          origin=runtime.origin)
     result = tool.execute({"error_id": error_id, **args}, context)
     assert not result.is_error  # A normal query miss must not manufacture another diagnostic.
     return json.loads(result.as_text())

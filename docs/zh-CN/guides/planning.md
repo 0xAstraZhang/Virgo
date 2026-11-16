@@ -6,7 +6,7 @@ Plan 模式让 Virgo 调查仓库并维护一份待确认的实施方案。提�
 
 ## 调查、审阅与执行
 
-启动 Virgo 后输入：
+使用 `virgo --work-mode plan` 启动，或在现有对话中输入 `/mode plan`：
 
 ```text
 /mode plan
@@ -18,7 +18,7 @@ Plan 专用指令要求先阅读项目说明、检查代码和已有验收，并
 
 主 Agent 通过 Core 工具 `propose_plan` 发布完整 Markdown。专用指令要求方案包含标题、目标、修改范围、关键决策、实施步骤、验收条件和已知约束。它是对话元数据；发布不会在项目中创建计划文件，也不授权修改代码。
 
-`/plan` 和 `/plan show` 显示当前正文、版本 token 和确认状态。可以继续对话，要求修改方案：
+`/plan` 和 `/plan show` 显示当前方案和版本 token。可以继续对话，要求修改方案：
 
 ```text
 保留现有超时作为默认值。请补充错误提示和兼容行为，并更新计划。
@@ -31,11 +31,19 @@ Plan 专用指令要求先阅读项目说明、检查代码和已有验收，并
 /plan execute <plan-id>:<revision>
 ```
 
-用 `/plan` 显示的准确 token 替换占位内容。缺失、过期或属于其他对话的 token 会被拒绝。这个用户命令确认该版本，将来源对话切换到 Default，并通过原有 Runtime 开始运行；用户请求中携带被选中的完整 Markdown。它不改变审批策略或 Sandbox，每次工具操作仍经过正常权限检查。
+用 `/plan` 显示的准确 token 替换占位内容。缺失、过期或属于其他对话的 token 会被拒绝。这个用户命令为本次运行选择该版本，将来源对话切换到 Default，并通过原有 Runtime 开始运行。完整 Markdown 只在当前 system 上下文注入一次，执行请求引用其 token。它不改变审批策略或 Sandbox，每次工具操作仍经过正常权限检查。
 
 `/mode default` 只退出 Plan，不确认或执行方案。模型生成的文字、计划正文以及澄清问题的回答都不能调用执行命令。
 
-## 直接修改 Markdown
+## 在全屏界面查看和修改
+
+按 Ctrl+G 打开当前方案，查看 Markdown 与准确版本 token。修改正文后选择**保存修改**（Ctrl+S），生成新版本。正文有未保存修改时，**执行此计划**按钮禁用。保存后重新打开窗口，审阅新版本，再选择**执行此计划**。窗口与 `/plan` 使用相同的版本检查和执行命令，旧窗口不能覆盖或执行新方案。选择**关闭**或按 Esc 会丢弃未保存编辑，不会执行。
+
+Shift+Tab 通过 `/mode` 切换 Default 与 Plan，不确认方案，也不改变审批策略或 Sandbox。底部状态栏分别显示这三个维度，空间不足时优先保留它们，再显示模型信息。Ctrl+P 和 Ctrl+N 仍用于浏览输入历史。
+
+对话忙碌时，计划保存和执行会被拒绝，不会排队。等待结束或停止当前运行后，审阅现有版本，再重新选择执行。
+
+## 通过命令修改 Markdown
 
 使用 `/plan edit`，通过客户端已有的多行输入替换整份方案。在逐行终端中输入新正文，以单独一行 `.` 结束；`/cancel` 取消，仅输入 `.` 则保留给出的原文。当前 Markdown 会作为初始内容显示。没有交互输入能力的客户端可以直接在命令中提供 Markdown：
 
@@ -63,7 +71,7 @@ Plan 专用指令要求先阅读项目说明、检查代码和已有验收，并
 保留当前依赖、审批策略和 Sandbox。
 ```
 
-将整个代码块作为一条命令提交。保存替换内容会进入 Plan、递增版本，并清除旧版本的确认。编辑采用完整正文替换，不使用补丁或任务图。让模型修订计划也遵循同样的版本与确认规则。
+将整个代码块作为一条命令提交。保存替换内容会进入 Plan 并递增版本。每次执行都必须明确选择当前 token；方案本身不携带可重复使用的执行授权。编辑采用完整正文替换，不使用补丁或任务图。让模型修订计划也遵循同样的版本规则。
 
 持有已显示版本的集成可以使用条件替换：
 
@@ -80,13 +88,16 @@ token 后必须换行，再提供完整正文。如果保存前版本已经变�
 | --- | --- |
 | ProposedPlan | 每个对话一份带版本的 Markdown，说明实施方案和验收条件 |
 | Todo | 现有执行清单，使用 `pending`、`in_progress`、`completed` 状态 |
-| WorkMode | Plan 增加只读工具上限；Default 在其他策略约束下进行普通工作 |
-| 审批策略 | 决定工具调用直接放行、进入审查或需要人工批准 |
+| WorkMode | 来源对话的工作意图：Plan 提供调查指令和只读工具上限；Default 在其他策略约束下进行普通工作 |
+| 只读能力限制 | 独立限制子 Runtime 的工具，不把它的任务转换为规划 |
+| 审批策略 | `ask` 可为需要批准的操作请求用户确认；`never` 直接拒绝此类操作，不弹出确认 |
 | Sandbox | 独立执行配置的文件和进程隔离限制 |
 
 `propose_plan` 是 Core 工具，仅对 Plan 中的主 Runtime 可用。它相对于项目修改标记为只读，将元数据保存到 SessionStore；不会为子 Agent 创建另一套计划存储。Plan 中不向模型暴露 `todo_write`，直接调用也会被拒绝；Default 执行期间仍使用原有 Todo 清单。执行计划不会新增任务数据库，也不会自动将方案步骤复制为 Todo。
 
-`/permissions accept-all` 不能移除 Plan 上限。执行计划或返回 Default 都保留已选择的审批策略和启用的 Sandbox，因此只读 Sandbox 仍可能拒绝确认后的文件写入。Plan 本身不启用操作系统沙箱；具体隔离范围见[原生命令沙箱](sandbox.md)。
+Plan 不提供 Bash、PowerShell 或任意 Shell 命令。Core 的 `git_read` 工具通过固定 Git 参数读取有上限的本地历史、已提交补丁和两个提交之间的比较；读取前先将 revision 解析为不可变的 commit ID。它不提供实时 status/diff、fetch、仓库 helper 或转换 filter。普通文件读取与搜索工具仍受各自权限约束。Default 中的只读子代理保留自己的任务指令；独立 `/review` 始终不接收 Plan 指令，即使来源对话正在 Plan。
+
+`/permissions ask` 和 `/permissions never` 都不能移除 Plan 或只读上限。`never` 不代表全部放行：deny 规则和需要批准的操作仍会阻止执行。执行计划或返回 Default 会保留所选审批策略与 Sandbox 配置。Plan 本身是应用层工具限制；原生 Sandbox 单独配置，默认请求启用，不可用时拒绝执行。配置边界与实际边界见[原生命令沙箱](sandbox.md)。
 
 ## 切换对话与恢复历史
 
@@ -97,20 +108,22 @@ token 后必须换行，再提供完整正文。如果保存前版本已经变�
 | 新建对话 | 使用配置的 `workMode`，默认值为 `default` |
 | 同一进程中切回已保留对话 | 保留该对话原有 Runtime、计划和工作模式 |
 | 打开保存的历史 | 恢复已保存的模式；配置 `workMode: "plan"` 时，即使历史为 Default 也保留 Plan 上限 |
-| 显式 `AgentSession(work_mode="plan" \| "default")` | 只对初始对话覆盖历史／配置中的独立工作模式 |
+| 显式 `--work-mode plan\|default` 或 `AgentSession(work_mode="plan" \| "default")` | 只对初始对话覆盖历史／配置中的独立工作模式 |
 
-普通默认启动不会丢弃历史中的 Plan 模式。显式构造参数不会改变后续新建对话的默认模式，也不写用户偏好。CLI 的 `--mode` 仍然表示输出格式。
+普通默认启动不会丢弃历史中的 Plan 模式。显式 CLI 或构造参数不会改变后续新建对话的默认模式，也不写用户偏好。使用 `virgo --continue --work-mode plan` 可在恢复时明确指定 Plan 上限。CLI 的 `--format text|json` 表示输出格式，与 `--work-mode` 和 `--approval ask|never` 独立。
 
-从磁盘恢复时会清除计划的本次会话确认状态。历史确认条目保留用于审计，但不会排队请求、唤醒 Runtime 或重新授权执行。审批策略和 Sandbox 使用当前会话配置，不从计划恢复。查看历史和选择模式都不会执行方案。
+`--resume` 打开全屏会话选择器时，`--work-mode` 会在任何初始请求运行前应用于选中的启动对话；之后切换会话不会再次套用该覆盖。已保留对话的主代理或其子代理仍在排队、运行时，会拒绝启动模式覆盖，并保持当前选择和已保存模式，也不会运行初始请求；等待这些工作结束后可重试。
 
-现有 SessionStore 使用 `work_mode` 与 `proposed_plan` 自定义记录保存状态。每个计划快照包含 `plan_id`、`revision`、`markdown`、`confirmed_revision`，模型上下文使用当前方案。模式与计划变化通过原有事件机制发出 `work_mode_changed` 和 `proposed_plan_changed`。没有独立计划文件或任务数据库；与其他会话状态一样，持久化失败会阻止执行。
+所选计划只绑定正在执行它的本次运行，运行结束即清除。恢复历史只恢复方案，没有活跃的执行选择。历史执行条目保留用于审计，但不会排队请求、唤醒 Runtime 或重新授权执行。审批策略和 Sandbox 使用当前会话配置，不从计划恢复。查看历史和选择模式都不会执行方案。
+
+现有 SessionStore 使用 `work_mode` 与 `proposed_plan` 自定义记录保存状态。每个方案仅包含 `plan_id`、`revision`、`markdown`；独立的 `plan_execution` 审计记录引用所选 ID 和版本。模型上下文区分普通方案与本次运行选中的计划。模式和计划状态发布后，通过原有事件机制发出 `work_mode_changed` 与 `proposed_plan_changed`。事件监听者可以观察通知，但不能在通知过程中重入修改状态。没有独立计划文件或任务数据库。持久化失败会阻止执行；启动模式覆盖写入失败时，保留原有 Runtime 状态。
 
 ## 请求与执行边界
 
-进入 Plan 会约束尚未开始的调用。下一次模型请求使用 Plan 指令与工具，原有预检和执行前检查根据来源 Runtime 执行模式限制。来源对话还有进行中的请求，或排队、运行中的子代理时，即使主代理已经结束，也会拒绝退出 Plan 或确认执行。需要等待这些工作结束或先停止，再重试。其他对话的工作不会阻止当前对话。准入时已有待完成工作，会在保存确认前拒绝执行。如果检查期间计划、模式或所选对话发生变化，会拒绝较早的操作并保留较新的选择。
+改变工作模式或选择计划执行时，来源对话必须空闲，包括其排队或运行中的子代理。需要等待这些工作结束或先停止，再重试。其他对话的工作不会阻止当前对话。准入在现有会话锁内检查所选 Runtime 和准确的当前版本，记录本次执行选择并设置模式，再通知监听者。在这个操作的通知过程中，不能重入修改计划、切换模式、切换对话或发布新子任务。活跃 Plan 请求仍可发布方案，因为保持当前模式不会改变其能力边界。
 
-已经运行的进程保留启动时使用的权限与 Sandbox 策略。模式变化不会终止它们，也不会追溯撤回访问权；模式状态会说明这一边界。取消行为见[命令解释器](shells.md)。
+原有预检和执行前检查根据来源 Runtime 对每次调用实施能力与权限限制。已经启动的独立进程保留启动时的权限和 Sandbox，改变对话模式不会终止它们。取消行为见[命令解释器](shells.md)。
 
-旧 `permissions.mode=plan`、`--permission-mode plan` 和直接使用 `session.permission_mode` 的 API 仍被接受。`/permissions plan` 进入独立 WorkMode，不替换已经选择的审批策略。迁移行为见[工作模式配置](../reference/configuration.md#工作模式)。
+旧 `permissions.mode`、`--permission-mode`、`session.permission_mode`、`/permissions plan` 和审批审查插件已移除。工作意图使用 `workMode` 或 `/mode plan`；审批策略使用 `permissions.approval` 或 `/permissions ask|never`；子代理的只读能力使用 `create_runtime(..., read_only=True)`。详见[工作模式配置](../reference/configuration.md#工作模式)。
 
-实现：[计划生命周期](../../../src/virgo/harness/plans.py)、[Runtime](../../../src/virgo/harness/session.py)、[权限策略](../../../src/virgo/harness/permission_policy.py)。[Plan 工作流验收](../../../tests/harness/test_plan_workflow_e2e.py) 使用原有工具循环和 SessionStore。
+实现：[计划生命周期](../../../src/virgo/harness/plans.py)、[Runtime](../../../src/virgo/harness/session.py)、[权限策略](../../../src/virgo/harness/permission_policy.py)、[受控 Git 读取](../../../src/virgo/tools/git_read.py)。[Plan 工作流验收](../../../tests/harness/test_plan_workflow_e2e.py) 使用原有工具循环和 SessionStore。

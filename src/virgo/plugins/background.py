@@ -455,7 +455,7 @@ def setup(api: ExtensionAPI) -> None:
     api.on_cleanup(shutdown)
 
     def abort_agents(runtime):
-        owner = runtime.review_source.root
+        owner = runtime.origin.root
         with jobs._lock:
             owned = [job for job in jobs.jobs.values()
                      if job.kind == "agent" and job.status == "running"

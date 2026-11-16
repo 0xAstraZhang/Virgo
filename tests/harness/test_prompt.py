@@ -9,7 +9,7 @@ from virgo.harness.session import Runtime
 
 MAIN_TOOLS = {
     "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "todo_write", "ask_user", "agent",
-    "bash", "job_output", "job_kill", "diagnostic_get",
+    "bash", "job_output", "job_kill", "diagnostic_get", "git_read",
 }
 
 
@@ -60,12 +60,12 @@ def test_user_system_and_project_context_survive_for_their_roles(make_session, p
 def test_permission_switch_updates_requests_and_restores_the_original_prefix(make_session):
     session = make_session()
     original = session.main.request_context([])
-    session.permission_mode = "plan"
+    session.services["permissions"].set_work_mode("plan")
     planning = session.main.request_context([])
-    assert {"read", "ask_user", "propose_plan"} <= {t.name for t in planning.tools}
-    assert not {"write", "edit", "job_kill", "todo_write"} & {t.name for t in planning.tools}
-    assert "<permission_mode>" in planning.system
-    session.permission_mode = "accept-all"
+    assert {"read", "ask_user", "propose_plan", "git_read"} <= {t.name for t in planning.tools}
+    assert not {"write", "edit", "job_kill", "todo_write", "bash", "powershell"} & {t.name for t in planning.tools}
+    assert "<work_mode>" in planning.system
+    session.services["permissions"].set_work_mode("default")
     restored = session.main.request_context([])
     assert restored.system == original.system
     assert restored.tools == original.tools

@@ -81,7 +81,7 @@ def native(make_session):
     assert executable, "PowerShell 7 is required by the strict Windows acceptance runner"
     session = make_session(settings={
         "profile": "minimal", "shell": {"executable": executable},
-        "sandbox": {"mode": "workspace-write", "network": "restricted"},
+        "sandbox": {"mode": "workspace-write"},
         "plugins": {"background": {"enabled": True}, "subagent": {"enabled": True}},
     }, refresh_models=False, extensions=False)
     result = run(session, "print('native-ready')")
@@ -542,13 +542,14 @@ print(json.dumps(outcome))
 
 
 def test_readonly_child_policy_is_enforced_by_windows(native, project):
+    """A trusted low-level payload verifies OS policy; readonly model tools have no Shell."""
     target = project / "readonly.txt"
     target.write_text("readable")
     api = ExtensionAPI(native, "windows-acceptance")
-    child = api.create_runtime("readonly-child", "subagent", parent=native.main, permission="plan")
+    child = api.create_runtime("readonly-child", "subagent", parent=native.main, read_only=True)
     try:
         ctx = ToolContext("readonly-check", project, threading.Event(), agent=child.name,
-                          review_source=child.review_source)
+                          origin=child.origin)
         policy = native.services["sandbox"].for_context(ctx)
         assert policy.mode == "read-only" and policy.workspace == project.resolve()
         source = """import json, subprocess, sys

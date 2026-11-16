@@ -92,7 +92,16 @@ APPROVED_RETIREMENTS = {
 # This is an exact reviewed inventory, not a feature-directory exemption. Each
 # original case must have passed at this SHA and all preservation/migration
 # gates must pass at their specified revisions before a deletion is accepted.
-PRODUCT_RETIREMENTS = read_json(Path(__file__).with_name("core_plugin_retirements.json"))
+PRODUCT_RETIREMENTS = tuple(read_json(Path(__file__).with_name(filename)) for filename in (
+    "core_plugin_retirements.json",
+    "execution_policy_retirements.json",
+))
+
+
+def product_retirement_policy(baseline_sha):
+    policies = [policy for policy in PRODUCT_RETIREMENTS if policy["baseline_sha"] == baseline_sha]
+    # Missing or ambiguous policies must not turn into a combined exemption.
+    return policies[0] if len(policies) == 1 else None
 
 
 def approved_retirements(base, head):
@@ -108,8 +117,8 @@ def approved_retirements(base, head):
 
 
 def approved_product_retirements(base, head):
-    policy = PRODUCT_RETIREMENTS
-    if base["sha"] != policy["baseline_sha"]:
+    policy = product_retirement_policy(base["sha"])
+    if policy is None:
         return {}
 
     def passed(report, identity):

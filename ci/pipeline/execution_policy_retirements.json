@@ -1,0 +1,288 @@
+{
+  "baseline_sha": "45bb6d52cffa4726e31329ba8f9c421b7b81d9a7",
+  "reason": "Model-based command approval, serialized review evidence and verdicts, the accept-all bypass, and permission auxiliary-model calls are removed. These cases exercise retired contracts, not redundant risk coverage. Exact preservation gates protect origin binding, execution-time permission rechecks, revocation, hook failure, background work and shared budgets; head-only acceptance verifies deterministic replacement rules.",
+  "preservation_gates": [
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_direct_main_event_binds_once_across_chat_switch"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_unbound_nonmain_event_cannot_borrow_main_authorization"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_background_subagent_captures_origin_before_worker_starts"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_execution_rechecks_mode_arguments_and_symlink_boundary"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_new_user_restriction_invalidates_session_approval"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_permission_hook_errors_cannot_fall_through_event_bus"
+    },
+    {
+      "classname": "tests.features.test_background",
+      "name": "test_background_job_notifies_idle_session"
+    },
+    {
+      "classname": "tests.harness.test_core_plugins_e2e",
+      "name": "test_children_share_budget_permission_ceiling_and_cancellation"
+    }
+  ],
+  "acceptance_gates": [
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_hard_sandbox_denial_does_not_request_approval"
+    },
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_never_rejects_unknown_operations_without_blocking_workspace_writes"
+    },
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_project_cannot_mark_a_mutating_command_read_only"
+    },
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_project_cannot_select_authorization_grants[permission0]"
+    },
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_project_cannot_select_authorization_grants[permission1]"
+    },
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_project_cannot_turn_user_deny_into_accept_all"
+    },
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_project_deny_rules_cannot_erase_user_restrictions[project_denies0]"
+    },
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_project_deny_rules_cannot_erase_user_restrictions[project_denies1]"
+    },
+    {
+      "classname": "tests.features.test_permission_policy_e2e",
+      "name": "test_requested_config_cannot_pretend_host_shell_is_isolated"
+    }
+  ],
+  "retired_cases": [
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_accept_all_bypasses_review_and_all_permission_rules",
+      "product": "accept-all"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_review_uses_call_signal_instead_of_interrupted_main",
+      "product": "model-approval"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_risky_or_failed_review_requests_human_approval[reply0]",
+      "product": "model-approval"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_risky_or_failed_review_requests_human_approval[reply1]",
+      "product": "model-approval"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_risky_or_failed_review_requests_human_approval[reply2]",
+      "product": "model-approval"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_risky_or_failed_review_requests_human_approval[reply3]",
+      "product": "model-approval"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_risky_or_failed_review_requests_human_approval[reply4]",
+      "product": "model-approval"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_risky_or_failed_review_requests_human_approval[reply5]",
+      "product": "model-approval"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_small_model_safe_verdict_allows_external_read_without_tools",
+      "product": "model-approval"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_budget_preserves_users_exact_action_and_whole_tool_groups",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_compaction_uses_original_user_evidence",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_denial_survives_old_tool_batch_trimming[auto-review]",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_denial_survives_old_tool_batch_trimming[human]",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_denial_survives_old_tool_batch_trimming[previous-denial]",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_omitted_human_decision_marks_authorization_history_incomplete",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_only_public_blocks_are_serialized_and_tool_text_is_not_authority",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_oversized_action_or_latest_user_requires_manual_review",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_pending_user_message_keeps_its_position_before_later_denial",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_prior_authorization_continuation_and_revocation_are_ordered",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_snapshot_payload_does_not_mutate_when_source_changes",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_subagent_public_history_survives_compaction",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_tool_call_output_approval_and_exact_action_are_retained",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_user_truncation_is_explicit_and_never_slices_messages",
+      "product": "review-context"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_allow_does_not_override_risk_and_authorization_requirements[high-implicit]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_allow_does_not_override_risk_and_authorization_requirements[low-none]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_allow_does_not_override_risk_and_authorization_requirements[medium-implicit]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_allow_does_not_override_risk_and_authorization_requirements[unknown-implicit]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_denial_revalidates_previously_approved_tools_in_same_batch",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_denied_effect_cannot_bypass_review_with_workspace_command_spelling",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_explicit_authorization_must_cite_retained_original_user",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_failed_review_is_not_a_safety_denial[reply0-invalid-json]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_failed_review_is_not_a_safety_denial[reply1-invalid-verdict]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_failed_review_is_not_a_safety_denial[reply2-invalid-verdict]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_failed_review_is_not_a_safety_denial[reply3-output-limit]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_failed_review_is_not_a_safety_denial[reply4-timeout]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_failed_review_is_not_a_safety_denial[reply5-request-error]",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_permission_request_sends_low_and_exact_4096_total",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.features.test_permission_verdicts",
+      "name": "test_user_withdrawal_during_review_supersedes_allow",
+      "product": "model-verdict"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[permission-compatible-low-without-default]",
+      "product": "permission-small-model"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[permission-model-default]",
+      "product": "permission-small-model"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[permission-server-default]",
+      "product": "permission-small-model"
+    },
+    {
+      "classname": "tests.harness.test_small_model_calls",
+      "name": "test_small_model_consumers_use_model_effort[permission-supports-low]",
+      "product": "permission-small-model"
+    }
+  ]
+}

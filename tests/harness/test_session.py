@@ -42,7 +42,7 @@ def test_session_persists_and_resumes(make_session, project):
         e["parent_id"] == lines[i]["id"] for i, e in enumerate(lines[2:], 1)
     )
     faux.script("test", faux.reply("second answer"))
-    s2 = AgentSession(project, ui=RecordingUI(), model="faux/test", session=path, permission_mode="accept-all")
+    s2 = AgentSession(project, ui=RecordingUI(), model="faux/test", session=path, approval_policy="never")
     assert [type(m).__name__ for m in s2.main.messages] == [type(m).__name__ for m in s.main.messages]
     s2.prompt("again")
     assert s2.main.agent.last_text == "second answer"
@@ -232,14 +232,14 @@ def test_requests_are_append_only(make_session):
 
 def test_plan_mode_exposes_read_only_tools_and_changes_back_on_switch(make_session):
     # PowerShell is intentionally unavailable in plan mode (covered by shell command tests).
-    s = make_session(faux.reply("The plan."), faux.reply("Implementation."), mode="plan",
+    s = make_session(faux.reply("The plan."), faux.reply("Implementation."), work_mode="plan",
                      settings={"shell": {"executable": "bash"}})
     s.prompt("Plan the change")
     planned = calls()[0]
     assert "Plan mode is active" in planned["system"]
-    assert {"read", "grep", "glob", "bash"}.issubset(planned["tools"])
+    assert {"read", "grep", "glob", "git_read"}.issubset(planned["tools"])
     assert not {"write", "edit", "workflow", "schedule", "team_review"}.intersection(planned["tools"])
-    s.permission_mode = "accept-all"
+    s.services["permissions"].set_work_mode("default")
     s.prompt("Implement it")
     implementation = calls()[1]
     assert "Plan mode is active" not in implementation["system"]
@@ -254,12 +254,12 @@ def test_plan_switch_blocks_writes_that_already_passed_batch_preflight(make_sess
             ("write", {"path": "second.txt", "content": "two"}),
         ]),
         faux.reply("Plan only."),
-        mode="accept-all",
+        approval="never",
     )
 
     def switch_after_preflight(event, session):
         if event.args.get("path") == "second.txt":
-            session.permission_mode = "plan"
+            session.main.read_only = True
 
     s.bus.on("tool_call", switch_after_preflight)
     s.prompt("write two files")
@@ -267,7 +267,7 @@ def test_plan_switch_blocks_writes_that_already_passed_batch_preflight(make_sess
     assert not (project / "second.txt").exists()
     results = [message for message in s.main.messages if isinstance(message, ToolResultMessage)]
     assert len(results) == 2
-    assert all(result.is_error and "Plan mode" in result.text() for result in results)
+    assert all(result.is_error and "read-only" in result.text() for result in results)
 
 
 def test_commands_and_templates(make_session, project):
@@ -341,7 +341,7 @@ def test_examples_directory_loads(make_session):
     examples = REPO_ROOT / "examples" / "project"
     ui = RecordingUI()
     s = make_session(faux.reply("ok"), cwd=examples, ui=ui)
-    assert "stats" in s.commands.names() and "review" in s.templates
+    assert "stats" in s.commands.names() and "inspect" in s.templates
     assert "code-review" in s.services["skills"]
     s.prompt("hi")
     system = calls()[0]["system"]

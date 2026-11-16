@@ -23,8 +23,7 @@ virgo --profile minimal --no-extensions
   "plugins": {
     "web": {"enabled": true},
     "mcp": {"enabled": false},
-    "todo": {"enabled": true},
-    "auto_review": {"enabled": true}
+    "todo": {"enabled": true}
   }
 }
 ```
@@ -36,10 +35,10 @@ virgo --profile minimal --no-extensions
 | `features.skills`、`todo`、`ask_user`、`subagent`、`background`、`mcp` | `plugins.<id>.enabled` |
 | `features.diagnostics` | `plugins.diagnostic_get.enabled`；Core 诊断仍保留 |
 | `features.search`、`features.fetch` | `plugins.web.searchEnabled`、`plugins.web.fetchEnabled`；由 `web` 插件组合提供 |
-| `features.permission=false` | 提示后转换为 `plugins.auto_review.enabled=false`；Core 权限策略始终装配 |
+| `features.permission`、`plugins.auto_review` | 已退休；改用 Core `permissions.approval` 与明确授权规则 |
 | 已移除功能开关及 `memory`、`workflow`、`goal` 配置 | 只提示，不执行后台工作或存储迁移 |
 
-如需有意识地跳过权限审查，使用既有的显式 `permissions.mode=accept-all`；禁用 Feature 不再是绕过权限的方法。禁用 `auto_review` 后，工作区规则和执行期检查仍在；不确定操作需要人工批准，无人审批时拒绝执行。
+旧 `features.permission` 和 `plugins.auto_review` 已退休；请按[执行策略迁移](migrating-execution-policy.md)配置 `permissions.approval`、明确授权与独立 WorkMode。
 
 `search.maxUses` 和 `fetch.maxUses` 从默认三次改为 `null`；需要时可显式设置正整数上限。`plugins.web.maxCalls` 可限制每个调用运行时的一次用户请求中客户端搜索与读取的总调用数；单次操作的时间和输出限制保留。详见[联网能力](web.md)。
 
@@ -48,7 +47,7 @@ virgo --profile minimal --no-extensions
 `agent` 工具现在接收 `description`、`prompt`、可选 `read_only` 和可选 `background`。`type` 参数已被移除，继续传入会导致参数校验失败。
 
 - 原 `type="general"`：直接省略类型参数，默认执行普通委派。
-- 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob`、`grep` 和经过 `plan` 检查的 `bash`，不提供 PowerShell。这不是操作系统沙箱。
+- 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob`、`grep` 和受控 `git_read`。只读能力与操作系统沙箱分别设置。
 - 自定义 `agents/*.md`：将任务指令迁移至 Skill 或委派提示，特殊模型和工具策略通过受信任的扩展实现。
 
 Virgo 不再加载 `~/.virgo/agents/*.md` 或 `.virgo/agents/*.md`。现有文件不会被删除或改写，需要时可手动迁移或归档。

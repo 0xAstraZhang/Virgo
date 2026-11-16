@@ -13,9 +13,13 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 | [Planning a change](guides/planning.md) | Repository investigation, versioned proposals, revision and explicit execution |
 | [Web search and reading](guides/web.md) | Backends, routing, permissions, fetch limits |
 | [Command shells](guides/shells.md) | Shell selection, execution behavior, output and cancellation |
+| [Native command sandbox](guides/sandbox.md) | Default process isolation, effective boundaries and platform limits |
+| [Independent code review](guides/code-review.md) | Frozen targets, read-only review, validated findings and stale reports |
 | [Troubleshooting](guides/troubleshooting.md) | Errors, logs, diagnostic evidence, recovery boundaries |
 
 [Upgrading an existing installation?](guides/migrating-to-core-plugins.md) Review profile changes, project trust and preserved historical data.
+
+[Execution-policy migration](guides/migrating-execution-policy.md) explains the new approval settings, default sandbox and removed permission modes.
 
 ## Look up a detail
 
@@ -34,5 +38,3 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 ## Keep documentation useful
 
 Maintain matching files under `docs/en/` and `docs/zh-CN/`. Explain the current behavior and link to code for implementation details. Update both editions in the same change when a command, setting, interface or path changes. Keep release-specific investigations in issues or PRs; reusable conclusions belong in the relevant guide. The root READMEs introduce the product and link here.
-
-[Native command sandbox](guides/sandbox.md) — opt-in process isolation and its limits.

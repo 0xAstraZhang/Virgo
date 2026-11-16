@@ -19,7 +19,7 @@ class SandboxManager:
         self.session = session
         config = session.settings.get("sandbox", {})
         validate_config(config)
-        self.mode = config.get("mode", "disabled")
+        self.mode = config.get("mode", "workspace-write")
         if self.mode != "disabled":
             from ..tools.fs import EDIT, WRITE, make_file_tool
             from .extensions import ROLES_ALL
@@ -32,25 +32,32 @@ class SandboxManager:
                      if os.name == "nt" else
                      "Only the workspace, system runtime paths and private scratch are exposed. ")
             session.sections.append((90, "core.sandbox", lambda _role: (
-                f"<sandbox>Core shell processes request a {self.mode} native sandbox with no network. "
+                f"<sandbox>Core shell processes have a configured {self.mode} native sandbox ceiling with no network. "
                 + scope +
-                "Plan/child restrictions can only narrow this policy. Sandbox startup failure does not "
-                "authorize a native retry. Python extensions and remote tools are not OS-sandboxed.</sandbox>"
+                "Read-only task capabilities can only narrow this policy. Sandbox startup failure does not "
+                "authorize a native retry. Core file mutations have separate application-level checks. "
+                "The broker, Python extensions, hooks and remote tools are not OS-sandboxed.</sandbox>"
             )))
         session.commands.register("sandbox", self.status, "show native command sandbox status",
                                   source="core", concurrent=True, description_key="sandbox.description")
 
     def status(self, session, args):
-        backend = "none"
+        backend = session.t("sandbox.host_execution")
         if self.mode != "disabled":
             try:
-                backend = platform_backend()[0]
+                backend = session.t("sandbox.backend_unverified", backend=platform_backend()[0])
             except SandboxUnavailable as error:
-                backend = str(error)
-        session.ui.print(session.t("sandbox.status", mode=self.mode, backend=backend))
+                backend = session.t("sandbox.backend_unavailable", reason=str(error))
+        session.ui.print(session.t("sandbox.status", mode=self.mode,
+                                   effective=self.effective_mode(session.main), backend=backend))
         session.ui.print(session.t("sandbox.scope"))
         if os.name == "nt" and self.mode != "disabled":
             session.ui.print(session.t("sandbox.windows_scope"))
+
+    def effective_mode(self, runtime) -> str:
+        if self.mode == "disabled":
+            return self.mode
+        return "read-only" if self.session.services["permissions"].is_read_only(runtime) else self.mode
 
     def for_context(self, context) -> SandboxPolicy | None:
         if self.mode == "disabled":
@@ -58,14 +65,12 @@ class SandboxManager:
         runtime = self.session.runtime_for_context(context)
         if runtime is None:
             raise SandboxUnavailable("Sandbox execution requires the originating runtime context")
-        workspace = Path(runtime.review_source.workspace)
+        workspace = Path(runtime.origin.workspace)
         if os.name != "nt":
             workspace = workspace.resolve()
         if self.session.paths.user.resolve().is_relative_to(workspace):
             raise SandboxUnavailable("Sandbox workspace must not contain Virgo's user credentials or session store")
-        mode = ("read-only" if self.session.services["permissions"].mode_for(context.agent, runtime=runtime) == "plan"
-                else self.mode)
-        return SandboxPolicy(mode, workspace)
+        return SandboxPolicy(self.effective_mode(runtime), workspace)
 
     def _check(self, event):
         if self.mode == "disabled" or event.tool_name not in {"write", "edit"}:

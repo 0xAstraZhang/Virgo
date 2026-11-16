@@ -72,7 +72,7 @@ class Fetch(WebAccess):
             ctx.agent,
             ctx.cwd,
             ctx.signal,
-            ctx.review_source,
+            ctx.origin,
         )
         blocked = self.api.authorize_tool(ev)
         if blocked:

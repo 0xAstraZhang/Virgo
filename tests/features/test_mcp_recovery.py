@@ -30,7 +30,7 @@ def settings(*names):
 
 def context(session, call_id="mcp-recovery", *, runtime=None):
     runtime = runtime or session.main
-    return ToolContext(call_id, runtime.cwd, runtime.agent.signal, runtime.name, review_source=runtime.review_source)
+    return ToolContext(call_id, runtime.cwd, runtime.agent.signal, runtime.name, origin=runtime.origin)
 
 
 def incident(session, name="echo", *, runtime=None):
@@ -106,7 +106,7 @@ def test_recovery_and_status_reject_foreign_or_forged_runtime_before_lookup(make
     monkeypatch.setattr(foreign.main.diagnostic_access, "get", forbidden_lookup)
     monkeypatch.setattr(owner.main.diagnostic_access, "get", forbidden_lookup)
     forged = context(owner)
-    forged.review_source = SimpleNamespace(runtime=owner.main)
+    forged.origin = SimpleNamespace(runtime=owner.main)
     wrong_agent = context(owner)
     wrong_agent.agent = "another-agent"
     for untrusted in (context(foreign), forged, wrong_agent):
@@ -417,14 +417,14 @@ def test_write_failure_cannot_claim_request_was_not_sent(make_session, monkeypat
 
 
 def test_plan_permission_blocks_reconnection_before_process_start(make_session):
-    session = make_session(mode="plan", settings=settings("echo"))
+    session = make_session(work_mode="plan", settings=settings("echo"))
     error = incident(session)
     original = session.services["mcp"]["echo"]
     faux.script("test", faux.reply(tools=[("mcp_reconnect", {"server": "echo", "error_id": error["error_id"]})]),
                 faux.reply("blocked"))
     session.prompt("inspect only")
     results = [message for message in session.main.messages if isinstance(message, ToolResultMessage)]
-    assert results[0].is_error and "Plan mode" in results[0].text()
+    assert results[0].is_error and "read-only" in results[0].text()
     assert session.services["mcp"]["echo"] is original and not original._closing
     assert not session.tool("mcp_reconnect").read_only and session.tool("mcp_status").read_only
 

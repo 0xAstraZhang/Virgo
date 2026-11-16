@@ -1,4 +1,4 @@
-"""Shared permission modes and fail-closed checkpoints, independent of policy internals."""
+"""Explicit approval choices and reusable read-only capability checks."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -7,25 +7,22 @@ from typing import Protocol
 from ..agent import AgentTool, Block, ToolCallEvent
 from ..i18n import Translator
 
-MODES = ("auto-review", "accept-all", "plan")
-_ALIASES = {"default": "auto-review", "accept-edits": "auto-review", "yolo": "accept-all"}
-_PLAN_SIDE_EFFECTS = {"job_kill", "todo_write"}
+APPROVAL_POLICIES = ("ask", "never")
+_READ_ONLY_EXCLUDED = {"bash", "powershell", "job_kill", "todo_write"}
 
 
-def normalize_permission_mode(mode: str) -> str:
-    mode = _ALIASES.get(mode, mode)
-    if mode not in MODES:
-        raise ValueError(f"permission mode must be one of {', '.join(MODES)}")
-    return mode
+def normalize_approval_policy(value: str) -> str:
+    if value not in APPROVAL_POLICIES:
+        raise ValueError("approval policy must be ask or never; legacy permission modes are retired")
+    return value
 
 
-def permission_mode_label(mode: str, t: Callable[[str], str] | None = None) -> str:
-    t = t or Translator()
-    return t("features.permission.mode." + normalize_permission_mode(mode))
+def approval_policy_label(value: str, t: Callable[[str], str] | None = None) -> str:
+    return (t or Translator())("features.permission.approval." + normalize_approval_policy(value))
 
 
-def plan_tool_allowed(tool: AgentTool | None) -> bool:
-    return bool(tool and (tool.name == "bash" or (tool.read_only and tool.name not in _PLAN_SIDE_EFFECTS)))
+def read_only_tool_allowed(tool: AgentTool | None) -> bool:
+    return bool(tool and tool.read_only and tool.name not in _READ_ONLY_EXCLUDED)
 
 
 class PermissionPolicy(Protocol):

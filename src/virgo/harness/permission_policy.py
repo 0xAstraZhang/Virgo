@@ -1,10 +1,4 @@
-"""Permissions: decide allow / ask / deny for every tool call.
-
-Approval strategies: ``auto-review`` and ``accept-all``. The independent ``plan``
-work mode restricts both. Legacy permission-mode ``plan`` remains accepted.
-Rules look like ``bash(npm test*)``, ``edit(src/**)``, ``read(~/.ssh/*)``, ``mcp__github__*``.
-"""
-
+"""Deterministic authorization, independent work intent and inherited capabilities."""
 from __future__ import annotations
 
 import fnmatch
@@ -13,50 +7,23 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..agent.types import Block, ToolCallEvent
 from ..tools.fs import IGNORE_DIRS, glob_match
 from ..tools.shell import SHELL_TOOLS
-from .permission_context import (
-    review_context_key,
-    review_store,
-    review_workspace,
-    source_for,
+from .origin_context import origin_key, origin_store, origin_workspace, source_for
+from .permission_scope import ApprovalBoundary, command_boundary, command_path_targets, inside
+from .permissions import (
+    approval_policy_label,
+    normalize_approval_policy,
+    read_only_tool_allowed,
 )
-from .permission_scope import (
-    ReviewBoundary,
-    command_boundary,
-    command_path_targets,
-    inside,
-    is_read_only_command,
-    read_only_command_rejection,
-)
-from .permissions import MODES as MODES
-from .permissions import normalize_permission_mode as normalize_permission_mode
-from .permissions import permission_mode_label as permission_mode_label
-from .permissions import plan_tool_allowed as plan_tool_allowed
-from .work_modes import WORK_MODES, normalize_work_mode
+from .work_modes import normalize_work_mode
 
 if TYPE_CHECKING:
     from .session import AgentSession
-
-@dataclass(frozen=True)
-class ReviewDecision:
-    decision: str
-    reason: str
-    risk: str = "unknown"
-    authorization: str = "unknown"
-    evidence_ids: tuple[str, ...] = ()
-
-
-class ReviewFailure(RuntimeError):
-    def __init__(self, kind: str):
-        self.kind = kind
-        super().__init__(kind)
-
 
 def parse_rule(rule: str) -> tuple[str, str | None]:
     m = re.fullmatch(r"\s*([^()\s]+)\s*(?:\((.*)\))?\s*", rule)
@@ -85,12 +52,15 @@ def _subjects(ev: ToolCallEvent) -> list[str]:
     return [json.dumps(a, sort_keys=True, default=str)]
 
 
-def rule_matches(rule: str, ev: ToolCallEvent) -> bool:
+def rule_matches(rule: str, ev: ToolCallEvent, *, allow: bool = False) -> bool:
     tool, pattern = parse_rule(rule)
     if not fnmatch.fnmatchcase(ev.tool_name, tool):
         return False
     if pattern is None:
         return True
+    if allow and ev.tool_name in SHELL_TOOLS:
+        # A command grant is exact; shell text prefixes are not argument boundaries.
+        return ev.args.get("command", "") == pattern
     pats = [pattern, os.path.expanduser(pattern)]
     return any(fnmatch.fnmatchcase(s, p) for s in _subjects(ev) for p in pats)
 
@@ -99,13 +69,10 @@ class Permissions:
     def __init__(self, session: AgentSession):
         self.session = session
         self._work_mode = normalize_work_mode(session.settings.get("workMode", "default"))
-        self._work_mode_revision = 0
-        self.reviewer = None
+        self.revision = 0
         self.session_rules: list[str] = []
         self.session_approvals: set[str] = set()
-        self.review_denials: dict[str, str] = {}
-        self.agent_modes: dict[str, str] = {}  # child overrides may only restrict the session policy
-        self.agent_parents: dict[str, str] = {}
+        self.denials: dict[str, str] = {}
 
     @property
     def work_mode(self) -> str:
@@ -119,198 +86,103 @@ class Permissions:
         return runtime
 
     def work_mode_for(self, runtime) -> str:
-        # A legacy direct permission assignment remains a live ceiling. It is
-        # migrated only by an explicit mode/approval command, not by replay.
-        if self.session.permission_mode == "plan":
-            return "plan"
         root = self._root_runtime(runtime)
         return root.work_mode if root is not None else self._work_mode
 
+    def is_read_only(self, runtime) -> bool:
+        if self.work_mode_for(runtime) == "plan":
+            return True
+        while runtime is not None:
+            if runtime.read_only:
+                return True
+            runtime = runtime.parent
+        return False
+
+    def approval_for(self, runtime=None) -> str:
+        approval = normalize_approval_policy(self.session.approval_policy)
+        while runtime is not None:
+            if runtime.session is not self.session:
+                raise ValueError("Approval runtime must belong to this session")
+            ceiling = runtime.approval_policy
+            if ceiling is not None and normalize_approval_policy(ceiling) == "never":
+                approval = "never"
+            runtime = runtime.parent
+        return approval
+
     def restore_work_mode(self, runtime, override: str | None = None) -> None:
-        """Restore intent only; approval strategy and sandbox are startup policy."""
+        """Restore work intent only, publishing it after persistence succeeds."""
         records = runtime.store.custom("work_mode") if runtime.store is not None else []
         saved = normalize_work_mode(records[-1]["mode"]) if records else None
-        if override is not None:
-            mode = normalize_work_mode(override)
-        elif self._work_mode == "plan":
-            mode = "plan"  # A configured read-only startup cannot be relaxed by history.
-        else:
-            mode = saved or self._work_mode
+        mode = normalize_work_mode(override) if override is not None else (
+            "plan" if self._work_mode == "plan" else saved or self._work_mode
+        )
+        if runtime.store is not None and saved != mode and (saved is not None or mode != "default"):
+            runtime.store.append("custom", kind="work_mode", data={"mode": mode})
         runtime.work_mode = mode
-        runtime.work_mode_revision = 0
-        # Save the effective legacy startup ceiling for cold restoration while
-        # retaining the direct permission API's live independent-mode behavior.
-        persisted = "plan" if override is None and self.session.permission_mode == "plan" else mode
-        # Fresh default sessions remain discardable. Persist meaningful startup
-        # overrides and Plan state without creating a request or a wakeup.
-        if runtime.store is not None and (saved != persisted and (saved is not None or persisted != "default")):
-            runtime.store.append("custom", kind="work_mode", data={"mode": persisted})
+        runtime.work_mode_revision = getattr(runtime, "work_mode_revision", -1) + 1
 
     def set_work_mode(self, mode: str, *, runtime=None) -> None:
         mode = normalize_work_mode(mode)
         with self.session._lock:
+            self.session.assert_state_change_allowed()
             root = self._root_runtime(runtime or getattr(self.session, "main", None))
-            previous = self.work_mode_for(root)
-            legacy = self.session.permission_mode == "plan"
-            if (mode == "default" and previous == "plan" and root is not None
-                    and self.session.runtime_is_busy(root)):
-                raise ValueError(self.session.t("work_mode.busy"))
-            if previous == mode and not legacy:
+            if self.work_mode_for(root) == mode:
                 return
-            updates = {}
-            if legacy:
-                # The legacy ceiling covers every originating conversation.
-                # Materialize it before clearing the global setting, including
-                # a removed conversation with queued or running child work.
-                origins = [*self.session._main_runtimes.values(),
-                           *self.session._child_runtimes.values()]
-                origins.extend(origin for origin, _ in self.session._pending_child_work.values())
-                for runtime in origins:
-                    origin = self._root_runtime(runtime)
-                    if origin is not root and origin.work_mode != "plan":
-                        updates[origin] = "plan"
-            if root is not None:
-                updates[root] = mode
-            for origin, selected in updates.items():
-                if origin.store is not None:
-                    origin.store.append("custom", kind="work_mode", data={"mode": selected})
-            # Publish only after every state write succeeds. Failed persistence
-            # must retain the global ceiling for all originating conversations.
+            if root is not None and self.session.runtime_is_busy(root):
+                raise ValueError(self.session.t("work_mode.busy"))
+            if root is not None and root.store is not None:
+                root.store.append("custom", kind="work_mode", data={"mode": mode})
             if root is None:
                 self._work_mode = mode
-                self._work_mode_revision += 1
-            for origin, selected in updates.items():
-                origin.work_mode = selected
-                origin.work_mode_revision += 1
-            if legacy:
-                self.session.permission_mode = "auto-review"
-            for origin, selected in updates.items():
-                self.session.bus.emit("work_mode_changed", origin, selected)
+            else:
+                root.work_mode = mode
+                root.work_mode_revision += 1
+            self.revision += 1
+            self.session.notify_state_change("work_mode_changed", root, mode)
 
-    def mode_for(self, agent: str, *, runtime=None) -> str:
-        """Compatibility projection consumed by tool filtering and both gates."""
-        if runtime is not None:
-            if runtime.session is not self.session or runtime.name != agent:
-                raise ValueError("Permission runtime must match the originating agent")
-        else:
-            runtime = self.session._child_runtimes.get(agent)
-            if runtime is None and agent == "main":
-                runtime = getattr(self.session, "main", None)
-        if self.work_mode_for(runtime) == "plan":
-            return "plan"
-        mode = normalize_permission_mode(self.session.permission_mode)
-        severity = {"accept-all": 0, "auto-review": 1, "plan": 2}
-        seen = set()
-        while agent not in seen:
-            seen.add(agent)
-            own = normalize_permission_mode(self.agent_modes.get(agent, mode))
-            if severity[own] > severity[mode]:
-                mode = own
-            parent = self.agent_parents.get(agent)
-            if parent is None:
-                break
-            agent = parent
-        return mode
-
-    def _event_runtime(self, ev):
-        source = source_for(self.session, ev)
+    def _event_runtime(self, event):
+        source = source_for(self.session, event)
         if source is None:
-            return None
-        runtime = self.session.runtime_for_context(ev)
+            raise ValueError("Permission checks require the originating runtime context")
+        runtime = self.session.runtime_for_context(event)
         if runtime is None:
             raise ValueError("Permission checks require the originating runtime context")
         return runtime
 
-    def set_agent_parent(self, agent: str, parent: str | None) -> None:
-        """Bind the dynamic permission ceiling to the originating parent."""
-        if parent is None:
-            self.agent_parents.pop(agent, None)
-            return
-        cursor, seen = parent, {agent}
-        while cursor is not None:
-            if cursor in seen:
-                raise ValueError("Runtime permission parent relationships must be acyclic")
-            seen.add(cursor)
-            cursor = self.agent_parents.get(cursor)
-        self.agent_parents[agent] = parent
+    def _approval_key(self, event: ToolCallEvent) -> str:
+        path = event.args.get("path")
+        target = str((event.cwd / os.path.expanduser(path)).resolve()) if isinstance(path, str) else None
+        if event.tool_name == "bash":
+            target = command_path_targets(event.args.get("command", ""), event.cwd)
+        shell = getattr(event.tool, "shell", None)
+        return json.dumps([
+            origin_key(self.session, event), event.tool_name, str(event.cwd.resolve()),
+            event.args, target, shell.environment() if shell else None,
+        ], sort_keys=True, ensure_ascii=False)
 
-    def set_reviewer(self, reviewer) -> None:
-        """Install optional automatic review without replacing Core enforcement."""
-        if reviewer is not None and not callable(reviewer):
-            raise TypeError("Permission reviewer must be callable")
-        self.reviewer = reviewer
-
-    def set_agent_mode(self, agent: str, mode: str | None) -> None:
-        if mode is None:
-            self.agent_modes.pop(agent, None)
-        else:
-            self.agent_modes[agent] = normalize_permission_mode(mode)
-
-    def _approval_key(self, ev: ToolCallEvent) -> str:
-        path = ev.args.get("path")
-        target = str((ev.cwd / os.path.expanduser(path)).resolve()) if isinstance(path, str) else None
-        if ev.tool_name == "bash":
-            target = command_path_targets(ev.args.get("command", ""), ev.cwd)
-        shell = getattr(ev.tool, "shell", None)
-        return json.dumps(
-            [
-                review_context_key(self.session, ev),
-                ev.tool_name,
-                str(ev.cwd.resolve()),
-                ev.args,
-                target,
-                shell.environment() if shell else None,
-            ],
-            sort_keys=True,
-            ensure_ascii=False,
-        )
-
-    def _snapshot(self, ev: ToolCallEvent) -> tuple:
-        rules = self.session.settings.get("permissions", {})
-        runtime = self._event_runtime(ev)
+    def _snapshot(self, event: ToolCallEvent) -> tuple:
+        runtime = self._event_runtime(event)
         root = self._root_runtime(runtime)
         return (
-            self.mode_for(ev.agent, runtime=runtime),
-            self._approval_key(ev),
-            json.dumps(rules, sort_keys=True),
-            self._requires_denial_review(ev),
-            root.work_mode_revision if root is not None else self._work_mode_revision,
+            self.approval_for(runtime), self.is_read_only(runtime), self._approval_key(event),
+            root.work_mode_revision if root is not None else self.revision,
         )
 
-    def _requires_denial_review(self, ev: ToolCallEvent) -> bool:
-        # A changed command spelling must not turn a denied effect into a static
-        # workspace allow. Keep read-only investigation available after a denial.
-        if ev.tool_name == "bash":
-            if is_read_only_command(ev.args.get("command", "")):
-                return False
-        elif plan_tool_allowed(ev.tool):
-            return False
-        source = source_for(self.session, ev)
-        if source is None:
-            return False
-        records = source.records()
-        last_user = max((i for i, record in enumerate(records) if record["role"] == "user"), default=-1)
-        return any(
-            record["role"] == "approval"
-            and record.get("decision") == "deny"
-            and (
-                record.get("source") in {"auto-review", "previous-denial"}
-                or (record.get("source") == "human" and record.get("reason") == "Denied by user.")
-            )
-            for record in records[last_user + 1 :]
-        )
-
-    def _boundary(self, ev: ToolCallEvent) -> ReviewBoundary | None:
-        workspace = review_workspace(self.session, ev)
+    def _boundary(self, ev: ToolCallEvent) -> ApprovalBoundary | None:
+        workspace = origin_workspace(self.session, ev)
         if ev.tool_name == "powershell":
-            return ReviewBoundary("features.permission.scope.powershell")
+            return ApprovalBoundary("features.permission.scope.powershell")
         if ev.tool_name == "bash":
-            return command_boundary(ev.args.get("command", ""), ev.cwd, workspace)
+            boundary = command_boundary(ev.args.get("command", ""), ev.cwd, workspace)
+            sandbox = self.session.services.get("sandbox")
+            if boundary is None and (sandbox is None or sandbox.mode == "disabled"):
+                return ApprovalBoundary("features.permission.scope.host_shell")
+            return boundary
         if ev.tool_name in {"read", "write", "edit", "glob", "grep"}:
             path = ev.args.get("path", ".")
             if not isinstance(path, str) or not inside(path, ev.cwd, workspace):
                 target = (ev.cwd / os.path.expanduser(path)).resolve() if isinstance(path, str) else path
-                return ReviewBoundary("features.permission.scope.action_path", {"path": target})
+                return ApprovalBoundary("features.permission.scope.action_path", {"path": target})
             if ev.tool_name in {"glob", "grep"}:
                 root = (ev.cwd / os.path.expanduser(path)).resolve()
                 try:
@@ -331,294 +203,192 @@ class Permissions:
                                 if not glob_match(displayed.as_posix(), pattern):
                                     continue
                             if candidate.is_symlink() and not inside(str(candidate), ev.cwd, workspace):
-                                return ReviewBoundary(
+                                return ApprovalBoundary(
                                     "features.permission.scope.search_link",
                                     {"path": candidate, "target": candidate.resolve()},
                                 )
                 except (OSError, RuntimeError):
-                    return ReviewBoundary("features.permission.scope.search_paths")
+                    return ApprovalBoundary("features.permission.scope.search_paths")
             return None
         if ev.tool_name.startswith("mcp__"):
-            return ReviewBoundary("features.permission.scope.external")
+            return ApprovalBoundary("features.permission.scope.external")
         if ev.tool_name == "web_fetch":
-            return ReviewBoundary("features.permission.scope.fetch")
+            return ApprovalBoundary("features.permission.scope.fetch")
         if ev.tool_name == "web_search":
-            return ReviewBoundary("features.permission.scope.search")
+            return ApprovalBoundary("features.permission.scope.search")
         if ev.tool and ev.tool.read_only:
             return None
-        return ReviewBoundary("features.permission.scope.unknown_tool")
+        return ApprovalBoundary("features.permission.scope.unknown_tool")
 
-    def decide(self, ev: ToolCallEvent) -> tuple[str, str]:
-        s = self.session.settings
-        mode = self.mode_for(ev.agent, runtime=self._event_runtime(ev))
+
+    def decide(self, event: ToolCallEvent) -> tuple[str, str]:
+        runtime = self._event_runtime(event)
         started = time.monotonic()
-        snapshot = self._snapshot(ev)
-        ev._review_audit = {}
 
         def finish(decision, reason, source, *, audit_reason=None):
-            self._record(
-                ev, mode, decision, audit_reason if audit_reason is not None else reason, source, started
-            )
+            self._record(event, decision, reason if audit_reason is None else audit_reason, source, started)
             return decision, reason
 
-        if mode == "accept-all":
-            return finish("allow", "", "accept-all")
-        for rule in s.get("permissions.deny", []) or []:
-            if rule_matches(rule, ev):
-                return finish(
-                    "deny", self.session.t("features.permission.denied_rule", rule=rule), "deny-rule"
-                )
-        if mode == "plan":
-            if ev.tool_name == "bash":
-                extra = set(s.get("permissions.readOnlyCommands", []) or [])
-                rejection = read_only_command_rejection(ev.args.get("command", ""), extra)
-                if rejection is not None:
-                    reason = self.session.t(
-                        "features.permission.plan_command_denied",
-                        reason=rejection.describe(self.session.t),
-                    )
-                    return finish("deny", reason, "plan")
-                return finish("allow", "", "plan")
-            if not plan_tool_allowed(ev.tool):
-                return finish("deny", self.session.t("features.permission.plan_readonly"), "plan")
-            return finish("allow", "", "plan")
-        action_key = self._approval_key(ev)
-        if action_key in self.review_denials:
-            return finish("deny", self.review_denials[action_key], "previous-denial")
-        denial_review = self._requires_denial_review(ev)
-        if not denial_review and action_key in self.session_approvals:
+        if self.is_read_only(runtime) and not read_only_tool_allowed(event.tool):
+            return finish("deny", self.session.t("features.permission.read_only"), "read-only")
+        for rule in self.session.settings.get("permissions.deny", []):
+            if rule_matches(rule, event):
+                return finish("deny", self.session.t("features.permission.denied_rule", rule=rule), "deny-rule")
+        key = self._approval_key(event)
+        if key in self.denials:
+            return finish("deny", self.denials[key], "previous-denial")
+        if key in self.session_approvals:
             return finish("allow", "", "session-approval")
-        for rule in s.get("permissions.allow", []) or []:
-            if not denial_review and rule_matches(rule, ev):
+        for rule in self.session.settings.get("permissions.allow", []):
+            if rule_matches(rule, event, allow=True):
                 return finish("allow", "", "allow-rule", audit_reason=rule)
-        boundary = self._boundary(ev)
-        if boundary is None and not denial_review:
+        boundary = self._boundary(event)
+        if boundary is None:
             return finish("allow", "", "workspace")
-        boundary_reason = boundary.describe(self.session.t) if boundary is not None else ""
-        if denial_review:
-            boundary_reason = (
-                ReviewBoundary("features.permission.scope.previous_denial").describe(self.session.t)
-                + boundary_reason
-            )
-        if self.reviewer is None:
-            return finish("ask", self.session.t("features.permission.approval_required_manual", reason=boundary_reason), "manual-review")
-        source = "auto-review"
-        try:
-            verdict = self.reviewer(ev, boundary_reason)
-            decision, reason = verdict.decision, verdict.reason
-        except Exception as error:  # noqa: BLE001 - failed reviews must go to a person, never fail open
-            origin = source_for(self.session, ev)
-            signal = getattr(ev, "signal", None)
-            if signal is None and origin is not None:
-                signal = origin.runtime.agent.signal
-            if signal is not None and signal.is_set():
-                return finish("deny", self.session.t("features.permission.interrupted"), "interrupted")
-            failure = (
-                error.kind
-                if isinstance(error, ReviewFailure)
-                else ("timeout" if isinstance(error, TimeoutError) else "request-error")
-            )
-            ev._review_audit["failure_kind"] = failure
-            decision = "ask"
-            reason = self.session.t(
-                "features.permission.review_failed", failure=failure, reason=boundary_reason
-            )
-            source = "review-error"
-        if snapshot != self._snapshot(ev):
-            finish("superseded", reason, source)
-            return self.decide(ev)
-        if decision == "allow":
-            return finish("allow", "", source, audit_reason=reason)
-        if decision == "deny":
-            reason = self.session.t("features.permission.denied", reason=reason)
-            self.review_denials[self._approval_key(ev)] = reason
-            return finish("deny", reason, source)
-        return finish("ask", self.session.t("features.permission.approval_required", reason=reason), source)
+        if self.approval_for(runtime) == "never":
+            return finish("deny", self.session.t("features.permission.never"), "approval-never")
+        reason = self.session.t("features.permission.approval_required_manual", reason=boundary.describe(self.session.t))
+        return finish("ask", reason, "manual-approval")
 
-    def _record(self, ev, mode, decision, reason, source, started):
-        # Link to the existing tool call without duplicating command bodies or file contents.
-        arguments = json.dumps(ev.args, sort_keys=True, ensure_ascii=False, default=str)
-        store = review_store(self.session, ev)
-        store.append(
-            "custom",
-            kind="permission_decision",
-            data={
-                "tool_call_id": ev.call_id,
-                "tool": ev.tool_name,
-                "agent": ev.agent,
-                "cwd": str(ev.cwd),
-                "mode": mode,
-                "work_mode": self.work_mode_for(self._event_runtime(ev)),
-                "permission_mode": self.session.permission_mode,
-                "source": source,
-                "decision": decision,
-                "reason": reason,
-                "arguments_sha256": hashlib.sha256(arguments.encode()).hexdigest(),
-                "model": getattr(ev, "_review_model", self.session.small_model.spec)
-                if source in {"auto-review", "review-error", "interrupted"}
-                else None,
-                "duration": round(time.monotonic() - started, 6),
-                "review_context": getattr(ev, "_review_audit", {}),
-            },
-        )
+    def _record(self, event, decision, reason, source, started):
+        arguments = json.dumps(event.args, sort_keys=True, ensure_ascii=False, default=str)
+        runtime = self._event_runtime(event)
+        origin_store(self.session, event).append("custom", kind="permission_decision", data={
+            "tool_call_id": event.call_id, "tool": event.tool_name, "agent": event.agent,
+            "cwd": str(event.cwd), "work_mode": self.work_mode_for(runtime),
+            "read_only": self.is_read_only(runtime), "approval_policy": self.approval_for(runtime),
+            "source": source, "decision": decision, "reason": reason,
+            "arguments_sha256": hashlib.sha256(arguments.encode()).hexdigest(),
+            "duration": round(time.monotonic() - started, 6),
+        })
 
-    def remember(self, ev: ToolCallEvent) -> str:
-        if ev.tool_name == "powershell" or (
-            ev.tool_name == "bash" and command_path_targets(ev.args.get("command", ""), ev.cwd) is None
+    def remember(self, event: ToolCallEvent) -> str:
+        if event.tool_name == "powershell" or (
+            event.tool_name == "bash" and command_path_targets(event.args.get("command", ""), event.cwd) is None
         ):
             self.session.ui.print(self.session.t("features.permission.cannot_remember"), "warn")
             return ""
-        self.session_approvals.add(self._approval_key(ev))
-        rule = describe(ev)
+        self.session_approvals.add(self._approval_key(event))
+        rule = describe(event)
         self.session_rules.append(rule)
         return rule
 
-    def _allow(self, ev: ToolCallEvent):
-        ev._permission_snapshot = self._snapshot(ev)
-        ev._permission_boundary = (
-            self._boundary(ev) if self.mode_for(ev.agent, runtime=self._event_runtime(ev)) == "auto-review" else None
-        )
+    def revoke(self) -> None:
+        with self.session._lock:
+            self.session.assert_state_change_allowed()
+            self.session_approvals.clear()
+            self.session_rules.clear()
+            self.denials.clear()
+            self.revision += 1
+
+    def _allow(self, event: ToolCallEvent):
+        event._permission_snapshot = self._snapshot(event)
+        event._permission_boundary = self._boundary(event)
         return None
 
-    def before_execute(self, ev: ToolCallEvent):
-        snapshot = self._snapshot(ev)
-        unchanged = getattr(ev, "_permission_snapshot", None) == snapshot
-        if unchanged and snapshot[0] == "auto-review":
-            unchanged = getattr(ev, "_permission_boundary", None) == self._boundary(ev)
-        if unchanged:
+    def before_execute(self, event: ToolCallEvent):
+        if (getattr(event, "_permission_snapshot", None) == self._snapshot(event)
+                and getattr(event, "_permission_boundary", None) == self._boundary(event)):
             return None
-        return self.on_tool_call(ev, self.session)
+        return self.on_tool_call(event, self.session)
 
-    def preflight(self, ev: ToolCallEvent):
-        return self.on_tool_call(ev, self.session)
+    def preflight(self, event: ToolCallEvent):
+        return self.on_tool_call(event, self.session)
 
-    def on_tool_call(self, ev: ToolCallEvent, _session):
+    def on_tool_call(self, event: ToolCallEvent, _session):
         try:
-            return self._on_tool_call(ev)
-        except Exception:  # noqa: BLE001 - EventBus swallows exceptions; permission hooks must fail closed.
+            return self._on_tool_call(event)
+        except Exception:  # Extension dispatch must never turn authorization errors into permission.
             return Block(self.session.t("features.permission.check_failed"))
 
-    def _on_tool_call(self, ev: ToolCallEvent):
-        mode = self.mode_for(ev.agent, runtime=self._event_runtime(ev))
-        snapshot = self._snapshot(ev)
-        decision, reason = self.decide(ev)
-        if snapshot != self._snapshot(ev):
-            return self.on_tool_call(ev, self.session)
-        if decision == "allow":
-            return self._allow(ev)
-        if decision == "deny":
-            return Block(reason)
-        summary = describe(ev)
-        who = "" if ev.agent == "main" else f"[{ev.agent}] "
-        started = time.monotonic()
-        answer = self.session.ui.confirm(
-            f"{who}{summary}\n  ({reason})" + self.session.t("features.permission.allow_suffix"), ev.agent
-        )
-        if snapshot != self._snapshot(ev):
-            self._record(
-                ev, mode, "superseded", "Permission context changed during confirmation.", "human", started
+    def _on_tool_call(self, event: ToolCallEvent):
+        # A changing UI approval cannot authorize another request or recurse forever.
+        for _ in range(3):
+            snapshot = self._snapshot(event)
+            decision, reason = self.decide(event)
+            if snapshot != self._snapshot(event):
+                continue
+            if decision == "allow":
+                return self._allow(event)
+            if decision == "deny":
+                return Block(reason)
+            who = "" if event.agent == "main" else f"[{event.agent}] "
+            started = time.monotonic()
+            answer = self.session.ui.confirm(
+                f"{who}{describe(event)}\n  ({reason})" + self.session.t("features.permission.allow_suffix"), event.agent
             )
-            return self.on_tool_call(ev, self.session)
-        self._record(
-            ev,
-            mode,
-            "allow" if answer in {"y", "a"} else "deny",
-            {"y": "Allowed once.", "a": "Allowed for this session.", "n": "Denied by user."}.get(
-                answer, "No approver available."
-            ),
-            "human",
-            started,
-        )
-        if answer is None:
-            return Block(self.session.t("features.permission.no_approver", reason=reason))
-        if answer == "a":
-            self.remember(ev)
-            return self._allow(ev)
-        if answer == "y":
-            return self._allow(ev)
-        reason = self.session.t("features.permission.user_denied")
-        if answer == "n":
-            self.review_denials[self._approval_key(ev)] = reason
-        return Block(reason)
+            if snapshot != self._snapshot(event):
+                self._record(event, "superseded", "Authorization context changed during confirmation.", "human", started)
+                continue
+            self._record(event, "allow" if answer in {"y", "a"} else "deny", {
+                "y": "Allowed once.", "a": "Allowed for this session.", "n": "Denied by user.",
+            }.get(answer, "No approver available."), "human", started)
+            if answer is None:
+                return Block(self.session.t("features.permission.no_approver", reason=reason))
+            if answer == "a":
+                self.remember(event)
+                return self._allow(event)
+            if answer == "y":
+                return self._allow(event)
+            reason = self.session.t("features.permission.user_denied")
+            if answer == "n":
+                self.denials[self._approval_key(event)] = reason
+            return Block(reason)
+        return Block(self.session.t("features.permission.check_failed"))
 
 
-def describe(ev: ToolCallEvent) -> str:
-    a = ev.args
-    if ev.tool_name in SHELL_TOOLS:
-        return f"{ev.tool_name}: {a.get('command', '')}"
-    if "path" in a:
-        return f"{ev.tool_name}: {a['path']}"
-    text = json.dumps(a, ensure_ascii=False, default=str)
-    return f"{ev.tool_name}: {text[:200]}"
+def describe(event: ToolCallEvent) -> str:
+    if event.tool_name in SHELL_TOOLS:
+        return f"{event.tool_name}: {event.args.get('command', '')}"
+    if "path" in event.args:
+        return f"{event.tool_name}: {event.args['path']}"
+    text = json.dumps(event.args, ensure_ascii=False, default=str)
+    return f"{event.tool_name}: {text[:200]}"
 
 
 def install_permissions(session: AgentSession) -> Permissions:
-    """Construct the mandatory policy before loading any capability plugin."""
-    perms = Permissions(session)
-    session.register_permission_policy(perms)
+    """Install mandatory authorization and independent execution boundaries."""
+    permissions = Permissions(session)
+    session.register_permission_policy(permissions)
     from .sandbox import SandboxManager
 
     sandbox = SandboxManager(session)
     session.services["sandbox"] = sandbox
     session.add_permission_policy(sandbox, owner="core.sandbox")
 
-    def cmd(session, args):
-        a = args.strip()
-        if a:
-            try:
-                requested = normalize_permission_mode(a)
-            except ValueError:
-                session.ui.print(session.t("features.permission.invalid_mode", modes=", ".join(MODES)), "error")
-                return
-            if requested == "plan" or session.permission_mode == "plan":
-                perms.set_work_mode("plan")
-            if requested != "plan":
-                session.permission_mode = requested
-        s = session.settings
-        label = permission_mode_label(session.permission_mode, session.t)
-        lines = [session.t("features.permission.status", label=label),
-                 session.t("work_mode.status", mode=session.t("work_mode." + perms.work_mode))]
+    def approvals_command(session, args):
+        value = args.strip()
+        try:
+            if value == "revoke":
+                permissions.revoke()
+            elif value:
+                session.approval_policy = normalize_approval_policy(value)
+        except ValueError as error:
+            session.ui.print(str(error), "error")
+            return
+        lines = [session.t("features.permission.status", label=approval_policy_label(session.approval_policy, session.t)),
+                 session.t("work_mode.status", mode=session.t("work_mode." + permissions.work_mode))]
         for key in ("allow", "deny"):
-            rules = s.get(f"permissions.{key}", []) or []
-            if rules:
+            if rules := session.settings.get(f"permissions.{key}", []):
                 lines.append(f"{session.t('features.permission.' + key)}: {', '.join(rules)}")
-        if perms.session_rules:
-            lines.append(session.t("features.permission.session_rules", rules=", ".join(perms.session_rules)))
+        if permissions.session_rules:
+            lines.append(session.t("features.permission.session_rules", rules=", ".join(permissions.session_rules)))
         session.ui.command_result("\n".join(lines))
 
-    def mode_cmd(session, args):
+    def mode_command(session, args):
         value = args.strip()
-        if value:
-            try:
-                normalize_work_mode(value)
-            except ValueError:
-                session.ui.print(session.t("work_mode.invalid", modes=", ".join(WORK_MODES)), "error")
-                return
-            try:
-                perms.set_work_mode(value)
-            except ValueError as error:
-                session.ui.print(str(error), "error")
-                return
-        session.ui.command_result(session.t("work_mode.status", mode=session.t("work_mode." + perms.work_mode)))
+        try:
+            if value:
+                permissions.set_work_mode(value)
+        except ValueError as error:
+            session.ui.print(str(error), "error")
+            return
+        session.ui.command_result(session.t("work_mode.status", mode=session.t("work_mode." + permissions.work_mode)))
         session.ui.command_result(session.t("work_mode.approval_unchanged"))
-        if perms.work_mode == "plan":
-            session.ui.command_result(session.t("work_mode.running"))
 
-    session.commands.register(
-        "mode",
-        mode_cmd,
-        "show or set work mode (default|plan)",
-        argument_hint="[default|plan]",
-        description_key="work_mode.description",
-        source="core",
-        concurrent=True,
-    )
-    session.commands.register(
-        "permissions",
-        cmd,
-        "show or set permissions (auto-review|accept-all|plan)",
-        argument_hint="[auto-review|accept-all|plan]",
-        description_key="features.commands.permissions",
-        source="core",
-    )
-    return perms
+    session.commands.register("mode", mode_command, "show or set work mode (default|plan)",
+                              argument_hint="[default|plan]", description_key="work_mode.description",
+                              source="core", concurrent=True)
+    session.commands.register("permissions", approvals_command, "show approval policy, select ask|never or revoke remembered approvals",
+                              argument_hint="[ask|never|revoke]", description_key="features.commands.permissions", source="core")
+    return permissions

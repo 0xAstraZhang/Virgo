@@ -262,11 +262,12 @@ def test_saved_model_choice_preserves_other_settings_and_applies_to_future_sessi
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     ui = PickerUI(PreferenceChoice("deepseek/deepseek-flash", "max", True))
     session = make_session(ui=ui)
-    session.settings.save_user({"permissions": {"mode": "plan"}, "custom": {"keep": True}})
+    session.settings.save_user({"workMode": "plan", "permissions": {"approval": "never"}, "custom": {"keep": True}})
     session.prompt("/model")
     data = json.loads((session.paths.user / "settings.json").read_text())
     assert data == {
-        "permissions": {"mode": "plan"},
+        "workMode": "plan",
+        "permissions": {"approval": "never"},
         "custom": {"keep": True},
         "model": "deepseek/deepseek-flash",
         "effort": "max",

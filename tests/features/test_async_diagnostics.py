@@ -190,10 +190,10 @@ def test_custom_exception_metadata_cannot_strand_background_job(make_session):
 
 def test_shell_background_call_uses_bound_tool_source_after_session_switch(make_session, monkeypatch, project):
     session = make_session()
-    original = session.main.review_source
+    original = session.main.origin
     session.new_session()
     fake_command_io(monkeypatch, project, failure="wait")
-    ctx = ToolContext("shell-origin", project, threading.Event(), "worker", review_source=original)
+    ctx = ToolContext("shell-origin", project, threading.Event(), "worker", origin=original)
     session.tool(selected(session).tool_name).execute({"command": "private command", "background": True}, ctx)
     job = next(iter(session.services["jobs"].jobs.values()))
     assert job.done.wait(5)
@@ -253,7 +253,7 @@ def test_subagent_cancellation_does_not_hide_an_actual_model_error(make_session)
 
 def test_background_subagent_preserves_child_error_in_job(make_session):
     session = make_session(faux.error("background child unavailable"))
-    ctx = ToolContext("agent-origin", session.cwd, threading.Event(), review_source=session.main.review_source)
+    ctx = ToolContext("agent-origin", session.cwd, threading.Event(), origin=session.main.origin)
     session.tool("agent").execute({"description": "private label", "prompt": "private prompt", "background": True}, ctx)
     job = next(iter(session.services["jobs"].jobs.values()))
     assert job.done.wait(5)

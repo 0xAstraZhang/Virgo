@@ -13,7 +13,7 @@ from ..diagnostics import safe_text
 from ..harness.extensions import ExtensionAPI
 
 _counter = itertools.count(1)
-READ_ONLY_TOOLS = frozenset({"read", "glob", "grep", "bash"})
+READ_ONLY_TOOLS = frozenset({"read", "glob", "grep", "git_read"})
 READ_ONLY_PROMPT = "You are in read-only mode; file and system changes are not permitted."
 
 
@@ -22,14 +22,14 @@ class Subagents:
         self.api = api
 
     def run(
-        self, prompt: str, description: str, signal, cwd=None, review_parent=None,
+        self, prompt: str, description: str, signal, cwd=None, origin_parent=None,
         *, read_only: bool = False,
     ) -> ToolResult:
         """Run a child with the caller's authority and optional read-only limits."""
         api = self.api
-        review_parent = review_parent or api.current_runtime().review_source
-        parent = review_parent.runtime
-        owner = review_parent.root
+        origin_parent = origin_parent or api.current_runtime().origin
+        parent = origin_parent.runtime
+        owner = origin_parent.root
         tools = (
             [tool for tool in api.tools_for("subagent") if tool.name in READ_ONLY_TOOLS]
             if read_only else None
@@ -43,14 +43,14 @@ class Subagents:
                 name,
                 "subagent",
                 parent=parent,
-                permission="plan" if read_only else None,
+                read_only=read_only,
                 cwd=cwd,
                 tools=tools,
                 system_extra=READ_ONLY_PROMPT if read_only else None,
                 max_turns=int(api.settings.get("subagents.maxTurns", 50)),
                 signal=signal,
                 compaction=True,
-                review_parent=review_parent,
+                origin_parent=origin_parent,
             )
             rt.agent.prompt([UserMessage(prompt)])
         except Exception as error:
@@ -200,23 +200,23 @@ def setup(api: ExtensionAPI) -> None:
         read_only = args.get("read_only", False)
         jobs = api.services.get("jobs")
         runtime = api.runtime_for_context(ctx)
-        if runtime is None and ctx.review_source is None and ctx.agent == "main":
+        if runtime is None and ctx.origin is None and ctx.agent == "main":
             # Trusted direct main-tool integrations predate runtime-bound contexts.
             # Capture their origin now, before a background worker or UI switch.
             runtime = api.current_runtime()
         if runtime is None:
             return ToolResult.error("Subagent requires the originating runtime context.")
-        review_parent = runtime.review_source
-        review_parent.root.entries()
+        origin_parent = runtime.origin
+        origin_parent.root.entries()
 
         def run_child(signal):
-            return subs.run(prompt, desc, signal, ctx.cwd, review_parent, read_only=read_only)
+            return subs.run(prompt, desc, signal, ctx.cwd, origin_parent, read_only=read_only)
 
         if args.get("background") and jobs is not None:
             job = jobs.start_callable(
                 f"agent: {desc}",
                 run_child,
-                store=review_parent.root,
+                store=origin_parent.root,
                 agent=ctx.agent,
                 tool_call_id=ctx.call_id,
                 cwd=ctx.cwd,
@@ -235,7 +235,7 @@ def setup(api: ExtensionAPI) -> None:
             description=(
                 "Delegate a self-contained task to a sub-agent with a fresh context. It cannot see this "
                 "conversation, so include the needed context; only its final answer comes back. Several calls in one "
-                "response run in parallel. Set read_only=true to restrict tools and commands. "
+                "response run in parallel. Set read_only=true to restrict tools. "
                 "Set background=true to keep working while it runs."
             ),
             parameters={
@@ -249,7 +249,7 @@ def setup(api: ExtensionAPI) -> None:
                     },
                     "read_only": {
                         "type": "boolean",
-                        "description": "Limit the child to reading files and read-only shell commands.",
+                        "description": "Limit the child to read-only tools; arbitrary shell commands are unavailable.",
                     },
                     "background": {"type": "boolean"},
                 },

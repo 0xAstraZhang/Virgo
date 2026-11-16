@@ -1,6 +1,6 @@
 """Sandbox acceptance scenarios, specified before implementing the launch path.
 
-Failure cases: a missing backend runs the payload natively; accept-all or a
+Failure cases: a missing backend runs the payload natively; an explicit grant or a
 project setting disables isolation; a child/background job loses its owner;
 indirect programs, symlinks or descendants write outside the workspace; Plan
 widens filesystem rights; network/Unix sockets escape; credentials leak through
@@ -28,6 +28,54 @@ from virgo.tools import sandbox
 
 from tests.support.harness import tool_results, wait_until
 from tests.support.shell import selected
+
+
+def test_default_sandbox_requires_native_boundary(project, monkeypatch):
+    """The default must not execute an approved command when isolation is absent.
+
+    Failure modes: omitting sandbox configuration retains host execution, or an
+    unavailable default backend silently retries an authorized write on the host.
+    """
+    from virgo.harness.session import AgentSession
+
+    from tests.support.harness import RecordingUI
+
+    def missing():
+        raise sandbox.SandboxUnavailable("backend deliberately unavailable")
+
+    monkeypatch.setattr(sandbox, "platform_backend", missing)
+    session = AgentSession(
+        project, model="faux/test", session=None, ui=RecordingUI(),
+        settings={"profile": "minimal", "permissions": {"allow": ["*"]}},
+        refresh_models=False, extensions=False,
+    )
+    try:
+        shell = selected(session)
+        command = "Set-Content default-escape.txt bad" if shell.tool_name == "powershell" else "echo bad > default-escape.txt"
+        result = run(session, command)
+        assert result.is_error and result.details.get("status") == "sandbox_unavailable", result.text()
+        assert not (project / "default-escape.txt").exists()
+        assert session.services["sandbox"].mode == "workspace-write"
+    finally:
+        session.shutdown()
+
+
+def test_sandbox_status_reports_effective_read_only(make_session, project, monkeypatch):
+    """A discovered launcher must not look verified or hide a task's ceiling."""
+    monkeypatch.setattr("virgo.harness.sandbox.platform_backend", lambda: ("example-backend", project))
+
+    def unexpected_launch(*args, **kwargs):
+        raise AssertionError("Status inspection must not launch a process")
+
+    monkeypatch.setattr(sandbox.SandboxPolicy, "spawn", unexpected_launch)
+    session = make_session(
+        work_mode="plan", settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    session.prompt("/sandbox")
+    assert "configured: workspace-write" in session.ui.text
+    assert "effective: read-only" in session.ui.text
+    assert "example-backend" in session.ui.text and "unverified" in session.ui.text
 
 
 def python_command(source: str) -> str:
@@ -72,19 +120,30 @@ def test_missing_backend_is_fail_closed_in_real_session(make_session, project, m
     assert result.details["sandbox"]["mode"] == "workspace-write"
 
 
-def test_project_cannot_disable_user_sandbox(make_session, project):
+def test_project_cannot_disable_user_sandbox(project):
+    from virgo.harness.session import AgentSession
+
+    from tests.support.harness import RecordingUI
+
     home = project.parent / "home"
     (home / "settings.json").write_text(json.dumps({"sandbox": {"mode": "read-only"}}))
     (project / ".virgo").mkdir()
     (project / ".virgo" / "settings.json").write_text(json.dumps({"sandbox": {"mode": "disabled"}}))
-    session = make_session(settings={"profile": "minimal"}, refresh_models=False)
-    session.prompt("/sandbox")
-    assert session.services["sandbox"].mode == "read-only"
-    assert "ignored" in session.ui.text and "read-only" in session.ui.text
-    faux.script("test", faux.reply(tools=[("write", {"path": "blocked.txt", "content": "no"})]),
-                faux.reply("done"))
-    session.prompt("Try a direct write with accept-all")
-    assert not (project / "blocked.txt").exists() and tool_results(session)[-1].is_error
+    session = AgentSession(
+        project, model="faux/test", session=None, ui=RecordingUI(),
+        settings={"profile": "minimal", "permissions": {"allow": ["*"]}},
+        refresh_models=False, extensions=False,
+    )
+    try:
+        session.prompt("/sandbox")
+        assert session.services["sandbox"].mode == "read-only"
+        assert "ignored" in session.ui.text and "read-only" in session.ui.text
+        faux.script("test", faux.reply(tools=[("write", {"path": "blocked.txt", "content": "no"})]),
+                    faux.reply("done"))
+        session.prompt("Try a direct write with explicit tool authorization")
+        assert not (project / "blocked.txt").exists() and tool_results(session)[-1].is_error
+    finally:
+        session.shutdown()
 
 
 def test_workspace_file_tools_obey_sandbox_even_with_accept_all(make_session, project):
@@ -266,7 +325,7 @@ def test_sandbox_file_mutation_rejects_metadata_symlink(make_session, project, t
 
 
 def test_disabled_sandbox_keeps_legacy_execution(make_session, project):
-    session = make_session(settings={"profile": "minimal"}, refresh_models=False)
+    session = make_session(settings={"profile": "minimal", "sandbox": {"mode": "disabled"}}, refresh_models=False)
     shell = selected(session)
     command = "Write-Output legacy" if shell.tool_name == "powershell" else "printf legacy"
     result = run(session, command)
@@ -275,7 +334,8 @@ def test_disabled_sandbox_keeps_legacy_execution(make_session, project):
     assert "disabled" in session.ui.text
 
 
-@pytest.mark.parametrize("config", [{"mode": "typo"}, {"network": "enabled"}, {"mode": None}, "off"])
+@pytest.mark.parametrize("config", [{"mode": "typo"}, {"network": "enabled"}, {"mode": None}, "off",
+                                    {"network": "restricted"}])
 def test_invalid_sandbox_configuration_fails_at_startup(make_session, config):
     with pytest.raises(ValueError, match="sandbox"):
         make_session(settings={"sandbox": config}, refresh_models=False)
@@ -308,7 +368,7 @@ def test_native_readonly_including_child_shell(native, project):
                                     threading.Event(), interpreter=selected(native), sandbox_policy=policy)
     assert code and status == "ok" and not (project / "blocked.txt").exists(), out.text
     native.services["permissions"].set_work_mode("plan")
-    ctx = ToolContext("plan", project, threading.Event(), review_source=native.main.review_source)
+    ctx = ToolContext("plan", project, threading.Event(), origin=native.main.origin)
     assert native.services["sandbox"].for_context(ctx).mode == "read-only"
 
 
@@ -418,9 +478,9 @@ def test_native_background_and_child_preserve_workspace(native, project):
     from virgo.harness.session import AgentSession
 
     from tests.support.harness import RecordingUI
-    session = AgentSession(project, model="faux/test", session=None, permission_mode="accept-all",
+    session = AgentSession(project, model="faux/test", session=None, approval_policy="never",
                            settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
-                                     "sandbox": {"mode": "workspace-write"}},
+                                     "permissions": {"allow": ["*"]}, "sandbox": {"mode": "workspace-write"}},
                            ui=RecordingUI(), refresh_models=False, extensions=False)
     try:
         result = run(session, "echo background > background.txt", background=True)
@@ -889,8 +949,8 @@ from tests.support.harness import RecordingUI, tool_results
 from tests.support.shell import selected
 
 session = AgentSession(
-    Path.cwd(), model="faux/test", session=None, permission_mode="accept-all",
-    settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+    Path.cwd(), model="faux/test", session=None, approval_policy="never",
+    settings={"profile": "minimal", "permissions": {"allow": ["*"]}, "sandbox": {"mode": "workspace-write"}},
     ui=RecordingUI(), refresh_models=False, extensions=False,
 )
 try:

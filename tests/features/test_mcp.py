@@ -36,14 +36,7 @@ def test_mcp_client_handshake_and_calls(tmp_path):
         c.close()
 
 
-def test_mcp_tools_are_namespaced_and_permission_checked(make_session, project, monkeypatch):
-    reviewed = []
-
-    def review(_session, event, _reason):
-        reviewed.append(event.tool_name)
-        return False, "external service needs approval"
-
-    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", review)
+def test_mcp_tools_are_namespaced_and_permission_checked(make_session, project):
     (project / ".virgo").mkdir()
     (project / ".virgo" / "mcp.json").write_text(
         json.dumps({"mcpServers": {"echo": {"command": sys.executable, "args": [str(SERVER)]}}})
@@ -53,7 +46,7 @@ def test_mcp_tools_are_namespaced_and_permission_checked(make_session, project, 
         faux.reply(tools=[("mcp__echo__echo", {"text": "hello mcp"}), ("mcp__echo__add", {"a": 1, "b": 2})]),
         faux.reply("ok"),
         ui=ui,
-        mode="auto-review",
+        allow=False,
         settings={"permissions": {"allow": ["mcp__echo__add"]}},
     )
     s.prompt("use mcp")
@@ -61,7 +54,9 @@ def test_mcp_tools_are_namespaced_and_permission_checked(make_session, project, 
     res = [m.text() for m in s.main.messages if isinstance(m, ToolResultMessage)]
     assert res == ["hello mcp", "3"]
     assert len(ui.questions) == 1  # echo asked; add allowed by rule
-    assert reviewed == ["mcp__echo__echo"]
+    decisions = s.store.custom("permission_decision")
+    assert any(row["tool"] == "mcp__echo__echo" and row["source"] == "human" for row in decisions)
+    assert any(row["tool"] == "mcp__echo__add" and row["source"] == "allow-rule" for row in decisions)
     assert s.main.agent.last_text == "ok"
 
 

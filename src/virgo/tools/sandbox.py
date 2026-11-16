@@ -74,12 +74,12 @@ class _CommandScratch:
 def validate_config(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("sandbox must be an object")
-    if set(value) - {"mode", "network"}:
-        raise ValueError("sandbox supports only mode and network")
-    if value.get("mode", "disabled") not in MODES:
+    if "network" in value:
+        raise ValueError("sandbox.network was removed; native Shell network access is always blocked")
+    if set(value) - {"mode"}:
+        raise ValueError("sandbox supports only mode")
+    if value.get("mode", "workspace-write") not in MODES:
         raise ValueError(f"sandbox.mode must be one of {', '.join(MODES)}")
-    if value.get("network", "restricted") != "restricted":
-        raise ValueError("sandbox.network currently supports only restricted; no implicit escalation")
 
 
 def _system_file(path: Path) -> Path:

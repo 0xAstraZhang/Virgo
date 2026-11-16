@@ -31,7 +31,7 @@ def test_subagent_fresh_context_and_no_recursion(make_session):
 
 
 def test_subagent_request_exposes_only_its_own_tools(make_session):
-    # Read-only delegation uses plan permissions and only the POSIX shell tool.
+    # Read-only delegation uses a capability ceiling and controlled Git reads.
     seen = {}
 
     def respond(ctx):
@@ -45,7 +45,7 @@ def test_subagent_request_exposes_only_its_own_tools(make_session):
     faux.handler("test", respond)
     session.prompt("delegate")
     assert "<tools>" not in seen["system"]
-    assert sorted(seen["tools"]) == ["bash", "glob", "grep", "read"]
+    assert sorted(seen["tools"]) == ["git_read", "glob", "grep", "read"]
 
 
 def test_subagent_schema_exposes_capabilities_not_types(make_session):
@@ -71,12 +71,12 @@ def test_read_only_subagent_blocks_shell_writes_even_if_parent_is_unrestricted(m
             return faux.reply("Read-only inspection complete.")
         return faux.reply("Main complete.")
 
-    session = make_session(mode="accept-all", settings={"shell": {"executable": "bash"}})
+    session = make_session(approval="never", settings={"shell": {"executable": "bash"}})
     faux.push("test", faux.reply(tools=[("agent", {
         "description": "inspect", "prompt": "Inspect the workspace.", "read_only": True,
     })]))
     faux.handler("test", respond)
     session.prompt("Inspect without changing files.")
     assert not target.exists()
-    assert sorted(child_tools) == ["bash", "glob", "grep", "read"]
+    assert sorted(child_tools) == ["git_read", "glob", "grep", "read"]
     assert tool_results(session)[0].text() == "Read-only inspection complete."

@@ -11,10 +11,11 @@ from .. import __version__
 from ..ai.types import AssistantMessage
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
 from ..harness.diagnostics import DiagnosticLog
-from ..harness.permissions import MODES, normalize_permission_mode
+from ..harness.permissions import APPROVAL_POLICIES, normalize_approval_policy
 from ..harness.session import AgentSession
 from ..harness.settings import PROFILES, Paths, Settings
 from ..harness.store import SessionStore
+from ..harness.work_modes import WORK_MODES
 from ..i18n import Translator, normalize_language
 from ..tools.sandbox import MODES as SANDBOX_MODES
 from .console import ConsoleBroker, PrintUI, TerminalUI
@@ -35,6 +36,7 @@ class _LocalizedParser(argparse.ArgumentParser):
         self.translator = translator
         super().__init__(
             add_help=False,
+            allow_abbrev=False,
             formatter_class=lambda prog: _LocalizedFormatter(prog, translator=translator),
             **kwargs,
         )
@@ -53,7 +55,8 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("--language", type=normalize_language, metavar="LANGUAGE", help=t("ui.cli.language"))
     p.add_argument("prompt", nargs="*", help=tr(t, "ui.cli.prompt"))
     p.add_argument("-p", "--print", action="store_true", help=tr(t, "ui.cli.print"))
-    p.add_argument("--mode", choices=["text", "json"], default="text", help=tr(t, "ui.cli.mode"))
+    p.add_argument("--format", choices=["text", "json"], default="text", help=tr(t, "ui.cli.mode"))
+    p.add_argument("--work-mode", choices=WORK_MODES, help=tr(t, "ui.cli.work_mode"))
     p.add_argument(
         "--ui",
         choices=["auto", "fullscreen", "plain"],
@@ -63,9 +66,9 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("-m", "--model", help=tr(t, "ui.cli.model"))
     p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], help=tr(t, "ui.cli.effort"))
     p.add_argument(
-        "--permission-mode",
-        type=normalize_permission_mode,
-        choices=MODES,
+        "--approval",
+        type=normalize_approval_policy,
+        choices=APPROVAL_POLICIES,
         help=tr(t, "ui.cli.permissions"),
     )
     p.add_argument("-c", "--continue", dest="cont", action="store_true", help=tr(t, "ui.cli.continue"))
@@ -133,7 +136,7 @@ def _shutdown(session: AgentSession) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     bootstrap.add_argument("--language")
     bootstrap.add_argument("-C", "--cwd", default=".")
     early, _ = bootstrap.parse_known_args(argv)
@@ -190,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         print(t("ui.cli.no_extensions_warning"), file=sys.stderr)
     try:
         if args.print:
-            ui = PrintUI(json_mode=args.mode == "json")
+            ui = PrintUI(json_mode=args.format == "json")
         elif fullscreen:
             from .tui.bridge import FullscreenUI
 
@@ -203,7 +206,8 @@ def main(argv: list[str] | None = None) -> int:
             ui=ui,
             model=args.model,
             session=session_arg,
-            permission_mode=args.permission_mode,
+            approval_policy=args.approval,
+            work_mode=args.work_mode,
             settings=overrides,
             extensions=not args.no_extensions,
             trust_project_extensions=args.trust_project_extensions,
@@ -219,7 +223,8 @@ def main(argv: list[str] | None = None) -> int:
             if fullscreen:
                 from .tui import run_fullscreen
 
-                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session)
+                startup = {"work_mode": args.work_mode} if pick_session and args.work_mode is not None else {}
+                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session, **startup)
 
             from .repl import run_repl
 
@@ -252,14 +257,14 @@ def main(argv: list[str] | None = None) -> int:
     if session.has_save_failure:
         return 1
     if ui.command_output:
-        return 0
+        return session.command_exit_code
     last = next((m for m in reversed(session.main.messages) if isinstance(m, AssistantMessage)), None)
     if last is None:
         return 1
     if last.stop_reason in ("error", "refusal", "aborted"):
         print(f"virgo: {safe_text(last.error_message or last.stop_reason)}", file=sys.stderr)
         return 1
-    if args.mode == "text":
+    if args.format == "text":
         print(last.text())
     return 0
 

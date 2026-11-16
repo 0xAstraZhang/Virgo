@@ -23,7 +23,7 @@ Virgo 将模型传输、Agent 循环和应用策略分离。官方能力插件�
 
 安装后的命令和 `python -m virgo` 均进入 [`cli/main.py`](../../../src/virgo/cli/main.py)。根目录的小型 `main.py` 是兼容启动器。运行时代码放在包内，保证源码和安装后的 wheel 使用同一实现。
 
-跨调用方共用的规则放在其语义归属层：`ai/providers/reasoning.py` 为请求构造和诊断元数据提供 OpenAI 推理强度映射；`harness/permissions.py` 管理权限模式、本地化显示名称和计划模式工具筛选。必要权限门位于 `harness/permission_policy.py`，范围判断和审查来源契约同样属于 Harness；可选的 `plugins/auto_review.py` 仅提供模型审批。插件通过 `api.runtime_for_context()` 解析可信调用方，不自行复制身份检查，也不借用当前选中的 Runtime。职责归属与不变量见[抽象边界](abstraction-boundaries.md)和 [Core／插件边界](core-plugin-boundaries.md)。
+共享规则归属其语义层：`ai/providers/reasoning.py` 管理推理强度映射；`harness/permissions.py` 管理审批与只读能力；`permission_policy.py` 执行规则与明确授权。`origin_context.py` 固定 Runtime、工作区和来源分支。Plan 是工作意图，Review 是独立任务，二者使用现有 Agent Loop。沙箱负责 Shell 的实际执行边界，文件工具保留应用级写入保护。
 
 ## Core 与插件装配
 

@@ -274,7 +274,7 @@ def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
                 ctx.cwd,
                 timeout if args.get("timeout") else None,
                 shell=shell,
-                store=ctx.review_source.root if ctx.review_source is not None else None,
+                store=ctx.origin.root if ctx.origin is not None else None,
                 agent=ctx.agent,
                 tool_call_id=ctx.call_id,
                 **({"sandbox_policy": policy, "cancellation": ctx.signal} if policy is not None else {}),

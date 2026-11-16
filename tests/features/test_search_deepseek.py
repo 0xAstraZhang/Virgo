@@ -49,14 +49,14 @@ def search_http(monkeypatch):
 
 def execute_search(session, runtime=None):
     runtime = runtime or session.main
-    ctx = ToolContext("search", runtime.cwd, runtime.agent.signal, runtime.name, review_source=runtime.review_source)
+    ctx = ToolContext("search", runtime.cwd, runtime.agent.signal, runtime.name, origin=runtime.origin)
     return session.tool("web_search").execute({"query": "Python docs"}, ctx)
 
 
 @pytest.mark.parametrize("denied", [False, True], ids=["allowed", "denied"])
 def test_startup_catalog_refresh_does_not_count_as_search(make_session, search_http, monkeypatch, denied):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
-    session = make_session(mode="auto-review" if denied else "accept-all", settings={
+    session = make_session(allow=not denied, settings={
         "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
     })
     session.set_model("deepseek/deepseek-flash")
@@ -272,17 +272,17 @@ def test_deepseek_tool_loop_keeps_results_or_error_without_other_backend(make_se
 
 def test_deepseek_native_honors_exact_query_denial(make_session, search_http, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
-    session = make_session(mode="auto-review", settings={
+    session = make_session(allow=False, settings={
         "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
     })
     session.set_model("deepseek/deepseek-flash")
-    monkeypatch.setattr("virgo.plugins.auto_review.review_tool_call", lambda *args: pytest.fail("denial must precede review"))
     install_responses(monkeypatch,
         AssistantMessage(content=[ToolCall("s", "web_search", {"query": "private information"})], stop_reason="tool_use"),
         AssistantMessage(content=[TextContent("Denied")]),
     )
     session.prompt("Search private information")
     assert not search_http["requests"]
+    assert not session.ui.questions  # Explicit denials cannot request human approval.
     assert next(m for m in session.main.messages if isinstance(m, ToolResultMessage)).is_error
 
 

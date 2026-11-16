@@ -4,7 +4,7 @@
 
 The model receives the tools enabled for its role, configuration and current capabilities. The exact list can change with extensions, MCP connections and web routing. Tool names, argument names and enum values remain stable across interface languages.
 
-Core owns the file, selected-shell and ProposedPlan tools. `web`, `todo`, `ask_user`, `subagent`, `background`, `mcp` and `diagnostic_get` supply the optional tools below. Use the default `coding` preset, or select capabilities explicitly through `plugins.<id>.enabled`. `--profile minimal --no-extensions` exposes only Core tools, subject to the current WorkMode. See [Configuration](configuration.md#profiles-and-plugins).
+Core owns the file, selected-shell, committed Git reader and ProposedPlan tools. `web`, `todo`, `ask_user`, `subagent`, `background`, `mcp` and `diagnostic_get` supply the optional tools below. Use the default `coding` preset, or select capabilities explicitly through `plugins.<id>.enabled`. `--profile minimal --no-extensions` exposes only Core tools, subject to the current WorkMode. See [Configuration](configuration.md#profiles-and-plugins).
 
 ## Files, commands and web
 
@@ -15,6 +15,7 @@ Core owns the file, selected-shell and ProposedPlan tools. `web`, `todo`, `ask_u
 | `edit` | Replace an exact text match in a file |
 | `glob` | Find paths by pattern |
 | `grep` | Search file content |
+| `git_read` | Read local committed log, patches or differences between two commits without repository helpers |
 | `bash` / `powershell` | Execute through the selected command shell |
 | `web_search` | Search through an exposed client backend |
 | `web_fetch` | Read a webpage through an exposed client backend |
@@ -23,7 +24,7 @@ Reads and tool output have budgets; long results include a continuation or saved
 
 ## Checklists and questions
 
-`propose_plan(markdown)` publishes or replaces a complete Markdown ProposedPlan. It is a Core tool for the main Runtime in Plan only; it saves versioned conversation metadata and does not write a project file or authorize execution. Revisions invalidate the earlier confirmation. `/plan` displays the proposal and `/plan execute <plan-id>:<revision>` is the user's explicit execution action. See [Planning a change](../guides/planning.md) for editing, restoration and permission boundaries.
+`propose_plan(markdown)` publishes or replaces a complete Markdown ProposedPlan. It is a Core tool for the main Runtime in Plan only; it saves versioned conversation metadata and does not write a project file or authorize execution. Revisions invalidate an older execution selection. `/plan` displays the proposal and `/plan execute <plan-id>:<revision>` is the user's explicit execution action. See [Planning a change](../guides/planning.md) for editing, restoration and permission boundaries.
 
 `todo_write` replaces the existing execution checklist with the complete supplied list. Statuses are `pending`, `in_progress` and `completed`; multiple items can be in progress. Invalid input leaves the old list intact. `/todos` displays it. An incomplete checklist does not itself force another model turn. The tool is hidden and denied in Plan: ProposedPlan describes the solution, while Todo tracks execution progress in Default. Confirming a plan does not create Todo items automatically or introduce a second task store.
 
@@ -31,7 +32,7 @@ Reads and tool output have budgets; long results include a continuation or saved
 
 ## Focused subagents
 
-The `agent(description, prompt, read_only=false, background=false)` tool delegates a focused task with an independent context and returns its final answer; include relevant context in the task prompt. `read_only=true` limits tools to `read`, `glob`, `grep`, and `bash` under plan-mode command checks (no PowerShell). This is not an OS sandbox. By default, the child has no extra restrictions beyond its parent's permission ceiling. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. An exhausted turn limit, interrupted final response, or empty final answer is reported as **incomplete**, not success. On a child failure, the parent receives bounded recent tool-error reasons and explicitly linked diagnostics; a successful delegation still returns only the final answer. Calls with the removed `type` argument are rejected. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
+The `agent(description, prompt, read_only=false, background=false)` tool delegates a focused task with an independent context and returns its final answer; include relevant context in the task prompt. `read_only=true` limits tools to `read`, `glob`, `grep`, and controlled `git_read`; arbitrary Shell is unavailable. Read-only capability is separate from the OS sandbox. By default, the child has no extra restrictions beyond its parent's permission ceiling. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. An exhausted turn limit, interrupted final response, or empty final answer is reported as **incomplete**, not success. On a child failure, the parent receives bounded recent tool-error reasons and explicitly linked diagnostics; a successful delegation still returns only the final answer. Calls with the removed `type` argument are rejected. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
 
 ## Background jobs
 

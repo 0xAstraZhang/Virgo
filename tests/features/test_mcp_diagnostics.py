@@ -107,7 +107,7 @@ def test_broken_pipe_tool_error_keeps_original_session_and_call(make_session, pr
         "command": sys.executable, "args": [str(SUPPORT / "mcp_echo_server.py")],
     }}})
     original_store = session.store
-    source = session.main.review_source
+    source = session.main.origin
     client = session.services["mcp"]["echo"]
     tool = session.tool("mcp__echo__echo")
 
@@ -118,7 +118,7 @@ def test_broken_pipe_tool_error_keeps_original_session_and_call(make_session, pr
     monkeypatch.setattr(client, "_send", break_write)
     result = tool.execute(
         {"text": "private-tool-input-not-for-diagnostics"},
-        ToolContext("call-mcp-123", project, threading.Event(), review_source=source),
+        ToolContext("call-mcp-123", project, threading.Event(), origin=source),
     )
     assert result.is_error and session.store is not original_store
     details = result.details["error"]

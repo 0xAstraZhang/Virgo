@@ -9,12 +9,12 @@ AI、Agent、Harness/Plugins、CLI 分层分别承担传输、执行与应用策
 | 规则 | 维护位置 | 调用方与边界 |
 | --- | --- | --- |
 | OpenAI 推理强度映射 | `ai/providers/reasoning.py` | Chat、Responses、Codex 请求及 `completion_request_metadata()` 共用纯函数；显式映射、模型声明与默认回退保留原优先级。HTTP 客户端、认证和流事件仍由适配器维护。 |
-| 权限模式词汇、显示名称与计划模式工具筛选 | `harness/permissions.py` | Harness 和 CLI 依赖共享契约；`harness/permission_policy.py` 实现必要规则、人工审批回退、缓存和审计；`plugins/auto_review.py` 提供可选模型审查；显示名称可传入会话翻译器。 |
+| 审批与只读能力 | `harness/permissions.py` | ask/never 与 WorkMode 独立；`permission_policy.py` 处理确定性规则、明确授权、执行前复核和审计。来源身份在 `origin_context.py`，不保存第二套审批 transcript。 |
 | 工具上下文对应的可信 Runtime | `AgentSession.runtime_for_context()` | 诊断与 MCP 使用同一身份判定；具体功能负责处理拒绝和执行后续操作。解析不查询当前 UI 选择，不授予新的诊断访问权。 |
 
 推理强度映射只共享真正一致的语义：Chat 兼容接口支持 `reasoningEffortMap`，Responses/Codex 保留各自的 `max → xhigh` 回退。不要用一个带大量分支的通用 Provider 对象掩盖协议差异，也不要在诊断记录里另写一套请求策略。
 
-Runtime 解析要求来源是 `ReviewSource`，来源中的对象是本 Session 的 `Runtime`，来源对象与 Runtime 原始绑定相同，且工具上下文中的 Agent 名称一致。任一不满足就返回 `None`；不要把缺失上下文补成 `session.main`。
+Runtime 解析要求来源是 `ExecutionOrigin`，来源中的对象是本 Session 的 `Runtime`，来源对象与 Runtime 原始绑定相同，且工具上下文中的 Agent 名称一致。任一不满足就返回 `None`；不要把缺失上下文补成 `session.main`。
 
 ## 保留的结构
 
@@ -28,9 +28,9 @@ Runtime 解析要求来源是 `ReviewSource`，来源中的对象是本 Session 
 
 ### 自定义权限策略的能力范围
 
-`PermissionPolicy` 提供普通工具的 `preflight()` 和 `before_execute()` 两个检查点。`api.register_permission_policy()` 将附加限制与必要 Core 策略组合。托管网页操作使用 `api.authorize_tool`，子运行时通过 `api.create_runtime(parent=..., permission=...)` 创建。官方插件不替换 Core 权限门，也不直接修改其他 Runtime 的模式。
+`PermissionPolicy` 提供普通工具的 `preflight()` 和 `before_execute()` 两个检查点。`api.register_permission_policy()` 将附加限制与必要 Core 策略组合。托管网页操作使用 `api.authorize_tool`，子运行时通过 `api.create_runtime(parent=..., read_only=...)` 创建。官方插件不替换 Core 权限门，也不直接修改其他 Runtime 的模式。
 
-范围判断和 `ReviewSource` 位于 Harness。可选模型审批被禁用或失败后，不确定操作仍回退到人工审批。未知调用方明确失败，不能借用当前界面中的对话身份。
+范围判断和 `ExecutionOrigin` 位于 Harness。需要新增授权的操作在 `ask` 下询问用户，在 `never` 下拒绝执行。未知调用方明确失败，不能借用当前界面中的对话身份。
 
 ### MCP 工具注册表发布
 

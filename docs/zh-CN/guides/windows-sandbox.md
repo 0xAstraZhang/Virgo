@@ -4,6 +4,8 @@
 
 ## 验证状态
 
+原生 Windows 隔离在下列已验证的管理员 runner 配置之外仍属于实验性支持。Virgo 在 Windows 上同样默认请求 `workspace-write`；后端不可用或 ACL 权限不足时拒绝 Shell 执行。`--sandbox disabled` 是显式的宿主执行选择，不宣称 OS 隔离。应用不会为使默认行为可用而自行提权或回退到宿主执行。
+
 在提交 `e2e5c94ca9cb4e336092963a11f977cfcc4ee52b` 上，下面两组真实 Windows 环境均通过全部 18 项安全场景，且各自的 XML 报告确认零失败、零错误、零跳过。参见[对应的原生 CI 运行](https://github.com/0xAstraZhang/Virgo/actions/runs/43747132842)。
 
 | 已验证 runner | OS build | PowerShell | Python | 原生验收结果 |

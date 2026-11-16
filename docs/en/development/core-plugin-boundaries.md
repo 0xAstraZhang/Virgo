@@ -33,15 +33,15 @@ Model adapters, hosts and capability plugins have different lifecycles. They nee
 | `background` | Job tools, status, cancellation and owner-bound notifications | Enabled |
 | `web` | Search/fetch routing, permission-aware access and configurable budgets | Enabled |
 | `mcp` | Configured connections, tools and bounded recovery | Only when server configuration exists |
-| `auto_review` | Optional model-assisted review for the Core permission policy | Enabled |
+| `code_review` | Independent read-only code review with frozen targets and validated reports | Enabled |
 
-`minimal` disables the preset's optional capabilities. Explicit `plugins.<id>.enabled` values override the preset. Git remains available through the shell; there is no separate Git plugin.
+`minimal` disables the preset's optional capabilities. Explicit `plugins.<id>.enabled` values override the preset. General Git operations remain available through the shell; [code review](../guides/code-review.md) provides only frozen status/diff views in its isolated Runtime.
 
 The Core owns shell/process execution and cancellation. The background plugin uses those primitives rather than a second executor. The Core also owns diagnostics and the human-facing `/diagnostics` command; disabling `diagnostic_get` only removes the model-facing lookup tool.
 
 ## Runtime invariants
 
-1. Core permission checks run before approval and immediately before execution, including after argument-changing hooks. A missing or failed policy cannot become unrestricted execution. Disabling model-assisted review uses the human approval path for uncertain operations.
+1. Core permission checks run before approval and immediately before execution, including after argument-changing hooks. A missing or failed policy cannot become unrestricted execution. Deterministic rules and explicit user approval authorize operations; a model does not grant permissions.
 2. Runtime identity, stores, diagnostic grants, cancellation and shared request budgets follow the caller. A child cannot raise the parent's permission ceiling. Switching the visible conversation does not transfer ownership.
 3. Tool/command registration records an owner and rejects name collisions. Dynamic replacement validates the full candidate set before publication; new schemas become visible at request boundaries. An executing batch retains its tool snapshot.
 4. MCP recovery validates a candidate before publication and retains a healthy connection when recovery fails. An active old response keeps its original schema and client until its batch completes; retired handles outside that response are rejected. Unused generations are reclaimed at request/turn/end boundaries. Recovery never replays a business operation. This also applies when the replacement advertises identical schemas: every reconnect publishes new handles at a request boundary.

@@ -1,7 +1,7 @@
 """Slash commands and prompt templates.
 
-Prompt templates are Markdown files in ``~/.virgo/prompts/`` or ``.virgo/prompts/``; ``review.md``
-becomes ``/review``. Arguments: ``$1`` ``$2`` …, ``$@`` / ``$ARGUMENTS`` (all), ``${1:-default}``,
+Prompt templates are Markdown files in ``~/.virgo/prompts/`` or ``.virgo/prompts/``; ``explain.md``
+becomes ``/explain``. Arguments: ``$1`` ``$2`` …, ``$@`` / ``$ARGUMENTS`` (all), ``${1:-default}``,
 ``${@:2}`` (from the 2nd on).
 """
 
@@ -25,13 +25,14 @@ if TYPE_CHECKING:
 @dataclass
 class Command:
     name: str
-    fn: Callable  # fn(session, args: str) -> None
+    fn: Callable  # fn(session, args: str[, origin_runtime for isolated tasks]) -> None
     description: str = ""
     source: str = "builtin"
     argument_hint: str = field(default="", kw_only=True)
     description_key: str = field(default="", kw_only=True)
     argument_hint_key: str = field(default="", kw_only=True)
     concurrent: bool = False  # only reads state: may run while the agent is busy
+    isolated: bool = field(default=False, kw_only=True)  # host task; bypass prompt hooks/templates
 
 
 class Commands:
@@ -50,6 +51,7 @@ class Commands:
         argument_hint: str = "",
         description_key: str = "",
         argument_hint_key: str = "",
+        isolated: bool = False,
     ) -> None:
         key = name.lstrip("/")
         if key in self._cmds:
@@ -57,6 +59,7 @@ class Commands:
         self._cmds[name.lstrip("/")] = Command(
             name.lstrip("/"), fn, description, source, concurrent, argument_hint=argument_hint,
             description_key=description_key, argument_hint_key=argument_hint_key,
+            isolated=isolated,
         )
 
     def remove_source(self, source: str) -> None:
@@ -98,11 +101,13 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     return {}, text
 
 
-def load_templates(dirs: list[Path]) -> dict[str, tuple[str, str]]:
+def load_templates(dirs: list[Path], *, reserved: frozenset[str] = frozenset()) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
     for d in dirs:
         if d.is_dir():
             for f in sorted(d.glob("*.md")):
+                if f.stem in reserved:
+                    raise ValueError(f"Prompt template {f} conflicts with reserved command /{f.stem}; rename the template.")
                 meta, body = parse_frontmatter(f.read_text(encoding="utf-8"))
                 out[f.stem] = (str(meta.get("description", "")), body.strip())
     return out

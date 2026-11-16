@@ -77,30 +77,37 @@ def test_aborted_summary_keeps_context_and_counts_usage(make_session):
     assert not session.main.agent.signal.is_set()
 
 
-@pytest.mark.parametrize("reply,answer,source,decision", [
-    (faux.reply('{"decision":"allow","risk":"low","authorization":"implicit","reason":"public download","evidence_ids":[]}'), None, "auto-review", "allow"),
-    (faux.reply('{"decision":"ask","risk":"unknown","authorization":"unknown","reason":"unknown script","evidence_ids":[]}'), "n", "auto-review", "deny"),
-    (faux.reply("invalid"), "y", "review-error", "allow"),
-    (faux.error("unavailable"), None, "review-error", "deny"),
+@pytest.mark.parametrize("approval,answer,decision", [
+    ("ask", "y", "allow"),
+    ("ask", "n", "deny"),
+    ("ask", "a", "allow"),
+    ("never", None, "deny"),
+], ids=[
+    "reply0-None-auto-review-allow", "reply1-n-auto-review-deny",
+    "reply2-y-review-error-allow", "reply3-None-review-error-deny",
 ])
-def test_permission_audit_records_review_and_final_decision(make_session, tmp_path, reply, answer, source, decision):
+def test_permission_audit_records_review_and_final_decision(make_session, tmp_path, approval, answer, decision):
+    # Preserve the comparison identities while auditing explicit policy and human
+    # decisions instead of the retired model reviewer.
     ui = RecordingUI(answers=[answer])
-    session = make_session(ui=ui, mode="auto-review", persist=True)
-    session.small_model = session.resolve("faux/reviewer")
-    faux.script("reviewer", reply)
+    session = make_session(ui=ui, allow=False, approval=approval, persist=True)
     ev = tool_call_event(session, "write", {"path": str(tmp_path / "outside"), "content": "private payload"})
     permissions = session.services["permissions"]
     permissions.on_tool_call(ev, session)
     audit = session.store.custom("permission_decision")
-    assert audit[0]["source"] == source
+    assert audit[0]["source"] == ("manual-approval" if approval == "ask" else "approval-never")
     assert audit[-1]["decision"] == decision
-    assert audit[0]["model"] == "faux/reviewer"
+    assert audit[0]["approval_policy"] == approval
+    assert audit[0]["work_mode"] == "default" and not audit[0]["read_only"]
+    assert all("model" not in record for record in audit)
     assert audit[0]["tool_call_id"] == ev.call_id
     assert audit[0]["reason"]
     assert audit[0]["duration"] >= 0
-    calls = session.store.custom("model_call")
-    assert len(calls) == 1 and calls[0]["tool_call_id"] == ev.call_id
-    assert calls[0]["usage"]["input"] > 0
+    assert not session.store.custom("model_call")
+    if approval == "ask":
+        assert audit[-1]["source"] == "human" and len(audit) == 2
+    else:
+        assert len(audit) == 1 and not ui.questions
     assert "private payload" not in session.store.path.read_text()
     if decision == "allow":
         snapshot = copy.deepcopy(session.store.entries)
@@ -109,14 +116,13 @@ def test_permission_audit_records_review_and_final_decision(make_session, tmp_pa
 
 
 def test_revalidation_has_auditable_argument_change(make_session, tmp_path):
-    session = make_session(mode="auto-review")
-    session.small_model = session.resolve("faux/reviewer")
-    faux.script("reviewer", faux.reply('{"decision":"allow","risk":"low","authorization":"implicit","reason":"known output","evidence_ids":[]}'))
+    session = make_session(allow=False, ui=RecordingUI(answers=["y"]))
     ev = tool_call_event(session, "write", {"path": "inside", "content": "one"})
     perms = session.services["permissions"]
     perms.on_tool_call(ev, session)
     ev.args["path"] = str(tmp_path / "outside")
     perms.before_execute(ev)
     decisions = session.store.custom("permission_decision")
-    assert [d["source"] for d in decisions] == ["workspace", "auto-review"]
+    assert [d["source"] for d in decisions] == ["workspace", "manual-approval", "human"]
     assert decisions[0]["arguments_sha256"] != decisions[1]["arguments_sha256"]
+    assert decisions[1]["arguments_sha256"] == decisions[2]["arguments_sha256"]

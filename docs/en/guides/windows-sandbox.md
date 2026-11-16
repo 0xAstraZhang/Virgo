@@ -4,6 +4,8 @@
 
 ## Validation status
 
+Native Windows isolation is experimental outside the validated administrative runner configurations below. Virgo requests `workspace-write` by default, including on Windows; an unavailable backend or insufficient ACL rights refuses Shell execution. `--sandbox disabled` is an explicit host-execution choice and does not preserve an OS isolation claim. The application never elevates itself or falls back to host execution to make the default work.
+
 The real Windows security suite passed all 18 scenarios on both environments below at revision `e2e5c94ca9cb4e336092963a11f977cfcc4ee52b`. Each job also validated its XML report with zero failures, errors or skips. See [the exact native run](https://github.com/0xAstraZhang/Virgo/actions/runs/43747132842).
 
 | Validated runner | OS build | PowerShell | Python | Native result |

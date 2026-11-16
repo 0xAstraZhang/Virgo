@@ -41,7 +41,7 @@ def test_minimal_coding_loop_and_resume_without_plugin_imports(make_session, pro
     session.prompt("Edit and verify the requested file")
     assert (project / "answer.txt").read_text() == "after\n"
     assert len(tool_results(session)) == 4 and not any(result.is_error for result in tool_results(session))
-    assert set(calls()[0]["tools"]) == {"read", "write", "edit", "glob", "grep", shell.tool_name}
+    assert set(calls()[0]["tools"]) == {"read", "write", "edit", "glob", "grep", "git_read", shell.tool_name}
     assert all(request["system"] == calls()[0]["system"] for request in calls())
     restored = SessionStore.load(session.store.path)
     assert restored.build_context()[0] == session.main.messages
@@ -55,10 +55,11 @@ def test_minimal_coding_loop_and_resume_without_plugin_imports(make_session, pro
         session.prompt('hello')
         assert not any(name.startswith(('virgo.features.', 'virgo.plugins.')) for name in sys.modules)
         assert {t.ident for t in threading.enumerate()} == before
-        # The Core planning artifact tool is registered without loading plugins;
-        # Default requests still publish only the original six coding tools.
-        assert len(session.main.tools) == 7
+        # Core supplies a planning artifact and controlled committed Git reads
+        # without importing any plugin, even in the minimal profile.
+        assert len(session.main.tools) == 8
         assert any(tool.name == 'propose_plan' for tool in session.main.tools)
+        assert any(tool.name == 'git_read' for tool in session.main.tools)
         session.shutdown()
         print('isolated')
     """)
@@ -69,7 +70,7 @@ def test_minimal_coding_loop_and_resume_without_plugin_imports(make_session, pro
 
 def test_minimal_permission_rechecks_hook_rewritten_arguments(make_session, project):
     session = make_session(faux.reply(tools=[("write", {"path": "allowed.txt", "content": "x"})]),
-                           faux.reply("done"), mode="auto-review", settings={"profile": "minimal",
+                           faux.reply("done"), allow=False, settings={"profile": "minimal",
                                                          "permissions": {"deny": ["write(secret.txt)"]}})
     ExtensionAPI(session, "rewrite").on("tool_call", lambda event, _: event.args.update(path="secret.txt"))
     session.prompt("write only allowed.txt")
@@ -154,14 +155,15 @@ def test_project_extensions_require_trust_outside_the_project(make_session, proj
 
 
 def test_children_share_budget_permission_ceiling_and_cancellation(make_session, project):
-    session = make_session(settings={"profile": "minimal", "budget": {"maxModelCalls": 2}}, mode="plan")
+    session = make_session(settings={"profile": "minimal", "budget": {"maxModelCalls": 2}}, work_mode="plan")
     api = ExtensionAPI(session, "delegate")
-    child = api.create_runtime("child", "subagent", parent=session.main, permission="accept-all")
+    child = api.create_runtime("child", "subagent", parent=session.main, read_only=False)
     faux.script("test", faux.reply(tools=[("write", {"path": "forbidden.txt", "content": "x"})]),
                 faux.reply("child done"), faux.reply("must not be called"))
     child.agent.prompt("write")
     assert not (project / "forbidden.txt").exists()
-    assert session.services["permissions"].mode_for("child") == "plan"
+    assert session.services["permissions"].work_mode_for(child) == "plan"
+    assert child.read_only and session.services["permissions"].is_read_only(child)
     session.prompt("a third request would exceed the shared budget")
     assert len(calls()) == 2
     assert session.main.messages[-1].stop_reason == "error"

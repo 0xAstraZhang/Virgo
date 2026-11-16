@@ -4,7 +4,7 @@
 
 模型只会获得当前角色、配置和能力允许的工具。扩展、MCP 连接和网页路由可能改变实际列表。工具名、参数名和枚举值不随界面语言变化。
 
-Core 负责文件、所选 Shell 和 ProposedPlan 工具。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供。可使用默认 `coding` 预设，或通过 `plugins.<id>.enabled` 选择能力；`--profile minimal --no-extensions` 仅暴露当前 WorkMode 允许的 Core 工具。详见[配置](configuration.md#预设与插件)。
+Core 负责文件、所选 Shell、已提交 Git 内容读取和 ProposedPlan 工具。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供。可使用默认 `coding` 预设，或通过 `plugins.<id>.enabled` 选择能力；`--profile minimal --no-extensions` 仅暴露当前 WorkMode 允许的 Core 工具。详见[配置](configuration.md#预设与插件)。
 
 ## 文件、命令与网页
 
@@ -15,6 +15,7 @@ Core 负责文件、所选 Shell 和 ProposedPlan 工具。下列可选工具由
 | `edit` | 替换文件中精确匹配的文本 |
 | `glob` | 按模式查找路径 |
 | `grep` | 搜索文件内容 |
+| `git_read` | 读取本地已提交日志、补丁或两个提交之间的差异，不执行仓库 helper |
 | `bash`／`powershell` | 使用选定的解释器执行命令 |
 | `web_search` | 通过已暴露的客户端后端搜索 |
 | `web_fetch` | 通过已暴露的客户端后端读取网页 |
@@ -23,7 +24,7 @@ Core 负责文件、所选 Shell 和 ProposedPlan 工具。下列可选工具由
 
 ## 清单与提问
 
-`propose_plan(markdown)` 发布或替换完整 Markdown ProposedPlan。它属于 Core，仅对 Plan 中的主 Runtime 可用；保存带版本的对话元数据，不写项目文件，也不授权执行。修订会使旧确认失效。`/plan` 显示方案，`/plan execute <plan-id>:<revision>` 是用户明确开始执行的操作。编辑、恢复和权限边界见[先规划，再执行](../guides/planning.md)。
+`propose_plan(markdown)` 发布或替换完整 Markdown ProposedPlan。它属于 Core，仅对 Plan 中的主 Runtime 可用；保存带版本的对话元数据，不写项目文件，也不授权执行。修订会使旧版本的执行选择失效。`/plan` 显示方案，`/plan execute <plan-id>:<revision>` 是用户明确开始执行的操作。编辑、恢复和权限边界见[先规划，再执行](../guides/planning.md)。
 
 `todo_write` 使用传入的完整列表替换现有执行清单。状态为 `pending`、`in_progress` 和 `completed`，允许多个事项同时进行；输入不合法时保留旧列表。`/todos` 显示清单，未完成事项本身不会强制触发下一轮模型调用。Plan 中隐藏并拒绝该工具：ProposedPlan 说明方案，Todo 在 Default 中跟踪执行进度。确认计划不会自动创建 Todo，也不引入第二套任务存储。
 
@@ -31,7 +32,7 @@ Core 负责文件、所选 Shell 和 ProposedPlan 工具。下列可选工具由
 
 ## 聚焦的子 Agent
 
-`agent(description, prompt, read_only=false, background=false)` 使用独立上下文处理任务并返回最终答案，所需上下文必须包含在任务提示里。`read_only=true` 仅允许 `read`、`glob`、`grep`、`bash`，并通过 `plan` 模式限制 Shell 命令（无 PowerShell）；这不是操作系统沙箱。默认子代理不施加额外限制，但不能突破父代理权限上限。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。达到轮数上限、最终回答中断或最终回答为空时，会明确报告**未完成**，而不是成功。子代理失败时，父代理能收到有长度限制的近期工具错误原因及明确传递的诊断证据；成功时仍只返回最终回答。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
+`agent(description, prompt, read_only=false, background=false)` 使用独立上下文处理任务并返回最终答案，所需上下文必须包含在任务提示里。`read_only=true` 仅允许 `read`、`glob`、`grep` 和受控 `git_read`，不提供任意 Shell。只读能力与操作系统沙箱分别设置。默认子代理不施加额外限制，但不能突破父代理权限上限。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。达到轮数上限、最终回答中断或最终回答为空时，会明确报告**未完成**，而不是成功。子代理失败时，父代理能收到有长度限制的近期工具错误原因及明确传递的诊断证据；成功时仍只返回最终回答。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 ## 后台任务
 

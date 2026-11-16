@@ -10,6 +10,7 @@ import pytest
 
 from virgo.ai.providers import faux
 from virgo.harness.session import AgentSession
+from virgo.harness.settings import deep_merge
 
 from tests.support.harness import RecordingUI
 from tests.support.terminal import HAS_PTY
@@ -68,15 +69,18 @@ def python_command(tmp_path):
 def make_session(project):
     made = []
 
-    def factory(*responses, ui=None, mode="accept-all", persist=False, settings=None, **kw) -> AgentSession:
+    def factory(*responses, ui=None, approval="ask", allow=True, persist=False, settings=None, **kw) -> AgentSession:
         faux.script("test", *responses)
         s = AgentSession(
             kw.pop("cwd", project),
             ui=ui or RecordingUI(),
             model="faux/test",
             session=kw.pop("session", "new" if persist else None),
-            permission_mode=mode,
-            settings=settings,
+            approval_policy=approval,
+            settings=deep_merge({
+                "sandbox": {"mode": "disabled"},
+                "permissions": {"allow": ["*"] if allow else []},
+            }, settings or {}),
             # These local fixtures create their own extension files deliberately.
             trust_project_extensions=kw.pop("trust_project_extensions", True),
             **kw,

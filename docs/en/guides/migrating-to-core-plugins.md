@@ -23,8 +23,7 @@ virgo --profile minimal --no-extensions
   "plugins": {
     "web": {"enabled": true},
     "mcp": {"enabled": false},
-    "todo": {"enabled": true},
-    "auto_review": {"enabled": true}
+    "todo": {"enabled": true}
   }
 }
 ```
@@ -36,10 +35,10 @@ Only known plugin IDs are accepted. Defaults merge with user settings, then proj
 | `features.skills`, `todo`, `ask_user`, `subagent`, `background`, `mcp` | `plugins.<id>.enabled` |
 | `features.diagnostics` | `plugins.diagnostic_get.enabled`; Core diagnostics remain available |
 | `features.search`, `features.fetch` | `plugins.web.searchEnabled`, `plugins.web.fetchEnabled`; the `web` plugin groups both capabilities |
-| `features.permission=false` | `plugins.auto_review.enabled=false` with a notice; Core permissions remain installed |
+| `features.permission`, `plugins.auto_review` | Retired; configure Core `permissions.approval` and explicit grants |
 | Removed feature flags and `memory`, `workflow`, `goal` settings | Notice only; no automatic work or storage migration |
 
-To deliberately bypass permission review, use the existing explicit `permissions.mode=accept-all`; disabling a feature is no longer a permission bypass. With `auto_review` disabled, workspace rules and the execution checks remain; uncertain operations require human approval and fail closed when no approver is available.
+Legacy `features.permission` and `plugins.auto_review` are retired. Follow [execution-policy migration](migrating-execution-policy.md) for `permissions.approval`, explicit grants and independent WorkMode.
 
 `search.maxUses` and `fetch.maxUses` default to `null` rather than three. Configure a positive explicit limit when required. `plugins.web.maxCalls` can bound client search and reading together per calling runtime/user request; operation time and output limits remain. See [Web](web.md).
 
@@ -48,7 +47,7 @@ To deliberately bypass permission review, use the existing explicit `permissions
 The `agent` tool accepts `description`, `prompt`, optional `read_only` and optional `background`. The `type` parameter is removed and calls containing it are rejected.
 
 - Replace `type="general"` with an omitted type argument; unrestricted delegation is the default.
-- Replace `type="explore"` with `read_only=true`. Only `read`, `glob`, `grep` and plan-checked `bash` are available, not PowerShell. This is not an OS sandbox.
+- Replace `type="explore"` with `read_only=true`. Only `read`, `glob`, `grep` and controlled `git_read` are available. Read-only capability is separate from the OS sandbox.
 - Move custom `agents/*.md` instructions into a Skill or delegated prompt; use trusted extensions for custom model and tool policies.
 
 Virgo no longer loads `~/.virgo/agents/*.md` or `.virgo/agents/*.md`. Existing files are not deleted or rewritten; archive or migrate them manually.

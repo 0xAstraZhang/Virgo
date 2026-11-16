@@ -12,7 +12,7 @@ These files show how a project can extend Virgo. Copy only the parts you need in
 | [Settings](project/.virgo/settings.json) | `.virgo/settings.json` | Language, effort, shell, permissions and an optional local API |
 | [MCP configuration](project/.virgo/mcp.json) | `.virgo/mcp.json` | Disabled placeholder for a stdio server |
 | [Secret-file guard](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | A tool hook and a `/stats` command |
-| [Review template](project/.virgo/prompts/review.md) | `.virgo/prompts/review.md` | `/review` with arguments |
+| [Review template](project/.virgo/prompts/inspect.md) | `.virgo/prompts/inspect.md` | `/inspect` with arguments |
 | [Code-review skill](project/.virgo/skills/code-review/SKILL.md) | `.virgo/skills/code-review/` | A skill with a separate checklist |
 
 `project/.virgo/` mirrors Virgo's runtime project configuration directory. The enclosing `project/` keeps the sample discoverable; it is not part of the destination path. `AGENTS.example.md` belongs at the project root, not inside `.virgo/`.
@@ -23,7 +23,7 @@ After copying the files, start Virgo in the destination project. For example, in
 
 ```bash
 mkdir -p /path/to/project/.virgo/prompts
-cp examples/project/.virgo/prompts/review.md /path/to/project/.virgo/prompts/review.md
+cp examples/project/.virgo/prompts/inspect.md /path/to/project/.virgo/prompts/inspect.md
 ```
 
 Copy the code-review skill as well if you want the review template's named skill available. Restart Virgo after adding extensions, templates, skills or agent types.

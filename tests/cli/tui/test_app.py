@@ -18,8 +18,6 @@ from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalPicker, SessionPicker
 from virgo.cli.tui.transcript import AssistantView
-from virgo.harness.permission_policy import ReviewDecision
-from virgo.plugins import auto_review as permission_module
 
 from tests.support.tui import has_reply, wait_for
 
@@ -245,8 +243,7 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
         (("right", "right", "right", "enter"), "n"),
     ],
 )
-def test_permission_answers_control_real_file_writes(make_session, project, monkeypatch, keys, answer):
-    monkeypatch.setattr(permission_module, "review_tool_call", lambda *_: ReviewDecision("ask", "writes outside the workspace"))
+def test_permission_answers_control_real_file_writes(make_session, project, keys, answer):
     outside = project.parent / "outside"
     outside.mkdir()
 
@@ -255,7 +252,7 @@ def test_permission_answers_control_real_file_writes(make_session, project, monk
         calls = [("write", {"path": str(outside / "approved.txt"), "content": "first"})]
         if answer == "a":
             calls.append(("write", {"path": str(outside / "approved.txt"), "content": "first"}))
-        session = make_session(faux.reply(tools=calls), faux.reply("finished"), ui=ui, mode="auto-review")
+        session = make_session(faux.reply(tools=calls), faux.reply("finished"), ui=ui, allow=False)
         app = VirgoApp(session, ui, initial="write files")
         async with app.run_test(size=(80, 24)) as pilot:
             picker = app.query_one(ApprovalPicker)
@@ -291,7 +288,7 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 await wait_for(pilot, lambda: has_reply(app, "Earlier response.") and not app.controller.busy)
                 draft = "Keep this draft\n第二行"
                 app.editor.load_text(draft)
-                original_mode = session.permission_mode
+                original_mode = session.approval_policy
                 worker.start()
                 picker = app.query_one(ApprovalPicker)
                 await wait_for(pilot, lambda: picker.display)
@@ -317,7 +314,7 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 await pilot.pause()
                 assert question.scroll_y > 0
                 await pilot.press("ctrl+r", "shift+tab")
-                assert isinstance(app.screen, SessionPicker) and session.permission_mode == original_mode
+                assert isinstance(app.screen, SessionPicker) and session.approval_policy == original_mode
                 assert not answers and app.screen.current_status == "Waiting"
                 await pilot.press("escape")
                 assert not app.has_modal and picker.display and not answers
@@ -494,14 +491,21 @@ def test_slow_shutdown_keeps_ui_responsive(make_session):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize(("mode", "label"), [("auto-review", "auto review"), ("accept-all", "accept all"), ("plan", "plan")])
-def test_status_preserves_fields_with_wide_path_and_long_model(make_session, project, mode, label):
+@pytest.mark.parametrize(
+    ("approval", "work_mode", "approval_label"),
+    [
+        pytest.param("ask", "default", "ask when needed", id="auto-review-auto review"),
+        pytest.param("never", "default", "never ask", id="accept-all-accept all"),
+        pytest.param("ask", "plan", "ask when needed", id="plan-plan"),
+    ],
+)
+def test_status_preserves_fields_with_wide_path_and_long_model(make_session, project, approval, work_mode, approval_label):
     directory = project / ("中文项目" * 15)
     directory.mkdir()
 
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, cwd=directory, mode=mode)
+        session = make_session(ui=ui, cwd=directory, approval=approval, work_mode=work_mode)
         session.main.model.id = "a-very-long-模型-name-" * 6
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
@@ -515,12 +519,17 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
                 model_line = str(status.content)
                 assert "\n" not in model_line
                 assert cell_len(model_line) == width - 2
-                assert model_line.startswith(label + "  ")
+                work_label = session.t("work_mode." + session.services["permissions"].work_mode)
+                authority = f"{work_label} · {approval_label} · sandbox: disabled"
+                assert model_line.startswith(work_label + " · ")
+                if cell_len(authority) <= width - 2:
+                    assert model_line.startswith(authority)
                 assert status.render_line(0).text == model_line
                 assert "ready" not in model_line
                 assert str(metrics.content).startswith("↑0 ↓0")
                 assert cell_len(str(metrics.content)) <= width - 2
-                assert model_line.endswith(f" · {session.effort}")
+                if width - 2 - cell_len(authority) - 2 >= cell_len(f" · {session.effort}") + 1:
+                    assert model_line.endswith(f" · {session.effort}")
                 assert "faux/" not in model_line
                 assert metrics.region.bottom == app.editor.region.y
                 assert app.editor.region.bottom == status.region.y
@@ -540,7 +549,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
     monkeypatch.setenv("TERM_PROGRAM", terminal)
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, mode="auto-review")
+        session = make_session(ui=ui, allow=False)
         session.main.model.provider = "deepseek"
         session.main.model.id = "deepseek-flash"
         app = VirgoApp(session, ui)
@@ -567,7 +576,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             assert metrics.render_line(0).text.startswith(" ")
             assert status.styles.text_align == "left"
             status_line = status.render_line(0).text
-            assert status_line.startswith("auto review  ")
+            assert status_line.startswith("Default · ask when needed · sandbox: disabled  ")
             assert status_line.endswith(f"deepseek-flash · {session.effort}")
             assert cell_len(status_line) == app.editor.region.width
             assert metrics.region.bottom == app.editor.region.y
@@ -586,19 +595,21 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
 def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, mode="auto-review")
+        session = make_session(ui=ui, allow=False)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             app.editor.load_text("unfinished task")
             for mode, label, color in (
-                ("accept-all", "accept all", "#DC2626"),
-                ("plan", "plan", "#2563EB"),
-                ("auto-review", "auto review", "#B8860B"),
+                ("plan", "Plan (read-only)", "#2563EB"),
+                ("default", "Default", "#7C3AED"),
+                ("plan", "Plan (read-only)", "#2563EB"),
             ):
                 await pilot.press("shift+tab")
-                assert session.permission_mode == mode
+                await wait_for(pilot, lambda mode=mode: session.services["permissions"].work_mode == mode)
+                assert session.approval_policy == "ask"
+                assert session.services["sandbox"].mode == "disabled"
                 text = app.query_one("#status", Static).content
-                assert text.plain.startswith(label + "  ")
+                assert text.plain.startswith(label + " · ask when needed · sandbox: disabled  ")
                 assert text.get_style_at_offset(app.console, 0).color.get_truecolor() == Color.parse(color).rgb
                 assert app.editor.text == "unfinished task"
                 assert app.focused is app.editor

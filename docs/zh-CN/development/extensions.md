@@ -45,7 +45,7 @@ def setup(api):
     )
 ```
 
-`execute(args, ctx)` 返回 `ToolResult` 或字符串。`ToolContext` 提供 `cwd`、`call_id`、`signal`、`agent`、可选进度回调和绑定的审查来源。执行时应响应取消。`content` 是模型可见内容；`details` 是结构化状态／UI 数据。已知失败返回 `ToolResult.error(...)`，其他异常交由 Core 保留类型与堆栈。
+`execute(args, ctx)` 返回 `ToolResult` 或字符串。`ToolContext` 提供 `cwd`、`call_id`、`signal`、`agent`、可选进度回调，以及绑定的 `ExecutionOrigin` 对象 `origin`。适配或延后执行操作时保留 `ctx.origin`；即使切换到其他对话，它仍标识原调用方。执行时应响应取消。`content` 是模型可见内容；`details` 是结构化状态／UI 数据。已知失败返回 `ToolResult.error(...)`，其他异常交由 Core 保留类型与堆栈。
 
 `AgentTool` 支持 `sequential`、`prepare_arguments` 和本地化元数据。工具名、参数键与枚举值是协议契约，不应翻译。`i18n_key`、`api.t`、`ctx.t` 见[本地化](localization.md)。
 
@@ -75,8 +75,8 @@ def setup(api):
 | `api.settings`、`api.paths`、`api.cwd`、`api.ui`、`api.t` | 生效配置、资源路径和 Host 服务 |
 | `api.current_runtime()`、`api.current_store()` | 在命令或初始化入口捕获当前归属 |
 | `api.runtime_for_context(ctx)` | 解析工具真实调用方，不借用当前选中的对话 |
-| `api.create_runtime(name, role, parent=..., permission=..., ...)` | 创建继承权限上限、记账、取消和共享请求预算的子运行时 |
-| `api.release_runtime(runtime)` | 释放完成后的子运行时注册及关联权限状态 |
+| `api.create_runtime(name, role, parent=..., read_only=True, ...)` | 创建继承能力与审批上限、记账、取消和共享请求预算的受限子运行时 |
+| `api.release_runtime(runtime)` | 释放完成后的子运行时注册及 Store 保存失败信号绑定 |
 | `api.reserve_child_work(store)` | 为已捕获的归属登记待执行代理工作，返回可重复调用的释放函数 |
 | `api.tools_for(role)`、`api.resolve(spec)` | 解析角色工具和模型配置 |
 | `api.authorize_tool(event)` | 为适配操作应用 Core 预检、钩子和执行前权限门 |
@@ -84,15 +84,15 @@ def setup(api):
 | `api.report_error(..., store=owner)`、`api.retain_diagnostics(owner, records)` | 保留归属明确的诊断证据 |
 | `api.complete(...)` | 使用 Core 请求策略发起记账明确的辅助模型请求 |
 
-`runtime_for_context` 验证真实 Runtime、所属 Session、原始审查来源对象和 Agent 名称；非法或外来来源返回 `None`，请求应明确失败。解析 Runtime 不授予其他证据访问权。工具调用应通过该入口解析身份，不能改用 `current_runtime()`；后者用于在入口刻意捕获当前对话。
+`runtime_for_context` 验证真实 Runtime、所属 Session、原始 `ExecutionOrigin` 对象的严格身份和 Agent 名称；非法或外来来源返回 `None`，请求应明确失败。解析 Runtime 不授予其他证据访问权。工具调用应通过该入口解析身份，不能改用 `current_runtime()`；后者用于在入口刻意捕获当前对话。
 
-子 Runtime 工厂接收显式可信父对象，防止子任务提高父运行时的权限等级。配置后，`budget.maxModelCalls` 限制与子任务共享的模型请求数；`subagents.maxTurns` 仍限制单个聚焦子任务的轮数。插件不应另建独立 AgentSession 来绕过归属或预算。
+向子 Runtime 工厂传入已捕获的可信父对象。`read_only=True` 独立于 WorkMode 收紧工具能力；即使省略该参数或传入 false，子任务仍继承父运行时的只读上限。子任务也可选择 `approval_policy="never"`，但不能放宽父运行时的 `never` 上限。工厂将 `origin_parent` 固定为 `parent.origin`，共享记账与请求预算，并传播取消信号。配置后，`budget.maxModelCalls` 限制与子任务共享的模型请求数；`subagents.maxTurns` 仍限制单个聚焦子任务的轮数。插件不应另建独立 AgentSession 来绕过归属或预算。
 
-`api.services` 仅用于明确的共享服务契约。`api.session` 在 0.2 系列作为兼容入口保留，官方插件使用 facade。不要修改 `_tools`、`_lock`、`main` 或 UI 选择状态。保留能力的 `virgo.features` 导入路径同样只是临时别名，需在 0.3 前迁移。
+`api.services` 仅用于明确的共享服务契约。`api.session` 在 0.2 系列作为兼容入口保留，官方插件使用 facade。不要修改 `_tools`、`_lock`、`main` 或 UI 选择状态。保留能力的 `virgo.features` 导入路径仍是临时别名，需在 0.3 前迁移；原 `virgo.features.permission*` 导入已经删除，应使用本文中的 Core API。
 
 ## 事件与权限
 
-`api.on(event, handler, priority=0)` 返回取消订阅函数；优先级高的先执行，同优先级保持注册顺序。事件签名保留：
+`api.on(event, handler, priority=0)` 返回取消订阅函数；优先级高的先执行，同优先级保持注册顺序。主要事件契约如下：
 
 | 事件 | 处理器契约 |
 | --- | --- |
@@ -100,7 +100,6 @@ def setup(api):
 | `input` | `(text, session)` → 替换文本、`Handled` 或 `None` |
 | `user_steer` | `(text, session)` |
 | `before_agent_start` | `(runtime, prompts)` |
-| `runtime_pending_work` | `(runtime)` → 此来源拥有排队或运行中的子代理工作时返回 `True`，否则返回 `False` |
 | `agent_event`、`turn_end` | `(event, runtime)` |
 | `tool_call` | `(event, session)` → `Block` 或 `None`；可调整参数 |
 | `tool_result` | `(result, event, session)` → 替换结果或 `None` |
@@ -108,22 +107,24 @@ def setup(api):
 | `agent_stop` | `(runtime)` → `Continue` 或 `None` |
 | `agent_end`、`before_compact` | `(runtime)` |
 | `compact` | `(runtime, summary)` |
+| `work_mode_changed` | `(origin_runtime, mode)`；观察已提交的模式状态 |
+| `proposed_plan_changed` | `(origin_runtime, proposal)`；观察已提交的计划提案 |
 
 `Block(reason)` 阻止工具；只有明确启用的继续策略才使用 `Continue(text)`。处理器失败进入诊断并与后续处理器隔离。上下文视图应保留追加式的消息前缀。
 
 发布排队中的代理工作或启动工作线程前，使用已捕获的来源记账 Store 调用 `api.reserve_child_work(owner)`。完成或启动失败时释放登记；释放必须在插件锁之外、向调用方发出完成信号之前进行。登记和释放使用与模式准入相同的 Core 锁。登记保留来源 Runtime 供策略检查，直到最后一个待完成任务释放，即使对话已被删除。官方后台服务为 callable 代理任务登记，子进程仍保留启动时策略。
 
-Core 在退出 Plan 或确认执行前也会查询 `runtime_pending_work`；处理器失败或返回非明确 `False` 的结果都会继续阻止准入，回答仅针对传入的来源。同步处理器返回后，Core 检查所选对话、提案和模式，再检查待执行登记及活跃运行时。因此，后续观察者登记的工作无需重复调用处理器就能被发现。选择发生变化时拒绝较早的准入，不回滚处理器作出的较新选择。
+Core 根据自身管理的待执行登记和运行中的 Runtime（含子代）判断来源是否忙碌。实际模式切换与显式计划执行要求该来源空闲；原 `runtime_pending_work` 检查钩子已退休。状态通知在持久化与状态发布后触发。观察者可以刷新 UI，但不能同步重入修改模式或计划、选择对话或登记新工作。后续显式操作应在通知返回后通过正常准入入口发起。
 
-`api.register_permission_policy(policy)` 在必要的 Core 策略后添加限制，不能替换 Core 权限门。策略实现 `preflight(event)` 和 `before_execute(event)`，第二次检查捕获预检后的变化。托管／适配操作需使用 `api.authorize_tool`；`read_only` 标记不是授权。Python 本身仍是可信代码，不在沙箱中执行。
+`api.register_permission_policy(policy)` 增加硬性限制，不能替换必要的 Core 授权策略。实现 `preflight(event)` 和 `before_execute(event)`，拒绝时返回 `Block(reason)`，继续时返回 `None`。两个检查点都先运行 Sandbox 和附加策略，再由 Core 检查能力上限、deny、已有授权及是否需要人工批准，避免为硬边界已经禁止的操作弹出审批。第二个检查点位于工具调用钩子和参数调整之后。托管／适配操作应携带原调用方上下文，使用 `api.authorize_tool(event)`。`AgentTool.read_only` 声明可信工具的能力，不授予所有操作，也不绕过其他策略。Python 扩展本身仍是 Shell 沙箱之外的可信代码。
 
-权限模式与辅助函数位于 `virgo.harness.permissions`；具体权限门、范围判断和审查来源契约同样属于 Harness。`auto_review` 通过 `register_permission_reviewer` 提供可选模型审查；禁用它仍保留规则和不确定操作的人工审批。
+Core 在 `harness/permission_policy.py` 执行确定性权限规则。`harness/permissions.py` 只定义 ask/never 审批和只读能力检查；`harness/origin_context.py` 固定来源 Runtime、工作区和记账分支。模型审批及 `register_permission_reviewer` 已退休。插件只能通过 `register_permission_policy` 增加限制。
 
 配置命令钩子支持 `PreToolUse`、`PostToolUse`、`UserPromptSubmit`、`Stop`，从 stdin 读取 JSON。退出码 `2` 表示相应事件的阻止／继续，stderr 提供反馈；其他失败记录诊断。匹配与准确语义见 [`extensions.py`](../../../src/virgo/harness/extensions.py)。
 
 ## 提示章节与状态
 
-`api.add_system_section(name, fn, order=50)` 调用 `fn(role)`。`add_runtime_system_section(name, fn, order=50)` 提供候选 `RuntimeContext`，包含角色、cwd、Store、记账 Store 和审查父来源。构造失败会拒绝候选，不应临时替换当前会话状态。
+`api.add_system_section(name, fn, order=50)` 调用 `fn(role)`。`add_runtime_system_section(name, fn, order=50)` 提供候选 `RuntimeContext`，包含 `role`、`cwd`、`store`、`accounting_store` 和 `origin_parent`；最后一项是已捕获的父 `ExecutionOrigin`，根运行时为 `None`。构造失败会拒绝候选，不应临时替换当前会话状态。
 
 `api.append_entry(kind, data)` 和 `api.entries(kind)` 访问当前 Store 的自定义状态。后台工作需先捕获真实所有者，再使用其 Store 和 `api.notify(..., store=owner)`。保存失败是真正的执行边界，不能当作持久化成功。Todo 仍是当前对话状态，不是持久任务图。
 
@@ -131,15 +132,21 @@ Core 在退出 Plan 或确认执行前也会查询 `runtime_pending_work`；处�
 
 技能包含 YAML frontmatter（`name`、`description`）和 Markdown。发现阶段展示索引，模型按需读取正文；`/skill:name args` 显式展开，内部相对路径按技能目录解析。
 
-`prompts/review.md` 模板成为 `/review`：
+`prompts/inspect.md` 模板成为 `/inspect`：
 
 ```markdown
 ---
-description: review the current diff
+description: inspect the current changes
 ---
-Review the current diff. Focus on: ${1:-correctness}. Additional context: $@
+Inspect the current changes. Focus on: ${1:-correctness}. Additional context: $@
 ```
 
-模板支持 `$1`、`$@`／`$ARGUMENTS`、`${1:-value}`、`${@:2}`；没有占位符时，参数追加到正文。专门的工作方法应写成 [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) 或委派任务提示；只读检查时设置 `read_only=true`。特殊模型和工具策略通过受信任的扩展实现。详见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
+模板支持 `$1`、`$@`／`$ARGUMENTS`、`${1:-value}`、`${@:2}`；没有占位符时，参数追加到正文。
+
+[独立代码审查插件](../guides/code-review.md)启用时拥有 `/review`。`review.md` 模板会导致启动报错，必须改名；扩展也不能注册同名命令。不再提供官方 `/code-review` 别名。`/inspect` 模板使用普通对话及其工具，`/review` 则运行独立审查任务。
+
+专门的工作方法应写成 [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) 或委派任务提示；创建检查子运行时时设置 `read_only=True`。特殊模型和工具策略通过受信任的扩展实现。详见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 捕获异常后用 `virgo.diagnostics.capture_error` 保留结构化诊断；成功恢复时将原始证据保留在 `related_errors`。属于某个 Runtime 的错误优先使用其 `report_error()`；结果／通知的显式传播可以授予父任务访问权，单独的错误 ID 字符串不能。详见[故障排查](../guides/troubleshooting.md)。
+
+独立任务命令使用 `api.register_command(..., isolated=True)`，回调为 `fn(session, args, origin_runtime)`。Host 固定来源并管理 busy/取消；子 Runtime 使用 `parent=origin_runtime, read_only=True`。`review` 使用固定快照工具与审查提示。重复命令名会被拒绝；模板不能占用已启用 Review 插件保留的 `/review` 名称。
