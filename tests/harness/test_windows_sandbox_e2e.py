@@ -6,7 +6,8 @@ ACLs can be replaced; a junction/hardlink broadens grants; children lose their
 token/Job; inherited handles/environment expose credentials; network failure is
 mistaken for isolation; root exit/cancel leaves descendants or temporary grants;
 one command's cleanup revokes another's authority; cwd/current-session replaces
-the originating workspace; failed setup replays a payload without isolation.
+the originating workspace; Core staging revokes a live command's ordinary file
+writes; failed setup replays a payload without isolation.
 
 Only the model is scripted. The selected shell, processes, tokens, DACLs,
 reparse points, listeners and cancellation are real Windows operations. These
@@ -976,6 +977,54 @@ Path('shared.txt').write_text('second-still-authorized')
             assert [device.state() for device in devices] == before_devices
         finally:
             stop_jobs()
+
+
+@pytest.mark.parametrize("tool", ["write", "edit"])
+def test_core_mutation_preserves_live_background_workspace_writes(native, project, tool):
+    target = project / "ordinary.txt"
+    target.write_text("original\n")
+    jobs = native.services["jobs"]
+    result = run(native, """import time
+from pathlib import Path
+with Path('ordinary.txt').open('a') as stream:
+    stream.write('before\\n')
+Path('mutation-ready').touch()
+deadline = time.monotonic() + 45
+while not Path('release-mutation').exists():
+    assert time.monotonic() < deadline
+    time.sleep(.02)
+assert Path('ordinary.txt').read_text() == 'changed\\n'
+with Path('ordinary.txt').open('a') as stream:
+    stream.write('after\\n')
+""", background=True)
+    assert not result.is_error, result.text()
+    job = list(jobs.jobs.values())[-1]
+    try:
+        wait_until(lambda: (project / "mutation-ready").exists() or job.done.is_set(), timeout=25)
+        assert (project / "mutation-ready").exists(), jobs.output(job)
+        assert target.read_text() == "original\nbefore\n"
+        restricting, = process_sids(job.proc.pid, 11)
+        package, = process_sids(job.proc.pid, 31)
+        arguments = ({"path": target.name, "content": "changed\n"} if tool == "write" else
+                     {"path": target.name, "edits": [{"old_text": "original\nbefore\n",
+                                                       "new_text": "changed\n"}]})
+        faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+        native.prompt("Update the ordinary file while its background command is waiting")
+        mutation = tool_results(native)[-1]
+        assert not mutation.is_error, mutation.text()
+        assert target.read_text() == "changed\n"
+        committed_dacl = dacl(target)
+        (project / "release-mutation").touch()
+        assert job.done.wait(15), "background command did not drain after Core mutation"
+        assert job.status == "completed", (jobs.output(job), committed_dacl)
+        assert target.read_text() == "changed\nafter\n"
+        for path in (project, project / ".virgo", target):
+            cleaned = dacl(path)
+            assert restricting not in cleaned and package not in cleaned, cleaned
+    finally:
+        if not job.done.is_set():
+            jobs.kill(job)
+            assert job.done.wait(15), "fixture must drain its background command"
 
 
 def test_child_runtime_keeps_origin_with_canonical_cwd_and_rejects_escape(native, project):
