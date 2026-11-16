@@ -33,7 +33,8 @@ Virgo 是围绕编程工作的 Harness。Core 负责可靠地运行模型—工�
 | `background` | 后台任务工具、状态、取消和归属明确的通知 | 启用 |
 | `web` | 搜索与读取路由、权限审查和可配置预算 | 启用 |
 | `mcp` | 已配置的连接、工具和有界恢复 | 存在服务器配置时启用 |
-| `code_review` | 固定目标、校验报告的独立只读代码审查 | 启用 |
+| `plan` | 版本化 Markdown 计划的提示词工作流 | 启用 |
+| `code_review` | 固定目标、校验报告的独立提示词审查 | 启用 |
 
 `minimal` 关闭预设中的可选能力；显式 `plugins.<id>.enabled` 覆盖预设。一般 Git 操作仍通过 Shell 使用；[代码审查](../guides/code-review.md)只在独立 Runtime 中提供冻结的 status/diff 视图。
 

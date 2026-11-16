@@ -15,7 +15,7 @@ Virgo 在启动时探测受支持的解释器。`/shell` 显示缓存的选项�
 /shell auto
 ```
 
-支持 Bash、Zsh、POSIX sh、dash、PowerShell 7+ 和 Windows PowerShell 5.1。CMD、Fish、WSL 发行版及任意自定义解释器没有对应适配器。选中的名称或路径不能附带额外启动参数。沙箱关闭时会启动解释器验证版本；启用沙箱时，发现与选择只检查受支持的可执行路径，不启动解释器，版本显示为 `unknown`，由实际隔离命令的启动确认能否执行。项目配置、PATH 发现、缓存列表验证以及所有 `/shell` 选择均适用，原生后端不可用时也不进行宿主探测。新安装的解释器可以直接指定；重启会刷新完整列表。
+支持 Bash、Zsh、POSIX sh、dash、PowerShell 7+ 和 Windows PowerShell 5.1。CMD、Fish、WSL 发行版及任意自定义解释器没有对应适配器。选中的名称或路径不能附带额外启动参数。只有会话启动时的权限完全不受限，即允许编辑、允许联网且不限制工作空间，才会在宿主执行版本探测。未修改的 No-Limit 预设和显式旧配置 `sandbox.mode=disabled` 符合这一条件；自定义预设按实际开关判断。启动时任意一项受限，发现与选择就只检查受支持的可执行路径，不启动解释器，版本显示为 `unknown`，由实际隔离命令的启动确认能否执行。会话中切换权限 Mode 不会新增版本探测权限。项目配置、PATH 发现、缓存列表验证以及所有 `/shell` 选择均适用，原生后端不可用时也不进行宿主探测。新安装的解释器可以直接指定；重启会刷新完整列表。
 
 Windows 自动优先选择 PowerShell 7，再选择 Windows PowerShell；macOS/Linux 优先 Bash，再选择 Zsh/sh。启用原生 Windows 沙箱时只接受 `pwsh.exe`，更换适配器不能绕过此限制。验证状态与环境要求见 [Windows 命令沙箱](windows-sandbox.md)。显式配置失效时会停用命令执行，并提示重新选择，不会静默改用另一种语言。
 

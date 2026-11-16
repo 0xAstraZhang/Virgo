@@ -140,7 +140,7 @@ def _filesystem(root):
 
 @pytest.mark.parametrize("work_mode", ["default", "plan"])
 def test_review_context_is_independent_of_planning_intent(make_session, project, work_mode):
-    """A read-only review must receive review intent, never planning instructions."""
+    """A review must receive review intent, independently of planning instructions."""
     _changed_repository(project)
     seen = []
 
@@ -183,7 +183,7 @@ def test_review_commit_ignores_unrelated_oversized_worktree_context(make_session
         assert result.is_error and "limit" in result.text().lower()
         return _answer()
 
-    faux.script("test", faux.reply(tools=[("read", {"path": "large.txt", "version": "worktree"})]), after_read)
+    faux.script("test", faux.reply(tools=[("review_read", {"path": "large.txt", "version": "worktree"})]), after_read)
     session.prompt("/review commit HEAD")
     report = _latest(session)
     assert report["status"] == "incomplete", report
@@ -249,7 +249,7 @@ def test_plan_git_output_budget_stops_oversized_streams_and_releases_resources(m
     session = make_session(
         faux.reply(tools=[("git_read", {"operation": "show", "revision": "HEAD"})]),
         faux.reply("The selected evidence exceeds the bounded reader."),
-        settings={"profile": "minimal", "workMode": "plan"}, refresh_models=False,
+        settings={"profile": "minimal", "workMode": "plan", "plugins": {"plan": {"enabled": True}}}, refresh_models=False,
     )
     started = []
     spawn = subprocess.Popen
@@ -306,7 +306,7 @@ def test_plan_git_reads_committed_objects_without_worktree_helpers(make_session,
                           ("git_read", {"operation": "show", "revision": "HEAD"}),
                           ("git_read", {"operation": "diff", "base": base, "revision": "HEAD"})]),
         faux.reply("Investigated committed history."),
-        settings={"profile": "minimal", "workMode": "plan"}, refresh_models=False,
+        settings={"profile": "minimal", "workMode": "plan", "plugins": {"plan": {"enabled": True}}}, refresh_models=False,
     )
 
     session.prompt("Inspect committed history without running project commands.")
@@ -343,7 +343,9 @@ def test_review_uncommitted_layers_and_diff_sides_reach_a_saved_display(make_ses
     def respond(context):
         assert "PRIVATE_PARENT_CONVERSATION" not in repr(context.messages)
         assert len(context.messages) == 1
-        assert {tool.name for tool in context.tools} == {"read", "glob", "grep", "review_git"}
+        assert {"read", "write", "edit", "review_read", "review_glob", "review_grep", "review_git"}.issubset(
+            tool.name for tool in context.tools
+        )
         snapshot = _manifest(context)
         seen.update(snapshot)
         assert snapshot["target"]["kind"] == "uncommitted"
@@ -417,8 +419,8 @@ def test_review_frozen_evidence_distinguishes_final_newlines(make_session, proje
         seen["change"] = change
         return faux.reply(tools=[
             ("review_git", {"operation": "diff", "change_id": change["id"]}),
-            ("read", {"path": "data.txt", "version": "index"}),
-            ("read", {"path": "data.txt", "version": "worktree"}),
+            ("review_read", {"path": "data.txt", "version": "index"}),
+            ("review_read", {"path": "data.txt", "version": "worktree"}),
         ])
 
     def last(context):
@@ -466,7 +468,7 @@ def test_review_base_uses_merge_base_and_frozen_head_files(make_session, project
         assert snapshot["merge_base"] == ancestor
         assert snapshot["head"] == feature and snapshot["base"] == baseline
         assert {item["new_path"] for item in snapshot["changes"]} == {"sample.py"}
-        return faux.reply(tools=[("read", {"path": "sample.py", "version": "head"})])
+        return faux.reply(tools=[("review_read", {"path": "sample.py", "version": "head"})])
 
     def last(context):
         result = next(message for message in reversed(context.messages) if isinstance(message, ToolResultMessage))
@@ -499,7 +501,7 @@ def test_review_commit_reads_the_selected_tree_not_head_or_worktree(make_session
     def first(context):
         seen.update(_manifest(context))
         assert seen["target"]["kind"] == "commit"
-        return faux.reply(tools=[("read", {"path": "sample.py", "version": "target"})])
+        return faux.reply(tools=[("review_read", {"path": "sample.py", "version": "target"})])
 
     def last(context):
         result = next(message for message in reversed(context.messages) if isinstance(message, ToolResultMessage))
@@ -522,58 +524,54 @@ def test_review_tools_hooks_git_helpers_and_large_outputs_never_write(
     _write(project, "filtered.txt", "FILTER_AFTER\n")
     _write(project, "large.txt", "".join(f"ROW_{i:04d} " + "x" * 70 + "\n" for i in range(1800)))
     _write(project, ".gitattributes", "*.txt diff=review_probe filter=review_probe\n")
-    marker = project / "hook-executed.txt"
+    marker = tmp_path / "hook-executed.txt"
+    helper_marker = project / "git-helper-executed.txt"
     hook = python_command(f"from pathlib import Path; Path({str(marker)!r}).write_text('executed')")
+    helper = python_command(f"from pathlib import Path; Path({str(helper_marker)!r}).write_text('executed')")
     settings = {
         "permissions": {"allow": ["*"]},
-        "hooks": {name: [{"matcher": ".*", "command": hook}] for name in (
-            "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
-        )},
+        "hooks": {name: [{"matcher": ".*", "command": hook}] for name in ("PreToolUse", "PostToolUse")},
     }
     session = make_session(settings=settings, approval="never", refresh_models=False)
-    _git(project, "config", "diff.external", hook)
-    _git(project, "config", "diff.review_probe.textconv", hook)
-    _git(project, "config", "filter.review_probe.clean", hook)
-    _git(project, "config", "filter.review_probe.smudge", hook)
+    for key in ("diff.external", "diff.review_probe.textconv", "filter.review_probe.clean",
+                "filter.review_probe.smudge", "core.fsmonitor"):
+        _git(project, "config", key, helper)
     _git(project, "config", "filter.review_probe.required", "true")
-    _git(project, "config", "core.fsmonitor", hook)
-    monkeypatch.setenv("GIT_EXTERNAL_DIFF", hook)
-    before = _filesystem(project)
+    monkeypatch.setenv("GIT_EXTERNAL_DIFF", helper)
     outsider = tmp_path / "outside.txt"
     outsider.write_text("OUTSIDE_WORKSPACE_SECRET", encoding="utf-8")
     seen = []
 
     def first(context):
-        assert {tool.name for tool in context.tools} == {"read", "glob", "grep", "review_git"}
-        assert not context.web_tools and context.web_search is None
+        assert {"read", "write", "edit", "review_read", "review_glob", "review_grep", "review_git"}.issubset(
+            tool.name for tool in context.tools
+        )
         _manifest(context)
         seen.append(True)
         return faux.reply(tools=[
-            ("write", {"path": "owned.txt", "content": "bad"}),
-            ("edit", {"path": "sample.py", "old_text": "0", "new_text": "1"}),
-            ("bash", {"command": hook}),
-            ("powershell", {"command": hook}),
-            ("agent", {"description": "escape", "prompt": "write owned.txt"}),
-            ("web_fetch", {"url": "https://example.invalid/"}),
-            ("read", {"path": str(outsider)}),
-            ("review_git", {"operation": "commit", "message": "escape"}),
-            ("read", {"path": "large.txt", "limit": 2000}),
+            ("write", {"path": "owned.txt", "content": "allowed by current permissions"}),
+            ("review_read", {"path": str(outsider)}),
+            ("review_git", {"operation": "commit", "message": "invalid snapshot operation"}),
+            ("review_read", {"path": "large.txt", "limit": 2000}),
             ("review_git", {"operation": "diff", "limit": 2000}),
         ])
 
     def last(context):
         results = [message for message in context.messages if isinstance(message, ToolResultMessage)]
-        assert len(results) == 10
-        assert all(message.is_error for message in results[:8])
+        assert len(results) == 5
+        assert not results[0].is_error  # Deliberate prompt noncompliance is not a sandbox denial.
+        assert results[1].is_error and results[2].is_error
         assert "OUTSIDE_WORKSPACE_SECRET" not in repr(context.messages)
         assert all(len(message.text().encode("utf-8")) < 60 * 1024 for message in results)
         return _answer()
 
     faux.script("test", first, last)
     session.prompt("/review")
-    assert seen and _latest(session)["status"] in {"completed", "incomplete"}
-    assert _filesystem(project) == before
-    assert not marker.exists() and not (project / ".virgo" / "outputs").exists()
+    report = _latest(session)
+    assert seen and report["status"] in {"completed", "incomplete"}
+    assert report["freshness"] == "stale"
+    assert (project / "owned.txt").read_text() == "allowed by current permissions"
+    assert marker.exists() and not helper_marker.exists()
 
 
 def test_review_rejects_malformed_schema_and_unrelated_diff_locations(make_session, project):
@@ -627,7 +625,9 @@ def test_review_rejects_malformed_schema_and_unrelated_diff_locations(make_sessi
 ])
 def test_review_unsuccessful_model_runs_cannot_become_clean_results(make_session, project, ending, expected):
     _changed_repository(project)
-    session = make_session(refresh_models=False, settings={"retry": {"maxRetries": 0}})
+    session = make_session(refresh_models=False, settings={
+        "retry": {"maxRetries": 0}, "compaction": {"enabled": ending != "overflow"},
+    })
     replies = {
         "empty": faux.reply(""),
         "truncated": faux.reply(_answer().text, stop_reason="length"),
@@ -637,11 +637,19 @@ def test_review_unsuccessful_model_runs_cannot_become_clean_results(make_session
         "insufficient": _answer(status="incomplete"),
     }
     faux.script("test", replies[ending])
+    if ending == "overflow":
+        faux.handler("test", lambda context: (
+            faux.reply("The frozen target still requires review.")
+            if "context summarization assistant" in context.system else replies[ending]
+        ))
     session.prompt("/review")
     report = _latest(session)
     assert report["status"] in expected, report
     assert not report["findings"]
-    assert len(calls()) == 1
+    assert len(calls()) == (3 if ending == "overflow" else 1)
+    if ending == "overflow":
+        assert "independent code reviewer" in calls()[-1]["system"]
+        assert {"write", "review_read", "review_git"}.issubset(calls()[-1]["tools"])
     assert not session._child_runtimes
     assert report["status"] in session.ui.text.lower()
 
@@ -649,7 +657,7 @@ def test_review_unsuccessful_model_runs_cannot_become_clean_results(make_session
 def test_review_shared_budget_exhaustion_is_not_a_clean_report(make_session, project):
     _changed_repository(project)
     session = make_session(refresh_models=False, settings={"budget": {"maxModelCalls": 1}})
-    faux.script("test", faux.reply(tools=[("read", {"path": "sample.py"})]), _answer())
+    faux.script("test", faux.reply(tools=[("review_read", {"path": "sample.py"})]), _answer())
     session.prompt("/review")
     report = _latest(session)
     assert report["status"] in {"failed", "incomplete"}
@@ -676,7 +684,8 @@ def test_review_tui_cancellation_releases_runtime_and_the_next_review_works(make
         assert _latest(session)["status"] == "cancelled"
         assert not child.agent.running and not session._child_runtimes
         assert tuple(session.store.failure_signals) == baseline_signals
-        assert child.read_only
+        assert not child.read_only
+        assert child.workflow == "review"
         assert "cancelled" in repr(updates).lower()
         faux.script("test", _answer())
         controller.submit("/review")
@@ -695,16 +704,18 @@ def test_review_tui_capture_never_waits_for_new_approval(make_session, project):
     outside.write_text("EXTERNAL_CONTENT_IS_NOT_REVIEW_EVIDENCE\n", encoding="utf-8")
     (project / "outside-link.txt").symlink_to(outside)
     ui = FullscreenUI()
-    session = make_session(ui=ui, refresh_models=False, approval="ask", allow=False)
+    session = make_session(ui=ui, refresh_models=False, approval="never", allow=False)
     controller = RunController(session, ui)
     baseline_signals = tuple(session.store.failure_signals)
     controller.start()
     try:
-        for allow, deny, expected in (
-            ([], [], "incomplete"),
-            (["read(outside-link.txt)"], [], "completed"),
-            (["read(outside-link.txt)"], ["read(outside-link.txt)"], "incomplete"),
+        for mode, allow, deny, expected in (
+            ("workspace-edit", [], [], "incomplete"),
+            ("no-limit", [], [], "completed"),
+            ("no-limit", [], ["read(outside-link.txt)"], "incomplete"),
+            ("workspace-edit", ["read(outside-link.txt)"], [], "incomplete"),
         ):
+            session.services["sandbox"].select_mode(mode)
             session.settings.set("permissions.allow", allow)
             session.settings.set("permissions.deny", deny)
             faux.script("test", _answer())
@@ -722,9 +733,27 @@ def test_review_tui_capture_never_waits_for_new_approval(make_session, project):
             assert len(calls()) == (1 if expected == "completed" else 0)
             assert not session._child_runtimes and not session.busy
             assert tuple(session.store.failure_signals) == baseline_signals
-            assert session.approval_policy == "ask"
-            assert session.services["permissions"].approval_for(session.main) == "ask"
+            assert session.approval_policy == "never"
+            assert session.services["permissions"].approval_for(session.main) == "never"
             assert "EXTERNAL_CONTENT_IS_NOT_REVIEW_EVIDENCE" not in repr(calls())
+        session.approval_policy = "ask"
+        session.settings.set("permissions.allow", [])
+        session.settings.set("permissions.deny", [])
+        session.services["permissions"].revoke()
+        (project / "outside-link.txt").unlink()
+        faux.script("test", faux.reply(tools=[("request_permissions", {
+            "tool": "read", "arguments": {"path": str(outside)},
+            "permissions": {"workspace_only": False},
+            "reason": "Inspect the explicit external context needed for review",
+        })]), _answer())
+        controller.submit("/review")
+        pump(controller, lambda c: not c.busy or ui.has_pending_requests)
+        assert ui.has_pending_requests
+        controller.abort()
+        pump(controller)
+        assert not ui.has_pending_requests and not session._child_runtimes
+        assert _latest(session)["status"] == "cancelled"
+        assert len(calls()) == 1
     finally:
         controller.abort()
         ui.cancel_confirmations()

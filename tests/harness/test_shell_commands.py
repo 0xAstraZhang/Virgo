@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import shutil
 from pathlib import Path
 
@@ -21,15 +22,70 @@ from virgo.ai.types import ToolResultMessage
 from virgo.cli.console import ConsoleBroker, TerminalUI
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
-from virgo.harness.session import Runtime
+from virgo.harness.session import AgentSession, Runtime
 
-from tests.support.harness import calls
+from tests.support.harness import RecordingUI, calls
 from tests.support.shell import invoke, result, selected
 from tests.support.tui import wait_for
 
 # On Windows, bash.exe can be the WSL launcher rather than a local interpreter.
 SHELLS = [name for name in ("bash", "zsh", "sh", "dash", "pwsh", "powershell")
           if shutil.which(name) and (os.name != "nt" or name in {"pwsh", "powershell"})]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable fixture")
+@pytest.mark.parametrize("configuration,probe_allowed", [
+    ({}, False),
+    ({"permissions": {"mode": "read-only"}}, False),
+    ({"permissions": {"mode": "no-limit"}}, True),
+    ({"permissions": {"mode": "no-limit", "modes": {"no-limit": {"readOnly": True}}}}, False),
+    ({"permissions": {"mode": "no-limit", "modes": {"no-limit": {"workspaceOnly": True}}}}, False),
+    ({"permissions": {"mode": "no-limit", "modes": {"no-limit": {"networkAllowed": False}}}}, False),
+    ({"permissions": {"mode": "read-only"}, "sandbox": {"mode": "disabled"}}, True),
+    ({"permissions": {"mode": "no-limit"}, "sandbox": {"mode": "read-only"}}, False),
+    ({"permissions": {"mode": "no-limit"}, "sandbox": {"mode": "workspace-write"}}, False),
+], ids=["default", "read-only", "no-limit", "read-only-flag", "workspace-flag", "network-flag",
+        "legacy-disabled", "legacy-read-only", "legacy-workspace"])
+def test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority(
+    project, monkeypatch, configuration, probe_allowed,
+):
+    """Discovery and explicit selection cannot execute candidates outside startup policy.
+
+    The executable only records a disposable sentinel and prints a valid version;
+    a later selection of No-Limit must not enable previously forbidden probes.
+    """
+    directory = project / "candidate-shell"
+    directory.mkdir()
+    candidate = directory / "bash"
+    sentinel = directory / "host-probe.txt"
+    candidate.write_text(
+        "#!/bin/sh\n"
+        f"printf 'probe\\n' >> {shlex.quote(str(sentinel))}\n"
+        "printf '5.2.0'\n", encoding="utf-8",
+    )
+    candidate.chmod(0o755)
+    monkeypatch.delenv("VIRGO_SHELL", raising=False)
+    monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ.get("PATH", ""))
+    # The common session fixture deliberately chooses legacy disabled; use the
+    # real constructor to exercise new defaults and explicit compatibility input.
+    session = AgentSession(
+        project, model="faux/test", ui=RecordingUI(), session=None, extensions=False,
+        refresh_models=False, settings={"profile": "minimal", "shell": {"executable": str(candidate)},
+                                        **configuration},
+    )
+    try:
+        assert sentinel.exists() is probe_allowed
+        assert selected(session).version == ("5.2.0" if probe_allowed else "unknown")
+        sentinel.unlink(missing_ok=True)
+        session.services["sandbox"].save_mode("probe-unrestricted", "Unrestricted", False, False, True,
+                                               persist=False)
+        session.prompt("/mode probe-unrestricted")
+        session.prompt(f"/shell {shlex.quote(str(candidate))}")
+        assert sentinel.exists() is probe_allowed, "Mode changes must not enable host version probes"
+        assert selected(session).version == ("5.2.0" if probe_allowed else "unknown")
+        assert not calls()
+    finally:
+        session.shutdown()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable fixture")
@@ -235,11 +291,12 @@ def test_powershell_failure_and_permission_boundaries(make_session, monkeypatch,
     res = invoke(session, "Write-Error 'failure'; Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()
     session.settings.set("permissions.allow", [])
+    session.settings.set("permissions.deny", ["powershell(Set-Content*)"])
     session.approval_policy = "never"
     res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()
     session.services["permissions"].set_work_mode("plan")
-    assert "powershell" not in [t.name for t in session.main.request_context([]).tools]
+    assert "powershell" in [t.name for t in session.main.request_context([]).tools]
     res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()
     session.approval_policy = "ask"

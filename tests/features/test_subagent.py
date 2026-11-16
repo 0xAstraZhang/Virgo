@@ -45,7 +45,8 @@ def test_subagent_request_exposes_only_its_own_tools(make_session):
     faux.handler("test", respond)
     session.prompt("delegate")
     assert "<tools>" not in seen["system"]
-    assert sorted(seen["tools"]) == ["git_read", "glob", "grep", "read"]
+    assert set(seen["tools"]) == {tool.name for tool in session.tools_for("subagent")}
+    assert {"write", "edit", "bash", "read", "git_read"}.issubset(seen["tools"])
 
 
 def test_subagent_schema_exposes_capabilities_not_types(make_session):
@@ -78,5 +79,5 @@ def test_read_only_subagent_blocks_shell_writes_even_if_parent_is_unrestricted(m
     faux.handler("test", respond)
     session.prompt("Inspect without changing files.")
     assert not target.exists()
-    assert sorted(child_tools) == ["git_read", "glob", "grep", "read"]
+    assert {"write", "edit", "bash", "read", "git_read"}.issubset(child_tools)
     assert tool_results(session)[0].text() == "Read-only inspection complete."

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from virgo import ai
+from virgo.agent import AgentTool
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, TextContent, Usage, UserMessage
 from virgo.harness.session import Runtime
@@ -90,8 +91,12 @@ def test_permission_audit_records_review_and_final_decision(make_session, tmp_pa
     # Preserve the comparison identities while auditing explicit policy and human
     # decisions instead of the retired model reviewer.
     ui = RecordingUI(answers=[answer])
-    session = make_session(ui=ui, allow=False, approval=approval, persist=True)
-    ev = tool_call_event(session, "write", {"path": str(tmp_path / "outside"), "content": "private payload"})
+    session = make_session(ui=ui, allow=False, approval=approval, persist=True,
+                           settings={"sandbox": {"mode": "workspace-write"}})
+    # An unmanaged trusted extension retains explicit tool approval. Managed
+    # file operations instead obey the selected profile at execution time.
+    session.register_tool(AgentTool("external_write", "External write", {"type": "object"}, lambda *_: "done"))
+    ev = tool_call_event(session, "external_write", {"path": str(tmp_path / "outside"), "content": "private payload"})
     permissions = session.services["permissions"]
     permissions.on_tool_call(ev, session)
     audit = session.store.custom("permission_decision")
@@ -116,13 +121,14 @@ def test_permission_audit_records_review_and_final_decision(make_session, tmp_pa
 
 
 def test_revalidation_has_auditable_argument_change(make_session, tmp_path):
-    session = make_session(allow=False, ui=RecordingUI(answers=["y"]))
+    session = make_session(allow=False, ui=RecordingUI(answers=["y"]),
+                           settings={"sandbox": {"mode": "workspace-write"}})
     ev = tool_call_event(session, "write", {"path": "inside", "content": "one"})
     perms = session.services["permissions"]
     perms.on_tool_call(ev, session)
     ev.args["path"] = str(tmp_path / "outside")
-    perms.before_execute(ev)
+    assert perms.before_execute(ev) is not None
     decisions = session.store.custom("permission_decision")
-    assert [d["source"] for d in decisions] == ["workspace", "manual-approval", "human"]
+    assert [d["source"] for d in decisions] == ["workspace", "execution-policy"]
     assert decisions[0]["arguments_sha256"] != decisions[1]["arguments_sha256"]
-    assert decisions[1]["arguments_sha256"] == decisions[2]["arguments_sha256"]
+    assert decisions[1]["decision"] == "deny" and not session.ui.questions

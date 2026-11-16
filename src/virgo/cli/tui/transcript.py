@@ -121,6 +121,8 @@ class EventView(Foldable):
             title.append(f"[{self.agent}] ")
         if self.tool_name:
             title.append(self.tool_name, style="bold")
+        elif self.kind == "review":
+            title.append(tr(self, "work_mode.review"))
         else:
             key = {
                 "thinking": "thought",
@@ -135,13 +137,16 @@ class EventView(Foldable):
                 "summary": "summary",
             }.get(self.kind)
             title.append(tr(self, "ui.event." + key) if key else self.kind.title())
+        if state := self.summary_status():
+            title.append(" · " + state)
         if self.activity_phase:
             title.append(f" · {self.activity_frame} {self.activity_phase}…", style="bold")
         if not (self.expanded and self.kind in TOOL_KINDS):
             title.append(" → " if self.tool_name and self.kind == "tool_result" else " · ")
-            if self._preview_text != self.text:
-                self._preview_text = self.text
-                self._preview = " ".join(self.text.split()) or "…"
+            preview = self.preview_text()
+            if self._preview_text != preview:
+                self._preview_text = preview
+                self._preview = " ".join(preview.split()) or "…"
                 self._preview_width = -1
             width = self.header.size.width or 80
             if self._preview_width != width:
@@ -150,6 +155,12 @@ class EventView(Foldable):
                 self._visible_preview.truncate(width, overflow="ellipsis")
             title.append(self._visible_preview)
         return title
+
+    def summary_status(self) -> str:
+        return ""
+
+    def preview_text(self) -> str:
+        return self.text
 
     def render_state(self) -> None:
         if self.kind == "text":
@@ -205,6 +216,7 @@ class ToolView(EventView):
         self.call_id, self.args = call_id, args or {}
         self.status = "done" if result else "pending"
         self.result = ""
+        self.details: dict = {}
         self.duration: float | None = None
         if not result:
             self.text = _json(self.args)
@@ -215,13 +227,50 @@ class ToolView(EventView):
             title.append(f" · {self.duration:g}s")
         return title
 
+    def summary_status(self) -> str:
+        return "" if self.activity_phase else tr(self, "ui.tool.state." + self.status)
+
+    def preview_text(self) -> str:
+        if self.kind == "tool_call":
+            if not isinstance(self.args, dict):
+                return self.text
+            if self.tool_name in ("grep", "glob"):
+                return f"{self.args.get('pattern', '')} · {self.args.get('path', '.')}"
+            for name in ("path", "command", "query", "url", "description"):
+                if isinstance(value := self.args.get(name), str) and value:
+                    return value
+            return self.text
+        sandbox = self.details.get("sandbox")
+        if self.status == "blocked" and isinstance(sandbox, dict):
+            dimension, target = sandbox.get("dimension"), sandbox.get("target")
+            if dimension in ("read_only", "workspace_only", "network_allowed") and target:
+                return f"{tr(self, 'ui.modes.' + dimension)} · {target} · {self.result}"
+        return self.result or self.text
+
     def set_result(self, text: str, *, is_error: bool = False, details=None) -> None:
         self.result = text
-        self.status = "error" if is_error else "done"
+        if isinstance(details, dict):
+            self.details.update(details)
+        error = self.details.get("error")
+        if self.details.get("cancelled") is True:
+            self.status = "cancelled"
+        elif is_error and (
+            self.details.get("status") in {"sandbox_denied", "permission_denied"}
+            or isinstance(error, dict) and error.get("kind") == "blocked"
+        ):
+            self.status = "blocked"
+        else:
+            self.status = "error" if is_error else "done"
         value = details.get("duration") if isinstance(details, dict) else None
         if isinstance(value, (int, float)):
             self.duration = value
         self.set_class(is_error, "error")
+        sandbox = self.details.get("sandbox")
+        if is_error and isinstance(sandbox, dict):
+            if sandbox.get("command_started") is False:
+                text += "\n" + tr(self, "ui.tool.not_started")
+            if sandbox.get("escalation_available") is True:
+                text += "\n" + tr(self, "ui.tool.escalation_available")
         self.set_text(text)
 
 
@@ -574,6 +623,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         row.set_result(text, is_error=message.is_error, details=message.details)
         if call := self._current_calls.get(key):
             call.status = row.status
+            call.set_class(message.is_error, "error")
             self._set_event_activity(call, "")
         return row
 
@@ -886,6 +936,17 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                         await self._result(data.get("agent", "main"), message)
                 except (KeyError, TypeError, ValueError):
                     await self.add_notice(tr(self, "ui.event.saved_tool_error"), "warn")
+            elif entry.get("type") == "custom" and entry.get("kind") == "code_review":
+                report = entry.get("data", {})
+                if isinstance(report, dict) and report.get("status") not in (None, "running"):
+                    # The plugin's saved terminal record is the validated report;
+                    # raw reviewer JSON is not a user-facing transcript message.
+                    from ...plugins.code_review.report import render_report
+
+                    try:
+                        await self.add_review_result(report, render_report(report))
+                    except (KeyError, TypeError, ValueError, AttributeError):
+                        await self.add_notice(tr(self, "ui.event.saved_message_error"), "warn")
             elif entry.get("type") == "compaction":
                 await self.add_notice(tr(self, "ui.event.compacted"), "dim")
 
@@ -900,6 +961,13 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 style, ""
             )
             await self._place(Static(Text(text, style=rich_style), classes="notice"))
+
+    async def add_review_result(self, report: dict, text: str) -> None:
+        row = EventView("review", text)
+        row.add_class("message", "review-report")
+        row.set_expanded(True)
+        row.set_class(report.get("status") not in ("completed", "cancelled"), "error")
+        await self._append(row)
 
     def toggle_tools(self) -> None:
         self.show_tools = self._older_tools = not self.show_tools

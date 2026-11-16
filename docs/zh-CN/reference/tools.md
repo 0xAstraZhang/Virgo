@@ -4,7 +4,7 @@
 
 模型只会获得当前角色、配置和能力允许的工具。扩展、MCP 连接和网页路由可能改变实际列表。工具名、参数名和枚举值不随界面语言变化。
 
-Core 负责文件、所选 Shell、已提交 Git 内容读取和 ProposedPlan 工具。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供。可使用默认 `coding` 预设，或通过 `plugins.<id>.enabled` 选择能力；`--profile minimal --no-extensions` 仅暴露当前 WorkMode 允许的 Core 工具。详见[配置](configuration.md#预设与插件)。
+Core 负责文件、所选 Shell 和权限申请工具。可选 Plan 插件提供已提交 Git 内容读取和 ProposedPlan。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供。可使用默认 `coding` 预设，或通过 `plugins.<id>.enabled` 选择能力；`--profile minimal --no-extensions` 提供完整 Core 工具 schema，不按工作流过滤。详见[配置](configuration.md#预设与插件)。
 
 ## 文件、命令与网页
 
@@ -22,17 +22,26 @@ Core 负责文件、所选 Shell、已提交 Git 内容读取和 ProposedPlan �
 
 读取和工具输出均有预算限制，长结果提供继续读取方式或已保存的输出路径。同一文件的写操作串行执行。原生网页服务可能提供服务端工具，而非上述客户端工具名。详见[命令解释器](../guides/shells.md)和[网页能力](../guides/web.md)。
 
+## 权限申请
+
+`request_permissions(tool, arguments, permissions, reason)` 申请单次操作例外。
+三个可选权限字段为 `read_only`、`workspace_only`、`network_allowed`。批准不执行或重放
+操作；同一来源运行中下一次相同工具调用消费授权。目标限于受管文件、Shell、Web 和 MCP
+操作；子任务和工作流继续继承来源权限，可在内部为具体操作申请例外。显式 deny 和显式只读子任务上限始终有效，
+Mode 保持不变。模型可见内容及 TUI 共享结构化拒绝信息：失败维度、目标、命令启动与副作用
+状态。后端不可用与权限拒绝分开报告。
+
 ## 清单与提问
 
-`propose_plan(markdown)` 发布或替换完整 Markdown ProposedPlan。它属于 Core，仅对 Plan 中的主 Runtime 可用；保存带版本的对话元数据，不写项目文件，也不授权执行。修订会使旧版本的执行选择失效。`/plan` 显示方案，`/plan execute <plan-id>:<revision>` 是用户明确开始执行的操作。编辑、恢复和权限边界见[先规划，再执行](../guides/planning.md)。
+`propose_plan(markdown)` 发布或替换完整 Markdown ProposedPlan。它属于可选 Plan 插件，对主 Runtime 可用，不要求当前处于 Plan；保存带版本的对话元数据，不写项目文件，也不授权执行。修订会使旧版本的执行选择失效。`/plan` 显示方案，`/plan execute <plan-id>:<revision>` 是用户明确开始执行的操作。编辑、恢复和权限边界见[先规划，再执行](../guides/planning.md)。
 
-`todo_write` 使用传入的完整列表替换现有执行清单。状态为 `pending`、`in_progress` 和 `completed`，允许多个事项同时进行；输入不合法时保留旧列表。`/todos` 显示清单，未完成事项本身不会强制触发下一轮模型调用。Plan 中隐藏并拒绝该工具：ProposedPlan 说明方案，Todo 在 Default 中跟踪执行进度。确认计划不会自动创建 Todo，也不引入第二套任务存储。
+`todo_write` 使用传入的完整列表替换现有执行清单。状态为 `pending`、`in_progress` 和 `completed`，允许多个事项同时进行；输入不合法时保留旧列表。`/todos` 显示清单，未完成事项本身不会强制触发下一轮模型调用。Plan 中仍提供该工具：ProposedPlan 说明方案，Todo 在 Default 中跟踪执行进度。确认计划不会自动创建 Todo，也不引入第二套任务存储。
 
 `ask_user` 允许主 Agent 提问，提供最多三个选项加自定义输入，或仅使用自由输入。Plan 指令要求先调查仓库，只对仍无法解决、且实质影响方案的决策使用该工具；回答澄清问题不确认执行。非交互、取消和超时结果会报告 `answered=false`，不会编造答案。无人值守运行使用 `askUser.unattendedTimeout`；用户加入对话后可以撤销该超时。
 
 ## 聚焦的子 Agent
 
-`agent(description, prompt, read_only=false, background=false)` 使用独立上下文处理任务并返回最终答案，所需上下文必须包含在任务提示里。`read_only=true` 仅允许 `read`、`glob`、`grep` 和受控 `git_read`，不提供任意 Shell。只读能力与操作系统沙箱分别设置。默认子代理不施加额外限制，但不能突破父代理权限上限。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。达到轮数上限、最终回答中断或最终回答为空时，会明确报告**未完成**，而不是成功。子代理失败时，父代理能收到有长度限制的近期工具错误原因及明确传递的诊断证据；成功时仍只返回最终回答。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
+`agent(description, prompt, read_only=false, background=false)` 使用独立上下文处理任务并返回最终答案，所需上下文必须包含在任务提示里。`read_only=true` 保持正常工具 schema，在执行时施加文件写入上限，包括 Shell。只读能力与操作系统沙箱分别设置。默认子代理不施加额外限制，但不能突破父代理权限上限。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。达到轮数上限、最终回答中断或最终回答为空时，会明确报告**未完成**，而不是成功。子代理失败时，父代理能收到有长度限制的近期工具错误原因及明确传递的诊断证据；成功时仍只返回最终回答。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 ## 后台任务
 
@@ -47,6 +56,9 @@ Core 负责文件、所选 Shell、已提交 Git 内容读取和 ProposedPlan �
 默认预设下，没有服务器配置就不启动 MCP 连接，也不注册 MCP 管理工具；显式启用后可在新增服务器前使用管理入口。
 
 stdio MCP 服务器配置在用户或项目的 `mcp.json`，或 `mcpServers` 配置项中。参数和环境字段支持 `${VARIABLE}` 插值。工具名为 `mcp__<server>__<tool>`，禁用的条目不会启动。除非作者提供本地化，服务和扩展的描述保留第三方原文。
+
+受管 MCP 调用遵守联网开关；服务无法约束本地文件范围时，需要明确的单次操作例外。
+可信 MCP 服务的启动及自主活动在任务沙箱之外运行，离线预设不代表隔离了该服务进程。
 
 `/mcp` 显示连接状态，`/mcp reconnect` 重新加载服务器配置。模型的 `mcp_status` 读取本地状态，`mcp_reconnect` 针对特定服务和已知错误执行有界、受权限约束的恢复。重连不会重放失败的业务操作。`diagnostic_get` 只暴露已授予调用 Runtime 的诊断证据，具体边界见[故障排查](../guides/troubleshooting.md)。
 

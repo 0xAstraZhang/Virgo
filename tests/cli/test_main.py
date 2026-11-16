@@ -59,7 +59,7 @@ def test_work_mode_startup_is_separate_from_output_approval_and_sandbox(entry, p
         cwd=project, input="", capture_output=True, text=True, timeout=10,
     )
     assert legacy.returncode == 2
-    assert "--mode" in legacy.stderr and not legacy.stdout
+    assert "permissions.mode" in legacy.stderr and not legacy.stdout
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])

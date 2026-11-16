@@ -43,8 +43,10 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `effort` | `medium`；界面支持 `low`、`medium`、`high`、`xhigh`、`max` |
 | `maxTokens` | 未设置，使用适配器／模型默认值 |
 | `shell.executable` | `auto`；受支持的解释器名称或可执行文件路径 |
-| `sandbox.mode` | `workspace-write`；可选择 `read-only` 或显式 `disabled`，仅用户／启动配置生效 |
-| `workMode` | `default`；`plan` 增加独立的只读权限上限 |
+| `permissions.mode` | `workspace-edit`；选择用户所有的权限预设 |
+| `permissions.modes` | 按稳定 ID 保存可编辑名称与三个开关 |
+| `sandbox.mode` | 可选的旧禁网兼容配置 |
+| `workMode` | `default`；`plan` 选择可选规划提示词 |
 | `permissions.approval` | `ask`；`never` 拒绝需要新增批准的操作 |
 | `permissions.allow`、`permissions.deny` | 工具规则列表 |
 | `compaction.enabled` | `true` |
@@ -104,50 +106,73 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 ## 工作模式
 
-`/mode plan` 进入规划，`/mode default` 返回普通工作，不会直接执行提案。`--work-mode default|plan` 选择初始对话的工作意图，`--format text|json` 控制输出格式。它们独立于 `--approval ask|never` 和 `--sandbox`。详见[规划变更](../guides/planning.md)。
-
-```json
-{
-  "workMode": "plan",
-  "permissions": {"approval": "ask"},
-  "sandbox": {"mode": "workspace-write"}
-}
-```
-
-此示例属于用户设置。项目可以请求 Plan，但不能用 `workMode=default` 放宽用户配置的 Plan 上限；用户可通过显式启动参数选择其他模式。已有对话保存自己的工作模式，新对话使用配置默认值。切换工作模式要求来源对话及其排队、运行中的后代任务空闲。通知只观察提交后的状态，不能重入模式、计划或运行准入变更。
-
-Plan 与只读子运行时只暴露只读工具，包括受控 `git_read`，不提供任意 Bash/PowerShell。子运行时只读能力独立于工作意图；只读调查或 Code Review 不会因此收到 Plan 指令。子运行时继承来源工作区，只能进一步收紧父级能力和审批上限。
-
-计划在 SessionStore 中保存版本化 Markdown。`/plan execute <id>:<revision>` 将准确版本绑定到一次执行请求；保存或恢复提案不会执行。执行保留审批及 Sandbox 限制；返回 Default 不会把配置为只读的沙箱改成可写。已退休入口见[执行策略迁移](../guides/migrating-execution-policy.md)。
+Plan 和 Code Review 是可选的提示词工作流。`/plan <任务>` 开始规划，`/workflow default`
+退出规划但不实施。`/review` 使用正常工具与固定审查证据启动独立审查。两者都不改变权限。
+提示词要求输出计划或报告；需要强制保护文件时，另选 Read-Only。
+`--work-mode default|plan` 选择初始任务指令，`--format text|json` 控制输出格式。
+见[规划](../guides/planning.md)和[代码审查](../guides/code-review.md)。
 
 ## 权限
 
-| 审批策略 | 行为 |
-| --- | --- |
-| `ask` | 执行已经获授权的操作；不确定或尚未获授权的操作询问用户 |
-| `never` | 执行已经获授权的操作；需要新增批准的操作直接拒绝 |
+`--mode <id>` 和 `/mode <id>` 选择执行权限预设。Shift+Tab 打开 TUI 选择器，可以修改
+名称和三个开关，或新建预设。使用只影响当前对话；保存将预设写入用户设置。
+任务开始时捕获权限；运行中修改显示为下次生效，不声称撤销已启动进程的权限。
+子 Agent 和后台任务保留来源工作区及权限。
 
-Core 授权检查始终启用。不会再调用模型从对话历史、工具输出或摘要推断授权。两种策略均保留显式 deny、只读能力和 Sandbox 上限。`/permissions ask` 与 `/permissions never` 选择策略，`/permissions revoke` 清除记住的批准和拒绝；这些命令不改变 WorkMode 或 Sandbox。
+| 默认 ID／名称 | 只读 | 仅工作区 | 联网 |
+| --- | --- | --- | --- |
+| `read-only` / Read-Only | true | true | true |
+| `workspace-edit` / Workspace-Edit | false | true | true |
+| `no-limit` / No-Limit | false | false | true |
 
-工作区文件操作使用确定性路径策略。简单本地 Shell 形式仅在原生沙箱启用时可自动允许；命令分类只是便利判断，不能证明隔离。无隔离宿主 Shell、网络、工作区外和未知操作需要明确规则或人工批准。沙箱失败不授予宿主重试权；没有交互审批者时，未解决的批准请求会拒绝执行。
-
-只有用户设置和显式启动覆盖可授予权限或选择审批策略。项目 `permissions` 只接受 `deny`，并与用户拒绝列表合并。项目 `allow`、`approval`、旧 `mode` 或 `readOnlyCommands` 会报告配置错误；项目空列表不能清空用户 deny。
-
-规则采用 `tool(pattern)` 或单独的工具名称模式。文件路径和 Web 规则使用 fnmatch。Shell allow 规则匹配**完整、准确的命令**，包含通配符的命令授权会报错；只有确实授权整个能力时才使用单独的 `bash` 或 `powershell`。Shell deny 仍可使用宽范围模式。用户设置示例：
+默认 Workspace-Edit。名称只用于显示，实际权限由开关决定。用户设置示例：
 
 ```json
 {
   "permissions": {
+    "mode": "workspace-edit",
+    "modes": {
+      "offline-inspection": {
+        "name": "离线检查",
+        "readOnly": true,
+        "workspaceOnly": true,
+        "networkAllowed": false
+      },
+      "workspace-edit": {"name": "日常开发"}
+    },
     "approval": "ask",
-    "allow": ["bash(uv run --no-sync pytest -q)", "read(/opt/reference/**)"],
-    "deny": ["bash(git push*)", "read(~/.ssh/*)"]
+    "deny": ["bash(git push*)"]
   }
 }
 ```
 
-Deny 和能力检查先于授权与询问。参数变化后，执行前再次核验。记住的批准绑定来源任务、准确参数、cwd、可静态解析的路径目标、Shell 环境和显式策略状态。动态 Shell 路径与 PowerShell 脚本仅获得单次批准。策略变化或 `/permissions revoke` 使旧决定失效；新增自然语言消息本身不属于授权系统状态变更。
+稳定 ID 使用 1–64 个字母、数字、下划线或连字符。自定义预设必须提供三个布尔值；
+内置预设可只覆盖部分字段。名称使用 1–100 个可打印字符。
+逐行客户端使用 `/mode save <id> <JSON>` 编辑，`/mode list` 查看实际值，`/sandbox`
+分别显示有效权限和后端发现状态。后端不支持所选组合时拒绝执行。
 
-审计记录保留来源任务、工作模式、只读上限、审批策略、决定和参数摘要。权限模型的风险及证据记录已退休。应用层检查与[原生 Shell 沙箱](../guides/sandbox.md)相互独立；后者不隔离可信 Python 扩展或远程工具。
+只读保护受管宿主文件数据，私有临时目录和宿主记录仍可写；它不保证远程系统没有副作用。
+工作区范围覆盖受管文件读写，并有明确的系统／运行时例外。POSIX 后端和 Core 文件适配器
+保护 Virgo 私有授权存储。Windows 使用对象 ACL，存在系统 LPAC 读取授权，不是精确路径命名空间。
+网络开关覆盖受管 Shell、Web／原生搜索及远程 MCP 调用，不关闭模型传输或登录。
+可信 Python 扩展不在 OS 沙箱中。MCP 服务不能执行本地文件边界，在受限文件模式下需申请
+单次、不限文件范围的明确例外。详见[沙箱](../guides/sandbox.md)。
+
+权限范围内的受管操作直接执行，不再根据 Shell 字符串分类进行普通审批。显式 deny 始终生效。
+`request_permissions(tool, arguments, permissions, reason)` 申请一个准确操作；批准后模型必须
+用相同参数调用该工具。它不会执行或重放命令、修改 Mode、给其他任务授权，历史也不恢复授权。
+批准绑定来源 Runtime／运行、参数、cwd、解析路径、工具实例、Shell 环境及策略版本。
+变化会使批准失效。已经拒绝的同一请求不会重复询问，直到撤销决定或开始新的运行。
+
+`permissions.approval=ask` 允许交互申请，`never` 拒绝新增申请，但不拒绝已在权限范围内的操作。
+`/permissions revoke` 清除记住的批准／拒绝以及尚未消费的单次例外。可信扩展策略仍可提出额外
+审批。用户 allow 规则可用于这些策略，但不能突破执行边界或显式 deny。Shell allow 必须精确
+匹配完整命令，或授权整个工具；deny 和路径规则支持 glob。
+
+只有用户设置及显式启动覆盖可以选择／编辑权限预设。项目 `permissions` 只接受额外 deny，
+不能清空用户拒绝。显式旧 `sandbox.mode=read-only|workspace-write`／`--sandbox` 保留禁网行为；
+`disabled` 映射到 No-Limit。删除旧设置后使用新的默认联网预设。不要同时使用 `--mode` 和
+`--sandbox`。`sandbox.network`、模型权限审批和旧审批模式别名仍不支持。
 
 ## 上下文与重试
 

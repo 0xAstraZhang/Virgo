@@ -298,6 +298,12 @@ class TerminalUI(UI):
             self._newline()
         return self.broker.ask(self._style("? ", "warn") + question, self.write)
 
+    def confirm_once(self, question: str, agent: str = "main") -> str | None:
+        with self._lock:
+            self._newline()
+        answer = self.broker.read_value(self._style("? ", "warn") + question + " [y/N] ", self.write)
+        return None if answer is None else "y" if answer.strip().lower() == "y" else "n"
+
     def input(
         self, question: str, *, password: bool = False, default: str = "", timeout: float | None = None
     ) -> str | None:

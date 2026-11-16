@@ -4,7 +4,7 @@
 
 ## Validation status
 
-Native Windows isolation is experimental outside the validated administrative runner configurations below. Virgo requests `workspace-write` by default, including on Windows; an unavailable backend or insufficient ACL rights refuses Shell execution. `--sandbox disabled` is an explicit host-execution choice and does not preserve an OS isolation claim. The application never elevates itself or falls back to host execution to make the default work.
+Native Windows isolation remains experimental outside the validated administrative runner configurations below. The current default Workspace-Edit requests workspace writes and networking; Read-Only keeps networking enabled while making workspace data read-only. An unavailable backend or insufficient ACL rights refuses Shell execution. No-Limit (including legacy `--sandbox disabled`) explicitly uses host execution without OS isolation. The application does not elevate itself to make a constrained policy work.
 
 The real Windows security suite passed all 18 scenarios on both environments below at revision `e2e5c94ca9cb4e336092963a11f977cfcc4ee52b`. Each job also validated its XML report with zero failures, errors or skips. See [the exact native run](https://github.com/0xAstraZhang/Virgo/actions/runs/43747132842).
 
@@ -15,18 +15,18 @@ The real Windows security suite passed all 18 scenarios on both environments bel
 
 These results cover administrator-run GitHub-hosted runners using local NTFS. They do not establish desktop Windows, ARM64/emulation or standard-account compatibility. The complete cross-platform comparison is a separate gate; check the current PR revision as described in [testing and CI](../development/testing-and-ci.md).
 
-The following sections describe the exercised permission model, host prerequisites and remaining limitations.
+The following sections distinguish the previously exercised boundary from the current permission-flag changes. Historical CI does not validate the new network-enabled presets; the current revision must pass native acceptance including real external TCP access and refusal of unsupported combinations.
 
 ## Permission model
 
-Approval permits the Core tool to request execution. It cannot change an active sandbox into an ordinary process. Work mode and child restrictions determine the policy ceiling independently. The originating Runtime supplies the workspace; changing the selected conversation or a command's working directory does not select a new grant root.
+Ordinary tool approval does not replace OS enforcement. An explicit `request_permissions` grant may change one operation’s flags; Plan/Code Review instructions do not. An explicit read-only child ceiling remains binding. The originating Runtime supplies the workspace; changing the selected conversation or cwd does not select a new grant root. Constrained policies with `workspace_only=false` are rejected as unsupported before the payload starts.
 
 | Mechanism | Implemented responsibility | Scope limit |
 | --- | --- | --- |
 | LPAC | A fresh AppContainer identity, with `ALL_APPLICATION_PACKAGES` access disabled; the process receives `registryRead` and `lpacInstrumentation` capabilities | Windows still has ambient `ALL RESTRICTED APPLICATION PACKAGES` grants. This is object ACL isolation, not a filesystem namespace or an exact read-path allowlist. |
 | Write-restricted token | `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE \| WRITE_RESTRICTED)` with one independent, random restricting SID | The extra check restricts writes. It does not by itself confine reads or networking. No Everyone or logon SID is added as an alternative write grant. |
 | Temporary file ACLs | Per-command read/execute or write ACEs for the workspace, selected runtimes and private profile; explicit mutation denials for read-only/protected objects | This requires ACL-edit authority on the affected objects and modifies their DACLs temporarily. It does not mount or copy a private filesystem. |
-| AppContainer network policy | No network capability is supplied; startup requires the Base Filtering Engine and Windows Firewall services to be running | No allowlisted domains, proxy-based boundary or unrestricted active network mode is implemented. |
+| AppContainer network policy | With networking disabled no network capability is supplied; enabled policies add `internetClientServer` and `privateNetworkClientServer`. Startup requires Base Filtering Engine and Windows Firewall services | No firewall rules, loopback exemptions, domain allowlists or proxy boundaries are installed. Windows and host firewall policy can still restrict connectivity. |
 | Crypto device lease | A temporary `0x00100003` allow ACE for the command's unique write SID on the exact `\Device\KsecDD` object | Grants file read/write-data and synchronize access to this device. It is not a whitelist of BCrypt functions or individual IOCTLs. No ETW provider ACL is changed. |
 | Null device lease | Temporary `0x0012019F` allow ACEs for the command's package SID and write SID on the exact `\Device\Null` object | Allows the generic read/write access used by `NUL` redirection and `subprocess.DEVNULL`; it grants no device ownership, DACL mutation, deletion or access to other device objects. |
 | Private desktop | Each command has a separate Low-integrity desktop. Its identities receive only attributes/global-atom access on the current window station | This modifies the current station DACL temporarily. It does not grant clipboard, screen, host-desktop access or permission to change desktop security. |
@@ -99,3 +99,5 @@ References used for the implementation:
 - [Microsoft: window-station access rights](https://learn.microsoft.com/en-us/windows/win32/winstation/window-station-security-and-access-rights), [desktop access rights](https://learn.microsoft.com/en-us/windows/win32/winstation/desktop-security-and-access-rights) and [CreateDesktopW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createdesktopw)
 - [Microsoft: Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
 - [Codex Windows implementation at the inspected revision](https://github.com/openai/codex/tree/5cb38e79842a0e0a6dca5bb97874163e8ee50129/codex-rs/windows-sandbox-rs): its legacy restricted-token and elevated-account/firewall paths use a different permission model. Virgo does not claim that proxy environment variables or Job Objects provide network isolation.
+
+Permission-flag acceptance also opens a real external TCP connection under network-enabled LPAC after a host positive control. `VIRGO_SANDBOX_NETWORK_TEST_HOST` selects the test host (default `www.microsoft.com`, port 443); no HTTP request or credentials are sent. The native runner must have outbound connectivity. Separate cases require every constrained full-host policy to fail before its payload. The network capability meanings and loopback limitations follow [Microsoft capability documentation](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/appxmanifestschema/element-capability) and [Windows loopback guidance](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication).

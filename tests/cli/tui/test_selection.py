@@ -270,7 +270,7 @@ faux.handler('keys', answer)
 raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', '--model', 'faux/keys']))
 """.replace("CAPTURE", f"Path({str(captured)!r})")
     with PtyClient(project, tmp_path / "shift-enter-home", [sys.executable, "-c", script]) as terminal:
-        terminal.wait_for(lambda data: b"ask when needed" in data)
+        terminal.wait_for(lambda data: b"Network on" in data)
         start = len(terminal.output)
         terminal.send(b"first" + sequence + b"second")
         terminal.wait_for(lambda data: "first" in plain(data) and "second" in plain(data), start=start)

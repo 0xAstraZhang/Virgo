@@ -14,7 +14,112 @@ from .sandbox import PROTECTED_NAMES, SandboxPolicy
 
 
 class SandboxFileDenied(PermissionError):
-    """A file mutation cannot retain its checked workspace boundary."""
+    """A file operation cannot retain its checked boundary."""
+
+    def __init__(self, message, *, dimension="filesystem", target=None):
+        super().__init__(message)
+        self.dimension = dimension
+        self.target = str(target) if target is not None else None
+
+
+def check_read(path: Path, policy: SandboxPolicy) -> None:
+    if policy.private_path(path):
+        raise SandboxFileDenied(f"Sandbox read denied for private Virgo storage: {path}",
+                                dimension="protected_path", target=path)
+    if policy.workspace_only and not any(path.is_relative_to(root) for root in policy.read_roots()):
+        raise SandboxFileDenied(f"Sandbox read is outside the permitted filesystem scope: {path}",
+                                dimension="workspace_only", target=path)
+
+
+@contextmanager
+def _open_directory(path: Path):
+    """Retain directory identity and reject links introduced after resolution."""
+    if os.name == "nt":
+        from .windows_sandbox_files import open_path
+
+        with open_path(path, 0x81, directory=True, share_delete=False) as handle:
+            yield handle
+        return
+    directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        yield directory
+    finally:
+        os.close(directory)
+
+
+def read_bytes(path: Path, policy: SandboxPolicy, *, max_bytes: int | None = None) -> bytes | None:
+    """Read through a retained no-link handle; never open FIFO/device paths."""
+    check_read(path, policy)
+    try:
+        with _open_directory(path.parent) as directory:
+            if os.name == "nt":
+                import msvcrt
+
+                from .windows_sandbox_files import open_child
+
+                with open_child(directory, path.name, 0x81, directory=False) as handle:
+                    descriptor = msvcrt.open_osfhandle(handle.detach(), os.O_RDONLY | os.O_BINARY)
+            else:
+                descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                     dir_fd=directory)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise SandboxFileDenied(f"Sandbox read requires a regular file: {path}", target=path)
+                if max_bytes is not None and info.st_size > max_bytes:
+                    return None
+                return stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise SandboxFileDenied(f"Sandbox read path changed or contains a symbolic link: {path}",
+                                    target=path) from error
+        raise
+
+
+def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str]):
+    """Yield paths and no-follow metadata without traversing outside aliases."""
+    check_read(path, policy)
+    try:
+        with _open_directory(path) as directory:
+            if os.name == "posix":
+                for relative, names, files, descriptor in os.fwalk(".", dir_fd=directory,
+                                                                follow_symlinks=False):
+                    current = path / relative
+                    names[:] = sorted(name for name in names if name not in ignore
+                                      and not policy.private_path((current / name).resolve()))
+                    for name in files:
+                        file = current / name
+                        if policy.private_path(file.resolve()):
+                            continue
+                        try:
+                            yield file, os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+            else:
+                # The retained native handle denies directory replacement. Keep
+                # every parent pinned while recursively inspecting its children.
+                from .windows_sandbox_files import open_child
+
+                with os.scandir(path) as entries:
+                    for entry in entries:
+                        file = Path(entry.path)
+                        if policy.private_path(file.resolve()):
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name not in ignore:
+                                yield from walk_files(file, policy, ignore)
+                        else:
+                            with open_child(directory, entry.name, 0x80, directory=False):
+                                yield file, entry.stat(follow_symlinks=False)
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise SandboxFileDenied(f"Sandbox search path changed or contains a symbolic link: {path}",
+                                    target=path) from error
+        raise
 
 
 @contextmanager
@@ -28,10 +133,17 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
     file tools. Only a successful caller commits the fresh inode to its target.
     """
     protected = (*(policy.workspace / name for name in PROTECTED_NAMES), *policy.runtime_paths())
-    if (policy.mode != "workspace-write" or not path.is_relative_to(policy.workspace)
-            or any(path.is_relative_to(root.resolve()) for root in protected)):
-        raise SandboxFileDenied(f"Sandbox file operation denied: {path}")
-    parts = path.relative_to(policy.workspace).parts
+    if policy.read_only:
+        raise SandboxFileDenied(f"Sandbox file mutation denied by read-only policy: {path}",
+                                dimension="read_only", target=path)
+    if policy.workspace_only and not path.is_relative_to(policy.workspace):
+        raise SandboxFileDenied(f"Sandbox file mutation is outside the workspace: {path}",
+                                dimension="workspace_only", target=path)
+    if policy.private_path(path) or any(path.is_relative_to(root.resolve()) for root in protected):
+        raise SandboxFileDenied(f"Sandbox file operation denied for protected path: {path}",
+                                dimension="protected_path", target=path)
+    within_workspace = path.is_relative_to(policy.workspace)
+    parts = path.relative_to(policy.workspace).parts if within_workspace else path.parts[1:]
     if not parts:
         raise SandboxFileDenied("Sandbox file operation requires a file below the workspace root")
 
@@ -43,7 +155,7 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
         if os.name == "posix":
             flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
             root = os.open(policy.workspace, flags)
-            directory = os.dup(root)
+            directory = os.dup(root) if within_workspace else os.open(path.anchor, flags)
             for part in parts[:-1]:
                 if create:
                     try:

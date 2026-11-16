@@ -207,7 +207,7 @@ def test_picker_waits_for_active_run_and_stays_usable_when_resized(make_session)
                 app.controller.submit("/model")
                 panel = app.query_one(PreferencePicker)
                 assert not panel.display
-                assert app.controller.pending == ["/model"]
+                assert app.controller.pending == ["after this run: /model"]
                 release.set()
                 await wait_for(pilot, lambda: panel.display)
                 for width, height in ((40, 16), (80, 24), (120, 40)):

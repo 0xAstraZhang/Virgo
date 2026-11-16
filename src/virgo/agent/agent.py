@@ -68,6 +68,15 @@ class Agent:
             q.clear()
             return items
 
+    def discard_steering(self, predicate: Callable) -> int:
+        """Remove only matching messages that the loop has not consumed yet."""
+        with self._lock:
+            kept = deque(message for message in self._steer if not predicate(message))
+            removed = len(self._steer) - len(kept)
+            self._steer.clear()
+            self._steer.extend(kept)
+            return removed
+
     def drain_queues(self) -> list:
         return self._drain(self._steer) + self._drain(self._follow)
 

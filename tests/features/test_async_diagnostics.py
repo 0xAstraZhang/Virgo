@@ -190,7 +190,8 @@ def test_custom_exception_metadata_cannot_strand_background_job(make_session):
 
 def test_shell_background_call_uses_bound_tool_source_after_session_switch(make_session, monkeypatch, project):
     session = make_session()
-    original = session.main.origin
+    worker = session.create_runtime("worker", "subagent", parent=session.main)
+    original = worker.origin
     session.new_session()
     fake_command_io(monkeypatch, project, failure="wait")
     ctx = ToolContext("shell-origin", project, threading.Event(), "worker", origin=original)
@@ -200,6 +201,7 @@ def test_shell_background_call_uses_bound_tool_source_after_session_switch(make_
     assert job.error_details["context"]["session_id"] == original.store.id != session.store.id
     assert job.error_details["context"]["agent"] == "worker"
     assert job.error_details["context"]["tool_call_id"] == "shell-origin"
+    session.release_runtime(worker)
 
 
 def test_subagent_failure_reaches_parent_tool_with_same_error_id(make_session):

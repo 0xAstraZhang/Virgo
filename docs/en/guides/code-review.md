@@ -19,7 +19,7 @@ Start Virgo at the Git repository root, then select a target:
 
 `/review` is the plugin's single command. While `code_review` is enabled, that name is reserved: a `review.md` prompt template causes an explicit startup conflict instead of taking over the command. Rename that template or disable the plugin before restarting. The former `/code-review` alias and automatic command fallback are removed.
 
-The `coding` preset enables `code_review`. Review is an independent task with a restricted tool set; it does not make approval decisions for ordinary commands. Set `plugins.code_review.enabled` to override the preset, for example:
+The `coding` preset enables `code_review`. Review is an independent task with normal tools and reviewer instructions; it does not make approval decisions for ordinary commands. Set `plugins.code_review.enabled` to override the preset, for example:
 
 ```json
 {"profile": "minimal", "plugins": {"code_review": {"enabled": true}}}
@@ -45,25 +45,53 @@ JSON mode emits a `code_review` event containing a `report` object. Exit status 
 
 A staged edit reversed in the working tree remains visible in both layers. Missing files marked `skip-worktree` in a sparse checkout retain their index contents; they do not become unstaged deletions. Merge commits use their first parent. A selected commit's stored parent determines its comparison even at a shallow boundary; missing parent history produces an incomplete result. Baselines must identify an unambiguous local/remote branch; use a full ref to disambiguate a branch from a same-named tag. Review does not fetch branches or missing objects.
 
-The plugin uses controlled Git argv, then freezes file bytes and old/new line mappings. Staged and committed rename detection uses Git object/index comparisons. Unstaged removals and untracked additions remain separate changes. Replacing a tracked file with a directory records the original file's deletion and each non-ignored new child as an untracked addition. Read/search tools select frozen `head`, `index`, `worktree`, `base` or `target` versions. They never read a later live file; symlinks expose link text rather than their targets.
+The plugin uses controlled Git argv, then freezes file bytes and old/new line mappings. Staged and committed rename detection uses Git object/index comparisons. Unstaged removals and untracked additions remain separate changes. Replacing a tracked file with a directory records the original file's deletion and each non-ignored new child as an untracked addition. The `review_read`, `review_glob` and `review_grep` tools select frozen `head`, `index`, `worktree`, `base` or `target` versions. They never read a later live file; symlinks expose link text rather than their targets.
 
-`core.filemode=false` ignores executable-bit differences between regular files while preserving file-type changes; `core.symlinks=false` still supports regular-file symlink checkouts. Frozen diffs retain the missing-final-newline marker, and `read` exposes `ends_with_newline` without changing source line numbers.
+`core.filemode=false` ignores executable-bit differences between regular files while preserving file-type changes; `core.symlinks=false` still supports regular-file symlink checkouts. Frozen diffs retain the missing-final-newline marker, and `review_read` exposes `ends_with_newline` without changing source line numbers.
 
 Saved snapshots record the requested target, resolved commits, comparison, change metadata, file fingerprints and a snapshot ID. They identify the reviewed code; they do not permanently archive every source byte. Source contents are held in memory for the task.
 
-## Read-only execution
+## Task instructions and execution permissions
 
-Each review creates a fresh child of its originating Runtime with `read_only=True` and uses the existing Agent Loop. The source workspace, model, shared request budget, cancellation and permission ancestry are inherited. Parent messages are not copied. A read-only capability does not select Plan intent: the review receives reviewer instructions even when its originating conversation is in Plan. `subagents.maxTurns` bounds the child; compaction is disabled, so context overflow becomes an incomplete result.
+Each review creates a fresh child of its originating Runtime and uses the existing
+Agent Loop. It inherits the source workspace, model, request budget, cancellation
+and execution permissions. Parent messages are not copied. Review adds no
+read-only ceiling and does not force approval to `never`; it receives reviewer
+instructions even when its parent is in Plan. `subagents.maxTurns` bounds the
+child, and normal compaction is available.
 
-The child uses `approval_policy="never"` without changing the parent's approval policy. Review never opens an approval dialog during snapshot capture, tool use or freshness checks. Existing allow rules remain effective, subject to deny rules and hard boundaries. If required evidence needs a new approval, capture returns `incomplete`; an unavailable freshness check reports `unknown`.
+All normal tools for a child Runtime remain available. The task instructions ask
+for investigation and a report, without repairing, committing or merging the
+changes. Actual file, Shell and network access follows the selected permission
+Mode. Select Read-Only explicitly when source writes must be prevented. A model
+that ignores reviewer instructions may perform an allowed write in a writable
+Mode; Review is not another security boundary.
 
-Only `read`, `glob`, literal `grep` and `review_git` are offered. `review_git` pages through frozen status/diff and accepts no arbitrary commands or Git arguments. There are no file mutation, shell, network, MCP, background or delegation tools. The task cannot fix, commit or merge code.
+Frozen evidence is available through `review_read`, `review_glob`, literal
+`review_grep` and `review_git`. Their names distinguish them from ordinary tools
+that read live files. `review_git` pages through snapshot status/diff and accepts
+no arbitrary commands or Git arguments. Findings are always validated against
+the frozen target even when ordinary tools supply supporting context.
 
-The command bypasses prompt hooks. Its Runtime excludes executable tool/stop hooks, context/system-section injection, dynamic tool registration and hosted web preparation. Both Core permission gates remain active, and snapshot content respects inherited read restrictions. Approval policies, allow rules and approvals cannot add tools. Results are bounded in memory; the review does not create `.virgo/outputs` files.
+The child receives the normal extension hooks, request preparation and dynamic
+tool updates. Reviewer instructions are reapplied at each model request, including
+after compaction. Structured assistant JSON is withheld from the raw message view;
+the client displays the validated report, while tool/activity events remain
+visible. Normal output bounding and session records still apply.
 
-Controlled Git reads disable optional index writes, external diff, textconv, fsmonitor, hooks and implicit transport. Working files are compared from captured bytes, without executing clean/smudge filters. Lifecycle/results and diagnostics use Virgo's user/session locations; the task refuses to start when those destinations resolve inside the reviewed workspace.
+Both permission checkpoints remain active. Snapshot reads are authorized under
+the captured origin. A denied capture returns an incomplete result without
+silently expanding permissions; a failed freshness check reports `unknown`.
+During model investigation, `request_permissions` can ask for one exact operation
+when approval is `ask`. Cancellation releases the request and child Runtime.
+With `never`, new permission requests are refused without opening a dialog.
 
-This is the official task's capability boundary. Trusted Python extensions still run in the host process; their initialization and event observers are not sandboxed by this task. Starting review does not stop previously started independent jobs.
+Controlled snapshot Git reads still disable optional index writes, external diff,
+textconv, fsmonitor, hooks and implicit transport. Working files are compared from
+captured bytes without executing clean/smudge filters. These restrictions define
+the snapshot reader's operations, not the normal Shell tool. Trusted Python
+extensions execute in the host process, and starting Review does not stop prior
+background jobs.
 
 ## Reports and finding locations
 

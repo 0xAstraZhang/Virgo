@@ -4,7 +4,9 @@
 
 ## Conversation and language
 
-Type a request and press Enter. While the agent is working, another message steers the current run: it is inserted after the current tool batch and before the next model call. Read-only commands can run concurrently; ordinary commands that change state wait for the active run to finish. `/mode plan` tightens pending calls immediately. Leaving Plan, editing a plan or executing it requires an idle conversation; busy plan edits/execution are rejected rather than queued.
+Type a request and press Enter. While the agent is working, another message steers the current run: it is inserted after the current tool batch and before the next model call. The pending-input area distinguishes this input from commands waiting until the run finishes. Ctrl+Shift+K cancels unconsumed user input and deferred commands while preserving the current run and background notifications. Esc or Ctrl+C interrupts the current run; it does not cancel separately queued input.
+
+Plan and Code Review are optional task workflows. Their instructions ask for a proposal or a review, while the selected permission preset controls execution independently. Plan does not imply read-only access. Busy plan edits/execution are rejected rather than queued.
 
 ```text
 /language 中文
@@ -30,13 +32,14 @@ The first two commands switch the current session and save a user default. `/lan
 | `/search [auto\|duckduckgo\|deepseek\|off]` | Choose search behavior |
 | `/fetch [auto\|http\|deepseek\|off]` | Choose webpage-reading behavior |
 | `/permissions [ask\|never\|revoke]` | Inspect rules, select approval policy, or revoke session grants |
-| `/mode [default\|plan]` | Inspect or change WorkMode without changing approval or Sandbox |
-| `/plan [show\|edit [Markdown]\|execute <id>:<revision>]` | Review, replace or explicitly execute the current proposal |
-| `/sandbox` | Inspect the configured native command sandbox |
+| `/mode [preset-id\|list\|save <id> <JSON>]` | Inspect, select or save a permission preset |
+| `/workflow [default\|plan]` | Inspect or change task instructions without changing permissions |
+| `/plan [goal\|show\|edit [Markdown]\|execute <id>:<revision>]` | Enter Plan, request a proposal, or review/edit/execute the current proposal |
+| `/sandbox` | Inspect the task permission configuration and native backend availability |
 | `/compact [focus]` | Compact older model context |
 | `/new`, `/sessions [number]`, `/session` | Start, browse or inspect sessions |
 | `/diagnostics [error-id]` | Inspect recent errors and diagnostic records |
-| `/review [uncommitted\|base <branch>\|commit <revision>\|show [id\|last]]` | Run or inspect an [independent read-only code review](code-review.md); `/code-review` is an equivalent entry when available |
+| `/review [uncommitted\|base <branch>\|commit <revision>\|show [id\|last]]` | Run or inspect an [independent code review](code-review.md) under the selected permissions |
 | `/todos`, `/jobs` | Inspect the conversation checklist or background jobs |
 | `/skills`, `/skill:name [args]` | List skills or explicitly use one |
 | `/mcp [reconnect]` | Inspect or reload MCP connections |
@@ -51,12 +54,13 @@ Model and effort pickers use the saved model catalog. They do not start a networ
 | Enter | Send input; confirm the selected item in a menu |
 | Shift+Enter | Insert a newline; use Ctrl+J in macOS Terminal |
 | Tab | Complete slash commands and prompt templates |
-| Shift+Tab | Toggle Default / Plan WorkMode; preserve approval policy and Sandbox |
+| Shift+Tab | Open permission presets; inspect, select, rename, edit or create a preset |
 | ↑ / ↓ | Navigate a menu; at editor boundaries, browse input history |
 | Ctrl+P / Ctrl+N | Browse input history directly |
 | Ctrl+G | Open the current proposed plan for review, editing or explicit execution |
 | Ctrl+O / Ctrl+T | Toggle tool details / thoughts |
 | Ctrl+R | Open the session browser |
+| Ctrl+Shift+K | Cancel pending user input and commands; keep the current run and notifications |
 | PageUp / PageDown | Scroll the conversation or open details |
 | Ctrl+Home | Go to the beginning |
 | Esc | Close a menu; otherwise interrupt a run; reject an approval |
@@ -65,19 +69,21 @@ Model and effort pickers use the saved model catalog. They do not start a networ
 
 In macOS Terminal, Enter and Shift+Enter can arrive as the same key sequence, so the interface advertises Ctrl+J for newlines. Other terminals must send distinguishable modified-key sequences for Shift+Enter to work.
 
-Messages stay expanded; thoughts, tool calls and results can be folded independently. Scroll upward to inspect history without following incoming output; return to the bottom or click the latest-message control to resume following it. Text selection copies on release; password fields do not copy automatically. macOS uses its clipboard, while other terminals need OSC52 support.
+Messages stay expanded; thoughts, tool calls and results can be folded independently. Tool headers show the relevant path, command or query and an explicit outcome. Permission failures show the boundary and target when available; expanded output retains the original evidence and identifies operations confirmed not to have started. Calls and results retain their arrival order, including concurrent tools. The final Code Review report stays expanded after tool activity and when reopening a saved conversation. Scroll upward to inspect history without following incoming output; return to the bottom or click the latest-message control to resume following it. Text selection copies on release; password fields do not copy automatically. macOS uses its clipboard, while other terminals need OSC52 support.
 
-Approval panels initially select denial. Use arrows and Enter, `y/n/a`, or `1/2/3` for allow once, deny or allow for this session. Long questions are scrollable. Permission details and the meaning of each mode are in [Configuration](../reference/configuration.md#permissions).
+Approval panels initially select denial. Additional permission requests identify one exact operation and offer allow once or deny (`y/n`, `1/2`, or arrows and Enter). They do not change the selected preset or authorize future unrelated calls. Ordinary extension approvals may also offer allow for this session (`a` or `3`). Long questions are scrollable. Permission details and the meaning of each mode are in [Configuration](../reference/configuration.md#permissions).
 
-The footer shows WorkMode, approval policy and effective Sandbox separately. On narrow terminals, these indicators take priority over the model name and effort. Plan remains independent of `ask` or `never`; `/sandbox` also reports the configured boundary and backend status.
+The footer separates the task label and preset name from three explicit permission values: read-only, workspace-only and network. These values remain visible during approval and on narrow terminals; the compact English labels are `RO`, `WS` and `NET`. A preset's name is editable and does not determine its permissions. `/sandbox` reports backend availability separately; a configured policy is not proof that a native command has successfully launched.
+
+Shift+Tab opens the preset picker without changing permissions. **Use** (or Enter on a preset) selects it for this conversation. Edit its name and switches, then **Save** to persist the preset in user settings; **New** creates a separate preset. Unsaved edits disable **Use**. Saving a new preset does not select it. An active run retains its captured permissions; when the next selected preset differs, the footer marks it as **Next**. Closing the picker preserves the conversation draft.
 
 ## Review a plan before execution
 
-Start with `virgo --work-mode plan`, or enter `/mode plan` in an existing conversation. Ask Virgo to investigate and publish a proposal. Ctrl+G opens its Markdown and exact version token; `/plan` provides the same content as command output.
+Start with `virgo --work-mode plan`, or enter `/plan` or `/workflow plan` in an existing conversation with the Plan plugin enabled. Ask Virgo to investigate and publish a proposal. Ctrl+G opens its Markdown and exact version token; `/plan show` provides the same content as command output.
 
 In the plan window, editing disables **Execute this plan**. **Save changes** creates a new revision and keeps Plan active; reopen the window to review it. **Execute this plan** starts only the displayed version, and a version changed elsewhere is rejected. Closing the window does not execute or save edits. A busy conversation rejects save/execution without queuing it.
 
-Use `/permissions` to select an approval strategy. Executing a plan or toggling WorkMode leaves that strategy and Sandbox unchanged. The complete workflow, plain-terminal editing and restoration rules are in [Planning](planning.md).
+Select a permission preset independently with Shift+Tab or `/mode`. Executing a plan or changing the workflow does not relax that preset. The complete workflow, plain-terminal editing and restoration rules are in [Planning](planning.md).
 
 ## Sessions and workspaces
 

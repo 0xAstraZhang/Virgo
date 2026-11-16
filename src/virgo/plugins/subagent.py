@@ -1,6 +1,6 @@
 """Sub-agents: delegate focused work with fresh contexts and inherited limits.
 
-The read_only capability restricts child tools and shell permissions, not the parent.
+The read_only option adds a child execution ceiling without hiding normal tools.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from ..diagnostics import safe_text
 from ..harness.extensions import ExtensionAPI
 
 _counter = itertools.count(1)
-READ_ONLY_TOOLS = frozenset({"read", "glob", "grep", "git_read"})
-READ_ONLY_PROMPT = "You are in read-only mode; file and system changes are not permitted."
+READ_ONLY_PROMPT = ("Your task may inspect host files but may not modify them. All normal tools remain visible; "
+                    "the execution policy enforces this read-only ceiling.")
 
 
 class Subagents:
@@ -23,17 +23,13 @@ class Subagents:
 
     def run(
         self, prompt: str, description: str, signal, cwd=None, origin_parent=None,
-        *, read_only: bool = False,
+        *, read_only: bool = False, execution_mode=None,
     ) -> ToolResult:
         """Run a child with the caller's authority and optional read-only limits."""
         api = self.api
         origin_parent = origin_parent or api.current_runtime().origin
         parent = origin_parent.runtime
         owner = origin_parent.root
-        tools = (
-            [tool for tool in api.tools_for("subagent") if tool.name in READ_ONLY_TOOLS]
-            if read_only else None
-        )
         name = f"subagent#{next(_counter)}"
         rt = None
         failure = cleanup_error = None
@@ -45,12 +41,12 @@ class Subagents:
                 parent=parent,
                 read_only=read_only,
                 cwd=cwd,
-                tools=tools,
                 system_extra=READ_ONLY_PROMPT if read_only else None,
                 max_turns=int(api.settings.get("subagents.maxTurns", 50)),
                 signal=signal,
                 compaction=True,
                 origin_parent=origin_parent,
+                execution_mode=execution_mode,
             )
             rt.agent.prompt([UserMessage(prompt)])
         except Exception as error:
@@ -208,9 +204,11 @@ def setup(api: ExtensionAPI) -> None:
             return ToolResult.error("Subagent requires the originating runtime context.")
         origin_parent = runtime.origin
         origin_parent.root.entries()
+        execution_mode = api.services["sandbox"].mode_for(runtime)
 
         def run_child(signal):
-            return subs.run(prompt, desc, signal, ctx.cwd, origin_parent, read_only=read_only)
+            return subs.run(prompt, desc, signal, ctx.cwd, origin_parent,
+                            read_only=read_only, execution_mode=execution_mode)
 
         if args.get("background") and jobs is not None:
             job = jobs.start_callable(
@@ -235,7 +233,8 @@ def setup(api: ExtensionAPI) -> None:
             description=(
                 "Delegate a self-contained task to a sub-agent with a fresh context. It cannot see this "
                 "conversation, so include the needed context; only its final answer comes back. Several calls in one "
-                "response run in parallel. Set read_only=true to restrict tools. "
+                "response run in parallel. Set read_only=true to prevent host-file writes while keeping normal "
+                "tool schemas visible. "
                 "Set background=true to keep working while it runs."
             ),
             parameters={
@@ -249,7 +248,7 @@ def setup(api: ExtensionAPI) -> None:
                     },
                     "read_only": {
                         "type": "boolean",
-                        "description": "Limit the child to read-only tools; arbitrary shell commands are unavailable.",
+                        "description": "Prevent host-file writes in the child; normal tool schemas remain visible.",
                     },
                     "background": {"type": "boolean"},
                 },

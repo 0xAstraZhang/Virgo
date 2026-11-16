@@ -2,72 +2,60 @@
 
 [文档](../README.md) · [English](../../en/guides/migrating-execution-policy.md)
 
-Virgo 现在将工作意图、显式审批和执行边界分别表达。这是一次不兼容改动：旧权限模式报告配置错误，不再在运行期间动态转换。已有对话和计划 Markdown 仍可读取；打开历史不会恢复授权或启动执行。
+任务指令与执行权限现在独立。Plan 和 Code Review 是拥有正常工具的可选插件，通过提示词
+要求输出计划／报告，不再附加只读权限。已有对话和计划仍然可读。
 
 ## 更新配置
 
-| 已退休设置或接口 | 替代方式 |
+| 原入口 | 当前入口 |
 | --- | --- |
-| `permissions.mode=plan`、`/permissions plan` | `workMode=plan`、`--work-mode plan` 或 `/mode plan` |
-| `permissions.mode=auto-review`、`default`、`accept-edits` | `permissions.approval=ask`；不确定操作由用户确认 |
-| `permissions.mode=accept-all`、`yolo` | 明确选择用户级 allow 规则以及 `ask` 或 `never`；不提供自动等价转换 |
-| `permissions.readOnlyCommands` | 删除；Plan 和只读子运行时不提供任意 Shell |
-| `plugins.auto_review`、`features.permission` | 删除；Core 授权始终启用，模型不再负责授予权限 |
-| `sandbox.network` | 删除；活动 Shell 沙箱固定禁止联网 |
-| `--permission-mode ...` | `--approval ask\|never`，工作模式另用 `--work-mode default\|plan` |
-| `--mode text\|json` | `--format text\|json` |
-| `bash(npm test*)` 等 Shell 命令前缀授权 | `bash(npm test)` 等完整命令，或明确授权整个工具 |
+| `/mode plan` / `/mode default` | `/plan` / `/workflow default` |
+| `workMode=plan`、`--work-mode plan` | Plan 插件启用时，继续选择规划指令 |
+| `/mode` | 查看／选择可编辑的**权限**预设 |
+| `--mode text|json` | `--format text|json`；`--mode` 现在接收权限预设 ID |
+| `sandbox.mode=workspace-write` / `read-only` | 显式保留旧禁网策略；删除后使用新默认值 |
+| `sandbox.mode=disabled` | 显式选择 No-Limit 文件／网络权限 |
+| `sandbox.network` | 改用预设的 `networkAllowed` 布尔值 |
+| `permissions.mode=plan|default|accept-edits|accept-all|yolo|auto-review` | 旧审批别名已删除；选择 `read-only`、`workspace-edit`、`no-limit` 或自定义 ID |
+| `permissions.readOnlyCommands`、`plugins.auto_review` | 已删除；Shell 字符串分类和模型裁决不构成执行边界 |
 
-`never` 表示需要新增批准的操作会被拒绝。它不授予全部工具权限，不忽略 deny，不退出 Plan，也不关闭 Sandbox。显式拒绝规则始终有效。
-
-将授权和审批策略从项目 `.virgo/settings.json` 移到用户设置。项目 `permissions` 只可添加 deny，并与用户 deny 合并；不能清空用户拒绝、选择审批策略或声明额外只读命令。项目 Sandbox 配置继续被忽略。
-
-普通交互工作的用户配置：
-
-```json
-{
-  "workMode": "default",
-  "permissions": {
-    "approval": "ask",
-    "allow": ["bash(uv run --no-sync pytest -q)"],
-    "deny": ["bash(git push*)"]
-  },
-  "sandbox": {"mode": "workspace-write"}
-}
-```
-
-可选的项目限制：
-
-```json
-{
-  "permissions": {"deny": ["write(secrets/**)", "edit(secrets/**)"]}
-}
-```
-
-带命令的 Shell allow 规则严格匹配完整文本，命令通配符会被拒绝。文件路径、Web allow 规则和 deny 规则保留 glob 语义。单独的 `bash` 授权整个 Bash 能力，仍受硬边界限制，但可以破坏普通工作区文件；应明确选择这类授权。
+新默认值为 `permissions.mode=workspace-edit`，允许编辑工作区及任务联网。Read-Only 也允许
+联网；离线工作通过自定义三开关预设表达。名称与权限可独立编辑。完整 JSON 及 `/mode save`
+语法见[配置](../reference/configuration.md#权限)。权限预设和授权由用户设置管理，项目只能增加 deny。
 
 ## 审批与记住的决定
 
-普通工作区文件操作采用确定性策略；简单本地 Shell 形式可在活动沙箱内自动执行。宿主 Shell、工作区外路径、联网和未知操作需要明确授权或人工批准。原生沙箱不可用不会转为宿主执行；Sandbox 和只读上限会在询问前检查，避免出现批准也不能执行的问题。
+所选权限范围内的受管操作直接执行。`request_permissions` 为一个准确操作申请明确的权限
+变化；批准本身不执行操作，下一次相同工具调用消费例外，Mode 不变。不同参数、来源 Runtime／
+运行、解析路径、Shell 环境、策略版本或工具实例不能复用它。
 
-人工批准可为单次，或针对来源任务中的准确操作记住。动态 Shell 路径和 PowerShell 脚本只获得单次批准。记住的决定绑定任务身份、工具、参数、cwd、解析后的路径、环境与显式策略。`/permissions revoke` 清除记住的批准和拒绝，改变显式策略也会使旧决定失效。主 Agent 仍接收对话指令，但不再由另一个模型将历史文本解释为授权系统中的授权或撤销。
+`ask` 允许交互申请，`never` 拒绝新增申请，而非拒绝全部操作。`/permissions revoke` 清除
+记住的决定和待消费例外。显式 deny 始终生效。失败或可能已有副作用的命令不会自动重放。
+打开历史不恢复授权，也不执行计划。可信扩展策略可以增加限制。
 
 ## 默认执行边界
 
-默认改为 `workspace-write`，minimal 预设也适用。使用 `--sandbox read-only` 施加写入上限；确需宿主执行时显式选择 `--sandbox disabled`。此选择不改变审批策略或 WorkMode。原生边界建立失败仍为错误，命令不会被自动重放。
+每次运行捕获来源权限。运行中切换预设用于后续运行；后台任务及子 Runtime 保留原来源。
+只读保护宿主文件数据，私有临时目录和宿主记录仍可写，也不保证远程系统没有修改。
 
-活动 Shell 沙箱禁止联网，并保护仓库元数据和指令路径。安装依赖、远程 Git 操作和提交可能因此不可用。选择宿主环境前请阅读[沙箱指南](sandbox.md)与[Windows 前提](windows-sandbox.md)。Windows 后端仍属实验支持；管理员 CI 结果不代表普通桌面标准账户可用。Core Python 文件工具使用独立应用层限制；可信扩展、hooks 和远程工具不在 Shell 的 OS 沙箱中。
+Core 文件工具在应用层执行文件范围检查；原生 Shell 后端执行支持的进程策略；受管 Web／
+原生搜索和远程 MCP 调用遵循网络开关。无法执行文件边界的 MCP 服务，需要明确的单次不限
+文件范围例外。宿主和可信 Python 扩展不在 Shell 的 OS 边界中。
 
-Plan 和只读子运行时使用文件阅读、搜索和受控 `git_read`，即使显式关闭宿主沙箱也不提供任意 Bash/PowerShell。Code Review 继续作为可选独立任务，使用冻结证据与经过校验的 Findings，不成为第三种工作模式。
+参见[沙箱](sandbox.md)与[Windows 限制](windows-sandbox.md)。Windows 保留系统 LPAC 读取
+授权，并拒绝受限的 `workspaceOnly=false` 组合。发现后端不代表已成功隔离；不支持或不可用
+会拒绝执行。No-Limit 使用宿主账户已有权限，不自动取得管理员权限。
 
 ## 集成 API
 
-- 审批选择使用 `AgentSession(approval_policy="ask" | "never")` 和 `session.approval_policy`。
-- 工作意图使用现有权限服务的 `set_work_mode(...)`。
-- 通过 `read_only=True` 创建受限子运行时；可选 `approval_policy="never"` 进一步限制交互审批。子任务不能放宽父级上限。
-- 延迟执行必须携带 `ToolContext.origin` / `ToolCallEvent.origin`，由 `ExecutionOrigin` 绑定来源。后台任务发布前就捕获来源，不能借用当前选中的对话。
-- `ExecutionOrigin` 保留工作区、来源 Runtime 和分支记账；旧 `ReviewSource` 的额外 transcript、模型审批输入和裁决 API 已删除。
-- 自定义权限策略只能给 Core 添加限制，不能替换 Core。旧 reviewer 注册 API 和 `features.permission*` 导入已退休。
-- 模式和计划通知在状态提交后发出。监听者可以观察和刷新 UI，不能同步重入状态变更或发布工作；下一次显式操作应在通知结束后走正常准入路径。
+`SandboxManager.mode_for(runtime)` 返回捕获的 `PermissionMode`；`selected_mode` 是当前
+对话下次采用的选择。`select_mode(id)` 只切换当前对话，`save_mode(...)` 将名称与开关写入
+用户设置。实际判断使用三个有效值。`Runtime.prepare_run()` 捕获策略。
 
-切换模式要求来源对话及其排队、运行中的子 Agent 空闲。已经启动的原生进程保留原有执行边界；切换模式不等于撤销进程权限。执行计划为一次运行选择准确版本，并保留当前审批及 Sandbox 设置。编辑计划会使旧执行选择失效；恢复历史不会执行计划。
+`read_only=True` 仍可明确限制子 Runtime，但不移除工具 schema；预设继承与该显式上限分开。
+延迟工作携带 `ToolContext.origin`，TUI 切换对话不会转移授权。存储的历史记录不会恢复单次例外。
+
+Plan 通过 `plugins.plan` 安装，Core 不再必然拥有 Plan 服务。扩展使用
+`add_request_system_section` 注入每请求指令，复用既有 Runtime 和 SessionStore。
+Review 保留目标解析、冻结证据与 Findings 校验，同时使用正常工具和交互路径。
+`harness.plans` 导入仅作为兼容入口，新集成使用插件 API。

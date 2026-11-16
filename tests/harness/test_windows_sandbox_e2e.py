@@ -820,6 +820,39 @@ print(json.dumps(results))
         assert data(run(native, source)) == [10013] * (len(endpoints) + 1), "requires WSAEACCES, not refusal/timeout"
 
 
+def test_network_permission_grants_real_egress_without_host_fallback(native, project):
+    """A reachable external endpoint distinguishes an actual grant from timeouts.
+
+    The strict native runner must have outbound TCP access. No HTTP request or
+    authentication data is sent; the exact host-reachable address is reused by
+    the restricted payload to avoid conflating DNS with token authorization.
+    """
+    host = os.environ.get("VIRGO_SANDBOX_NETWORK_TEST_HOST", "www.microsoft.com")
+    with socket.create_connection((host, 443), timeout=10) as control:
+        endpoint = control.getpeername()[:2]
+    source = f"""import json, socket
+assert socket.getaddrinfo({host!r}, 443), 'system name resolution must remain usable'
+with socket.create_connection({endpoint!r}, timeout=10):
+    print(json.dumps({{'connected': True}}))
+"""
+    policy = SandboxPolicy(workspace=project, read_only=True, network_allowed=True)
+    output, code, status = run_command(command(source), project, 20, threading.Event(),
+                                      interpreter=selected(native), sandbox_policy=policy)
+    assert code == 0 and status == "ok", output.text
+    assert payload_json(output.text) == {"connected": True}
+
+
+@pytest.mark.parametrize("read_only,network_allowed", [(False, False), (True, False), (True, True)])
+def test_unsupported_full_host_windows_policy_refuses_payload(native, project, read_only, network_allowed):
+    marker = project / "unsupported-must-not-run.txt"
+    policy = SandboxPolicy(workspace=project, read_only=read_only, workspace_only=False,
+                           network_allowed=network_allowed)
+    with pytest.raises(SandboxUnavailable, match="does not support constrained full-host") as failure:
+        run_command(command(f"from pathlib import Path;Path({str(marker)!r}).touch()"), project, 10,
+                    threading.Event(), interpreter=selected(native), sandbox_policy=policy)
+    assert failure.value.reason == "unsupported_policy" and not marker.exists()
+
+
 def process_exited(pid: int) -> bool:
     from ctypes import wintypes as w
 

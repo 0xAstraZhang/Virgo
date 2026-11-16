@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 
 from virgo.agent.types import AgentEvent
 from virgo.ai.providers import faux
@@ -11,6 +12,7 @@ from virgo.ai.stream import StreamEvent
 from virgo.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.controller import RunController
+from virgo.tools.fs import WRITE
 
 from tests.support.harness import wait_until
 from tests.support.tui import pump
@@ -131,7 +133,7 @@ def test_busy_input_steers_commands_defer_and_readonly_commands_continue(make_se
     controller.submit("also read this")
     controller.submit("/model faux/next")
     controller.submit("/session")
-    assert controller.pending == ["steering: also read this", "/model faux/next"]
+    assert controller.pending == ["steering: also read this", "after this run: /model faux/next"]
     updates = pump(controller, lambda c: not c.busy and not c.pending and not c._helpers)
     assert session.model.spec == "faux/next"
     assert [m.text() for m in session.main.messages if isinstance(m, UserMessage)] == [
@@ -140,6 +142,35 @@ def test_busy_input_steers_commands_defer_and_readonly_commands_continue(make_se
     ]
     assert any(u.kind == "print" and "session " in u.payload[0] for u in updates)
     assert len(faux.CALLS["test"]) == 2
+
+
+def test_cancel_pending_preserves_current_run_and_notifications(make_session):
+    entered, release = threading.Event(), threading.Event()
+
+    def response(_):
+        entered.set()
+        assert release.wait(4)
+        return faux.reply("current result")
+
+    ui = FullscreenUI()
+    session = make_session(response, faux.reply("notification handled"), ui=ui)
+    controller = RunController(session, ui)
+    controller.start("current task")
+    try:
+        assert entered.wait(2)
+        controller.submit("cancel this queued steering")
+        controller.submit("/model faux/unwanted")
+        session.notify("keep this notification")
+        assert controller.cancel_pending() == 2
+        assert not controller.pending
+        assert not session.main.agent.signal.is_set()
+    finally:
+        release.set()
+    pump(controller, lambda c: not c.busy and not session.wakeups)
+    users = [message for message in session.main.messages if isinstance(message, UserMessage)]
+    assert any(message.kind == "notification" and "keep this notification" in message.text() for message in users)
+    assert not any(message.text() == "cancel this queued steering" for message in users)
+    assert session.model.spec == "faux/test"
 
 
 def test_input_after_worker_finished_before_poll_is_scheduled(make_session):
@@ -228,18 +259,20 @@ def test_background_notification_wakes_idle_session(make_session):
 
 
 def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, project):
-    first, second = project.parent / "one.txt", project.parent / "two.txt"
+    first, second = project / "one.txt", project / "two.txt"
     ui = FullscreenUI()
     session = make_session(
         faux.reply(
             tools=[
-                ("write", {"path": str(first), "content": "one"}),
-                ("write", {"path": str(second), "content": "two"}),
+                ("extension_write", {"path": str(first), "content": "one"}),
+                ("extension_write", {"path": str(second), "content": "two"}),
             ]
         ),
         ui=ui,
         allow=False,
     )
+    session.services["sandbox"].select_mode("workspace-edit")
+    session.register_tool(replace(WRITE, name="extension_write", i18n_key=""))
     controller = RunController(session, ui)
     controller.start("write two files")
     before = pump(controller, lambda c: bool(ui._waiting))

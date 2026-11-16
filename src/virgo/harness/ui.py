@@ -57,6 +57,10 @@ class UI:
         """Ask the user. Return 'y', 'n' or 'a' (always), or None when nobody can answer."""
         return None
 
+    def confirm_once(self, question: str, agent: str = "main") -> str | None:
+        """Confirm one operation; legacy clients' 'a' answer means once here."""
+        return self.confirm(question, agent)
+
     def select(self, question: str, options: list[str], *, timeout: float | None = None) -> str | None:
         """Choose one label, or return None when cancelled or noninteractive.
 

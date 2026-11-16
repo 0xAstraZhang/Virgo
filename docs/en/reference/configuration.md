@@ -43,8 +43,10 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `effort` | `medium`; supported UI levels are `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxTokens` | Unset; adapter/model defaults apply |
 | `shell.executable` | `auto`; adapted shell name or executable path |
-| `sandbox.mode` | `workspace-write`; choose `read-only` or explicitly select `disabled`, user/startup configuration only |
-| `workMode` | `default`; `plan` adds an independent read-only ceiling |
+| `permissions.mode` | `workspace-edit`; select a user-owned execution preset |
+| `permissions.modes` | Editable names and three flags, keyed by stable ID |
+| `sandbox.mode` | Optional legacy offline compatibility setting |
+| `workMode` | `default`; `plan` selects the optional planning prompt |
 | `permissions.approval` | `ask`; use `never` to reject operations needing a new approval |
 | `permissions.allow`, `permissions.deny` | Lists of tool rules |
 | `compaction.enabled` | `true` |
@@ -62,7 +64,7 @@ Web-specific fields are documented in [Web search and reading](../guides/web.md)
 
 ## Profiles and plugins
 
-`coding` is the default. It enables `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background`, `web` and `code_review`. MCP is enabled only when server configuration exists. `minimal` starts with no official capabilities; explicit `plugins.<id>.enabled` overrides either preset. Unknown plugin names and malformed values fail configuration rather than silently enabling something.
+`coding` is the default. It enables `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background`, `web`, `plan` and `code_review`. MCP is enabled only when server configuration exists. `minimal` starts with no official capabilities; explicit `plugins.<id>.enabled` overrides either preset. Unknown plugin names and malformed values fail configuration rather than silently enabling something.
 
 ```json
 {
@@ -104,50 +106,85 @@ Auxiliary requests automatically choose a small model on the same connection: `c
 
 ## Work mode
 
-`/mode plan` enters planning and `/mode default` returns to ordinary work without executing a proposal. `--work-mode default|plan` selects the initial conversation's intent; `--format text|json` controls output formatting. These are separate from `--approval ask|never` and `--sandbox`. See [Planning a change](../guides/planning.md).
-
-```json
-{
-  "workMode": "plan",
-  "permissions": {"approval": "ask"},
-  "sandbox": {"mode": "workspace-write"}
-}
-```
-
-The example belongs in user settings. Project settings may request Plan but cannot relax a user-configured Plan ceiling. A user may explicitly select a different startup mode. Existing conversations keep their own saved mode; new conversations use the configured default. Mode changes require that originating conversation and its queued/running descendants to be idle. Notifications observe committed state and cannot reenter mode, plan or runtime admission changes.
-
-Plan and read-only children expose read-only tools, including controlled `git_read`, instead of arbitrary Bash/PowerShell. A child's read-only capability is independent of planning intent: a read-only investigation or Code Review is not automatically given Plan instructions. Children inherit their originating workspace and can only narrow their parent's capability and approval ceiling.
-
-Plans keep versioned Markdown in SessionStore. `/plan execute <id>:<revision>` selects the exact version for an execution request; saving or reopening a proposal does not execute it. Execution preserves approval and Sandbox restrictions. Returning to Default cannot make a configured read-only sandbox writable. See [the migration guide](../guides/migrating-execution-policy.md) for retired mode APIs.
+Plan and Code Review are optional prompt workflows. `/plan <task>` starts planning;
+`/workflow default` leaves planning without implementing it. `/review` runs an independent
+review using the normal tools and fixed review evidence. Neither workflow changes permissions.
+Their prompts request a plan/report without making changes; use Read-Only when enforced file
+protection is needed. `--work-mode default|plan` selects initial task instructions, while
+`--format text|json` controls output. See [Planning](../guides/planning.md) and
+[Code Review](../guides/code-review.md).
 
 ## Permissions
 
-| Approval policy | Behavior |
-| --- | --- |
-| `ask` | Execute already authorized operations; ask a person for uncertain or ungranted operations |
-| `never` | Execute already authorized operations; reject anything needing a new approval |
+`--mode <id>` and `/mode <id>` select an execution preset. Shift+Tab opens the TUI picker,
+where preset names and all three switches can be edited or a new preset created. Selection
+is conversation-local; Save persists the preset in user settings. The current task captures
+its permissions; changes during a run are shown as the next selection and do not revoke
+already running processes. Children/background jobs keep their source workspace and policy.
 
-Core authorization is always installed. No model infers a grant from conversation history, tool output or summaries. Both choices retain explicit deny rules, read-only ceilings and configured Sandbox boundaries. `/permissions ask` and `/permissions never` select the policy; `/permissions revoke` clears remembered grants and denials. These commands do not alter WorkMode or Sandbox.
+| Default ID / name | Read only | Workspace only | Network allowed |
+| --- | --- | --- | --- |
+| `read-only` / Read-Only | true | true | true |
+| `workspace-edit` / Workspace-Edit | false | true | true |
+| `no-limit` / No-Limit | false | false | true |
 
-Workspace file operations use the deterministic path policy. Simple local Shell forms can be allowed automatically only with an active native sandbox; classification is a convenience, not proof of confinement. Unisolated host Shell, network, outside-workspace and unknown operations need an explicit rule or human approval. A failed sandbox does not authorize a host retry. Without an interactive approver, an unresolved request fails closed.
-
-Only user settings and explicit startup overrides can grant permissions or select the approval policy. Project `permissions` accepts only `deny`, merged with user denials. Project `allow`, `approval`, old `mode` or `readOnlyCommands` entries report a configuration error. A project cannot erase the user's deny list with an empty list.
-
-Rules use `tool(pattern)` or a tool-name pattern alone. Path and web rules use fnmatch patterns. Shell allow rules match an **exact complete command**, and wildcard command patterns are rejected; use a tool-only `bash` or `powershell` grant only when that entire capability is intentionally authorized. Shell deny patterns may remain broad. Examples for user settings:
+Workspace-Edit is the default. Names are editable labels, never permission checks. User settings:
 
 ```json
 {
   "permissions": {
+    "mode": "workspace-edit",
+    "modes": {
+      "offline-inspection": {
+        "name": "Offline inspection",
+        "readOnly": true,
+        "workspaceOnly": true,
+        "networkAllowed": false
+      },
+      "workspace-edit": {"name": "Daily development"}
+    },
     "approval": "ask",
-    "allow": ["bash(uv run --no-sync pytest -q)", "read(/opt/reference/**)"],
-    "deny": ["bash(git push*)", "read(~/.ssh/*)"]
+    "deny": ["bash(git push*)"]
   }
 }
 ```
 
-Deny and capability checks precede grants and questions. Approval is checked again immediately before execution after argument changes. A remembered approval binds the originating task, exact arguments, cwd, statically resolved path targets, shell environment and explicit policy state. Dynamic Shell paths and PowerShell scripts receive only one-shot approval. Policy changes or `/permissions revoke` invalidate remembered decisions; a new natural-language message alone is not an authorization-system mutation.
+The stable ID is 1–64 letters/digits/underscores/hyphens. Custom entries require all three
+boolean fields; built-in entries may override individual fields. A name is 1–100 printable
+characters. `/mode save <id> <JSON>` provides the same editing path in plain/noninteractive
+clients. `/mode list` lists actual values; `/sandbox` shows the selected/effective policy and
+backend discovery separately. Unsupported backend combinations fail closed.
 
-Audit records retain the source task, work mode, read-only ceiling, approval policy, decision and argument digest. Permission-model risk and evidence records are retired. These application checks are separate from the [native Shell sandbox](../guides/sandbox.md), which does not isolate trusted Python extensions or remote tools.
+Read-only protects managed host file data, with private scratch and broker records allowed;
+it does not prevent remote side effects. Workspace scope includes managed file reads/writes
+with system/runtime exceptions. Private Virgo authority storage remains protected in POSIX
+profiles and Core file adapters. Windows uses object ACLs with ambient LPAC read grants;
+it is not an exact path namespace. Network policy covers managed Shell, Web/native search
+and remote MCP invocation, not model transport/login. Trusted Python extensions are outside
+the OS boundary. MCP services cannot enforce local file scope and need an explicit unrestricted
+single-operation exception under constrained file profiles. See [Sandbox](../guides/sandbox.md).
+
+Managed operations within the profile run without Shell syntax classification. Explicit deny
+rules remain binding. `request_permissions(tool, arguments, permissions, reason)` asks for one
+exact operation, then the model must call that tool with identical arguments. It does not run
+or replay the command, change Mode, grant sibling tasks access, or persist authorization in
+history. Approval is bound to the runtime/run, arguments, cwd, resolved paths, tool generation,
+shell environment and current policy revision; changes invalidate it. A repeated denied
+request does not prompt again until decisions are revoked or a new run starts.
+
+`permissions.approval=ask` permits interactive requests; `never` refuses new requests while
+allowing operations already within the profile. `/permissions revoke` clears remembered
+approvals/refusals and unconsumed operation exceptions. Additional trusted extension policies
+may still ask for authorization. User `allow` rules remain available for those policies but
+cannot override an execution boundary or explicit deny. Shell allow patterns must match an
+exact full command or a whole tool; deny and path rules support glob patterns.
+
+Only user settings and explicit startup overrides may select/edit modes or grant permissions.
+Project `permissions` accepts only additional `deny` rules; it cannot clear user denials.
+Legacy explicit `sandbox.mode=read-only|workspace-write` / `--sandbox` preserve their offline
+behavior; `disabled` maps to No-Limit. Remove the legacy setting to use network-enabled defaults.
+Do not combine `--mode` and `--sandbox`. `sandbox.network`, model permission approval and old
+approval-mode aliases remain unsupported.
 
 ## Context and retries
 

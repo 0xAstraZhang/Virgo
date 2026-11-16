@@ -33,6 +33,11 @@ _CAPABILITY_LOCK = threading.Lock()
 _CAPABILITY_PID = 0
 _CAPABILITY_RESULT: bool | str | None = None
 
+
+def control_root() -> Path:
+    """One explicit hidden parent covers this user's concurrent supervisors."""
+    return Path("/private/tmp") / f"virgo-control-{os.getuid()}"
+
 # This code is supplied as a fixed -c argument, never imported from a workspace.
 # The private socket is deliberately outside every payload-readable root.
 _SUPERVISOR = r"""import ctypes, errno, json, os, select, signal, socket, subprocess, sys, time
@@ -406,15 +411,21 @@ class LaunchdProcess:
     def _private_directory(self) -> Path:
         forbidden = (*self._policy._read_roots(), self._policy.workspace,
                      Path(self._env["TMPDIR"]).resolve())
-        for base in dict.fromkeys((Path(tempfile.gettempdir()).resolve(), Path("/private/tmp"))):
-            directory = Path(tempfile.mkdtemp(prefix="vgo-", dir=base)).resolve()
-            mode = directory.stat()
-            if (mode.st_uid == os.getuid() and stat.S_IMODE(mode.st_mode) == 0o700
-                    and len(os.fsencode(directory / "s")) < 104
-                    and not any(directory.is_relative_to(root) for root in forbidden)):
-                return directory
-            shutil.rmtree(directory)
-        raise _unavailable("No private launchd control directory is outside the sandbox grants")
+        base = control_root()
+        try:
+            base.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        mode = base.lstat()
+        if (not stat.S_ISDIR(mode.st_mode) or mode.st_uid != os.getuid()
+                or stat.S_IMODE(mode.st_mode) != 0o700 or base.resolve() != base
+                or any(base.is_relative_to(root) for root in forbidden)):
+            raise _unavailable("Private launchd control storage has unsafe ownership, permissions or scope")
+        directory = Path(tempfile.mkdtemp(prefix="vgo-", dir=base)).resolve()
+        if len(os.fsencode(directory / "s")) < 104:
+            return directory
+        shutil.rmtree(directory)
+        raise _unavailable("Private launchd control socket path is too long")
 
     def _failure(self, message: str):
         if self._mode == "command" and self._released:

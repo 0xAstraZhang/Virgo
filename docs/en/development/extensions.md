@@ -86,7 +86,9 @@ def setup(api):
 
 `runtime_for_context` validates the real Runtime, owning Session, exact original `ExecutionOrigin` object and agent name. Invalid or foreign sources return `None`; fail the requested operation explicitly. Resolving a runtime does not grant access to unrelated diagnostic records. For tool calls, use this identity resolution rather than `current_runtime()`; the latter is for deliberately capturing the current conversation at entry time.
 
-Pass the captured trusted parent to the child factory. `read_only=True` narrows its tools independently of WorkMode; the child inherits a parent's read-only ceiling even if the argument is omitted or false. A child may also select `approval_policy="never"`; a parent's `never` ceiling cannot be loosened. The factory binds `origin_parent` to `parent.origin`, shares accounting and the request budget, and propagates cancellation. `budget.maxModelCalls`, when configured, limits model requests shared with children; `subagents.maxTurns` remains the focused child turn limit. Do not build an independent AgentSession inside a plugin to escape ownership or budgets.
+Pass the captured trusted parent to the child factory. `read_only=True` adds an execution ceiling without hiding tool schemas or selecting Plan; the child inherits a parent's read-only ceiling even if the argument is omitted or false. A child may also select `approval_policy="never"`; a parent's `never` ceiling cannot be loosened. The factory binds `origin_parent` to `parent.origin`, shares accounting and the request budget, and propagates cancellation. `budget.maxModelCalls`, when configured, limits model requests shared with children; `subagents.maxTurns` remains the focused child turn limit. Do not build an independent AgentSession inside a plugin to escape ownership or budgets.
+
+Children capture their source permission profile before automatic project-context reads. The built-in background agent captures that profile when the task is submitted, so a later parent Mode change cannot widen a queued task. A trusted extension that defers Runtime creation can pass its captured `PermissionMode` through the `execution_mode` factory argument; this argument is not exposed in the model tool schema.
 
 Use `api.services` only for an explicit shared service contract. The compatibility `api.session` escape hatch exists through the 0.2 series; official plugins use the facade. Do not mutate `_tools`, `_lock`, `main` or selected UI state. Retained `virgo.features` implementation imports are temporary aliases; migrate before 0.3. The former `virgo.features.permission*` imports have already been removed; use the Core APIs described here.
 
@@ -99,6 +101,7 @@ Use `api.services` only for an explicit shared service contract. The compatibili
 | `session_start`, `session_shutdown` | `(session)` |
 | `input` | `(text, session)` → replacement text, `Handled`, or `None` |
 | `user_steer` | `(text, session)` |
+| `runtime_created`, `runtime_closed` | `(runtime)`; bind/release per-runtime UI and plugin state |
 | `before_agent_start` | `(runtime, prompts)` |
 | `agent_event`, `turn_end` | `(event, runtime)` |
 | `tool_call` | `(event, session)` → `Block` or `None`; arguments may be adjusted |
@@ -126,6 +129,12 @@ Settings command hooks support `PreToolUse`, `PostToolUse`, `UserPromptSubmit` a
 
 `api.add_system_section(name, fn, order=50)` calls `fn(role)`. `add_runtime_system_section(name, fn, order=50)` supplies a candidate's `RuntimeContext` with `role`, `cwd`, `store`, `accounting_store` and `origin_parent`. The last field is the captured parent `ExecutionOrigin`, or `None` for a root. A construction failure rejects the candidate; do not temporarily swap active session state.
 
+`api.add_request_system_section(name, fn, order=50)` calls `fn(runtime)` for every
+request and compaction context. Return instructions or `None`. Use it for active
+task instructions that must survive tool loops, compression and restoration.
+It does not filter tools or change execution permissions. Plan and Code Review
+use this hook; optional plugins own their task state and result handling.
+
 `api.append_entry(kind, data)` and `api.entries(kind)` access custom state on the current store. Background work should capture its actual owner first, then use that store and `api.notify(..., store=owner)`. Save failure is a real execution boundary, not successful persistence. Todo remains conversation state, not a durable task graph.
 
 ## Skills and templates
@@ -149,4 +158,4 @@ Specialized instructions belong in a [Skill](../../../examples/project/.virgo/sk
 
 For caught exceptions use `virgo.diagnostics.capture_error` and retain structured errors in tool results; on successful recovery keep original evidence under `related_errors`. Prefer the original runtime's `report_error()` for runtime-owned evidence. Propagated results/notifications can grant parent access; an error-ID string alone cannot. See [Troubleshooting](../guides/troubleshooting.md).
 
-Isolated commands use `api.register_command(..., isolated=True)` and `fn(session, args, origin_runtime)`. The Host binds the origin and owns busy/cancellation; create children with `parent=origin_runtime, read_only=True`. Review uses fixed snapshot tools and review instructions. Command-name duplicates are rejected; templates cannot occupy the enabled Review plugin's reserved `/review` name.
+Isolated commands use `api.register_command(..., isolated=True)` and `fn(session, args, origin_runtime)`. The Host binds the origin and owns busy/cancellation; create children with `parent=origin_runtime` and select `read_only=True` only when an explicit child ceiling is required. Review retains ordinary child tools, adds named snapshot readers and supplies reviewer instructions. Command-name duplicates are rejected; isolated command names are reserved against prompt templates, including `/review` while its plugin is enabled.

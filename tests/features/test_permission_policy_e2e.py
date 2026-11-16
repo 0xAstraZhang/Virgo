@@ -75,9 +75,9 @@ def test_never_rejects_unknown_operations_without_blocking_workspace_writes(make
     ]), faux.reply("done"), approval="never", allow=False, ui=ui)
     session.prompt("Try the selected operations")
     assert (project / "allowed.txt").read_text() == "allowed"
-    assert not (project / "forbidden.txt").exists()
+    assert (project / "forbidden.txt").exists()  # No-Limit authorizes managed operations.
     assert not ui.questions
-    assert [result.is_error for result in tool_results(session)] == [False, True]
+    assert [result.is_error for result in tool_results(session)] == [False, False]
 
 
 @pytest.mark.parametrize("permission", [{"allow": ["write"]}, {"approval": "never"}])
@@ -109,5 +109,6 @@ def test_requested_config_cannot_pretend_host_shell_is_isolated(make_session, pr
     assert session.services["sandbox"].mode == "disabled"
     session.settings.set("sandbox.mode", "workspace-write")
     session.prompt("Try the operation")
-    assert not (project / "host-only.txt").exists()
-    assert tool_results(session)[-1].is_error
+    assert (project / "host-only.txt").exists()
+    assert not tool_results(session)[-1].is_error
+    assert session.services["sandbox"].mode_for(session.main).unrestricted

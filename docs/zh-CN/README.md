@@ -14,7 +14,7 @@
 | [联网搜索与网页读取](guides/web.md) | 后端、能力路由、权限和读取限制 |
 | [命令解释器](guides/shells.md) | Shell 选择、执行语义、输出和取消 |
 | [原生命令沙箱](guides/sandbox.md) | 默认进程隔离、有效边界与平台限制 |
-| [独立代码审查](guides/code-review.md) | 固定目标、只读执行、Findings 校验和报告过时判断 |
+| [独立代码审查](guides/code-review.md) | 固定目标、审查指令、Findings 校验和报告过时判断 |
 | [故障排查](guides/troubleshooting.md) | 错误、日志、诊断证据和恢复边界 |
 
 [升级已有安装？](guides/migrating-to-core-plugins.md) 先了解预设变化、项目信任和保留的历史数据。

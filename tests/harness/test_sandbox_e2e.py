@@ -10,6 +10,7 @@ processes. Dedicated CI requires them instead of accepting capability skips.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import shlex
@@ -17,7 +18,9 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,7 +64,7 @@ def test_default_sandbox_requires_native_boundary(project, monkeypatch):
 
 
 def test_sandbox_status_reports_effective_read_only(make_session, project, monkeypatch):
-    """A discovered launcher must not look verified or hide a task's ceiling."""
+    """Plan intent must not change permissions or certify a discovered launcher."""
     monkeypatch.setattr("virgo.harness.sandbox.platform_backend", lambda: ("example-backend", project))
 
     def unexpected_launch(*args, **kwargs):
@@ -73,8 +76,8 @@ def test_sandbox_status_reports_effective_read_only(make_session, project, monke
         refresh_models=False, extensions=False,
     )
     session.prompt("/sandbox")
-    assert "configured: workspace-write" in session.ui.text
-    assert "effective: read-only" in session.ui.text
+    assert '"read_only": false' in session.ui.text
+    assert '"workspace_only": true' in session.ui.text
     assert "example-backend" in session.ui.text and "unverified" in session.ui.text
 
 
@@ -118,6 +121,74 @@ def test_missing_backend_is_fail_closed_in_real_session(make_session, project, m
     assert result.is_error and result.details["status"] == "sandbox_unavailable"
     assert not (project / "escaped.txt").exists()
     assert result.details["sandbox"]["mode"] == "workspace-write"
+
+
+@pytest.mark.parametrize("read_only,workspace_only,network_allowed", [
+    flags for flags in itertools.product((False, True), repeat=3)
+    if flags != (False, False, True)
+])
+def test_native_independent_permission_combinations(native, project, read_only, workspace_only, network_allowed):
+    """Each flag changes its own boundary, without granting Unix-socket access."""
+    from virgo.tools.bash import run_command
+
+    inside = project / "flag-inside.txt"
+    outside = project.parent / "flag-outside.txt"
+    inside.write_text("inside")
+    outside.write_text("outside")
+    secret = Path(os.environ["VIRGO_HOME"]) / "private-secret.txt"
+    secret.write_text("private-value")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp, socket.socket(socket.AF_UNIX) as unix:
+        tcp.bind(("127.0.0.1", 0))
+        tcp.listen()
+        unix.bind(str(project / "flag-host.sock"))
+        unix.listen()
+        source = f"""import json, socket
+from pathlib import Path
+def attempt(action):
+    try:
+        action()
+        return True
+    except OSError:
+        return False
+def tcp():
+    with socket.create_connection(('127.0.0.1', {tcp.getsockname()[1]}), timeout=2):
+        pass
+def unix():
+    with socket.socket(socket.AF_UNIX) as client:
+        client.connect({str(project / 'flag-host.sock')!r})
+print(json.dumps({{
+    'inside_read': attempt(lambda: Path({str(inside)!r}).read_text()),
+    'outside_read': attempt(lambda: Path({str(outside)!r}).read_text()),
+    'inside_write': attempt(lambda: Path({str(inside)!r}).write_text('changed')),
+    'outside_write': attempt(lambda: Path({str(outside)!r}).write_text('changed')),
+    'private_read': attempt(lambda: Path({str(secret)!r}).read_text()),
+    'tcp': attempt(tcp), 'unix': attempt(unix),
+}}))
+"""
+        policy = sandbox.SandboxPolicy(workspace=project, read_only=read_only,
+                                       workspace_only=workspace_only, network_allowed=network_allowed)
+        output, code, status = run_command(python_command(source), project, 15, threading.Event(),
+                                          interpreter=selected(native), sandbox_policy=policy)
+    assert status == "ok" and code == 0, output.text
+    assert json.loads(output.text) == {
+        "inside_read": True, "outside_read": not workspace_only,
+        "inside_write": not read_only, "outside_write": not read_only and not workspace_only,
+        "private_read": False, "tcp": network_allowed, "unix": False,
+    }
+
+
+def test_native_network_permission_supports_system_name_resolution(native, project):
+    """A real reachable host exercises resolver files/IPC as well as TCP."""
+    from virgo.tools.bash import run_command
+
+    host = os.environ.get("VIRGO_SANDBOX_NETWORK_TEST_HOST", "www.microsoft.com")
+    with socket.create_connection((host, 443), timeout=10):
+        pass
+    source = f"import socket; connection=socket.create_connection(({host!r},443),timeout=10); connection.close(); print('connected')"
+    policy = sandbox.SandboxPolicy(workspace=project, read_only=True, network_allowed=True)
+    output, code, status = run_command(python_command(source), project, 15, threading.Event(),
+                                      interpreter=selected(native), sandbox_policy=policy)
+    assert status == "ok" and code == 0 and "connected" in output.text, output.text
 
 
 def test_project_cannot_disable_user_sandbox(project):
@@ -331,7 +402,7 @@ def test_disabled_sandbox_keeps_legacy_execution(make_session, project):
     result = run(session, command)
     assert not result.is_error and "legacy" in result.text()
     session.prompt("/sandbox")
-    assert "disabled" in session.ui.text
+    assert "No-Limit" in session.ui.text and "no OS isolation" in session.ui.text
 
 
 @pytest.mark.parametrize("config", [{"mode": "typo"}, {"network": "enabled"}, {"mode": None}, "off",
@@ -369,7 +440,7 @@ def test_native_readonly_including_child_shell(native, project):
     assert code and status == "ok" and not (project / "blocked.txt").exists(), out.text
     native.services["permissions"].set_work_mode("plan")
     ctx = ToolContext("plan", project, threading.Event(), origin=native.main.origin)
-    assert native.services["sandbox"].for_context(ctx).mode == "read-only"
+    assert native.services["sandbox"].for_context(ctx).mode == "workspace-write"
 
 
 def test_native_network_and_environment_isolation(native, monkeypatch):
@@ -505,9 +576,15 @@ def test_native_background_and_child_preserve_workspace(native, project):
 def test_native_failure_and_timeout_are_not_reclassified(native):
     result = run(native, "exit 7")
     assert result.is_error and result.details["exit_code"] == 7 and result.details["status"] == "ok"
+    assert result.details["sandbox"]["kind"] == "command_failed"
+    assert result.details["sandbox"]["command_started"] is True
+    assert result.details["sandbox"]["side_effects"] == "possible"
     result = run(native, "sleep 10", timeout=0.2)
     assert result.is_error and result.details["status"] == "timeout"
     assert result.details["sandbox"]["mode"] == "workspace-write"
+    assert result.details["sandbox"]["kind"] == "command_failed"
+    assert result.details["sandbox"]["command_started"] is True
+    assert result.details["sandbox"]["side_effects"] == "possible"
 
 
 @pytest.mark.parametrize("background", [False, True])
@@ -882,6 +959,48 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
         assert not session.services["jobs"].jobs
 
 
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native launch protocol")
+@pytest.mark.parametrize("background", [False, True])
+def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, project, monkeypatch, background):
+    """A delayed broker can miss an acknowledgement after the payload ran.
+
+    The synthetic wrapper exercises real exec/pipe/lifecycle behavior, not OS
+    isolation. Only acknowledgement observation and the broker deadline clock
+    are controlled; the payload writes a disposable marker exactly once.
+    """
+    launcher = project.parent / "forward_payload.py"
+    marker = project / "payload-ran.txt"
+    launcher.write_text(
+        "import os, sys\nfrom pathlib import Path\n"
+        "if len(sys.argv) == 2 and Path(sys.argv[1]).name == 'true':\n"
+        "    raise SystemExit(0)\n"
+        "os.execv(sys.argv[1], sys.argv[1:])\n"
+    )
+    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("protocol-test", Path(sys.executable)))
+    system_file = sandbox._system_file
+    monkeypatch.setattr(sandbox, "_system_file",
+                        lambda path: path if path == Path("/usr/bin/true") else system_file(path))
+    monkeypatch.setattr(sandbox.SandboxPolicy, "_macos",
+                        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)])
+    delayed = False
+
+    def lose_ack(*_args):
+        nonlocal delayed
+        wait_until(marker.exists, timeout=3)
+        delayed = True
+        return [], [], []
+
+    monkeypatch.setattr(sandbox, "select", SimpleNamespace(select=lose_ack))
+    monkeypatch.setattr(sandbox, "time", SimpleNamespace(
+        monotonic=lambda: time.monotonic() + (10 if delayed else 0), sleep=time.sleep))
+    session = make_session(settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                                     "sandbox": {"mode": "workspace-write"}}, refresh_models=False, extensions=False)
+    source = "from pathlib import Path\nwith Path('payload-ran.txt').open('a') as stream: stream.write('once')"
+    result = run(session, python_command(source), background=background)
+    assert marker.read_text() == "once"
+    assert result.is_error and result.details["status"] == "sandbox_failed", result.text()
+    assert result.details["sandbox"]["side_effects"] == "possible"
+
 
 def test_native_protected_symlink_cannot_add_a_host_read_mount(native, project):
     """A payload-created metadata link must not reveal a host secret next launch."""
@@ -1116,6 +1235,56 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(make_se
             assert "replacement-cwd-private-context" not in request["system"]
     finally:
         api.release_runtime(child)
+
+
+@pytest.mark.parametrize("route", ["child", "main-rebuild", "new-main"])
+def test_automatic_context_cannot_borrow_another_conversations_no_limit_mode(make_session, project, route):
+    """Prompt construction must use its owner before any provider request.
+
+    Failure modes: a child of an inactive restricted origin, its rebuilt lead,
+    or a newly constructed restricted conversation inherits the visible lead's
+    No-Limit setting and automatically reads ancestor or replacement-cwd files.
+    """
+    from tests.support.harness import calls
+
+    (project.parent / "home" / "AGENTS.md").write_text("trusted-user-context-marker")
+    (project / "AGENTS.md").write_text("origin-workspace-instructions")
+    (project.parent / "AGENTS.md").write_text("outside-ancestor-private-context")
+    other = project.parent / "outside-context-workspace"
+    other.mkdir()
+    (other / "CLAUDE.md").write_text("replacement-cwd-private-context")
+    session = make_session(
+        settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        refresh_models=False, extensions=False,
+    )
+    origin = session.main
+    session.services["sandbox"].select_mode("workspace-edit")
+    session.new_session()
+    session.services["sandbox"].select_mode("no-limit")
+    assert not session.services["sandbox"].mode_for(session.main).workspace_only
+    api = ExtensionAPI(session, "context-origin-profile")
+    child = None
+    try:
+        if route == "child":
+            runtime = child = api.create_runtime("origin-profile-child", "subagent", parent=origin, cwd=other)
+        elif route == "main-rebuild":
+            runtime = origin
+            runtime.rebuild_system()
+        else:
+            session.new_session()
+            runtime = session.main
+        faux.script("test", faux.reply("done"))
+        runtime.agent.prompt("Inspect the original task's instructions")
+        assert session.services["sandbox"].mode_for(runtime).workspace_only
+        assert calls()
+        for request in calls():
+            assert "origin-workspace-instructions" in request["system"]
+            assert "trusted-user-context-marker" in request["system"]
+            assert "outside-ancestor-private-context" not in request["system"]
+            assert "replacement-cwd-private-context" not in request["system"]
+    finally:
+        if child is not None:
+            api.release_runtime(child)
 
 
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX executable shell discovery")

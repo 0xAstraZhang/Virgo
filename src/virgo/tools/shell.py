@@ -257,13 +257,22 @@ def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
             policy = sandbox(ctx) if sandbox is not None else None
             result = execute_with_policy(args, ctx, policy)
         except SandboxCancelled as error:
-            result = ToolResult.error(str(error), details={"status": "aborted", "cancelled": True})
+            result = ToolResult.error(str(error), details={"status": "aborted", "cancelled": True,
+                                      "sandbox": {"kind": "aborted", "command_started": False,
+                                                  "side_effects": "none", "escalation_available": False}})
         except SandboxUnavailable as error:
-            result = ToolResult.error(str(error), details={"status": "sandbox_unavailable"})
+            result = ToolResult.error(str(error), details={"status": "sandbox_unavailable", "sandbox": {
+                "kind": "sandbox_unavailable", "dimension": getattr(error, "dimension", None),
+                "command_started": False, "side_effects": "none", "escalation_available": False,
+            }})
         except SandboxProcessError as error:
-            result = ToolResult.error(str(error), details={"status": "sandbox_failed"})
+            result = ToolResult.error(str(error), details={"status": "sandbox_failed", "sandbox": {
+                "kind": "sandbox_failed", "command_started": "unknown", "side_effects": "possible",
+                "escalation_available": False,
+            }})
         if policy is not None:
-            result.details = {**(result.details or {}), "sandbox": policy.describe()}
+            facts = (result.details or {}).get("sandbox", {})
+            result.details = {**(result.details or {}), "sandbox": {**policy.describe(), **facts}}
         return result
 
     def execute_with_policy(args, ctx, policy):
@@ -286,6 +295,12 @@ def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
                                         **({"sandbox_policy": policy} if policy is not None else {}))
         result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name, t=ctx.t)
         result.details.update(shell=shell.kind, executable=shell.executable, version=shell.version)
+        if policy is not None:
+            started = out.path is not None
+            result.details["sandbox"] = {
+                "kind": "command_failed" if result.is_error else "command_completed",
+                "command_started": started, "side_effects": "possible" if started else "none",
+            }
         return result
 
     params = {**BASH_PARAMS, "properties": {**BASH_PARAMS["properties"]}}

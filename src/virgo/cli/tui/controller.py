@@ -8,6 +8,7 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ...ai.types import UserMessage
 from ...harness.session import AgentSession
@@ -16,6 +17,9 @@ from ...harness.ui import UI
 from ..i18n import tr
 from ..repl import EXIT
 from .bridge import FullscreenUI, RunFinished, StagedFullscreenUI, Update
+
+if TYPE_CHECKING:
+    from .modes import PermissionModeChoice
 
 
 class RunController:
@@ -42,13 +46,17 @@ class RunController:
         self._ids = itertools.count(1)
         self._deferred: deque[str] = deque()
         self._steering: list[str] = []
+        self._task_runtime = None
         self._initial_reset: Update | None = None
         self._shutdown_worker: threading.Thread | None = None
         self._unsubscribers = [
             session.bus.on("session_start", self._session_reset, priority=-100),
             session.bus.on("agent_event", self._agent_event, priority=100),
+            session.bus.on("runtime_created", self._runtime_created, priority=100),
+            session.bus.on("runtime_closed", self._runtime_closed),
             session.bus.on("command_start", self._command_start, priority=100),
             session.bus.on("work_mode_changed", self._state_changed),
+            session.bus.on("permission_mode_changed", self._state_changed),
             session.bus.on("proposed_plan_changed", self._state_changed),
         ]
         ui.bind_signal("main", session.main.agent.signal)
@@ -104,8 +112,11 @@ class RunController:
                             self._unsubscribers = [
                                 candidate.bus.on("session_start", self._session_reset, priority=-100),
                                 candidate.bus.on("agent_event", self._agent_event, priority=100),
+                                candidate.bus.on("runtime_created", self._runtime_created, priority=100),
+                                candidate.bus.on("runtime_closed", self._runtime_closed),
                                 candidate.bus.on("command_start", self._command_start, priority=100),
                                 candidate.bus.on("work_mode_changed", self._state_changed),
+                                candidate.bus.on("permission_mode_changed", self._state_changed),
                                 candidate.bus.on("proposed_plan_changed", self._state_changed),
                             ]
                             self.ui.push("session_changed", candidate)
@@ -148,26 +159,69 @@ class RunController:
         )
         return [
             *[tr(self, "ui.controller.steering", text=text) for text in self._steering],
-            *self._deferred,
+            *[tr(self, "ui.controller.deferred", text=text) for text in self._deferred],
             *unsaved,
         ]
+
+    @property
+    def task_runtime(self):
+        return self._task_runtime or self.session.main
+
+    @property
+    def workflow(self) -> str:
+        return getattr(self.task_runtime, "workflow", None) or self.session.services["permissions"].work_mode
+
+    def change_permission_mode(self, choice: PermissionModeChoice) -> None:
+        manager = self.session.services["sandbox"]
+
+        def apply() -> None:
+            if choice.action == "select":
+                manager.select_mode(choice.mode_id)
+            else:
+                manager.save_mode(
+                    choice.mode_id, name=choice.name, read_only=choice.read_only,
+                    workspace_only=choice.workspace_only, network_allowed=choice.network_allowed, persist=True,
+                )
+                self.ui.print(tr(self, "ui.modes.saved", name=choice.name), "dim")
+
+        self._launch(apply, concurrent=True, command="mode")
+
+    def cancel_pending(self) -> int:
+        """Cancel inputs not yet consumed; leave the running task and notifications alone."""
+        count = len(self._deferred) + self.session.cancel_pending_input()
+        self._deferred.clear()
+        self._steering.clear()
+        if count:
+            self.ui.print(tr(self, "ui.controller.cleared", count=count), "dim")
+        return count
 
     def _session_reset(self, session: AgentSession) -> None:
         self.ui.bind_signal("main", session.main.agent.signal)
         self.ui.push("reset", copy.deepcopy(session.store.branch()))
 
     def _command_start(self, command, runtime) -> None:
+        if runtime.session is self.session and command.isolated:
+            self._task_runtime = runtime
+            self.ui.push("state_changed", None)
         if runtime.session is self.session and command.isolated and (self.closing or self._interrupted):
             self.session.abort_runtime(runtime)
+
+    def _runtime_created(self, runtime) -> None:
+        if runtime.session is self.session:
+            self.ui.bind_signal(runtime.name, runtime.agent.signal)
+            if runtime.parent is self._task_runtime and runtime.workflow:
+                self._task_runtime = runtime
+                self.ui.push("state_changed", None)
+
+    def _runtime_closed(self, runtime) -> None:
+        if runtime.session is self.session:
+            self.ui.unbind_signal(runtime.name, runtime.agent.signal)
 
     def _agent_event(self, event, runtime) -> None:
         if runtime.session is not self.session:
             return
-        if runtime.role != "review":
-            # Reviews never ask for tool approval or interactive input; keeping
-            # their ephemeral signal in the UI would retain it after cleanup.
-            self.ui.bind_signal(event.agent, runtime.agent.signal)
-        if (event.agent == "main" or runtime.role == "review") and event.type == "agent_start" and (self.closing or self._interrupted):
+        self.ui.bind_signal(event.agent, runtime.agent.signal)
+        if (event.agent == "main" or runtime is self._task_runtime) and event.type == "agent_start" and (self.closing or self._interrupted):
             # Agent.prompt resets its own signal. An interrupt may have arrived
             # after scheduling but before that reset on the worker thread.
             self.session.abort_runtime(runtime)
@@ -192,6 +246,7 @@ class RunController:
         ticket = next(self._ids)
         if not concurrent:
             self.busy = True
+            self._task_runtime = None
             self._interrupted = False
             self.session.main.agent.signal.clear()
             self.ui.push("run_start", ticket)
@@ -265,6 +320,7 @@ class RunController:
         for update in self.ui.drain():
             if update.kind == "done":
                 self.busy = False
+                self._task_runtime = None
                 out.append(update)
             elif update.kind == "helper_done":
                 self._helpers.pop(update.payload, None)

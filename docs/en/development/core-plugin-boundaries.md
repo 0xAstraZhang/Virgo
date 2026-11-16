@@ -33,7 +33,8 @@ Model adapters, hosts and capability plugins have different lifecycles. They nee
 | `background` | Job tools, status, cancellation and owner-bound notifications | Enabled |
 | `web` | Search/fetch routing, permission-aware access and configurable budgets | Enabled |
 | `mcp` | Configured connections, tools and bounded recovery | Only when server configuration exists |
-| `code_review` | Independent read-only code review with frozen targets and validated reports | Enabled |
+| `plan` | Prompt workflow with versioned Markdown proposals | Enabled |
+| `code_review` | Independent prompt review with frozen targets and validated reports | Enabled |
 
 `minimal` disables the preset's optional capabilities. Explicit `plugins.<id>.enabled` values override the preset. General Git operations remain available through the shell; [code review](../guides/code-review.md) provides only frozen status/diff views in its isolated Runtime.
 

@@ -53,6 +53,7 @@ class ApprovalPicker(Vertical):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.confirmation: Confirmation | None = None
+        self.answers = self.ANSWERS
         self._answered = False
         self.display = False
 
@@ -67,8 +68,12 @@ class ApprovalPicker(Vertical):
         self.confirmation = confirmation
         self._answered = False
         self.display = True
+        self.answers = ("y", "n") if confirmation.once_only else self.ANSWERS
+        title = tr(self, "ui.approval.title", agent=confirmation.agent)
+        if confirmation.once_only:
+            title += " · " + tr(self, "ui.approval.once_scope")
         self.query_one("#approval-title", Static).update(
-            tr(self, "ui.approval.title", agent=confirmation.agent)
+            title
         )
         question = confirmation.question.removesuffix(
             tr(self, "features.permission.allow_suffix")
@@ -77,13 +82,13 @@ class ApprovalPicker(Vertical):
         self.query_one("#approval-question").scroll_home(animate=False)
         options = self.query_one("#approval-options", ChoiceList)
         options.clear_options()
-        options.add_options(
-            [
-                Option(tr(self, "ui.approval.once"), id="allow"),
-                Option(tr(self, "ui.approval.deny"), id="deny"),
-                Option(tr(self, "ui.approval.session"), id="always"),
-            ]
-        )
+        choices = [
+            Option(tr(self, "ui.approval.once"), id="allow"),
+            Option(tr(self, "ui.approval.deny"), id="deny"),
+        ]
+        if not confirmation.once_only:
+            choices.append(Option(tr(self, "ui.approval.session"), id="always"))
+        options.add_options(choices)
         options.highlighted = 1
         self.resize_panel()
         self.focus_control()
@@ -130,16 +135,16 @@ class ApprovalPicker(Vertical):
     def action_choose(self) -> None:
         index = self.query_one("#approval-options", ChoiceList).highlighted
         if index is not None:
-            self.action_answer(self.ANSWERS[index])
+            self.action_answer(self.answers[index])
 
     @on(OptionList.OptionSelected, "#approval-options")
     def answer_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
         options = self.query_one("#approval-options", ChoiceList)
         if event.option is options.get_option_at_index(event.option_index):
-            self.action_answer(self.ANSWERS[event.option_index])
+            self.action_answer(self.answers[event.option_index])
 
     def action_answer(self, answer: str) -> None:
-        if self.confirmation is not None and not self._answered:
+        if self.confirmation is not None and not self._answered and answer in self.answers:
             self._answered = True
             self.post_message(self.Answered(self.confirmation, answer))

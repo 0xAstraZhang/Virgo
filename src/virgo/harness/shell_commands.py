@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 
 from ..tools.shell import Shell, default_shell, discover_shells, make_shell_tool, probe_shell
+from .execution_modes import configured_modes, legacy_mode
 from .extensions import ROLES_ALL
 
 USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)'
@@ -14,7 +15,13 @@ class ShellSelection:
         self.session = session
         # Capture the startup choice before discovery: approval/mode changes
         # must never enable host execution of version probes in this session.
-        self._probe_versions = session.settings.get("sandbox.mode", "disabled") == "disabled"
+        modes = configured_modes(session.settings.get("permissions.modes", {}))
+        selected = session.settings.get("permissions.mode", "workspace-edit")
+        if (legacy := session.settings.get("sandbox.mode")) is not None:
+            mode = legacy_mode(legacy)
+            modes.setdefault(mode.id, mode)
+            selected = mode.id
+        self._probe_versions = modes[selected].unrestricted
         # Share only the startup snapshot; each session owns its selection and additions.
         self.catalog = tuple(discover_shells(execute=self._probe_versions)) if catalog is None else catalog
         self.available = list(self.catalog)

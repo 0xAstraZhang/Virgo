@@ -156,8 +156,41 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
             assert main.expanded
             assert "four" in str(main.output.content)
             assert "[explorer]" in str(view.tools[("explorer", "shared-id")].header.content)
+            assert "pwd" in str(view.tools[("main", "shared-id")].header.content)
+            assert '"command"' not in str(view.tools[("main", "shared-id")].header.content)
+            assert "failed" in str(main.header.content)
             view.toggle_tools()
             assert all(t.expanded for t in view.tools.values())
+
+    asyncio.run(scenario())
+
+
+def test_sandbox_failure_shows_boundary_and_preserves_raw_evidence():
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(100, 24)) as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent(
+                "tool_execution_start", tool_call_id="write-1", tool_name="write",
+                args={"path": "settings.json", "content": "replacement"},
+            ))
+            await view.consume(AgentEvent(
+                "tool_execution_end", tool_call_id="write-1", tool_name="write", is_error=True,
+                result=ToolResult.error("Host file writes are disabled.", details={
+                    "status": "sandbox_denied",
+                    "sandbox": {"dimension": "read_only", "target": "settings.json",
+                                "command_started": False, "escalation_available": True},
+                }),
+            ))
+            await pilot.pause()
+            row = view.results[("main", "write-1")]
+            assert row.status == "blocked" and not row.expanded
+            assert all(value in str(row.header.content) for value in ("blocked", "Read only", "settings.json"))
+            row.header.focus()
+            await pilot.press("enter")
+            assert "Host file writes are disabled." in str(row.output.content)
+            assert "Operation did not start." in str(row.output.content)
+            assert "Additional permission" in str(row.output.content)
 
     asyncio.run(scenario())
 

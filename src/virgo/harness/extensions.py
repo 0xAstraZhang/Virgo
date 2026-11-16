@@ -238,6 +238,14 @@ class ExtensionAPI:
         """fn(RuntimeContext) -> text; construction errors reject the candidate."""
         self._add_section(self._session.runtime_sections, name, fn, order)
 
+    def add_request_system_section(self, name: str, fn: Callable, order: int = 50) -> None:
+        """fn(Runtime) -> instructions evaluated for every request and compaction.
+
+        This changes task instructions only; tools and execution permissions are
+        owned by the normal registry and permission policies.
+        """
+        self._add_section(self._session.request_sections, name, fn, order)
+
     def _add_section(self, sections, name, fn, order):
         key = f"{self.name}:{name}"
         if any(existing == key for _, existing, _ in sections):
@@ -294,11 +302,14 @@ class ExtensionAPI:
         return self._session._before_tool(event) or self._session._before_tool_execute(event)
 
     def has_tool_hooks(self):
-        # The Core sandbox limits local execution, not provider-hosted tools.
+        # Native web authorization still evaluates the Core sandbox policy.
+        # Its result handler only releases local operation grants; it is not a
+        # user hook that needs to observe provider-hosted queries/results.
         sandbox = self._session.services.get("sandbox")
         return (any(owner != "core.sandbox" or policy is not sandbox
                     for owner, policy in self._session._additional_permission_policies)
-                or self._session.bus.has_handlers("tool_call") or self._session.bus.has_handlers("tool_result"))
+                or self._session.bus.has_handlers("tool_call")
+                or self._session.bus.has_handlers("tool_result", exclude=sandbox._result if sandbox else None))
 
     def report_error(self, error, **kwargs):
         return self._session.report_error(error, **kwargs)
