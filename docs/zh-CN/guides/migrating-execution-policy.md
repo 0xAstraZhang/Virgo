@@ -14,8 +14,8 @@ Virgo 现在将工作意图、显式审批和执行边界分别表达。这是�
 | `permissions.readOnlyCommands` | 删除；Plan 和只读子运行时不提供任意 Shell |
 | `plugins.auto_review`、`features.permission` | 删除；Core 授权始终启用，模型不再负责授予权限 |
 | `sandbox.network` | 删除；活动 Shell 沙箱固定禁止联网 |
-| `--permission-mode ...` | `--approval ask|never`，工作模式另用 `--work-mode default|plan` |
-| `--mode text|json` | `--format text|json` |
+| `--permission-mode ...` | `--approval ask\|never`，工作模式另用 `--work-mode default\|plan` |
+| `--mode text\|json` | `--format text\|json` |
 | `bash(npm test*)` 等 Shell 命令前缀授权 | `bash(npm test)` 等完整命令，或明确授权整个工具 |
 
 `never` 表示需要新增批准的操作会被拒绝。它不授予全部工具权限，不忽略 deny，不退出 Plan，也不关闭 Sandbox。显式拒绝规则始终有效。

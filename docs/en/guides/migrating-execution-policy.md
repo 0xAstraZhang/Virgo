@@ -14,8 +14,8 @@ Virgo now separates work intent, explicit approval and the execution boundary. T
 | `permissions.readOnlyCommands` | Remove it; Plan and read-only children have no arbitrary Shell tool |
 | `plugins.auto_review`, `features.permission` | Remove them; Core authorization is always installed and no model grants permissions |
 | `sandbox.network` | Remove it; active Shell sandboxes block networking |
-| `--permission-mode ...` | `--approval ask|never` and, separately, `--work-mode default|plan` |
-| `--mode text|json` | `--format text|json` |
+| `--permission-mode ...` | `--approval ask\|never` and, separately, `--work-mode default\|plan` |
+| `--mode text\|json` | `--format text\|json` |
 | Shell allow command prefixes such as `bash(npm test*)` | Exact complete command grants such as `bash(npm test)`, or an intentional tool-only grant |
 
 `never` means that operations needing a new approval are rejected. It does not grant all tools, ignore deny rules, leave Plan or disable Sandbox. Explicit deny rules always remain effective.
