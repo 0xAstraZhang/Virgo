@@ -64,11 +64,12 @@ def test_fullscreen_pty_paste_resize_and_clean_exit(project, tmp_path):
         assert not termios.tcgetattr(terminal.slave)[3] & termios.ECHO
         assert re.search(rb"\x1b\[24;\d+H", terminal.output)
 
-        # Terminal.app emits CSI Z for Shift+Tab; cycle all three permissions.
-        for label in ("accept all", "plan", "auto review"):
+        # Terminal.app emits CSI Z for Shift+Tab; change WorkMode only.
+        for label in ("Plan (read-only)", "Default"):
             before_switch = len(terminal.output)
             terminal.send(b"\x1b[Z")
             terminal.wait_for(lambda data, label=label: label in plain(data), start=before_switch)
+        assert "accept all" not in plain(bytes(terminal.output))
 
         # A single bracketed paste contains a newline but must remain in the editor.
         before_paste = len(terminal.output)

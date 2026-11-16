@@ -12,6 +12,7 @@ from virgo.ai.types import UserMessage
 from virgo.cli.tui import controller as controller_module
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.controller import RunController
+from virgo.harness.extensions import ExtensionAPI
 from virgo.harness.settings import Paths
 from virgo.harness.store import SessionStore
 
@@ -74,6 +75,57 @@ def test_same_workspace_open_preserves_session_and_resets_history(make_session, 
     assert not session._shutdown_started
     assert session.main.messages[0].text() == "saved question"
     assert any(event.kind == "reset" for event in updates)
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_startup_mode_override_preserves_a_running_plan_child(make_session, project, retained):
+    ui = FullscreenUI()
+    session = make_session(ui=ui, persist=True, work_mode="plan", extensions=False,
+                           settings={"profile": "minimal"}, refresh_models=False)
+    origin, path = session.main, session.store.path
+    api = ExtensionAPI(session, "mode-restore-acceptance")
+    child = api.create_runtime("planning-child", "subagent", parent=origin)
+    entered, release = threading.Event(), threading.Event()
+
+    def pending_response(context):
+        assert "write" not in {tool.name for tool in context.tools}
+        entered.set()
+        assert release.wait(5)
+        return faux.reply(tools=[("write", {"path": "late.txt", "content": "must stay read-only"})])
+
+    faux.script("test", pending_response, faux.reply("done"))
+    worker = threading.Thread(target=child.agent.prompt, args=("Investigate in Plan",))
+    worker.start()
+    controller = None
+    try:
+        assert entered.wait(5)
+        if retained:
+            session.new_session()
+        selected = session.main
+        controller = RunController(session, ui)
+        controller.start()
+        assert controller.open_session(path, work_mode="default", initial="must not run")
+        updates = pump(controller)
+        assert session.main is selected
+        assert session.services["permissions"].work_mode_for(origin) == "plan"
+        assert any(update.kind == "print" and update.payload[1] == "error" for update in updates)
+        assert not any(message.text() == "must not run" for message in origin.messages)
+        release.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        assert not (project / "late.txt").exists()
+        api.release_runtime(child)
+        assert controller.open_session(path, work_mode="default")
+        pump(controller)
+        assert session.main is origin
+        assert session.services["permissions"].work_mode_for(origin) == "default"
+    finally:
+        release.set()
+        worker.join(5)
+        api.release_runtime(child)
+        if controller is not None:
+            controller.request_close()
+            assert controller.wait_closed()
 
 
 @pytest.mark.parametrize("failure", ["missing-file", "missing-workspace", "invalid-settings"])

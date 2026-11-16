@@ -15,6 +15,7 @@ from ..harness.permissions import MODES, normalize_permission_mode
 from ..harness.session import AgentSession
 from ..harness.settings import PROFILES, Paths, Settings
 from ..harness.store import SessionStore
+from ..harness.work_modes import WORK_MODES
 from ..i18n import Translator, normalize_language
 from ..tools.sandbox import MODES as SANDBOX_MODES
 from .console import ConsoleBroker, PrintUI, TerminalUI
@@ -54,6 +55,7 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("prompt", nargs="*", help=tr(t, "ui.cli.prompt"))
     p.add_argument("-p", "--print", action="store_true", help=tr(t, "ui.cli.print"))
     p.add_argument("--mode", choices=["text", "json"], default="text", help=tr(t, "ui.cli.mode"))
+    p.add_argument("--work-mode", choices=WORK_MODES, help=tr(t, "ui.cli.work_mode"))
     p.add_argument(
         "--ui",
         choices=["auto", "fullscreen", "plain"],
@@ -204,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             session=session_arg,
             permission_mode=args.permission_mode,
+            work_mode=args.work_mode,
             settings=overrides,
             extensions=not args.no_extensions,
             trust_project_extensions=args.trust_project_extensions,
@@ -219,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
             if fullscreen:
                 from .tui import run_fullscreen
 
-                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session)
+                startup = {"work_mode": args.work_mode} if pick_session and args.work_mode is not None else {}
+                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session, **startup)
 
             from .repl import run_repl
 

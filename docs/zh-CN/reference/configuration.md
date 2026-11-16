@@ -108,7 +108,7 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 ## 工作模式
 
-`/mode plan` 进入只读规划，`/mode default` 明确返回正常工作；`/mode` 查看当前工作模式。该命令属于 Core，在 `--profile minimal --no-extensions` 下也可用，不会请求模型。
+`/mode plan` 进入只读规划，`/mode default` 返回 Default，不执行方案；`/mode` 查看当前工作模式。这些 Core 命令在 `--profile minimal --no-extensions` 下也可用，不会请求模型。`/plan` 显示当前 ProposedPlan，`/plan edit` 替换 Markdown，`/plan execute <plan-id>:<revision>` 明确开始执行该版本。完整操作与编辑示例见[先规划，再执行](../guides/planning.md)。
 
 工作模式与审批策略分别保存。`/permissions accept-all` 或 `/permissions auto-review` 只改变审批策略，不会退出独立的 Plan 模式。返回 `default` 时保留已选择的审批策略，不会自行授予 `accept-all`。两个维度可分别配置：
 
@@ -119,11 +119,13 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 }
 ```
 
-同一套有效策略用于过滤模型可见工具、钩子前预检和执行前复检。Plan 上限同样约束子运行时；退出 Plan 不会移除子运行时自身的只读限制。权限审计保留有效 `mode`，并分别记录 `work_mode` 和 `permission_mode`。
+同一套有效策略用于过滤模型可见工具、钩子前预检和执行前复检。Plan 上限跟随来源主 Runtime 及其子运行时，在切换对话后仍然有效；退出 Plan 不会移除子运行时自身的只读限制。进入 Plan 会约束尚未开始的调用；来源对话还有进行中的请求，或排队、运行中的子代理时，拒绝退出 Plan 或执行计划，其他对话的工作不会阻止它。已经运行的进程保留启动时策略。权限审计保留有效 `mode`，并分别记录 `work_mode` 和 `permission_mode`。
 
-旧 `permissions.mode=plan`、`--permission-mode plan` 和直接使用 `session.permission_mode` 的 API 仍被接受。`/permissions plan` 现在进入独立工作模式，不替换已选择的审批策略。审批命令改变旧启动配置中的 `plan` 前，会先将 Plan 保留为独立状态。若此前没有另外显式选择审批策略，`/mode default` 会将旧 Plan 启动恢复为 `auto-review`。集成代码应使用 `session.services["permissions"].set_work_mode(...)` 切换独立模式；旧的直接赋值 API 保留兼容行为。
+旧 `permissions.mode=plan`、`--permission-mode plan` 和直接使用 `session.permission_mode` 的 API 仍被接受。`/permissions plan` 现在进入独立工作模式，不替换已选择的审批策略。没有显式传入构造参数 `work_mode` 时，旧 Plan 启动也会为历史恢复保存 Plan 限制，即使尚未产生提案。模式或审批命令移除旧的全局限制前，会先为其他所有来源对话及其后代保留 Plan；状态保存失败时继续保留全局限制。`/mode default` 只解除所选对话的 Plan；若此前没有另外显式选择审批策略，旧 Plan 启动会恢复为 `auto-review`。集成代码应使用 `session.services["permissions"].set_work_mode(...)` 切换独立模式；旧的直接赋值 API 保留兼容行为。
 
-模式命令影响当前 `AgentSession`，包括其子运行时及在其中切换的历史对话。命令不保存用户默认值，重启时也不从会话历史恢复模式，而是重新读取 `workMode`。CLI 的 `--mode` 仍控制输出格式，不表示工作模式。工作模式选择本身不会启用操作系统沙箱，也不生成结构化计划产物或代码审查任务。TUI 现有权限选择器仍显示审批设置；`/mode` 和 `/permissions` 会显示独立工作模式。
+工作模式和当前 ProposedPlan 是通过 SessionStore 保存的对话状态。新对话使用配置的 `workMode`；切回已保留对话时使用其原 Runtime 和模式。打开保存的历史会恢复已保存的模式，但配置 `workMode: "plan"` 会保留 Plan 上限。显式 `--work-mode plan|default` 或 `AgentSession(work_mode="plan" | "default")` 覆盖初始对话的独立模式，不改变后续新对话的默认值。模式命令不保存用户偏好。
+
+恢复计划会清除本次会话的确认，不开始或排队执行。审批策略和 Sandbox 来自当前配置，不从历史计划元数据恢复。修改 Markdown 会递增版本并使旧确认失效；执行需要准确的当前 token，且对话必须空闲。计划确认不等于对后续工具调用的预先批准，也不解除 Sandbox。CLI 的 `--mode text|json` 仍控制输出格式，与 `--work-mode` 独立。全屏界面中，Shift+Tab 只切换 WorkMode，Ctrl+G 打开计划编辑窗口。选择 WorkMode 本身不启用操作系统沙箱，也不开始代码审查任务。
 
 ## 权限
 

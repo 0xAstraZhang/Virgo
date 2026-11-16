@@ -32,7 +32,7 @@ def test_idle_frames_neither_relayout_nor_walk_the_transcript(make_session, monk
             assert updates == [] and walks == []
             session.permission_mode = "plan"
             app.update_status()
-            assert "plan" in str(app.screen_stack[0].query_one("#status", Static).content)
+            assert "Plan (read-only)" in str(app.screen_stack[0].query_one("#status", Static).content)
 
     asyncio.run(scenario())
 

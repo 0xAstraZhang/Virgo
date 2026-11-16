@@ -67,7 +67,7 @@ uv run virgo --continue
 uv run virgo -p --mode json "总结 README"
 ```
 
-默认的 `auto-review` 权限模式会审查涉及工作区外部或网络边界的操作。需要只读调查时，可使用 `plan` 模式。具体行为和限制见[权限参考](docs/zh-CN/reference/configuration.md#权限)。
+默认的 `auto-review` 审批策略会审查涉及工作区外部或网络边界的操作。`/mode plan` 进入只读调查，并生成可查看、修订和明确执行的带版本方案。操作见[规划指南](docs/zh-CN/guides/planning.md)；计划确认保留当前[审批策略](docs/zh-CN/reference/configuration.md#权限)与 Sandbox。
 
 ## 继续了解
 

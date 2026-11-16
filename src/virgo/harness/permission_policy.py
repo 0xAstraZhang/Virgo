@@ -109,29 +109,93 @@ class Permissions:
 
     @property
     def work_mode(self) -> str:
-        # Preserve the old direct Session API while new mode selection has its
-        # own state. An approval command migrates this legacy input before it
-        # changes the approval strategy, so it cannot implicitly end planning.
-        return "plan" if self.session.permission_mode == "plan" else self._work_mode
+        return self.work_mode_for(getattr(self.session, "main", None))
 
-    def set_work_mode(self, mode: str) -> None:
+    def _root_runtime(self, runtime):
+        if runtime is not None and runtime.session is not self.session:
+            raise ValueError("Work mode runtime must belong to this session")
+        while runtime is not None and runtime.parent is not None:
+            runtime = runtime.parent
+        return runtime
+
+    def work_mode_for(self, runtime) -> str:
+        # A legacy direct permission assignment remains a live ceiling. It is
+        # migrated only by an explicit mode/approval command, not by replay.
+        if self.session.permission_mode == "plan":
+            return "plan"
+        root = self._root_runtime(runtime)
+        return root.work_mode if root is not None else self._work_mode
+
+    def restore_work_mode(self, runtime, override: str | None = None) -> None:
+        """Restore intent only; approval strategy and sandbox are startup policy."""
+        records = runtime.store.custom("work_mode") if runtime.store is not None else []
+        saved = normalize_work_mode(records[-1]["mode"]) if records else None
+        if override is not None:
+            mode = normalize_work_mode(override)
+        elif self._work_mode == "plan":
+            mode = "plan"  # A configured read-only startup cannot be relaxed by history.
+        else:
+            mode = saved or self._work_mode
+        runtime.work_mode = mode
+        runtime.work_mode_revision = 0
+        # Save the effective legacy startup ceiling for cold restoration while
+        # retaining the direct permission API's live independent-mode behavior.
+        persisted = "plan" if override is None and self.session.permission_mode == "plan" else mode
+        # Fresh default sessions remain discardable. Persist meaningful startup
+        # overrides and Plan state without creating a request or a wakeup.
+        if runtime.store is not None and (saved != persisted and (saved is not None or persisted != "default")):
+            runtime.store.append("custom", kind="work_mode", data={"mode": persisted})
+
+    def set_work_mode(self, mode: str, *, runtime=None) -> None:
         mode = normalize_work_mode(mode)
         with self.session._lock:
-            previous = self.work_mode
+            root = self._root_runtime(runtime or getattr(self.session, "main", None))
+            previous = self.work_mode_for(root)
             legacy = self.session.permission_mode == "plan"
-            # Install the new ceiling before normalizing a legacy permission.
-            # Readers must not observe a transient unrestricted migration.
-            self._work_mode = mode
+            if (mode == "default" and previous == "plan" and root is not None
+                    and self.session.runtime_is_busy(root)):
+                raise ValueError(self.session.t("work_mode.busy"))
+            if previous == mode and not legacy:
+                return
+            updates = {}
             if legacy:
-                # A legacy startup has no separately selected approval strategy.
-                # Leaving it must never invent an accept-all grant.
-                self.session.permission_mode = "auto-review"
-            if previous != mode or legacy:
+                # The legacy ceiling covers every originating conversation.
+                # Materialize it before clearing the global setting, including
+                # a removed conversation whose child runtime is still alive.
+                origins = [*self.session._main_runtimes.values(),
+                           *self.session._child_runtimes.values()]
+                for runtime in origins:
+                    origin = self._root_runtime(runtime)
+                    if origin is not root and origin.work_mode != "plan":
+                        updates[origin] = "plan"
+            if root is not None:
+                updates[root] = mode
+            for origin, selected in updates.items():
+                if origin.store is not None:
+                    origin.store.append("custom", kind="work_mode", data={"mode": selected})
+            # Publish only after every state write succeeds. Failed persistence
+            # must retain the global ceiling for all originating conversations.
+            if root is None:
+                self._work_mode = mode
                 self._work_mode_revision += 1
+            for origin, selected in updates.items():
+                origin.work_mode = selected
+                origin.work_mode_revision += 1
+            if legacy:
+                self.session.permission_mode = "auto-review"
+            for origin, selected in updates.items():
+                self.session.bus.emit("work_mode_changed", origin, selected)
 
-    def mode_for(self, agent: str) -> str:
+    def mode_for(self, agent: str, *, runtime=None) -> str:
         """Compatibility projection consumed by tool filtering and both gates."""
-        if self.work_mode == "plan":
+        if runtime is not None:
+            if runtime.session is not self.session or runtime.name != agent:
+                raise ValueError("Permission runtime must match the originating agent")
+        else:
+            runtime = self.session._child_runtimes.get(agent)
+            if runtime is None and agent == "main":
+                runtime = getattr(self.session, "main", None)
+        if self.work_mode_for(runtime) == "plan":
             return "plan"
         mode = normalize_permission_mode(self.session.permission_mode)
         severity = {"accept-all": 0, "auto-review": 1, "plan": 2}
@@ -146,6 +210,15 @@ class Permissions:
                 break
             agent = parent
         return mode
+
+    def _event_runtime(self, ev):
+        source = source_for(self.session, ev)
+        if source is None:
+            return None
+        runtime = self.session.runtime_for_context(ev)
+        if runtime is None:
+            raise ValueError("Permission checks require the originating runtime context")
+        return runtime
 
     def set_agent_parent(self, agent: str, parent: str | None) -> None:
         """Bind the dynamic permission ceiling to the originating parent."""
@@ -193,12 +266,14 @@ class Permissions:
 
     def _snapshot(self, ev: ToolCallEvent) -> tuple:
         rules = self.session.settings.get("permissions", {})
+        runtime = self._event_runtime(ev)
+        root = self._root_runtime(runtime)
         return (
-            self.mode_for(ev.agent),
+            self.mode_for(ev.agent, runtime=runtime),
             self._approval_key(ev),
             json.dumps(rules, sort_keys=True),
             self._requires_denial_review(ev),
-            self._work_mode_revision,
+            root.work_mode_revision if root is not None else self._work_mode_revision,
         )
 
     def _requires_denial_review(self, ev: ToolCallEvent) -> bool:
@@ -274,7 +349,7 @@ class Permissions:
 
     def decide(self, ev: ToolCallEvent) -> tuple[str, str]:
         s = self.session.settings
-        mode = self.mode_for(ev.agent)
+        mode = self.mode_for(ev.agent, runtime=self._event_runtime(ev))
         started = time.monotonic()
         snapshot = self._snapshot(ev)
         ev._review_audit = {}
@@ -372,7 +447,7 @@ class Permissions:
                 "agent": ev.agent,
                 "cwd": str(ev.cwd),
                 "mode": mode,
-                "work_mode": self.work_mode,
+                "work_mode": self.work_mode_for(self._event_runtime(ev)),
                 "permission_mode": self.session.permission_mode,
                 "source": source,
                 "decision": decision,
@@ -400,7 +475,7 @@ class Permissions:
     def _allow(self, ev: ToolCallEvent):
         ev._permission_snapshot = self._snapshot(ev)
         ev._permission_boundary = (
-            self._boundary(ev) if self.mode_for(ev.agent) == "auto-review" else None
+            self._boundary(ev) if self.mode_for(ev.agent, runtime=self._event_runtime(ev)) == "auto-review" else None
         )
         return None
 
@@ -423,7 +498,7 @@ class Permissions:
             return Block(self.session.t("features.permission.check_failed"))
 
     def _on_tool_call(self, ev: ToolCallEvent):
-        mode = self.mode_for(ev.agent)
+        mode = self.mode_for(ev.agent, runtime=self._event_runtime(ev))
         snapshot = self._snapshot(ev)
         decision, reason = self.decide(ev)
         if snapshot != self._snapshot(ev):
@@ -508,18 +583,25 @@ def install_permissions(session: AgentSession) -> Permissions:
                 lines.append(f"{session.t('features.permission.' + key)}: {', '.join(rules)}")
         if perms.session_rules:
             lines.append(session.t("features.permission.session_rules", rules=", ".join(perms.session_rules)))
-        session.ui.print("\n".join(lines))
+        session.ui.command_result("\n".join(lines))
 
     def mode_cmd(session, args):
         value = args.strip()
         if value:
             try:
-                perms.set_work_mode(value)
+                normalize_work_mode(value)
             except ValueError:
                 session.ui.print(session.t("work_mode.invalid", modes=", ".join(WORK_MODES)), "error")
                 return
-        session.ui.print(session.t("work_mode.status", mode=session.t("work_mode." + perms.work_mode)))
-        session.ui.print(session.t("work_mode.approval_unchanged"))
+            try:
+                perms.set_work_mode(value)
+            except ValueError as error:
+                session.ui.print(str(error), "error")
+                return
+        session.ui.command_result(session.t("work_mode.status", mode=session.t("work_mode." + perms.work_mode)))
+        session.ui.command_result(session.t("work_mode.approval_unchanged"))
+        if perms.work_mode == "plan":
+            session.ui.command_result(session.t("work_mode.running"))
 
     session.commands.register(
         "mode",
@@ -528,6 +610,7 @@ def install_permissions(session: AgentSession) -> Permissions:
         argument_hint="[default|plan]",
         description_key="work_mode.description",
         source="core",
+        concurrent=True,
     )
     session.commands.register(
         "permissions",

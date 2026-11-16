@@ -515,12 +515,18 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
                 model_line = str(status.content)
                 assert "\n" not in model_line
                 assert cell_len(model_line) == width - 2
-                assert model_line.startswith(label + "  ")
+                work_label = session.t("work_mode." + session.services["permissions"].work_mode)
+                approval_label = "auto review" if mode == "plan" else label
+                authority = f"{work_label} · {approval_label} · sandbox: disabled"
+                assert model_line.startswith(work_label + " · ")
+                if cell_len(authority) <= width - 2:
+                    assert model_line.startswith(authority)
                 assert status.render_line(0).text == model_line
                 assert "ready" not in model_line
                 assert str(metrics.content).startswith("↑0 ↓0")
                 assert cell_len(str(metrics.content)) <= width - 2
-                assert model_line.endswith(f" · {session.effort}")
+                if width - 2 - cell_len(authority) - 2 >= cell_len(f" · {session.effort}") + 1:
+                    assert model_line.endswith(f" · {session.effort}")
                 assert "faux/" not in model_line
                 assert metrics.region.bottom == app.editor.region.y
                 assert app.editor.region.bottom == status.region.y
@@ -567,7 +573,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             assert metrics.render_line(0).text.startswith(" ")
             assert status.styles.text_align == "left"
             status_line = status.render_line(0).text
-            assert status_line.startswith("auto review  ")
+            assert status_line.startswith("Default · auto review · sandbox: disabled  ")
             assert status_line.endswith(f"deepseek-flash · {session.effort}")
             assert cell_len(status_line) == app.editor.region.width
             assert metrics.region.bottom == app.editor.region.y
@@ -591,14 +597,16 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
         async with app.run_test(size=(80, 24)) as pilot:
             app.editor.load_text("unfinished task")
             for mode, label, color in (
-                ("accept-all", "accept all", "#DC2626"),
-                ("plan", "plan", "#2563EB"),
-                ("auto-review", "auto review", "#B8860B"),
+                ("plan", "Plan (read-only)", "#2563EB"),
+                ("default", "Default", "#7C3AED"),
+                ("plan", "Plan (read-only)", "#2563EB"),
             ):
                 await pilot.press("shift+tab")
-                assert session.permission_mode == mode
+                await wait_for(pilot, lambda mode=mode: session.services["permissions"].work_mode == mode)
+                assert session.permission_mode == "auto-review"
+                assert session.services["sandbox"].mode == "disabled"
                 text = app.query_one("#status", Static).content
-                assert text.plain.startswith(label + "  ")
+                assert text.plain.startswith(label + " · auto review · sandbox: disabled  ")
                 assert text.get_style_at_offset(app.console, 0).color.get_truecolor() == Color.parse(color).rgb
                 assert app.editor.text == "unfinished task"
                 assert app.focused is app.editor

@@ -99,6 +99,7 @@ Use `api.services` only for an explicit shared service contract. The compatibili
 | `input` | `(text, session)` → replacement text, `Handled`, or `None` |
 | `user_steer` | `(text, session)` |
 | `before_agent_start` | `(runtime, prompts)` |
+| `runtime_pending_work` | `(runtime)` → `True` for queued or running child-agent work owned by this origin, otherwise `False` |
 | `agent_event`, `turn_end` | `(event, runtime)` |
 | `tool_call` | `(event, session)` → `Block` or `None`; arguments may be adjusted |
 | `tool_result` | `(result, event, session)` → replacement result or `None` |
@@ -108,6 +109,8 @@ Use `api.services` only for an explicit shared service contract. The compatibili
 | `compact` | `(runtime, summary)` |
 
 Use `Block(reason)` to stop a tool and `Continue(text)` only for an explicitly enabled continuation policy. Handler failure is diagnosed and isolated from later handlers. Context views should preserve append-only message prefixes.
+
+Plugins that queue child agents before creating their Runtimes report that work through `runtime_pending_work`. Core uses the query when leaving Plan or confirming execution; a failed handler or any result other than explicit `False` keeps admission blocked. Restrict the answer to the supplied origin. Background subprocesses retain their launch policy and do not count as queued child-agent work.
 
 `api.register_permission_policy(policy)` adds restrictions after the mandatory Core policy; it cannot replace the Core gate. A policy implements both `preflight(event)` and `before_execute(event)`. The second checkpoint catches changes after preflight. Hosted/adapted operations must use `api.authorize_tool`; a truthy `read_only` flag is not authorization. Python itself remains trusted code, not sandboxed execution.
 

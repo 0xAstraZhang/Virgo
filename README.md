@@ -67,7 +67,7 @@ uv run virgo --continue
 uv run virgo -p --mode json "Summarize the README"
 ```
 
-The default `auto-review` permission mode reviews operations that cross workspace or network boundaries. Use `plan` for read-only investigation. See the [permission reference](docs/en/reference/configuration.md#permissions) for the exact behavior and limits.
+The default `auto-review` approval strategy reviews operations that cross workspace or network boundaries. `/mode plan` enters read-only investigation with a versioned proposal that you can view, revise and explicitly execute. Follow the [planning guide](docs/en/guides/planning.md); plan confirmation preserves the current [approval policy](docs/en/reference/configuration.md#permissions) and Sandbox.
 
 ## Explore
 

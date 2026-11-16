@@ -455,6 +455,16 @@ def setup(api: ExtensionAPI) -> None:
 
     api.on("runtime_abort", abort_agents)
 
+    def pending_agents(runtime):
+        owner = runtime.review_source.root
+        with jobs._lock:
+            return any(job.kind == "agent" and job.status == "running"
+                       and job.accounting_store.id == owner.id
+                       and (runtime.role == "main" or job.agent == runtime.name)
+                       for job in jobs.jobs.values())
+
+    api.on("runtime_pending_work", pending_agents)
+
     api.services["shell"].install_tools()
 
     def find(args: dict) -> Job | ToolResult:

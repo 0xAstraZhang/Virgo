@@ -10,6 +10,7 @@
 | --- | --- |
 | [快速开始](guides/getting-started.md) | 安装、登录、首次会话、打印模式 |
 | [使用 Virgo](guides/interaction.md) | 命令、快捷键、语言、会话和运行中补充指令 |
+| [先规划，再执行](guides/planning.md) | 仓库调查、带版本的方案、修订和明确执行 |
 | [联网搜索与网页读取](guides/web.md) | 后端、能力路由、权限和读取限制 |
 | [命令解释器](guides/shells.md) | Shell 选择、执行语义、输出和取消 |
 | [独立代码审查](guides/code-review.md) | 固定目标、只读执行、Findings 校验和报告过时判断 |
