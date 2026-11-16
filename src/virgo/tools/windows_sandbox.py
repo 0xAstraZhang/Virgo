@@ -311,6 +311,12 @@ def _require_network_isolation():
 
 def validate_policy(policy, cwd):
     """Retain the runtime's lexical root; a later junction cannot redefine it."""
+    if not policy.workspace_only:
+        raise SandboxUnavailable(
+            "The Windows LPAC backend does not support constrained full-host filesystem access; "
+            "select a workspace-scoped policy or explicitly request No-Limit.",
+            reason="unsupported_policy", dimension="workspace_only",
+        )
     workspace = Path(normalize_path(policy.workspace))
     cwd = Path(normalize_path(cwd))
     if not cwd.is_relative_to(workspace):
@@ -370,7 +376,10 @@ class WindowsSandbox:
             # These capabilities use Windows' existing token-wide grants.
             # lpacInstrumentation permits ETW registrations wherever its SID is
             # authorized; this is not a per-provider whitelist or an ETW ACL edit.
-            self._capability_buffers = [_capability(name) for name in ("registryRead", "lpacInstrumentation")]
+            names = ["registryRead", "lpacInstrumentation"]
+            if policy.network_allowed:
+                names += ["internetClientServer", "privateNetworkClientServer"]
+            self._capability_buffers = [_capability(name) for name in names]
             self._capabilities = (SidAndAttributes * len(self._capability_buffers))(
                 *(SidAndAttributes(ctypes.cast(value, PSID), 0x4) for value in self._capability_buffers)
             )
@@ -416,7 +425,7 @@ class WindowsSandbox:
             # inode cannot move out of .virgo between preflight and its update.
             # Runtime/profile grants retain their per-object locking below.
             with self._grants._locked():
-                self._grants.grant_tree(policy.workspace, policy.mode == "workspace-write", protected,
+                self._grants.grant_tree(policy.workspace, not policy.read_only, protected,
                                         reject_hardlinks=True, excluded=runtime_roots)
             for root in runtime_roots:
                 self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)

@@ -4,7 +4,7 @@ This is the "integrated harness": every feature plugs into one loop through exte
 Per model call, in order:
   1. steering messages and notifications are appended by the loop
   2. auto-compaction check (at a turn boundary)
-  3. `context` handlers build the request view; plan mode restricts instructions and tools
+  3. `context` handlers and request sections build the request view without changing tool availability
   4. stream with retries (backoff, optional fallback model) and one reactive compaction on overflow
 Per tool call: ordered extensions and explicit permission preflight -> execution recheck -> tool -> results.
 When the agent would stop: queued follow-ups, then `agent_stop` extension handlers.
@@ -48,6 +48,7 @@ from . import compaction
 from .commands import Commands, expand_template, load_templates, register_builtins
 from .diagnostic_view import project_tool_result
 from .diagnostics import DiagnosticLog
+from .execution_modes import PermissionMode
 from .extensions import (
     ROLES_ALL,
     EventBus,
@@ -58,8 +59,7 @@ from .extensions import (
 )
 from .origin_context import ExecutionOrigin, source_for
 from .permission_policy import install_permissions
-from .permissions import PermissionPolicy, normalize_approval_policy, read_only_tool_allowed
-from .plans import install_plans
+from .permissions import PermissionPolicy, normalize_approval_policy
 from .prompt import RuntimeContext, build_system
 from .recovery import RuntimeDiagnostics, message_diagnostics
 from .retry import retry_after_seconds
@@ -103,6 +103,9 @@ class Runtime:
         work_mode: str | None = None,
         read_only: bool = False,
         approval_policy: str | None = None,
+        workflow: str | None = None,
+        suppress_message_events: bool = False,
+        execution_mode: PermissionMode | None = None,
     ):
         self.session = session
         self.request_budget = request_budget or RequestBudget(session.settings.get("budget.maxModelCalls"))
@@ -116,8 +119,8 @@ class Runtime:
         self.parent = origin_parent.runtime if origin_parent is not None else None
         self.read_only = bool(read_only)
         self.approval_policy = approval_policy
-        self.active_plan = None
-        self.proposed_plan = None
+        self.workflow = workflow
+        self.suppress_message_events = suppress_message_events
         if role == "main":
             session.services["permissions"].restore_work_mode(self, work_mode)
         if origin_parent is not None:
@@ -148,6 +151,9 @@ class Runtime:
         self.diagnostic_access = self.recovery.access
         self.native_binding = (store.last_compaction() or {}).get("context_binding") if store else None
         self.system = ""
+        if execution_mode is not None:
+            self.execution_mode = execution_mode
+        session.services["sandbox"].capture_runtime(self)
         self.rebuild_system()
         cfg = AgentConfig(
             tools=self.tools,
@@ -157,7 +163,7 @@ class Runtime:
             before_tool_call=self._before_tool,
             before_tool_execute=session._before_tool_execute,
             after_tool_call=session._after_tool,
-            should_stop=(None if role == "review" else lambda _msgs: session.bus.first("agent_stop", self)),
+            should_stop=lambda _msgs: session.bus.first("agent_stop", self),
             max_turns=max_turns,
             can_run=self.can_run,
             on_error=lambda details: self.report_error(details, phase="agent.listener"),
@@ -176,21 +182,14 @@ class Runtime:
                         bound.failure_listeners.append(session.report_save_error)
                     if bound.save_error is not None:
                         self.agent.signal.set()
-        if role == "main":
-            session.services["plans"].restore(self)
 
     @property
     def messages(self) -> list:
         return self.agent.messages
 
     def rebuild_system(self) -> None:
-        if self.role == "review":
-            # A review consumes an explicit snapshot, not live project instructions
-            # or another capability's system sections.
-            self.system = self.system_extra or "Review the supplied code snapshot using only its read-only tools."
-            return
         self.system = build_system(self.session, self.role, self.system_extra, self.cwd,
-                                   tools=self.tools, context=self.construction_context)
+                                   tools=self.tools, context=self.construction_context, runtime=self)
 
     def can_run(self) -> bool:
         errors = [bound.save_error for bound in (self.store, self.accounting_store)
@@ -209,6 +208,7 @@ class Runtime:
 
     def prepare_run(self) -> None:
         """Bind startup hooks to this run before its first model request exists."""
+        self.session.services["sandbox"].capture_runtime(self)
         self.run_id = uuid.uuid4().hex
         self._model_call_id = None
         self._attempt_number = 0
@@ -226,11 +226,10 @@ class Runtime:
             self.session.report_save_error(error)
         self.can_run()
         self.session.bus.emit("agent_event", ev, self)
-        if ev.type == "turn_end" and self.role != "review":
+        if ev.type == "turn_end":
             self.session.bus.emit("turn_end", ev, self)
-        # The task publishes its validated report. Raw assistant JSON (including
-        # malformed or interrupted output) must not look like a final conclusion.
-        if self.role != "review" or ev.type not in {"message_start", "message_update", "message_end"}:
+        # Structured-result clients publish their validated conclusion separately.
+        if not self.suppress_message_events or ev.type not in {"message_start", "message_update", "message_end"}:
             self.session.ui.on_event(ev)
 
     def diagnostic_context(self, **extra) -> dict:
@@ -413,16 +412,9 @@ class Runtime:
     def _base_context(self, messages: list, *, report_errors: bool = False) -> Context:
         """Assemble instructions and schemas; only actual requests report formatting failures."""
         s = self.session
-        permissions = s.services.get("permissions")
-        read_only = permissions.is_read_only(self)
-        work_mode = permissions.work_mode_for(self)
         system = self.system + "\n\n<language>\n" + s.t("harness.response_language") + "\n</language>"
         tools = []
         for tool in self.tools:
-            if read_only and not read_only_tool_allowed(tool):
-                continue
-            if tool.name == "propose_plan" and (work_mode != "plan" or self.role != "main"):
-                continue
             try:
                 tools.append(tool.spec(s.translator))
             except Exception as error:
@@ -431,17 +423,20 @@ class Runtime:
                 if report_errors:
                     self.report_error(error, phase="i18n.tool", context={"tool_name": tool.name})
                 tools.append(tool.spec())
-        if instructions := s.services["plans"].instructions(self):
+        if instructions := s.services["sandbox"].instructions(self):
             system += "\n\n" + instructions
+        for _order, _name, section in sorted(s.request_sections, key=lambda item: item[0]):
+            if instructions := section(self):
+                system += "\n\n" + instructions
         return Context(system, messages, tools)
 
     def request_context(self, messages: list, model=None) -> Context:
         """Use the same instructions, tools and extension view for generation and compaction."""
         s = self.session
-        view = list(messages) if self.role == "review" else s.bus.chain("context", list(messages), self)
+        view = s.bus.chain("context", list(messages), self)
         context = self._base_context(view, report_errors=True)
         web = s.services.get("web")
-        if web is not None and self.role != "review":
+        if web is not None:
             web.prepare(self, context, model or self.model)
         if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):
             context.messages = strip_thinking(view)
@@ -450,8 +445,6 @@ class Runtime:
     # -- model calls ---------------------------------------------------------
     def refresh_tools(self) -> None:
         """Adopt registered tools at a request boundary while retaining local restrictions."""
-        if self.role == "review":
-            return  # Only the task's frozen snapshot tools belong to this runtime.
         version, registered = self.session.tool_snapshot(self.role)
         if version == self._tool_version:
             return
@@ -469,8 +462,7 @@ class Runtime:
 
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
         if self.can_run() and not signal.is_set():
-            if self.role != "review":
-                self.session.bus.emit("runtime_request", self)
+            self.session.bus.emit("runtime_request", self)
             self.refresh_tools()
         self._call_started = time.monotonic()
         self._model_call_id = uuid.uuid4().hex
@@ -530,7 +522,7 @@ class Runtime:
                 "max_retries": max_retries, "duration": round(duration, 6),
             })
             web = s.services.get("web")
-            if (self.role != "review" and web_fallbacks < 2 and not signal.is_set() and web
+            if (web_fallbacks < 2 and not signal.is_set() and web
                     and web.fallback(request_model, ctx, failed)):
                 web_fallbacks += 1
                 record_call(self.accounting_store, request_model, failed, purpose="fetch-fallback" if failed.error_kind == "fetch_unsupported" else "search-fallback",
@@ -634,6 +626,7 @@ class AgentSession:
         self.services: dict = {}
         self.sections: list = []
         self.runtime_sections: list = []
+        self.request_sections: list = []
         self.permission_policy: PermissionPolicy | None = None
         self._permission_boundary = None
         self._additional_permission_policies: list[tuple[str, PermissionPolicy]] = []
@@ -678,14 +671,13 @@ class AgentSession:
             install_permissions(self)
             if self.permission_policy is None:
                 raise RuntimeError("Core permission policy was not installed")
-            install_plans(self)
             load_builtin_features(self)
             if extensions:
                 load_user_extensions(self)
             install_command_hooks(self)
             self.templates.update(load_templates(
                 self.paths.both("prompts"),
-                reserved=frozenset({"review"}) if "code_review" in self.services else frozenset(),
+                reserved=frozenset(command.name for command in self.commands.all() if command.isolated),
             ))
             self.main = self._new_main(self.store, work_mode=work_mode)
         except BaseException:
@@ -1026,7 +1018,6 @@ class AgentSession:
                 kwargs["origin_parent"] = origin_parent
                 kwargs["request_budget"] = parent.request_budget
                 kwargs["signal"] = ChildCancellation(parent.agent.signal, kwargs.get("signal"))
-                read_only = bool(read_only or self.services["permissions"].is_read_only(parent))
                 parent_approval = self.services["permissions"].approval_for(parent)
                 if parent_approval == "never":
                     kwargs["approval_policy"] = "never"
@@ -1038,6 +1029,7 @@ class AgentSession:
             kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else origin_parent.root)
             try:
                 runtime = Runtime(self, name, role, read_only=read_only, **kwargs)
+                self.bus.emit("runtime_created", runtime)
                 if role == "main" and runtime.store is not None:
                     self._main_runtimes[runtime.store.id] = runtime
                 elif role != "main":
@@ -1059,6 +1051,7 @@ class AgentSession:
                     with store._lock:
                         if runtime.agent.signal in store.failure_signals:
                             store.failure_signals.remove(runtime.agent.signal)
+        self.bus.emit("runtime_closed", runtime)
 
     def runtime_for_context(self, ctx: ToolContext) -> Runtime | None:
         """Resolve a trusted caller without borrowing the currently selected runtime."""
@@ -1331,11 +1324,6 @@ class AgentSession:
             return block
         ev._permission_policy = self.permission_policy
         ev._additional_permission_policies = tuple(self._additional_permission_policies)
-        runtime = self.runtime_for_context(ev)
-        if runtime is not None and runtime.role == "review":
-            # Preserve both mandatory permission gates while excluding executable
-            # tool hooks from an otherwise read-only task.
-            return self._check_policy("preflight", ev)
         snapshot = self.bus.snapshot("tool_call")
         boundary = self._permission_boundary
         if boundary is None:
@@ -1352,13 +1340,6 @@ class AgentSession:
         return self._check_policy("before_execute", ev)
 
     def _after_tool(self, ev: ToolCallEvent, res: ToolResult) -> ToolResult:
-        runtime = self.runtime_for_context(ev)
-        if runtime is not None and runtime.role == "review":
-            if any(isinstance(block, TextContent) and len(block.text.encode("utf-8")) > MAX_BYTES
-                   for block in res.content):
-                return ToolResult.error("Review output exceeds the in-memory limit; request a smaller range.",
-                                        details={"status": "incomplete"})
-            return res  # No post-tool hooks or .virgo/outputs spill files.
         res = self.bus.chain("tool_result", res, ev, self)
         bounded = []
         for b in res.content:
@@ -1397,6 +1378,9 @@ class AgentSession:
                     if self.busy:
                         raise RuntimeError("An isolated task cannot overlap another run in this session")
                     runtime = self.main
+                    # A user selection made during the previous run applies to
+                    # this new task; existing descendants keep their snapshots.
+                    self.services["sandbox"].capture_runtime(runtime)
                     self.busy = True
                     runtime.agent.signal.clear()
                 try:
@@ -1521,21 +1505,19 @@ class AgentSession:
                     parent = parent.parent
             return False
 
-    def run(self, prompts: list, *, plan_token: str | None = None) -> None:
+    def run(self, prompts: list, *, prepare=None) -> None:
         with self._lock:
             self.assert_state_change_allowed()
             if self._shutdown_started:
                 return
             rt = self.main
-            if plan_token is not None:
-                # Confirmation, exact revision selection and the existing run
-                # admission share one lock; a session switch cannot interleave.
-                prompts = [self.services["plans"].prepare_execution(rt, plan_token)]
+            if prepare is not None:
+                # A command can bind its selected input atomically to admission.
+                # Prepared runs are never queued or replayed after a save failure.
+                prompts = prepare(rt)
             if not rt.can_run():
-                if plan_token is None:
+                if prepare is None:
                     self.wakeups.extend(prompts)
-                else:
-                    rt.active_plan = None
                 return
             self.busy = True
         wake = False
@@ -1548,7 +1530,6 @@ class AgentSession:
             raise
         finally:
             with self._lock:
-                rt.active_plan = None
                 self.busy = False
                 self._apply_model_metadata()
                 left = rt.agent.drain_queues()
@@ -1584,6 +1565,19 @@ class AgentSession:
         # features right away that the user is present.
         self.bus.emit("user_steer", text, self)
         return True
+
+    def cancel_pending_input(self) -> int:
+        """Cancel unconsumed user input, including input handed back after a run."""
+        def is_input(message) -> bool:
+            return isinstance(message, UserMessage) and message.kind is None
+
+        with self._lock:
+            removed = self.main.agent.discard_steering(is_input)
+            kept = deque(message for message in self.wakeups if not is_input(message))
+            removed += len(self.wakeups) - len(kept)
+            self.wakeups.clear()
+            self.wakeups.extend(kept)
+            return removed
 
     def runtime_for_store(self, store) -> Runtime | None:
         """Find the originating lead, including an inactive or in-memory session."""

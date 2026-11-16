@@ -15,6 +15,7 @@ import platform
 import select
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -49,6 +50,11 @@ class SandboxCancelled(InterruptedError):
 class SandboxUnavailable(RuntimeError):
     """The requested isolation could not be established; do not run natively."""
 
+    def __init__(self, message, *, reason=None, dimension=None):
+        super().__init__(message)
+        self.reason = reason
+        self.dimension = dimension
+
 
 class SandboxProcessError(RuntimeError):
     """Native process control failed after the command may have started."""
@@ -75,7 +81,8 @@ def validate_config(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("sandbox must be an object")
     if "network" in value:
-        raise ValueError("sandbox.network was removed; native Shell network access is always blocked")
+        raise ValueError("sandbox.network is not supported; use permissions.modes.<id>.networkAllowed. "
+                         "Explicit legacy sandbox modes retain their offline behavior.")
     if set(value) - {"mode"}:
         raise ValueError("sandbox supports only mode")
     if value.get("mode", "workspace-write") not in MODES:
@@ -92,6 +99,40 @@ def _system_file(path: Path) -> Path:
     if not path.is_file():
         raise SandboxUnavailable(f"Sandbox runtime is not a file: {path}")
     return path
+
+
+def _network_config_file(path: Path) -> Path:
+    """Accept systemd-resolved's service-owned data without relaxing runtime trust."""
+    try:
+        return _system_file(path)
+    except SandboxUnavailable:
+        source = path.resolve(strict=True)
+        if path != Path("/etc/resolv.conf") or source not in {
+            Path("/run/systemd/resolve/stub-resolv.conf"), Path("/run/systemd/resolve/resolv.conf"),
+        }:
+            raise
+    import pwd
+
+    try:
+        service_uid = pwd.getpwnam("systemd-resolve").pw_uid
+    except KeyError as error:
+        raise SandboxUnavailable("Resolver configuration has no known systemd-resolve owner") from error
+    entry = path.lstat()
+    if (entry.st_uid != 0 or not (stat.S_ISLNK(entry.st_mode) or stat.S_ISREG(entry.st_mode))
+            or not stat.S_ISLNK(entry.st_mode) and entry.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+        raise SandboxUnavailable(f"Resolver configuration entry is not root-controlled: {path}")
+    for parent in path.parents:
+        info = parent.stat()
+        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise SandboxUnavailable(f"Resolver configuration entry has an unsafe parent: {parent}")
+    for candidate in (source, *source.parents):
+        info = candidate.lstat()
+        owners = {0, service_uid} if candidate in {source, source.parent} else {0}
+        expected_type = stat.S_ISREG if candidate == source else stat.S_ISDIR
+        if (info.st_uid not in owners or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or not expected_type(info.st_mode)):
+            raise SandboxUnavailable(f"Resolver configuration has unsafe ownership, permissions or type: {candidate}")
+    return source
 
 
 def platform_backend() -> tuple[str, Path]:
@@ -115,12 +156,12 @@ def platform_backend() -> tuple[str, Path]:
     raise SandboxUnavailable("No supported native sandbox backend is available (Linux: system bubblewrap; macOS: sandbox-exec; Windows: native x64 LPAC).")
 
 
-def _seccomp_file():
+def _seccomp_file(network_allowed: bool = False):
     """Compile with the system libseccomp instead of hard-coding syscall numbers.
 
-    Network namespaces alone do not block pathname Unix sockets. Deny socket
-    creation and io_uring as well, so mounted service sockets cannot provide an
-    out-of-sandbox execution or network route.
+    Network namespaces alone do not block pathname Unix sockets. With networking
+    enabled only Internet-family sockets are allowed; Unix sockets, socketpair,
+    and io_uring remain blocked so a host service socket is not an implicit grant.
     """
     machine = platform.machine()
     triplet = {"x86_64": "x86_64-linux-gnu", "aarch64": "aarch64-linux-gnu"}.get(machine)
@@ -143,6 +184,13 @@ def _seccomp_file():
     lib.seccomp_syscall_resolve_name.restype = ctypes.c_int
     lib.seccomp_rule_add.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint]
     lib.seccomp_rule_add.restype = ctypes.c_int
+    class ArgumentComparison(ctypes.Structure):
+        _fields_ = [("arg", ctypes.c_uint), ("op", ctypes.c_int),
+                    ("datum_a", ctypes.c_uint64), ("datum_b", ctypes.c_uint64)]
+
+    lib.seccomp_rule_add_array.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int,
+                                         ctypes.c_uint, ctypes.POINTER(ArgumentComparison)]
+    lib.seccomp_rule_add_array.restype = ctypes.c_int
     lib.seccomp_export_bpf.argtypes = [ctypes.c_void_p, ctypes.c_int]
     lib.seccomp_export_bpf.restype = ctypes.c_int
     context = lib.seccomp_init(0x7FFF0000)  # SCMP_ACT_ALLOW; foreign architectures fail closed.
@@ -150,9 +198,10 @@ def _seccomp_file():
         raise SandboxUnavailable("Could not initialize seccomp")
     output = tempfile.TemporaryFile()
     try:
-        for name in ("socket", "socketpair", "socketcall", "io_uring_setup", "io_uring_enter",
+        blocked = ("socketpair", "socketcall", "io_uring_setup", "io_uring_enter",
                      "io_uring_register", "ptrace", "process_vm_writev", "process_vm_readv",
-                     "bpf", "perf_event_open", "mount", "umount2", "pivot_root", "setns", "unshare"):
+                     "bpf", "perf_event_open", "mount", "umount2", "pivot_root", "setns", "unshare")
+        for name in blocked + (() if network_allowed else ("socket",)):
             number = lib.seccomp_syscall_resolve_name(name.encode("ascii"))
             if number < 0:  # Not a native syscall on this architecture.
                 if name != "socketcall":
@@ -160,6 +209,20 @@ def _seccomp_file():
                 continue
             if lib.seccomp_rule_add(context, 0x00050000 | errno.EPERM, number, 0) != 0:
                 raise SandboxUnavailable(f"Could not restrict syscall {name}")
+        if network_allowed:
+            number = lib.seccomp_syscall_resolve_name(b"socket")
+            if number < 0:
+                raise SandboxUnavailable("System libseccomp does not recognize socket")
+            # A rule may compare an argument only once. Deny every domain except
+            # AF_INET and AF_INET6 with bounded equality/range rules.
+            first, last = sorted((socket.AF_INET, socket.AF_INET6))
+            comparisons = [(2, first), (6, last)]  # SCMP_CMP_LT, SCMP_CMP_GT
+            comparisons += [(4, value) for value in range(first + 1, last)]  # SCMP_CMP_EQ
+            for operator, value in comparisons:
+                comparison = ArgumentComparison(0, operator, value, 0)
+                if lib.seccomp_rule_add_array(context, 0x00050000 | errno.EPERM, number, 1,
+                                             ctypes.byref(comparison)) != 0:
+                    raise SandboxUnavailable("Could not restrict non-Internet socket families")
         if lib.seccomp_export_bpf(context, output.fileno()) != 0:
             raise SandboxUnavailable("Could not export seccomp filter")
         output.seek(0)
@@ -171,14 +234,43 @@ def _seccomp_file():
         lib.seccomp_release(context)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class SandboxPolicy:
-    mode: str
     workspace: Path
+    read_only: bool
+    workspace_only: bool
+    network_allowed: bool
+    private_paths: tuple[Path, ...]
+
+    def __init__(self, mode: str | None = None, workspace: Path | None = None, *,
+                 read_only: bool | None = None, workspace_only: bool = True,
+                 network_allowed: bool = False, private_paths=None):
+        if mode is not None and mode not in {"read-only", "workspace-write"}:
+            raise ValueError("An active SandboxPolicy requires read-only or workspace-write")
+        if workspace is None:
+            raise ValueError("An active SandboxPolicy requires its originating workspace")
+        read_only = mode == "read-only" if read_only is None else read_only
+        if any(type(value) is not bool for value in (read_only, workspace_only, network_allowed)):
+            raise ValueError("Sandbox permission flags must be booleans")
+        object.__setattr__(self, "workspace", Path(workspace))
+        object.__setattr__(self, "read_only", read_only)
+        object.__setattr__(self, "workspace_only", workspace_only)
+        object.__setattr__(self, "network_allowed", network_allowed)
+        if private_paths is None:
+            private_paths = (Path(os.environ.get("VIRGO_HOME", Path.home() / ".virgo")),)
+        if sys.platform == "darwin":
+            from .macos_process import control_root
+
+            private_paths = (*private_paths, control_root())
+        object.__setattr__(self, "private_paths", tuple(Path(path).resolve() for path in private_paths))
+        self.__post_init__()
+
+    @property
+    def mode(self) -> str:
+        """Legacy label; consumers must use the three flags for enforcement."""
+        return "read-only" if self.read_only else "workspace-write"
 
     def __post_init__(self):
-        if self.mode not in {"read-only", "workspace-write"}:
-            raise ValueError("An active SandboxPolicy requires read-only or workspace-write")
         if os.name == "nt":
             # The runtime captured this root before execution. Do not follow a
             # junction installed later and turn its target into a fresh grant.
@@ -190,7 +282,15 @@ class SandboxPolicy:
         object.__setattr__(self, "workspace", workspace)
 
     def describe(self) -> dict:
-        return {"mode": self.mode, "network": "restricted", "workspace": str(self.workspace)}
+        return {"mode": self.mode, "network": "allowed" if self.network_allowed else "restricted",
+                "workspace": str(self.workspace), "read_only": self.read_only,
+                "workspace_only": self.workspace_only, "network_allowed": self.network_allowed}
+
+    def read_roots(self) -> tuple[Path, ...]:
+        return (self.workspace, *self._read_roots()) if self.workspace_only else (Path(self.workspace.anchor),)
+
+    def private_path(self, path: Path) -> bool:
+        return any(path.is_relative_to(root) for root in self.private_paths)
 
     def runtime_paths(self) -> tuple[Path, ...]:
         """Keep interpreter roots explicit even when a broader read mount covers them."""
@@ -208,7 +308,7 @@ class SandboxPolicy:
             if path.exists():
                 paths.append(path)
         paths.extend(path for path in self.runtime_paths()
-                     if path != self.workspace and path.is_relative_to(self.workspace))
+                     if path != self.workspace and (not self.workspace_only or path.is_relative_to(self.workspace)))
         return tuple(dict.fromkeys(paths))
 
     @staticmethod
@@ -227,8 +327,10 @@ class SandboxPolicy:
 
                 return validate_policy(self, cwd)
             cwd = Path(cwd).resolve(strict=True)
-            if not cwd.is_dir() or not cwd.is_relative_to(self.workspace):
+            if not cwd.is_dir() or self.workspace_only and not cwd.is_relative_to(self.workspace):
                 raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
+            if self.private_path(cwd):
+                raise SandboxUnavailable("Command cwd is inside private Virgo storage", reason="protected_path")
             base = Path(sys.base_prefix).resolve(strict=True)
             prefix = Path(sys.prefix).resolve(strict=True)
             if any(path.is_relative_to(self.workspace) for path in (*self._system_roots(), base)):
@@ -243,9 +345,9 @@ class SandboxPolicy:
                         # a writable alias of the installation directory does not.
                         raise SandboxUnavailable(f"Interpreter directory alias is writable in the workspace: {alias}")
             protected = self.protected_paths()
-            if self.mode == "workspace-write" and os.name == "posix":
+            if not self.read_only and self.workspace_only and os.name == "posix":
                 self._reject_writable_hardlinks(protected)
-            for path in (cwd / ".virgo", cwd / ".virgo" / "outputs"):
+            for path in (self.workspace / ".virgo", self.workspace / ".virgo" / "outputs"):
                 if path.is_symlink() or not path.resolve().is_relative_to(self.workspace):
                     raise SandboxUnavailable(f"Sandbox output directory must stay inside its workspace: {path}")
             return cwd
@@ -294,11 +396,16 @@ class SandboxPolicy:
                protected_mounts: tuple[tuple[int, Path], ...] | None = None) -> list[str]:
         args = [str(launcher), "--die-with-parent", "--new-session", "--unshare-all", "--unshare-user",
                 "--disable-userns", "--cap-drop", "ALL"]
-        for root in self._read_roots():
-            if not root.is_relative_to(self.workspace):
-                args += ["--ro-bind", str(root), str(root)]
+        if self.network_allowed:
+            args += ["--share-net"]
+        if not self.workspace_only:
+            args += ["--ro-bind" if self.read_only else "--bind", "/", "/"]
+        else:
+            for root in self._read_roots():
+                if not root.is_relative_to(self.workspace):
+                    args += ["--ro-bind", str(root), str(root)]
         for alias in ("/bin", "/sbin", "/lib", "/lib64", "/etc"):
-            if Path(alias).is_symlink():
+            if self.workspace_only and Path(alias).is_symlink():
                 args += ["--symlink", os.readlink(alias), alias]
         # uv virtualenv executables can refer to an unversioned directory
         # alias, while base_prefix names the versioned installation. Recreate
@@ -309,7 +416,7 @@ class SandboxPolicy:
         while pending:
             name = pending.pop()
             for alias in (*reversed(name.parents), name):
-                if alias in seen:
+                if alias in seen or not self.workspace_only:
                     continue
                 seen.add(alias)
                 if not alias.is_symlink():
@@ -322,8 +429,22 @@ class SandboxPolicy:
                 if not any(resolved.is_relative_to(root) for root in (*roots, self.workspace)):
                     raise SandboxUnavailable(f"Interpreter alias leaves permitted roots: {alias}")
                 args += ["--symlink", str(resolved), str(alias)]
-        args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/run"]
-        args += ["--bind" if self.mode == "workspace-write" else "--ro-bind",
+        args += ["--proc", "/proc", "--dev", "/dev"]
+        if self.workspace_only:
+            args += ["--tmpfs", "/tmp", "--dir", "/run"]
+        else:
+            args += ["--tmpfs", "/run"]
+        if self.network_allowed:
+            # Resolvers commonly link /etc/resolv.conf into /run, which remains
+            # private. Expose only the verified system configuration targets,
+            # never the surrounding service sockets or host runtime directory.
+            for value in ("/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"):
+                if Path(value).exists():
+                    source = _network_config_file(Path(value))
+                    if source.is_relative_to(Path("/run")) or (self.workspace_only and not any(
+                            source.is_relative_to(root) for root in self._read_roots())):
+                        args += ["--ro-bind", str(source), str(source)]
+        args += ["--ro-bind" if self.read_only else "--bind",
                  str(self.workspace), str(self.workspace)]
         # Apply nested interpreter protection after the workspace bind so it
         # cannot be hidden by that broader writable mount. Callers can pin the
@@ -334,6 +455,13 @@ class SandboxPolicy:
             # bwrap verifies the mounted inode against this descriptor and
             # closes it before exec; a /proc/self/fd path alone is insufficient.
             args += ["--ro-bind-fd", str(descriptor), str(target)]
+        for path in self.private_paths:
+            exposed = not self.workspace_only or any(path.is_relative_to(root)
+                                                    for root in (*self._read_roots(), self.workspace))
+            if exposed and path.exists():
+                if not path.is_dir() or path.is_symlink():
+                    raise SandboxUnavailable(f"Private Virgo storage must be a directory: {path}")
+                args += ["--tmpfs", str(path), "--remount-ro", str(path)]
         args += ["--bind", str(scratch), str(scratch), "--chdir", str(cwd),
                  "--seccomp", str(seccomp_fd), "--"]
         return args
@@ -342,7 +470,7 @@ class SandboxPolicy:
         def quoted(path):
             # JSON string escaping also prevents policy injection by path spelling.
             return json.dumps(str(path), ensure_ascii=False)
-        readable = (*self._read_roots(), self.workspace, scratch)
+        readable = (*self._read_roots(), self.workspace, scratch) if self.workspace_only else (Path("/"),)
         lines = ["(version 1)", "(deny default)", "(allow process-exec)", "(allow process-fork)",
                  "(allow signal (target same-sandbox))", "(allow process-info* (target same-sandbox))",
                  "(allow sysctl-read)", "(allow file-read-metadata)",
@@ -353,13 +481,26 @@ class SandboxPolicy:
                  '(allow file-write-data (literal "/dev/null"))']
         lines += [f"(allow file-read* file-map-executable (subpath {quoted(root)}))" for root in readable]
         lines.append(f"(allow file-write* (subpath {quoted(scratch)}))")
-        if self.mode == "workspace-write":
+        if not self.read_only:
             exclusions = " ".join(f"(require-not (subpath {quoted(self.workspace / name)}))"
                                   for name in PROTECTED_NAMES)
             # Explicit exclusions also protect metadata paths which do not exist yet.
-            lines.append(f"(allow file-write* (require-all (subpath {quoted(self.workspace)}) {exclusions}))")
+            root = self.workspace if self.workspace_only else Path("/")
+            lines.append(f"(allow file-write* (require-all (subpath {quoted(root)}) {exclusions}))")
             for path in self.runtime_paths():
                 lines.append(f"(deny file-write* (subpath {quoted(path)}))")
+        if self.network_allowed:
+            # The system resolver and routing control are narrow OS exceptions,
+            # also used by Chromium's Seatbelt network policy. This does not
+            # authorize arbitrary pathname sockets in the workspace or home.
+            lines.extend(['(allow network-outbound (remote tcp) (remote udp) '
+                          '(literal "/private/var/run/mDNSResponder") (control-name "com.apple.netsrc"))',
+                          "(allow network-bind network-inbound (local tcp) (local udp))"])
+            lines.append('(allow file-read* (literal "/private/var/run/resolv.conf"))')
+        from .macos_process import control_root
+
+        for path in (*self.private_paths, control_root()):
+            lines.append(f"(deny file-read* file-write* (subpath {quoted(path)}))")
         if output_path is not None:
             # The broker owns this exact spool file; do not open the output directory.
             lines.append(f"(allow file-write-data (literal {quoted(output_path.resolve())}))")
@@ -389,13 +530,18 @@ class SandboxPolicy:
             clean_env.update(HOME=str(scratch_path / "home"), TMPDIR=str(scratch_path),
                              TMP=str(scratch_path), TEMP=str(scratch_path), VIRGO="1")
             if backend == "bubblewrap":
-                filter_file = _seccomp_file()
+                filter_file = _seccomp_file(self.network_allowed)
                 root = os.open(self.workspace, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
                 try:
                     for path in self.protected_paths():
-                        descriptor = os.dup(root)
+                        if path.is_relative_to(self.workspace):
+                            descriptor = os.dup(root)
+                            parts = path.relative_to(self.workspace).parts
+                        else:
+                            descriptor = os.open(path.anchor, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+                            parts = path.parts[1:]
                         try:
-                            for part in path.relative_to(self.workspace).parts:
+                            for part in parts:
                                 child = os.open(part, os.O_PATH | os.O_NOFOLLOW, dir_fd=descriptor)
                                 os.close(descriptor)
                                 descriptor = child
@@ -451,9 +597,13 @@ class SandboxPolicy:
             deadline = time.monotonic() + 5
             while True:
                 if cancellation is not None and cancellation.is_set():
-                    raise SandboxCancelled("Sandbox launch cancelled before command exec")
+                    raise SandboxProcessError(
+                        "Sandbox launch cancelled while awaiting exec acknowledgement; "
+                        "the command may have run. Do not replay it.")
                 if time.monotonic() >= deadline:
-                    raise SandboxUnavailable(f"{backend} did not confirm command startup")
+                    raise SandboxProcessError(
+                        f"{backend} did not confirm command startup; execution is unknown and "
+                        "the command may have produced effects. Do not replay it.")
                 if not select.select([status_read], [], [], 0.05)[0]:
                     continue
                 chunk = os.read(status_read, 1502)
@@ -461,7 +611,8 @@ class SandboxPolicy:
                     break
                 startup.extend(chunk)
                 if len(startup) > 1501:
-                    raise SandboxUnavailable(f"{backend} returned an invalid startup acknowledgement")
+                    raise SandboxProcessError(f"{backend} returned an invalid startup acknowledgement; "
+                                              "command execution is unknown. Do not replay it.")
             if startup != b"\0":
                 reason = bytes(startup).lstrip(b"\0").decode("utf-8", errors="replace")
                 raise SandboxUnavailable(f"{backend} failed before command exec: {reason or 'no startup acknowledgement'}")
@@ -469,6 +620,9 @@ class SandboxPolicy:
         except (OSError, subprocess.TimeoutExpired) as error:
             if isinstance(error, SandboxCancelled):
                 raise
+            if proc is not None:
+                raise SandboxProcessError(f"Native sandbox launch reporting failed after process creation: {error}. "
+                                          "Command execution is unknown; do not replay it.") from error
             raise SandboxUnavailable(f"Could not launch native sandbox: {error}") from error
         finally:
             failed = sys.exc_info()[0] is not None

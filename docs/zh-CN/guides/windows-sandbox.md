@@ -4,7 +4,7 @@
 
 ## 验证状态
 
-原生 Windows 隔离在下列已验证的管理员 runner 配置之外仍属于实验性支持。Virgo 在 Windows 上同样默认请求 `workspace-write`；后端不可用或 ACL 权限不足时拒绝 Shell 执行。`--sandbox disabled` 是显式的宿主执行选择，不宣称 OS 隔离。应用不会为使默认行为可用而自行提权或回退到宿主执行。
+原生 Windows 隔离在下列已验证管理员 runner 配置之外仍属于实验性支持。当前默认 Workspace-Edit 请求可写工作区与联网；Read-Only 保留联网能力并将工作区数据设为只读。后端不可用或 ACL 权限不足时拒绝执行。No-Limit（包括旧 `--sandbox disabled`）显式使用宿主执行，不宣称 OS 隔离。应用不会为了使受限策略可用而自行提权。
 
 在提交 `e2e5c94ca9cb4e336092963a11f977cfcc4ee52b` 上，下面两组真实 Windows 环境均通过全部 18 项安全场景，且各自的 XML 报告确认零失败、零错误、零跳过。参见[对应的原生 CI 运行](https://github.com/0xAstraZhang/Virgo/actions/runs/43747132842)。
 
@@ -15,18 +15,18 @@
 
 这些结果对应使用本地 NTFS、以管理员身份运行的 GitHub 托管 runner，不能证明桌面 Windows、ARM64／模拟执行或普通账户兼容性。完整跨平台对比是另一个独立门禁；应按[测试与 CI](../development/testing-and-ci.md)检查当前 PR 修订。
 
-下面记录已执行验收的权限模型、宿主前提和剩余限制。
+下文区分已经执行过验收的原有边界与当前权限开关改动。旧提交的 CI 结果不能验证新增联网预设；当前修订必须通过包含真实外部 TCP 联网与不支持组合拒绝行为的原生验收。
 
 ## 权限模型
 
-审批允许 Core 工具请求执行，不能把启用的沙箱变成普通进程。工作模式和子任务限制独立决定权限上限。工作区来自来源 Runtime；切换当前会话或改变命令工作目录不会更换授权根目录。
+普通工具审批不会替换 OS 隔离；明确的 `request_permissions` 授权可以改变单个操作的权限开关。Plan／Code Review 指令不影响权限，显式只读子任务上限仍然有效。工作区来自来源 Runtime；切换当前对话或 cwd 不会更换授权根。需要隔离但设置 `workspace_only=false` 的组合会在业务命令启动前明确返回不支持。
 
 | 机制 | 已实现的职责 | 边界限制 |
 | --- | --- | --- |
 | LPAC | 每次命令创建独立 AppContainer 身份，关闭 `ALL_APPLICATION_PACKAGES` 授权，赋予 `registryRead` 和 `lpacInstrumentation` capability | Windows 仍有 `ALL RESTRICTED APPLICATION PACKAGES` 的系统授权。这是对象 ACL 隔离，不是文件系统命名空间，也不是精确的读取路径白名单。 |
 | 写受限 Token | 使用 `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE \| WRITE_RESTRICTED)`，仅加入一个独立随机限制 SID | 附加检查约束写入；它本身不约束读取和网络。不把 Everyone 或 logon SID 加为替代写授权。 |
 | 临时文件 ACL | 为工作区、选定运行时和私有 profile 添加每次命令独立的读／执行或写 ACE；对只读及受保护对象明确拒绝修改 | 宿主必须能修改相应对象的 ACL。这会临时修改 DACL，不会挂载或复制私有文件系统。 |
-| AppContainer 网络策略 | 不提供网络 capability；启动要求 Base Filtering Engine 和 Windows Firewall 服务正在运行 | 未实现域名白名单、代理隔离边界或启用沙箱时的无限制网络模式。 |
+| AppContainer 网络策略 | 禁网时不提供网络 capability；联网时增加 `internetClientServer` 与 `privateNetworkClientServer`。启动要求 Base Filtering Engine 与 Windows Firewall 服务运行 | 不安装防火墙规则、loopback 豁免、域名白名单或代理边界；Windows 和宿主防火墙仍可能限制连接。 |
 | 加密设备临时授权 | 在精确的 `\Device\KsecDD` 对象上，为命令的独立写 SID 临时添加 `0x00100003` 允许 ACE | 授予该设备的文件读写数据与同步权限，不是 BCrypt 函数或单独 IOCTL 的白名单；不会修改 ETW provider 的 ACL。 |
 | Null 设备临时授权 | 在精确的 `\Device\Null` 对象上，为命令的 package SID 和写 SID 临时添加 `0x0012019F` 允许 ACE | 允许 `NUL` 重定向及 `subprocess.DEVNULL` 使用的通用读写访问；不授予设备所有权、DACL 修改、删除或其他设备对象的访问权限。 |
 | 私有桌面 | 每次命令拥有独立的 Low 完整性级别桌面；在当前 window station 上仅向命令身份授予属性／全局原子访问权限 | 临时修改当前 station 的 DACL；不授予剪贴板、屏幕、宿主桌面访问或修改桌面安全配置的权限。 |
@@ -97,3 +97,5 @@ Core 使用原生 `FileRenameInformationEx` 的替换和 POSIX 语义标志，�
 - [Window station 访问权限](https://learn.microsoft.com/en-us/windows/win32/winstation/window-station-security-and-access-rights)、[桌面访问权限](https://learn.microsoft.com/en-us/windows/win32/winstation/desktop-security-and-access-rights) 与 [CreateDesktopW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createdesktopw)
 - [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
 - [已读取的 Codex Windows 实现修订](https://github.com/openai/codex/tree/5cb38e79842a0e0a6dca5bb97874163e8ee50129/codex-rs/windows-sandbox-rs)：其旧受限 Token 路径和提权账户／防火墙路径采用不同权限模型。Virgo 不将代理环境变量或 Job Object 当作网络隔离。
+
+权限开关验收还会先建立宿主正向连接，再要求允许联网的 LPAC 连接同一真实外部 TCP 地址。`VIRGO_SANDBOX_NETWORK_TEST_HOST` 指定测试主机，默认 `www.microsoft.com` 的 443 端口；不发送 HTTP 请求或凭据。原生 runner 必须具有出站连接能力。另有用例要求所有受限且关闭工作区范围的组合在业务命令前失败。capability 含义与 loopback 限制参见 [Microsoft 文档](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/appxmanifestschema/element-capability)和 [Windows loopback 指南](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication)。

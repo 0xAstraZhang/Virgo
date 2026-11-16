@@ -67,7 +67,7 @@ uv run virgo --continue
 uv run virgo -p --format json "Summarize the README"
 ```
 
-The default uses `ask` approval and a `workspace-write` native Shell sandbox. `/mode plan` investigates with read-only tools; execution requires the user to select an exact proposal revision. `/review` runs an independent code-review task. See [Planning](docs/en/guides/planning.md), [Sandbox boundaries](docs/en/guides/sandbox.md), and [breaking migration](docs/en/guides/migrating-execution-policy.md).
+The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/mode` selects or edits permission presets. `/plan` and `/review` are optional prompt workflows using the normal tools; choose Read-Only separately when file protection is required. The model can request a single-operation permission exception. See [Planning](docs/en/guides/planning.md), [Sandbox boundaries](docs/en/guides/sandbox.md), and [breaking migration](docs/en/guides/migrating-execution-policy.md).
 
 ## Explore
 

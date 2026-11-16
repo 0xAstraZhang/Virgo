@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..agent.types import AgentTool
-    from .session import AgentSession
+    from .session import AgentSession, Runtime
 
 
 @dataclass(frozen=True)
@@ -117,11 +117,18 @@ def _first_file(paths: list[Path], *, workspace: Path | None = None) -> str | No
 def build_system(
     session: AgentSession, role: str = "main", extra: str | None = None, cwd: Path | None = None,
     tools: list[AgentTool] | None = None, context: RuntimeContext | None = None,
+    runtime: Runtime | None = None,
 ) -> str:
-    """``tools`` supplies the actual shell environment (default: every tool of ``role``)."""
+    """Use the supplied tools and originating Runtime's automatic-context permissions."""
     cwd = Path(cwd or session.cwd)
     workspace = None
-    if getattr(session.services.get("sandbox"), "mode", "disabled") != "disabled":
+    sandbox = session.services.get("sandbox")
+    if runtime is None and context is not None:
+        if context.origin_parent is not None:
+            runtime = context.origin_parent.runtime
+        elif context.store is not None or context.accounting_store is not None:
+            runtime = session.runtime_for_store(context.store or context.accounting_store)
+    if sandbox is not None and sandbox.mode_for(runtime).workspace_only:
         # Runtime construction precedes ExecutionOrigin creation. Its captured
         # parent/store already identifies the owner, including detached children.
         if context is not None and context.origin_parent is not None:

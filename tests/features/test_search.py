@@ -241,10 +241,15 @@ def test_native_permission_review_is_cached_only_for_current_request(make_sessio
 
 
 def test_unapproved_native_scope_falls_back_without_asking_user(make_session, monkeypatch):
-    session = make_session(allow=False)
+    # Network is an explicit mode boundary, even with broad allow rules.
+    session = make_session()
+    sandbox = session.services["sandbox"]
+    sandbox.save_mode("offline", "Offline", False, True, False, persist=False)
+    sandbox.select_mode("offline")
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
     assert context.web_search is None
+    assert not context.web_tools
     assert "web_search" in [t.name for t in context.tools]
     assert session.ui.questions == []
 
@@ -259,18 +264,21 @@ def test_custom_tool_hooks_route_search_through_client_execution(make_session, m
     def hook(*args):
         observed.append(args)
 
-    remove = session.bus.on(event, hook)
     monkeypatch.setattr(session.tool("web_search"), "execute", lambda *a: ToolResult.text("Search source"))
-    seen = install_responses(
-        monkeypatch,
-        AssistantMessage(content=[ToolCall("s", "web_search", {"query": "Python docs"})], stop_reason="tool_use"),
-        AssistantMessage(content=[TextContent("Answer")]),
-    )
-    runtime.agent.prompt("Search Python docs")
-    assert all(context.web_search is None for _, context in seen)
-    assert len(observed) == 1
-    remove()
-    assert runtime.request_context(runtime.messages).web_search
+    for owner in ("host", "core.sandbox"):
+        # An owner label never exempts a real hook from client dispatch.
+        remove = session.bus.on(event, hook, owner=owner)
+        observed.clear()
+        seen = install_responses(
+            monkeypatch,
+            AssistantMessage(content=[ToolCall("s", "web_search", {"query": "Python docs"})], stop_reason="tool_use"),
+            AssistantMessage(content=[TextContent("Answer")]),
+        )
+        runtime.agent.prompt("Search Python docs")
+        assert all(context.web_search is None for _, context in seen)
+        assert len(observed) == 1
+        remove()
+        assert runtime.request_context(runtime.messages).web_search
 
 
 def test_extension_owned_search_tool_is_not_replaced_by_hosted_search(make_session):

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 
 from ..tools.shell import Shell, default_shell, discover_shells, make_shell_tool, probe_shell
+from .execution_modes import configured_modes, legacy_mode
 from .extensions import ROLES_ALL
 
 USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)'
@@ -12,9 +13,15 @@ USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)
 class ShellSelection:
     def __init__(self, session, catalog: tuple[Shell, ...] | None = None):
         self.session = session
-        # Capture the startup choice before discovery: approval/mode changes
-        # must never enable host execution of version probes in this session.
-        self._probe_versions = session.settings.get("sandbox.mode", "disabled") == "disabled"
+        # Startup authority is a ceiling; later probes also check the current
+        # policy so neither direction of a mode change broadens authority.
+        modes = configured_modes(session.settings.get("permissions.modes", {}))
+        selected = session.settings.get("permissions.mode", "workspace-edit")
+        if (legacy := session.settings.get("sandbox.mode")) is not None:
+            mode = legacy_mode(legacy)
+            modes[mode.id] = mode
+            selected = mode.id
+        self._probe_versions = modes[selected].unrestricted
         # Share only the startup snapshot; each session owns its selection and additions.
         self.catalog = tuple(discover_shells(execute=self._probe_versions)) if catalog is None else catalog
         self.available = list(self.catalog)
@@ -30,7 +37,11 @@ class ShellSelection:
             session.ui.print(session.t("harness.shell.unavailable", error=error), "warn")
 
     def probe(self, value: str) -> Shell:
-        return probe_shell(value, t=self.session.t, execute=self._probe_versions)
+        sandbox = self.session.services.get("sandbox")
+        execute = self._probe_versions and (
+            sandbox is None or sandbox.selected_mode.unrestricted
+        )
+        return probe_shell(value, t=self.session.t, execute=execute)
 
     def remember(self, shell: Shell) -> None:
         for index, item in enumerate(self.available):

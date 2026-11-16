@@ -26,6 +26,20 @@ def _result(agent):
     return next(message for message in agent.messages if isinstance(message, ToolResultMessage))
 
 
+def test_sandbox_boundary_is_visible_to_model_even_without_exception_record():
+    result = ToolResult.error("Write refused", details={"status": "sandbox_denied", "sandbox": {
+        "kind": "sandbox_denied", "dimension": "read_only", "target": "src/config.py",
+        "effective_permissions": {"read_only": True, "workspace_only": True, "network_allowed": False},
+        "command_started": False, "side_effects": "none", "escalation_available": True,
+    }})
+    content = project_tool_result(ToolCall("blocked", "write", {}), result)
+    text = "\n".join(block.text for block in content if isinstance(block, TextContent))
+    assert '"dimension":"read_only"' in text
+    assert '"command_started":false' in text
+    assert '"network_allowed":false' in text
+    assert '"escalation_available":true' in text
+
+
 def test_projection_sees_final_hooks_and_recorded_evidence_once_in_provider_content():
     rendered = []
 

@@ -19,7 +19,7 @@
 
 `/review` 是插件唯一的命令。启用 `code_review` 时该名称被保留；存在 `review.md` Prompt 模板会明确报告启动冲突，不会让模板接管命令。请重命名模板或关闭插件后重新启动。旧 `/code-review` 别名和自动命令回退机制已移除。
 
-`coding` 预设启用 `code_review`。Review 是工具集合受限的独立任务，不为普通命令作审批决定。可通过 `plugins.code_review.enabled` 覆盖预设，例如：
+`coding` 预设启用 `code_review`。Review 是使用正常工具集合和审查指令的独立任务，不为普通命令作审批决定。可通过 `plugins.code_review.enabled` 覆盖预设，例如：
 
 ```json
 {"profile": "minimal", "plugins": {"code_review": {"enabled": true}}}
@@ -45,25 +45,43 @@ JSON 模式输出包含 `report` 对象的 `code_review` 事件。报告完成�
 
 先暂存、再在工作区撤回的改动仍会出现在两个层中。稀疏检出中标记为 `skip-worktree` 的缺失文件保留 index 内容，不会被误判为未暂存删除。Merge commit 使用第一父提交。即使提交位于浅克隆边界，也按提交对象中记录的父提交确定比较范围；本地缺少父提交历史时返回 incomplete。基线必须无歧义地指向本地或远程分支；与 tag 同名时可使用完整 ref。审查不会拉取分支或缺失对象。
 
-插件使用受控 Git argv 解析目标，然后固定文件字节和新旧行映射。Staged 和已提交变更的重命名识别来自 Git 对象/index 比较；unstaged 删除和 untracked 新增仍是独立变更。已跟踪文件被目录替换时，原文件记为删除，未被忽略的新子文件分别记为 untracked 新增。读取、搜索工具选择冻结的 `head`、`index`、`worktree`、`base`、`target` 版本，不会读到随后变化的实时文件。符号链接只暴露链接文本，不跟随其目标。
+插件使用受控 Git argv 解析目标，然后固定文件字节和新旧行映射。Staged 和已提交变更的重命名识别来自 Git 对象/index 比较；unstaged 删除和 untracked 新增仍是独立变更。已跟踪文件被目录替换时，原文件记为删除，未被忽略的新子文件分别记为 untracked 新增。`review_read`、`review_glob`、`review_grep` 选择冻结的 `head`、`index`、`worktree`、`base`、`target` 版本，不会读到随后变化的实时文件。符号链接只暴露链接文本，不跟随其目标。
 
 `core.filemode=false` 只忽略普通文件之间的可执行位差异，文件类型变化仍会保留；`core.symlinks=false` 下以普通文件形式检出的符号链接仍受支持。冻结 diff 保留文件末尾缺少换行符的标记，`read` 提供 `ends_with_newline`，不改变源码行号。
 
 保存的快照记录请求目标、已解析提交、比较方式、变更元数据、文件指纹和快照 ID，用来标识被审查的代码，不是全部源码字节的永久存档。源码内容在任务期间保存在内存中。
 
-## 只读执行
+## 任务指令与执行权限
 
-每次审查创建来源 Runtime 的独立子 Runtime，设置 `read_only=True`，复用现有 Agent Loop，继承来源工作区、模型、共享请求预算、取消信号和权限关系，不复制父对话。只读能力不等于 Plan 工作意图；即使来源对话正在 Plan，审查也只接收审查任务指令。`subagents.maxTurns` 限制轮数；审查关闭压缩，上下文溢出会成为不完整结果。
+每次审查创建来源 Runtime 的独立子 Runtime，复用现有 Agent Loop，继承来源
+工作区、模型、请求预算、取消信号和执行权限，不复制父对话。Review 不添加
+只读上限，也不强制将审批设为 `never`；即使父对话正在 Plan，它也使用审查
+指令。`subagents.maxTurns` 限制轮数，正常的上下文压缩仍然可用。
 
-子运行时固定使用 `approval_policy="never"`，不改变父运行时的审批策略。快照捕获、工具调用和 freshness 检查都不会弹出审批。已有 allow 规则继续生效，同时受 deny 与硬边界限制。必要证据需要新的批准时，捕获返回 `incomplete`；无法完成 freshness 检查时显示 `unknown`。
+子 Runtime 的正常工具集合全部保留。审查指令要求调查并报告问题，不实施
+修复、提交或合并。实际文件、Shell、网络访问由当前权限 Mode 决定。需要
+阻止源文件写入时，应独立选择 Read-Only。模型如果违反审查指令，在可写
+Mode 中仍可能执行获准写入；Review 不构成另一层安全边界。
 
-审查仅提供 `read`、`glob`、字面量 `grep` 和 `review_git`。`review_git` 只分页返回冻结的 status/diff，不接受任意命令或 Git 参数。工具集合不包含文件修改、Shell、联网、MCP、后台任务或委派能力，任务不能修复、提交或合并代码。
+冻结证据通过 `review_read`、`review_glob`、字面量 `review_grep` 和 `review_git`
+提供，与读取实时文件的普通工具名称区分。`review_git` 只分页读取快照的
+status/diff，不接受任意命令或 Git 参数。普通工具可以补充调查上下文，但
+Finding 的位置始终按冻结目标校验。
 
-命令绕过 Prompt hooks；Runtime 排除可执行的工具/停止 hooks、上下文/系统提示注入、动态工具注册和模型托管联网能力。Core 的两个权限检查点仍生效，快照内容遵守继承的读取限制。审批策略、allow 规则和批准不能增加工具。结果在内存中分页，不创建 `.virgo/outputs` 文件。
+子任务采用普通扩展 hooks、请求准备和动态工具更新。审查指令在每次模型
+请求时重新应用，包括压缩之后。未经校验的助手 JSON 不直接进入原始消息
+视图；客户端显示经校验的报告，同时保留工具和活动事件。普通输出限制、
+会话元数据和诊断记录仍然适用。
 
-受控 Git 读取关闭可选 index 写入、external diff、textconv、fsmonitor、hooks 和隐式网络传输。工作文件通过已捕获字节比较，不执行 clean/smudge filters。生命周期、结果和诊断使用 Virgo 的用户/会话位置；这些目的地解析到被审查工作区内部时，任务会拒绝启动。
+两个权限检查点仍然生效。快照读取使用捕获的来源权限。捕获受阻时返回
+incomplete，不静默扩大权限；无法完成 freshness 检查时为 unknown。模型
+调查期间可以在 `ask` 策略下通过 `request_permissions` 请求一次精确操作。
+取消会释放等待和子 Runtime；`never` 会拒绝新权限申请，不弹出审批。
 
-这是官方任务的能力边界。受信任的 Python 扩展仍在宿主进程中运行，其初始化和事件观察者不受本任务沙箱隔离。启动审查也不会停止此前已经运行的独立后台任务。
+受控快照 Git 读取仍关闭可选 index 写入、external diff、textconv、fsmonitor、
+hooks 和隐式联网。工作文件直接比较捕获字节，不执行 clean/smudge filter。
+这些是快照读取器自身的操作定义，不限制普通 Shell 工具。可信 Python 扩展
+在宿主进程中执行；启动 Review 不会停止之前的后台任务。
 
 ## 报告与 Finding 定位
 
@@ -92,4 +110,4 @@ Diff 匹配会检查取消信号，并为每个变更文件检查五秒截止时
 
 纯重命名、权限位变化会被记录，但本增量不能为没有变更文本行的情况附加 Finding 行锚点。仅拥有子目录工作区的 Runtime 不能扩大范围到仓库根目录。本命令没有自动修复、独立 review model 配置、补丁应用、PR 发布或多审查任务编排。
 
-实现入口：[目标与工具](../../../src/virgo/plugins/code_review/targets.py)、[校验与展示](../../../src/virgo/plugins/code_review/report.py)、[任务插件](../../../src/virgo/plugins/code_review/__init__.py)、[共享受控 Git 读取](../../../src/virgo/tools/git_read.py)。[E2E 验收场景](../../../tests/harness/test_code_review_e2e.py)使用真实 Git、会话和工具循环，仅模型响应由脚本提供；它们验证任务边界和报告行为，不证明模型发现缺陷的质量。
+实现入口：[目标与工具](../../../src/virgo/plugins/code_review/targets.py)、[校验与展示](../../../src/virgo/plugins/code_review/report.py)、[任务插件](../../../src/virgo/plugins/code_review/__init__.py)、[共享受控 Git 读取](../../../src/virgo/tools/git_read.py)。[E2E 验收场景](../../../tests/harness/test_code_review_e2e.py)使用真实 Git、会话和工具循环，仅模型响应由脚本提供；它们验证权限继承和报告行为，不证明模型发现缺陷的质量。

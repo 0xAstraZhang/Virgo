@@ -97,7 +97,7 @@ def origin_key(session, event) -> str:
         "origin": source.identity, "workspace": str(source.workspace), "agent": event.agent,
         "rules": session.settings.get("permissions", {}),
         "approval": permissions.approval_for(runtime), "read_only": permissions.is_read_only(runtime),
-        "work_mode": permissions.work_mode_for(runtime),
+        "execution_permissions": session.services["sandbox"].mode_for(runtime).flags(),
         "revision": permissions.revision, "approval_revision": session.approval_revision,
     }
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

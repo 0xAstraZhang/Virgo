@@ -82,13 +82,14 @@ def test_startup_mode_override_preserves_a_running_plan_child(make_session, proj
     ui = FullscreenUI()
     session = make_session(ui=ui, persist=True, work_mode="plan", extensions=False,
                            settings={"profile": "minimal"}, refresh_models=False)
+    session.services["sandbox"].select_mode("read-only")
     origin, path = session.main, session.store.path
     api = ExtensionAPI(session, "mode-restore-acceptance")
     child = api.create_runtime("planning-child", "subagent", parent=origin)
     entered, release = threading.Event(), threading.Event()
 
     def pending_response(context):
-        assert "write" not in {tool.name for tool in context.tools}
+        assert "write" in {tool.name for tool in context.tools}
         entered.set()
         assert release.wait(5)
         return faux.reply(tools=[("write", {"path": "late.txt", "content": "must stay read-only"})])

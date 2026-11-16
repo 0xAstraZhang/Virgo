@@ -41,21 +41,24 @@ def test_mcp_tools_are_namespaced_and_permission_checked(make_session, project):
     (project / ".virgo" / "mcp.json").write_text(
         json.dumps({"mcpServers": {"echo": {"command": sys.executable, "args": [str(SERVER)]}}})
     )
-    ui = RecordingUI(answers=["y"])
+    ui = RecordingUI()
     s = make_session(
         faux.reply(tools=[("mcp__echo__echo", {"text": "hello mcp"}), ("mcp__echo__add", {"a": 1, "b": 2})]),
+        faux.reply(tools=[("mcp__echo__echo", {"text": "private"})]),
         faux.reply("ok"),
         ui=ui,
         allow=False,
-        settings={"permissions": {"allow": ["mcp__echo__add"]}},
+        settings={"permissions": {"allow": ["mcp__echo__add"], "deny": ["mcp__echo__echo(*private*)"]}},
     )
     s.prompt("use mcp")
     assert "mcp__echo__echo" in calls()[0]["tools"]
     res = [m.text() for m in s.main.messages if isinstance(m, ToolResultMessage)]
-    assert res == ["hello mcp", "3"]
-    assert len(ui.questions) == 1  # echo asked; add allowed by rule
+    assert res[:2] == ["hello mcp", "3"]
+    assert "denied" in res[2].lower()
+    assert not ui.questions  # No-Limit operations are automatic; explicit denies still bind.
     decisions = s.store.custom("permission_decision")
-    assert any(row["tool"] == "mcp__echo__echo" and row["source"] == "human" for row in decisions)
+    assert any(row["tool"] == "mcp__echo__echo" and row["source"] == "workspace" for row in decisions)
+    assert any(row["tool"] == "mcp__echo__echo" and row["source"] == "deny-rule" for row in decisions)
     assert any(row["tool"] == "mcp__echo__add" and row["source"] == "allow-rule" for row in decisions)
     assert s.main.agent.last_text == "ok"
 

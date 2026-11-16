@@ -67,17 +67,20 @@ def test_project_deny_rules_cannot_erase_user_restrictions(project, project_deni
         session.shutdown()
 
 
-def test_never_rejects_unknown_operations_without_blocking_workspace_writes(make_session, project):
+def test_never_rejects_unknown_operations_without_blocking_workspace_writes(make_session, project, python_command):
     ui = RecordingUI(answers=["y"])
-    session = make_session(faux.reply(tools=[
+    session = make_session(approval="never", allow=False, ui=ui)
+    shell = session.services["shell"].current
+    command = python_command("from pathlib import Path; Path('forbidden.txt').touch()", shell=shell)
+    faux.script("test", faux.reply(tools=[
         ("write", {"path": "allowed.txt", "content": "allowed"}),
-        ("bash", {"command": "touch forbidden.txt"}),
-    ]), faux.reply("done"), approval="never", allow=False, ui=ui)
+        (shell.tool_name, {"command": command}),
+    ]), faux.reply("done"))
     session.prompt("Try the selected operations")
     assert (project / "allowed.txt").read_text() == "allowed"
-    assert not (project / "forbidden.txt").exists()
+    assert (project / "forbidden.txt").exists()  # No-Limit authorizes managed operations.
     assert not ui.questions
-    assert [result.is_error for result in tool_results(session)] == [False, True]
+    assert [result.is_error for result in tool_results(session)] == [False, False]
 
 
 @pytest.mark.parametrize("permission", [{"allow": ["write"]}, {"approval": "never"}])
@@ -101,13 +104,14 @@ def test_hard_sandbox_denial_does_not_request_approval(make_session, tmp_path):
     assert not ui.questions
 
 
-def test_requested_config_cannot_pretend_host_shell_is_isolated(make_session, project):
-    session = make_session(
-        faux.reply(tools=[("bash", {"command": "touch host-only.txt"})]), faux.reply("done"),
-        approval="never", allow=False,
-    )
+def test_requested_config_cannot_pretend_host_shell_is_isolated(make_session, project, python_command):
+    session = make_session(approval="never", allow=False)
+    shell = session.services["shell"].current
+    command = python_command("from pathlib import Path; Path('host-only.txt').touch()", shell=shell)
+    faux.script("test", faux.reply(tools=[(shell.tool_name, {"command": command})]), faux.reply("done"))
     assert session.services["sandbox"].mode == "disabled"
     session.settings.set("sandbox.mode", "workspace-write")
     session.prompt("Try the operation")
-    assert not (project / "host-only.txt").exists()
-    assert tool_results(session)[-1].is_error
+    assert (project / "host-only.txt").exists()
+    assert not tool_results(session)[-1].is_error
+    assert session.services["sandbox"].mode_for(session.main).unrestricted

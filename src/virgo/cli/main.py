@@ -75,6 +75,7 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("-r", "--resume", nargs="?", const="", metavar="FILE", help=tr(t, "ui.cli.resume"))
     p.add_argument("--no-session", action="store_true", help=tr(t, "ui.cli.no_session"))
     p.add_argument("--profile", choices=PROFILES, help=t("ui.cli.profile"))
+    p.add_argument("--mode", help=t("ui.cli.permission_mode"))
     p.add_argument("--sandbox", choices=SANDBOX_MODES, help=t("sandbox.cli"))
     p.add_argument("--no-extensions", action="store_true", help=tr(t, "ui.cli.no_extensions"))
     p.add_argument("--trust-project-extensions", action="store_true", help=t("ui.cli.trust_project_extensions"))
@@ -146,7 +147,10 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as error:
         _startup_error(error, early.cwd)
         return 2
-    args = build_parser(t.language).parse_args(argv)
+    parser = build_parser(t.language)
+    args = parser.parse_args(argv)
+    if args.mode is not None and args.sandbox is not None:
+        parser.error("--mode and --sandbox cannot be combined; select one execution policy")
     fullscreen = False
     if not args.print and args.ui != "plain":
         fullscreen = _fullscreen_available()
@@ -189,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
         overrides["profile"] = args.profile
     if args.sandbox is not None:
         overrides["sandbox"] = {"mode": args.sandbox}
+    if args.mode is not None:
+        overrides["permissions"] = {"mode": args.mode}
     if args.no_extensions:
         print(t("ui.cli.no_extensions_warning"), file=sys.stderr)
     try:

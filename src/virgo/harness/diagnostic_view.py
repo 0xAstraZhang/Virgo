@@ -162,6 +162,16 @@ def project_tool_result(call: ToolCall, result: ToolResult, *, query_available=T
     """Preserve content and images, appending evidence only for a final failure."""
     content = list(result.content)
     details = result.details if isinstance(result.details, dict) else {}
+    sandbox = details.get("sandbox")
+    if result.is_error and isinstance(sandbox, dict):
+        boundary = _fields(sandbox, ("kind", "dimension", "target", "command_started", "side_effects",
+                                     "escalation_available", "mode", "workspace"), limit=256)
+        flags = _fields(sandbox.get("effective_permissions", sandbox),
+                        ("read_only", "workspace_only", "network_allowed"))
+        if flags:
+            boundary["effective_permissions"] = flags
+        if boundary:
+            content.append(TextContent(_render({"sandbox": boundary})))
     error = details.get("error")
     # A result hook may have recovered an earlier error. Retain that historical
     # evidence in metadata without presenting the successful result as failed.

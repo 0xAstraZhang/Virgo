@@ -11,14 +11,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..agent.types import Block, ToolCallEvent
-from ..tools.fs import IGNORE_DIRS, glob_match
 from ..tools.shell import SHELL_TOOLS
-from .origin_context import origin_key, origin_store, origin_workspace, source_for
-from .permission_scope import ApprovalBoundary, command_boundary, command_path_targets, inside
+from .origin_context import origin_key, origin_store, source_for
+from .permission_scope import ApprovalBoundary, command_path_targets
 from .permissions import (
     approval_policy_label,
     normalize_approval_policy,
-    read_only_tool_allowed,
 )
 from .work_modes import normalize_work_mode
 
@@ -90,8 +88,9 @@ class Permissions:
         return root.work_mode if root is not None else self._work_mode
 
     def is_read_only(self, runtime) -> bool:
-        if self.work_mode_for(runtime) == "plan":
-            return True
+        sandbox = self.session.services.get("sandbox")
+        if sandbox is not None:
+            return sandbox.mode_for(runtime).read_only
         while runtime is not None:
             if runtime.read_only:
                 return True
@@ -162,61 +161,21 @@ class Permissions:
 
     def _snapshot(self, event: ToolCallEvent) -> tuple:
         runtime = self._event_runtime(event)
-        root = self._root_runtime(runtime)
         return (
             self.approval_for(runtime), self.is_read_only(runtime), self._approval_key(event),
-            root.work_mode_revision if root is not None else self.revision,
+            self.session.services["sandbox"].revision,
         )
 
     def _boundary(self, ev: ToolCallEvent) -> ApprovalBoundary | None:
-        workspace = origin_workspace(self.session, ev)
-        if ev.tool_name == "powershell":
-            return ApprovalBoundary("features.permission.scope.powershell")
-        if ev.tool_name == "bash":
-            boundary = command_boundary(ev.args.get("command", ""), ev.cwd, workspace)
-            sandbox = self.session.services.get("sandbox")
-            if boundary is None and (sandbox is None or sandbox.mode == "disabled"):
-                return ApprovalBoundary("features.permission.scope.host_shell")
-            return boundary
-        if ev.tool_name in {"read", "write", "edit", "glob", "grep"}:
-            path = ev.args.get("path", ".")
-            if not isinstance(path, str) or not inside(path, ev.cwd, workspace):
-                target = (ev.cwd / os.path.expanduser(path)).resolve() if isinstance(path, str) else path
-                return ApprovalBoundary("features.permission.scope.action_path", {"path": target})
-            if ev.tool_name in {"glob", "grep"}:
-                root = (ev.cwd / os.path.expanduser(path)).resolve()
-                try:
-                    for directory, names, files in os.walk(root):
-                        names[:] = [name for name in names if name not in IGNORE_DIRS]
-                        for name in files:
-                            candidate = Path(directory) / name
-                            # Mirror the tools' own file selection (same matcher, same base path).
-                            if ev.tool_name == "glob":
-                                rel = candidate.relative_to(root).as_posix()
-                                if not glob_match(rel, ev.args.get("pattern", "*")):
-                                    continue
-                            elif pattern := ev.args.get("glob"):
-                                try:
-                                    displayed = candidate.relative_to(ev.cwd.resolve())
-                                except ValueError:
-                                    displayed = candidate
-                                if not glob_match(displayed.as_posix(), pattern):
-                                    continue
-                            if candidate.is_symlink() and not inside(str(candidate), ev.cwd, workspace):
-                                return ApprovalBoundary(
-                                    "features.permission.scope.search_link",
-                                    {"path": candidate, "target": candidate.resolve()},
-                                )
-                except (OSError, RuntimeError):
-                    return ApprovalBoundary("features.permission.scope.search_paths")
+        # Managed tools enforce the selected profile in their execution adapters.
+        # Shell syntax is not an authorization or isolation boundary.
+        managed = {"read", "write", "edit", "glob", "grep", "git_read", "bash", "powershell",
+                   "web_search", "web_fetch", "request_permissions", "todo_write"}
+        if ev.tool_name in managed or ev.tool_name.startswith(("mcp__", "review_")):
             return None
-        if ev.tool_name.startswith("mcp__"):
-            return ApprovalBoundary("features.permission.scope.external")
-        if ev.tool_name == "web_fetch":
-            return ApprovalBoundary("features.permission.scope.fetch")
-        if ev.tool_name == "web_search":
-            return ApprovalBoundary("features.permission.scope.search")
         if ev.tool and ev.tool.read_only:
+            return None
+        if self.session.services["sandbox"].mode_for_event(ev).unrestricted:
             return None
         return ApprovalBoundary("features.permission.scope.unknown_tool")
 
@@ -229,7 +188,13 @@ class Permissions:
             self._record(event, decision, reason if audit_reason is None else audit_reason, source, started)
             return decision, reason
 
-        if self.is_read_only(runtime) and not read_only_tool_allowed(event.tool):
+        sandbox = self.session.services["sandbox"]
+        if block := sandbox._check(event):
+            return finish("deny", block.reason, "execution-policy")
+        mode = sandbox.mode_for_event(event)
+        metadata = {"todo_write", "propose_plan", "request_permissions", "job_kill"}
+        if (mode.read_only and event.tool_name not in SHELL_TOOLS | metadata
+                and event.tool is not None and not event.tool.read_only):
             return finish("deny", self.session.t("features.permission.read_only"), "read-only")
         for rule in self.session.settings.get("permissions.deny", []):
             if rule_matches(rule, event):
@@ -280,6 +245,7 @@ class Permissions:
             self.session_rules.clear()
             self.denials.clear()
             self.revision += 1
+            self.session.services["sandbox"].revoke()
 
     def _allow(self, event: ToolCallEvent):
         event._permission_snapshot = self._snapshot(event)
@@ -375,20 +341,6 @@ def install_permissions(session: AgentSession) -> Permissions:
             lines.append(session.t("features.permission.session_rules", rules=", ".join(permissions.session_rules)))
         session.ui.command_result("\n".join(lines))
 
-    def mode_command(session, args):
-        value = args.strip()
-        try:
-            if value:
-                permissions.set_work_mode(value)
-        except ValueError as error:
-            session.ui.print(str(error), "error")
-            return
-        session.ui.command_result(session.t("work_mode.status", mode=session.t("work_mode." + permissions.work_mode)))
-        session.ui.command_result(session.t("work_mode.approval_unchanged"))
-
-    session.commands.register("mode", mode_command, "show or set work mode (default|plan)",
-                              argument_hint="[default|plan]", description_key="work_mode.description",
-                              source="core", concurrent=True)
     session.commands.register("permissions", approvals_command, "show approval policy, select ask|never or revoke remembered approvals",
                               argument_hint="[ask|never|revoke]", description_key="features.commands.permissions", source="core")
     return permissions

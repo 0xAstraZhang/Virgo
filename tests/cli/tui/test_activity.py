@@ -165,7 +165,7 @@ def test_queued_runs_and_automatic_wake_get_separate_summaries_but_local_command
             assert app.controller.busy and not session.busy
             # The completed worker is still busy until poll; this prompt queues.
             app.controller.submit("second request")
-            assert app.controller.pending == ["second request"]
+            assert app.controller.pending == ["after this run: second request"]
             await app.poll()
             app._poll_timer.resume()
             await wait_for(pilot, lambda: len(summaries(app)) == 2 and not app.controller.busy)

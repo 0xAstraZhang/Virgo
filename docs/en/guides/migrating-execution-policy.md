@@ -1,73 +1,72 @@
-# Migrating execution policy
+# Execution-policy migration
 
 [Documentation](../README.md) · [简体中文](../../zh-CN/guides/migrating-execution-policy.md)
 
-Virgo now separates work intent, explicit approval and the execution boundary. This is an incompatible change: old permission modes fail configuration instead of being translated dynamically. Saved conversations and plan Markdown remain readable; reopening history does not restore authorization or start execution.
+Task instructions and execution permissions are now independent. Plan and Code Review are
+optional plugins with normal tool access. They request plans/reports through prompts; they do
+not impose a read-only permission ceiling. Existing conversation content and plans remain readable.
 
 ## Update configuration
 
-| Retired setting or interface | Replacement |
+| Previous entry | Current entry |
 | --- | --- |
-| `permissions.mode=plan`, `/permissions plan` | `workMode=plan`, `--work-mode plan` or `/mode plan` |
-| `permissions.mode=auto-review`, `default`, `accept-edits` | `permissions.approval=ask`; uncertain operations ask a person |
-| `permissions.mode=accept-all`, `yolo` | Choose explicit user-owned allow rules and `ask` or `never`; there is no automatic equivalent |
-| `permissions.readOnlyCommands` | Remove it; Plan and read-only children have no arbitrary Shell tool |
-| `plugins.auto_review`, `features.permission` | Remove them; Core authorization is always installed and no model grants permissions |
-| `sandbox.network` | Remove it; active Shell sandboxes block networking |
-| `--permission-mode ...` | `--approval ask\|never` and, separately, `--work-mode default\|plan` |
-| `--mode text\|json` | `--format text\|json` |
-| Shell allow command prefixes such as `bash(npm test*)` | Exact complete command grants such as `bash(npm test)`, or an intentional tool-only grant |
+| `/mode plan` / `/mode default` | `/plan` / `/workflow default` |
+| `workMode=plan`, `--work-mode plan` | Still selects planning instructions when the Plan plugin is enabled |
+| `/mode` | Lists/selects editable **permission** presets |
+| `--mode text|json` | `--format text|json`; `--mode` now takes a permission preset ID |
+| `sandbox.mode=workspace-write` / `read-only` | Explicit legacy offline policy; remove it to use the new defaults |
+| `sandbox.mode=disabled` | Explicit No-Limit filesystem/network policy |
+| `sandbox.network` | Use a preset's `networkAllowed` boolean |
+| `permissions.mode=plan|default|accept-edits|accept-all|yolo|auto-review` | Removed approval aliases; select `read-only`, `workspace-edit`, `no-limit`, or a custom preset ID |
+| `permissions.readOnlyCommands`, `plugins.auto_review` | Removed; Shell syntax/model verdicts do not establish execution boundaries |
 
-`never` means that operations needing a new approval are rejected. It does not grant all tools, ignore deny rules, leave Plan or disable Sandbox. Explicit deny rules always remain effective.
-
-Move grants and the approval choice out of project `.virgo/settings.json` into user settings. Project `permissions` can only add deny rules; its list is combined with user denials. A project cannot clear user denials, select an approval strategy or declare more commands read-only. Project sandbox settings remain ignored.
-
-A user configuration for ordinary interactive work:
-
-```json
-{
-  "workMode": "default",
-  "permissions": {
-    "approval": "ask",
-    "allow": ["bash(uv run --no-sync pytest -q)"],
-    "deny": ["bash(git push*)"]
-  },
-  "sandbox": {"mode": "workspace-write"}
-}
-```
-
-An optional project restriction:
-
-```json
-{
-  "permissions": {"deny": ["write(secrets/**)", "edit(secrets/**)"]}
-}
-```
-
-A Shell allow rule with a command matches its complete text exactly; command wildcard patterns are rejected. Path/web allow patterns and deny patterns retain their glob semantics. A tool-only `bash` grant authorizes the entire Bash capability within the current hard boundaries, including potentially destructive changes to ordinary workspace files. Select such grants deliberately.
+New default: `permissions.mode=workspace-edit` with writable workspace and task networking.
+Read-Only also permits networking; offline operation is a custom three-flag preset. Names and
+permissions are editable independently. See [configuration](../reference/configuration.md#permissions)
+for the full JSON and `/mode save` syntax. User settings own modes and grants; projects only add deny rules.
 
 ## Approvals and remembered decisions
 
-Ordinary workspace file operations remain deterministic. Simple local Shell forms may run automatically within an active sandbox. Host Shell, outside paths, network and unknown operations need an explicit grant or human approval. An unavailable native sandbox never turns into host execution. Sandbox limits and read-only ceilings are checked before asking a question that could not authorize the operation.
+Managed operations within the selected profile run directly. `request_permissions` asks for one
+exact operation with explicit permission changes; approval does not execute the operation. The next
+identical call consumes the exception. Mode stays unchanged. Different arguments, caller/run,
+resolved targets, shell environment, policy revision or tool instance cannot reuse it.
 
-Human approval can be one-shot or remembered for the exact originating operation. Dynamic Shell paths and PowerShell scripts are one-shot. Remembered decisions bind task identity, tool, arguments, cwd, resolved paths, environment and explicit policy. `/permissions revoke` clears remembered grants and denials. Changing explicit policy also invalidates prior decisions. The main agent still receives conversation instructions, but a separate model no longer interprets transcript text as an authorization-system grant or revocation.
+`ask` permits requests; `never` refuses new requests, not all operations. `/permissions revoke`
+clears remembered decisions and pending exceptions. Explicit deny rules remain binding. Failed
+or possibly side-effectful commands are not replayed automatically. Opening history does not
+restore grants or execute a plan. Trusted extension policies can add restrictions.
 
 ## Default execution boundary
 
-The default is now `workspace-write`, including the minimal profile. Use `--sandbox read-only` for a hard write ceiling, or explicitly choose `--sandbox disabled` for host execution. That choice does not alter approval policy or WorkMode. Native setup failures remain errors and commands are not automatically replayed.
+Every run captures its source permissions. Mode changes during work apply to subsequent runs;
+background work and child runtimes keep their original source. Read-only protects host file data,
+with private scratch and broker records allowed. It does not promise to prevent remote mutations.
 
-Active Shell sandboxes block network access and protect repository metadata/instruction paths. Dependency installation, remote Git actions and commits may therefore be unavailable. See [the sandbox guide](sandbox.md) and [Windows prerequisites](windows-sandbox.md) before choosing a host environment. The Windows backend remains experimental: administrator CI results do not establish standard-account desktop compatibility. Core Python file tools use separate application restrictions; trusted extensions, hooks and remote tools are not placed inside the Shell OS sandbox.
+Core file tools enforce file scope at application level. Native Shell backends enforce supported
+process policies; managed Web/native search and remote MCP calls also respect network policy.
+MCP services unable to enforce file scope need an explicit unrestricted one-operation exception.
+The broker and trusted Python extensions are outside the Shell OS boundary.
 
-Plan and read-only children use file reading, search and controlled `git_read`. They do not receive arbitrary Bash or PowerShell, even when the host sandbox is explicitly disabled. Code Review remains an independent optional task with frozen source evidence and validated findings, not a third work mode.
+Check [Sandbox](sandbox.md) and [Windows limitations](windows-sandbox.md). Windows retains ambient
+LPAC read grants and rejects constrained `workspaceOnly=false` combinations. Backend discovery
+is not proof of a successful launch; unsupported/unavailable isolation rejects execution. No-Limit
+uses the host account's existing rights, not automatic administrator privileges.
 
 ## Integration APIs
 
-- Use `AgentSession(approval_policy="ask" | "never")` and `session.approval_policy` for approval choices.
-- Use the existing permission service's `set_work_mode(...)` for work intent.
-- Create restricted children with `read_only=True`; an optional child `approval_policy="never"` can narrow interactive approval. Children cannot widen parent ceilings.
-- Carry `ToolContext.origin` / `ToolCallEvent.origin`, backed by `ExecutionOrigin`, through deferred work. Capture it before publishing a background task. Do not substitute the currently selected conversation.
-- `ExecutionOrigin` retains workspace, source Runtime and branch-bound accounting. The old `ReviewSource` transcript, reviewer input and model-verdict APIs are removed.
-- Custom permission policies add restrictions to mandatory Core checks. They do not replace the Core policy. The old reviewer registration API and `features.permission*` imports are retired.
-- Mode/plan notifications run after state commits. They can observe and refresh UI; they cannot synchronously reenter state changes or publish work. Schedule any next explicit action through the normal admission path after notification completes.
+`SandboxManager.mode_for(runtime)` returns the captured `PermissionMode`; `selected_mode` is the
+current conversation's next selection. `select_mode(id)` selects locally and `save_mode(...)`
+persists named flags in user settings. Configuration strings are never used as a substitute for
+the effective flags. `Runtime.prepare_run()` captures the policy.
 
-Work mode changes require the originating conversation and its queued/running child agents to be idle. Already running native processes retain their launch boundary; switching modes is not process revocation. Plan execution selects an exact plan version for one run and preserves current approval/Sandbox settings. Editing a plan invalidates an older execution selection; restoring history does not execute it.
+`read_only=True` remains an explicit child ceiling without removing tool schemas. Profile
+inheritance is separate from that ceiling. Delayed work carries `ToolContext.origin` so a TUI
+conversation change cannot transfer authority. Runtime-only permission exceptions are never
+restored from stored custom records.
+
+Plan is installed through `plugins.plan`; Core has no mandatory Plan service. Extensions can add
+request-level instructions with `add_request_system_section`, and use the existing Runtime and
+SessionStore. Review retains target resolution, frozen evidence and validated findings, with
+normal tools and request/interaction handling. The compatibility `harness.plans` import remains;
+new integrations should use the plugin API.

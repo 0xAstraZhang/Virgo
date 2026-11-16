@@ -13,7 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult, image_result
-from .sandbox_files import SandboxFileDenied, open_mutation
+from .sandbox_files import SandboxFileDenied, check_read, open_mutation, read_bytes, walk_files
 from .truncate import MAX_BYTES, MAX_LINES
 
 IGNORE_DIRS = {
@@ -66,14 +66,16 @@ def _display(p: Path, cwd: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _read(args: dict, ctx: ToolContext) -> ToolResult:
+def _read(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
     p = resolve(args["path"], ctx.cwd)
+    if sandbox_policy is not None:
+        check_read(p, sandbox_policy)
     if not p.exists():
         return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
     if p.is_dir():
         return ToolResult.error(ctx.t("tools.fs.is_directory", path=args["path"]))
     if p.suffix.lower() in IMAGE_TYPES:
-        data = p.read_bytes()
+        data = read_bytes(p, sandbox_policy) if sandbox_policy is not None else p.read_bytes()
         if len(data) > 5 * 1024 * 1024:
             return ToolResult.error(ctx.t("tools.fs.large_image"))
         return image_result(
@@ -81,7 +83,7 @@ def _read(args: dict, ctx: ToolContext) -> ToolResult:
             IMAGE_TYPES[p.suffix.lower()],
             ctx.t("tools.fs.image", name=p.name),
         )
-    raw = p.read_bytes()
+    raw = read_bytes(p, sandbox_policy) if sandbox_policy is not None else p.read_bytes()
     if b"\x00" in raw[:8192]:
         return ToolResult.error(ctx.t("tools.fs.binary", path=args["path"]))
     lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
@@ -361,13 +363,21 @@ EDIT = AgentTool(
 
 
 def make_file_tool(tool: AgentTool, sandbox) -> AgentTool:
-    """Bind Core write/edit I/O to the caller's policy without changing its schema."""
+    """Bind every Core file tool to the caller's effective filesystem policy."""
     def execute(args, ctx):
         policy = sandbox(ctx)
         try:
             return tool.execute(args, ctx, sandbox_policy=policy)
         except SandboxFileDenied as error:
-            return ToolResult.error(str(error), details={"status": "sandbox_denied", "sandbox": policy.describe()})
+            effects = "unknown" if tool.name in {"write", "edit"} else "none"
+            facts = {**policy.describe(), "kind": "sandbox_denied", "dimension": error.dimension,
+                     "target": error.target, "effective_permissions": {
+                         "read_only": policy.read_only, "workspace_only": policy.workspace_only,
+                         "network_allowed": policy.network_allowed,
+                     }, "command_started": False, "side_effects": effects, "escalation_available": True}
+            details = {"status": "sandbox_denied", "sandbox": facts,
+                       "denied_dimension": error.dimension, "target": error.target}
+            return ToolResult.error(str(error), details=details)
 
     return replace(tool, execute=execute)
 
@@ -406,16 +416,22 @@ def _match_segments(parts: list[str], segments: list[str]) -> bool:
     return bool(parts) and fnmatch.fnmatchcase(parts[0], head) and _match_segments(parts[1:], rest)
 
 
-def _glob(args: dict, ctx: ToolContext) -> ToolResult:
+def _glob(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
     base = resolve(args.get("path") or ".", ctx.cwd)
+    if sandbox_policy is not None:
+        check_read(base, sandbox_policy)
     if not base.is_dir():
         return ToolResult.error(ctx.t("tools.fs.not_directory", path=args.get("path")))
     pattern = args["pattern"]
     hits = []
-    for f in _walk(base):
+    entries = (walk_files(base, sandbox_policy, IGNORE_DIRS) if sandbox_policy is not None else
+               ((path, path.stat() if path.exists() else None) for path in _walk(base)))
+    modified = {}
+    for f, info in entries:
         if glob_match(f.relative_to(base).as_posix(), pattern):
             hits.append(f)
-    hits.sort(key=lambda f: f.stat().st_mtime if f.exists() else 0, reverse=True)
+            modified[f] = info.st_mtime if info is not None else 0
+    hits.sort(key=lambda f: modified[f], reverse=True)
     limit = 200
     lines = [_display(f, ctx.cwd) for f in hits[:limit]]
     if not lines:
@@ -444,14 +460,19 @@ GLOB = AgentTool(
 )
 
 
-def _grep(args: dict, ctx: ToolContext) -> ToolResult:
+def _grep(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
     flags = re.IGNORECASE if args.get("ignore_case") else 0
     try:
         rx = re.compile(args["pattern"], flags)
     except re.error as e:
         return ToolResult.error(ctx.t("tools.fs.regex", error=e))
     base = resolve(args.get("path") or ".", ctx.cwd)
-    files = [base] if base.is_file() else _walk(base)
+    if sandbox_policy is not None:
+        check_read(base, sandbox_policy)
+    files = [base] if base.is_file() else (
+        (path for path, _info in walk_files(base, sandbox_policy, IGNORE_DIRS))
+        if sandbox_policy is not None else _walk(base)
+    )
     gl = args.get("glob")
     ctxn = int(args.get("context") or 0)
     limit = int(args.get("limit") or 100)
@@ -461,9 +482,16 @@ def _grep(args: dict, ctx: ToolContext) -> ToolResult:
         if gl and not glob_match(Path(_display(f, ctx.cwd)).as_posix(), gl):
             continue
         try:
-            if f.stat().st_size > 5 * 1024 * 1024:
-                continue
-            raw = f.read_bytes()
+            if sandbox_policy is not None:
+                raw = read_bytes(f.resolve(), sandbox_policy, max_bytes=5 * 1024 * 1024)
+                if raw is None or len(raw) > 5 * 1024 * 1024:
+                    continue
+            else:
+                if f.stat().st_size > 5 * 1024 * 1024:
+                    continue
+                raw = f.read_bytes()
+        except SandboxFileDenied:
+            raise
         except OSError:
             continue
         if b"\x00" in raw[:8192]:

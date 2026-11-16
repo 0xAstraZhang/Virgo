@@ -1,0 +1,73 @@
+"""User-owned, named filesystem/network permission presets."""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PermissionMode:
+    id: str
+    name: str
+    read_only: bool
+    workspace_only: bool
+    network_allowed: bool
+
+    @property
+    def unrestricted(self) -> bool:
+        return not self.read_only and not self.workspace_only and self.network_allowed
+
+    @property
+    def legacy_mode(self) -> str:
+        return "disabled" if self.unrestricted else "read-only" if self.read_only else "workspace-write"
+
+    def flags(self) -> dict:
+        return {"read_only": self.read_only, "workspace_only": self.workspace_only,
+                "network_allowed": self.network_allowed}
+
+    def config(self) -> dict:
+        return {"name": self.name, "readOnly": self.read_only, "workspaceOnly": self.workspace_only,
+                "networkAllowed": self.network_allowed}
+
+DEFAULT_MODES = {
+    mode.id: mode for mode in (
+        PermissionMode("read-only", "Read-Only", True, True, True),
+        PermissionMode("workspace-edit", "Workspace-Edit", False, True, True),
+        PermissionMode("no-limit", "No-Limit", False, False, True),
+    )
+}
+
+
+def parse_mode(identifier: str, value: dict) -> PermissionMode:
+    if not isinstance(identifier, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", identifier):
+        raise ValueError("Permission mode IDs must be 1–64 letters, digits, underscores or hyphens")
+    if not isinstance(value, dict) or set(value) - {"name", "readOnly", "workspaceOnly", "networkAllowed"}:
+        raise ValueError(f"Invalid permission mode {identifier!r}")
+    name = value.get("name")
+    if not isinstance(name, str) or not name.strip() or len(name) > 100 or any(ord(c) < 32 for c in name):
+        raise ValueError("Permission mode names must be 1–100 printable characters")
+    fields = ("readOnly", "workspaceOnly", "networkAllowed")
+    if any(type(value.get(key)) is not bool for key in fields):
+        raise ValueError("Permission modes require boolean readOnly, workspaceOnly and networkAllowed")
+    return PermissionMode(identifier, name.strip(), *(value[key] for key in fields))
+
+
+def configured_modes(value: object) -> dict[str, PermissionMode]:
+    if not isinstance(value, dict):
+        raise ValueError("permissions.modes must be an object keyed by stable mode ID")
+    modes = dict(DEFAULT_MODES)
+    for identifier, entry in value.items():
+        inherited = modes[identifier].config() if identifier in modes else {}
+        if not isinstance(entry, dict):
+            raise ValueError(f"Invalid permission mode {identifier!r}")
+        modes[identifier] = parse_mode(identifier, {**inherited, **entry})
+    return modes
+
+
+def legacy_mode(value: str) -> PermissionMode:
+    """Explicit old sandbox options preserve their original offline semantics."""
+    if value == "disabled":
+        return DEFAULT_MODES["no-limit"]
+    if value in {"read-only", "workspace-write"}:
+        return PermissionMode("legacy-" + value, value + " (offline)", value == "read-only", True, False)
+    raise ValueError("Legacy sandbox mode must be disabled, read-only or workspace-write")

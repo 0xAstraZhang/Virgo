@@ -39,6 +39,7 @@ class Confirmation:
     id: int
     question: str
     agent: str
+    once_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,9 @@ class FullscreenUI(UI):
     def print(self, text: str, style: str | None = None) -> None:
         self.push("print", (str(text), style))
 
+    def review_result(self, report: dict, text: str) -> None:
+        self.push("review_result", (copy.deepcopy(report), text))
+
     def wake(self) -> None:
         self.push("wake")
 
@@ -123,12 +127,24 @@ class FullscreenUI(UI):
         with self._lock:
             self._signals[agent] = signal
 
+    def unbind_signal(self, agent: str, signal: threading.Event) -> None:
+        with self._lock:
+            if self._signals.get(agent) is signal:
+                self.cancel_confirmations(agent)
+                self._signals.pop(agent, None)
+
     def confirm(self, question: str, agent: str = "main") -> str | None:
+        return self._confirm(question, agent)
+
+    def confirm_once(self, question: str, agent: str = "main") -> str | None:
+        return self._confirm(question, agent, once_only=True)
+
+    def _confirm(self, question: str, agent: str, *, once_only: bool = False) -> str | None:
         with self._lock:
             signal = self._signals.get(agent)
             if self._closed or (signal is not None and signal.is_set()):
                 return None
-            request = Confirmation(next(self._ids), question, agent)
+            request = Confirmation(next(self._ids), question, agent, once_only)
             waiting = _Waiting(request)
             self._waiting[request.id] = waiting
             self.push("confirmation", request)
@@ -158,6 +174,8 @@ class FullscreenUI(UI):
             signal = self._signals.get(waiting.request.agent)
             if self._closed or (signal is not None and signal.is_set()):
                 answer = None
+            if waiting.request.once_only and answer == "a":
+                answer = "y"
             waiting.answer = answer
             waiting.ready.set()
             if answer is None:

@@ -158,7 +158,7 @@ def test_restored_plan_is_viewable_without_starting_execution(make_session):
             await pilot.pause()
             assert not app.has_modal and not app.controller.busy
             assert not faux.CALLS["test"]
-            assert "Plan (read-only)" in str(app.query_one("#status", Static).content)
+            assert "Plan · " in str(app.query_one("#status", Static).content)
             await pilot.press("ctrl+g")
             await wait_for(pilot, lambda: app.has_modal)
             assert app.screen.query_one("#plan-markdown", TextArea).text == PLAN

@@ -1,6 +1,6 @@
 """Planning workflow acceptance, specified before production changes.
 
-Failure cases: a proposal or Todo silently authorizes project writes; an edited
+Failure cases: a proposal or Todo silently changes permission Mode; an edited
 plan retains an earlier confirmation; a missing, stale, or foreign token starts
 execution; explicit execution loses the exact plan or broadens approvals or the
 sandbox; replay starts a run or restores a grant; a conversation switch lends its
@@ -48,6 +48,15 @@ Keep the current approval policy and sandbox restrictions.
 REVISED_PLAN = PLAN.replace("first answer", "revised answer")
 
 
+@pytest.fixture
+def make_session(make_session):
+    def with_plan(*args, settings=None, **kwargs):
+        configured = dict(settings or {})
+        configured["plugins"] = {**configured.get("plugins", {}), "plan": {"enabled": True}}
+        return make_session(*args, settings=configured, **kwargs)
+    return with_plan
+
+
 def propose(session, markdown=PLAN):
     faux.push("test", faux.reply(tools=[("propose_plan", {"markdown": markdown})]),
               faux.reply("The proposal is ready for your review."))
@@ -78,15 +87,17 @@ def test_proposal_is_a_separate_artifact_and_cannot_write_or_replace_todos(make_
     assert session.services["permissions"].work_mode == "plan"
     assert session.approval_policy == "ask"
     assert (project / "source.txt").read_text(encoding="utf-8") == "existing source"
-    assert not (project / "answer.txt").exists()
+    assert (project / "answer.txt").read_text() == "unauthorized"
     assert not (project / "plan.md").exists()
     results = {result.tool_name: result for result in tool_results(session)}
     assert not results["read"].is_error and not results["propose_plan"].is_error
-    assert results["write"].is_error and results["todo_write"].is_error
-    assert session.services["todos"]["todos"] == []
+    # Prompt-only Plan does not add a hidden execution boundary. The scripted
+    # model intentionally ignores its task instruction; No-Limit permits it.
+    assert not results["write"].is_error and not results["todo_write"].is_error
+    assert session.services["todos"]["todos"][0]["content"] == "Execute now"
     for request in calls():
         assert "propose_plan" in request["tools"]
-        assert not {"write", "edit", "todo_write"}.intersection(request["tools"])
+        assert {"write", "edit", "todo_write"}.issubset(request["tools"])
     count = len(calls())
     session.prompt("/plan")
     session.prompt("/plan show")
@@ -116,12 +127,12 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     assert session.services["plans"].current == revised, "A stale editor must not overwrite the new revision"
     session.prompt(f"/plan execute {first.token}")
     session.prompt("/plan execute")
-    session.prompt("/mode default")
+    session.prompt("/workflow default")
     assert len(calls()) == count and not session.run_pending()
     assert session.main.active_plan is None
     assert not (project / "answer.txt").exists()
 
-    session.prompt("/mode plan")
+    session.prompt("/workflow plan")
     faux.push("test", faux.reply(tools=[("write", {"path": "answer.txt", "content": "revised answer"})]),
               faux.reply("Implemented the confirmed revision."))
     session.prompt(f"/plan execute {revised.token}")
@@ -135,7 +146,7 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     messages = [message for message in session.main.messages if isinstance(message, UserMessage)]
     assert revised.token in messages[-1].text() and REVISED_PLAN not in messages[-1].text()
     assert request["system"].count(REVISED_PLAN) == 1
-    assert "write" in request["tools"] and "propose_plan" not in request["tools"]
+    assert "write" in request["tools"] and "propose_plan" in request["tools"]
 
 
 @pytest.mark.parametrize("conditional", [False, True])
@@ -143,7 +154,7 @@ def test_reentrant_mode_edit_preserves_version_bound_execution(make_session, con
     session = make_session(persist=True, settings={"profile": "minimal", "workMode": "plan"},
                            refresh_models=False, extensions=False)
     original = propose(session)
-    session.prompt("/mode default")
+    session.prompt("/workflow default")
     published, rejected = [], []
     session.bus.on("proposed_plan_changed", lambda _runtime, plan: published.append(plan))
 
@@ -181,7 +192,7 @@ def test_reentrant_mode_exit_does_not_publish_a_plan_in_default(make_session):
     session = make_session(settings={"profile": "minimal", "workMode": "plan"},
                            refresh_models=False, extensions=False)
     original = propose(session)
-    session.prompt("/mode default")
+    session.prompt("/workflow default")
     rejected = []
 
     def leave_plan(runtime, mode):
@@ -219,8 +230,8 @@ def test_execution_confirmation_and_leaving_plan_preserve_approval_and_sandbox(
     assert session.services["sandbox"].mode == sandbox
     assert not (project / "answer.txt").exists() and tool_results(session)[-1].is_error
     count = len(calls())
-    session.prompt("/mode plan")
-    session.prompt("/mode default")
+    session.prompt("/workflow plan")
+    session.prompt("/workflow default")
     assert session.approval_policy == approval and session.services["sandbox"].mode == sandbox
     assert len(calls()) == count and not session.run_pending()
 
@@ -295,9 +306,9 @@ def test_saved_mode_startup_floor_and_explicit_override_do_not_execute(
 ):
     original = make_session(persist=True, settings={"profile": "minimal"},
                             refresh_models=False, extensions=False)
-    original.prompt("/mode plan")
+    original.prompt("/workflow plan")
     propose(original)
-    original.prompt(f"/mode {saved}")
+    original.prompt(f"/workflow {saved}")
     path = original.store.path
     original.shutdown()
     options = {"work_mode": explicit} if explicit is not None else {}
@@ -307,6 +318,23 @@ def test_saved_mode_startup_floor_and_explicit_override_do_not_execute(
     assert restored.services["plans"].current.markdown == PLAN
     assert restored.main.active_plan is None
     assert not calls() and not restored.run_pending()
+
+
+def test_invalid_saved_proposal_cannot_silently_become_an_empty_plan(make_session):
+    original = make_session(persist=True, settings={"profile": "minimal", "workMode": "plan"},
+                            refresh_models=False, extensions=False)
+    original.store.append("custom", kind="proposed_plan", data={"plan_id": "invalid"})
+    path = original.store.path
+    original.shutdown()
+    restored = make_session(session=path, settings={"profile": "minimal"},
+                            refresh_models=False, extensions=False)
+    faux.push("test", faux.reply("A saved proposal must not disappear from my context."))
+    restored.prompt("Continue the saved planning task.")
+    assert not calls()
+    assert "Invalid saved ProposedPlan" in restored.ui.text
+    with pytest.raises(ValueError, match="Invalid saved ProposedPlan"):
+        restored.services["plans"].replace(PLAN)
+    assert SessionStore.load(path).custom("proposed_plan") == [{"plan_id": "invalid"}]
 
 
 @pytest.mark.parametrize("retained", [False, True])
@@ -333,7 +361,7 @@ def test_failed_startup_override_keeps_the_original_plan_ceiling(make_session, m
 def test_conversation_switches_keep_plan_and_child_permissions_with_the_origin(make_session, project):
     session = make_session(persist=True, settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
                            refresh_models=False, extensions=False)
-    session.prompt("/mode plan")
+    session.prompt("/workflow plan")
     original = session.main
     original_path = session.store.path
     first = propose(session)
@@ -352,9 +380,9 @@ def test_conversation_switches_keep_plan_and_child_permissions_with_the_origin(m
                                           ("write", {"path": "child.txt", "content": "blocked"})]),
                   faux.reply("The originating conversation is still in Plan."))
         child.agent.prompt("Attempt a write while another conversation is selected.")
-        assert not (project / "child.txt").exists()
+        assert (project / "child.txt").read_text() == "blocked"
         child_results = [message for message in child.messages if isinstance(message, ToolResultMessage)]
-        assert len(child_results) == 2 and all(message.is_error for message in child_results)
+        assert len(child_results) == 2 and child_results[0].is_error and not child_results[1].is_error
         assert original.proposed_plan.markdown == PLAN
         assert session.services["permissions"].work_mode_for(original) == "plan"
 
@@ -407,15 +435,24 @@ def test_busy_request_cannot_confirm_or_queue_an_execution(make_session):
     assert not session.run_pending()
 
 
-@pytest.mark.parametrize("action", ["mode", "execute"])
-@pytest.mark.parametrize("stage", ["queued", "running"])
+@pytest.mark.parametrize("permission_mode,stage,action", [
+    pytest.param("no-limit", "queued", "mode", id="no-limit-queued-mode"),
+    pytest.param("no-limit", "queued", "execute", id="no-limit-queued-execute"),
+    pytest.param("no-limit", "running", "mode", id="no-limit-running-mode"),
+    pytest.param("no-limit", "running", "execute", id="no-limit-running-execute"),
+    pytest.param("read-only", "queued", "mode", id="queued-mode"),
+    pytest.param("read-only", "queued", "execute", id="queued-execute"),
+    pytest.param("read-only", "running", "mode", id="running-mode"),
+    pytest.param("read-only", "running", "execute", id="running-execute"),
+])
 def test_background_planning_child_blocks_only_its_origin_before_confirmation(
-    make_session, project, monkeypatch, action, stage,
+    make_session, project, monkeypatch, action, stage, permission_mode,
 ):
     session = make_session(persist=True, settings={
         "profile": "minimal", "workMode": "plan",
         "plugins": {"subagent": {"enabled": True}, "background": {"enabled": True}},
     }, refresh_models=False, extensions=False)
+    session.services["sandbox"].select_mode(permission_mode)
     plan = propose(session)
     origin, origin_path = session.main, session.store.path
     entered, release = threading.Event(), threading.Event()
@@ -471,10 +508,14 @@ def test_background_planning_child_blocks_only_its_origin_before_confirmation(
         assert session.main.active_plan is None
         assert session.services["permissions"].work_mode == "default"
         session.open_session(origin_path)
+        # A queued child owns its submission-time profile even if its parent
+        # selects wider permissions and starts another run before child creation.
+        session.services["sandbox"].select_mode("no-limit")
+        session.prompt("Continue the lead's work with the newly selected permissions")
 
         count = len(calls())
         saved = session.store.custom("proposed_plan")
-        session.prompt("/mode default" if action == "mode" else f"/plan execute {plan.token}")
+        session.prompt("/workflow default" if action == "mode" else f"/plan execute {plan.token}")
         selected_mode = session.services["permissions"].work_mode
         selected_plan = session.services["plans"].current
         saved_after = SessionStore.load(origin_path).custom("proposed_plan")
@@ -484,8 +525,14 @@ def test_background_planning_child_blocks_only_its_origin_before_confirmation(
         if job is not None:
             assert job.done.wait(5)
 
-    assert not (project / "child.txt").exists(), "An outstanding Plan task must not gain write access"
-    assert child_results and child_results[0].is_error
+    assert child_results
+    if permission_mode == "read-only":
+        assert not (project / "child.txt").exists()
+        assert child_results[0].is_error
+        assert child_results[0].details["sandbox"]["dimension"] == "read_only"
+    else:
+        assert (project / "child.txt").read_text() == "unauthorized"
+        assert not child_results[0].is_error
     assert selected_mode == "plan" and selected_plan is plan
     assert saved_after == saved, "Rejected execution must not persist a confirmation"
     assert calls_after == count
@@ -570,8 +617,8 @@ def test_early_admission_observers_preserve_newer_selection(make_session, projec
     faux.script("test", faux.reply(tools=[("write", {"path": "observer.txt", "content": "answer"})]),
                 faux.reply("The committed mode controls this operation."))
     session.prompt("Report the current investigation status.")
-    assert (project / "observer.txt").exists() == (phase == 1)
-    assert tool_results(session)[-1].is_error == (phase != 1)
+    assert (project / "observer.txt").read_text() == "answer"
+    assert not tool_results(session)[-1].is_error
 
 
 def test_admission_inspection_rechecks_a_child_started_by_its_observer(make_session, project):
@@ -586,7 +633,7 @@ def test_admission_inspection_rechecks_a_child_started_by_its_observer(make_sess
         rejected.append(str(error.value))
 
     unsubscribe = session.bus.on("work_mode_changed", observe)
-    session.prompt("/mode default")
+    session.prompt("/workflow default")
     unsubscribe()
     assert rejected and not session._child_runtimes
     assert session.services["permissions"].work_mode == "default"
@@ -612,7 +659,7 @@ def test_admission_observer_cannot_queue_untracked_plan_work(make_session, proje
     unsubscribe = session.bus.on("work_mode_changed", observe)
     count = len(calls())
     faux.push("test", faux.reply("The committed selection controls this request."))
-    session.prompt("/mode default" if action == "mode" else f"/plan execute {plan.token}")
+    session.prompt("/workflow default" if action == "mode" else f"/plan execute {plan.token}")
     unsubscribe()
 
     assert rejected and not jobs.jobs and not session._child_runtimes
@@ -643,7 +690,7 @@ def test_legacy_migration_preserves_a_trashed_origin_with_queued_child_work(make
         session.trash_session(origin_path)
         trashed = trash[0][1]
         saved_trash = trashed.read_bytes()
-        session.prompt("/mode default")
+        session.prompt("/workflow default")
         assert session.services["permissions"].work_mode == "default"
         faux.push("test", faux.reply(tools=[("write", {"path": "trashed-child.txt", "content": "blocked"})]),
                   faux.reply("The originating Plan boundary was retained."))
@@ -651,7 +698,7 @@ def test_legacy_migration_preserves_a_trashed_origin_with_queued_child_work(make
         release.set()
         assert job.done.wait(5)
 
-    assert not (project / "trashed-child.txt").exists()
+    assert (project / "trashed-child.txt").read_text() == "blocked"
     assert session.services["permissions"].work_mode_for(origin) == "plan"
     assert origin.store.path is None and not origin_path.exists()
     assert trashed.read_bytes() == saved_trash

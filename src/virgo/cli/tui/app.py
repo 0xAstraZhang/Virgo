@@ -21,7 +21,6 @@ from textual.widgets.option_list import Option
 
 from ... import __version__
 from ...ai.types import Usage
-from ...harness.permissions import approval_policy_label
 from ...harness.preferences import PreferenceChoice
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
@@ -33,13 +32,13 @@ from .controller import RunController
 from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .forms import MultilineInput
+from .modes import PermissionModePicker, permission_flags
 from .plans import PlanEditor
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
 from .transcript import EventView, Transcript, update_static
 
 PURPLE = "#7C3AED"
-PERMISSION_COLORS = {"ask": "#B8860B", "never": "#DC2626"}
 
 
 def terminal_theme() -> Theme:
@@ -177,7 +176,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     TextArea > .text-area--cursor { text-style: reverse; background: $background; color: $foreground; }
     TextArea > .text-area--selection { text-style: reverse; background: $background; color: $foreground; }
     #metrics { height: 1; text-align: right; text-style: dim; }
-    #status { height: 1; text-align: left; }
+    #status { height: auto; min-height: 2; text-align: left; }
     #hints { height: auto; max-height: 2; margin: 0 1; text-style: dim; }
     ToastRack { dock: top; margin: 0 1; }
     Toast { width: auto; max-width: 50%; padding: 0 1; margin: 0;
@@ -214,7 +213,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         Binding("pageup", "page(-1)", priority=True, show=False),
         Binding("pagedown", "page(1)", priority=True, show=False),
         Binding("ctrl+home", "top", priority=True, show=False),
-        Binding("shift+tab", "cycle_work_mode", priority=True, show=False),
+        Binding("shift+tab", "permission_modes", priority=True, show=False),
+        Binding("ctrl+shift+k", "cancel_pending", priority=True, show=False),
         Binding("ctrl+g", "plan", priority=True, show=False),
         Binding("ctrl+r", "sessions", priority=True, show=False),
     ]
@@ -294,7 +294,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_plan(self) -> None:
         if self.controller.closing or self.has_modal:
             return
-        plan = self.session.services["plans"].current
+        plans = self.session.services.get("plans")
+        plan = plans.current if plans is not None else None
         if plan is None:
             self.notify(tr(self, "ui.plan.missing"))
             return
@@ -575,6 +576,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     await self.transcript.consume(update.payload)
                 elif update.kind == "print":
                     await self.transcript.add_notice(*update.payload)
+                elif update.kind == "review_result":
+                    await self.transcript.add_review_result(*update.payload)
                 elif update.kind == "confirmation":
                     self.confirmations.append(update.payload)
                 elif update.kind == "confirmation_cancelled":
@@ -625,7 +628,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             pending = self.controller.pending
             pending_widget = self._pane.query_one("#pending", Static)
             pending_widget.display = bool(pending)
-            queued = "\n".join(tr(self, "ui.queued", text=text.splitlines()[0]) for text in pending[-3:])
+            queued = ""
+            if pending:
+                summary = tr(self, "ui.controller.pending_count", count=len(pending))
+                queued = summary + " · " + tr(self, "ui.hints.pending") + "\n" + "\n".join(
+                    text.splitlines()[0] for text in pending[:2]
+                )
             update_static(pending_widget, Text(queued))  # runs every frame: skip no-op relayouts
             if self.input_request is not None and self.input_request.preferences is not None:
                 self._pane.query_one(PreferencePicker).resize_panel()
@@ -651,7 +659,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.active_confirmation = confirmation.id
         self.hide_completions()
         root = self._pane
-        for selector in ("#editor", "#metrics", "#status", "#hints", "#jump"):
+        for selector in ("#editor", "#metrics", "#hints", "#jump"):
             root.query_one(selector).display = False
         root.query_one(ApprovalPicker).open(confirmation)
         self.update_status()
@@ -695,6 +703,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         root = self._pane
         if request.preferences is not None:
             self.editor.display = False
+            # Keep the permission strip in view while the picker occupies the
+            # composer, including a compact screen with pending input.
+            root.query_one("#metrics").display = False
             root.query_one(PreferencePicker).open(request.preferences)
             self.focus_composer()
             self.update_status()
@@ -765,6 +776,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         question.display = False
         root.query_one("#completions", ChoiceList).clear_options()
         self.editor.display = True
+        root.query_one("#metrics").display = True
         self.hide_completions()
         self.update_completions()
         self.focus_composer()
@@ -848,16 +860,17 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
         metrics.truncate(width, overflow="ellipsis")
         update_static(root.query_one("#metrics", Static), metrics)
-        approval = self.session.approval_policy
-        work_mode = self.session.services["permissions"].work_mode
+        manager = self.session.services["sandbox"]
+        selected = manager.selected_mode
+        active = manager.mode_for(self.controller.task_runtime) if self.controller.busy else selected
+        workflow = self.controller.workflow
         footer = Text(no_wrap=True, overflow="ellipsis")
         if self.session.store.save_error is not None:
             footer.append(tr(self, "ui.state.unsaved_footer"), style="bold red")
-        footer.append(tr(self, "work_mode." + work_mode),
-                      style="#2563EB" if work_mode == "plan" else PURPLE)
-        footer.append(" · ")
-        footer.append(approval_policy_label(approval, self.session.t), style=PERMISSION_COLORS[approval])
-        footer.append(" · " + tr(self, "ui.status.sandbox", mode=self.session.services["sandbox"].effective_mode(self.session.main)))
+        footer.append(tr(self, "work_mode." + workflow), style="#2563EB" if workflow == "plan" else PURPLE)
+        footer.append(" · " + active.name)
+        if active != selected:
+            footer.append(" · " + tr(self, "ui.modes.next", name=selected.name), style="dim")
         effort = f" · {self.session.effort}"
         available = width - footer.cell_len - 2
         if available >= cell_len(effort) + 1:
@@ -869,7 +882,16 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         else:
             footer.pad_right(max(0, width - footer.cell_len))
         footer.truncate(width, overflow="ellipsis")
-        update_static(root.query_one("#status", Static), footer)
+        flags = permission_flags(self, active)
+        if cell_len(flags) > width:
+            flags = permission_flags(self, active, compact=True)
+        # Policy values remain their own line: a long user-defined preset name
+        # or model cannot truncate a permission bit, including while approving.
+        status = Text(no_wrap=False)
+        status.append(footer)
+        status.append("\n")
+        status.append(flags)
+        update_static(root.query_one("#status", Static), status)
 
     def refresh_language(self) -> None:
         """Refresh presentation chrome without altering stored conversation text."""
@@ -973,7 +995,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.accept_completion()
 
     def action_escape(self) -> None:
-        if isinstance(self.screen, (SessionPicker, PlanEditor)):
+        if isinstance(self.screen, (SessionPicker, PlanEditor, PermissionModePicker)):
             self.screen.dismiss(None)
         elif self.active_confirmation is not None:
             self.finish_confirmation("n")
@@ -995,7 +1017,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             return True
         if (
             self.has_modal or self.active_input is not None or self.active_confirmation is not None
-        ) and action in {"page", "top", "tools", "thinking", "cycle_work_mode", "plan"}:
+        ) and action in {"page", "top", "tools", "thinking", "permission_modes", "cancel_pending", "plan"}:
             return False
         return True
 
@@ -1020,12 +1042,27 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 shortcut_hints(tr(self, "ui.hints.exit")),
             )
 
-    def action_cycle_work_mode(self) -> None:
-        if self.controller.closing:
+    def action_permission_modes(self) -> None:
+        if self.controller.closing or self.has_modal:
             return
-        mode = self.session.services["permissions"].work_mode
-        self.controller.submit("/mode " + ("default" if mode == "plan" else "plan"))
-        self.update_status()
+        controller = self.controller
+        manager = self.session.services["sandbox"]
+        self.hide_completions()
+
+        def selected(choice) -> None:
+            if choice is not None and controller is self.controller:
+                controller.change_permission_mode(choice)
+            self.focus_composer()
+            self.update_status()
+
+        self.push_screen(
+            PermissionModePicker(manager.modes, manager.selected_mode_id, translator=self.session.translator),
+            selected,
+        )
+
+    def action_cancel_pending(self) -> None:
+        if not self.controller.closing:
+            self.controller.cancel_pending()
 
     def action_eof(self) -> None:
         if self.active_confirmation is not None or not self.editor.text:

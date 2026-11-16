@@ -231,19 +231,20 @@ def test_requests_are_append_only(make_session):
 
 
 def test_plan_mode_exposes_read_only_tools_and_changes_back_on_switch(make_session):
-    # PowerShell is intentionally unavailable in plan mode (covered by shell command tests).
+    # Task instructions change independently of the visible normal tool set.
     s = make_session(faux.reply("The plan."), faux.reply("Implementation."), work_mode="plan",
                      settings={"shell": {"executable": "bash"}})
     s.prompt("Plan the change")
     planned = calls()[0]
     assert "Plan mode is active" in planned["system"]
     assert {"read", "grep", "glob", "git_read"}.issubset(planned["tools"])
-    assert not {"write", "edit", "workflow", "schedule", "team_review"}.intersection(planned["tools"])
+    assert {"write", "edit", "bash", "request_permissions"}.issubset(planned["tools"])
     s.services["permissions"].set_work_mode("default")
     s.prompt("Implement it")
     implementation = calls()[1]
     assert "Plan mode is active" not in implementation["system"]
     assert {"write", "edit"}.issubset(implementation["tools"])
+    assert implementation["tools"] == planned["tools"]
     assert implementation["messages"][: len(planned["messages"])] == planned["messages"]
 
 
@@ -267,7 +268,7 @@ def test_plan_switch_blocks_writes_that_already_passed_batch_preflight(make_sess
     assert not (project / "second.txt").exists()
     results = [message for message in s.main.messages if isinstance(message, ToolResultMessage)]
     assert len(results) == 2
-    assert all(result.is_error and "read-only" in result.text() for result in results)
+    assert all(result.is_error and result.details["sandbox"]["dimension"] == "read_only" for result in results)
 
 
 def test_commands_and_templates(make_session, project):

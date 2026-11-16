@@ -12,13 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from ..tools.sandbox import validate_config as validate_sandbox_config
+from .execution_modes import configured_modes
 from .permissions import normalize_approval_policy
 from .work_modes import normalize_work_mode
 
 PROFILES = ("minimal", "coding")
 PLUGIN_IDS = (
     "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web", "mcp",
-    "code_review",
+    "plan", "code_review",
 )
 REMOVED_FEATURES = frozenset({"schedule", "workflow", "team", "tasks", "memory", "goal"})
 _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
@@ -26,12 +27,12 @@ _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 DEFAULTS: dict[str, Any] = {
     "language": "en",
     "workMode": "default",
-    "sandbox": {"mode": "workspace-write"},
+    "sandbox": {},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
     "providers": {},
-    "permissions": {"approval": "ask", "allow": [], "deny": []},
+    "permissions": {"mode": "workspace-edit", "modes": {}, "approval": "ask", "allow": [], "deny": []},
     "hooks": {},
     "shell": {"executable": "auto"},
     "profile": "coding",
@@ -139,15 +140,17 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
 def _validate_permissions(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("permissions must be an object")
-    if "mode" in value:
-        raise ValueError("permissions.mode is retired; use workMode for Plan and permissions.approval=ask or never")
     if "readOnlyCommands" in value:
-        raise ValueError("permissions.readOnlyCommands is retired; read-only runtimes do not expose arbitrary Shell")
-    unknown = set(value) - {"approval", "allow", "deny"}
+        raise ValueError("permissions.readOnlyCommands is retired; permission presets enforce Shell file and network boundaries")
+    unknown = set(value) - {"mode", "modes", "approval", "allow", "deny"}
     if unknown:
         raise ValueError(f"Unknown permissions setting(s): {', '.join(sorted(unknown))}")
     if "approval" in value:
         normalize_approval_policy(value["approval"])
+    configured_modes(value.get("modes", {}))
+    selected = value.get("mode")
+    if selected is not None and (not isinstance(selected, str) or not selected.strip()):
+        raise ValueError("permissions.mode must be a permission preset ID")
     for name in ("allow", "deny"):
         rules = value.get(name, [])
         if not isinstance(rules, list) or any(not isinstance(rule, str) or not rule.strip() for rule in rules):
@@ -164,6 +167,9 @@ def _validate_permissions(value: object) -> None:
 
 def _validate(data: dict) -> None:
     _validate_permissions(data.get("permissions", {}))
+    modes = configured_modes(data.get("permissions", {}).get("modes", {}))
+    if data.get("permissions", {}).get("mode", "workspace-edit") not in modes:
+        raise ValueError("permissions.mode is retired or unknown; choose a configured permission preset ID")
     validate_sandbox_config(data.get("sandbox", {}))
     normalize_work_mode(data.get("workMode", "default"))
     profile = data.get("profile", "coding")
@@ -233,15 +239,16 @@ class Settings:
             raise ValueError("Project permissions may only add deny rules; grants and approval policy belong in user settings or explicit startup overrides")
         # A project cannot erase user restrictions through ordinary deep merging.
         denied = list(dict.fromkeys([*data["permissions"]["deny"], *project_permissions.get("deny", [])]))
-        if data["workMode"] == "plan" and project.get("workMode") == "default":
-            project.pop("workMode")
-            notices.append("Project workMode=default cannot relax a user-configured Plan ceiling.")
+        # Workflow instructions do not confer or restrict execution authority.
         data = deep_merge(data, project)
         data["permissions"]["deny"] = denied
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         normalized_overrides = _normalize_layer(overrides or {}, notices)
         data = deep_merge(data, normalized_overrides)
+        if "mode" in normalized_overrides.get("permissions", {}) and "sandbox" not in normalized_overrides:
+            # An explicit new preset override wins over an older user's sandbox setting.
+            data["sandbox"] = {}
         _validate(data)
         settings = cls(data, paths)
         settings.overrides = normalized_overrides
