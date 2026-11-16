@@ -73,3 +73,14 @@ def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp
     assert settings.get("permissions.modes.offline.name") == "Offline"
     assert settings.get("workMode") == "plan"
     assert settings.get("plan") is True
+
+
+def test_invalid_legacy_modes_value_is_a_configuration_error(project):
+    with pytest.raises(ValueError, match="permissions.modes"):
+        Settings.load(Paths(project), {"permissions": {"modes": "nope", "presets": {}}})
+
+
+def test_reserved_permission_preset_ids_are_rejected(project):
+    with pytest.raises(ValueError, match="reserved"):
+        Settings.load(Paths(project), {"permissions": {"presets": {"ask": {
+            "name": "Ask", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}}})

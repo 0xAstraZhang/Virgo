@@ -149,7 +149,7 @@ Workspace-Edit is the default. Names are editable labels, never permission check
 }
 ```
 
-The stable ID is 1–64 letters/digits/underscores/hyphens. Custom entries require all three
+The stable ID is 1–64 letters/digits/underscores/hyphens. `ask`, `never`, `revoke`, `show`, `status`, `sandbox`, `list` and `save` are reserved by `/permissions`. Custom entries require all three
 boolean fields; built-in entries may override individual fields. A name is 1–100 printable
 characters. `/permissions save <id> <JSON>` provides the same editing path in plain/noninteractive
 clients. `/permissions list` lists actual values; `/permissions show` reports the selected/effective policy and

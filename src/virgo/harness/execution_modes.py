@@ -33,6 +33,8 @@ class PermissionPreset:
 # Compatibility alias for extensions written against the 0.2 name.
 PermissionMode = PermissionPreset
 
+RESERVED_PRESET_IDS = frozenset({"ask", "never", "revoke", "show", "status", "sandbox", "list", "save"})
+
 DEFAULT_MODES = {
     preset.id: preset for preset in (
         PermissionPreset("read-only", "Read-Only", True, True, True),
@@ -44,12 +46,14 @@ DEFAULT_MODES = {
 
 def parse_mode(identifier: str, value: dict) -> PermissionPreset:
     if not isinstance(identifier, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", identifier):
-        raise ValueError("Permission mode IDs must be 1–64 letters, digits, underscores or hyphens")
+        raise ValueError("Permission preset IDs must be 1–64 letters, digits, underscores or hyphens")
+    if identifier in RESERVED_PRESET_IDS:
+        raise ValueError(f"Permission preset ID {identifier!r} is reserved by /permissions")
     if not isinstance(value, dict) or set(value) - {"name", "readOnly", "workspaceOnly", "networkAllowed"}:
-        raise ValueError(f"Invalid permission mode {identifier!r}")
+        raise ValueError(f"Invalid permission preset {identifier!r}")
     name = value.get("name")
     if not isinstance(name, str) or not name.strip() or len(name) > 100 or any(ord(c) < 32 for c in name):
-        raise ValueError("Permission mode names must be 1–100 printable characters")
+        raise ValueError("Permission preset names must be 1–100 printable characters")
     fields = ("readOnly", "workspaceOnly", "networkAllowed")
     if any(type(value.get(key)) is not bool for key in fields):
         raise ValueError("Permission presets require boolean readOnly, workspaceOnly and networkAllowed")
@@ -63,7 +67,7 @@ def configured_modes(value: object) -> dict[str, PermissionPreset]:
     for identifier, entry in value.items():
         inherited = modes[identifier].config() if identifier in modes else {}
         if not isinstance(entry, dict):
-            raise ValueError(f"Invalid permission mode {identifier!r}")
+            raise ValueError(f"Invalid permission preset {identifier!r}")
         modes[identifier] = parse_mode(identifier, {**inherited, **entry})
     return modes
 

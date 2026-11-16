@@ -210,6 +210,8 @@ class Runtime:
     def prepare_run(self) -> None:
         """Bind startup hooks to this run before its first model request exists."""
         sandbox = self.session.services["sandbox"]
+        # Drop the previous run's decision before reading live selection.
+        self.permission_snapshot = None
         sandbox.capture_runtime(self)
         self.permission_snapshot = sandbox.snapshot(self)
         self.run_id = uuid.uuid4().hex

@@ -29,6 +29,8 @@ MESSAGES = {
     "features.commands.mcp": "查看 MCP 服务器（/mcp reconnect 重连）",
     "features.commands.permissions": "查看或修改权限预设、审批策略和已记住的决定",
     "features.commands.mode_alias": "/permissions 的弃用别名",
+    "features.commands.mode_deprecated": 'virgo：/mode 已弃用；请使用 /permissions',
+    "features.commands.sandbox_deprecated": 'virgo：/sandbox 已弃用；请使用 /permissions sandbox',
     "features.commands.sandbox_alias": "/permissions show 的弃用别名",
     "features.commands.search": "选择搜索服务（/search [auto|duckduckgo|deepseek|off]）",
     "features.commands.skills": "列出可用技能（用 /skill:name 调用）",

@@ -146,7 +146,7 @@ Plan 和 Code Review 是可选的规划与审查任务。`/plan <任务>` 开始
 }
 ```
 
-稳定 ID 使用 1–64 个字母、数字、下划线或连字符。自定义预设必须提供三个布尔值；
+稳定 ID 使用 1–64 个字母、数字、下划线或连字符。`ask`、`never`、`revoke`、`show`、`status`、`sandbox`、`list`、`save` 由 `/permissions` 保留。自定义预设必须提供三个布尔值；
 内置预设可只覆盖部分字段。名称使用 1–100 个可打印字符。
 逐行客户端使用 `/permissions save <id> <JSON>` 编辑，`/permissions list` 查看实际值，`/permissions show`
 分别显示有效权限和后端发现状态。后端不支持所选组合时拒绝执行。

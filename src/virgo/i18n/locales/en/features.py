@@ -32,6 +32,8 @@ MESSAGES = {
     "features.commands.mcp": "show MCP servers (/mcp reconnect)",
     "features.commands.permissions": "show or change permission presets, approval policy and remembered decisions",
     "features.commands.mode_alias": "deprecated alias for /permissions",
+    "features.commands.mode_deprecated": 'virgo: /mode is deprecated; use /permissions',
+    "features.commands.sandbox_deprecated": 'virgo: /sandbox is deprecated; use /permissions sandbox',
     "features.commands.sandbox_alias": "deprecated alias for /permissions show",
     "features.commands.search": "choose search backend (/search [auto|duckduckgo|deepseek|off])",
     "features.commands.skills": "list available skills (/skill:name to use one)",

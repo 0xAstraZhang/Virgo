@@ -14,6 +14,7 @@ MESSAGES = {
     "ui.base.back": "返回",
     "ui.base.multiline_help": "单独输入 . 结束；/cancel 取消；直接输入 . 保留现有内容。",
     "work_mode.description": "查看或切换 Plan，不改变权限",
+    "work_mode.deprecated": 'virgo：/workflow 已弃用；请使用 /plan 或 /plan off',
     "work_mode.status": "Plan 任务：{mode}",
     "work_mode.default": "默认",
     "work_mode.plan": "计划",

@@ -34,6 +34,10 @@ The comparator selects exactly one manifest for the exact base SHA. It does not 
 
 Before the comparator implementation changed, its new real-CLI acceptance generated 50 passing baseline cases (42 originals and eight preservation gates) and 17 passing head cases (eight preservation and nine acceptance gates). The old comparator correctly rejected the previously unrecognized policy with `42 previously executed tests disappeared`. The completed checks exercise the full inventory and reject wrong baselines, original modules and parameter IDs; failed originals; each missing gate; failed, skipped or relocated gates; unrelated deletion; and still-present failures/skips. The historical retirement checks and normal failure/skip/removal checks remain. Native sandbox validation and the rest of CI receive no exemption from this manifest.
 
+## Renamed identities
+
+Three existing cases keep their behavior but changed identity in this change: the planning/read-only test name and the two localized `Work mode` parameter labels. `ci/pipeline/reports.py::PARAMETER_ALIASES` maps each old identity to its new name, including the JUnit-escaped Chinese parameter ID. The alias is applied to both base and head reports, so the comparison sees a rename rather than a lost test.
+
 ## Shell-scope classifier retirement
 
 Reviewed baseline: `1b8e14b9be519adc02d9372aca9c08be9a55262f`. This change retires **112 parameter-expanded cases** from `tests/features/test_permission_scope.py`. The removed classifier (`is_simple_read_command`, `command_boundary`, `command_approval_reason`) had no production caller after managed operations became the only approval boundary; the surviving contract is the exact path-target binding in `command_path_targets`.

@@ -29,3 +29,23 @@ def test_child_snapshot_keeps_the_parent_ceiling(make_session):
         assert child.permission_snapshot.approval == "never"
     finally:
         session.release_runtime(child)
+
+
+def test_active_run_keeps_the_captured_approval_policy(make_session):
+    session = make_session(approval="never")
+    runtime = session.main
+    runtime.prepare_run()
+    session.approval_policy = "ask"
+    permissions = session.services["permissions"]
+    assert permissions.approval_for(runtime) == "never"
+    assert runtime.permission_snapshot.approval == "never"
+
+
+def test_next_run_captures_a_new_approval_policy(make_session):
+    session = make_session(approval="never")
+    runtime = session.main
+    runtime.prepare_run()
+    assert runtime.permission_snapshot.approval == "never"
+    session.approval_policy = "ask"
+    runtime.prepare_run()
+    assert runtime.permission_snapshot.approval == "ask"

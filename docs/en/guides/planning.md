@@ -6,9 +6,9 @@ Plan is an optional task plugin. It adds investigation and planning instructions
 keeps one versioned Markdown proposal, and lets the user select a version for
 implementation. It uses the existing Runtime and Agent Loop.
 
-Plan does not select a permission Mode, hide normal tools, or impose a read-only
+Plan does not select a permission preset, hide normal tools, or impose a read-only
 execution ceiling. The model is instructed to investigate and propose changes;
-the selected permission Mode determines what its tools can actually do. Select
+the selected permission preset determines what its tools can actually do. Select
 Read-Only separately when project writes must be prevented. A writable Mode does
 not make the planning task an instruction to implement its proposal.
 
@@ -73,7 +73,7 @@ one command. The interactive edit path also checks the version it opened.
 Execution requires the exact current token. A missing, stale or foreign token is
 rejected. The user command selects that version for one run, changes the task
 instructions to Default, and starts the existing Runtime. The selected Markdown
-appears once in its current request context. The permission Mode and approval
+appears once in its current request context. The permission preset and approval
 policy remain unchanged. If a required operation exceeds those permissions, the
 normal failure and permission-request path applies.
 
@@ -100,7 +100,7 @@ permission will never issue a write.
 
 The optional `git_read` helper supplies bounded local log/show/commit comparisons
 without repository helpers or implicit network access. Ordinary Shell tools are
-also available under the current permission Mode. Independent Code Review uses
+also available under the current permission preset. Independent Code Review uses
 its own reviewer instructions even when launched from a Plan conversation.
 
 ## History and request boundaries

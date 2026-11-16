@@ -14,6 +14,7 @@ MESSAGES = {
     "ui.base.back": "Back",
     "ui.base.multiline_help": "Finish with a line containing .; /cancel cancels; . alone keeps existing content.",
     "work_mode.description": "show or change Plan without changing permissions",
+    "work_mode.deprecated": 'virgo: /workflow is deprecated; use /plan or /plan off',
     "work_mode.status": "Plan task: {mode}",
     "work_mode.default": "Default",
     "work_mode.plan": "Plan",

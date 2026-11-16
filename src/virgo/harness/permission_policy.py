@@ -101,7 +101,11 @@ class Permissions:
         return False
 
     def approval_for(self, runtime=None) -> str:
+        """Read the captured policy for a run, never a later selection."""
         approval = normalize_approval_policy(self.session.approval_policy)
+        snapshot = getattr(runtime, "permission_snapshot", None) if runtime is not None else None
+        if snapshot is not None:
+            approval = normalize_approval_policy(snapshot.approval)
         while runtime is not None:
             if runtime.session is not self.session:
                 raise ValueError("Approval runtime must belong to this session")
@@ -377,12 +381,18 @@ def install_permissions(session: AgentSession) -> Permissions:
         "show or change permission presets, approval policy and remembered decisions",
         argument_hint=hint, description_key="features.commands.permissions", source="core", concurrent=True,
     )
+    def mode_alias(session, args):
+        session.ui.print(session.t("features.commands.mode_deprecated"), "warn")
+        permission_command(session, args)
+
     session.commands.register(
-        "mode", permission_command, "deprecated alias for /permissions", argument_hint=hint,
+        "mode", mode_alias, "deprecated alias for /permissions", argument_hint=hint,
         description_key="features.commands.mode_alias", source="core", concurrent=True,
     )
+
     def sandbox_alias(session, args):
-        session.services["sandbox"].status(session, "")
+        session.ui.print(session.t("features.commands.sandbox_deprecated"), "warn")
+        permission_command(session, "sandbox")
 
     session.commands.register(
         "sandbox", sandbox_alias, "deprecated alias for /permissions show",

@@ -40,3 +40,13 @@ def test_plan_on_and_off_use_the_plan_command(make_session):
     assert permissions.work_mode == "plan"
     session.prompt("/plan off")
     assert permissions.work_mode == "default"
+
+
+def test_deprecated_command_aliases_warn_and_keep_working(make_session):
+    session = make_session()
+    session.prompt("/mode read-only")
+    assert session.services["sandbox"].selected_mode.id == "read-only"
+    assert "deprecated" in session.ui.text
+    session.ui.lines.clear()
+    session.prompt("/sandbox")
+    assert "deprecated" in session.ui.text

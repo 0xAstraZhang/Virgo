@@ -295,6 +295,7 @@ def setup(api: ExtensionAPI) -> None:
                          argument_hint="[goal|off|show|edit [Markdown]|execute <id>:<revision>]")
 
     def workflow(session, args):
+        session.ui.print(session.t("work_mode.deprecated"), "warn")
         try:
             if args.strip():
                 session.services["permissions"].set_work_mode(args.strip())

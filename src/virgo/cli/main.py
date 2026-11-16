@@ -162,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         print(t("ui.cli.deprecated_sandbox"), file=sys.stderr)
     if args.plan and args.work_mode not in (None, "plan"):
         parser.error("--plan and --work-mode default conflict; use --plan alone")
+    if args.work_mode is not None:
+        print(t("ui.cli.deprecated_work_mode"), file=sys.stderr)
     work_mode = args.work_mode or ("plan" if args.plan else None)
     fullscreen = False
     if not args.print and args.ui != "plain":

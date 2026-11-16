@@ -198,7 +198,7 @@ class SandboxManager:
                 identifier, _, raw = value[5:].partition(" ")
                 mode = parse_mode(identifier, json.loads(raw))
                 self.save_mode(mode.id, mode.name, **mode.flags())
-                session.ui.command_result(f"Saved permission mode {mode.id}.")
+                session.ui.command_result(f"Saved permission preset {mode.id}.")
             else:
                 self.select_mode(value)
                 self.status(session, "")
