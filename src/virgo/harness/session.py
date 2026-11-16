@@ -1390,10 +1390,27 @@ class AgentSession:
         return bool(self._failed_stores) or any(store.save_error for store in self._visited_stores)
 
     def runtime_is_busy(self, runtime: Runtime) -> bool:
-        """Check this origin's agent work, including children queued by plugins."""
+        """Require an idle origin and a stable selection across plugin inspection."""
         if runtime.session is not self:
             raise ValueError("Cannot inspect a runtime owned by another session")
         with self._lock:
+            if runtime.agent.running or (runtime is self.main and self.busy):
+                return True
+            origin = runtime
+            while origin.parent is not None:
+                origin = origin.parent
+            selected, proposal = self.main, origin.proposed_plan
+            mode = (origin.work_mode, origin.work_mode_revision, self.permission_mode)
+            for handler in self.bus.snapshot("runtime_pending_work"):
+                pending = self.bus.first_snapshot("runtime_pending_work", (handler,), runtime)
+                # A failed or incomplete inspection must not relax Plan.
+                if pending is not False:
+                    return True
+            # Observers may revise, switch, or select a mode synchronously.
+            # Reject the older admission without undoing the newer selection.
+            if (self.main is not selected or origin.proposed_plan is not proposal
+                    or mode != (origin.work_mode, origin.work_mode_revision, self.permission_mode)):
+                return True
             if runtime.agent.running or (runtime is self.main and self.busy):
                 return True
             for child in self._child_runtimes.values():
@@ -1404,11 +1421,6 @@ class AgentSession:
                     if parent is runtime:
                         return True
                     parent = parent.parent
-            for handler in self.bus.snapshot("runtime_pending_work"):
-                pending = self.bus.first_snapshot("runtime_pending_work", (handler,), runtime)
-                # A failed or incomplete inspection must not relax Plan.
-                if pending is not False:
-                    return True
             return False
 
     def run(self, prompts: list, *, plan_token: str | None = None) -> None:
