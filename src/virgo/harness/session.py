@@ -1399,6 +1399,28 @@ class AgentSession:
     def has_save_failure(self) -> bool:
         return bool(self._failed_stores) or any(store.save_error for store in self._visited_stores)
 
+    def runtime_is_busy(self, runtime: Runtime) -> bool:
+        """Check this origin's agent work, including children queued by plugins."""
+        if runtime.session is not self:
+            raise ValueError("Cannot inspect a runtime owned by another session")
+        with self._lock:
+            if runtime.agent.running or (runtime is self.main and self.busy):
+                return True
+            for child in self._child_runtimes.values():
+                if not child.agent.running:
+                    continue
+                parent = child.parent
+                while parent is not None:
+                    if parent is runtime:
+                        return True
+                    parent = parent.parent
+            for handler in self.bus.snapshot("runtime_pending_work"):
+                pending = self.bus.first_snapshot("runtime_pending_work", (handler,), runtime)
+                # A failed or incomplete inspection must not relax Plan.
+                if pending is not False:
+                    return True
+            return False
+
     def run(self, prompts: list, *, plan_token: str | None = None) -> None:
         with self._lock:
             if self._shutdown_started:

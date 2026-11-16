@@ -119,7 +119,7 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 }
 ```
 
-同一套有效策略用于过滤模型可见工具、钩子前预检和执行前复检。Plan 上限跟随来源主 Runtime 及其子运行时，在切换对话后仍然有效；退出 Plan 不会移除子运行时自身的只读限制。进入 Plan 会约束尚未开始的调用；对话繁忙时拒绝退出 Plan 或执行计划，已经运行的进程保留启动时策略。权限审计保留有效 `mode`，并分别记录 `work_mode` 和 `permission_mode`。
+同一套有效策略用于过滤模型可见工具、钩子前预检和执行前复检。Plan 上限跟随来源主 Runtime 及其子运行时，在切换对话后仍然有效；退出 Plan 不会移除子运行时自身的只读限制。进入 Plan 会约束尚未开始的调用；来源对话还有进行中的请求，或排队、运行中的子代理时，拒绝退出 Plan 或执行计划，其他对话的工作不会阻止它。已经运行的进程保留启动时策略。权限审计保留有效 `mode`，并分别记录 `work_mode` 和 `permission_mode`。
 
 旧 `permissions.mode=plan`、`--permission-mode plan` 和直接使用 `session.permission_mode` 的 API 仍被接受。`/permissions plan` 现在进入独立工作模式，不替换已选择的审批策略。没有显式传入构造参数 `work_mode` 时，旧 Plan 启动也会为历史恢复保存 Plan 限制，即使尚未产生提案。模式或审批命令移除旧的全局限制前，会先为其他所有来源对话及其后代保留 Plan；状态保存失败时继续保留全局限制。`/mode default` 只解除所选对话的 Plan；若此前没有另外显式选择审批策略，旧 Plan 启动会恢复为 `auto-review`。集成代码应使用 `session.services["permissions"].set_work_mode(...)` 切换独立模式；旧的直接赋值 API 保留兼容行为。
 
