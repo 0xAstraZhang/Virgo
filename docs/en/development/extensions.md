@@ -77,6 +77,7 @@ def setup(api):
 | `api.runtime_for_context(ctx)` | Resolve a tool caller without borrowing the currently selected conversation |
 | `api.create_runtime(name, role, parent=..., permission=..., ...)` | Construct a child with inherited permission ceiling, accounting, cancellation and shared request budget |
 | `api.release_runtime(runtime)` | Release a completed child's registration and associated policy state |
+| `api.reserve_child_work(store)` | Register pending agent work for its captured owner and return an idempotent release callback |
 | `api.tools_for(role)`, `api.resolve(spec)` | Resolve permitted tool roles and model configuration |
 | `api.authorize_tool(event)` | Apply the Core preflight/hooks/execution gate to an adapted operation |
 | `api.notify(..., store=owner, diagnostics=...)` | Deliver asynchronous results to their originating conversation |
@@ -99,6 +100,7 @@ Use `api.services` only for an explicit shared service contract. The compatibili
 | `input` | `(text, session)` → replacement text, `Handled`, or `None` |
 | `user_steer` | `(text, session)` |
 | `before_agent_start` | `(runtime, prompts)` |
+| `runtime_pending_work` | `(runtime)` → `True` for queued or running child-agent work owned by this origin, otherwise `False` |
 | `agent_event`, `turn_end` | `(event, runtime)` |
 | `tool_call` | `(event, session)` → `Block` or `None`; arguments may be adjusted |
 | `tool_result` | `(result, event, session)` → replacement result or `None` |
@@ -108,6 +110,10 @@ Use `api.services` only for an explicit shared service contract. The compatibili
 | `compact` | `(runtime, summary)` |
 
 Use `Block(reason)` to stop a tool and `Continue(text)` only for an explicitly enabled continuation policy. Handler failure is diagnosed and isolated from later handlers. Context views should preserve append-only message prefixes.
+
+Before publishing queued agent work or starting its worker, call `api.reserve_child_work(owner)` with the captured originating accounting store. Release it on completion or startup failure, outside plugin locks and before signaling completion to callers. Registration and release use the same Core lock as mode admission. The reservation retains the originating Runtime for policy checks until its last pending job releases, including after conversation deletion. The official background service reserves callable agent jobs; subprocesses retain their launch policy.
+
+Core also calls `runtime_pending_work` when leaving Plan or confirming execution; a failed handler or any result other than explicit `False` keeps admission blocked. Restrict the answer to the supplied origin. After synchronous handlers return, Core checks the selected conversation, proposal and mode, then pending reservations and active runtimes. Work registered by a later observer is therefore visible without repeating callbacks. A changed selection rejects the older admission without rolling back the handler's newer choice.
 
 `api.register_permission_policy(policy)` adds restrictions after the mandatory Core policy; it cannot replace the Core gate. A policy implements both `preflight(event)` and `before_execute(event)`. The second checkpoint catches changes after preflight. Hosted/adapted operations must use `api.authorize_tool`; a truthy `read_only` flag is not authorization. Python itself remains trusted code, not sandboxed execution.
 

@@ -82,7 +82,7 @@ class WebAccess:
             return False  # Native queries cannot pass through client-tool hooks.
         if permissions is None:
             return False  # Missing Core policy must never authorize provider-side operations.
-        mode = permissions.mode_for(runtime.name)
+        mode = permissions.mode_for(runtime.name, runtime=runtime)
         if mode == "accept-all":
             return True
         rules = self.api.settings.get("permissions", {})

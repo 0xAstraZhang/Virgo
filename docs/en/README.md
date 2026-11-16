@@ -10,6 +10,7 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 | --- | --- |
 | [Getting started](guides/getting-started.md) | Installation, login, your first session, print mode |
 | [Using Virgo](guides/interaction.md) | Commands, keyboard shortcuts, language, sessions, steering |
+| [Planning a change](guides/planning.md) | Repository investigation, versioned proposals, revision and explicit execution |
 | [Web search and reading](guides/web.md) | Backends, routing, permissions, fetch limits |
 | [Command shells](guides/shells.md) | Shell selection, execution behavior, output and cancellation |
 | [Troubleshooting](guides/troubleshooting.md) | Errors, logs, diagnostic evidence, recovery boundaries |

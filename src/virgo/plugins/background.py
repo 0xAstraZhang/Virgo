@@ -293,7 +293,13 @@ class JobManager:
         tool_call_id=None,
         cwd=None,
     ) -> Job:
-        job = self._new("agent", label, store=store, agent=agent, tool_call_id=tool_call_id, cwd=cwd)
+        owner = store if store is not None else self.api.current_store()
+        release = self.api.reserve_child_work(owner)
+        try:
+            job = self._new("agent", label, store=owner, agent=agent, tool_call_id=tool_call_id, cwd=cwd)
+        except BaseException:
+            release()
+            raise
 
         def run():
             try:
@@ -324,11 +330,16 @@ class JobManager:
                 details = self._report(job, e, phase="background.callable")
                 job.result = error_summary(details, t=self.api.t)
                 status = "killed" if job.signal.is_set() else "failed"
+            finally:
+                # Callable/child execution has ended. Release outside the jobs
+                # lock and before _finish publishes job.done to waiting callers.
+                release()
             self._finish(job, status)
 
         try:
             threading.Thread(target=run, daemon=True, name=f"virgo-{job.id}").start()
         except BaseException as error:
+            release()
             self._start_failed(job, error, None)
             raise
         return job

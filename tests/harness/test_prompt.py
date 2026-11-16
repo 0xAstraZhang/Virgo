@@ -62,8 +62,8 @@ def test_permission_switch_updates_requests_and_restores_the_original_prefix(mak
     original = session.main.request_context([])
     session.permission_mode = "plan"
     planning = session.main.request_context([])
-    assert {"read", "ask_user", "todo_write"} <= {t.name for t in planning.tools}
-    assert not {"write", "edit", "job_kill"} & {t.name for t in planning.tools}
+    assert {"read", "ask_user", "propose_plan"} <= {t.name for t in planning.tools}
+    assert not {"write", "edit", "job_kill", "todo_write"} & {t.name for t in planning.tools}
     assert "<permission_mode>" in planning.system
     session.permission_mode = "accept-all"
     restored = session.main.request_context([])
