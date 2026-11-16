@@ -4,7 +4,7 @@
   "preservation_gates": [
     {
       "classname": "tests.features.test_permission",
-      "name": "test_shell_session_approval_binds_all_resolved_path_targets"
+      "name": "test_rule_matching_paths"
     },
     {
       "classname": "tests.features.test_permission",
