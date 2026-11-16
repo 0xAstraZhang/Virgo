@@ -435,9 +435,16 @@ def test_busy_request_cannot_confirm_or_queue_an_execution(make_session):
     assert not session.run_pending()
 
 
-@pytest.mark.parametrize("action", ["mode", "execute"])
-@pytest.mark.parametrize("stage", ["queued", "running"])
-@pytest.mark.parametrize("permission_mode", ["no-limit", "read-only"])
+@pytest.mark.parametrize("permission_mode,stage,action", [
+    pytest.param("no-limit", "queued", "mode", id="no-limit-queued-mode"),
+    pytest.param("no-limit", "queued", "execute", id="no-limit-queued-execute"),
+    pytest.param("no-limit", "running", "mode", id="no-limit-running-mode"),
+    pytest.param("no-limit", "running", "execute", id="no-limit-running-execute"),
+    pytest.param("read-only", "queued", "mode", id="queued-mode"),
+    pytest.param("read-only", "queued", "execute", id="queued-execute"),
+    pytest.param("read-only", "running", "mode", id="running-mode"),
+    pytest.param("read-only", "running", "execute", id="running-execute"),
+])
 def test_background_planning_child_blocks_only_its_origin_before_confirmation(
     make_session, project, monkeypatch, action, stage, permission_mode,
 ):
