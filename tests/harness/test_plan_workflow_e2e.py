@@ -133,6 +133,69 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     assert "write" in request["tools"] and "propose_plan" not in request["tools"]
 
 
+@pytest.mark.parametrize("conditional", [False, True])
+def test_reentrant_mode_edit_preserves_version_bound_execution(make_session, conditional):
+    session = make_session(persist=True, settings={"profile": "minimal", "workMode": "plan"},
+                           refresh_models=False, extensions=False)
+    original = propose(session)
+    session.prompt("/mode default")
+    published = []
+    session.bus.on("proposed_plan_changed", lambda _runtime, plan: published.append(plan))
+
+    def revise_on_plan(_runtime, mode):
+        if mode == "plan":
+            session.prompt(f"/plan edit {original.token}\n{REVISED_PLAN}")
+
+    unsubscribe = session.bus.on("work_mode_changed", revise_on_plan)
+    count = len(calls())
+    command = f"/plan edit {original.token}\n{PLAN}" if conditional else f"/plan edit {PLAN}"
+    session.prompt(command)
+    unsubscribe()
+
+    intervening = published[0]
+    current = session.services["plans"].current
+    assert intervening.markdown == REVISED_PLAN
+    assert len({plan.token for plan in published}) == len(published)
+    saved = SessionStore.load(session.store.path).custom("proposed_plan")
+    assert len({(plan["plan_id"], plan["revision"]) for plan in saved}) == len(saved)
+    if conditional:
+        assert current == intervening
+        assert session.t("plan.stale") in session.ui.text
+    else:
+        assert current.markdown == PLAN and current.revision == intervening.revision + 1
+        session.prompt(f"/plan execute {intervening.token}")
+    session.prompt(f"/plan execute {original.token}")
+    assert len(calls()) == count and not session.run_pending()
+    assert current.confirmed_revision is None
+    assert session.services["permissions"].work_mode == "plan"
+
+    faux.push("test", faux.reply("Execution received the selected proposal."))
+    session.prompt(f"/plan execute {current.token}")
+    assert len(calls()) == count + 1
+    message = [message for message in session.main.messages if isinstance(message, UserMessage)][-1]
+    assert current.markdown in message.text()
+    assert current.markdown in str(calls()[count]["messages"][-1]["content"])
+
+
+def test_reentrant_mode_exit_does_not_publish_a_plan_in_default(make_session):
+    session = make_session(settings={"profile": "minimal", "workMode": "plan"},
+                           refresh_models=False, extensions=False)
+    original = propose(session)
+    session.prompt("/mode default")
+
+    def leave_plan(_runtime, mode):
+        if mode == "plan":
+            session.prompt("/mode default")
+
+    session.bus.on("work_mode_changed", leave_plan)
+    count = len(calls())
+    session.prompt(f"/plan edit {original.token}\n{REVISED_PLAN}")
+    assert session.services["plans"].current == original
+    assert len(session.store.custom("proposed_plan")) == 1
+    assert session.services["permissions"].work_mode == "default"
+    assert len(calls()) == count and not session.run_pending()
+
+
 @pytest.mark.parametrize("approval,sandbox", [("auto-review", "disabled"), ("accept-all", "read-only")])
 def test_execution_confirmation_and_leaving_plan_preserve_approval_and_sandbox(
     make_session, project, approval, sandbox,

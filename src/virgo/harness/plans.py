@@ -95,14 +95,19 @@ class Plans:
                 raise ValueError(s.t("plan.stale"))
             if not rt.can_run():
                 raise ValueError(s.t("harness.session.unsaved"))
+            # Tighten before writing, then re-read after synchronous mode
+            # observers. An observer may replace the plan or leave Plan again.
+            permissions = s.services["permissions"]
+            permissions.set_work_mode("plan", runtime=rt)
+            previous = rt.proposed_plan
+            if (permissions.work_mode_for(rt) != "plan"
+                    or expected_token is not None and (previous is None or expected_token != previous.token)):
+                raise ValueError(s.t("plan.stale"))
             proposal = ProposedPlan(
                 previous.plan_id if previous else uuid.uuid4().hex[:12],
                 previous.revision + 1 if previous else 1,
                 markdown.strip(),
             )
-            # Tightening before the write also protects legacy permission-mode
-            # Plan. Failed persistence must never publish a relaxed state.
-            s.services["permissions"].set_work_mode("plan", runtime=rt)
             rt.store.append("custom", kind="proposed_plan", data=asdict(proposal))
             rt.proposed_plan = proposal
             s.bus.emit("proposed_plan_changed", rt, proposal)
