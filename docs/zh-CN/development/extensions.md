@@ -77,6 +77,7 @@ def setup(api):
 | `api.runtime_for_context(ctx)` | 解析工具真实调用方，不借用当前选中的对话 |
 | `api.create_runtime(name, role, parent=..., permission=..., ...)` | 创建继承权限上限、记账、取消和共享请求预算的子运行时 |
 | `api.release_runtime(runtime)` | 释放完成后的子运行时注册及关联权限状态 |
+| `api.reserve_child_work(store)` | 为已捕获的归属登记待执行代理工作，返回可重复调用的释放函数 |
 | `api.tools_for(role)`、`api.resolve(spec)` | 解析角色工具和模型配置 |
 | `api.authorize_tool(event)` | 为适配操作应用 Core 预检、钩子和执行前权限门 |
 | `api.notify(..., store=owner, diagnostics=...)` | 将异步结果送回原对话 |
@@ -110,7 +111,9 @@ def setup(api):
 
 `Block(reason)` 阻止工具；只有明确启用的继续策略才使用 `Continue(text)`。处理器失败进入诊断并与后续处理器隔离。上下文视图应保留追加式的消息前缀。
 
-插件在创建子 Runtime 前将代理任务排队时，通过 `runtime_pending_work` 报告这些工作。Core 在退出 Plan 或确认执行前查询；处理器失败或返回非明确 `False` 的结果都会继续阻止准入。同步处理器返回后，Core 还会检查所选对话、提案和模式，并再次检查活跃运行时。选择发生变化时拒绝较早的准入，不回滚处理器作出的较新选择。回答仅针对传入的来源，后台子进程保留启动时策略，不计为排队中的子代理工作。
+发布排队中的代理工作或启动工作线程前，使用已捕获的来源记账 Store 调用 `api.reserve_child_work(owner)`。完成或启动失败时释放登记；释放必须在插件锁之外、向调用方发出完成信号之前进行。登记和释放使用与模式准入相同的 Core 锁。登记保留来源 Runtime 供策略检查，直到最后一个待完成任务释放，即使对话已被删除。官方后台服务为 callable 代理任务登记，子进程仍保留启动时策略。
+
+Core 在退出 Plan 或确认执行前也会查询 `runtime_pending_work`；处理器失败或返回非明确 `False` 的结果都会继续阻止准入，回答仅针对传入的来源。同步处理器返回后，Core 检查所选对话、提案和模式，再检查待执行登记及活跃运行时。因此，后续观察者登记的工作无需重复调用处理器就能被发现。选择发生变化时拒绝较早的准入，不回滚处理器作出的较新选择。
 
 `api.register_permission_policy(policy)` 在必要的 Core 策略后添加限制，不能替换 Core 权限门。策略实现 `preflight(event)` 和 `before_execute(event)`，第二次检查捕获预检后的变化。托管／适配操作需使用 `api.authorize_tool`；`read_only` 标记不是授权。Python 本身仍是可信代码，不在沙箱中执行。
 

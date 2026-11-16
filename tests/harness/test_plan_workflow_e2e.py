@@ -570,3 +570,96 @@ def test_admission_inspection_rechecks_a_child_started_by_its_observer(make_sess
 
     assert workers and all(not worker.is_alive() for worker in workers) and not failures
     assert selected_mode == "plan" and not (project / "observer-child.txt").exists()
+
+
+@pytest.mark.parametrize("action", ["mode", "execute"])
+def test_admission_observer_cannot_queue_untracked_plan_work(make_session, project, action):
+    session = make_session(settings={
+        "profile": "minimal", "workMode": "plan",
+        "plugins": {"subagent": {"enabled": True}, "background": {"enabled": True}},
+    }, refresh_models=False, extensions=False)
+    plan = propose(session)
+    jobs, subagents = session.services["jobs"], session.services["subagents"]
+    entered, release = threading.Event(), threading.Event()
+    queued = []
+    inspections = 0
+
+    def inspect(runtime):
+        nonlocal inspections
+        inspections += 1
+        if inspections == (1 if action == "mode" else 2):
+            def investigate(signal):
+                entered.set()
+                assert release.wait(5), "Release the queued investigation before creating its Runtime"
+                return subagents.run("Queued Plan investigation", "Investigate", signal,
+                                     runtime.cwd, runtime.review_source)
+
+            queued.append(jobs.start_callable("Queued investigation", investigate,
+                                             store=runtime.review_source.root, agent=runtime.name,
+                                             cwd=runtime.cwd))
+            assert entered.wait(5)
+        return False
+
+    # This observer is deliberately registered after the background plugin.
+    unsubscribe = session.bus.on("runtime_pending_work", inspect)
+
+    def respond(context):
+        if context.messages[0].text() == "Queued Plan investigation" and isinstance(
+            context.messages[-1], UserMessage,
+        ):
+            return faux.reply(tools=[("write", {"path": "queued-observer.txt", "content": "blocked"})])
+        return faux.reply("The current permission boundary was applied.")
+
+    faux.handler("test", respond)
+    try:
+        session.prompt("/mode default" if action == "mode" else f"/plan execute {plan.token}")
+        selected_mode = session.services["permissions"].work_mode
+        assert queued and not session._child_runtimes
+        assert session.services["plans"].current.confirmed_revision is None
+    finally:
+        unsubscribe()
+        release.set()
+        for job in queued:
+            assert job.done.wait(5)
+
+    assert selected_mode == "plan" and not (project / "queued-observer.txt").exists()
+    # Completion must release the admission reservation before signaling done.
+    session.prompt(f"/plan execute {plan.token}")
+    assert session.services["plans"].current.confirmed_revision == plan.revision
+    assert session.services["permissions"].work_mode == "default"
+
+
+def test_legacy_migration_preserves_a_trashed_origin_with_queued_child_work(make_session, project, trash):
+    session = make_session(mode="plan", persist=True, settings={
+        "profile": "minimal",
+        "plugins": {"subagent": {"enabled": True}, "background": {"enabled": True}},
+    }, refresh_models=False, extensions=False)
+    origin, origin_path = session.main, session.store.path
+    entered, release = threading.Event(), threading.Event()
+
+    def investigate(signal):
+        entered.set()
+        assert release.wait(5), "Release the queued investigation after legacy migration"
+        return session.services["subagents"].run("Investigate only", "Queued investigation", signal,
+                                                project, origin.review_source)
+
+    job = session.services["jobs"].start_callable("Queued investigation", investigate,
+                                               store=origin.review_source.root)
+    try:
+        assert entered.wait(5) and not session._child_runtimes
+        session.trash_session(origin_path)
+        trashed = trash[0][1]
+        saved_trash = trashed.read_bytes()
+        session.prompt("/mode default")
+        assert session.services["permissions"].work_mode == "default"
+        faux.push("test", faux.reply(tools=[("write", {"path": "trashed-child.txt", "content": "blocked"})]),
+                  faux.reply("The originating Plan boundary was retained."))
+    finally:
+        release.set()
+        assert job.done.wait(5)
+
+    assert not (project / "trashed-child.txt").exists()
+    assert session.services["permissions"].work_mode_for(origin) == "plan"
+    assert origin.store.path is None and not origin_path.exists()
+    assert trashed.read_bytes() == saved_trash
+    assert not session.runtime_is_busy(origin)

@@ -161,9 +161,10 @@ class Permissions:
             if legacy:
                 # The legacy ceiling covers every originating conversation.
                 # Materialize it before clearing the global setting, including
-                # a removed conversation whose child runtime is still alive.
+                # a removed conversation with queued or running child work.
                 origins = [*self.session._main_runtimes.values(),
                            *self.session._child_runtimes.values()]
+                origins.extend(origin for origin, _ in self.session._pending_child_work.values())
                 for runtime in origins:
                     origin = self._root_runtime(runtime)
                     if origin is not root and origin.work_mode != "plan":

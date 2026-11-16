@@ -289,6 +289,10 @@ class ExtensionAPI:
     def release_runtime(self, runtime):
         self._session.release_runtime(runtime)
 
+    def reserve_child_work(self, store) -> Callable[[], None]:
+        """Return an idempotent release for agent work queued for this owner."""
+        return self._session.reserve_child_work(store)
+
     def tools_for(self, role: str):
         return self._session.tools_for(role)
 
