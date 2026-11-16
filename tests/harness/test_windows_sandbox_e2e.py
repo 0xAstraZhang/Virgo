@@ -1058,6 +1058,127 @@ if {tool == "write"}:
             assert job.done.wait(15), "fixture must drain its background command"
 
 
+def test_core_create_during_command_preflight_preserves_workspace_writes(
+    native, project, monkeypatch, record_testsuite_property,
+):
+    from virgo.tools import windows_sandbox_acl as acl
+    from virgo.tools import windows_sandbox_files as files
+
+    target = project / "created-during-startup.txt"
+    staged, retained = threading.Event(), threading.Event()
+    release_core, release_grant = threading.Event(), threading.Event()
+    attempting_commit, core_done, shell_done = threading.Event(), threading.Event(), threading.Event()
+    cancellation = threading.Event()
+    observed, results, errors = {}, {}, {}
+    replace, update = files.replace_staged, acl.AclGrants._update
+
+    @contextmanager
+    def pause_commit(source, destination, **arguments):
+        if destination == target:
+            with files.open_path(source, files.FILE_READ_ATTRIBUTES, directory=False) as handle:
+                observed["identity"] = handle.identity
+            observed["staged_path"] = str(source)
+            staged.set()
+            assert release_core.wait(30), "fixture did not release the staged Core commit"
+            attempting_commit.set()
+        with replace(source, destination, **arguments):
+            yield
+
+    def pause_grant(self, grant, *, cleanup=False):
+        if not cleanup and grant.handle.identity == observed.get("identity") and not retained.is_set():
+            observed["grant_path"] = str(grant.path)
+            observed["grant_writable"] = grant.writable
+            retained.set()
+            assert release_grant.wait(15), "fixture did not release the retained staging grant"
+        return update(self, grant, cleanup=cleanup)
+
+    monkeypatch.setattr(files, "replace_staged", pause_commit)
+    monkeypatch.setattr(acl.AclGrants, "_update", pause_grant)
+    faux.script("test", faux.reply(tools=[("write", {"path": target.name, "content": "created\n"})]),
+                faux.reply("done"))
+
+    def core_write():
+        try:
+            native.prompt("Create an ordinary file while another command starts")
+            results["core"] = tool_results(native)[-1]
+        except BaseException as error:
+            errors["core"] = repr(error)
+        finally:
+            core_done.set()
+
+    def start_shell():
+        try:
+            results["shell"] = run_command(command("""import os, time
+from pathlib import Path
+Path('startup-pid').write_text(str(os.getpid()))
+Path('startup-ready').touch()
+deadline = time.monotonic() + 30
+while not Path('release-startup-payload').exists():
+    assert time.monotonic() < deadline
+    time.sleep(.02)
+assert Path('created-during-startup.txt').read_text() == 'created\\n'
+with Path('created-during-startup.txt').open('a') as stream:
+    stream.write('after\\n')
+"""), project, 30, cancellation, interpreter=selected(native),
+                sandbox_policy=SandboxPolicy("workspace-write", project))
+        except BaseException as error:
+            errors["shell"] = repr(error)
+        finally:
+            shell_done.set()
+
+    core_thread = threading.Thread(target=core_write, daemon=True)
+    shell_thread = threading.Thread(target=start_shell, daemon=True)
+    try:
+        core_thread.start()
+        wait_until(lambda: staged.is_set() or core_done.is_set(), timeout=15)
+        assert staged.is_set(), f"Core did not reach real staging: {errors}, {results}"
+        assert not target.exists(), "the fixture must exercise creation of a new ordinary file"
+        shell_thread.start()
+        wait_until(lambda: retained.is_set() or shell_done.is_set(), timeout=25)
+        assert retained.is_set(), f"Command preflight did not retain the staging inode: {errors}, {results}"
+        assert Path(observed["grant_path"]) == Path(observed["staged_path"]), observed
+        assert not observed["grant_writable"], observed
+        release_core.set()
+        assert attempting_commit.wait(5), "Core did not attempt its native commit"
+        # A fixed implementation may serialize the entire workspace preflight.
+        # Release its grant even when Core is waiting for that lock; do not make
+        # the vulnerable interleaving a requirement for the corrected behavior.
+        observed["core_completed_before_grant"] = core_done.wait(2)
+        record_testsuite_property("core_completed_before_staging_grant", observed["core_completed_before_grant"])
+        if core_done.is_set() and target.exists():
+            observed["dacl_before_grant"] = dacl(target)
+        release_grant.set()
+        assert core_done.wait(15), f"Core mutation did not finish: {errors}"
+        assert "core" not in errors, errors
+        assert not results["core"].is_error, results["core"].text()
+        assert target.read_text() == "created\n"
+        ready = project / "startup-ready"
+        wait_until(lambda: ready.exists() or shell_done.is_set(), timeout=25)
+        assert ready.exists(), f"Native payload did not start: {errors}, {results}"
+        pid = int((project / "startup-pid").read_text())
+        restricting, = process_sids(pid, 11)
+        package, = process_sids(pid, 31)
+        observed["live_dacl"] = dacl(target)
+        (project / "release-startup-payload").touch()
+        assert shell_done.wait(20), f"Native payload did not drain: {errors}"
+        assert "shell" not in errors, errors
+        out, code, status = results["shell"]
+        assert code == 0 and status == "ok", f"Ordering and DACL evidence:\n{observed}\nPayload output:\n{out.text}"
+        assert target.read_text() == "created\nafter\n"
+        assert not list((project / ".virgo").glob("mutation-*.tmp"))
+        for path in (project, project / ".virgo", target):
+            cleaned = dacl(path)
+            assert restricting not in cleaned and package not in cleaned, cleaned
+    finally:
+        release_core.set()
+        release_grant.set()
+        cancellation.set()
+        for thread in (core_thread, shell_thread):
+            if thread.ident is not None:
+                thread.join(25)
+        assert not core_thread.is_alive() and not shell_thread.is_alive(), "fixture must drain both workers"
+
+
 def test_child_runtime_keeps_origin_with_canonical_cwd_and_rejects_escape(native, project):
     nested = project / "目录 with spaces"
     nested.mkdir()
