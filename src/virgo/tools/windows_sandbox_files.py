@@ -15,7 +15,7 @@ import os
 import re
 import uuid
 import weakref
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,6 +123,13 @@ class FileInfo:
     volume_serial: int
     file_index: int
     size: int
+
+
+def descriptor_identity(descriptor: int) -> tuple[int, int]:
+    """Read the same native identity from an already checked CRT descriptor."""
+    info = _ByHandleInfo()
+    _check(GetFileInformation(msvcrt.get_osfhandle(descriptor), ctypes.byref(info)))
+    return info.VolumeSerial, (info.IndexHigh << 32) | info.IndexLow
 
 
 class FileHandle:
@@ -252,20 +259,42 @@ def open_child(parent: FileHandle, name: str, access, *, share_delete=True, shar
                  allow_reparse=allow_reparse)
 
 
-def replace_staged(source: Path, target: Path):
-    """Atomically replace a name while existing ACL lease handles stay valid."""
+@contextmanager
+def replace_staged(source: Path, target: Path, *, expected_identity: tuple[int, int] | None):
+    """Replace a name, yield its commit point, then finish the destination DACL."""
+    from .windows_sandbox_acl import _prepare_dacl, _read, acl_lock, inherited_file_dacl
+
     source, target = Path(normalize_path(source)), Path(normalize_path(target))
     _component(target.name)
     encoded = target.name.encode("utf-16-le")
-    with open_path(target.parent, FILE_READ_ATTRIBUTES, directory=True, share_delete=False) as parent:
-        with open_path(source, 0x10000, directory=False,
-                       share_delete=False, share_write=False) as staged:  # DELETE
+    committed = False
+    try:
+        with acl_lock(), ExitStack() as handles:
+            parent = handles.enter_context(open_path(target.parent, 0x20000,  # READ_CONTROL
+                                                      directory=True, share_delete=False))
+            try:
+                original = handles.enter_context(open_child(parent, target.name, 0x20000,
+                                                            directory=False))
+            except FileNotFoundError:
+                if expected_identity is not None:
+                    raise PermissionError(errno.EACCES, "Sandbox file changed before commit", str(target)) from None
+                destination = inherited_file_dacl(parent.value)
+            else:
+                if original.identity != expected_identity:
+                    raise PermissionError(errno.EACCES, "Sandbox file changed before commit", str(target))
+                destination = _read(original.value)
+            prepared_dacl = _prepare_dacl(destination, destination.aces, destination.control)
+            staged = handles.enter_context(open_path(source, 0x50000,  # DELETE | WRITE_DAC
+                                                      directory=False, share_delete=False,
+                                                      share_write=False))
             data = ctypes.create_string_buffer(ctypes.sizeof(_RenameInfo) + len(encoded))
             info = _RenameInfo.from_buffer(data)
             # FileRenameInformationEx: replace the directory entry even when a
             # sandbox retains the old inode for later ACL revocation. Do not
             # ignore read-only attributes or fall back to an in-place write.
-            info.Flags = 0x1 | 0x2  # REPLACE_IF_EXISTS | POSIX_SEMANTICS
+            # A destination that was absent must remain absent; do not overwrite
+            # a file that appeared after the existence check above.
+            info.Flags = (0x1 | 0x2) if expected_identity is not None else 0
             info.RootDirectory = parent.value
             info.FileNameLength = len(encoded)
             ctypes.memmove(ctypes.addressof(data) + _RenameInfo.FileName.offset, encoded, len(encoded))
@@ -275,6 +304,18 @@ def replace_staged(source: Path, target: Path):
                 error = ctypes.WinError(RtlNtStatusToDosError(result))
                 error.filename, error.filename2 = str(source), str(target)
                 raise error
+            committed = True
+            # The caller must stop treating the old staging name as owned even
+            # if permission/handle finalization now fails. Keep metadata's deny
+            # ACL until the inode has left .virgo, then restore the destination's
+            # current DACL before releasing the no-write/no-delete-share handle.
+            yield
+            prepared_dacl.apply(staged.value)
+    except OSError as error:
+        if committed:
+            raise OSError(f"New file content was committed to {target}, but Windows permission "
+                          f"or handle finalization failed: {error}") from error
+        raise
 
 
 class _PinnedOutput(io.FileIO):

@@ -983,8 +983,10 @@ Path('shared.txt').write_text('second-still-authorized')
 def test_core_mutation_preserves_live_background_workspace_writes(native, project, tool):
     target = project / "ordinary.txt"
     target.write_text("original\n")
+    baseline_dacl = dacl(target)
+    created = project / "created-by-core.txt"
     jobs = native.services["jobs"]
-    result = run(native, """import time
+    result = run(native, f"""import time
 from pathlib import Path
 with Path('ordinary.txt').open('a') as stream:
     stream.write('before\\n')
@@ -999,6 +1001,10 @@ print('opening committed file for append', flush=True)
 with Path('ordinary.txt').open('a') as stream:
     stream.write('after\\n')
 print('committed file append complete', flush=True)
+if {tool == "write"}:
+    assert Path('created-by-core.txt').read_text() == 'created\\n'
+    with Path('created-by-core.txt').open('a') as stream:
+        stream.write('after\\n')
 """, background=True)
     assert not result.is_error, result.text()
     job = list(jobs.jobs.values())[-1]
@@ -1009,6 +1015,7 @@ print('committed file append complete', flush=True)
         restricting, = process_sids(job.proc.pid, 11)
         package, = process_sids(job.proc.pid, 31)
         original_dacl = dacl(target)
+        metadata_dacl = dacl(project / ".virgo")
         arguments = ({"path": target.name, "content": "changed\n"} if tool == "write" else
                      {"path": target.name, "edits": [{"old_text": "original\nbefore\n",
                                                        "new_text": "changed\n"}]})
@@ -1018,15 +1025,31 @@ print('committed file append complete', flush=True)
         assert not mutation.is_error, mutation.text()
         assert target.read_text() == "changed\n"
         committed_dacl = dacl(target)
+        created_dacl = None
+        if tool == "write":
+            faux.script("test", faux.reply(tools=[("write", {"path": created.name,
+                                                             "content": "created\n"})]), faux.reply("done"))
+            native.prompt("Create another ordinary file while the background command is waiting")
+            mutation = tool_results(native)[-1]
+            assert not mutation.is_error, mutation.text()
+            assert created.read_text() == "created\n"
+            created_dacl = dacl(created)
+        assert dacl(project / ".virgo") == metadata_dacl
+        assert not list((project / ".virgo").glob("mutation-*.tmp"))
         (project / "release-mutation").touch()
         assert job.done.wait(15), "background command did not drain after Core mutation"
         assert job.status == "completed", (
             f"Background status: {job.status}\nRestricting SID: {restricting}\nPackage SID: {package}\n"
             f"DACL before Core mutation:\n{original_dacl}\nDACL after Core mutation:\n{committed_dacl}\n"
+            f"DACL of Core-created file:\n{created_dacl}\n"
             f"Background output:\n{jobs.output(job)}"
         )
         assert target.read_text() == "changed\nafter\n"
-        for path in (project, project / ".virgo", target):
+        assert committed_dacl == original_dacl
+        assert dacl(target) == baseline_dacl
+        if tool == "write":
+            assert created.read_text() == "created\nafter\n"
+        for path in (project, project / ".virgo", target, *([created] if tool == "write" else [])):
             cleaned = dacl(path)
             assert restricting not in cleaned and package not in cleaned, cleaned
     finally:

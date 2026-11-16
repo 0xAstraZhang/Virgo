@@ -66,7 +66,11 @@
 
 Core `write`／`edit`、可信扩展、hooks、远程工具和宿主本身在 LPAC 外执行。Core 文件修改保留独立的应用层检查和新文件暂存；Windows 路径不具备 POSIX 描述符相对遍历保证。本后端不宣称这些 Python 操作受 OS 沙箱隔离。
 
-Core 文件提交的最后一步使用原生 `FileRenameInformationEx` 的替换和 POSIX 语义标志，原子替换目录项，同时允许运行中的命令继续保留旧文件的 ACL 句柄用于清理。暂存源文件和目标父目录均以禁止 reparse 遍历的方式打开，并保留到重命名完成。原生重命名不可用时提交失败，不会关闭其他命令的 ACL 句柄或改写现有目标 inode。参见[原生重命名契约](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)。
+Core 使用原生 `FileRenameInformationEx` 的替换和 POSIX 语义标志，原子替换已有文件的目录项，同时允许运行中的命令继续保留旧文件的 ACL 句柄用于清理。暂存源文件和目标父目录均以禁止 reparse 遍历的方式打开，并保留到重命名完成。原生重命名不可用时提交失败，不会关闭其他命令的 ACL 句柄或改写现有目标 inode。参见[原生重命名契约](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)。
+
+重命名不会重新分配默认安全描述符。因此，Core 使用与沙箱授权及清理相同的每用户 mutex，确认保留的目标句柄与最初打开的文件具有相同原生身份后，再读取目标当前的 DACL。目标不存在时，Windows `CreatePrivateObjectSecurityEx` 根据目标父目录及宿主 Token 派生文件 DACL；若目标在此期间出现，重命名会拒绝覆盖它。暂存 inode 在重命名之前始终保留受保护元数据权限；离开 `.virgo` 后，才通过保留的句柄设置目标 DACL，再释放禁止写／删除共享的句柄。这样保留目标的宿主 ACE 及当前命令授权，同时不赋予命令修改 `.virgo` 内暂存文件的权限。清理从打开每个路径到移除 ACE 全程持有同一 mutex，避免并发 Core 替换从清理已打开的旧 inode 复制即将撤销的授权。不复制所有者、组或 SACL。参见[移动时的文件安全性](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights)与[原生继承](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createprivateobjectsecurityex)。
+
+重命名和后续 DACL 设置是两个独立的原生操作。若重命名后的权限或句柄收尾失败，工具会明确报告新内容已经提交；DACL 设置失败可能使已提交文件保留较严格的暂存 DACL。宿主不会删除已提交目标、重试编辑或回退为改写原 inode。重命名成功后，原暂存路径不再被视为待清理的自有临时文件。
 
 ## 分发与维护
 
@@ -77,6 +81,8 @@ Core 文件提交的最后一步使用原生 `FileRenameInformationEx` 的替换
 ## 验收与参考
 
 `tests/harness/test_windows_sandbox_e2e.py` 的 18 个场景先于生产后端提交，覆盖工作区正向访问、工作区外与系统包 ACL、只读及元数据上限、重解析与硬链接、凭据与句柄继承、后代 Token 及进程访问、真实 TCP／UDP、超时／取消、后台与子 Runtime 来源、禁止重放及资源清理。专用 workflow 在 `windows-2022` 和 `windows-2025` 上运行精确 PR head，任何失败、错误或跳过都会拒绝验收。LPAC 验证器修正只将不受支持的 Token 查询换成原生 `AccessCheck`，保留原有 18 个场景与断言。针对实测 BCrypt 及空设备流访问失败，又在这些场景中加入设备授权验收定义，并先于各自设备修复提交：父子进程设备权限、并发命令间无关 ACE 保留、正常／超时／取消清理、坏映像回滚，以及不可信协调 mutex 的拒绝。
+
+另有两个 Core `write`／`edit` 用例，在真实的 workspace-write 后台命令存活期间调用 Core 修改普通文件，要求后台命令随后重新打开文件并读取、追加，目标及受保护元数据 DACL 保持一致，清理后两种命令身份均被移除。write 用例还覆盖新建普通文件。DACL 修正前，[修订 `8190365` 的诊断运行](https://github.com/0xAstraZhang/Virgo/actions/runs/43802827866)在两种 runner 上均确认 Core 替换及后续读取成功，但追加被拒绝：普通文件带入了 `.virgo` 的命令只读 ACE。这些用例属于当前 head 的验收要求；前述 18 个场景的旧验证结果不代表新增用例已经通过。
 
 - [Microsoft：启动 AppContainer／LPAC](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)
 - [Restricted Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens) 与 [CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
