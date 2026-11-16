@@ -631,6 +631,7 @@ class AgentSession:
         self._failed_stores: list = []
         self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
         self._main_runtimes: dict[str, Runtime] = {}
+        self._pending_child_work: dict[str, tuple[Runtime, int]] = {}
         self._tool_groups: dict[tuple[str, str], tuple[tuple[AgentTool, tuple], ...]] = {}
         self._tool_version = 0
         self._plugin_cleanups: list[tuple[str, object]] = []
@@ -1389,6 +1390,41 @@ class AgentSession:
     def has_save_failure(self) -> bool:
         return bool(self._failed_stores) or any(store.save_error for store in self._visited_stores)
 
+    def reserve_child_work(self, store):
+        """Reserve queued agent work before a plugin publishes or starts it."""
+        owner = store.id
+        with self._lock:
+            if pending := self._pending_child_work.get(owner):
+                origin, count = pending
+            else:
+                origin, count = self._main_runtimes.get(owner), 0
+                if origin is None:
+                    for child in self._child_runtimes.values():
+                        candidate = child
+                        while candidate.parent is not None:
+                            candidate = candidate.parent
+                        if candidate.review_source.root.id == owner:
+                            origin = candidate
+                            break
+                if origin is None:
+                    raise ValueError("Queued child work requires an originating conversation")
+            self._pending_child_work[owner] = (origin, count + 1)
+        active = True
+
+        def release():
+            nonlocal active
+            with self._lock:
+                if not active:
+                    return
+                active = False
+                origin, count = self._pending_child_work[owner]
+                if count > 1:
+                    self._pending_child_work[owner] = (origin, count - 1)
+                else:
+                    self._pending_child_work.pop(owner)
+
+        return release
+
     def runtime_is_busy(self, runtime: Runtime) -> bool:
         """Require an idle origin and a stable selection across plugin inspection."""
         if runtime.session is not self:
@@ -1410,6 +1446,10 @@ class AgentSession:
             # Reject the older admission without undoing the newer selection.
             if (self.main is not selected or origin.proposed_plan is not proposal
                     or mode != (origin.work_mode, origin.work_mode_revision, self.permission_mode)):
+                return True
+            # A later observer can queue work after its plugin was inspected.
+            # Registrations share this lock, so no queue can slip past admission.
+            if self._pending_child_work.get(origin.review_source.root.id):
                 return True
             if runtime.agent.running or (runtime is self.main and self.busy):
                 return True
