@@ -66,6 +66,8 @@
 
 Core `write`／`edit`、可信扩展、hooks、远程工具和宿主本身在 LPAC 外执行。Core 文件修改保留独立的应用层检查和新文件暂存；Windows 路径不具备 POSIX 描述符相对遍历保证。本后端不宣称这些 Python 操作受 OS 沙箱隔离。
 
+Core 文件提交的最后一步使用原生 `FileRenameInformationEx` 的替换和 POSIX 语义标志，原子替换目录项，同时允许运行中的命令继续保留旧文件的 ACL 句柄用于清理。暂存源文件和目标父目录均以禁止 reparse 遍历的方式打开，并保留到重命名完成。原生重命名不可用时提交失败，不会关闭其他命令的 ACL 句柄或改写现有目标 inode。参见[原生重命名契约](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)。
+
 ## 分发与维护
 
 未新增第三方依赖、驱动、编译助手、服务、账户预配或防火墙规则安装器。普通 Python 包分发 `windows_sandbox.py`、`windows_sandbox_acl.py`、`windows_sandbox_files.py`，由 `ctypes` 调用系统 DLL；进程生命周期仍由 `windows_process.py` 管理。

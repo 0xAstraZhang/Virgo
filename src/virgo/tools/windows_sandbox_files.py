@@ -57,6 +57,11 @@ class _ByHandleInfo(ctypes.Structure):
                 ("Links", DWORD), ("IndexHigh", DWORD), ("IndexLow", DWORD)]
 
 
+class _RenameInfo(ctypes.Structure):
+    _fields_ = [("Flags", DWORD), ("RootDirectory", HANDLE),
+                ("FileNameLength", DWORD), ("FileName", ctypes.c_ubyte * 1)]
+
+
 def _api(library, name, args, result=BOOL):
     function = getattr(library, name)
     function.argtypes, function.restype = args, result
@@ -73,6 +78,9 @@ GetVolumeInformation = _api(kernel, "GetVolumeInformationByHandleW", [
 NtCreateFile = _api(ntdll, "NtCreateFile", [
     ctypes.POINTER(HANDLE), DWORD, ctypes.POINTER(_ObjectAttributes), ctypes.POINTER(_IOStatusBlock),
     ctypes.c_void_p, DWORD, DWORD, DWORD, DWORD, ctypes.c_void_p, DWORD,
+], NTSTATUS)
+NtSetInformationFile = _api(ntdll, "NtSetInformationFile", [
+    HANDLE, ctypes.POINTER(_IOStatusBlock), ctypes.c_void_p, DWORD, ctypes.c_int,
 ], NTSTATUS)
 RtlNtStatusToDosError = _api(ntdll, "RtlNtStatusToDosError", [NTSTATUS], DWORD)
 
@@ -242,6 +250,31 @@ def open_child(parent: FileHandle, name: str, access, *, share_delete=True, shar
     return _open(name, access, parent=parent.value, share_delete=share_delete,
                  share_write=share_write, directory=directory, disposition=disposition,
                  allow_reparse=allow_reparse)
+
+
+def replace_staged(source: Path, target: Path):
+    """Atomically replace a name while existing ACL lease handles stay valid."""
+    source, target = Path(normalize_path(source)), Path(normalize_path(target))
+    _component(target.name)
+    encoded = target.name.encode("utf-16-le")
+    with open_path(target.parent, FILE_READ_ATTRIBUTES, directory=True, share_delete=False) as parent:
+        with open_path(source, 0x10000, directory=False,
+                       share_delete=False, share_write=False) as staged:  # DELETE
+            data = ctypes.create_string_buffer(ctypes.sizeof(_RenameInfo) + len(encoded))
+            info = _RenameInfo.from_buffer(data)
+            # FileRenameInformationEx: replace the directory entry even when a
+            # sandbox retains the old inode for later ACL revocation. Do not
+            # ignore read-only attributes or fall back to an in-place write.
+            info.Flags = 0x1 | 0x2  # REPLACE_IF_EXISTS | POSIX_SEMANTICS
+            info.RootDirectory = parent.value
+            info.FileNameLength = len(encoded)
+            ctypes.memmove(ctypes.addressof(data) + _RenameInfo.FileName.offset, encoded, len(encoded))
+            status = _IOStatusBlock()
+            result = NtSetInformationFile(staged.value, ctypes.byref(status), data, len(data), 65)
+            if result < 0:
+                error = ctypes.WinError(RtlNtStatusToDosError(result))
+                error.filename, error.filename2 = str(source), str(target)
+                raise error
 
 
 class _PinnedOutput(io.FileIO):

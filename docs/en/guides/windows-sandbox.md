@@ -66,6 +66,8 @@ Abrupt broker death closes its Job handle and requests kernel termination throug
 
 Core `write`/`edit`, trusted extensions, hooks, remote tools and the broker run outside LPAC. Core file mutations retain their separate application checks and fresh-file staging. The Windows Core path does not provide the POSIX descriptor-relative traversal guarantee; this backend does not claim to OS-sandbox those Python operations.
 
+The final Core file commit uses the native `FileRenameInformationEx` replace and POSIX-semantics flags. This atomically replaces the directory entry while a running command retains the old file's ACL handle for cleanup. The staged source and destination parent are opened without reparse traversal and retained through the rename. An unavailable native rename fails the commit; it does not close another command's ACL handles or write into the existing destination inode. See [the native rename contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information).
+
 ## Distribution and maintenance
 
 No third-party dependency, driver, compiled helper, service, account provisioning or firewall-rule installer is added. The ordinary Python package contains `windows_sandbox.py`, `windows_sandbox_acl.py` and `windows_sandbox_files.py`; `ctypes` calls the installed Windows system DLLs. `windows_process.py` continues to own process lifetime.

@@ -124,7 +124,12 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
                 if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
                     raise SandboxFileDenied(f"Sandbox file changed before commit: {path}")
             stream.close()  # Windows replacement requires closing the staged handle.
-            os.replace(staged_target, target, src_dir_fd=staging, dst_dir_fd=directory)
+            if os.name == "nt":
+                from .windows_sandbox_files import replace_staged
+
+                replace_staged(staged_target, target)
+            else:
+                os.replace(staged_target, target, src_dir_fd=staging, dst_dir_fd=directory)
             staged_name = None
 
         yield stream, existed, commit
