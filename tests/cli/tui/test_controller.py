@@ -173,6 +173,39 @@ def test_cancel_pending_preserves_current_run_and_notifications(make_session):
     assert session.model.spec == "faux/test"
 
 
+def test_cancel_pending_removes_unconsumed_input_after_worker_finishes(make_session):
+    entered, release = threading.Event(), threading.Event()
+
+    def response(_):
+        entered.set()
+        assert release.wait(4)
+        return faux.reply("interrupted result")
+
+    ui = FullscreenUI()
+    session = make_session(response, faux.reply("notification handled"), ui=ui)
+    controller = RunController(session, ui)
+    controller.start("current task")
+    try:
+        assert entered.wait(2)
+        controller.submit("cancel this queued instruction")
+        session.notify("keep this notification")
+        controller.abort()
+    finally:
+        release.set()
+    controller._worker.join(3)
+    assert not controller._worker.is_alive()
+    assert controller.pending == ["steering: cancel this queued instruction"]
+    assert any(message.text() == "cancel this queued instruction" for message in session.wakeups)
+
+    assert controller.cancel_pending() == 1
+    assert not controller.pending
+    pump(controller, lambda c: not c.busy and not session.wakeups)
+
+    users = [message for message in session.main.messages if isinstance(message, UserMessage)]
+    assert not any(message.text() == "cancel this queued instruction" for message in users)
+    assert any(message.kind == "notification" and "keep this notification" in message.text() for message in users)
+
+
 def test_input_after_worker_finished_before_poll_is_scheduled(make_session):
     ui = FullscreenUI()
     session = make_session(faux.reply("first answer"), faux.reply("second answer"), ui=ui)

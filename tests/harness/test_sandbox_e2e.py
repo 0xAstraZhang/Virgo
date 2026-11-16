@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import socket
+import stat
 import sys
 import tempfile
 import threading
@@ -127,14 +128,21 @@ def test_missing_backend_is_fail_closed_in_real_session(make_session, project, m
     flags for flags in itertools.product((False, True), repeat=3)
     if flags != (False, False, True)
 ])
-def test_native_independent_permission_combinations(native, project, read_only, workspace_only, network_allowed):
-    """Each flag changes its own boundary, without granting Unix-socket access."""
+def test_native_independent_permission_combinations(native, short_workspace, read_only, workspace_only, network_allowed):
+    """Check host objects, not a same-path file created in private /tmp.
+
+    An existing-file mutation cannot create a sandbox-private shadow. Host-side
+    inode/content checks independently establish whether actual data changed.
+    The socket stays inside the visible workspace, with a short AF_UNIX path.
+    """
     from virgo.tools.bash import run_command
 
+    project = short_workspace
     inside = project / "flag-inside.txt"
     outside = project.parent / "flag-outside.txt"
     inside.write_text("inside")
     outside.write_text("outside")
+    original = {path: path.stat() for path in (inside, outside)}
     secret = Path(os.environ["VIRGO_HOME"]) / "private-secret.txt"
     secret.write_text("private-value")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp, socket.socket(socket.AF_UNIX) as unix:
@@ -156,11 +164,15 @@ def tcp():
 def unix():
     with socket.socket(socket.AF_UNIX) as client:
         client.connect({str(project / 'flag-host.sock')!r})
+def write_existing(path):
+    with Path(path).open('r+') as stream:
+        stream.write('changed')
+        stream.truncate()
 print(json.dumps({{
     'inside_read': attempt(lambda: Path({str(inside)!r}).read_text()),
     'outside_read': attempt(lambda: Path({str(outside)!r}).read_text()),
     'inside_write': attempt(lambda: Path({str(inside)!r}).write_text('changed')),
-    'outside_write': attempt(lambda: Path({str(outside)!r}).write_text('changed')),
+    'outside_write': attempt(lambda: write_existing({str(outside)!r})),
     'private_read': attempt(lambda: Path({str(secret)!r}).read_text()),
     'tcp': attempt(tcp), 'unix': attempt(unix),
 }}))
@@ -170,11 +182,27 @@ print(json.dumps({{
         output, code, status = run_command(python_command(source), project, 15, threading.Event(),
                                           interpreter=selected(native), sandbox_policy=policy)
     assert status == "ok" and code == 0, output.text
+    for path, content in ((inside, "inside" if read_only else "changed"),
+                          (outside, "changed" if not read_only and not workspace_only else "outside")):
+        current = path.stat()
+        assert (current.st_dev, current.st_ino) == (original[path].st_dev, original[path].st_ino)
+        assert path.read_text() == content, f"Unexpected host-file mutation: {path}"
     assert json.loads(output.text) == {
         "inside_read": True, "outside_read": not workspace_only,
         "inside_write": not read_only, "outside_write": not read_only and not workspace_only,
         "private_read": False, "tcp": network_allowed, "unix": False,
     }
+
+
+@pytest.fixture
+def short_workspace():
+    # macOS pytest roots can exceed sockaddr_un.sun_path even before the file
+    # name is appended. Keep the listener in a real, visible workspace instead
+    # of moving it into an unmounted host directory that would mask a bypass.
+    with tempfile.TemporaryDirectory(prefix="vgf-", dir="/tmp") as directory:
+        workspace = Path(directory).resolve() / "w"
+        workspace.mkdir()
+        yield workspace
 
 
 def test_native_network_permission_supports_system_name_resolution(native, project):
@@ -189,6 +217,72 @@ def test_native_network_permission_supports_system_name_resolution(native, proje
     output, code, status = run_command(python_command(source), project, 15, threading.Event(),
                                       interpreter=selected(native), sandbox_policy=policy)
     assert status == "ok" and code == 0 and "connected" in output.text, output.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux resolver metadata and POSIX account lookup")
+def test_linux_resolver_configuration_accepts_only_trusted_service_metadata(project, monkeypatch):
+    """Systemd-owned DNS data is not an executable runtime.
+
+    Ubuntu CI reproduced rejection of its actual service-owned stub-resolv.conf.
+    This focused envelope check substitutes only fixed system-path metadata; the
+    separate native test still has to establish actual name resolution and TCP.
+    """
+    import pwd
+
+    entry = Path("/etc/resolv.conf")
+    target = Path("/run/systemd/resolve/stub-resolv.conf")
+    service_uid = 42424
+    metadata = {"entry_uid": 0, "target_uid": service_uid, "target_mode": stat.S_IFREG | 0o644,
+                "directory_uid": service_uid}
+    root_paths = {*entry.parents, *target.parents}
+    root_files = {Path("/etc/hosts"), Path("/etc/nsswitch.conf")}
+    original_stat, original_resolve, original_account = Path.stat, Path.resolve, pwd.getpwnam
+
+    def info(mode, uid):
+        return os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+
+    def system_stat(path, *, follow_symlinks=True):
+        if path == entry and not follow_symlinks:
+            return info(stat.S_IFLNK | 0o777, metadata["entry_uid"])
+        if path in {entry, target}:
+            return info(metadata["target_mode"], metadata["target_uid"])
+        if path == target.parent:
+            return info(stat.S_IFDIR | 0o755, metadata["directory_uid"])
+        if path in root_paths:
+            return info(stat.S_IFDIR | 0o755, 0)
+        if path in root_files:
+            return info(stat.S_IFREG | 0o644, 0)
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    def system_resolve(path, *args, **kwargs):
+        if path == entry:
+            return target
+        if path in root_files:
+            return path
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", system_stat)
+    monkeypatch.setattr(Path, "resolve", system_resolve)
+    monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=service_uid)
+                        if name == "systemd-resolve" else original_account(name))
+    policy = sandbox.SandboxPolicy(workspace=project, read_only=True, network_allowed=True)
+
+    def envelope():
+        return policy._linux(Path("/usr/bin/bwrap"), project.parent / "scratch", project, 99, ())
+
+    args = envelope()
+    mounts = [args[index:index + 3] for index, value in enumerate(args) if value == "--ro-bind"]
+    assert ["--ro-bind", str(target), str(target)] in mounts
+    assert ["--ro-bind", str(target.parent), str(target.parent)] not in mounts
+    with pytest.raises(sandbox.SandboxUnavailable, match="not system-owned"):
+        sandbox._system_file(entry)  # Executable/library trust must stay strict.
+    for key, value in (("entry_uid", service_uid), ("target_uid", service_uid + 1),
+                       ("directory_uid", service_uid + 1), ("target_mode", stat.S_IFREG | 0o666),
+                       ("target_mode", stat.S_IFLNK | 0o444)):
+        previous, metadata[key] = metadata[key], value
+        with pytest.raises(sandbox.SandboxUnavailable):
+            envelope()
+        metadata[key] = previous
 
 
 def test_project_cannot_disable_user_sandbox(project):

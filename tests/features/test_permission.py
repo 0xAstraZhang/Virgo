@@ -152,6 +152,10 @@ def test_search_review_matches_actual_ignored_and_filtered_files(make_session, t
     (tmp_path / "outside").write_text("value OUTSIDE_SECRET")
     (hidden / "python").symlink_to(tmp_path / "outside")
     (session.cwd / "secret.txt").symlink_to(tmp_path / "outside")
+    outside_directory = tmp_path / "outside-directory"
+    outside_directory.mkdir()
+    (outside_directory / "hidden.py").write_text("value OUTSIDE_SECRET")
+    (session.cwd / "linked-directory").symlink_to(outside_directory, target_is_directory=True)
     faux.script("test", faux.reply(tools=[
         ("grep", {"pattern": "value", "glob": "*.py"}),
         ("glob", {"pattern": "**/*.py"}),
@@ -160,6 +164,7 @@ def test_search_review_matches_actual_ignored_and_filtered_files(make_session, t
     session.prompt("Search without following outside aliases")
     results = tool_results(session)
     assert not results[0].is_error and not results[1].is_error
+    assert "linked-directory" not in results[1].text()
     assert results[2].is_error and results[2].details["sandbox"]["dimension"] == "workspace_only"
     assert "OUTSIDE_SECRET" not in repr(results)
     assert not session.ui.questions
@@ -190,6 +195,9 @@ def test_search_review_selects_the_same_files_as_the_glob_tools(make_session, tm
 def test_shell_session_approval_binds_all_resolved_path_targets(make_session, tmp_path, command):
     ui = RecordingUI(answers=["a"])
     session = make_session(ui=ui, allow=False, settings={"sandbox": {"mode": "workspace-write"}})
+    # These commands exercise POSIX path parsing even when the host defaults to PowerShell.
+    shells = session.services["shell"]
+    shells.select(next(shell for shell in shells.available if shell.tool_name == "bash"))
     (session.cwd / "sub").mkdir()
     (session.cwd / "fixed").symlink_to(tmp_path / "fixed-outside")
     link = session.cwd / ("sub/link" if command.startswith(("cd", "git")) else "link")
@@ -213,6 +221,8 @@ def test_shell_session_approval_binds_all_resolved_path_targets(make_session, tm
 def test_dynamic_shell_approval_is_once_and_inherited_cdpath_needs_review(make_session, monkeypatch):
     ui = RecordingUI(answers=["a", "n"])
     session = make_session(ui=ui, allow=False, settings={"sandbox": {"mode": "workspace-write"}})
+    shells = session.services["shell"]
+    shells.select(next(shell for shell in shells.available if shell.tool_name == "bash"))
     args = {"command": "cat $TARGET"}
     expanded = {"workspace_only": False, "network_allowed": True}
     assert not request(session, "bash", args, permissions=expanded).is_error

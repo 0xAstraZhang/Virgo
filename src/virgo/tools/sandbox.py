@@ -101,6 +101,40 @@ def _system_file(path: Path) -> Path:
     return path
 
 
+def _network_config_file(path: Path) -> Path:
+    """Accept systemd-resolved's service-owned data without relaxing runtime trust."""
+    try:
+        return _system_file(path)
+    except SandboxUnavailable:
+        source = path.resolve(strict=True)
+        if path != Path("/etc/resolv.conf") or source not in {
+            Path("/run/systemd/resolve/stub-resolv.conf"), Path("/run/systemd/resolve/resolv.conf"),
+        }:
+            raise
+    import pwd
+
+    try:
+        service_uid = pwd.getpwnam("systemd-resolve").pw_uid
+    except KeyError as error:
+        raise SandboxUnavailable("Resolver configuration has no known systemd-resolve owner") from error
+    entry = path.lstat()
+    if (entry.st_uid != 0 or not (stat.S_ISLNK(entry.st_mode) or stat.S_ISREG(entry.st_mode))
+            or not stat.S_ISLNK(entry.st_mode) and entry.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+        raise SandboxUnavailable(f"Resolver configuration entry is not root-controlled: {path}")
+    for parent in path.parents:
+        info = parent.stat()
+        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise SandboxUnavailable(f"Resolver configuration entry has an unsafe parent: {parent}")
+    for candidate in (source, *source.parents):
+        info = candidate.lstat()
+        owners = {0, service_uid} if candidate in {source, source.parent} else {0}
+        expected_type = stat.S_ISREG if candidate == source else stat.S_ISDIR
+        if (info.st_uid not in owners or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or not expected_type(info.st_mode)):
+            raise SandboxUnavailable(f"Resolver configuration has unsafe ownership, permissions or type: {candidate}")
+    return source
+
+
 def platform_backend() -> tuple[str, Path]:
     if sys.platform == "win32":
         try:
@@ -406,7 +440,7 @@ class SandboxPolicy:
             # never the surrounding service sockets or host runtime directory.
             for value in ("/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"):
                 if Path(value).exists():
-                    source = _system_file(Path(value))
+                    source = _network_config_file(Path(value))
                     if source.is_relative_to(Path("/run")) or (self.workspace_only and not any(
                             source.is_relative_to(root) for root in self._read_roots())):
                         args += ["--ro-bind", str(source), str(source)]

@@ -102,19 +102,27 @@ def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str]):
             else:
                 # The retained native handle denies directory replacement. Keep
                 # every parent pinned while recursively inspecting its children.
-                from .windows_sandbox_files import open_child
+                from .windows_sandbox_files import (
+                    FILE_ATTRIBUTE_DIRECTORY,
+                    FILE_ATTRIBUTE_REPARSE_POINT,
+                    open_child,
+                )
 
                 with os.scandir(path) as entries:
                     for entry in entries:
                         file = Path(entry.path)
                         if policy.private_path(file.resolve()):
                             continue
-                        if entry.is_dir(follow_symlinks=False):
-                            if entry.name not in ignore:
+                        info = entry.stat(follow_symlinks=False)
+                        if info.st_file_attributes & FILE_ATTRIBUTE_DIRECTORY:
+                            if (entry.name not in ignore
+                                    and not info.st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT):
                                 yield from walk_files(file, policy, ignore)
                         else:
-                            with open_child(directory, entry.name, 0x80, directory=False):
-                                yield file, entry.stat(follow_symlinks=False)
+                            # Inspect only this final object's metadata, including
+                            # file links. Content reads resolve and check scope later.
+                            with open_child(directory, entry.name, 0x80, directory=False, allow_reparse=True):
+                                yield file, info
     except OSError as error:
         if error.errno in {errno.ELOOP, errno.ENOTDIR}:
             raise SandboxFileDenied(f"Sandbox search path changed or contains a symbolic link: {path}",

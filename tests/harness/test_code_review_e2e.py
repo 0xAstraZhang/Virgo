@@ -159,6 +159,33 @@ def test_review_context_is_independent_of_planning_intent(make_session, project,
     assert session.services["permissions"].work_mode == work_mode
 
 
+def test_review_uses_permission_mode_selected_during_previous_run(make_session, project):
+    """A new isolated task must not inherit the previous completed run's authority."""
+    _changed_repository(project)
+
+    def select_next_mode(_context):
+        session.services["sandbox"].select_mode("read-only")
+        return faux.reply("Finished the previous task.")
+
+    session = make_session(
+        select_next_mode,
+        faux.reply(tools=[("write", {"path": "review-write.txt", "content": "unexpected"})]),
+        _answer(), refresh_models=False,
+    )
+    manager = session.services["sandbox"]
+    session.prompt("Finish the current task")
+    assert manager.selected_mode_id == "read-only"
+    assert manager.mode_for(session.main).id == "no-limit"
+
+    session.prompt("/review")
+
+    assert not (project / "review-write.txt").exists()
+    assert manager.mode_for(session.main).read_only
+    assert '"read_only": true' in calls()[-1]["system"]
+    assert _latest(session)["status"] == "completed"
+    assert _latest(session)["freshness"] == "current"
+
+
 def test_review_commit_ignores_unrelated_oversized_worktree_context(make_session, project):
     _repository(project)
     _write(project, "large.txt", "unchanged\n" * 120_000)
@@ -672,6 +699,8 @@ def test_review_tui_cancellation_releases_runtime_and_the_next_review_works(make
     session = make_session(ui=ui, refresh_models=False)
     controller = RunController(session, ui)
     baseline_signals = tuple(session.store.failure_signals)
+    closed = []
+    session.bus.on("runtime_closed", closed.append)
     faux.script("test", faux.reply(_answer().text, delay=20))
     controller.start("/review")
     try:
@@ -679,11 +708,16 @@ def test_review_tui_cancellation_releases_runtime_and_the_next_review_works(make
         child = next(iter(session._child_runtimes.values()))
         assert child.parent is session.main and child.cwd == project
         assert child.request_budget is session.main.request_budget
+        assert ui._signals[child.name] is child.agent.signal
         controller.abort()
         updates = pump(controller)
         assert _latest(session)["status"] == "cancelled"
         assert not child.agent.running and not session._child_runtimes
         assert tuple(session.store.failure_signals) == baseline_signals
+        assert ui._signals == {"main": session.main.agent.signal}
+        assert closed == [child]
+        session.release_runtime(child)
+        assert closed == [child]
         assert not child.read_only
         assert child.workflow == "review"
         assert "cancelled" in repr(updates).lower()
@@ -692,6 +726,13 @@ def test_review_tui_cancellation_releases_runtime_and_the_next_review_works(make
         pump(controller)
         assert _latest(session)["status"] == "completed"
         assert not session._child_runtimes
+        assert ui._signals == {"main": session.main.agent.signal}
+        for _ in range(2):
+            controller.submit("/review show")
+            pump(controller)
+            assert not session._child_runtimes
+            assert ui._signals == {"main": session.main.agent.signal}
+        assert len(closed) == 4
     finally:
         controller.abort()
         if controller._worker is not None:

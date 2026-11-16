@@ -1051,6 +1051,7 @@ class AgentSession:
                     with store._lock:
                         if runtime.agent.signal in store.failure_signals:
                             store.failure_signals.remove(runtime.agent.signal)
+        self.bus.emit("runtime_closed", runtime)
 
     def runtime_for_context(self, ctx: ToolContext) -> Runtime | None:
         """Resolve a trusted caller without borrowing the currently selected runtime."""
@@ -1377,6 +1378,9 @@ class AgentSession:
                     if self.busy:
                         raise RuntimeError("An isolated task cannot overlap another run in this session")
                     runtime = self.main
+                    # A user selection made during the previous run applies to
+                    # this new task; existing descendants keep their snapshots.
+                    self.services["sandbox"].capture_runtime(runtime)
                     self.busy = True
                     runtime.agent.signal.clear()
                 try:
@@ -1563,11 +1567,17 @@ class AgentSession:
         return True
 
     def cancel_pending_input(self) -> int:
-        """Cancel unconsumed user steering without touching notifications or follow-ups."""
+        """Cancel unconsumed user input, including input handed back after a run."""
+        def is_input(message) -> bool:
+            return isinstance(message, UserMessage) and message.kind is None
+
         with self._lock:
-            return self.main.agent.discard_steering(
-                lambda message: isinstance(message, UserMessage) and message.kind is None,
-            )
+            removed = self.main.agent.discard_steering(is_input)
+            kept = deque(message for message in self.wakeups if not is_input(message))
+            removed += len(self.wakeups) - len(kept)
+            self.wakeups.clear()
+            self.wakeups.extend(kept)
+            return removed
 
     def runtime_for_store(self, store) -> Runtime | None:
         """Find the originating lead, including an inactive or in-memory session."""

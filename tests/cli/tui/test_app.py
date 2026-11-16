@@ -414,7 +414,10 @@ def test_review_report_remains_visible_after_tools_and_history_replay(make_sessi
                 assert "Code Review" in str(app.query_one("#status", Static).content)
             finally:
                 release.set()
-            await wait_for(pilot, lambda: bool(session.store.custom("code_review")) and not app.controller.busy)
+            # Draining the controller clears busy before the app has awaited
+            # all tool/report mounts in that batch. Wait for presentation too.
+            await wait_for(pilot, lambda: bool(session.store.custom("code_review"))
+                           and not app.controller.busy and not app._polling)
             report = session.store.custom("code_review")[-1]
             assert report["status"] == "completed"
             for replay in (False, True):

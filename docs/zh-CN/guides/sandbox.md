@@ -30,6 +30,8 @@ Workspace-Edit 允许文件访问范围内的联网操作。外部 SDK／缓存�
 
 `network_allowed=false` 时，Linux 使用独立网络命名空间并通过 seccomp 禁止 socket；macOS 不授予 Seatbelt 网络权限；Windows 不提供网络 capability。允许联网时，Linux 共享宿主网络并仅允许 IPv4／IPv6 socket 类型，macOS 授予 TCP／UDP 权限，以及 DNS 所需的精确系统解析器／路由 IPC 端点。任意 Unix socket 和进程控制逃逸路径仍受限制。Linux 只额外暴露精确解析器配置文件，不暴露 `/run` 下的宿主服务 socket。Windows 增加互联网／私有网络 capability，不修改防火墙规则或 loopback 豁免。联网权限可以访问宿主 TCP 服务，不是域名或远端主机白名单。Core 在应用层另行约束 Web／MCP 操作；模型传输仍在命令沙箱之外。
 
+Linux 将解析器配置作为数据处理，与可执行文件／运行时的信任检查分开。root 控制的 `/etc/resolv.conf` 可以指向 `/run/systemd/resolve/stub-resolv.conf` 或 `/run/systemd/resolve/resolv.conf`，后者允许由 root 或本机 `systemd-resolve` 账户持有。服务账户所有权例外仅适用于该精确普通文件和其服务目录；其他祖先仍须由 root 控制，且拒绝组／其他用户可写权限。只读挂载的是精确文件，不是其所在目录。启动器和库仍严格要求 root 所有。
+
 前台、后台及子 Runtime Shell 共用启动器，使用来源工作区。Plan 和 Code Review 的提示词不会更改三个开关，也不删除常规工具。明确指定的只读子任务可以收紧继承权限。已运行的进程保留启动时边界；切换预设不会追溯改变其权限。
 
 启用沙箱还会阻止 Shell 发现与选择过程中的宿主执行。启动配置、PATH 候选、缓存选项和 `/shell` 命令只检查可执行路径，不运行版本探测；版本保持为 `unknown`，由实际隔离启动判断所选解释器能否执行。后端不可用时也不会回退到宿主版本探测。相应的版本与兼容行为见[命令解释器](shells.md)。

@@ -37,7 +37,9 @@ class SandboxManager:
         validate_config(config)
         if "mode" in config:
             mode = legacy_mode(config["mode"])
-            self.modes.setdefault(mode.id, mode)
+            # An explicit compatibility option defines its flags; a custom
+            # preset with the same ID must not replace that authority.
+            self.modes[mode.id] = mode
             self._selected_mode_id = mode.id
         self.revision = 0
         self._pending: dict[str, _Grant] = {}

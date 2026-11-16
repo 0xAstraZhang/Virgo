@@ -1,6 +1,8 @@
 """Execution profiles and one-operation exceptions through the existing Agent Loop."""
 from __future__ import annotations
 
+import pytest
+
 from virgo.ai.providers import faux
 from virgo.harness.session import AgentSession
 from virgo.harness.settings import Settings
@@ -147,3 +149,34 @@ def test_default_profile_is_workspace_edit_with_network(project):
         assert mode.flags() == {"read_only": False, "workspace_only": True, "network_allowed": True}
     finally:
         session.shutdown()
+
+
+@pytest.mark.parametrize("legacy,identifier,flags", [
+    ("read-only", "legacy-read-only", (True, True, False)),
+    ("workspace-write", "legacy-workspace-write", (False, True, False)),
+    ("disabled", "no-limit", (False, False, True)),
+])
+def test_explicit_legacy_policy_overrides_colliding_custom_preset(make_session, project, legacy, identifier, flags):
+    """A preset name collision must not redefine an explicit compatibility option.
+
+    Failure modes: legacy read-only writes data, workspace-write escapes its
+    scope or enables networking, and disabled inherits a redefined No-Limit.
+    """
+    inside, outside = project / "legacy-inside.txt", project.parent / "legacy-outside.txt"
+    collision = {"name": "Collision", "readOnly": legacy == "disabled",
+                 "workspaceOnly": legacy == "disabled", "networkAllowed": legacy != "disabled"}
+    session = make_session(
+        faux.reply(tools=[("write", {"path": str(inside), "content": "inside"}),
+                          ("write", {"path": str(outside), "content": "outside"})]), faux.reply("done"),
+        settings={"profile": "minimal", "sandbox": {"mode": legacy},
+                  "permissions": {"modes": {identifier: collision}}},
+        extensions=False, refresh_models=False,
+    )
+    session.prompt("Apply the explicit legacy permission option")
+    read_only, workspace_only, network_allowed = flags
+    assert inside.exists() is not read_only
+    assert outside.exists() is (not read_only and not workspace_only)
+    assert [result.is_error for result in tool_results(session)] == [read_only, read_only or workspace_only]
+    assert session.services["sandbox"].mode_for(session.main).flags() == {
+        "read_only": read_only, "workspace_only": workspace_only, "network_allowed": network_allowed,
+    }
