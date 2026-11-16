@@ -20,19 +20,19 @@ The `coding` preset enables `plan`. To enable it in the minimal preset:
 {"profile": "minimal", "plugins": {"plan": {"enabled": true}}}
 ```
 
-Use either the direct task command or a workflow selection followed by a message:
+Use either the direct Plan command or a startup selection followed by a message:
 
 ```text
 /plan Investigate the configuration loader and plan an optional timeout.
-/workflow plan
+/plan
 Investigate the configuration loader and propose an optional timeout.
 /plan show
 ```
 
 `/plan` without arguments selects planning instructions and displays the current
-proposal when present. `/workflow default` leaves the planning task without
-executing a proposal or changing permissions. `/mode` selects permissions; it is
-not the workflow selector.
+proposal when present. `/plan off` leaves the planning task without
+executing a proposal or changing permissions. `/permissions` selects permissions; it is
+not the Plan selector.
 
 The instructions ask the model to inspect project instructions, relevant code,
 existing tests and behavior before deciding. With `ask_user` available, it should
@@ -110,7 +110,7 @@ not lend the visible conversation's proposal to an older runtime or child.
 Saved history restores the proposal and workflow, with no active execution.
 Historical execution records do not queue another run or restore authorization.
 
-`workMode` and `--work-mode` remain workflow startup inputs. An explicit startup
+`plan` and `--plan` are startup inputs. An explicit startup
 override applies to the selected initial conversation, including the resume
 picker, before an initial prompt runs. It does not rewrite the user default for
 later conversations. A retained origin with active work rejects such an override.

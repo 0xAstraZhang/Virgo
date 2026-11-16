@@ -1,4 +1,4 @@
-# Permission profiles and prompt workflows
+# Permission presets and prompt tasks
 
 This change separates task instructions from execution permissions. Plan and Code Review use
 the normal Runtime and registered tools; their prompts request planning/review without implementing.
@@ -16,18 +16,18 @@ not prevent an already trusted MCP service from connecting autonomously. Unsuppo
 combinations fail before launching.
 
 Each run captures a policy; children and background work keep their source workspace and policy.
-Selecting/editing a mode affects subsequent work, never claims to revoke a running process.
+Selecting/editing a preset affects subsequent work, never claims to revoke a running process.
 A permission request may grant only one exact operation in its originating run. It cannot change
 the selected preset, override a user deny, authorize another agent, survive policy edits/revocation,
 or be restored from historical messages. Only managed file, Shell, Web and MCP operations can
-receive an exception; spawning a child or starting a workflow cannot grant authority to its
+receive an exception; spawning a child or starting a task cannot grant authority to its
 future operations. Approvals are rechecked before execution. Failed or
 partially executed commands are never automatically replayed.
 
 ## Failure modes and acceptance
 
 - A tool visible to Plan/Review may still fail under the execution policy. Check identical normal
-  tool schemas under each workflow and prove write denial through the execution path.
+  tool schemas under each task and prove write denial through the execution path.
 - A workspace escape through a direct file tool, link, subprocess, background job or child must
   receive the source policy; changing cwd or selected conversation cannot expand access.
 - Offline policy must cover managed Shell, Web/native provider search and remote MCP invocation;

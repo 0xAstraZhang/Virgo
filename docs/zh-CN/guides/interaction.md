@@ -6,7 +6,7 @@
 
 输入任务并按 Enter。Agent 工作时再次发送消息，会在当前批次工具执行结束后、下一次模型调用前补充到当前任务中。待处理输入区域区分这类补充和等待本轮结束后执行的命令。Ctrl+Shift+K 取消尚未被消费的用户输入和延后命令，保留当前任务与后台通知。Esc 或 Ctrl+C 中止当前任务，不会取消另外排队的输入。
 
-Plan 和 Code Review 是可选任务工作流，分别通过指令要求产出方案或审查结果；执行权限由独立选择的权限模式决定。Plan 本身不代表只读权限。忙碌时的计划编辑和执行会被拒绝，不会排队。
+Plan 和 Code Review 是可选任务，分别通过指令要求产出方案或审查结果；执行权限由独立选择的权限预设决定。Plan 本身不代表只读权限。忙碌时的计划编辑和执行会被拒绝，不会排队。
 
 ```text
 /language 中文
@@ -31,11 +31,8 @@ Plan 和 Code Review 是可选任务工作流，分别通过指令要求产出�
 | `/shell [name\|path\|auto]` | 选择命令解释器 |
 | `/search [auto\|duckduckgo\|deepseek\|off]` | 选择搜索方式 |
 | `/fetch [auto\|http\|deepseek\|off]` | 选择网页读取方式 |
-| `/permissions [ask\|never\|revoke]` | 查看规则、选择审批策略或撤销会话授权 |
-| `/mode [preset-id\|list\|save <id> <JSON>]` | 查看、选择或保存权限模式 |
-| `/workflow [default\|plan]` | 查看或切换任务指令，不改变权限 |
-| `/plan [goal\|show\|edit [Markdown]\|execute <id>:<revision>]` | 进入 Plan、请求规划，或查看、修改、执行当前方案 |
-| `/sandbox` | 查看任务权限配置和原生后端可用状态 |
+| `/permissions [preset-id\|list\|save <id> <JSON>\|ask\|never\|revoke\|show]` | 查看或修改权限预设、审批策略、已记住的决定和后端可用状态 |
+| `/plan [goal\|show\|edit [Markdown]\|execute <id>:<revision>\|off]` | 进入 Plan、请求规划，查看、修改、执行当前方案，或退出 Plan |
 | `/compact [focus]` | 压缩较早的模型上下文 |
 | `/new`、`/sessions [number]`、`/session` | 新建、浏览或查看会话 |
 | `/diagnostics [error-id]` | 查看近期错误和诊断记录 |
@@ -44,6 +41,8 @@ Plan 和 Code Review 是可选任务工作流，分别通过指令要求产出�
 | `/skills`、`/skill:name [args]` | 列出技能或显式使用技能 |
 | `/mcp [reconnect]` | 查看或重新加载 MCP 连接 |
 | `/exit` | 退出交互程序 |
+
+`/mode`、`/sandbox` 和 `/workflow` 是 `/permissions` 与 `/plan` 的一个版本弃用别名，会打印弃用提示。规范词汇见[术语](../development/vocabulary.md)。
 
 模型和推理强度选择器读取已保存的模型目录，不会自行联网刷新。Virgo 启动时在后台刷新已连接的厂商；首次目录仍在加载时，可在完成后重新打开 `/model`。刷新失败会保留旧目录。选择器中 Enter 保存为用户默认值，`s` 仅应用于当前会话，Esc 取消。直接使用 `/model provider/id` 和 `/effort high` 只影响当前会话。
 
@@ -54,7 +53,7 @@ Plan 和 Code Review 是可选任务工作流，分别通过指令要求产出�
 | Enter | 发送输入；在菜单中确认选中项 |
 | Shift+Enter | 换行；macOS Terminal 使用 Ctrl+J |
 | Tab | 补全斜杠命令和提示模板 |
-| Shift+Tab | 打开权限模式选择器；查看、选择、重命名、修改或新建模式 |
+| Shift+Tab | 打开权限预设选择器；查看、选择、重命名、修改或新建预设 |
 | ↑ / ↓ | 在菜单中移动；在编辑器边界浏览输入历史 |
 | Ctrl+P / Ctrl+N | 直接浏览输入历史 |
 | Ctrl+G | 打开当前计划，查看、修改或明确执行 |
@@ -73,17 +72,17 @@ macOS Terminal 可能将 Enter 和 Shift+Enter 发送为相同序列，因此界
 
 审批面板默认选中拒绝。额外权限申请绑定一项明确操作，只提供允许一次或拒绝，可使用 `y/n`、`1/2` 或方向键和 Enter。批准不会修改所选模式，也不授权之后无关的调用。普通扩展审批仍可能提供本会话允许（`a` 或 `3`）。长问题可滚动查看。权限规则与各模式的含义见[配置参考](../reference/configuration.md#权限)。
 
-底部状态栏将任务与模式名称放在一行，另行明确显示只读、仅限工作区、联网三个权限值。审批过程中和窄终端中，这三个值保持可见；英文紧凑标签为 `RO`、`WS`、`NET`。模式名称可以修改，名称本身不决定权限。`/sandbox` 单独报告后端可用状态；已配置权限并不证明原生命令已成功建立隔离并启动。
+底部状态栏将 Plan 与预设名称放在一行，另行明确显示只读、仅限工作区、联网三个权限值。审批过程中和窄终端中，这三个值保持可见；英文紧凑标签为 `RO`、`WS`、`NET`。预设名称可以修改，名称本身不决定权限。`/permissions show` 单独报告后端可用状态；已配置权限并不证明原生命令已成功建立隔离并启动。
 
 Shift+Tab 打开选择器时不会改变权限。**使用**（或在模式列表按 Enter）应用到当前会话。修改名称和开关后，**保存**将模式写入用户设置；**新建**创建独立模式。有未保存修改时，**使用**按钮禁用。保存新模式不会自动选用它。当前任务保留启动时捕获的权限；下一次选用的模式不同时，状态栏单独显示**下次**。关闭选择器会保留原对话输入草稿。
 
 ## 审阅计划后明确执行
 
-启用 Plan 插件后，使用 `virgo --work-mode plan` 启动，或在现有对话中输入 `/plan`、`/workflow plan`。让 Virgo 调查并提出方案。Ctrl+G 打开计划 Markdown 和准确版本 token；`/plan show` 也会通过命令输出显示这些内容。
+启用 Plan 插件后，使用 `virgo --plan` 启动，或在现有对话中输入 `/plan`。让 Virgo 调查并提出方案。Ctrl+G 打开计划 Markdown 和准确版本 token；`/plan show` 也会通过命令输出显示这些内容。
 
 修改计划窗口中的正文后，**执行此计划**按钮禁用。**保存修改**创建新版本，并保持 Plan；重新打开窗口即可审阅。**执行此计划**只执行窗口所显示的版本，其他入口已经更新该版本时会拒绝执行。关闭窗口不会执行计划或保存编辑。对话忙碌时，保存和执行会被拒绝，不会排队。
 
-通过 Shift+Tab 或 `/mode` 独立选择权限模式。执行计划或切换工作流都不会放宽所选权限。完整操作、逐行终端编辑与恢复规则见[规划工作流](planning.md)。
+通过 Shift+Tab 或 `/permissions` 独立选择权限预设。执行计划或退出 Plan 都不会放宽所选权限。完整操作、逐行终端编辑与恢复规则见[规划任务](planning.md)。
 
 ## 会话与工作空间
 

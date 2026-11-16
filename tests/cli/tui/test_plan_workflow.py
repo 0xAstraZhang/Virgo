@@ -45,7 +45,7 @@ def test_plan_editor_saves_revision_then_requires_explicit_execution(make_sessio
             await wait_for(pilot, lambda: not app.has_modal and not app.controller.busy)
             revised = session.services["plans"].current
             assert revised.markdown == REVISED and revised.token != original.token
-            assert session.main.active_plan is None
+            assert session.services["plans"].active_for(session.main) is None
             assert session.services["permissions"].work_mode == "plan"
             assert session.approval_policy == "ask"
             assert session.services["sandbox"].mode == "read-only"
@@ -57,7 +57,7 @@ def test_plan_editor_saves_revision_then_requires_explicit_execution(make_sessio
             await wait_for(pilot, lambda: has_reply(app, "implementation requested") and not app.controller.busy)
             assert session.services["permissions"].work_mode == "default"
             assert session.store.custom("plan_execution")[-1] == {"plan_id": revised.plan_id, "revision": revised.revision}
-            assert session.main.active_plan is None
+            assert session.services["plans"].active_for(session.main) is None
             assert session.approval_policy == "ask"
             assert session.services["sandbox"].mode == "read-only"
             assert faux.CALLS["test"][-1]["system"].count(REVISED) == 1
@@ -85,7 +85,7 @@ def test_plan_editor_actions_remain_usable_after_compact_resize(make_session):
             await wait_for(pilot, lambda: not app.has_modal and not app.controller.busy)
             proposal = session.services["plans"].current
             assert proposal.markdown == REVISED
-            assert session.main.active_plan is None
+            assert session.services["plans"].active_for(session.main) is None
             assert app.editor.text == "unsent conversation draft"
             assert not faux.CALLS["test"]
 
@@ -108,7 +108,7 @@ def test_plan_editor_actions_remain_usable_after_compact_resize(make_session):
             assert await pilot.click("#plan-execute", offset=(execute.region.width // 2, execute.region.height // 2))
             await wait_for(pilot, lambda: has_reply(app, "compact plan executed") and not app.controller.busy)
             assert session.store.custom("plan_execution")[-1] == {"plan_id": proposal.plan_id, "revision": proposal.revision}
-            assert session.main.active_plan is None
+            assert session.services["plans"].active_for(session.main) is None
             assert app.editor.text == "unsent conversation draft"
             await pilot.resize_terminal(80, 24)
             assert session.services["plans"].current.markdown == REVISED
@@ -186,7 +186,7 @@ def test_busy_plan_execution_is_not_queued_by_modal(make_session):
                 await pilot.pause()
                 assert not app.controller.pending
                 assert session.services["permissions"].work_mode == "plan"
-                assert session.main.active_plan is None
+                assert session.services["plans"].active_for(session.main) is None
                 release.set()
                 await wait_for(pilot, lambda: not app.controller.busy)
                 assert not faux.CALLS["test"]

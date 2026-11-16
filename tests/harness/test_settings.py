@@ -58,3 +58,18 @@ def test_permission_defaults_and_saved_mode_migration(project, configured):
         assert session.approval_policy == "ask"
     finally:
         session.shutdown()
+
+
+def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp_path, monkeypatch):
+    user = tmp_path / "legacy-user"
+    user.mkdir()
+    (user / "settings.json").write_text(json.dumps({
+        "workMode": "plan",
+        "permissions": {"mode": "read-only", "modes": {"offline": {
+            "name": "Offline", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}}}))
+    monkeypatch.setenv("VIRGO_HOME", str(user))
+    settings = Settings.load(Paths(project))
+    assert settings.get("permissions.mode") == "read-only"
+    assert settings.get("permissions.modes.offline.name") == "Offline"
+    assert settings.get("workMode") == "plan"
+    assert settings.get("plan") is True

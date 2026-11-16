@@ -95,6 +95,7 @@ APPROVED_RETIREMENTS = {
 PRODUCT_RETIREMENTS = tuple(read_json(Path(__file__).with_name(filename)) for filename in (
     "core_plugin_retirements.json",
     "execution_policy_retirements.json",
+    "shell_scope_retirements.json",
 ))
 
 

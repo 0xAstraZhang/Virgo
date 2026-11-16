@@ -31,6 +31,7 @@
 
 - [Core 与插件边界](development/core-plugin-boundaries.md)：职责归属、能力清单和验收。
 - [架构](development/architecture.md)：模块职责、执行流程和稳定边界。
+- [术语](development/vocabulary.md)：能力、权限、Plan 与 Review 的规范词汇。
 - [扩展](development/extensions.md)：Python 工具与命令、事件、生命周期、运行时服务、技能和提示模板。
 - [本地化](development/localization.md)：语言包、会话归属、回退策略和新增语言。
 - [开发与 CI](development/testing-and-ci.md)：本地命令、端到端验收、结果比较和运行器维护。

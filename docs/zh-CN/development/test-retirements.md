@@ -34,6 +34,12 @@
 
 比较器实现修改前，新增真实 CLI 验收先生成 base 的 50 个通过场景（42 个原场景和八个保留门禁），以及 head 的 17 个通过场景（八个保留门禁和九个新验收）。旧比较器按预期拒绝尚未识别的新政策，报告 `42 previously executed tests disappeared`。完整验收覆盖全部清单，并拒绝错误基线、原始模块和参数 ID，原场景失败，每一个门禁缺失，门禁失败／跳过／移位，无关删除，以及仍存在的失败／跳过。历史退役验收和普通失败／跳过／删除检查保留；该清单不豁免原生沙箱验证或其他 CI。
 
+## Shell 范围分类器退役
+
+评审基线：`1b8e14b9be519adc02d9372aca9c08be9a55262f`。本次改动退役 `tests/features/test_permission_scope.py` 中的 **112 个参数展开用例**。受管操作成为唯一审批边界后，被删除的分类器（`is_simple_read_command`、`command_boundary`、`command_approval_reason`）已无生产调用；保留的契约是 `command_path_targets` 的精确路径绑定。
+
+完整身份见 [`shell_scope_retirements.json`](../../../ci/pipeline/shell_scope_retirements.json)。四个保留门禁在 base 与 head 都通过：Shell 授权绑定全部解析路径、动态目标重新审批、执行前参数／符号链接复核、预设值持久化。仅 head 的验收覆盖实际路径绑定、规范权限轴和捕获的权限快照。
+
 ## 先前的 Core／插件产品退役
 
 审查基线：`47e1757bda5c5cfafb3a5a508a1a6ec4d629bfaf`。本次迁移退役 **46 个参数展开后的场景**，对应六个退出维护的官方产品。它们与重复测试清理分开记录：旧行为按设计不可再用，不将保留的编程测试宣称为调度器或团队平台的等价覆盖。

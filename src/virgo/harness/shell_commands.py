@@ -15,8 +15,8 @@ class ShellSelection:
         self.session = session
         # Startup authority is a ceiling; later probes also check the current
         # policy so neither direction of a mode change broadens authority.
-        modes = configured_modes(session.settings.get("permissions.modes", {}))
-        selected = session.settings.get("permissions.mode", "workspace-edit")
+        modes = configured_modes(session.settings.get("permissions.presets", {}))
+        selected = session.settings.get("permissions.preset", "workspace-edit")
         if (legacy := session.settings.get("sandbox.mode")) is not None:
             mode = legacy_mode(legacy)
             modes[mode.id] = mode

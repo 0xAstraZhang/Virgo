@@ -1,0 +1,614 @@
+{
+  "baseline_sha": "1b8e14b9be519adc02d9372aca9c08be9a55262f",
+  "reason": "The shell-scope hint classifier never authorized execution and had no production caller after managed operations became the only approval boundary. These cases tested a retired heuristic, not risk coverage. Exact preservation gates keep approval identity, path-target binding and execution-time rechecks; head-only acceptance gates cover the live path-target binder and the canonical permission axes.",
+  "preservation_gates": [
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_shell_session_approval_binds_all_resolved_path_targets"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_dynamic_shell_approval_is_once_and_inherited_cdpath_needs_review"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_execution_rechecks_mode_arguments_and_symlink_boundary"
+    },
+    {
+      "classname": "tests.harness.test_permission_modes_e2e",
+      "name": "test_custom_mode_names_and_permissions_persist_without_changing_active_run"
+    }
+  ],
+  "acceptance_gates": [
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_static_paths_are_resolved_against_the_command_directory"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_dynamic_paths_cannot_be_remembered"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_path_targets_change_when_a_symlinked_target_changes"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_approval_boundary_identity_is_not_display_text"
+    },
+    {
+      "classname": "tests.cli.test_command_surface",
+      "name": "test_canonical_cli_flags_and_deprecated_aliases"
+    },
+    {
+      "classname": "tests.harness.test_permission_snapshot",
+      "name": "test_snapshot_freezes_preset_approval_and_revision"
+    },
+    {
+      "classname": "tests.harness.test_permission_snapshot",
+      "name": "test_child_snapshot_keeps_the_parent_ceiling"
+    }
+  ],
+  "retired_cases": [
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_read_only_command_classifier[ls -la]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_read_only_command_classifier[git status && git diff HEAD]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_read_only_command_classifier[cat a.txt | grep x | wc -l]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_read_only_command_classifier[FOO=1 rg pattern]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_read_only_command_classifier[find . -name '*.py']",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_read_only_command_classifier[sed -n '1,200p' README.md]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_read_only_command_classifier[git branch --list]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_read_only_command_classifier[git tag --list v*]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[rm x]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[echo hi > f]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[git push]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[ls; rm -rf build]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[find . -delete]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[find . -fls listing.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[sed -i s/a/b/ f]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[cat $(whoami)]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[python x.py]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[./ls]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[/tmp/git status]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[git branch -D doomed]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[git tag new]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[git remote add origin https://example.test/repo]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[git diff --output=changed.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[git grep -Ovim pattern]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[sort -o changed.txt data.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[env sh -c 'touch changed.txt']",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[sed 'w /tmp/out' input.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[rg --pre=./script needle .]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[sed -n -e '1p' -e'1w /tmp/escape' input]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[sed -n '1p' --expression='1w /tmp/escape' input]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[tree -o output.txt .]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[ag --pager='touch /tmp/escape' x]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[date -s2020-01-01]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[hostname -Fhosts.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[file -Cmcustom.magic]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_plan_rejects_side_effects_and_opaque_shell[uniq input output]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[touch a.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[mkdir -p build]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[cp a.txt sub/b.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[printf x > out.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[echo hello >> log.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[git status && git diff HEAD]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[cat README.md | grep name]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[pytest -q]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[ruff check src]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[mypy src]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[python -m pytest -q]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[python3 -m ruff check]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[uv run --offline pytest -q]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[uv --offline run python -m mypy src]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_workspace_commands_need_no_review[uv run --no-sync ruff check]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[cd .. && touch x]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[git -C ../other status]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[cp a.txt ../out]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[cat /etc/hosts]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[echo x > ../out]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[cat $HOME/.profile]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[curl https://example.test]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[git fetch]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[git push]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[git clone repo]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[uv sync]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[npm install]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[bash -c 'touch x']",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[python -c 'print(1)']",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[cat $(whoami)]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[rm */victim]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[cp input -t/tmp/outside]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[touch -r/etc/hosts local]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[git checkout main]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[git switch main]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[git add file.txt]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[uv run pytest]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[mypy --install-types src]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[pytest --tx ssh=host//python=python]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[ruff check --output-file=../outside src]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[uv run --offline python script.py]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_external_network_and_unknown_commands_need_review[CDPATH=sub cd name && rm victim]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_git_c_does_not_change_following_shell_directory",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_symlinks_and_attached_path_options_need_review",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[/bin/date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[/usr/bin/date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[date -u]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[date +%Y-%m-%d]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[date -u '+%Y-%m-%d %H:%M:%S']",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[date +]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[ls -d . && date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_forms_are_read_only[date | cat]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date -s 2020-01-01]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date -s2020-01-01]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date --set=2020-01-01]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date 111109302026]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date -u 111109302026]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date -u -s 2020-01-01]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date +%s 111109302026]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date +%s +%Y]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date -u -u]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date --unknown]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[./date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[/tmp/date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date $(whoami)]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_mutations_and_unknown_forms_still_need_review[date; curl https://example.test]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_date_query_preserves_workspace_boundaries",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_posix_command_paths_do_not_trust_other_executables[/bin/../tmp/date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_posix_command_paths_do_not_trust_other_executables[/usr/bin/../../tmp/date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_posix_command_paths_do_not_trust_other_executables[./bin/date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_posix_command_paths_do_not_trust_other_executables[/usr/local/bin/date]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_posix_command_paths_do_not_trust_other_executables['/bin\\\\date']",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_posix_command_paths_do_not_trust_other_executables['C:\\\\bin\\\\date.exe']",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_posix_command_paths_do_not_trust_other_executables[C:/bin/date.exe]",
+      "product": "shell-scope-classifier"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_home_desktop_and_date_need_no_review",
+      "product": "shell-scope-classifier"
+    }
+  ]
+}

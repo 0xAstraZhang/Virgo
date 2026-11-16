@@ -4,7 +4,7 @@
 
 模型只会获得当前角色、配置和能力允许的工具。扩展、MCP 连接和网页路由可能改变实际列表。工具名、参数名和枚举值不随界面语言变化。
 
-Core 负责文件、所选 Shell 和权限申请工具。可选 Plan 插件提供已提交 Git 内容读取和 ProposedPlan。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供。可使用默认 `coding` 预设，或通过 `plugins.<id>.enabled` 选择能力；`--profile minimal --no-extensions` 提供完整 Core 工具 schema，不按工作流过滤。详见[配置](configuration.md#预设与插件)。
+Core 负责文件、所选 Shell 和权限申请工具。可选 Plan 插件提供已提交 Git 内容读取和 ProposedPlan。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供。可使用默认 `coding` 预设，或通过 `plugins.<id>.enabled` 选择能力；`--profile minimal --no-extensions` 提供完整 Core 工具 schema，不按任务过滤。详见[配置](configuration.md#预设与插件)。
 
 ## 文件、命令与网页
 
@@ -27,7 +27,7 @@ Core 负责文件、所选 Shell 和权限申请工具。可选 Plan 插件提�
 `request_permissions(tool, arguments, permissions, reason)` 申请单次操作例外。
 三个可选权限字段为 `read_only`、`workspace_only`、`network_allowed`。批准不执行或重放
 操作；同一来源运行中下一次相同工具调用消费授权。目标限于受管文件、Shell、Web 和 MCP
-操作；子任务和工作流继续继承来源权限，可在内部为具体操作申请例外。显式 deny 和显式只读子任务上限始终有效，
+操作；子任务继续继承来源权限，可在内部为具体操作申请例外。显式 deny 和显式只读子任务上限始终有效，
 Mode 保持不变。模型可见内容及 TUI 共享结构化拒绝信息：失败维度、目标、命令启动与副作用
 状态。后端不可用与权限拒绝分开报告。
 

@@ -148,7 +148,7 @@ def test_invalid_work_modes_leave_the_effective_policy_unchanged(make_session):
         make_session(settings={"profile": "minimal", "plugins": {"plan": {"enabled": True}}, "workMode": "typo"}, refresh_models=False)
 
 
-@pytest.mark.parametrize("language, label", [("en", "Work mode"), ("zh-CN", "工作模式")])
+@pytest.mark.parametrize("language, label", [("en", "Plan task"), ("zh-CN", "Plan 任务")])
 def test_work_mode_command_is_localized_and_available_without_plugins(make_session, language, label):
     session = make_session(settings={"profile": "minimal", "plugins": {"plan": {"enabled": True}}, "language": language},
                            refresh_models=False, extensions=False)

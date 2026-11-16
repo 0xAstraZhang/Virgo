@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from ..agent.types import AgentEvent
 from ..i18n import Translator
 from .preferences import PreferenceChoice, PreferenceRequest
@@ -48,6 +50,26 @@ class UI:
     def command_result(self, text: str) -> None:
         """Explicit command output, also visible in noninteractive clients."""
         self.print(text)
+
+    def command_begin(self) -> None:
+        """Mark the start of synchronous slash-command output."""
+
+    def command_end(self) -> None:
+        """Mark the end of synchronous slash-command output."""
+
+    @contextmanager
+    def command_scope(self):
+        """Route output emitted by a slash command through the command channel."""
+        self.command_begin()
+        try:
+            yield
+        finally:
+            self.command_end()
+
+    @contextmanager
+    def command_suspended(self):
+        """Suspend command routing while a command starts a normal agent run."""
+        yield
 
     def review_result(self, report: dict, text: str) -> None:
         """Display only the Harness-validated report, with a structured host hook."""

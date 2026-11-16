@@ -107,8 +107,8 @@ def test_custom_mode_names_and_permissions_persist_without_changing_active_run(m
     assert manager.mode_for(session.main).flags() == {"read_only": True, "workspace_only": False,
                                                      "network_allowed": False}
     restored = Settings.load(session.paths)
-    assert restored.get("permissions.modes.offline.name") == "Offline inspection"
-    assert restored.get("permissions.mode") == "workspace-edit"
+    assert restored.get("permissions.presets.offline.name") == "Offline inspection"
+    assert restored.get("permissions.preset") == "workspace-edit"
     manager.save_mode("read-only", "My read-only", False, True, True)
     assert not manager.modes["read-only"].read_only
 

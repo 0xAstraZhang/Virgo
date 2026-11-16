@@ -83,7 +83,7 @@ def test_proposal_is_a_separate_artifact_and_cannot_write_or_replace_todos(make_
     assert plan.markdown == PLAN and plan.revision == 1
     assert plan.plan_id and plan.token == f"{plan.plan_id}:1"
     assert set(vars(plan)) == {"plan_id", "revision", "markdown"}
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     assert session.services["permissions"].work_mode == "plan"
     assert session.approval_policy == "ask"
     assert (project / "source.txt").read_text(encoding="utf-8") == "existing source"
@@ -113,7 +113,7 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     faux.push("test", faux.reply("Execution started with the selected plan."))
     session.prompt(f"/plan execute {first.token}")
     assert session.store.custom("plan_execution")[-1] == {"plan_id": first.plan_id, "revision": first.revision}
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     assert session.services["permissions"].work_mode == "default"
 
     count = len(calls())
@@ -121,7 +121,7 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     revised = session.services["plans"].current
     assert revised.plan_id == first.plan_id and revised.revision == first.revision + 1
     assert revised.markdown == REVISED_PLAN
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     assert session.services["permissions"].work_mode == "plan"
     session.prompt(f"/plan edit {first.token}\n{PLAN}")
     assert session.services["plans"].current == revised, "A stale editor must not overwrite the new revision"
@@ -129,7 +129,7 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     session.prompt("/plan execute")
     session.prompt("/workflow default")
     assert len(calls()) == count and not session.run_pending()
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     assert not (project / "answer.txt").exists()
 
     session.prompt("/workflow plan")
@@ -141,7 +141,7 @@ def test_revision_invalidates_confirmation_and_only_exact_explicit_execution_run
     assert session.services["permissions"].work_mode == "default"
     assert session.approval_policy == "ask"
     assert session.store.custom("plan_execution")[-1] == {"plan_id": revised.plan_id, "revision": revised.revision}
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     request = calls()[count]
     messages = [message for message in session.main.messages if isinstance(message, UserMessage)]
     assert revised.token in messages[-1].text() and REVISED_PLAN not in messages[-1].text()
@@ -177,7 +177,7 @@ def test_reentrant_mode_edit_preserves_version_bound_execution(make_session, con
     assert len({(plan["plan_id"], plan["revision"]) for plan in saved}) == len(saved)
     session.prompt(f"/plan execute {original.token}")
     assert len(calls()) == count and not session.run_pending()
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     assert session.services["permissions"].work_mode == "plan"
 
     faux.push("test", faux.reply("Execution received the selected proposal."))
@@ -244,7 +244,7 @@ def test_saved_confirmation_is_not_replayed_or_restored_as_an_execution_grant(ma
     faux.push("test", faux.reply("The plan was selected; no file changes were made."))
     session.prompt(f"/plan execute {plan.token}")
     assert session.store.custom("plan_execution")[-1] == {"plan_id": plan.plan_id, "revision": plan.revision}
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     path = session.store.path
     session.shutdown()
 
@@ -254,7 +254,7 @@ def test_saved_confirmation_is_not_replayed_or_restored_as_an_execution_grant(ma
     current = restored.services["plans"].current
     assert current.plan_id == plan.plan_id and current.revision == plan.revision
     assert current.markdown == PLAN
-    assert restored.main.active_plan is None
+    assert restored.services["plans"].active_for(restored.main) is None
     assert restored.approval_policy == "ask" and restored.services["sandbox"].mode == "read-only"
     assert not calls() and not restored.wakeups and not restored.run_pending()
     restored.prompt("/plan show")
@@ -272,7 +272,7 @@ def test_unsaved_confirmation_cannot_leave_plan_or_start_execution(make_session,
         session.prompt(f"/plan execute {plan.token}")
     assert session.store.save_error is not None
     assert session.services["permissions"].work_mode == "plan"
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     assert len(calls()) == count and not session.run_pending()
     assert not (project / "answer.txt").exists()
 
@@ -290,7 +290,7 @@ def test_unsaved_confirmation_cannot_leave_plan_or_start_execution(make_session,
     unsubscribe()
     assert notified.store.save_error is not None
     assert notified.services["permissions"].work_mode == "default"
-    assert notified.main.active_plan is None
+    assert notified.services["plans"].active_for(notified.main) is None
     assert len(calls()) == count and notified.main.run_id == previous_run
     assert not notified.busy and not notified.run_pending()
 
@@ -316,7 +316,7 @@ def test_saved_mode_startup_floor_and_explicit_override_do_not_execute(
                             refresh_models=False, extensions=False, **options)
     assert restored.services["permissions"].work_mode == expected
     assert restored.services["plans"].current.markdown == PLAN
-    assert restored.main.active_plan is None
+    assert restored.services["plans"].active_for(restored.main) is None
     assert not calls() and not restored.run_pending()
 
 
@@ -383,15 +383,15 @@ def test_conversation_switches_keep_plan_and_child_permissions_with_the_origin(m
         assert (project / "child.txt").read_text() == "blocked"
         child_results = [message for message in child.messages if isinstance(message, ToolResultMessage)]
         assert len(child_results) == 2 and child_results[0].is_error and not child_results[1].is_error
-        assert original.proposed_plan.markdown == PLAN
+        assert session.services["plans"].proposed_for(original).markdown == PLAN
         assert session.services["permissions"].work_mode_for(original) == "plan"
 
         faux.push("test", faux.reply(tools=[("propose_plan", {"markdown": REVISED_PLAN})]),
                   faux.reply("Only the originating proposal was revised."))
         original.agent.prompt("Revise the proposal while another conversation is selected.")
         assert session.main is second and session.services["plans"].current is None
-        assert original.proposed_plan.markdown == REVISED_PLAN
-        assert original.proposed_plan.revision == first.revision + 1
+        assert session.services["plans"].proposed_for(original).markdown == REVISED_PLAN
+        assert session.services["plans"].proposed_for(original).revision == first.revision + 1
         session.open_session(original_path)
         assert session.services["plans"].current.markdown == REVISED_PLAN
         assert session.services["permissions"].work_mode == "plan"
@@ -425,7 +425,7 @@ def test_busy_request_cannot_confirm_or_queue_an_execution(make_session):
         assert started.wait(5) and session.busy
         count = len(calls())
         session.prompt(f"/plan execute {plan.token}")
-        assert session.main.active_plan is None
+        assert session.services["plans"].active_for(session.main) is None
         assert session.services["permissions"].work_mode == "plan"
         assert len(calls()) == count and not session.wakeups
     finally:
@@ -505,7 +505,7 @@ def test_background_planning_child_blocks_only_its_origin_before_confirmation(
         other = session.services["plans"].current
         session.prompt(f"/plan execute {other.token}")
         assert session.store.custom("plan_execution")[-1] == {"plan_id": other.plan_id, "revision": other.revision}
-        assert session.main.active_plan is None
+        assert session.services["plans"].active_for(session.main) is None
         assert session.services["permissions"].work_mode == "default"
         session.open_session(origin_path)
         # A queued child owns its submission-time profile even if its parent
@@ -541,7 +541,7 @@ def test_background_planning_child_blocks_only_its_origin_before_confirmation(
     # Completion releases admission without removing the existing job record.
     session.prompt(f"/plan execute {plan.token}")
     assert session.store.custom("plan_execution")[-1] == {"plan_id": plan.plan_id, "revision": plan.revision}
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     assert session.services["permissions"].work_mode == "default"
 
 
@@ -564,7 +564,7 @@ def test_reentrant_pending_work_inspection_cannot_execute_a_revised_plan(make_se
 
     assert not inspected, "Core admission does not dispatch mutable extension inspection callbacks"
     assert session.services["plans"].current is original
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
     assert session.services["permissions"].work_mode == "default"
     assert len(calls()) == count + 1
     assert calls()[count]["system"].count(PLAN) == 1
@@ -610,8 +610,8 @@ def test_early_admission_observers_preserve_newer_selection(make_session, projec
     assert not origin.store.custom("code_review"), "Rejected tasks cannot publish a review lifecycle"
     assert rejected and session.main is origin
     assert len(calls()) == count + (phase == 1)
-    assert origin.proposed_plan.markdown == (PLAN if phase == 1 else REVISED_PLAN)
-    assert origin.active_plan is None
+    assert session.services["plans"].proposed_for(origin).markdown == (PLAN if phase == 1 else REVISED_PLAN)
+    assert session.services["plans"].active_for(origin) is None
     assert permissions.work_mode_for(origin) == ("default" if phase == 1 else "plan")
     # The committed selection controls later work; notification attempts cannot change it.
     faux.script("test", faux.reply(tools=[("write", {"path": "observer.txt", "content": "answer"})]),
@@ -666,7 +666,7 @@ def test_admission_observer_cannot_queue_untracked_plan_work(make_session, proje
     assert not session._pending_child_work and not (project / "queued-observer.txt").exists()
     assert session.services["permissions"].work_mode == "default"
     assert len(calls()) == count + (action == "execute")
-    assert session.main.active_plan is None
+    assert session.services["plans"].active_for(session.main) is None
 
 
 def test_legacy_migration_preserves_a_trashed_origin_with_queued_child_work(make_session, project, trash):

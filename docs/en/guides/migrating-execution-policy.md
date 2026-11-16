@@ -10,20 +10,20 @@ not impose a read-only permission ceiling. Existing conversation content and pla
 
 | Previous entry | Current entry |
 | --- | --- |
-| `/mode plan` / `/mode default` | `/plan` / `/workflow default` |
-| `workMode=plan`, `--work-mode plan` | Still selects planning instructions when the Plan plugin is enabled |
-| `/mode` | Lists/selects editable **permission** presets |
-| `--mode text|json` | `--format text|json`; `--mode` now takes a permission preset ID |
+| `/mode plan` / `/mode default` | `/plan` / `/plan off` |
+| `workMode=plan`, `--work-mode plan` | Use `plan: true` / `--plan`; still selects planning instructions when the Plan plugin is enabled |
+| `/mode` | Deprecated alias for `/permissions`; lists/selects editable **permission** presets |
+| `--mode text|json` | `--format text|json`; the old `--mode` preset spelling is a deprecated alias for `--permission` |
 | `sandbox.mode=workspace-write` / `read-only` | Explicit legacy offline policy; remove it to use the new defaults |
 | `sandbox.mode=disabled` | Explicit No-Limit filesystem/network policy |
 | `sandbox.network` | Use a preset's `networkAllowed` boolean |
-| `permissions.mode=plan|default|accept-edits|accept-all|yolo|auto-review` | Removed approval aliases; select `read-only`, `workspace-edit`, `no-limit`, or a custom preset ID |
+| `permissions.mode=plan|default|accept-edits|accept-all|yolo|auto-review` | Removed approval aliases; select `permissions.preset` = `read-only`, `workspace-edit`, `no-limit`, or a custom preset ID |
 | `permissions.readOnlyCommands`, `plugins.auto_review` | Removed; Shell syntax/model verdicts do not establish execution boundaries |
 
-New default: `permissions.mode=workspace-edit` with writable workspace and task networking.
+New default: `permissions.preset=workspace-edit` with writable workspace and task networking.
 Read-Only also permits networking; offline operation is a custom three-flag preset. Names and
 permissions are editable independently. See [configuration](../reference/configuration.md#permissions)
-for the full JSON and `/mode save` syntax. User settings own modes and grants; projects only add deny rules.
+for the full JSON and `/permissions save` syntax. User settings own presets and approvals; projects only add deny rules.
 
 ## Approvals and remembered decisions
 

@@ -295,9 +295,11 @@ class RunController:
             self.ui.print(tr(self, "plan.busy"), "warn")
             return
         if cmd is not None and cmd.concurrent:
-            self._launch(
-                lambda: cmd.fn(self.session, text.partition(" ")[2]), concurrent=True, command=cmd.name
-            )
+            def invoke():
+                with self.session.ui.command_scope():
+                    cmd.fn(self.session, text.partition(" ")[2])
+
+            self._launch(invoke, concurrent=True, command=cmd.name)
         elif self.busy:
             if text.startswith("/") and not text.startswith("//"):
                 self._deferred.append(text)

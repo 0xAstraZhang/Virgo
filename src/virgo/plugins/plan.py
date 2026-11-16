@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import uuid
+import weakref
 from dataclasses import asdict, dataclass
 
 from ..agent import AgentTool, ToolResult
@@ -17,7 +18,7 @@ from ..tools.git_read import GIT_READ
 PLAN_INSTRUCTIONS = """Plan mode is active. Investigate the repository and produce a decision-complete
 proposal; do not implement the proposed changes. This is a task instruction, not
 a permission boundary: all normal tools remain available under the selected
-permission Mode. Use investigation tools and commands only for the planning goal.
+permission preset. Use investigation tools and commands only for the planning goal.
 Read project instructions and inspect relevant code, existing tests, and prior
 behavior before deciding what to change. Find repository facts by investigation
 instead of asking the user to look them up. Use the existing ask_user tool,
@@ -67,17 +68,28 @@ class ProposedPlan:
         return cls(data["plan_id"], data["revision"], data["markdown"])
 
 
+@dataclass
+class _PlanState:
+    proposed: ProposedPlan | None = None
+    active: ProposedPlan | None = None
+
+
 class Plans:
     def __init__(self, api: ExtensionAPI):
         self.api = api
         self.session = api.session
+        self._states: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
     @property
     def current(self) -> ProposedPlan | None:
-        runtime = self.session.main
-        if not hasattr(runtime, "proposed_plan"):
+        return self._ensure(self.session.main).proposed
+
+    def _ensure(self, runtime) -> _PlanState:
+        state = self._states.get(runtime)
+        if state is None:
             self.restore(runtime)
-        return runtime.proposed_plan
+            state = self._states[runtime]
+        return state
 
     def restore(self, runtime) -> None:
         proposal = None
@@ -88,14 +100,21 @@ class Plans:
         # The lifecycle bus reports extension errors without aborting session
         # creation. Do not mark failed hydration as an empty valid proposal:
         # request instructions and commands must retry validation before use.
-        runtime.proposed_plan = proposal
-        runtime.active_plan = None
+        self._states[runtime] = _PlanState(proposal)
+
+    def proposed_for(self, runtime) -> ProposedPlan | None:
+        return self._ensure(runtime).proposed
+
+    def active_for(self, runtime) -> ProposedPlan | None:
+        return self._ensure(runtime).active
+
+    def clear_active(self, runtime) -> None:
+        self._ensure(runtime).active = None
 
     def _main(self, runtime):
         if runtime.session is not self.session or runtime.role != "main" or runtime.store is None:
             raise ValueError(self.session.t("plan.main_only"))
-        if not hasattr(runtime, "proposed_plan"):
-            self.restore(runtime)
+        self._ensure(runtime)
         return runtime
 
     def replace(self, markdown: str, *, runtime=None, expected_token: str | None = None,
@@ -106,7 +125,8 @@ class Plans:
         with s._lock:
             s.assert_state_change_allowed()
             rt = self._main(runtime or s.main)
-            previous = rt.proposed_plan
+            state = self._states[rt]
+            previous = state.proposed
             if expected_token is not None and (previous is None or expected_token != previous.token):
                 raise ValueError(s.t("plan.stale"))
             if not rt.can_run():
@@ -122,7 +142,7 @@ class Plans:
                 markdown.strip(),
             )
             rt.store.append("custom", kind="proposed_plan", data=asdict(proposal))
-            rt.proposed_plan = proposal
+            state.proposed = proposal
             s.notify_state_change("proposed_plan_changed", rt, proposal)
             return proposal
 
@@ -133,7 +153,8 @@ class Plans:
         rt = self._main(runtime)
         if rt is not s.main or s.runtime_is_busy(rt):
             raise ValueError(s.t("plan.busy"))
-        proposal = rt.proposed_plan
+        state = self._states[rt]
+        proposal = state.proposed
         if proposal is None:
             raise ValueError(s.t("plan.missing"))
         if not _TOKEN.fullmatch(token) or token != proposal.token:
@@ -142,11 +163,11 @@ class Plans:
         # audit event is never replayed as a grant when opening saved history.
         rt.store.append("custom", kind="plan_execution", data={"plan_id": proposal.plan_id,
                                                                "revision": proposal.revision})
-        rt.active_plan = proposal
+        state.active = proposal
         try:
             s.services["permissions"].set_work_mode("default", runtime=rt)
         except BaseException:
-            rt.active_plan = None
+            state.active = None
             raise
         return UserMessage(
             f"Execute the proposed plan {proposal.token} that I explicitly selected. "
@@ -158,8 +179,7 @@ class Plans:
     def instructions(self, runtime) -> str:
         # Direct Runtime integrations use the same optional state hydration as
         # the Session factory without a Core dependency on this plugin.
-        if not hasattr(runtime, "proposed_plan"):
-            self.restore(runtime)
+        state = self._ensure(runtime)
         if getattr(runtime, "workflow", None) == "review":
             return ""
         permissions = self.session.services["permissions"]
@@ -170,8 +190,8 @@ class Plans:
                           "Report your investigation and remaining decisions to the parent. "
                           "You cannot publish, confirm, or execute the main runtime's plan.")
             parts.append(f"<work_mode>\n{PLAN_INSTRUCTIONS}\n\n{publishing}\n</work_mode>")
-        active = getattr(runtime, "active_plan", None)
-        if runtime.role == "main" and (proposal := active or runtime.proposed_plan) is not None:
+        active = state.active
+        if runtime.role == "main" and (proposal := active or state.proposed) is not None:
             confirmation = (
                 "The user explicitly selected this version for the current run. "
                 "Tool calls still require their normal permissions."
@@ -203,6 +223,9 @@ class Plans:
             if not action:
                 s.services["permissions"].set_work_mode("plan")
                 s.ui.command_result(self.show() if self.current else s.t("work_mode.status", mode=s.t("work_mode.plan")))
+            elif action in {"off", "default"}:
+                s.services["permissions"].set_work_mode("default")
+                s.ui.command_result(s.t("work_mode.status", mode=s.t("work_mode.default")))
             elif action == "show":
                 s.ui.command_result(self.show())
             elif action == "execute":
@@ -213,7 +236,7 @@ class Plans:
                 try:
                     s.run([], prepare=lambda rt: [self.prepare_execution(rt, token)])
                 finally:
-                    runtime.active_plan = None
+                    self.clear_active(runtime)
             elif action == "edit":
                 expected = None
                 first, separator, rest = content.partition("\n")
@@ -268,8 +291,8 @@ def setup(api: ExtensionAPI) -> None:
                     "required": ["markdown"], "additionalProperties": False},
         execute=propose, read_only=True, sequential=True,
     ))
-    api.register_command("plan", plans.command, "plan a task, or view, edit and execute its proposal",
-                         argument_hint="[goal|show|edit [Markdown]|execute <id>:<revision>]")
+    api.register_command("plan", plans.command, "plan a task, or view, edit, execute or leave its proposal",
+                         argument_hint="[goal|off|show|edit [Markdown]|execute <id>:<revision>]")
 
     def workflow(session, args):
         try:
@@ -281,5 +304,5 @@ def setup(api: ExtensionAPI) -> None:
         mode = session.services["permissions"].work_mode
         session.ui.command_result(session.t("work_mode.status", mode=session.t("work_mode." + mode)))
 
-    api.register_command("workflow", workflow, "show or select task instructions without changing permissions",
+    api.register_command("workflow", workflow, "deprecated alias for /plan (default|plan)",
                          argument_hint="[default|plan]", concurrent=True)

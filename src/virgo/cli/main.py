@@ -55,7 +55,8 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("--language", type=normalize_language, metavar="LANGUAGE", help=t("ui.cli.language"))
     p.add_argument("prompt", nargs="*", help=tr(t, "ui.cli.prompt"))
     p.add_argument("-p", "--print", action="store_true", help=tr(t, "ui.cli.print"))
-    p.add_argument("--format", choices=["text", "json"], default="text", help=tr(t, "ui.cli.mode"))
+    p.add_argument("--format", choices=["text", "json"], default="text", help=tr(t, "ui.cli.format"))
+    p.add_argument("--plan", action="store_true", help=t("ui.cli.plan"))
     p.add_argument("--work-mode", choices=WORK_MODES, help=tr(t, "ui.cli.work_mode"))
     p.add_argument(
         "--ui",
@@ -75,7 +76,8 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("-r", "--resume", nargs="?", const="", metavar="FILE", help=tr(t, "ui.cli.resume"))
     p.add_argument("--no-session", action="store_true", help=tr(t, "ui.cli.no_session"))
     p.add_argument("--profile", choices=PROFILES, help=t("ui.cli.profile"))
-    p.add_argument("--mode", help=t("ui.cli.permission_mode"))
+    p.add_argument("--permission", dest="permission", help=t("ui.cli.permission_mode"))
+    p.add_argument("--mode", dest="legacy_mode", help=argparse.SUPPRESS)
     p.add_argument("--sandbox", choices=SANDBOX_MODES, help=t("sandbox.cli"))
     p.add_argument("--no-extensions", action="store_true", help=tr(t, "ui.cli.no_extensions"))
     p.add_argument("--trust-project-extensions", action="store_true", help=t("ui.cli.trust_project_extensions"))
@@ -149,8 +151,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     parser = build_parser(t.language)
     args = parser.parse_args(argv)
-    if args.mode is not None and args.sandbox is not None:
-        parser.error("--mode and --sandbox cannot be combined; select one execution policy")
+    if args.permission is not None and args.legacy_mode is not None:
+        parser.error("--permission and the deprecated --mode alias cannot be combined")
+    if args.legacy_mode is not None:
+        print(t("ui.cli.deprecated_mode"), file=sys.stderr)
+    selected_permission = args.permission if args.permission is not None else args.legacy_mode
+    if selected_permission is not None and args.sandbox is not None:
+        parser.error("--permission and the deprecated --sandbox option cannot be combined; select one permission preset")
+    if args.sandbox is not None:
+        print(t("ui.cli.deprecated_sandbox"), file=sys.stderr)
+    if args.plan and args.work_mode not in (None, "plan"):
+        parser.error("--plan and --work-mode default conflict; use --plan alone")
+    work_mode = args.work_mode or ("plan" if args.plan else None)
     fullscreen = False
     if not args.print and args.ui != "plain":
         fullscreen = _fullscreen_available()
@@ -193,8 +205,8 @@ def main(argv: list[str] | None = None) -> int:
         overrides["profile"] = args.profile
     if args.sandbox is not None:
         overrides["sandbox"] = {"mode": args.sandbox}
-    if args.mode is not None:
-        overrides["permissions"] = {"mode": args.mode}
+    if selected_permission is not None:
+        overrides["permissions"] = {"preset": selected_permission}
     if args.no_extensions:
         print(t("ui.cli.no_extensions_warning"), file=sys.stderr)
     try:
@@ -213,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             session=session_arg,
             approval_policy=args.approval,
-            work_mode=args.work_mode,
+            work_mode=work_mode,
             settings=overrides,
             extensions=not args.no_extensions,
             trust_project_extensions=args.trust_project_extensions,
@@ -229,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
             if fullscreen:
                 from .tui import run_fullscreen
 
-                startup = {"work_mode": args.work_mode} if pick_session and args.work_mode is not None else {}
+                startup = {"work_mode": work_mode} if pick_session and work_mode is not None else {}
                 return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session, **startup)
 
             from .repl import run_repl

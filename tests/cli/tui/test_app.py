@@ -745,8 +745,8 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
             await wait_for(pilot, lambda: not app.has_modal and len(manager.modes) == 4)
             assert manager.selected_mode_id == "no-limit"
             saved = json.loads((session.paths.user / "settings.json").read_text())
-            assert saved["permissions"]["modes"]["no-limit"]["name"] == "Offline inspection"
-            assert any(item["name"] == "New profile" for item in saved["permissions"]["modes"].values())
+            assert saved["permissions"]["presets"]["no-limit"]["name"] == "Offline inspection"
+            assert any(item["name"] == "New profile" for item in saved["permissions"]["presets"].values())
             assert app.editor.text == "unfinished task"
             assert not faux.CALLS["test"]
 
