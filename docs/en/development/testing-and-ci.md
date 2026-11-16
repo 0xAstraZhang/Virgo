@@ -36,6 +36,8 @@ The documentation-only classifier includes the two root READMEs and Markdown fil
 
 CI currently uses Python 3.13 with locked dependencies. Python 3.11 remains the declared package minimum. Actions are pinned to commit SHAs; exact tool versions, timeouts and artifact retention are maintained in the workflows. Linux head jobs build the sdist/wheel and install the wheel outside the checkout before checking the CLI, so package-data omissions are visible.
 
+Windows complete-suite jobs have a 35-minute budget because they include serial native sandbox acceptance alongside the rest of the product suite. Linux/macOS complete-suite jobs retain 20 minutes, as does the dedicated Windows native workflow. Cancellation, incomplete execution and missing reports still fail the final comparison.
+
 ## Read the result
 
 The final summary and `comparison` artifact show new failures, existing failures, fixes, changed skips, and added/missing cases. Each `results-<platform>-<revision>` artifact contains logs, JUnit XML, normalized outcomes, interpreter data and the tested SHA. Failure details include the case, source location and traceback; locals are not dumped.
