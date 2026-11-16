@@ -207,13 +207,17 @@ class Runtime:
         return project_tool_result(call, result,
                                    query_available=any(tool.name == "diagnostic_get" for tool in self.tools))
 
-    def prepare_run(self) -> None:
-        """Bind startup hooks to this run before its first model request exists."""
+    def refresh_permission_snapshot(self) -> None:
+        """Capture the current selection for a new task, not an older run."""
         sandbox = self.session.services["sandbox"]
-        # Drop the previous run's decision before reading live selection.
+        # Drop the previous task's decision before reading live selection.
         self.permission_snapshot = None
         sandbox.capture_runtime(self)
         self.permission_snapshot = sandbox.snapshot(self)
+
+    def prepare_run(self) -> None:
+        """Bind startup hooks to this run before its first model request exists."""
+        self.refresh_permission_snapshot()
         self.run_id = uuid.uuid4().hex
         self._model_call_id = None
         self._attempt_number = 0
@@ -1384,7 +1388,7 @@ class AgentSession:
                     runtime = self.main
                     # A user selection made during the previous run applies to
                     # this new task; existing descendants keep their snapshots.
-                    self.services["sandbox"].capture_runtime(runtime)
+                    runtime.refresh_permission_snapshot()
                     self.busy = True
                     runtime.agent.signal.clear()
                 try:

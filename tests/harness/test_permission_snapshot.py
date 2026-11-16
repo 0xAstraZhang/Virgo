@@ -49,3 +49,18 @@ def test_next_run_captures_a_new_approval_policy(make_session):
     session.approval_policy = "ask"
     runtime.prepare_run()
     assert runtime.permission_snapshot.approval == "ask"
+
+
+def test_isolated_task_refreshes_the_parent_snapshot_before_creating_a_child(make_session):
+    session = make_session(approval="never")
+    runtime = session.main
+    runtime.prepare_run()
+    session.approval_policy = "ask"
+    runtime.refresh_permission_snapshot()
+    assert runtime.permission_snapshot.approval == "ask"
+    child = session.create_runtime("child", "subagent", parent=runtime, read_only=False)
+    try:
+        child.prepare_run()
+        assert child.permission_snapshot.approval == "ask"
+    finally:
+        session.release_runtime(child)
