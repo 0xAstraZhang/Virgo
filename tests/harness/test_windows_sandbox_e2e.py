@@ -993,9 +993,12 @@ deadline = time.monotonic() + 45
 while not Path('release-mutation').exists():
     assert time.monotonic() < deadline
     time.sleep(.02)
+print('opening committed file for read', flush=True)
 assert Path('ordinary.txt').read_text() == 'changed\\n'
+print('opening committed file for append', flush=True)
 with Path('ordinary.txt').open('a') as stream:
     stream.write('after\\n')
+print('committed file append complete', flush=True)
 """, background=True)
     assert not result.is_error, result.text()
     job = list(jobs.jobs.values())[-1]
@@ -1005,6 +1008,7 @@ with Path('ordinary.txt').open('a') as stream:
         assert target.read_text() == "original\nbefore\n"
         restricting, = process_sids(job.proc.pid, 11)
         package, = process_sids(job.proc.pid, 31)
+        original_dacl = dacl(target)
         arguments = ({"path": target.name, "content": "changed\n"} if tool == "write" else
                      {"path": target.name, "edits": [{"old_text": "original\nbefore\n",
                                                        "new_text": "changed\n"}]})
@@ -1016,7 +1020,11 @@ with Path('ordinary.txt').open('a') as stream:
         committed_dacl = dacl(target)
         (project / "release-mutation").touch()
         assert job.done.wait(15), "background command did not drain after Core mutation"
-        assert job.status == "completed", (jobs.output(job), committed_dacl)
+        assert job.status == "completed", (
+            f"Background status: {job.status}\nRestricting SID: {restricting}\nPackage SID: {package}\n"
+            f"DACL before Core mutation:\n{original_dacl}\nDACL after Core mutation:\n{committed_dacl}\n"
+            f"Background output:\n{jobs.output(job)}"
+        )
         assert target.read_text() == "changed\nafter\n"
         for path in (project, project / ".virgo", target):
             cleaned = dacl(path)
