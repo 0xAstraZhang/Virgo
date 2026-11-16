@@ -411,8 +411,13 @@ class WindowsSandbox:
                 *policy.runtime_paths(), executable.parent,
             )))
             protected = tuple(dict.fromkeys((*policy.protected_paths(), *runtime_roots)))
-            self._grants.grant_tree(policy.workspace, policy.mode == "workspace-write", protected,
-                                    reject_hardlinks=True, excluded=runtime_roots)
+            # Core commits use this same mutex. Keep workspace path
+            # classification and retained-object grants together, so a staged
+            # inode cannot move out of .virgo between preflight and its update.
+            # Runtime/profile grants retain their per-object locking below.
+            with self._grants._locked():
+                self._grants.grant_tree(policy.workspace, policy.mode == "workspace-write", protected,
+                                        reject_hardlinks=True, excluded=runtime_roots)
             for root in runtime_roots:
                 self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)
             self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
