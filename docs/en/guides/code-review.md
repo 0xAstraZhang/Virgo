@@ -47,6 +47,8 @@ A staged edit reversed in the working tree remains visible in both layers. Missi
 
 The Harness resolves controlled Git argv, then freezes file bytes and old/new line mappings. Staged and committed rename detection uses Git object/index comparisons. Unstaged removals and untracked additions remain separate changes. Read/search tools select frozen `head`, `index`, `worktree`, `base` or `target` versions. They never read a later live file; symlinks expose link text rather than their targets.
 
+`core.filemode=false` ignores executable-bit differences between regular files while preserving file-type changes; `core.symlinks=false` still supports regular-file symlink checkouts. Frozen diffs retain the missing-final-newline marker, and `read` exposes `ends_with_newline` without changing source line numbers.
+
 Saved snapshots record the requested target, resolved commits, comparison, change metadata, file fingerprints and a snapshot ID. They identify the reviewed code; they do not permanently archive every source byte. Source contents are held in memory for the task.
 
 ## Read-only execution

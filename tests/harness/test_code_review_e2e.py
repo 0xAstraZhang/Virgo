@@ -187,6 +187,78 @@ def test_review_uncommitted_layers_and_diff_sides_reach_a_saved_display(make_ses
     assert _filesystem(project) == before
 
 
+@pytest.mark.parametrize("symlinks", ["true", "false"], ids=["type-change", "plain-checkout"])
+def test_review_symlink_type_is_independent_of_executable_bit_tracking(make_session, project, symlinks):
+    _repository(project)
+    _write(project, "link.txt", "sample.py")
+    _git(project, "add", "--", "link.txt")
+    blob = _git(project, "rev-parse", ":link.txt")
+    # Store a symlink without requiring the host to permit creating one.
+    _git(project, "update-index", "--cacheinfo", f"120000,{blob},link.txt")
+    _git(project, "commit", "-m", "fixture: tracked symlink")
+    _git(project, "config", "core.filemode", "false")
+    _git(project, "config", "core.symlinks", symlinks)
+    assert _git(project, "diff", "--name-status") == ("T\tlink.txt" if symlinks == "true" else "")
+    session = make_session(_answer(), refresh_models=False)
+
+    session.prompt("/review")
+
+    report = _latest(session)
+    assert report["status"] == "completed" and report["freshness"] == "current"
+    if symlinks == "true":
+        change = _change(report["snapshot"], "link.txt", "unstaged")
+        assert (change["old_mode"], change["new_mode"]) == ("120000", "100644")
+        assert len(calls()) == 1
+    else:
+        assert report["snapshot"]["changes"] == []
+        assert not calls()
+
+
+@pytest.mark.parametrize("missing_side", ["new", "old"], ids=["remove-final-lf", "add-final-lf"])
+def test_review_frozen_evidence_distinguishes_final_newlines(make_session, project, missing_side):
+    _repository(project)
+    before = "first\njob\n" if missing_side == "new" else "first\njob"
+    after = "first\njob" if missing_side == "new" else "first\njob\n"
+    _write(project, "data.txt", before)
+    _git(project, "add", "--", "data.txt")
+    _git(project, "commit", "-m", "fixture: newline-delimited records")
+    _write(project, "data.txt", after)
+    marker = "\\ No newline at end of file"
+    assert marker in _git(project, "diff", "--", "data.txt")
+    session = make_session(refresh_models=False)
+    seen = {}
+
+    def first(context):
+        change = _change(_manifest(context), "data.txt", "unstaged")
+        seen["change"] = change
+        return faux.reply(tools=[
+            ("review_git", {"operation": "diff", "change_id": change["id"]}),
+            ("read", {"path": "data.txt", "version": "index"}),
+            ("read", {"path": "data.txt", "version": "worktree"}),
+        ])
+
+    def last(context):
+        results = [message for message in context.messages if isinstance(message, ToolResultMessage)]
+        assert len(results) == 3 and not any(result.is_error for result in results)
+        seen["evidence"] = [json.loads(result.text()) for result in results]
+        return _answer([_finding(seen["change"], line=2, title="Check the final record's line terminator")])
+
+    faux.script("test", first, last)
+    session.prompt("/review")
+
+    report = _latest(session)
+    assert report["status"] == "completed", report
+    diff, old, new = seen["evidence"]
+    missing_line = ("+" if missing_side == "new" else "-") + "job"
+    start = diff["lines"].index(missing_line)
+    assert diff["lines"][start:start + 2] == [missing_line, marker]
+    assert diff["lines"].count(marker) == 1
+    assert old["lines"] == new["lines"] == ["first", "job"]
+    assert old["ends_with_newline"] is before.endswith("\n")
+    assert new["ends_with_newline"] is after.endswith("\n")
+    assert report["findings"][0]["start_line"] == 2
+
+
 def test_review_base_uses_merge_base_and_frozen_head_files(make_session, project):
     ancestor = _repository(project)
     _git(project, "checkout", "-b", "feature")

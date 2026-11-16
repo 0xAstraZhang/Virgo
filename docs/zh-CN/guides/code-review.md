@@ -47,6 +47,8 @@ JSON 模式输出包含 `report` 对象的 `code_review` 事件。报告完成�
 
 Harness 使用受控 Git argv 解析目标，然后固定文件字节和新旧行映射。Staged 和已提交变更的重命名识别来自 Git 对象/index 比较；unstaged 删除和 untracked 新增仍是独立变更。读取、搜索工具选择冻结的 `head`、`index`、`worktree`、`base`、`target` 版本，不会读到随后变化的实时文件。符号链接只暴露链接文本，不跟随其目标。
 
+`core.filemode=false` 只忽略普通文件之间的可执行位差异，文件类型变化仍会保留；`core.symlinks=false` 下以普通文件形式检出的符号链接仍受支持。冻结 diff 保留文件末尾缺少换行符的标记，`read` 提供 `ends_with_newline`，不改变源码行号。
+
 保存的快照记录请求目标、已解析提交、比较方式、变更元数据、文件指纹和快照 ID，用来标识被审查的代码，不是全部源码字节的永久存档。源码内容在任务期间保存在内存中。
 
 ## 只读执行

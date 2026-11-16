@@ -143,6 +143,8 @@ def _diff_lines(matcher, before, after, old_path, new_path):
                     if index % 1024 == 0:
                         matcher._check()
                     yield prefix + line.removesuffix("\n")
+                    if not line.endswith("\n"):
+                        yield "\\ No newline at end of file"
 
 
 def _path(value: str, *, directory=False):
@@ -500,8 +502,9 @@ class ReviewSnapshot:
                 self._allowed(path)
                 if path not in files:
                     raise SnapshotError(f"Path is absent from frozen {version}: {path}")
-                return self._page(_text_lines(files[path].text()), args, path=path, version=version,
-                                  mode=files[path].mode)
+                text = files[path].text()
+                return self._page(_text_lines(text), args, path=path, version=version,
+                                  mode=files[path].mode, ends_with_newline=text.endswith("\n"))
             pattern = args.get("pattern", "*" if name == "glob" else None)
             if not isinstance(pattern, str) or not pattern or len(pattern) > 1024:
                 raise SnapshotError("A nonempty search pattern of at most 1024 characters is required.")
@@ -543,7 +546,7 @@ class ReviewSnapshot:
         paging = {"offset": {"type": "integer", "minimum": 1}, "limit": {"type": "integer", "minimum": 1}}
         version = {"type": "string", "enum": list(self.versions)}
         specs = (
-            ("read", "Read a frozen UTF-8 file; links expose only link text.",
+            ("read", "Read a frozen UTF-8 file with final-newline metadata; links expose only link text.",
              {"path": {"type": "string"}, "version": version, **paging}, ["path"]),
             ("glob", "List frozen paths matching a glob; page with offset/limit.",
              {"pattern": {"type": "string"}, "path": {"type": "string"}, "version": version, **paging}, []),
@@ -666,7 +669,9 @@ def capture_snapshot(workspace: Path, target: dict, signal, *, allow_read=None) 
         except OSError as error:
             raise SnapshotError(f"Cannot capture working file {path}: {error}", "incomplete") from error
         if item.mode in {"100644", "100755"} and old is not None:
-            mode = old.mode if not filemode or (not symlinks and old.mode == "120000") else item.mode
+            ignore_executable = not filemode and old.mode in {"100644", "100755"}
+            plain_symlink = not symlinks and old.mode == "120000"
+            mode = old.mode if ignore_executable or plain_symlink else item.mode
             item = _File(mode, item.identity, item.raw)
         account(item.raw)
         worktree[path] = item
