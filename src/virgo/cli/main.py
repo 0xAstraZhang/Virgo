@@ -256,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     if session.has_save_failure:
         return 1
     if ui.command_output:
-        return 0
+        return session.command_exit_code
     last = next((m for m in reversed(session.main.messages) if isinstance(m, AssistantMessage)), None)
     if last is None:
         return 1

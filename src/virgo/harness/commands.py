@@ -25,19 +25,22 @@ if TYPE_CHECKING:
 @dataclass
 class Command:
     name: str
-    fn: Callable  # fn(session, args: str) -> None
+    fn: Callable  # fn(session, args: str[, origin_runtime for isolated tasks]) -> None
     description: str = ""
     source: str = "builtin"
     argument_hint: str = field(default="", kw_only=True)
     description_key: str = field(default="", kw_only=True)
     argument_hint_key: str = field(default="", kw_only=True)
     concurrent: bool = False  # only reads state: may run while the agent is busy
+    isolated: bool = field(default=False, kw_only=True)  # host task; bypass prompt hooks/templates
+    template_fallback: bool = field(default=False, kw_only=True)  # yield to a same-name user template
 
 
 class Commands:
-    def __init__(self, translator: Translator | None = None):
+    def __init__(self, translator: Translator | None = None, *, templates: dict | None = None):
         self._cmds: dict[str, Command] = {}
         self.translator = translator or Translator()
+        self._templates = templates if templates is not None else {}
 
     def register(
         self,
@@ -50,6 +53,8 @@ class Commands:
         argument_hint: str = "",
         description_key: str = "",
         argument_hint_key: str = "",
+        isolated: bool = False,
+        template_fallback: bool = False,
     ) -> None:
         key = name.lstrip("/")
         if key in self._cmds:
@@ -57,6 +62,7 @@ class Commands:
         self._cmds[name.lstrip("/")] = Command(
             name.lstrip("/"), fn, description, source, concurrent, argument_hint=argument_hint,
             description_key=description_key, argument_hint_key=argument_hint_key,
+            isolated=isolated, template_fallback=template_fallback,
         )
 
     def remove_source(self, source: str) -> None:
@@ -74,13 +80,17 @@ class Commands:
 
     def get(self, name: str) -> Command | None:
         command = self._cmds.get(name)
-        return self._localized(command) if command is not None else None
+        return self._localized(command) if command is not None and self._available(command) else None
+
+    def _available(self, command: Command) -> bool:
+        return not (command.template_fallback and command.name in self._templates)
 
     def all(self) -> list[Command]:
-        return [self._localized(command) for command in sorted(self._cmds.values(), key=lambda c: c.name)]
+        return [self._localized(command) for command in sorted(self._cmds.values(), key=lambda c: c.name)
+                if self._available(command)]
 
     def names(self) -> list[str]:
-        return sorted(self._cmds)
+        return sorted(name for name, command in self._cmds.items() if self._available(command))
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:

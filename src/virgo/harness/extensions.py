@@ -215,12 +215,19 @@ class ExtensionAPI:
 
     def register_command(
         self, name: str, fn: Callable, description: str = "", concurrent: bool = False, *, argument_hint: str = "",
-        description_key: str = "", argument_hint_key: str = "",
+        description_key: str = "", argument_hint_key: str = "", isolated: bool = False,
+        template_fallback: bool = False,
     ) -> None:
-        """concurrent=True for commands that only read state (they may run while the agent works)."""
+        """concurrent=True permits read-only state queries during another run.
+
+        isolated=True bypasses prompt hooks and passes the captured source Runtime
+        as the callback's third argument. It still uses Core permission checks.
+        template_fallback=True yields to a current same-name prompt template.
+        """
         self.session.commands.register(name, fn, description, source=self.name, concurrent=concurrent,
                                        argument_hint=argument_hint, description_key=description_key,
-                                       argument_hint_key=argument_hint_key)
+                                       argument_hint_key=argument_hint_key, isolated=isolated,
+                                       template_fallback=template_fallback)
 
     def add_system_section(self, name: str, fn: Callable[[str], str | None], order: int = 50) -> None:
         """fn(role) -> text for the system prompt."""

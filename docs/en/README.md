@@ -13,6 +13,7 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 | [Planning a change](guides/planning.md) | Repository investigation, versioned proposals, revision and explicit execution |
 | [Web search and reading](guides/web.md) | Backends, routing, permissions, fetch limits |
 | [Command shells](guides/shells.md) | Shell selection, execution behavior, output and cancellation |
+| [Independent code review](guides/code-review.md) | Frozen targets, read-only review, validated findings and stale reports |
 | [Troubleshooting](guides/troubleshooting.md) | Errors, logs, diagnostic evidence, recovery boundaries |
 
 [Upgrading an existing installation?](guides/migrating-to-core-plugins.md) Review profile changes, project trust and preserved historical data.

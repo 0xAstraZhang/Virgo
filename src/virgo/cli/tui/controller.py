@@ -47,6 +47,7 @@ class RunController:
         self._unsubscribers = [
             session.bus.on("session_start", self._session_reset, priority=-100),
             session.bus.on("agent_event", self._agent_event, priority=100),
+            session.bus.on("command_start", self._command_start, priority=100),
             session.bus.on("work_mode_changed", self._state_changed),
             session.bus.on("proposed_plan_changed", self._state_changed),
         ]
@@ -103,6 +104,7 @@ class RunController:
                             self._unsubscribers = [
                                 candidate.bus.on("session_start", self._session_reset, priority=-100),
                                 candidate.bus.on("agent_event", self._agent_event, priority=100),
+                                candidate.bus.on("command_start", self._command_start, priority=100),
                                 candidate.bus.on("work_mode_changed", self._state_changed),
                                 candidate.bus.on("proposed_plan_changed", self._state_changed),
                             ]
@@ -154,11 +156,18 @@ class RunController:
         self.ui.bind_signal("main", session.main.agent.signal)
         self.ui.push("reset", copy.deepcopy(session.store.branch()))
 
+    def _command_start(self, command, runtime) -> None:
+        if runtime.session is self.session and command.isolated and (self.closing or self._interrupted):
+            self.session.abort_runtime(runtime)
+
     def _agent_event(self, event, runtime) -> None:
         if runtime.session is not self.session:
             return
-        self.ui.bind_signal(event.agent, runtime.agent.signal)
-        if event.agent == "main" and event.type == "agent_start" and (self.closing or self._interrupted):
+        if runtime.role != "review":
+            # Reviews never ask for tool approval or interactive input; keeping
+            # their ephemeral signal in the UI would retain it after cleanup.
+            self.ui.bind_signal(event.agent, runtime.agent.signal)
+        if (event.agent == "main" or runtime.role == "review") and event.type == "agent_start" and (self.closing or self._interrupted):
             # Agent.prompt resets its own signal. An interrupt may have arrived
             # after scheduling but before that reset on the worker thread.
             self.session.abort_runtime(runtime)

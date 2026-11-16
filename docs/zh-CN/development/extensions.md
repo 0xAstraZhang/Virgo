@@ -140,6 +140,8 @@ description: review the current diff
 Review the current diff. Focus on: ${1:-correctness}. Additional context: $@
 ```
 
-模板支持 `$1`、`$@`／`$ARGUMENTS`、`${1:-value}`、`${@:2}`；没有占位符时，参数追加到正文。专门的工作方法应写成 [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) 或委派任务提示；只读检查时设置 `read_only=true`。特殊模型和工具策略通过受信任的扩展实现。详见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
+模板支持 `$1`、`$@`／`$ARGUMENTS`、`${1:-value}`、`${@:2}`；没有占位符时，参数追加到正文。[独立代码审查插件](../guides/code-review.md)保留已有 `/review`、`/code-review` 模板和命令，只为未占用的名称注册官方任务。审查 Prompt 模板仍使用普通对话及其工具。专门的工作方法应写成 [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) 或委派任务提示；只读检查时设置 `read_only=true`。特殊模型和工具策略通过受信任的扩展实现。详见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 捕获异常后用 `virgo.diagnostics.capture_error` 保留结构化诊断；成功恢复时将原始证据保留在 `related_errors`。属于某个 Runtime 的错误优先使用其 `report_error()`；结果／通知的显式传播可以授予父任务访问权，单独的错误 ID 字符串不能。详见[故障排查](../guides/troubleshooting.md)。
+
+独立任务命令通过 `api.register_command(..., isolated=True)` 注册，回调签名为 `fn(session, args, origin_runtime)`。Host 在分发前固定来源 Runtime，绕过 Prompt hooks，并管理 busy/取消边界。创建子 Runtime 时应使用这个显式来源，不要重新读取当前选中的会话。`template_fallback=True` 让命令在分发、帮助和参数提示中一致地让位于当前同名模板。`review` 是只使用固定快照工具和提示的受限 Runtime 角色，不接入动态能力或可执行命令 hooks。

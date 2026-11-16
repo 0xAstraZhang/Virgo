@@ -36,6 +36,7 @@
 | `/compact [focus]` | 压缩较早的模型上下文 |
 | `/new`、`/sessions [number]`、`/session` | 新建、浏览或查看会话 |
 | `/diagnostics [error-id]` | 查看近期错误和诊断记录 |
+| `/review [uncommitted\|base <branch>\|commit <revision>\|show [id\|last]]` | 运行或查看[独立只读代码审查](code-review.md)；名称可用时 `/code-review` 提供同一入口 |
 | `/todos`、`/jobs` | 查看当前对话清单或后台任务 |
 | `/skills`、`/skill:name [args]` | 列出技能或显式使用技能 |
 | `/mcp [reconnect]` | 查看或重新加载 MCP 连接 |
