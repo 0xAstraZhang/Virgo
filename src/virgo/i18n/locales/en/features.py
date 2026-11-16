@@ -142,6 +142,7 @@ MESSAGES = {
     "features.permission.scope.wildcard": "wildcard paths may follow links outside the workspace",
     "features.permission.session_rules": "approved this session: {rules}",
     "features.permission.status": "approval policy: {label}",
+    "features.permission.captured": 'current run: {label}',
     "features.permission.user_denied": "The user denied this tool call. Use a materially safer alternative or "
     "ask what they want instead.",
     "features.search.key": "DeepSeek search requires an official API key. Use /login api deepseek with "

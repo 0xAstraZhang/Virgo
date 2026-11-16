@@ -9,7 +9,7 @@ implementation. It uses the existing Runtime and Agent Loop.
 Plan does not select a permission preset, hide normal tools, or impose a read-only
 execution ceiling. The model is instructed to investigate and propose changes;
 the selected permission preset determines what its tools can actually do. Select
-Read-Only separately when project writes must be prevented. A writable Mode does
+Read-Only separately when project writes must be prevented. A writable permission preset does
 not make the planning task an instruction to implement its proposal.
 
 ## Start and revise a plan
@@ -90,7 +90,7 @@ reenter these operations.
 | Plan task | Investigation and proposal instructions; no additional authority restriction |
 | ProposedPlan | One Markdown body with `plan_id` and `revision` |
 | Todo | The existing implementation checklist; publishing a plan does not create or replace it |
-| Permission Mode | Read-only, workspace scope and network settings enforced during tool execution |
+| Permission preset | Read-only, workspace scope and network settings enforced during tool execution |
 | Explicit read-only child | A permission ceiling selected for a delegated task, independent of Plan |
 
 The Plan instructions discourage replacing the proposal with Todo items, but

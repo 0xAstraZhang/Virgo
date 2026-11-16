@@ -161,6 +161,8 @@ def _canonicalize_permissions(value: dict, notices: list[str]) -> None:
         legacy_modes = value.pop("modes")
         if not isinstance(legacy_modes, dict):
             raise ValueError("permissions.modes must be an object keyed by stable preset ID")
+        if "presets" in value and not isinstance(value["presets"], dict):
+            raise ValueError("permissions.presets must be an object keyed by stable preset ID")
         if "presets" in value:
             value["presets"] = deep_merge(legacy_modes, value["presets"])
         else:

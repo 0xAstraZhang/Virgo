@@ -167,7 +167,7 @@ single-operation exception under constrained file profiles. See [Sandbox](../gui
 Managed operations within the profile run without Shell syntax classification. Explicit deny
 rules remain binding. `request_permissions(tool, arguments, permissions, reason)` asks for one
 exact operation, then the model must call that tool with identical arguments. It does not run
-or replay the command, change Mode, grant sibling tasks access, or persist authorization in
+or replay the command, change the permission preset, grant sibling tasks access, or persist authorization in
 history. Approval is bound to the runtime/run, arguments, cwd, resolved paths, tool generation,
 shell environment and current policy revision; changes invalidate it. A repeated denied
 request does not prompt again until decisions are revoked or a new run starts.

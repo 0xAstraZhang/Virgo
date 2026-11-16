@@ -106,6 +106,10 @@ class Permissions:
         snapshot = getattr(runtime, "permission_snapshot", None) if runtime is not None else None
         if snapshot is not None:
             approval = normalize_approval_policy(snapshot.approval)
+        elif runtime is not None and runtime.parent is not None:
+            parent_snapshot = getattr(runtime.parent, "permission_snapshot", None)
+            if parent_snapshot is not None:
+                approval = normalize_approval_policy(parent_snapshot.approval)
         while runtime is not None:
             if runtime.session is not self.session:
                 raise ValueError("Approval runtime must belong to this session")
@@ -341,11 +345,16 @@ def install_permissions(session: AgentSession) -> Permissions:
         sandbox = session.services["sandbox"]
 
         def show():
+            selected = normalize_approval_policy(session.approval_policy)
             lines = [
                 session.t("features.permission.status",
-                          label=approval_policy_label(session.approval_policy, session.t)),
+                          label=approval_policy_label(selected, session.t)),
                 session.t("work_mode.status", mode=session.t("work_mode." + permissions.work_mode)),
             ]
+            snapshot = getattr(session.main, "permission_snapshot", None)
+            if snapshot is not None and snapshot.approval != selected:
+                lines.append(session.t("features.permission.captured",
+                                       label=approval_policy_label(snapshot.approval, session.t)))
             for key in ("allow", "deny"):
                 if rules := session.settings.get(f"permissions.{key}", []):
                     lines.append(f"{session.t('features.permission.' + key)}: {', '.join(rules)}")

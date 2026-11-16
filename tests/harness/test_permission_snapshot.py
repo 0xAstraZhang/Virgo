@@ -64,3 +64,16 @@ def test_isolated_task_refreshes_the_parent_snapshot_before_creating_a_child(mak
         assert child.permission_snapshot.approval == "ask"
     finally:
         session.release_runtime(child)
+
+
+def test_child_without_a_snapshot_inherits_the_parent_capture(make_session):
+    session = make_session(approval="ask")
+    runtime = session.main
+    runtime.prepare_run()
+    session.approval_policy = "never"
+    child = session.create_runtime("child", "subagent", parent=runtime, read_only=False)
+    try:
+        child.prepare_run()
+        assert child.permission_snapshot.approval == "ask"
+    finally:
+        session.release_runtime(child)

@@ -63,9 +63,9 @@ child, and normal compaction is available.
 All normal tools for a child Runtime remain available. The task instructions ask
 for investigation and a report, without repairing, committing or merging the
 changes. Actual file, Shell and network access follows the selected permission
-Mode. Select Read-Only explicitly when source writes must be prevented. A model
+permission preset. Select Read-Only explicitly when source writes must be prevented. A model
 that ignores reviewer instructions may perform an allowed write in a writable
-Mode; Review is not another security boundary.
+permission preset; Review is not another security boundary.
 
 Frozen evidence is available through `review_read`, `review_glob`, literal
 `review_grep` and `review_git`. Their names distinguish them from ordinary tools

@@ -84,3 +84,12 @@ def test_reserved_permission_preset_ids_are_rejected(project):
     with pytest.raises(ValueError, match="reserved"):
         Settings.load(Paths(project), {"permissions": {"presets": {"ask": {
             "name": "Ask", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}}})
+
+
+def test_invalid_presets_value_is_a_configuration_error(project):
+    with pytest.raises(ValueError, match="permissions.presets"):
+        Settings.load(Paths(project), {"permissions": {
+            "modes": {"offline": {"name": "Offline", "readOnly": True,
+                                  "workspaceOnly": True, "networkAllowed": False}},
+            "presets": "nope",
+        }})

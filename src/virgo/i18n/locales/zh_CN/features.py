@@ -123,6 +123,7 @@ MESSAGES = {
     "features.permission.scope.wildcard": "通配路径可能沿链接访问工作区外的内容",
     "features.permission.session_rules": "本会话已允许: {rules}",
     "features.permission.status": "审批策略: {label}",
+    "features.permission.captured": '当前运行：{label}',
     "features.permission.user_denied": "用户拒绝了此次工具调用。请采用明显更安全的替代方式，或询问用户希望如何处理。",
     "features.search.key": "DeepSeek 搜索需要官方 API 密钥。请通过 /login api deepseek 配置 https://api.deepseek.com，或设置 "
     "DEEPSEEK_API_KEY（可用 search.apiKeyEnv 指定独立的搜索密钥）。",

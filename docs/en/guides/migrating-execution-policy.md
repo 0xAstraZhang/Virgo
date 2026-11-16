@@ -29,7 +29,7 @@ for the full JSON and `/permissions save` syntax. User settings own presets and 
 
 Managed operations within the selected profile run directly. `request_permissions` asks for one
 exact operation with explicit permission changes; approval does not execute the operation. The next
-identical call consumes the exception. Mode stays unchanged. Different arguments, caller/run,
+identical call consumes the exception. The permission preset stays unchanged. Different arguments, caller/run,
 resolved targets, shell environment, policy revision or tool instance cannot reuse it.
 
 `ask` permits requests; `never` refuses new requests, not all operations. `/permissions revoke`
@@ -39,7 +39,7 @@ restore grants or execute a plan. Trusted extension policies can add restriction
 
 ## Default execution boundary
 
-Every run captures its source permissions. Mode changes during work apply to subsequent runs;
+Every run captures its source permissions. Permission preset changes during work apply to subsequent runs;
 background work and child runtimes keep their original source. Read-only protects host file data,
 with private scratch and broker records allowed. It does not promise to prevent remote mutations.
 
