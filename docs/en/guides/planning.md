@@ -109,7 +109,7 @@ Plan state belongs to the main Runtime of its conversation. Child runtimes inher
 
 Ordinary startup with the default setting does not discard a saved Plan mode. An explicit CLI or constructor override does not change the default for subsequently created conversations or write a user preference. Use `virgo --continue --work-mode plan` to resume with an explicit Plan ceiling. The CLI `--mode text|json` remains the output-format option; it is independent of `--work-mode`.
 
-When `--resume` opens the full-screen session picker, `--work-mode` applies to the selected startup conversation before any initial prompt runs; later session switches do not reuse it.
+When `--resume` opens the full-screen session picker, `--work-mode` applies to the selected startup conversation before any initial prompt runs; later session switches do not reuse it. An override of a retained conversation is rejected while its main agent or any queued or running descendant is active; the selected conversation, saved mode and initial prompt remain unchanged until the work finishes.
 
 Cold restoration clears the plan's live confirmation state. The historical confirmation entry remains available for auditing, but does not queue a request, wake a Runtime or authorize execution again. Approval strategy and Sandbox are taken from the current session configuration, never restored from the plan. Viewing history and selecting a mode do not execute a plan.
 

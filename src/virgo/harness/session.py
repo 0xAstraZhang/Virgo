@@ -1152,7 +1152,7 @@ class AgentSession:
             if runtime is None:
                 runtime = self._prepare_main(store, work_mode=work_mode)
             elif work_mode is not None:
-                if runtime.agent.running or self.busy:
+                if self.busy or self.runtime_is_busy(runtime):
                     raise ValueError(self.t("work_mode.busy"))
                 self.services["permissions"].restore_work_mode(runtime, work_mode)
             if self._shutdown_started:
