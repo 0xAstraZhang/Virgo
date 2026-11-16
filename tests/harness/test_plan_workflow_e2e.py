@@ -477,3 +477,96 @@ def test_reentrant_pending_work_inspection_cannot_execute_a_revised_plan(make_se
     assert len(calls()) == count + 1
     latest = [message for message in session.main.messages if isinstance(message, UserMessage)][-1]
     assert REVISED_PLAN in latest.text()
+
+
+@pytest.mark.parametrize("phase", [1, 2])
+@pytest.mark.parametrize("change", ["revise", "mode", "switch", "new_default"])
+def test_early_admission_observers_preserve_newer_selection(make_session, project, phase, change):
+    session = make_session(persist=True, settings={"profile": "minimal", "workMode": "plan"},
+                           refresh_models=False, extensions=False)
+    original = propose(session)
+    origin, origin_path = session.main, session.store.path
+    permissions = session.services["permissions"]
+    inspections = 0
+    changed = False
+
+    def inspect(runtime):
+        nonlocal inspections, changed
+        inspections += 1
+        if inspections == phase and not changed:
+            changed = True
+            if change in {"revise", "new_default"}:
+                session.services["plans"].replace(REVISED_PLAN, runtime=runtime)
+                if change == "new_default":
+                    permissions.set_work_mode("default", runtime=runtime)
+            elif change == "mode":
+                permissions.set_work_mode("default", runtime=runtime)
+                permissions.set_work_mode("plan", runtime=runtime)
+            else:
+                session.new_session()
+        return False
+
+    unsubscribe = session.bus.on("runtime_pending_work", inspect)
+    count = len(calls())
+    faux.push("test", faux.reply("The superseded execution must not start."))
+    session.prompt(f"/plan execute {original.token}")
+    unsubscribe()
+
+    assert changed and len(calls()) == count
+    assert origin.proposed_plan.confirmed_revision is None
+    if change in {"revise", "new_default"}:
+        assert origin.proposed_plan.markdown == REVISED_PLAN
+        assert origin.proposed_plan.revision == original.revision + 1
+    if change == "switch":
+        assert session.main is not origin and permissions.work_mode == "plan"
+    expected_mode = "default" if change == "new_default" else "plan"
+    assert permissions.work_mode_for(origin) == expected_mode
+
+    # A later ordinary prompt must not use a ceiling lost during stale admission.
+    session.open_session(origin_path)
+    faux.script("test", faux.reply(tools=[("write", {"path": "observer.txt", "content": "answer"})]),
+                faux.reply("The current selected mode controls this operation."))
+    session.prompt("Report the current investigation status.")
+    assert (project / "observer.txt").exists() == (change == "new_default")
+    assert tool_results(session)[-1].is_error == (change != "new_default")
+
+
+def test_admission_inspection_rechecks_a_child_started_by_its_observer(make_session, project):
+    session = make_session(settings={"profile": "minimal", "workMode": "plan"},
+                           refresh_models=False, extensions=False)
+    api = ExtensionAPI(session, "pending-inspection-child")
+    started = threading.Event()
+    children, workers, failures = [], [], []
+
+    def inspect(runtime):
+        child = api.create_runtime("new-investigator", "subagent", parent=runtime)
+        children.append(child)
+        child.agent.subscribe(lambda event: started.set() if event.type == "agent_start" else None)
+
+        def run_child():
+            try:
+                child.agent.prompt("Investigate without changing files.")
+            except BaseException as error:
+                failures.append(error)
+
+        worker = threading.Thread(target=run_child)
+        workers.append(worker)
+        worker.start()
+        assert started.wait(5), "The child must start before admission resumes"
+        return False
+
+    unsubscribe = session.bus.on("runtime_pending_work", inspect)
+    faux.push("test", faux.reply(tools=[("write", {"path": "observer-child.txt", "content": "blocked"})]),
+              faux.reply("Investigation complete."))
+    try:
+        session.prompt("/mode default")
+        selected_mode = session.services["permissions"].work_mode
+    finally:
+        unsubscribe()
+        for worker in workers:
+            worker.join(5)
+        for child in children:
+            api.release_runtime(child)
+
+    assert workers and all(not worker.is_alive() for worker in workers) and not failures
+    assert selected_mode == "plan" and not (project / "observer-child.txt").exists()
