@@ -4,7 +4,7 @@
 
 ## Conversation and language
 
-Type a request and press Enter. While the agent is working, another message steers the current run: it is inserted after the current tool batch and before the next model call. Read-only commands can run concurrently; commands that change state wait for the active run to finish.
+Type a request and press Enter. While the agent is working, another message steers the current run: it is inserted after the current tool batch and before the next model call. Read-only commands can run concurrently; ordinary commands that change state wait for the active run to finish. `/mode plan` tightens pending calls immediately. Leaving Plan, editing a plan or executing it requires an idle conversation; busy plan edits/execution are rejected rather than queued.
 
 ```text
 /language 中文
@@ -30,6 +30,9 @@ The first two commands switch the current session and save a user default. `/lan
 | `/search [auto\|duckduckgo\|deepseek\|off]` | Choose search behavior |
 | `/fetch [auto\|http\|deepseek\|off]` | Choose webpage-reading behavior |
 | `/permissions [auto-review\|accept-all\|plan]` | Inspect rules or change permission mode |
+| `/mode [default\|plan]` | Inspect or change WorkMode without changing approval or Sandbox |
+| `/plan [show\|edit [Markdown]\|execute <id>:<revision>]` | Review, replace or explicitly execute the current proposal |
+| `/sandbox` | Inspect the configured native command sandbox |
 | `/compact [focus]` | Compact older model context |
 | `/new`, `/sessions [number]`, `/session` | Start, browse or inspect sessions |
 | `/diagnostics [error-id]` | Inspect recent errors and diagnostic records |
@@ -47,9 +50,10 @@ Model and effort pickers use the saved model catalog. They do not start a networ
 | Enter | Send input; confirm the selected item in a menu |
 | Shift+Enter | Insert a newline; use Ctrl+J in macOS Terminal |
 | Tab | Complete slash commands and prompt templates |
-| Shift+Tab | Cycle permission modes for this session |
+| Shift+Tab | Toggle Default / Plan WorkMode; preserve approval policy and Sandbox |
 | ↑ / ↓ | Navigate a menu; at editor boundaries, browse input history |
 | Ctrl+P / Ctrl+N | Browse input history directly |
+| Ctrl+G | Open the current proposed plan for review, editing or explicit execution |
 | Ctrl+O / Ctrl+T | Toggle tool details / thoughts |
 | Ctrl+R | Open the session browser |
 | PageUp / PageDown | Scroll the conversation or open details |
@@ -63,6 +67,16 @@ In macOS Terminal, Enter and Shift+Enter can arrive as the same key sequence, so
 Messages stay expanded; thoughts, tool calls and results can be folded independently. Scroll upward to inspect history without following incoming output; return to the bottom or click the latest-message control to resume following it. Text selection copies on release; password fields do not copy automatically. macOS uses its clipboard, while other terminals need OSC52 support.
 
 Approval panels initially select denial. Use arrows and Enter, `y/n/a`, or `1/2/3` for allow once, deny or allow for this session. Long questions are scrollable. Permission details and the meaning of each mode are in [Configuration](../reference/configuration.md#permissions).
+
+The footer shows WorkMode, approval strategy and configured Sandbox separately. On narrow terminals, these indicators take priority over the model name and effort. Plan mode remains visible even when the approval strategy is `accept-all`.
+
+## Review a plan before execution
+
+Start with `virgo --work-mode plan`, or enter `/mode plan` in an existing conversation. Ask Virgo to investigate and publish a proposal. Ctrl+G opens its Markdown and exact version token; `/plan` provides the same content as command output.
+
+In the plan window, editing disables **Execute this plan**. **Save changes** creates a new unconfirmed revision and keeps Plan active; reopen the window to review it. **Execute this plan** starts only the displayed version, and a version changed elsewhere is rejected. Closing the window does not execute or save edits. A busy conversation rejects save/execution without queuing it.
+
+Use `/permissions` to select an approval strategy. Executing a plan or toggling WorkMode leaves that strategy and Sandbox unchanged. The complete workflow, plain-terminal editing and restoration rules are in [Planning](planning.md).
 
 ## Sessions and workspaces
 

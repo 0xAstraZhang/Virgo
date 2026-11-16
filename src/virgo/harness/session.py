@@ -1063,8 +1063,8 @@ class AgentSession:
         messages, ids = store.build_context()
         return self.create_runtime("main", "main", store=store, messages=messages, ids=ids, work_mode=work_mode)
 
-    def _prepare_main(self, store: SessionStore) -> Runtime:
-        return self._new_main(store)
+    def _prepare_main(self, store: SessionStore, *, work_mode: str | None = None) -> Runtime:
+        return self._new_main(store, work_mode=work_mode)
 
     def live_store(self, path: str | Path) -> SessionStore | None:
         """Resolve an owned conversation before consulting its possibly damaged file."""
@@ -1091,20 +1091,23 @@ class AgentSession:
                 items[store.path] = store.describe()
         return sorted(items.values(), key=lambda item: (-item["mtime"], str(item["path"])))
 
-    def open_session(self, path: str | Path) -> None:
+    def open_session(self, path: str | Path, *, work_mode: str | None = None) -> None:
         path = Path(path).absolute()
         with self._lock:
             if self.store.path == path:
+                if work_mode is not None:
+                    self._activate_store(self.store, runtime=self.main, pending=self.wakeups, work_mode=work_mode)
                 return
             retained = self._retained_sessions.get(path)
             if retained is not None:
                 runtime, pending = retained
-                self._activate_store(runtime.store, runtime=runtime, pending=pending)
+                self._activate_store(runtime.store, runtime=runtime, pending=pending, work_mode=work_mode)
                 return
-            self._activate_store(SessionStore.load(path))
+            self._activate_store(SessionStore.load(path), work_mode=work_mode)
 
-    def new_session(self) -> None:
-        self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd))
+    def new_session(self, *, work_mode: str | None = None) -> None:
+        self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd),
+                             work_mode=work_mode)
 
     def trash_session(self, path: str | Path) -> None:
         """Trash a conversation, replacing the active one with a new saved session."""
@@ -1141,11 +1144,18 @@ class AgentSession:
                 self._activate_store(replacement, runtime=runtime)
 
     def _activate_store(self, store: SessionStore, *, runtime: Runtime | None = None,
-                        pending: deque | None = None) -> None:
+                        pending: deque | None = None, work_mode: str | None = None) -> None:
         with self._lock:
             if self._shutdown_started:
                 return
-            runtime = runtime if runtime is not None else self._prepare_main(store)
+            # Apply the startup selection before session_start observers can
+            # inspect tools or begin the initial request.
+            if runtime is None:
+                runtime = self._prepare_main(store, work_mode=work_mode)
+            elif work_mode is not None:
+                if self.busy or self.runtime_is_busy(runtime):
+                    raise ValueError(self.t("work_mode.busy"))
+                self.services["permissions"].restore_work_mode(runtime, work_mode)
             if self._shutdown_started:
                 return
             old = self.main
