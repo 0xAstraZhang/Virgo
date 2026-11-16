@@ -1,8 +1,9 @@
 """Native, fail-closed subprocess isolation; never an approval decision.
 
 Linux uses a system-owned bubblewrap plus a seccomp filter. macOS uses Seatbelt.
+Windows uses LPAC plus a separately write-restricted token and temporary ACLs.
 The broker stays outside so model transport and diagnostic persistence keep their
-own authority. Only explicitly selected runtime/workspace paths are exposed.
+own authority. POSIX exposes selected paths; Windows also has ambient LPAC reads.
 """
 from __future__ import annotations
 
@@ -94,6 +95,13 @@ def _system_file(path: Path) -> Path:
 
 
 def platform_backend() -> tuple[str, Path]:
+    if sys.platform == "win32":
+        try:
+            from .windows_sandbox import backend
+
+            return backend()
+        except (OSError, AttributeError) as error:
+            raise SandboxUnavailable(f"Required Windows sandbox APIs are unavailable: {error}") from error
     candidates = ("/usr/bin/bwrap", "/bin/bwrap") if sys.platform == "linux" else (
         ("/usr/bin/sandbox-exec",) if sys.platform == "darwin" else ()
     )
@@ -104,7 +112,7 @@ def platform_backend() -> tuple[str, Path]:
                 return ("bubblewrap" if sys.platform == "linux" else "seatbelt"), path
         except FileNotFoundError:
             continue
-    raise SandboxUnavailable("No supported native sandbox backend is available (Linux: system bubblewrap; macOS: sandbox-exec).")
+    raise SandboxUnavailable("No supported native sandbox backend is available (Linux: system bubblewrap; macOS: sandbox-exec; Windows: native x64 LPAC).")
 
 
 def _seccomp_file():
@@ -171,7 +179,15 @@ class SandboxPolicy:
     def __post_init__(self):
         if self.mode not in {"read-only", "workspace-write"}:
             raise ValueError("An active SandboxPolicy requires read-only or workspace-write")
-        object.__setattr__(self, "workspace", Path(self.workspace).resolve(strict=True))
+        if os.name == "nt":
+            # The runtime captured this root before execution. Do not follow a
+            # junction installed later and turn its target into a fresh grant.
+            from .windows_sandbox_files import normalize_path
+
+            workspace = Path(normalize_path(self.workspace))
+        else:
+            workspace = Path(self.workspace).resolve(strict=True)
+        object.__setattr__(self, "workspace", workspace)
 
     def describe(self) -> dict:
         return {"mode": self.mode, "network": "restricted", "workspace": str(self.workspace)}
@@ -206,6 +222,10 @@ class SandboxPolicy:
     def validate(self, cwd: Path) -> Path:
         """Check the envelope before the broker creates output directories/files."""
         try:
+            if os.name == "nt":
+                from .windows_sandbox import validate_policy
+
+                return validate_policy(self, cwd)
             cwd = Path(cwd).resolve(strict=True)
             if not cwd.is_dir() or not cwd.is_relative_to(self.workspace):
                 raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
@@ -351,6 +371,10 @@ class SandboxPolicy:
             raise SandboxCancelled("Sandbox launch cancelled")
         cwd = self.validate(cwd)
         backend, launcher = platform_backend()
+        if backend == "windows-lpac":
+            from .windows_sandbox import spawn
+
+            return spawn(self, argv, cwd, env, stdout, cancellation)
         if launcher.is_relative_to(self.workspace):
             raise SandboxUnavailable("Workspace must not contain the sandbox launcher")
         scratch = _CommandScratch()

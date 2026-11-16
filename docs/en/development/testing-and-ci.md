@@ -36,6 +36,8 @@ The documentation-only classifier includes the two root READMEs and Markdown fil
 
 CI currently uses Python 3.13 with locked dependencies. Python 3.11 remains the declared package minimum. Actions are pinned to commit SHAs; exact tool versions, timeouts and artifact retention are maintained in the workflows. Linux head jobs build the sdist/wheel and install the wheel outside the checkout before checking the CLI, so package-data omissions are visible.
 
+Windows complete-suite jobs have a 35-minute budget because they include serial native sandbox acceptance alongside the rest of the product suite. Linux/macOS complete-suite jobs retain 20 minutes, as does the dedicated Windows native workflow. Cancellation, incomplete execution and missing reports still fail the final comparison.
+
 ## Read the result
 
 The final summary and `comparison` artifact show new failures, existing failures, fixes, changed skips, and added/missing cases. Each `results-<platform>-<revision>` artifact contains logs, JUnit XML, normalized outcomes, interpreter data and the tested SHA. Failure details include the case, source location and traceback; locals are not dumped.
@@ -94,6 +96,8 @@ They drive real temporary projects and catch wrong revisions, missing/incomplete
 Retirement acceptance must also catch unrelated deletions, failing baseline cases, new skips, and retained coverage that is missing, skipped or failing. It must reject reuse against another baseline SHA or an unrelated same-name test, and detect a removed identity disappearing from either the readable or JSON comparison report.
 
 ## Manual diagnostics
+
+Native sandbox acceptance runs separately from the complete suite. [Native sandbox boundaries](../../../.github/workflows/native-sandbox.yml) exercises Linux/macOS with `VIRGO_REQUIRE_SANDBOX_TESTS=1`. [Windows sandbox boundaries](../../../.github/workflows/windows-sandbox.yml) checks out the exact PR head on Windows Server 2022 and 2025, records the OS/interpreter environment, runs `tests/harness/test_windows_sandbox_e2e.py` and rejects empty reports, failures, errors and skips. Read the native results and the full cross-platform comparison for the same revision; neither replaces the other. Windows support and measured results are recorded in [Windows command sandbox](../guides/windows-sandbox.md).
 
 The separate [Shell diagnostics workflow](../../../.github/workflows/shell-selection.yml) is manual-only:
 

@@ -26,7 +26,12 @@ def open_output(cwd: Path, prefix: str, *, sandbox_policy=None):
 
         sandbox_policy.validate(cwd)
         if os.name == "nt":
-            raise SandboxUnavailable("Native sandbox output requires a supported POSIX backend")
+            from .windows_sandbox_files import open_output as windows_output
+
+            try:
+                return windows_output(sandbox_policy, prefix)
+            except OSError as error:
+                raise SandboxUnavailable(f"Could not open originating Windows sandbox output: {error}") from error
         # Logs belong to the originating workspace. Walk by directory descriptor
         # so a metadata symlink cannot redirect broker writes between check/open.
         directory = None

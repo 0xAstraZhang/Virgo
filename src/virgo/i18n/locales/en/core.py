@@ -38,6 +38,7 @@ MESSAGES = {
     "sandbox.description": "show native command sandbox status",
     "sandbox.status": "Sandbox: {mode}; backend: {backend}",
     "sandbox.scope": "Native isolation covers Core shell processes. Python extensions and remote tools remain separately trusted. Configuration is startup-only.",
+    "sandbox.windows_scope": "Windows requires native x64 LPAC, NTFS and PowerShell 7. Reads include ambient LPAC ACL grants; a separate token limits writes. Availability is verified on each launch.",
     "sandbox.file_denied": "Sandbox denies file mutation: {path}",
     "sandbox.cli": "select native shell isolation; independent of approval strategy",
 }

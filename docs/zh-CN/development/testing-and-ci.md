@@ -36,6 +36,8 @@ uv build
 
 CI 当前使用 Python 3.13 和锁定依赖，软件声明的最低版本仍为 Python 3.11。Actions 固定到提交 SHA，具体工具版本、超时和产物保留时间维护在工作流中。Linux head 任务构建 sdist／wheel，并在 checkout 外安装 wheel 后检查 CLI，以发现包内容遗漏。
 
+Windows 完整套件任务的预算为 35 分钟，因为它在其余产品测试之外还包含串行原生沙箱验收。Linux/macOS 完整套件任务仍为 20 分钟，专用 Windows 原生工作流也保留 20 分钟。取消、运行不完整和报告缺失仍会使最终比较失败。
+
 ## 阅读结果
 
 最终摘要和 `comparison` 产物列出新失败、已有失败、修复、跳过变化和新增／缺失场景。每份 `results-<平台>-<版本>` 包含日志、JUnit XML、标准化结果、解释器信息和被测 SHA。失败详情包含场景、源码位置和堆栈，不输出 locals。
@@ -94,6 +96,8 @@ uv run --no-sync python ci/checks/powershell_cache.py
 退役机制验收还必须防范无关删除、基线失败、新增跳过，以及保留覆盖缺失／跳过／失败；必须拒绝将例外复用于其他基线 SHA 或无关同名测试，并检查被删除的 identity 是否从可读或 JSON 比较报告中消失。
 
 ## 手动诊断
+
+原生沙箱验收独立于完整测试运行。[Native sandbox boundaries](../../../.github/workflows/native-sandbox.yml) 设置 `VIRGO_REQUIRE_SANDBOX_TESTS=1` 验证 Linux/macOS。[Windows sandbox boundaries](../../../.github/workflows/windows-sandbox.yml) 在 Windows Server 2022 和 2025 上检出精确的 PR head，记录 OS／解释器环境，运行 `tests/harness/test_windows_sandbox_e2e.py`，并拒绝空报告、失败、错误和跳过。需要同时读取同一修订的原生结果与完整跨平台对比结果，二者不能互相替代。Windows 支持范围与实测结果见 [Windows 命令沙箱](../guides/windows-sandbox.md)。
 
 独立的 [Shell 诊断工作流](../../../.github/workflows/shell-selection.yml)仅手动触发：
 

@@ -37,6 +37,7 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
 
     root = directory = staging = descriptor = staged_descriptor = None
     staged_name = None
+    expected_identity = None
     stream = None
     try:
         if os.name == "posix":
@@ -54,9 +55,9 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
                 directory = child
             target = parts[-1]
         else:
-            # Windows has no native backend or descriptor-relative directory
-            # traversal. Keep its application-level path checks and use the
-            # same fresh-inode mutation, including the hardlink rejection.
+            # These broker operations run outside the Windows shell's LPAC.
+            # Keep the application-level path checks and fresh-file staging;
+            # this branch does not provide POSIX descriptor-relative traversal.
             if create:
                 path.parent.mkdir(parents=True, exist_ok=True)
             target = path
@@ -75,6 +76,10 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
                 raise SandboxFileDenied(f"Sandbox file operation requires a regular file: {path}")
             if info.st_nlink != 1:
                 raise SandboxFileDenied(f"Sandbox file operation rejects hard-linked files: {path}")
+            if os.name == "nt":
+                from .windows_sandbox_files import descriptor_identity
+
+                expected_identity = descriptor_identity(descriptor)
 
         metadata = policy.workspace / ".virgo"
         if os.name == "posix":
@@ -111,8 +116,9 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
             nonlocal staged_name
             stream.flush()
             if info is not None:
-                # File permissions are retained; ownership, ACLs and extended
-                # attributes are not copied to the newly created inode.
+                # File permissions are retained; ownership and extended
+                # attributes are not copied. Windows restores the current
+                # destination DACL only after the fresh inode leaves staging.
                 if os.name == "posix":
                     os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
                 else:
@@ -124,7 +130,13 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
                 if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
                     raise SandboxFileDenied(f"Sandbox file changed before commit: {path}")
             stream.close()  # Windows replacement requires closing the staged handle.
-            os.replace(staged_target, target, src_dir_fd=staging, dst_dir_fd=directory)
+            if os.name == "nt":
+                from .windows_sandbox_files import replace_staged
+
+                with replace_staged(staged_target, target, expected_identity=expected_identity):
+                    staged_name = None
+            else:
+                os.replace(staged_target, target, src_dir_fd=staging, dst_dir_fd=directory)
             staged_name = None
 
         yield stream, existed, commit
