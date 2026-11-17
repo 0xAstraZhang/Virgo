@@ -63,7 +63,7 @@ def installed_codex_version() -> str | None:
             if isinstance(data, dict) and data.get("name") == "@openai/codex":
                 if version := valid_version(data.get("version")):
                     return version
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             continue
     return None
 

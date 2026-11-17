@@ -147,6 +147,8 @@ def test_cli_metadata_failure_is_optional(tmp_path, monkeypatch):
     assert versions.installed_codex_version() == "1.2.3"
     manifest.write_text("broken json")
     assert versions.installed_codex_version() is None
+    manifest.write_text('[' * 10000 + '0' + ']' * 10000)
+    assert versions.installed_codex_version() is None
 
 
 @pytest.mark.parametrize("metadata", [
