@@ -63,6 +63,8 @@ Managed MCP invocations respect the network flag and require an explicit operati
 when a server cannot enforce local file scope. Trusted MCP service startup and autonomous
 activity run outside Virgo's task sandbox; an offline preset does not isolate that service.
 
+Cancelling an MCP call stops waiting for its response and sends a best-effort cancellation notification. The server may already have performed the operation; cancellation does not establish rollback or trigger a replay. Late responses are discarded. Cancellation before dispatch sends no request.
+
 `/mcp` shows connection state; `/mcp reconnect` reloads server configuration. The model's `mcp_status` reads local state, while `mcp_reconnect` performs bounded, permission-checked recovery for a specific server and known error. Reconnecting never replays a failed business operation. `diagnostic_get` exposes scoped evidence already granted to the calling runtime. See [Troubleshooting](../guides/troubleshooting.md) for the exact boundaries.
 
 Implementation: [base tools](../../../src/virgo/tools), [official plugins](../../../src/virgo/plugins), [extension API](../../../src/virgo/harness/extensions.py).

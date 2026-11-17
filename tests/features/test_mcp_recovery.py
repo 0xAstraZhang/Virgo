@@ -6,6 +6,7 @@ import json
 import sys
 import textwrap
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -20,6 +21,61 @@ from tests.support import SUPPORT
 from tests.support.harness import calls
 
 SERVER = SUPPORT / "mcp_echo_server.py"
+
+
+def test_cancelled_mcp_call_stops_waiting_without_replay(make_session, project):
+    marker = project / "dispatched"
+    cancelled = project / "cancelled"
+    server = project / "cancellable_server.py"
+    source = SERVER.read_text()
+    source = source.replace(
+        '    if rid is None:\n',
+        '    if method == "notifications/cancelled":\n'
+        f'        Path({str(cancelled)!r}).write_text(str(req["params"]["requestId"]))\n'
+        '        reply(req["params"]["requestId"], {"content": []})\n'
+        '    if rid is None:\n',
+    ).replace(
+        '        if name == "echo":\n',
+        '        if args.get("text") == "wait":\n'
+        f'            Path({str(marker)!r}).write_text(str(rid))\n'
+        '            continue\n'
+        '        if name == "echo":\n',
+    )
+    server.write_text(source)
+    session = make_session(settings={"mcpServers": {
+        "echo": {"command": sys.executable, "args": [str(server)]},
+    }})
+    client = session.services["mcp"]["echo"]
+    ctx = context(session)
+    tool = session.tool("mcp__echo__echo")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(tool.execute, {"text": "wait"}, ctx)
+        try:
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert marker.exists()
+            ctx.signal.set()
+            result = running.result(timeout=2)
+            assert result.is_error
+            assert result.details["error"]["phase"] == "mcp.cancelled"
+            assert result.details["transport"]["side_effects"] == "unknown"
+            deadline = time.monotonic() + 2
+            while not cancelled.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert cancelled.read_text() == marker.read_text()
+            ctx.signal.clear()
+            assert tool.execute({"text": "next"}, ctx).as_text() == "next"
+            assert not client._pending and not client._waiting
+            assert session.services["mcp"]["echo"] is client
+            ctx.signal.set()
+            before = client._next
+            result = tool.execute({"text": "must not dispatch"}, ctx)
+            assert result.is_error and result.details["transport"]["dispatch"] == "not_started"
+            assert client._next == before + 1
+        finally:
+            ctx.signal.clear()
+            client.close()
 
 
 def settings(*names):

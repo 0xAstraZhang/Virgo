@@ -170,7 +170,7 @@ class MCPConnections:
                 "generation": client.generation,
             }
             try:
-                result = to_result(client.call(remote, args))
+                result = to_result(client.call(remote, args, signal=ctx.signal))
                 if result.is_error:
                     metadata["request_id"] = getattr(client._request_local, "id", None)
                     result.details["error"] = self._report(

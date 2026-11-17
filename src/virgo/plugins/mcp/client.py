@@ -10,6 +10,7 @@ import re
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 from ... import __version__
@@ -95,6 +96,8 @@ class MCPClient:
         self._stderr_thread: threading.Thread | None = None
         self._reader_thread: threading.Thread | None = None
         self._request_local = threading.local()
+        self._cancellations: deque[int] = deque()
+        self._cancel_thread: threading.Thread | None = None
         self.generation = 1
 
     def transport(self) -> dict:
@@ -226,7 +229,35 @@ class MCPClient:
                 payload = payload[written:]
             self.proc.stdin.flush()
 
-    def request(self, method: str, params: dict | None = None, timeout: float = 60.0) -> dict:
+    def _queue_cancellation(self, rid: int) -> None:
+        # A server can stop reading stdin. Never make local cancellation wait
+        # for a notification write, and use at most one writer per connection.
+        with self._cv:
+            if self._closing:
+                return
+            self._cancellations.append(rid)
+            if self._cancel_thread is None:
+                self._cancel_thread = threading.Thread(
+                    target=self._send_cancellations, daemon=True, name=f"mcp-{self.name}-cancel"
+                )
+                self._cancel_thread.start()
+
+    def _send_cancellations(self) -> None:
+        while True:
+            with self._cv:
+                if self._closing or not self._cancellations:
+                    self._cancellations.clear()
+                    self._cancel_thread = None
+                    return
+                rid = self._cancellations.popleft()
+            try:
+                self.notify("notifications/cancelled", {"requestId": rid})
+            except MCPError:
+                pass  # Best effort; local cancellation never proves remote rollback.
+
+    def request(
+        self, method: str, params: dict | None = None, timeout: float = 60.0, *, signal=None
+    ) -> dict:
         with self._cv:
             self._next += 1
             rid = self._next
@@ -234,7 +265,20 @@ class MCPClient:
         self._request_local.id = rid
         self._request_local.dispatch = "not_started"
         self._request_local.outcome = "not_started"
+
+        def check_cancelled():
+            if signal is not None and signal.is_set():
+                dispatch = self._request_local.dispatch
+                if dispatch == "sent":
+                    self._queue_cancellation(rid)
+                raise MCPError(
+                    f"{self.name}: cancelled {method}", phase="mcp.cancelled",
+                    method=method, request_id=rid, dispatch=dispatch,
+                    outcome=self._request_local.outcome,
+                )
+
         try:
+            check_cancelled()
             if self._reader_done.is_set() or self._closing:
                 raise MCPError(
                     f"{self.name}: {self.error or 'connection closed'} for {method}",
@@ -258,17 +302,21 @@ class MCPClient:
                     outcome="unknown",
                 ) from error
             self._request_local.dispatch = "sent"
+            deadline = time.monotonic() + timeout
             with self._cv:
-                ok = self._cv.wait_for(
-                    lambda: (
+                while True:
+                    check_cancelled()
+                    ok = (
                         rid in self._pending
                         or self._reader_done.is_set()
                         or self._closing
                         or self.proc is not None
                         and self.proc.poll() is not None
-                    ),
-                    timeout,
-                )
+                    )
+                    remaining = deadline - time.monotonic()
+                    if ok or remaining <= 0:
+                        break
+                    self._cv.wait(min(0.05, remaining) if signal is not None else remaining)
                 msg = self._pending.pop(rid, None)
         finally:
             with self._cv:
@@ -380,8 +428,8 @@ class MCPClient:
             )
         self.tools = tools
 
-    def call(self, tool: str, arguments: dict, timeout: float = 300.0) -> dict:
-        return self.request("tools/call", {"name": tool, "arguments": arguments}, timeout)
+    def call(self, tool: str, arguments: dict, timeout: float = 300.0, *, signal=None) -> dict:
+        return self.request("tools/call", {"name": tool, "arguments": arguments}, timeout, signal=signal)
 
     def close(self) -> None:
         with self._cv:

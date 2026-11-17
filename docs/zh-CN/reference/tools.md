@@ -60,6 +60,8 @@ stdio MCP 服务器配置在用户或项目的 `mcp.json`，或 `mcpServers` 配
 受管 MCP 调用遵守联网开关；服务无法约束本地文件范围时，需要明确的单次操作例外。
 可信 MCP 服务的启动及自主活动在任务沙箱之外运行，离线预设不代表隔离了该服务进程。
 
+取消 MCP 调用会停止等待响应，并尽力发送取消通知。服务端可能已执行操作，取消不代表回滚，也不会触发重放；迟到的响应会被丢弃。分发前取消不会发送请求。
+
 `/mcp` 显示连接状态，`/mcp reconnect` 重新加载服务器配置。模型的 `mcp_status` 读取本地状态，`mcp_reconnect` 针对特定服务和已知错误执行有界、受权限约束的恢复。重连不会重放失败的业务操作。`diagnostic_get` 只暴露已授予调用 Runtime 的诊断证据，具体边界见[故障排查](../guides/troubleshooting.md)。
 
 实现：[基础工具](../../../src/virgo/tools)、[官方插件](../../../src/virgo/plugins)、[扩展 API](../../../src/virgo/harness/extensions.py)。
