@@ -93,12 +93,12 @@ def test_home_directory_is_not_reread_as_project_settings(tmp_path, monkeypatch)
     assert settings.get("model") == "faux/user"
     assert settings.get("permissions.preset") == "read-only"
     assert settings.get("permissions.presets.offline.name") == "Offline"
-    assert any("home directory" in notice for notice in settings.migration_warnings)
+    assert any("state directory" in notice for notice in settings.migration_warnings)
 
 
 def test_project_layer_still_rejects_grants_when_the_paths_differ(project, tmp_path):
-    state = tmp_path / "home"
-    (state / "settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
+    home = tmp_path / "home"
+    (home / "settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
     (project / ".virgo").mkdir()
     (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
     with pytest.raises(ValueError, match="Project permissions may only add deny"):
