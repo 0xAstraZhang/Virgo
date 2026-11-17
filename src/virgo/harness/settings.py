@@ -231,6 +231,17 @@ def _validate(data: dict) -> None:
         raise ValueError("budget.maxModelCalls must be null or a positive integer")
 
 
+def _same_directory(left: Path, right: Path) -> bool:
+    """Report whether two configuration directories are the same place.
+
+    An unresolvable path cannot be proven shared, so it keeps the deny-only guard.
+    """
+    try:
+        return left.resolve() == right.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
 def _trusted_projects(user: dict) -> set[Path]:
     extensions = user.get("extensions", {})
     if not isinstance(extensions, dict):
@@ -272,7 +283,13 @@ class Settings:
     def load(cls, paths: Paths, overrides: dict | None = None) -> Settings:
         notices: list[str] = []
         user = _read_json(paths.user / "settings.json")
-        project = _read_json(paths.project / "settings.json")
+        # When <cwd>/.virgo is the user settings directory, reading it again as an
+        # untrusted project layer would reject the user's own grants. The user layer
+        # already carries those settings.
+        shared_settings = _same_directory(paths.project, paths.user)
+        project = {} if shared_settings else _read_json(paths.project / "settings.json")
+        if shared_settings and (paths.user / "settings.json").exists():
+            notices.append("The working directory resolves to the Virgo state directory; user settings are not re-read as project settings.")
         trusted = _trusted_projects(user)
         if "sandbox" in project:
             project = {key: value for key, value in project.items() if key != "sandbox"}

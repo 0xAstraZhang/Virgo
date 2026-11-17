@@ -11,7 +11,7 @@ Virgo deep-merges built-in defaults, user settings and project settings, in that
 3. `<working-directory>/.virgo/settings.json`.
 4. Supported environment and runtime/CLI overrides.
 
-Nested objects merge; a higher-priority value replaces the lower-priority value, except that project authorization settings may only add deny rules. User deny rules cannot be removed by a project. CLI model selection overrides `VIRGO_MODEL`, which overrides settings. `VIRGO_SHELL` overrides the shell selected by user, project and runtime settings. Commands that save a user default preserve unrelated fields; a project or startup override can still win on the next launch.
+Nested objects merge; a higher-priority value replaces the lower-priority value, except that project authorization settings may only add deny rules. User deny rules cannot be removed by a project. CLI model selection overrides `VIRGO_MODEL`, which overrides settings. `VIRGO_SHELL` overrides the shell selected by user, project and runtime settings. Commands that save a user default preserve unrelated fields; a project or startup override can still win on the next launch. When `<working-directory>/.virgo` is the same directory as the user settings directory (`~/.virgo` or `$VIRGO_HOME`), that file is not read a second time as a project settings layer.
 
 Language follows defaults → user settings → project settings → `--language`/runtime settings. `/language` saves a user preference and applies it now; a failed save keeps the active language. No `VIRGO_LANGUAGE` variable is defined. See [Localization](../development/localization.md) for aliases and live-session behavior.
 
