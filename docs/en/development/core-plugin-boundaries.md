@@ -23,7 +23,7 @@ Model adapters, hosts and capability plugins have different lifecycles. They nee
 
 ## Official capabilities
 
-| Plugin ID | Responsibility | `coding` default |
+| Plugin ID | Responsibility | Default |
 | --- | --- | --- |
 | `skills` | Index and explicitly expand skill instructions | Enabled |
 | `todo` | Checklist belonging to the current conversation | Enabled |
@@ -33,10 +33,8 @@ Model adapters, hosts and capability plugins have different lifecycles. They nee
 | `background` | Job tools, status, cancellation and owner-bound notifications | Enabled |
 | `web` | Search/fetch routing, permission-aware access and configurable budgets | Enabled |
 | `mcp` | Configured connections, tools and bounded recovery | Only when server configuration exists |
-| `plan` | Prompt task with versioned Markdown proposals | Enabled |
-| `code_review` | Independent prompt review with frozen targets and validated reports | Enabled |
 
-`minimal` disables the preset's optional capabilities. Explicit `plugins.<id>.enabled` values override the preset. General Git operations remain available through the shell; [code review](../guides/code-review.md) provides only frozen status/diff views in its isolated Runtime.
+Official capabilities load by default; `plugins.<id>.enabled` disables individual plugins. General Git operations remain available through the shell.
 
 The Core owns shell/process execution and cancellation. The background plugin uses those primitives rather than a second executor. The Core also owns diagnostics and the human-facing `/diagnostics` command; disabling `diagnostic_get` only removes the model-facing lookup tool.
 
@@ -69,8 +67,6 @@ Existing message/tool-result records are data, not executable registrations. Old
 
 The pre-implementation acceptance suite is `tests/harness/test_core_plugins_e2e.py`. It exercises a real assembled session with a deterministic model: the file/edit/shell loop and resume, execution-time permissions, registry publication, failed setup/cleanup, project trust, child restrictions and shared budget, historical data, and configuration precedence. Existing provider, MCP, background, cancellation, session and TUI scenarios remain the regression checks. [Test retirements](test-retirements.md) distinguishes removed product behavior from retained guarantees.
 
-`ci/measure_startup.py` samples fresh-process import/construction time, module/thread/tool counts and schema/system character counts using a temporary home and the offline `faux` provider. Run with `--profile minimal` and `--profile coding` under the same interpreter and machine. Character counts are not tokens. The script does not measure coding quality, live-provider cost or success rate.
+`ci/measure_startup.py` samples fresh-process import/construction time, module/thread/tool counts and schema/system character counts using a temporary home and the offline `faux` provider. Run it under the same interpreter and machine when comparing revisions. Character counts are not tokens. The script does not measure coding quality, live-provider cost or success rate.
 
 A coding-quality comparison needs fixed repository snapshots, model/effort, task set, permissions and budgets, then recorded completion, intervention, tool failures, model calls, elapsed time and cost. No quality gain is inferred from removed lines or the offline acceptance run. Keep measured results and their exact environment in the PR or a dated report.
-
-The dated [validation report](core-plugins-validation.md) preserves the baseline suite result, five-process startup samples and the limits of the measured evidence.

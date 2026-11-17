@@ -65,7 +65,7 @@ def test_default_sandbox_requires_native_boundary(project, monkeypatch):
 
 
 def test_sandbox_status_reports_effective_read_only(make_session, project, monkeypatch):
-    """Plan intent must not change permissions or certify a discovered launcher."""
+    """Status must report flags without certifying a discovered launcher."""
     monkeypatch.setattr("virgo.harness.sandbox.platform_backend", lambda: ("example-backend", project))
 
     def unexpected_launch(*args, **kwargs):
@@ -73,7 +73,7 @@ def test_sandbox_status_reports_effective_read_only(make_session, project, monke
 
     monkeypatch.setattr(sandbox.SandboxPolicy, "spawn", unexpected_launch)
     session = make_session(
-        work_mode="plan", settings={"profile": "minimal", "sandbox": {"mode": "workspace-write"}},
+        settings={"sandbox": {"mode": "workspace-write"}},
         refresh_models=False, extensions=False,
     )
     session.prompt("/sandbox")
@@ -532,8 +532,7 @@ def test_native_readonly_including_child_shell(native, project):
     out, code, status = run_command("sh -c 'echo bad > blocked.txt'", project, 10,
                                     threading.Event(), interpreter=selected(native), sandbox_policy=policy)
     assert code and status == "ok" and not (project / "blocked.txt").exists(), out.text
-    native.services["permissions"].set_work_mode("plan")
-    ctx = ToolContext("plan", project, threading.Event(), origin=native.main.origin)
+    ctx = ToolContext("worker", project, threading.Event(), origin=native.main.origin)
     assert native.services["sandbox"].for_context(ctx).mode == "workspace-write"
 
 

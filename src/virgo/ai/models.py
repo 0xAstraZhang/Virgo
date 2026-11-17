@@ -18,6 +18,8 @@ import re
 from .auth_presets import API_PRESETS, AUTH_PRESETS
 from .types import Model
 
+RETIRED_PROVIDERS = {"google-gemini-cli": "Google account login was removed; run /login to choose another provider."}
+
 BUILTIN_PROVIDERS = {
     **{k: v["config"] for k, v in {**AUTH_PRESETS, **API_PRESETS}.items()},
     "anthropic": {"api": "anthropic", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrlEnv": "ANTHROPIC_BASE_URL"},
@@ -74,6 +76,8 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
         provider, model_id = spec.split("/", 1)
     else:
         provider, model_id = _guess_provider(spec), spec
+    if provider in RETIRED_PROVIDERS and provider not in providers:
+        raise ValueError(RETIRED_PROVIDERS[provider])
     conf = dict(BUILTIN_PROVIDERS.get(provider, {}))
     conf.update(providers.get(provider, {}))
     if not conf:
@@ -115,8 +119,6 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
     elif api == "openai" and isinstance(effort_map := conf.get("reasoningEffortMap"), dict):
         supported = tuple(key for key, value in effort_map.items() if isinstance(key, str) and key == value)
         levels = supported if levels is None else tuple(level for level in levels if level in supported)
-    elif levels is None and api == "google-gemini-cli" and model_id.startswith("gemini-"):
-        levels = ("low", "medium", "high")
     if levels is not None and default_level not in levels:
         default_level = None
     return Model(

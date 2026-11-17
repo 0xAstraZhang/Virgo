@@ -123,9 +123,9 @@ def test_noninteractive_sessions_report_no_answer_without_a_prompt(make_session)
     assert "choice" not in result.details and "answer" not in result.details
 
 
-def test_only_the_lead_agent_gets_the_tool_and_plan_mode_allows_it(make_session):
+def test_only_the_lead_agent_gets_the_tool(make_session):
     ui = AskingUI(picks=[0])
-    s = make_session(faux.reply(tools=[("ask_user", ASK)]), faux.reply("ok"), ui=ui, work_mode="plan")
+    s = make_session(faux.reply(tools=[("ask_user", ASK)]), faux.reply("ok"), ui=ui)
     assert s.tool("ask_user") is not None
     assert s.tool("ask_user", "subagent") is None and s.tool("ask_user", "teammate") is None
     s.prompt("plan storage")

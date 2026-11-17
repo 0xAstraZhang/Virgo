@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ...harness.runtime import Runtime
     from .activity import RunActivity
     from .bridge import Confirmation, InputRequest
     from .editor import InputHistory
@@ -45,6 +44,5 @@ class ConversationState:
     completion_suppressed: str | None = None
     last_interrupt: float = 0.0
     browsing: bool = False
-    task_runtime: Runtime | None = None
     deferred: deque[str] = field(default_factory=deque)
     steering: list[str] = field(default_factory=list)

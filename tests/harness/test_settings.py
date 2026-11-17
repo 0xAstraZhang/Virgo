@@ -53,9 +53,6 @@ def test_permission_defaults_and_saved_mode_migration(project, configured):
     try:
         assert session.approval_policy == "ask"
         assert session.services["sandbox"].mode == "workspace-write"
-        session.services["permissions"].set_work_mode("plan")
-        assert session.services["permissions"].work_mode == "plan"
-        assert session.approval_policy == "ask"
     finally:
         session.shutdown()
 
@@ -71,8 +68,8 @@ def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp
     settings = Settings.load(Paths(project))
     assert settings.get("permissions.mode") == "read-only"
     assert settings.get("permissions.modes.offline.name") == "Offline"
-    assert settings.get("workMode") == "plan"
-    assert settings.get("plan") is True
+    assert settings.get("workMode") is None
+    assert any("workMode" in notice for notice in settings.migration_warnings)
 
 
 def test_home_directory_is_not_reread_as_project_settings(tmp_path, monkeypatch):
@@ -123,3 +120,22 @@ def test_invalid_presets_value_is_a_configuration_error(project):
                                   "workspaceOnly": True, "networkAllowed": False}},
             "presets": "nope",
         }})
+
+
+def test_retired_task_configuration_is_ignored_with_a_notice(project, tmp_path, monkeypatch):
+    user = tmp_path / "retired-user"
+    user.mkdir()
+    (user / "settings.json").write_text(json.dumps({
+        "plan": True,
+        "profile": "minimal",
+        "workMode": "plan",
+        "plugins": {"plan": {"enabled": True}, "code_review": {"enabled": True}},
+    }))
+    monkeypatch.setenv("VIRGO_HOME", str(user))
+    settings = Settings.load(Paths(project))
+    assert settings.get("plan") is None
+    assert settings.get("profile") is None
+    assert set(settings.get("plugins", {})) == set()
+    notices = "\n".join(settings.migration_warnings)
+    for name in ("plan", "profile", "workMode", "plugins.plan", "plugins.code_review"):
+        assert name in notices

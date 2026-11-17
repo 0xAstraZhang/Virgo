@@ -338,7 +338,6 @@ def test_powershell_failure_and_permission_boundaries(make_session, monkeypatch,
     session.approval_policy = "never"
     res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()
-    session.services["permissions"].set_work_mode("plan")
     assert "powershell" in [t.name for t in session.main.request_context([]).tools]
     res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()

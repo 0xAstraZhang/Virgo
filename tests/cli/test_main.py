@@ -40,15 +40,20 @@ def test_permission_mode_arguments_and_legacy_aliases(value):
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
-def test_work_mode_startup_is_separate_from_output_approval_and_sandbox(entry, project):
+def test_removed_task_flags_are_rejected_and_permission_output_stays_independent(entry, project):
     result = subprocess.run(
         [*entry, "--no-session", "--no-extensions", "--model", "faux/demo", "-p",
-         "--format", "json", "--work-mode", "plan", "--approval", "never",
-         "--sandbox", "read-only", "/permissions"],
+         "--format", "json", "--approval", "never", "--sandbox", "read-only", "/permissions"],
         cwd=project, input="", capture_output=True, text=True, check=True, timeout=10,
     )
-    assert "plan" in result.stdout.lower() and "never ask" in result.stdout
+    assert "never ask" in result.stdout
     assert all(isinstance(json.loads(line), dict) for line in result.stdout.splitlines())
+    for flag, value in (("--work-mode", "plan"), ("--plan", None), ("--profile", "minimal")):
+        rejected = subprocess.run(
+            [*entry, "--no-session", flag, *([value] if value else [])],
+            cwd=project, input="", capture_output=True, text=True, timeout=10,
+        )
+        assert rejected.returncode == 2 and "unrecognized arguments" in rejected.stderr
     # The retired output flag must not become an abbreviation of --model.
     legacy = subprocess.run(
         [*entry, "--no-session", "--no-extensions", "--mode", "json",

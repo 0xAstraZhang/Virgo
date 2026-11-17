@@ -86,7 +86,7 @@ def test_failed_job_notification_is_reported_and_does_not_hold_print_mode(make_s
     assert "queue gone" in session.ui.text
 
 def test_disabled_background_capability_keeps_the_shell_foreground_only(make_session):
-    session = make_session(settings={"profile": "minimal"})
+    session = make_session(settings={"plugins": {"background": {"enabled": False}}})
     jobs = session.services["jobs"]
     assert not jobs.background_enabled
     assert session.tool("job_output") is None and session.tool("job_kill") is None
@@ -98,7 +98,7 @@ def test_disabled_background_capability_keeps_the_shell_foreground_only(make_ses
 def test_disabled_background_capability_runs_an_agent_synchronously(make_session):
     session = make_session(
         faux.reply("foreground result"),
-        settings={"profile": "minimal", "plugins": {"subagent": {"enabled": True}}},
+        settings={"plugins": {"background": {"enabled": False}}},
     )
     ctx = ToolContext("agent-origin", session.cwd, threading.Event(), origin=session.main.origin)
     result = session.tool("agent").execute(

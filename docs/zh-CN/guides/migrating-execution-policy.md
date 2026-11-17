@@ -2,15 +2,12 @@
 
 [文档](../README.md) · [English](../../en/guides/migrating-execution-policy.md)
 
-任务指令与执行权限现在独立。Plan 和 Code Review 是拥有正常工具的可选插件，通过提示词
-要求输出计划／报告，不再附加只读权限。已有对话和计划仍然可读。
+执行权限独立于任务指令，提示词不会附加只读权限。本文说明权限预设、审批与沙箱迁移。
 
 ## 更新配置
 
 | 原入口 | 当前入口 |
 | --- | --- |
-| `/mode plan` / `/mode default` | `/plan` / `/plan off` |
-| `workMode=plan`、`--work-mode plan` | 改用 `plan: true` / `--plan`；Plan 插件启用时选择规划指令 |
 | `/mode` | `/permissions` 的弃用别名；查看／选择可编辑的**权限**预设 |
 | `--mode text|json` | `--format text|json`；旧 `--mode` 预设写法是 `--permission` 的弃用别名 |
 | `sandbox.mode=workspace-write` / `read-only` | 显式保留旧禁网策略；删除后使用新默认值 |
@@ -31,7 +28,7 @@
 
 `ask` 允许交互申请，`never` 拒绝新增申请，而非拒绝全部操作。`/permissions revoke` 清除
 记住的决定和待消费例外。显式 deny 始终生效。失败或可能已有副作用的命令不会自动重放。
-打开历史不恢复授权，也不执行计划。可信扩展策略可以增加限制。
+打开历史不恢复授权。可信扩展策略可以增加限制。
 
 ## 默认执行边界
 
@@ -55,7 +52,4 @@ Core 文件工具在应用层执行文件范围检查；原生 Shell 后端执�
 `read_only=True` 仍可明确限制子 Runtime，但不移除工具 schema；预设继承与该显式上限分开。
 延迟工作携带 `ToolContext.origin`，TUI 切换对话不会转移授权。存储的历史记录不会恢复单次例外。
 
-Plan 通过 `plugins.plan` 安装，Core 不再必然拥有 Plan 服务。扩展使用
-`add_request_system_section` 注入每请求指令，复用既有 Runtime 和 SessionStore。
-Review 保留目标解析、冻结证据与 Findings 校验，同时使用正常工具和交互路径。
-0.3 已删除 `harness.plans` 兼容入口；新集成使用插件 API。
+扩展使用 `add_request_system_section` 注入每请求指令，复用既有 Runtime 和 SessionStore。

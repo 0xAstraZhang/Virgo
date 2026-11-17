@@ -22,21 +22,21 @@ Virgo separates model transport, the agent loop and application policy. Official
 
 The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
 
-Canonical user-facing terms are defined in [Vocabulary](vocabulary.md). Shared rules live with their semantics: `ai/providers/reasoning.py` maps reasoning levels; `harness/permissions.py` defines approval and read-only capability; `permission_policy.py` enforces rules and explicit grants. `origin_context.py` binds the Runtime, workspace and source branch. Plan is work intent and Review is an isolated task; both reuse the existing Agent Loop. Sandbox enforces Shell boundaries while file tools retain application-level write protection.
+Canonical user-facing terms are defined in [Vocabulary](vocabulary.md). Shared rules live with their semantics: `ai/providers/reasoning.py` maps reasoning levels; `harness/permissions.py` defines approval and read-only capability; `permission_policy.py` enforces rules and explicit grants. `origin_context.py` binds the Runtime, workspace and source branch. Sandbox enforces Shell boundaries while file tools retain application-level write protection.
 
 ## Core and plugin assembly
 
-Core initializes the base coding toolkit, Shell, store, runtime identity, diagnostics and mandatory permission gate before loading capabilities. `coding` selects the official coding plugins; `minimal` selects none unless explicitly enabled. Trusted Python extensions are separate, so `--profile minimal --no-extensions` is the zero-extension path.
+Core initializes the base coding toolkit, Shell, store, runtime identity, diagnostics and mandatory permission gate before loading capabilities. Official coding plugins load by default and `plugins.<id>.enabled` overrides that per plugin. Trusted Python extensions are separate, so `--no-extensions` is the zero-extension path.
 
 Registrations have owners; collisions fail. Setup rollback removes partial registrations, and cleanup runs in reverse order. Disabled capabilities are not imported. Dynamic tool sets publish atomically at model-request boundaries through the owned registry. The Core depends on these contracts, not concrete plugin implementations. See [Extension API](extensions.md).
 
 ## Sessions and runtimes
 
-`AgentSession` owns workspace paths, effective settings, authentication, a session-scoped translator, the UI adapter, registered tools/commands, shared services and diagnostic logs. A `Runtime` owns one agent context: main or a focused child runtime. Its construction explicitly binds working directory, tools, model, conversation store, accounting store and review ancestry.
+`AgentSession` owns workspace paths, effective settings, authentication, a session-scoped translator, the UI adapter, registered tools/commands, shared services and diagnostic logs. A `Runtime` owns one agent context: main or a focused child runtime. Its construction explicitly binds working directory, tools, model, conversation store and accounting store.
 
 Candidate runtimes build their system context before activation. `RuntimeContext` lets runtime-aware prompt sections read the candidate's store and role without temporarily replacing `session.main` or `session.store`. A failed candidate leaves the active conversation intact.
 
-The full-screen application keeps controllers for live conversations. Switching the selected conversation changes what the user sees; it does not reassign background work. Async callbacks bind their original store and review source when queued. A shared accounting store does not grant access to another runtime's diagnostic evidence.
+The full-screen application keeps controllers for live conversations. Switching the selected conversation changes what the user sees; it does not reassign background work. Async callbacks bind their original store and source when queued. A shared accounting store does not grant access to another runtime's diagnostic evidence.
 
 ## Request and tool flow
 

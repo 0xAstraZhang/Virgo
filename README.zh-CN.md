@@ -41,16 +41,6 @@ uv run virgo --model faux/demo
 
 演示使用预设响应；实际编程工作需要连接模型。
 
-## 选择能力预设
-
-默认 `coding` 包含聚焦的子 Agent、技能、联网工具、询问、清单、后台任务和诊断读取；MCP 仅在有配置时启动。`minimal` 保留 Core 文件／Shell 工具、模型循环、权限、会话和诊断：
-
-```bash
-uv run virgo --profile minimal --no-extensions
-```
-
-显式插件设置可为任一预设添加需要的能力。项目 Python 扩展需要明确授权。详见 [Core + 插件](docs/zh-CN/development/core-plugin-boundaries.md)和[升级指南](docs/zh-CN/guides/migrating-to-core-plugins.md)。
-
 ## 融入你的工作方式
 
 ```bash
@@ -67,7 +57,7 @@ uv run virgo --continue
 uv run virgo -p --format json "总结 README"
 ```
 
-默认权限预设为 Workspace-Edit：允许编辑工作区、允许任务联网。`/permissions` 选择或编辑权限预设与审批策略。`/plan` 和 `/review` 是使用正常工具的可选任务；需要强制保护文件时另选 Read-Only。模型可以申请单次操作的权限例外。见[规划指南](docs/zh-CN/guides/planning.md)、[沙箱范围](docs/zh-CN/guides/sandbox.md)和[不兼容迁移说明](docs/zh-CN/guides/migrating-execution-policy.md)。
+默认权限预设为 Workspace-Edit：允许编辑工作区、允许任务联网。`/permissions` 选择或编辑权限预设与审批策略。模型可以申请单次操作的权限例外。见[沙箱范围](docs/zh-CN/guides/sandbox.md)和[不兼容迁移说明](docs/zh-CN/guides/migrating-execution-policy.md)。
 
 ## 继续了解
 

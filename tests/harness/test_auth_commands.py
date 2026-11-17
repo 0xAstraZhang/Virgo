@@ -10,6 +10,7 @@ import pytest
 
 from virgo.ai.auth import authenticated_model
 from virgo.ai.auth_presets import API_PRESETS, AUTH_PRESETS
+from virgo.harness.preferences import model_choices
 from virgo.harness.session import AgentSession
 from virgo.harness.ui import UI
 
@@ -213,3 +214,52 @@ def test_logout_all_keeps_environment_and_headless_login_does_not_prompt(project
         assert not s.commands.get("logout").concurrent
     finally:
         s.shutdown()
+
+
+def _directory_server(state):
+    from http.server import BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            state["paths"].append(self.path)
+            body = json.dumps(state["payload"]).encode()
+            self.send_response(state["status"])
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
+@pytest.mark.parametrize(
+    "status, expected_warning",
+    [(200, None), (500, "could not read the model directory")],
+    ids=["success", "failure"],
+)
+def test_login_fetches_the_provider_directory_once(project, monkeypatch, status, expected_warning):
+    from tests.support.http import bypass_proxies, serve
+
+    bypass_proxies(monkeypatch)
+    state = {"paths": [], "status": status,
+             "payload": {"data": [{"id": "fresh-model", "context_length": 64000}]}}
+    with serve(_directory_server(state)) as url:
+        ui = LoginUI("API — Connect with an API key", "Custom", "local", "OpenAI compatible",
+                     f"{url}/v1", "seed-model", "secret")
+        s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
+        try:
+            s.prompt("/login")
+            assert s.model.spec == "local/seed-model"
+            assert state["paths"] == ["/v1/models"]
+            offered = {choice.spec for choice in model_choices(s)}
+            if status == 200:
+                assert "local/fresh-model" in offered
+                assert any("1 models available" in line for line in ui.lines)
+            else:
+                assert "local/fresh-model" not in offered
+                assert any(expected_warning in line for line in ui.lines)
+        finally:
+            s.shutdown()

@@ -230,31 +230,13 @@ def test_requests_are_append_only(make_session):
         assert b["messages"][: len(a["messages"])] == a["messages"]
 
 
-def test_plan_mode_exposes_read_only_tools_and_changes_back_on_switch(make_session):
-    # Task instructions change independently of the visible normal tool set.
-    s = make_session(faux.reply("The plan."), faux.reply("Implementation."), work_mode="plan",
-                     settings={"shell": {"executable": "bash"}})
-    s.prompt("Plan the change")
-    planned = calls()[0]
-    assert "Plan mode is active" in planned["system"]
-    assert {"read", "grep", "glob", "git_read"}.issubset(planned["tools"])
-    assert {"write", "edit", "bash", "request_permissions"}.issubset(planned["tools"])
-    s.services["permissions"].set_work_mode("default")
-    s.prompt("Implement it")
-    implementation = calls()[1]
-    assert "Plan mode is active" not in implementation["system"]
-    assert {"write", "edit"}.issubset(implementation["tools"])
-    assert implementation["tools"] == planned["tools"]
-    assert implementation["messages"][: len(planned["messages"])] == planned["messages"]
-
-
-def test_plan_switch_blocks_writes_that_already_passed_batch_preflight(make_session, project):
+def test_mode_switch_blocks_writes_that_already_passed_batch_preflight(make_session, project):
     s = make_session(
         faux.reply(tools=[
             ("write", {"path": "first.txt", "content": "one"}),
             ("write", {"path": "second.txt", "content": "two"}),
         ]),
-        faux.reply("Plan only."),
+        faux.reply("Stopped."),
         approval="never",
     )
 

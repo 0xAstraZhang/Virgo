@@ -55,8 +55,6 @@ def _request(model: Model, codex_version: str | None = None) -> tuple[str, dict,
     token = model.options.get("apiKey") or os.environ.get(model.api_key_env or "", "")
     headers = {**(model.options.get("headers") or {}), "Accept": "application/json"}
     params = {}
-    if model.api == "google-gemini-cli":
-        raise CatalogError("This account API has no supported live model directory; use /model provider/model-id.")
     if model.api == "openai-codex":
         account = model.options.get("authMetadata", {}).get("accountId")
         if not token or not account:

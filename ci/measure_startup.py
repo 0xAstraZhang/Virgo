@@ -1,6 +1,6 @@
-"""Offline startup sample; run in fresh processes for baseline/profile comparisons.
+"""Offline startup sample; run in fresh processes for baseline comparisons.
 
-Usage: python ci/measure_startup.py [--profile minimal|coding]
+Usage: python ci/measure_startup.py
 The faux provider and temporary home avoid credentials, network and user data.
 Schema/prompt sizes are characters, not provider token or quality measurements.
 """
@@ -18,8 +18,7 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("minimal", "coding"))
-    args = parser.parse_args()
+    parser.parse_args()
     start = time.perf_counter()
     from virgo.harness.session import AgentSession
 
@@ -27,11 +26,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="virgo-measure-") as directory:
         root = Path(directory)
         session = AgentSession(root, home=root / "home", model="faux/measure", session=None,
-                               settings={"profile": args.profile} if args.profile else {},
                                extensions=False, refresh_models=False)
         ready = time.perf_counter()
         payload = {
-            "profile": args.profile or "baseline-default",
+            "profile": "default",
             "import_ms": round((imported - start) * 1000, 3),
             "construct_ms": round((ready - imported) * 1000, 3),
             "total_ms": round((ready - start) * 1000, 3),

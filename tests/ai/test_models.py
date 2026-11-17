@@ -89,7 +89,7 @@ def test_provider_effort_mapping_excludes_disabled_or_remapped_levels():
     assert model.supported_reasoning_levels == ("high",)
 
 
-@pytest.mark.parametrize("spec", ["anthropic/claude-opus-5-5", "google-gemini-cli/gemini-2.5-pro", "deepseek/deepseek-flash"])
+@pytest.mark.parametrize("spec", ["anthropic/claude-opus-5-5", "deepseek/deepseek-flash"])
 def test_existing_builtin_reasoning_transports_advertise_low(spec):
     assert "low" in resolve_model(spec).supported_reasoning_levels
 
@@ -114,3 +114,8 @@ def test_model_resolution_and_custom_providers():
         },
     )
     assert d.api == "openai" and d.base_url == "https://api.deepseek.com" and d.context_window == 64000
+
+
+def test_retired_google_account_provider_has_a_clear_error():
+    with pytest.raises(ValueError, match="Google account login was removed"):
+        resolve_model("google-gemini-cli/gemini-2.5-pro")

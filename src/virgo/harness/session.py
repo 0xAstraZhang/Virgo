@@ -57,7 +57,6 @@ from .shell_commands import ShellSelection
 from .store import SessionSaveError, SessionStore
 from .telemetry import record_call
 from .ui import UI
-from .work_modes import normalize_work_mode
 
 _DEFAULT_EFFORT = object()
 
@@ -71,7 +70,6 @@ class AgentSession:
         model: str | None = None,
         session: str | Path | None = "new",  # "new" | "continue" | path | None (in memory)
         approval_policy: str | None = None,
-        work_mode: str | None = None,
         settings: dict | None = None,
         extensions: bool = True,
         trust_project_extensions: bool = False,
@@ -95,8 +93,6 @@ class AgentSession:
         self._diagnostic_lock = threading.RLock()
         self._notified_errors: set[str] = set()
         self.settings = Settings.load(self.paths, settings)
-        if work_mode is not None:
-            normalize_work_mode(work_mode)
         self.trust_project_extensions = trust_project_extensions
         self.translator = Translator(self.settings.get("language", "en"))
         self.ui.set_translator(self.translator)
@@ -166,11 +162,8 @@ class AgentSession:
                 jobs.background_enabled = False
                 self.services["shell"].install_tools()
             install_command_hooks(self)
-            self.templates.update(load_templates(
-                self.paths.both("prompts"),
-                reserved=frozenset(command.name for command in self.commands.all() if command.isolated),
-            ))
-            self.main = self._new_main(self.store, work_mode=work_mode)
+            self.templates.update(load_templates(self.paths.both("prompts")))
+            self.main = self._new_main(self.store)
         except BaseException:
             self.cleanup_plugins()
             raise
@@ -553,12 +546,12 @@ class AgentSession:
             return None
         return runtime
 
-    def _new_main(self, store: SessionStore, *, work_mode: str | None = None) -> Runtime:
+    def _new_main(self, store: SessionStore) -> Runtime:
         messages, ids = store.build_context()
-        return self.create_runtime("main", "main", store=store, messages=messages, ids=ids, work_mode=work_mode)
+        return self.create_runtime("main", "main", store=store, messages=messages, ids=ids)
 
-    def _prepare_main(self, store: SessionStore, *, work_mode: str | None = None) -> Runtime:
-        return self._new_main(store, work_mode=work_mode)
+    def _prepare_main(self, store: SessionStore) -> Runtime:
+        return self._new_main(store)
 
     def live_store(self, path: str | Path) -> SessionStore | None:
         """Resolve an owned conversation before consulting its possibly damaged file."""
@@ -585,25 +578,22 @@ class AgentSession:
                 items[store.path] = store.describe()
         return sorted(items.values(), key=lambda item: (-item["mtime"], str(item["path"])))
 
-    def open_session(self, path: str | Path, *, work_mode: str | None = None) -> None:
+    def open_session(self, path: str | Path) -> None:
         path = Path(path).absolute()
         with self._lock:
             self.assert_state_change_allowed()
             if self.store.path == path:
-                if work_mode is not None:
-                    self._activate_store(self.store, runtime=self.main, pending=self.wakeups, work_mode=work_mode)
                 return
             retained = self._retained_sessions.get(path)
             if retained is not None:
                 runtime, pending = retained
-                self._activate_store(runtime.store, runtime=runtime, pending=pending, work_mode=work_mode)
+                self._activate_store(runtime.store, runtime=runtime, pending=pending)
                 return
-            self._activate_store(SessionStore.load(path), work_mode=work_mode)
+            self._activate_store(SessionStore.load(path))
 
-    def new_session(self, *, work_mode: str | None = None) -> None:
+    def new_session(self) -> None:
         self.assert_state_change_allowed()
-        self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd),
-                             work_mode=work_mode)
+        self._activate_store(SessionStore.new(self.paths.sessions if self.store.path else None, self.cwd))
 
     def trash_session(self, path: str | Path) -> None:
         """Trash a conversation, replacing the active one with a new saved session."""
@@ -641,7 +631,7 @@ class AgentSession:
                 self._activate_store(replacement, runtime=runtime)
 
     def _activate_store(self, store: SessionStore, *, runtime: Runtime | None = None,
-                        pending: deque | None = None, work_mode: str | None = None) -> None:
+                        pending: deque | None = None) -> None:
         with self._lock:
             self.assert_state_change_allowed()
             if self._shutdown_started:
@@ -649,11 +639,7 @@ class AgentSession:
             # Apply the startup selection before session_start observers can
             # inspect tools or begin the initial request.
             if runtime is None:
-                runtime = self._prepare_main(store, work_mode=work_mode)
-            elif work_mode is not None:
-                if self.busy or self.runtime_is_busy(runtime):
-                    raise ValueError(self.t("work_mode.busy"))
-                self.services["permissions"].restore_work_mode(runtime, work_mode)
+                runtime = self._prepare_main(store)
             if self._shutdown_started:
                 return
             old = self.main
@@ -855,34 +841,6 @@ class AgentSession:
             raise
 
     def _prompt(self, text: str) -> None:
-        if text.startswith("/") and not text.startswith("//"):
-            name, _, args = text[1:].partition(" ")
-            command = self.commands.get(name)
-            if command is not None and command.isolated:
-                # Explicit host tasks bypass UserPromptSubmit hooks. Capture the
-                # owner before any worker or UI can select another conversation.
-                with self._lock:
-                    self.assert_state_change_allowed()
-                    if self._shutdown_started or not self.main.can_run():
-                        self.command_exit_code = 1
-                        return
-                    if self.busy:
-                        raise RuntimeError("An isolated task cannot overlap another run in this session")
-                    runtime = self.main
-                    # A user selection made during the previous run applies to
-                    # this new task; existing descendants keep their snapshots.
-                    runtime.refresh_permission_snapshot()
-                    self.busy = True
-                    runtime.agent.signal.clear()
-                try:
-                    self.bus.emit("command_start", command, runtime)
-                    with self.ui.command_scope():
-                        command.fn(self, args, runtime)
-                finally:
-                    with self._lock:
-                        self.busy = False
-                        self._apply_model_metadata()
-                return
         result = self.bus.chain("input", text, self)
         if isinstance(result, Handled):
             if result.message:
@@ -899,7 +857,10 @@ class AgentSession:
             if name in self.templates:
                 text = expand_template(self.templates[name][1], args)
             else:
-                if name in {"schedule", "schedules", "team", "tasks", "task", "memory", "goal"}:
+                if name in {
+                    "schedule", "schedules", "team", "tasks", "task", "memory", "goal",
+                    "plan", "review", "workflow",
+                }:
                     self.ui.print(self.t("harness.commands.retired", name=name), "error")
                 else:
                     self.ui.print(self.t("harness.commands.unknown", name=name), "error")

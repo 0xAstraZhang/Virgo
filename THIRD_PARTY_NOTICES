@@ -3,7 +3,7 @@ https://github.com/earendil-works/pi
 
 The authentication and account-provider implementation references and adapts
 Pi's OAuth flows, request conversion, and credential-storage design. Current
-providers reference Pi 1.5.0; Google Code Assist references Pi v0.56.1.
+providers reference Pi 1.5.0.
 
 MIT License
 

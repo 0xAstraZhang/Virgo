@@ -133,7 +133,6 @@ def _select(ui, question: str, choices: list[str], signal) -> str:
      'Choose a login method': 'harness.oauth.method',
      'Copy code login': 'harness.oauth.copy_code',
      'Device code login': 'harness.oauth.device',
-     'Google sign-in method': 'harness.oauth.google_method',
      'Paste redirect URL': 'harness.oauth.redirect'}
     labels = {(_t(ui, keys[value]) if value in keys else value): value for value in choices}
     question = _t(ui, keys[question]) if question in keys else question
@@ -452,20 +451,12 @@ def login(provider_id: str, ui, signal=None) -> dict:
         return _browser_login(provider_id, ui, signal)
     if provider_id in ("xai", "kimi-coding"):
         return _device_login(provider_id, ui, signal)
-    if provider_id == "google-gemini-cli":
-        from .oauth_google import login as google_login
-
-        return google_login(ui, signal)
     raise AuthError("This provider does not support account login.")
 
 
 def refresh(provider_id: str, credential: dict, signal=None) -> dict:
     """Refresh an existing account credential, retaining provider metadata."""
     _check(signal)
-    if provider_id == "google-gemini-cli":
-        from .oauth_google import refresh as google_refresh
-
-        return google_refresh(credential, signal)
     providers = {
         "anthropic": (ANTHROPIC_CLIENT, ANTHROPIC_TOKEN),
         "openai-codex": (OPENAI_CLIENT, OPENAI_TOKEN),

@@ -293,10 +293,3 @@ def test_cancel_and_deadline_return_promptly_from_stalled_provider(transport, mo
             catalog.fetch_model_catalog(resolve_model("openai/chat"))
     finally:
         release.set()
-
-
-def test_google_account_directory_is_explicitly_unsupported(transport):
-    requests = transport(lambda _: pytest.fail("must not guess an account endpoint"))
-    with pytest.raises(catalog.CatalogError, match="no supported live model directory"):
-        catalog.fetch_model_catalog(resolve_model("google-gemini-cli/old"))
-    assert not requests

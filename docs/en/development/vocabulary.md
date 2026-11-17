@@ -2,33 +2,27 @@
 
 [Architecture](architecture.md) · [Core and plugin boundaries](core-plugin-boundaries.md) · [简体中文](../../zh-CN/development/vocabulary.md)
 
-Virgo has three independent axes. Use one word for each axis in code, configuration, the CLI, slash commands and documentation. A synonym is a migration alias, not a second concept.
+Virgo has two independent axes. Use one word for each axis in code, configuration, the CLI, slash commands and documentation. A synonym is a migration alias, not a second concept.
 
-## The three axes
+## The two axes
 
 | Axis | Canonical term | What it decides | Where it lives |
 | --- | --- | --- | --- |
-| Capabilities | **capability profile** (with **plugins**) | Which optional tools and commands exist in a session | `profile`, `plugins.<id>.enabled`, `--profile` |
+| Capabilities | **plugins** (with **`plugins.<id>.enabled`**) | Which optional tools and commands exist in a session | `plugins.<id>.enabled` |
 | Permissions | **permission preset** (with **approval**) | Which managed file, Shell and network operations may run | `permissions.preset`, `permissions.presets`, `permissions.approval`, `--permission`, `--approval`, `/permissions` |
-| Task | **Plan** | Whether the model receives planning instructions | `plan`, `--plan`, `/plan` |
-
-**Code Review** is an operation (`/review`), not a fourth axis or a persistent mode. It runs in an isolated runtime with its own instructions.
 
 ## Canonical terms
 
 | Term | Meaning | Not |
 | --- | --- | --- |
-| `profile` | The capability bundle selected at session construction: `coding` or `minimal` | "capability preset" when the sentence also uses permission presets |
-| `plugins.<id>` | An explicit capability switch inside a profile | `features.<id>` |
+| `plugins.<id>` | An explicit capability switch; official plugins are enabled by default | `features.<id>` |
 | permission preset | A named set of `readOnly`, `workspaceOnly` and `networkAllowed` flags with a stable ID | "mode", "sandbox mode", "permission Mode" |
 | approval | `ask` or `never`: whether a new single-operation approval may be requested | "auto review", "accept-edits", "yolo" |
-| Plan | The optional planning task; `/plan off` leaves it | "work mode", "workflow", "task type" |
-| review | One isolated Code Review run | "review mode" |
 | sandbox | The native OS boundary behind a permission preset | A permission preset itself |
 | session | One persisted conversation and its store | "pane", "tab" |
 | conversation | One live runtime shown in a pane | "session" when the stored file matters |
 
-`preset` alone always means a permission preset. `profile` alone always means a capability profile. Do not use "mode" for either one.
+`preset` alone always means a permission preset. Capabilities are selected per plugin. Do not use "mode" for a permission preset.
 
 ## Command and flag surface
 
@@ -38,8 +32,6 @@ Virgo has three independent axes. Use one word for each axis in code, configurat
 | Select the startup permission preset | `--permission <preset-id>` | `--mode` |
 | Select approval policy | `--approval ask\|never` | — |
 | Inspect backend availability | `/permissions show` | `/sandbox` |
-| Enter, inspect, edit, execute or leave Plan | `/plan [goal\|show\|edit [Markdown]\|execute <id>:<revision>\|off]` | `/workflow default\|plan` |
-| Start in Plan | `--plan` | `--work-mode plan` |
 
 Deprecated aliases print a notice. They do not change the meaning of the canonical entry point and are removed in a later release.
 
@@ -50,8 +42,6 @@ Deprecated aliases print a notice. They do not change the meaning of the canonic
 - `Runtime.permission_snapshot` captures the preset, approval policy and revision once at `prepare_run()`.
   A selection change while work is running applies to the next run; the running snapshot stays fixed.
 - Children inherit the parent snapshot. An explicit read-only child is a ceiling, not a new preset.
-- Plan state is conversation state. The store records `plan` and `proposed_plan`; old `work_mode` records are read but never rewritten.
-- `Runtime.work_mode` remains an internal compatibility accessor until 0.4; new code reads `Runtime.permission_snapshot` or the plan record.
 
 ## Configuration migration
 
@@ -59,8 +49,6 @@ New configuration uses:
 
 ```json
 {
-  "profile": "coding",
-  "plan": false,
   "permissions": {
     "preset": "workspace-edit",
     "presets": {},
@@ -76,9 +64,7 @@ These old keys are read with a notice and are not written back automatically:
 | --- | --- |
 | `permissions.mode` | `permissions.preset` |
 | `permissions.modes` | `permissions.presets` |
-| `workMode: "plan"` | `plan: true` |
 | `--mode <id>` | `--permission <id>` |
-| `--work-mode plan` | `--plan` |
 | `sandbox.mode` | A permission preset with the same flags |
 | `features.<id>` | `plugins.<id>` |
 

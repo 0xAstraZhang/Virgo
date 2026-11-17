@@ -57,7 +57,6 @@ def select(session, model=None):
     (selected_model(base_url="https://api.anthropic.com:8443"), None),
     (selected_model(base_url="https://user@api.anthropic.com"), None),
     (Model("openai", "gpt-6-realtime", "openai"), None),
-    (Model("google-gemini-cli", "gemini-2.5-pro", "google-gemini-cli"), None),
     (Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com"), None),
     (selected_model(options={"nativeSearch": False}), None),
     (selected_model(base_url="https://proxy.example", options={"nativeSearch": True}), "web_search_20250305"),
@@ -193,9 +192,8 @@ def test_cache_is_invalidated_by_endpoint_model_and_credential_changes(make_sess
         assert runtime.request_context(runtime.messages, changed).web_search is not None
 
 
-@pytest.mark.parametrize("mode", ["auto-review", "plan"])
-def test_deny_rule_blocks_native_and_builtin_execution(make_session, monkeypatch, mode):
-    session = make_session(approval="ask", work_mode="plan" if mode == "plan" else "default", settings={"fetch": {"mode": "off"}, "permissions": {"deny": ["web_search"]}})
+def test_deny_rule_blocks_native_and_builtin_execution(make_session, monkeypatch):
+    session = make_session(approval="ask", settings={"fetch": {"mode": "off"}, "permissions": {"deny": ["web_search"]}})
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
     assert context.web_search is None

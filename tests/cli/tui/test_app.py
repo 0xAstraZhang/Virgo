@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import threading
 from dataclasses import replace
 
@@ -20,7 +19,7 @@ from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalPicker, SessionPicker
 from virgo.cli.tui.modes import PermissionModePicker
-from virgo.cli.tui.transcript import AssistantView, EventView
+from virgo.cli.tui.transcript import AssistantView
 from virgo.tools.fs import WRITE
 
 from tests.support.tui import has_reply, wait_for
@@ -381,58 +380,6 @@ def test_single_operation_approval_keeps_permissions_visible_without_session_cho
     asyncio.run(scenario())
 
 
-def test_review_report_remains_visible_after_tools_and_history_replay(make_session, project):
-    subprocess.run(["git", "init", "--initial-branch=main"], cwd=project, check=True, capture_output=True)
-    (project / "sample.py").write_text("value = 1\n")
-    subprocess.run(["git", "add", "--", "sample.py"], cwd=project, check=True, capture_output=True)
-    subprocess.run([
-        "git", "-c", "user.name=UI Review", "-c", "user.email=review@example.invalid",
-        "-c", "commit.gpgsign=false", "commit", "-m", "initial",
-    ], cwd=project, check=True, capture_output=True)
-    (project / "sample.py").write_text("value = 2\n")
-
-    async def scenario():
-        ui = FullscreenUI()
-        reviewing, release = threading.Event(), threading.Event()
-
-        def review_tools(_context):
-            reviewing.set()
-            release.wait(3)
-            return faux.reply(tools=[("read", {"path": "sample.py"})])
-
-        session = make_session(
-            review_tools,
-            faux.reply(json.dumps({"summary": "Checked the selected changes.", "findings": []})),
-            ui=ui, persist=True, refresh_models=False,
-        )
-        app = VirgoApp(session, ui, initial="/review")
-        async with app.run_test(size=(80, 24)) as pilot:
-            try:
-                await wait_for(pilot, reviewing.is_set)
-                app.update_status()
-                assert app.controller.workflow == "review"
-                assert "Code Review" in str(app.query_one("#status", Static).content)
-            finally:
-                release.set()
-            # Draining the controller clears busy before the app has awaited
-            # all tool/report mounts in that batch. Wait for presentation too.
-            await wait_for(pilot, lambda: bool(session.store.custom("code_review"))
-                           and not app.controller.busy and not app._polling)
-            report = session.store.custom("code_review")[-1]
-            assert report["status"] == "completed"
-            for replay in (False, True):
-                if replay:
-                    await app.transcript.load_history(session.store.branch())
-                    await pilot.pause()
-                rows = [row for row in app.transcript.query(EventView) if row.text.startswith("Code review ")]
-                assert len(rows) == 1
-                assert rows[0].expanded and rows[0].output.display
-                assert "Checked the selected changes." in str(rows[0].output.content)
-                assert '"findings"' not in str(rows[0].output.content)
-
-    asyncio.run(scenario())
-
-
 def test_cancelled_inline_approval_advances_queue_and_ignores_stale_answer(make_session):
     async def scenario():
         ui = FullscreenUI()
@@ -585,20 +532,19 @@ def test_slow_shutdown_keeps_ui_responsive(make_session):
 
 
 @pytest.mark.parametrize(
-    ("approval", "work_mode", "approval_label"),
+    ("approval", "approval_label"),
     [
-        pytest.param("ask", "default", "ask when needed", id="auto-review-auto review"),
-        pytest.param("never", "default", "never ask", id="accept-all-accept all"),
-        pytest.param("ask", "plan", "ask when needed", id="plan-plan"),
+        pytest.param("ask", "ask when needed", id="ask"),
+        pytest.param("never", "never ask", id="never"),
     ],
 )
-def test_status_preserves_fields_with_wide_path_and_long_model(make_session, project, approval, work_mode, approval_label):
+def test_status_preserves_fields_with_wide_path_and_long_model(make_session, project, approval, approval_label):
     directory = project / ("中文项目" * 15)
     directory.mkdir()
 
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, cwd=directory, approval=approval, work_mode=work_mode)
+        session = make_session(ui=ui, cwd=directory, approval=approval)
         session.services["sandbox"].save_mode(
             "no-limit", "Custom permission name " * 4, False, False, True, persist=False,
         )
@@ -614,10 +560,9 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
                 status = app.query_one("#status", Static)
                 model_line, flags = str(status.content).splitlines()
                 assert cell_len(model_line) == width - 2
-                work_label = session.t("work_mode." + session.services["permissions"].work_mode)
-                authority = f"{work_label} · {session.services['sandbox'].selected_mode.name}"
-                assert model_line.startswith(work_label + " · ")
-                if cell_len(authority) <= width - 2:
+                authority = session.services["sandbox"].selected_mode.name
+                assert model_line.startswith(authority[:10])
+                if width - 2 >= cell_len(authority):
                     assert model_line.startswith(authority)
                 assert status.render_line(0).text == model_line
                 assert all(part in flags for part in (
@@ -677,7 +622,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             assert metrics.render_line(0).text.startswith(" ")
             assert status.styles.text_align == "left"
             status_line = status.render_line(0).text
-            assert status_line.startswith("Default · No-Limit  ")
+            assert status_line.startswith("No-Limit  ")
             assert status_line.endswith(f"deepseek-flash · {session.effort}")
             assert "Read-only off · Workspace off · Network on" in status.render_line(1).text
             assert cell_len(status_line) == app.editor.region.width
@@ -713,9 +658,8 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
                 await pilot.press("enter")
                 await wait_for(pilot, lambda mode=mode: manager.selected_mode_id == mode and not app.has_modal)
                 assert session.approval_policy == "ask"
-                assert session.services["permissions"].work_mode == "default"
                 text = app.query_one("#status", Static).content
-                assert text.plain.startswith("Default · " + manager.selected_mode.name)
+                assert text.plain.startswith(manager.selected_mode.name)
                 assert app.editor.text == "unfinished task"
                 assert app.focused is app.editor
 

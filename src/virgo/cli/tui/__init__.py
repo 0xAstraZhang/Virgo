@@ -5,13 +5,12 @@ from __future__ import annotations
 from ..i18n import tr
 
 
-def run_fullscreen(session, ui, initial: str | None = None, pick_session: bool = False,
-                   work_mode: str | None = None) -> int:
+def run_fullscreen(session, ui, initial: str | None = None, pick_session: bool = False) -> int:
     import sys
 
     from .app import VirgoApp
 
-    app = VirgoApp(session, ui, initial=initial, pick_session=pick_session, work_mode=work_mode)
+    app = VirgoApp(session, ui, initial=initial, pick_session=pick_session)
     try:
         result = app.run()
         return app.return_code or result or 0

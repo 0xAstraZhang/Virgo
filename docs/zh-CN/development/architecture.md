@@ -22,21 +22,21 @@ Virgo 将模型传输、Agent 循环和应用策略分离。官方能力插件�
 
 安装后的命令和 `python -m virgo` 均进入 [`cli/main.py`](../../../src/virgo/cli/main.py)。运行时代码放在包内，保证源码和安装后的 wheel 使用同一实现。
 
-用户可见的规范术语见[术语](vocabulary.md)。共享规则归属其语义层：`ai/providers/reasoning.py` 管理推理强度映射；`harness/permissions.py` 管理审批与只读能力；`permission_policy.py` 执行规则与明确授权。`origin_context.py` 固定 Runtime、工作区和来源分支。Plan 是工作意图，Review 是独立任务，二者使用现有 Agent Loop。沙箱负责 Shell 的实际执行边界，文件工具保留应用级写入保护。
+用户可见的规范术语见[术语](vocabulary.md)。共享规则归属其语义层：`ai/providers/reasoning.py` 管理推理强度映射；`harness/permissions.py` 管理审批与只读能力；`permission_policy.py` 执行规则与明确授权。`origin_context.py` 固定 Runtime、工作区和来源分支。沙箱负责 Shell 的实际执行边界，文件工具保留应用级写入保护。
 
 ## Core 与插件装配
 
-Core 先初始化基础编程工具、Shell、Store、运行时身份、诊断和必要权限门，再加载能力。`coding` 选择官方编程插件；`minimal` 默认不选择能力，显式配置仍可启用。可信 Python 扩展单独控制，因此零扩展路径为 `--profile minimal --no-extensions`。
+Core 先初始化基础编程工具、Shell、Store、运行时身份、诊断和必要权限门，再加载能力。官方编程插件默认加载，`plugins.<id>.enabled` 可按插件覆盖。可信 Python 扩展单独控制，因此零扩展路径为 `--no-extensions`。
 
 注册记录归属，名称冲突失败；初始化回滚移除部分注册，清理按逆序运行。禁用的能力不导入。动态工具集通过有归属的注册表在模型请求边界原子发布。Core 依赖这些契约，不依赖具体插件实现。详见[扩展 API](extensions.md)。
 
 ## 会话与 Runtime
 
-`AgentSession` 持有工作区路径、生效配置、认证、会话级翻译器、UI 适配器、已注册工具／命令、共享服务和诊断日志。每个 `Runtime` 持有一份 Agent 上下文：主 Agent 或聚焦的子运行时。构造时显式绑定工作目录、工具、模型、对话存储、记账存储和审查归属。
+`AgentSession` 持有工作区路径、生效配置、认证、会话级翻译器、UI 适配器、已注册工具／命令、共享服务和诊断日志。每个 `Runtime` 持有一份 Agent 上下文：主 Agent 或聚焦的子运行时。构造时显式绑定工作目录、工具、模型、对话存储和记账存储。
 
 候选 Runtime 在激活前构建系统上下文。`RuntimeContext` 让支持 Runtime 的提示段读取候选存储和角色，无需临时替换 `session.main` 或 `session.store`。候选创建失败时，活动对话保持原状。
 
-全屏应用为活动对话保留各自控制器。切换选中的对话只改变显示，不会重分配后台工作。异步回调在入队时绑定原始存储和审查来源；共享记账存储不授予访问其他 Runtime 诊断的权限。
+全屏应用为活动对话保留各自控制器。切换选中的对话只改变显示，不会重分配后台工作。异步回调在入队时绑定原始存储和来源；共享记账存储不授予访问其他 Runtime 诊断的权限。
 
 ## 请求与工具流程
 

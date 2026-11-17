@@ -23,7 +23,7 @@ uv run virgo
 
 | 方式 | 可用预设 | 接入方式 |
 | --- | --- | --- |
-| 账号（`auth`） | OpenAI、Anthropic、xAI、Google、Kimi | 按厂商使用浏览器、授权码或设备码流程 |
+| 账号（`auth`） | OpenAI、Anthropic、xAI、Kimi | 按厂商使用浏览器、授权码或设备码流程 |
 | API（`api`） | DeepSeek、GLM、Kimi | 预设服务地址，加上你提供的 API key |
 | 自定义 API | 自行指定 provider ID | OpenAI 兼容或 Anthropic Messages 接口、模型 ID 和密钥 |
 
@@ -36,7 +36,7 @@ uv run virgo
 /logout
 ```
 
-按你实际使用的服务地址和账号完成登录。账号可登录并不表示该账号拥有所有模型或 API 产品的权限。Google 登录可能要求 Cloud project ID，也会读取 `GOOGLE_CLOUD_PROJECT` 和 `GOOGLE_CLOUD_PROJECT_ID`。
+按你实际使用的服务地址和账号完成登录。账号可登录并不表示该账号拥有所有模型或 API 产品的权限。
 
 也可以继续使用环境变量凭据。例如，在启动 Virgo 前设置 `ANTHROPIC_API_KEY`，即可使用内置 Anthropic 连接。其他厂商与自定义端点的设置见[配置参考](../reference/configuration.md)。
 
@@ -69,7 +69,7 @@ git diff | uv run virgo -p "检查这份 diff 中的正确性问题"
 
 文本打印模式输出最终答案。JSON 模式输出 JSONL 事件；有显式结果的斜杠命令会产生 `command_result` 记录。`-p` 必须通过参数或标准输入获得提示。此模式不能回答交互问题，相关工具会报告未作答，不会替你选择。
 
-`--no-session` 关闭对话历史保存，但不会关闭诊断日志或工具产生的输出文件。`--no-extensions` 跳过用户和项目的 Python 扩展；官方插件由 `--profile` 和 `plugins` 配置控制。`--profile minimal --no-extensions` 只启用 Core 能力；默认 `coding` 保留标准编程工具与可选助手能力。项目 Python 扩展需要 `--trust-project-extensions` 或用户级信任，见[迁移](migrating-to-core-plugins.md)。
+`--no-session` 关闭对话历史保存，但不会关闭诊断日志或工具产生的输出文件。`--no-extensions` 跳过用户和项目的 Python 扩展；官方插件默认启用，可用 `plugins.<id>.enabled` 逐个关闭。项目 Python 扩展需要 `--trust-project-extensions` 或用户级信任，见[迁移](migrating-to-core-plugins.md)。
 
 ## 体验离线演示
 

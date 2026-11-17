@@ -4,7 +4,7 @@
 
 The model receives the tools enabled for its role, configuration and current capabilities. The exact list can change with extensions, MCP connections and web routing. Tool names, argument names and enum values remain stable across interface languages.
 
-Core owns file, selected-shell and permission-request tools. The optional Plan plugin owns the committed Git reader and ProposedPlan tools. `web`, `todo`, `ask_user`, `subagent`, `background`, `mcp` and `diagnostic_get` supply the optional tools below. Use the default `coding` preset, or select capabilities explicitly through `plugins.<id>.enabled`. `--profile minimal --no-extensions` exposes only Core tools, with full schemas independent of workflow instructions. See [Configuration](configuration.md#profiles-and-plugins).
+Core owns file, selected-shell and permission-request tools. `web`, `todo`, `ask_user`, `subagent`, `background`, `mcp` and `diagnostic_get` supply the optional tools below and are enabled by default; `plugins.<id>.enabled` overrides each one. See [Configuration](configuration.md#plugins).
 
 ## Files, commands and web
 
@@ -15,7 +15,6 @@ Core owns file, selected-shell and permission-request tools. The optional Plan p
 | `edit` | Replace an exact text match in a file |
 | `glob` | Find paths by pattern |
 | `grep` | Search file content |
-| `git_read` | Read local committed log, patches or differences between two commits without repository helpers |
 | `bash` / `powershell` | Execute through the selected command shell |
 | `web_search` | Search through an exposed client backend |
 | `web_fetch` | Read a webpage through an exposed client backend |
@@ -35,11 +34,9 @@ model-visible content and the TUI. Backend-unavailable errors are distinct from 
 
 ## Checklists and questions
 
-`propose_plan(markdown)` publishes or replaces a complete Markdown ProposedPlan. It belongs to the optional Plan plugin and is available to the main Runtime regardless of active workflow; it saves versioned conversation metadata and does not write a project file or authorize execution. Revisions invalidate an older execution selection. `/plan` displays the proposal and `/plan execute <plan-id>:<revision>` is the user's explicit execution action. See [Planning a change](../guides/planning.md) for editing, restoration and permission boundaries.
+`todo_write` replaces the existing execution checklist with the complete supplied list. Statuses are `pending`, `in_progress` and `completed`; multiple items can be in progress. Invalid input leaves the old list intact. `/todos` displays it. An incomplete checklist does not itself force another model turn.
 
-`todo_write` replaces the existing execution checklist with the complete supplied list. Statuses are `pending`, `in_progress` and `completed`; multiple items can be in progress. Invalid input leaves the old list intact. `/todos` displays it. An incomplete checklist does not itself force another model turn. The tool remains available in Plan: ProposedPlan describes the solution, while Todo tracks execution progress in Default. Confirming a plan does not create Todo items automatically or introduce a second task store.
-
-`ask_user` lets the main agent ask a question with up to three options, plus custom input, or free-form input alone. Plan instructions require repository investigation first and reserve this tool for unresolved decisions that materially change the plan. Answering a clarification does not confirm execution. Noninteractive, cancelled and timed-out questions report `answered=false` without inventing an answer. Unattended runs use `askUser.unattendedTimeout`; a user joining the conversation can cancel that timeout.
+`ask_user` lets the main agent ask a question with up to three options, plus custom input, or free-form input alone. Answering a clarification does not confirm execution. Noninteractive, cancelled and timed-out questions report `answered=false` without inventing an answer. Unattended runs use `askUser.unattendedTimeout`; a user joining the conversation can cancel that timeout.
 
 ## Focused subagents
 
@@ -55,7 +52,7 @@ Client-side `web_search` and `web_fetch` transport errors identify the exception
 
 ## MCP and diagnostics
 
-Without configured servers, the default preset starts no MCP connection and registers no MCP management tools. An explicitly enabled MCP plugin can expose management even before servers are added.
+Without configured servers, Virgo starts no MCP connection and registers no MCP management tools. An explicitly enabled MCP plugin can expose management even before servers are added.
 
 Configure stdio MCP servers in user or project `mcp.json`, or the `mcpServers` setting. Server arguments and environment entries can use `${VARIABLE}` interpolation. A server's tools appear as `mcp__<server>__<tool>`. Disabled entries are not started. Server and extension descriptions remain third-party content unless their author supplies localization.
 

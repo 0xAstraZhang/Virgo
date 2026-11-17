@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from virgo.ai import compaction
-from virgo.ai.providers import anthropic, codex, google, openai, responses
+from virgo.ai.providers import anthropic, codex, openai, responses
 from virgo.ai.providers._errors import attach_error
 from virgo.ai.types import AssistantMessage, Context, Model, StreamOptions, UserMessage, message_to_dict
 
@@ -19,7 +19,7 @@ from tests.support.http import sse
 
 ADAPTERS = [
     (anthropic, "anthropic"), (openai, "openai"), (responses, "openai-responses"),
-    (codex, "openai-codex"), (google, "google-gemini-cli"),
+    (codex, "openai-codex"),
 ]
 TOKEN = "provider-private-credential-12345"
 
@@ -27,7 +27,7 @@ TOKEN = "provider-private-credential-12345"
 def model_for(api, url=None):
     return Model(
         api, "test-model", api, base_url=url,
-        options={"apiKey": TOKEN, "authMetadata": {"accountId": "test-account", "projectId": "test-project"}},
+        options={"apiKey": TOKEN, "authMetadata": {"accountId": "test-account"}},
     )
 
 
@@ -79,7 +79,7 @@ def test_network_failure_retains_original_cause(monkeypatch, adapter, api):
                 raise sdk.APIConnectionError(request=request) from cause
             raise httpx.ConnectError("Provider connection failed", request=request) from cause
 
-    monkeypatch.setattr(adapter, "json_events" if adapter in {codex, google} else "_client", fail)
+    monkeypatch.setattr(adapter, "json_events" if adapter is codex else "_client", fail)
     result = adapter.stream(model, Context("", [UserMessage("hello")]), StreamOptions()).result()
 
     assert result.stop_reason == "error" and result.error_kind == "retryable"
@@ -161,7 +161,6 @@ def test_timeout_without_attached_request_preserves_original_failure(transport_n
 
 @pytest.mark.parametrize("adapter,api,transport_name", [
     (anthropic, "anthropic", "httpx2"), (codex, "openai-codex", "httpx"),
-    (google, "google-gemini-cli", "httpx"),
 ])
 def test_adapter_timeout_without_request_is_not_replaced(monkeypatch, adapter, api, transport_name):
     transport = importlib.import_module(transport_name)

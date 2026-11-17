@@ -30,7 +30,7 @@ def test_auxiliary_model_uses_the_same_connection(project, main, small):
 
 @pytest.mark.parametrize("main", [
     "deepseek/deepseek-flash", "kimi/kimi-k3.1-pro",
-    "xai/grok-4.3", "google-gemini-cli/gemini-2.5-pro", "faux/test",
+    "xai/grok-4.3", "faux/test",
 ])
 def test_other_providers_reuse_main_model(project, main):
     session = AgentSession(
