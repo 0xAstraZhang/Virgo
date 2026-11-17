@@ -27,7 +27,7 @@ from virgo.ai.types import (
     message_from_dict,
     message_to_dict,
 )
-from virgo.features.search import native_tool
+from virgo.plugins.search import native_tool
 from virgo.harness.session import Runtime
 
 from tests.support.harness import install_responses, response_stream

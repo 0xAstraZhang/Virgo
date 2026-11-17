@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from virgo.agent.types import ToolContext
-from virgo.features.mcp import STDERR_LIMIT, MCPClient, MCPError
+from virgo.plugins.mcp import STDERR_LIMIT, MCPClient, MCPError
 
 from tests.support import SUPPORT
 

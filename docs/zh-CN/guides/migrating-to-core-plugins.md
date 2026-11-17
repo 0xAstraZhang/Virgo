@@ -91,7 +91,7 @@ Virgo 不再加载 `~/.virgo/agents/*.md` 或 `.virgo/agents/*.md`。现有文�
 
 ## 扩展作者
 
-官方实现迁到 `virgo.plugins`；集成时使用文档化的 `ExtensionAPI`。保留能力的 `virgo.features` 导入路径仅在 0.2 系列内提供兼容转发，升级 0.3 前应迁移。已退出维护的子系统不保留兼容实现。
+官方实现迁到 `virgo.plugins`；集成时使用文档化的 `ExtensionAPI`。0.3 已删除 `virgo.features` 导入别名；请使用 `virgo.plugins` 或文档化的 `ExtensionAPI`。已退出维护的子系统不保留兼容实现。
 
 工具和命令重名现在明确失败，不再覆盖已有注册。用 `api.on_cleanup` 注册清理，用 `api.replace_tools` 发布动态工具集。异步任务捕获实际调用方的 Runtime／Store，子运行时通过工厂创建，不直接修改 `session._tools`、`session._lock` 或当前 UI 状态。公开接口见[扩展指南](../development/extensions.md)。
 

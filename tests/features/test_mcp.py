@@ -13,7 +13,7 @@ from virgo.ai.providers import faux
 from virgo.ai.types import (
     ToolResultMessage,
 )
-from virgo.features.mcp import MCPClient
+from virgo.plugins.mcp import MCPClient
 
 from tests.support import SUPPORT
 from tests.support.harness import RecordingUI, calls

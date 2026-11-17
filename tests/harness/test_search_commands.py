@@ -11,7 +11,7 @@ from textual.widgets import OptionList
 
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
-from virgo.harness.search_commands import CHOICES
+from virgo.plugins.search_commands import CHOICES
 from virgo.harness.settings import Settings
 from virgo.harness.ui import UI
 

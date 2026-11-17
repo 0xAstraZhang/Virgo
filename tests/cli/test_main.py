@@ -14,11 +14,8 @@ from types import ModuleType
 
 import pytest
 
-from tests.support import REPO_ROOT
-
-ROOT = REPO_ROOT
 COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" else "virgo")
-ENTRY_POINTS = [[str(COMMAND)], [sys.executable, "-m", "virgo"], [sys.executable, str(ROOT / "main.py")]]
+ENTRY_POINTS = [[str(COMMAND)], [sys.executable, "-m", "virgo"]]
 
 
 @pytest.mark.parametrize(
@@ -42,7 +39,7 @@ def test_permission_mode_arguments_and_legacy_aliases(value):
     assert "--permission-mode" not in parser.format_help()
 
 
-@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])
+@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
 def test_work_mode_startup_is_separate_from_output_approval_and_sandbox(entry, project):
     result = subprocess.run(
         [*entry, "--no-session", "--no-extensions", "--model", "faux/demo", "-p",
@@ -62,7 +59,7 @@ def test_work_mode_startup_is_separate_from_output_approval_and_sandbox(entry, p
     assert "permissions.mode" in legacy.stderr and not legacy.stdout
 
 
-@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])
+@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
 def test_cli_identity(entry, project):
     result = subprocess.run(
         [*entry, "--version"], cwd=project, capture_output=True, text=True, check=True, timeout=10
@@ -74,7 +71,7 @@ def test_cli_identity(entry, project):
     assert help_result.stdout.startswith("usage: virgo ")
 
 
-@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])
+@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
 def test_cli_loads_features_and_streams_json(entry, project):
     (project / "sample.py").write_text('print("hello")\n')
     result = subprocess.run(
@@ -102,7 +99,7 @@ def test_cli_loads_features_and_streams_json(entry, project):
     assert events and "sample.py" in result.stdout
 
 
-@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])
+@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
 def test_fullscreen_rejects_non_terminal_before_starting_session(entry, project):
     result = subprocess.run(
         [*entry, "--ui", "fullscreen", "--model", "faux/demo"],
@@ -119,7 +116,7 @@ def test_fullscreen_rejects_non_terminal_before_starting_session(entry, project)
 
 
 @pytest.mark.parametrize("ui", ["auto", "plain"])
-@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])
+@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
 def test_non_terminal_uses_plain_repl(entry, ui, project):
     result = subprocess.run(
         [*entry, "--ui", ui, "--no-session", "--no-extensions", "--model", "faux/demo"],
@@ -134,7 +131,7 @@ def test_non_terminal_uses_plain_repl(entry, ui, project):
     assert "\x1b[?1049h" not in result.stdout
 
 
-@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module", "checkout"])
+@pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
 def test_print_text_ignores_fullscreen_option(entry, project):
     result = subprocess.run(
         [*entry, "--ui", "fullscreen", "-p", "--no-session", "--no-extensions", "-m", "faux/demo"],

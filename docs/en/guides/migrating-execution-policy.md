@@ -68,5 +68,5 @@ restored from stored custom records.
 Plan is installed through `plugins.plan`; Core has no mandatory Plan service. Extensions can add
 request-level instructions with `add_request_system_section`, and use the existing Runtime and
 SessionStore. Review retains target resolution, frozen evidence and validated findings, with
-normal tools and request/interaction handling. The compatibility `harness.plans` import remains;
-new integrations should use the plugin API.
+normal tools and request/interaction handling. The 0.3 release removes the `harness.plans` alias;
+new integrations use the plugin API.

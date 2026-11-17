@@ -341,7 +341,6 @@ class ExtensionAPI:
 
 BUILTIN_PLUGINS = PLUGIN_IDS
 # Kept for source compatibility until 0.3; these are plugin IDs, not all-enabled features.
-BUILTIN_FEATURES = BUILTIN_PLUGINS
 
 
 def _setup(session: AgentSession, name: str, setup: Callable[[ExtensionAPI], None], *, context=None) -> None:

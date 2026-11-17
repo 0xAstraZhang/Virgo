@@ -91,7 +91,7 @@ Session deserialization does not require tools to remain installed. Old tool res
 
 ## Extension authors
 
-Use `virgo.plugins` for official implementation imports and the documented `ExtensionAPI` for integration. Retained `virgo.features` import paths are temporary compatibility shims through the 0.2 series; remove reliance on them before 0.3. Removed product subsystems have no compatibility implementation.
+Use `virgo.plugins` for official implementation imports and the documented `ExtensionAPI` for integration. The 0.3 release removes the `virgo.features` import aliases; use `virgo.plugins` or the documented `ExtensionAPI`. Removed product subsystems have no compatibility implementation.
 
 Tool and command collisions now fail instead of replacing an existing registration. Register cleanup through `api.on_cleanup`; publish dynamic tool sets through `api.replace_tools`. Capture the caller's runtime/store for asynchronous work, use the runtime factory for children, and do not mutate `session._tools`, `session._lock` or selected UI state. The [extension guide](../development/extensions.md) lists the supported surface.
 

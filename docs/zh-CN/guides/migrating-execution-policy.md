@@ -58,4 +58,4 @@ Core 文件工具在应用层执行文件范围检查；原生 Shell 后端执�
 Plan 通过 `plugins.plan` 安装，Core 不再必然拥有 Plan 服务。扩展使用
 `add_request_system_section` 注入每请求指令，复用既有 Runtime 和 SessionStore。
 Review 保留目标解析、冻结证据与 Findings 校验，同时使用正常工具和交互路径。
-`harness.plans` 导入仅作为兼容入口，新集成使用插件 API。
+0.3 已删除 `harness.plans` 兼容入口；新集成使用插件 API。

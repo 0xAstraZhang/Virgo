@@ -10,7 +10,7 @@ import pytest
 from virgo.agent.types import ToolContext, ToolResult
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage
-from virgo.features import background
+from virgo.plugins import background
 
 from tests.support.harness import calls, tool_results
 from tests.support.shell import selected

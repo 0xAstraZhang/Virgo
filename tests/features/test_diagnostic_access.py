@@ -7,7 +7,7 @@ import threading
 
 from virgo.agent.types import ToolContext
 from virgo.diagnostics import capture_error
-from virgo.features.diagnostics import setup
+from virgo.plugins.diagnostic_get import setup
 from virgo.harness.diagnostic_access import MAX_RECORD_BYTES, DiagnosticAccess
 from virgo.harness.extensions import ExtensionAPI
 
@@ -201,7 +201,7 @@ def test_broken_lookup_returns_unavailable_without_recursive_failure(make_sessio
     access = collection(session.main)
     access.remember(record("original-error", "original-evidence"))
     emergency = []
-    monkeypatch.setattr("virgo.features.diagnostics.emergency_write", emergency.append)
+    monkeypatch.setattr("virgo.plugins.diagnostic_get.emergency_write", emergency.append)
 
     def fail(*_args):
         raise OSError("evidence lookup failed")
