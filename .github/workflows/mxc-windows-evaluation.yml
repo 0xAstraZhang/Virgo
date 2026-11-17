@@ -1,0 +1,66 @@
+name: MXC Windows replacement evaluation
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'ci/mxc_evaluation.py'
+      - '.github/workflows/mxc-windows-evaluation.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mxc-evaluation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  evaluate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      PYTHONUTF8: '1'
+      VIRGO_REQUIRE_WINDOWS_SANDBOX_TESTS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: candidate
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: f33be1cae82d4e25006d88411aea68d9be9c8033
+          persist-credentials: false
+          path: baseline
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+      - name: Install locked baseline
+        working-directory: baseline
+        run: uv sync --locked --dev
+      - name: Probe and attempt real MXC launches
+        working-directory: baseline
+        run: uv run --no-sync python ../candidate/ci/mxc_evaluation.py probe --output ../evidence
+      - name: Reuse unmodified Windows end-to-end baseline
+        if: ${{ !cancelled() }}
+        working-directory: baseline
+        shell: pwsh
+        run: |
+          uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --durations=0 --junitxml=../evidence/baseline-junit.xml 2>&1 | Tee-Object ../evidence/baseline-pytest.log
+          exit $LASTEXITCODE
+      - name: Measure successful baseline commands
+        if: ${{ !cancelled() }}
+        working-directory: baseline
+        run: uv run --no-sync python ../candidate/ci/mxc_evaluation.py benchmark --output ../evidence
+      - name: Validate and summarize evidence
+        if: ${{ !cancelled() }}
+        working-directory: baseline
+        run: uv run --no-sync python ../candidate/ci/mxc_evaluation.py summarize --output ../evidence
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: mxc-evaluation-${{ matrix.os }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 30
