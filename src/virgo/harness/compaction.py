@@ -35,7 +35,7 @@ from .store import summary_message
 from .telemetry import record_call
 
 if TYPE_CHECKING:
-    from .session import Runtime
+    from .runtime import Runtime
 
 SUMMARY_SYSTEM = (
     "You are a context summarization assistant. You read a transcript of a coding session between a user and an "

@@ -256,7 +256,7 @@ def setup(api: ExtensionAPI) -> None:
                 "additionalProperties": False,
             },
             execute=execute,
-            read_only=True,  # its own tool calls are permission-checked individually
+            side_effect="read",  # its own tool calls are permission-checked individually
             i18n_key="tools.agent",
         ),
         roles=("main",),

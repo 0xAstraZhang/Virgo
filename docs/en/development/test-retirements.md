@@ -34,6 +34,10 @@ The comparator selects exactly one manifest for the exact base SHA. It does not 
 
 Before the comparator implementation changed, its new real-CLI acceptance generated 50 passing baseline cases (42 originals and eight preservation gates) and 17 passing head cases (eight preservation and nine acceptance gates). The old comparator correctly rejected the previously unrecognized policy with `42 previously executed tests disappeared`. The completed checks exercise the full inventory and reject wrong baselines, original modules and parameter IDs; failed originals; each missing gate; failed, skipped or relocated gates; unrelated deletion; and still-present failures/skips. The historical retirement checks and normal failure/skip/removal checks remain. Native sandbox validation and the rest of CI receive no exemption from this manifest.
 
+## Removed checkout entry point
+
+The 0.3 change removes the root `main.py` compatibility launcher. Seven `tests.cli.test_main` identities lose their `[checkout]` parameter; the `[command]` and `[module]` variants (including both `ui` variants of `test_non_terminal_uses_plain_repl`) retain the same assertions in base and head. `ci/pipeline/reports.py::APPROVED_RETIREMENTS` records this baseline and the exact retained coverage, so the comparison reports a reviewed duplicate removal rather than seven lost tests.
+
 ## Renamed identities
 
 Three existing cases keep their behavior but changed identity in this change: the planning/read-only test name and the two localized `Work mode` parameter labels. `ci/pipeline/reports.py::PARAMETER_ALIASES` maps each old identity to its new name, including the JUnit-escaped Chinese parameter ID. The alias is applied to both base and head reports, so the comparison sees a rename rather than a lost test.

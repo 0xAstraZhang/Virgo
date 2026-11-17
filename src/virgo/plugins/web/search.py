@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import copy
 
-from ..ai.providers.web import deepseek_endpoint as deepseek_endpoint
-from ..ai.providers.web import endpoint as endpoint
-from ..ai.providers.web import native_tool as native_tool  # compatibility export
-from ..harness.extensions import ROLES_ALL
-from ..tools.web import make_web_search
-from .web_access import WebAccess
+from ...ai.providers.web import deepseek_endpoint as deepseek_endpoint
+from ...ai.providers.web import endpoint as endpoint
+from ...ai.providers.web import native_tool as native_tool  # compatibility export
+from ...harness.extensions import ROLES_ALL
+from ...tools.web import make_web_search
+from .access import WebAccess
 
 DEEPSEEK_SETUP = (
     "DeepSeek search requires an official API key. Use /login api deepseek with https://api.deepseek.com "
@@ -61,7 +61,7 @@ class Search(WebAccess):
             patch["apiKeyEnv"] = None
         self.api.settings.save_user({"search": patch})
         self._legacy_backend = False
-        from .web import web_service
+        from . import web_service
 
         web_service(self.api).clear()
 
@@ -81,12 +81,12 @@ class Search(WebAccess):
                 )
 
     def prepare(self, runtime, context, model) -> None:
-        from .web import web_service
+        from . import web_service
 
         web_service(self.api).prepare(runtime, context, model)
 
     def fallback(self, model, context, failed) -> bool:
-        from .web import web_service
+        from . import web_service
 
         return web_service(self.api).fallback(model, context, failed)
 
@@ -96,7 +96,7 @@ def setup(api) -> None:
 
     search = Search(api)
     api.services["search"] = search
-    from .web import web_service
+    from . import web_service
 
     web_service(api)
     # Keep the tool in runtime registries so /search can enable an initially

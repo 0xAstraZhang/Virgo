@@ -6,8 +6,8 @@ import copy
 import threading
 import weakref
 
-from ..ai.types import UserMessage
-from ..ai.web import offers_for, started
+from ...ai.types import UserMessage
+from ...ai.web import offers_for, started
 
 GUIDANCE = (
     "Use the available web tools to read source pages when needed. Cite actual source URLs. "

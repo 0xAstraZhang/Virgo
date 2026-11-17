@@ -13,7 +13,6 @@ Virgo separates model transport, the agent loop and application policy. Official
 | `src/virgo/harness/` | Session/runtime construction, settings, commands, extensions, context, permissions and persistence |
 | `src/virgo/tools/` | File, shell and web execution primitives |
 | `src/virgo/plugins/` | Optional official capabilities registered through `setup(api)` |
-| `src/virgo/features/` | Temporary import compatibility shims for retained capabilities |
 | `src/virgo/cli/` | Entry point, print mode, plain REPL and Textual full-screen application |
 | `src/virgo/i18n/` | Language registry, translation API and built-in catalogs |
 | `tests/` | Tests organized by source responsibility; shared support in `tests/support/` |
@@ -21,7 +20,7 @@ Virgo separates model transport, the agent loop and application policy. Official
 | `examples/project/` | Files to adapt for a project's instructions and `.virgo/` configuration |
 | `docs/en/`, `docs/zh-CN/` | Matching maintained documentation |
 
-The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). The small root `main.py` is a compatibility launcher. Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
+The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
 
 Canonical user-facing terms are defined in [Vocabulary](vocabulary.md). Shared rules live with their semantics: `ai/providers/reasoning.py` maps reasoning levels; `harness/permissions.py` defines approval and read-only capability; `permission_policy.py` enforces rules and explicit grants. `origin_context.py` binds the Runtime, workspace and source branch. Plan is work intent and Review is an isolated task; both reuse the existing Agent Loop. Sandbox enforces Shell boundaries while file tools retain application-level write protection.
 

@@ -289,7 +289,7 @@ def setup(api: ExtensionAPI) -> None:
         ),
         parameters={"type": "object", "properties": {"markdown": {"type": "string", "minLength": 1}},
                     "required": ["markdown"], "additionalProperties": False},
-        execute=propose, read_only=True, sequential=True,
+        execute=propose, side_effect="read", sequential=True,
     ))
     api.register_command("plan", plans.command, "plan a task, or view, edit, execute or leave its proposal",
                          argument_hint="[goal|off|show|edit [Markdown]|execute <id>:<revision>]")

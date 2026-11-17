@@ -74,7 +74,7 @@ def setup(api: ExtensionAPI) -> None:
                 "required": ["todos"],
             },
             execute=execute,
-            read_only=True,
+            side_effect="read",
             i18n_key="tools.todo_write",
         ),
         roles=("main",),

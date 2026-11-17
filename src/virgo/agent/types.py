@@ -46,18 +46,53 @@ class ToolContext:
         return (self.translator or Translator())(key, **values)
 
 
-@dataclass
+@dataclass(init=False)
 class AgentTool:
     name: str
     description: str
     parameters: dict
     execute: Callable[[dict, ToolContext], ToolResult | str]
     label: str = ""
-    read_only: bool = False  # does not modify the user's files or system
+    side_effect: str = "write"  # "read" or "write"; separate from the run permission
     sequential: bool = False  # force the whole batch to run sequentially
     prepare_arguments: Callable[[dict], dict] | None = None
     i18n_key: str = field(default="", kw_only=True)
     i18n_values: dict | Callable[[Translator], dict] = field(default_factory=dict, kw_only=True)
+
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        parameters: dict,
+        execute: Callable[[dict, ToolContext], ToolResult | str],
+        label: str = "",
+        side_effect: str = "write",
+        sequential: bool = False,
+        prepare_arguments: Callable[[dict], dict] | None = None,
+        *,
+        read_only: bool | None = None,
+        i18n_key: str = "",
+        i18n_values: dict | Callable[[Translator], dict] | None = None,
+    ):
+        if read_only is not None:
+            # Compatibility for extensions written before the 0.3 rename.
+            side_effect = "read" if read_only else "write"
+        if side_effect not in {"read", "write"}:
+            raise ValueError("AgentTool.side_effect must be 'read' or 'write'")
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+        self.execute = execute
+        self.label = label
+        self.side_effect = side_effect
+        self.sequential = sequential
+        self.prepare_arguments = prepare_arguments
+        self.i18n_key = i18n_key
+        self.i18n_values = {} if i18n_values is None else i18n_values
+
+    @property
+    def read_only(self) -> bool:
+        return self.side_effect == "read"
 
     def spec(self, translator: Translator | None = None) -> ToolSpec:
         tool = localize_tool(self, translator) if translator is not None else self

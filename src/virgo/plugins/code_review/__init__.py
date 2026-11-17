@@ -43,7 +43,7 @@ completed conclusion. The Harness independently checks status, structure and dif
 """
 _USAGE = "/review [uncommitted | base <branch> | commit <revision> | show [id|last]]"
 _READ_CHECK = AgentTool("read", "Check snapshot read permission", {"type": "object"},
-                        lambda _args, _ctx: "", read_only=True)
+                        lambda _args, _ctx: "", side_effect="read")
 
 
 def _now():

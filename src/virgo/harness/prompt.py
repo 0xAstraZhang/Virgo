@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..agent.types import AgentTool
-    from .session import AgentSession, Runtime
+    from .runtime import Runtime
+    from .session import AgentSession
 
 
 @dataclass(frozen=True)

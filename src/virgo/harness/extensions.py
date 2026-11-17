@@ -139,8 +139,8 @@ class EventBus:
 class ExtensionAPI:
     """Owned registration and runtime services for trusted in-process plugins.
 
-    ``session`` is a compatibility escape hatch until 0.3. Official plugins use
-    this facade. Python extensions are trusted code, not a security sandbox.
+    ``session`` is a limited compatibility escape hatch for official plugins.
+    New extensions use this facade. Python extensions are trusted code, not a security sandbox.
     """
 
     def __init__(self, session: AgentSession, name: str):
@@ -340,8 +340,6 @@ class ExtensionAPI:
 # ---------------------------------------------------------------------------
 
 BUILTIN_PLUGINS = PLUGIN_IDS
-# Kept for source compatibility until 0.3; these are plugin IDs, not all-enabled features.
-BUILTIN_FEATURES = BUILTIN_PLUGINS
 
 
 def _setup(session: AgentSession, name: str, setup: Callable[[ExtensionAPI], None], *, context=None) -> None:

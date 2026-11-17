@@ -51,7 +51,7 @@ def setup(api: ExtensionAPI) -> None:
                 "additionalProperties": False,
             },
             execute=execute,
-            read_only=True,
+            side_effect="read",
             i18n_key="tools.diagnostic_get",
         ),
         roles=ROLES_ALL,

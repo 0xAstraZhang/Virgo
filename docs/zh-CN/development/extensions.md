@@ -35,7 +35,7 @@ def setup(api):
             description="List names directly inside the working directory.",
             parameters={"type": "object", "properties": {}, "required": []},
             execute=overview,
-            read_only=True,
+            side_effect="read",
         ),
         roles=("main", "subagent"),
     )
@@ -90,7 +90,7 @@ def setup(api):
 
 子任务会在自动读取项目上下文前捕获来源权限模式。官方后台代理在提交任务时捕获该模式，因此稍后修改父对话 Mode 不会扩大排队任务的权限。延迟创建 Runtime 的受信任扩展可通过工厂的 `execution_mode` 参数传递已捕获的 `PermissionMode`；模型工具定义不暴露这个参数。
 
-`api.services` 仅用于明确的共享服务契约。`api.session` 在 0.2 系列作为兼容入口保留，官方插件使用 facade。不要修改 `_tools`、`_lock`、`main` 或 UI 选择状态。保留能力的 `virgo.features` 导入路径仍是临时别名，需在 0.3 前迁移；原 `virgo.features.permission*` 导入已经删除，应使用本文中的 Core API。
+`api.services` 仅用于明确的共享服务契约。`api.session` 仍作为官方插件的受限入口保留；新扩展应使用 `api.services` 和文档化的 facade 方法。 官方插件使用 facade，不要修改 `_tools`、`_lock`、`main` 或 UI 选择状态。0.3 已删除 `virgo.features` 实现别名；请导入 `virgo.plugins` 或使用本文中的 Core API。
 
 ## 事件与权限
 
@@ -119,7 +119,7 @@ def setup(api):
 
 Core 根据自身管理的待执行登记和运行中的 Runtime（含子代）判断来源是否忙碌。实际模式切换与显式计划执行要求该来源空闲；原 `runtime_pending_work` 检查钩子已退休。状态通知在持久化与状态发布后触发。观察者可以刷新 UI，但不能同步重入修改模式或计划、选择对话或登记新工作。后续显式操作应在通知返回后通过正常准入入口发起。
 
-`api.register_permission_policy(policy)` 增加硬性限制，不能替换必要的 Core 授权策略。实现 `preflight(event)` 和 `before_execute(event)`，拒绝时返回 `Block(reason)`，继续时返回 `None`。两个检查点都先运行 Sandbox 和附加策略，再由 Core 检查能力上限、deny、已有授权及是否需要人工批准，避免为硬边界已经禁止的操作弹出审批。第二个检查点位于工具调用钩子和参数调整之后。托管／适配操作应携带原调用方上下文，使用 `api.authorize_tool(event)`。`AgentTool.read_only` 声明可信工具的能力，不授予所有操作，也不绕过其他策略。Python 扩展本身仍是 Shell 沙箱之外的可信代码。
+`api.register_permission_policy(policy)` 增加硬性限制，不能替换必要的 Core 授权策略。实现 `preflight(event)` 和 `before_execute(event)`，拒绝时返回 `Block(reason)`，继续时返回 `None`。两个检查点都先运行 Sandbox 和附加策略，再由 Core 检查能力上限、deny、已有授权及是否需要人工批准，避免为硬边界已经禁止的操作弹出审批。第二个检查点位于工具调用钩子和参数调整之后。托管／适配操作应携带原调用方上下文，使用 `api.authorize_tool(event)`。`AgentTool.side_effect` 声明可信工具的能力，不授予所有操作，也不绕过其他策略。Python 扩展本身仍是 Shell 沙箱之外的可信代码。
 
 Core 在 `harness/permission_policy.py` 执行确定性权限规则。`harness/permissions.py` 只定义 ask/never 审批和只读能力检查；`harness/origin_context.py` 固定来源 Runtime、工作区和记账分支。模型审批及 `register_permission_reviewer` 已退休。插件只能通过 `register_permission_policy` 增加限制。
 

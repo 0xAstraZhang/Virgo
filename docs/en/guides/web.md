@@ -95,4 +95,4 @@ Search and reading remain independent. Turning reading off, forcing HTTP, or req
 
 Fallback happens only on an explicit unsupported-capability response, and is bounded. Authentication failures, rate limits, timeouts and empty results do not silently switch providers. If a server-side operation has already begun, Virgo retains the evidence and stops automatic replay. Sources and readable citations remain in session history across model changes.
 
-Implementation: [capability types](../../../src/virgo/ai/web.py), [routing](../../../src/virgo/plugins/web.py), [search](../../../src/virgo/plugins/search.py), [fetch](../../../src/virgo/plugins/fetch.py).
+Implementation: [capability types](../../../src/virgo/ai/web.py), [routing](../../../src/virgo/plugins/web/__init__.py), [search](../../../src/virgo/plugins/web/search.py), [fetch](../../../src/virgo/plugins/web/fetch.py).

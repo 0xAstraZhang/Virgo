@@ -41,7 +41,7 @@ Virgo has three independent axes. Use one word for each axis in code, configurat
 | Enter, inspect, edit, execute or leave Plan | `/plan [goal\|show\|edit [Markdown]\|execute <id>:<revision>\|off]` | `/workflow default\|plan` |
 | Start in Plan | `--plan` | `--work-mode plan` |
 
-Deprecated aliases print a notice. They do not change the meaning of the canonical entry point and are removed in 0.3.
+Deprecated aliases print a notice. They do not change the meaning of the canonical entry point and are removed in a later release.
 
 ## State ownership
 
@@ -51,7 +51,7 @@ Deprecated aliases print a notice. They do not change the meaning of the canonic
   A selection change while work is running applies to the next run; the running snapshot stays fixed.
 - Children inherit the parent snapshot. An explicit read-only child is a ceiling, not a new preset.
 - Plan state is conversation state. The store records `plan` and `proposed_plan`; old `work_mode` records are read but never rewritten.
-- `Runtime.work_mode` remains an internal compatibility accessor until 0.3; new code reads `Runtime.permission_snapshot` or the plan record.
+- `Runtime.work_mode` remains an internal compatibility accessor until 0.4; new code reads `Runtime.permission_snapshot` or the plan record.
 
 ## Configuration migration
 
@@ -82,7 +82,7 @@ These old keys are read with a notice and are not written back automatically:
 | `sandbox.mode` | A permission preset with the same flags |
 | `features.<id>` | `plugins.<id>` |
 
-A project may only add `permissions.deny`. It cannot select a preset or set approval. Remove a legacy key before upgrading to 0.3.
+A project may only add `permissions.deny`. It cannot select a preset or set approval. Remove a legacy key before upgrading to 0.4.
 
 ## Naming rules for new code
 

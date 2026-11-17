@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from virgo.ai.providers import faux
-from virgo.features import background
+from virgo.plugins import background
 
 from tests.support.harness import RecordingUI, calls, last_message_text, tool_results, wait_until
 from tests.support.shell import selected

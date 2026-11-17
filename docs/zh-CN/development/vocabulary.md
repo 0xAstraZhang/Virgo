@@ -41,7 +41,7 @@ Virgo 有三个彼此独立的轴。代码、配置、命令行、斜杠命令�
 | 进入、查看、编辑、执行或退出 Plan | `/plan [goal\|show\|edit [Markdown]\|execute <id>:<revision>\|off]` | `/workflow default\|plan` |
 | 以 Plan 启动 | `--plan` | `--work-mode plan` |
 
-弃用别名会打印提示；它们不改变规范入口的含义，并会在 0.3 移除。
+弃用别名会打印提示；它们不改变规范入口的含义，并会在后续版本移除。
 
 ## 状态归属
 
@@ -51,7 +51,7 @@ Virgo 有三个彼此独立的轴。代码、配置、命令行、斜杠命令�
   运行中切换预设只影响下一次运行；正在运行的快照保持不变。
 - 子运行时继承父快照。显式只读子任务是上限，不是新的预设。
 - Plan 状态属于对话。store 记录 `plan` 和 `proposed_plan`；旧的 `work_mode` 记录会被读取，但不会自动改写。
-- `Runtime.work_mode` 是 0.3 前的内部兼容访问器；新代码读取 `Runtime.permission_snapshot` 或 Plan 记录。
+- `Runtime.work_mode` 是 0.4 前的内部兼容访问器；新代码读取 `Runtime.permission_snapshot` 或 Plan 记录。
 
 ## 配置迁移
 
@@ -82,7 +82,7 @@ Virgo 有三个彼此独立的轴。代码、配置、命令行、斜杠命令�
 | `sandbox.mode` | 具有相同开关的权限预设 |
 | `features.<id>` | `plugins.<id>` |
 
-项目设置只能增加 `permissions.deny`，不能选择预设或设置审批策略。升级到 0.3 前请删除遗留键。
+项目设置只能增加 `permissions.deny`，不能选择预设或设置审批策略。升级到 0.4 前请删除遗留键。
 
 ## 新代码的命名规则
 

@@ -35,7 +35,7 @@ def setup(api):
             description="List names directly inside the working directory.",
             parameters={"type": "object", "properties": {}, "required": []},
             execute=overview,
-            read_only=True,
+            side_effect="read",
         ),
         roles=("main", "subagent"),
     )
@@ -90,7 +90,7 @@ Pass the captured trusted parent to the child factory. `read_only=True` adds an 
 
 Children capture their source permission profile before automatic project-context reads. The built-in background agent captures that profile when the task is submitted, so a later parent Mode change cannot widen a queued task. A trusted extension that defers Runtime creation can pass its captured `PermissionMode` through the `execution_mode` factory argument; this argument is not exposed in the model tool schema.
 
-Use `api.services` only for an explicit shared service contract. The compatibility `api.session` escape hatch exists through the 0.2 series; official plugins use the facade. Do not mutate `_tools`, `_lock`, `main` or selected UI state. Retained `virgo.features` implementation imports are temporary aliases; migrate before 0.3. The former `virgo.features.permission*` imports have already been removed; use the Core APIs described here.
+Use `api.services` only for an explicit shared service contract. `api.session` remains a limited escape hatch for official plugins; new extensions should use `api.services` and the documented facade methods. Official plugins use the facade and do not mutate `_tools`, `_lock`, `main` or selected UI state. The 0.3 release removes the `virgo.features` implementation aliases; import `virgo.plugins` or use the Core APIs described here.
 
 ## Events and permissions
 
@@ -119,7 +119,7 @@ Before publishing queued agent work or starting its worker, call `api.reserve_ch
 
 Core determines whether the origin is busy from its own pending reservations and running runtimes, including descendants. Mode transitions and explicit plan execution require that origin to be idle; the former `runtime_pending_work` inspection hook is retired. State-change notifications run after persistence and state publication. Observers may refresh UI, but cannot synchronously change mode or plan, select a conversation, or admit new work. Start any subsequent explicit action through the normal admission path after notification returns.
 
-`api.register_permission_policy(policy)` adds a hard restriction without replacing the mandatory Core authorization policy. Implement both `preflight(event)` and `before_execute(event)`, returning `Block(reason)` to deny or `None` to continue. At both checkpoints, Sandbox and additional policies run before Core evaluates capability ceilings, deny rules, existing grants and possible human approval. This prevents an approval question for an operation a hard boundary forbids. Core runs the second checkpoint after tool-call hooks and argument changes. Hosted/adapted operations must use `api.authorize_tool(event)` and carry the original caller context. `AgentTool.read_only` declares a trusted tool's capability; it neither grants all operations nor bypasses other policies. Python extensions themselves remain trusted code outside the Shell sandbox.
+`api.register_permission_policy(policy)` adds a hard restriction without replacing the mandatory Core authorization policy. Implement both `preflight(event)` and `before_execute(event)`, returning `Block(reason)` to deny or `None` to continue. At both checkpoints, Sandbox and additional policies run before Core evaluates capability ceilings, deny rules, existing grants and possible human approval. This prevents an approval question for an operation a hard boundary forbids. Core runs the second checkpoint after tool-call hooks and argument changes. Hosted/adapted operations must use `api.authorize_tool(event)` and carry the original caller context. `AgentTool.side_effect` declares a trusted tool's capability; it neither grants all operations nor bypasses other policies. Python extensions themselves remain trusted code outside the Shell sandbox.
 
 Core enforces deterministic authorization in `harness/permission_policy.py`. `harness/permissions.py` defines ask/never approval and read-only capability checks; `harness/origin_context.py` binds the Runtime, workspace and accounting branch. Model approval and `register_permission_reviewer` are retired. Plugins may add restrictions through `register_permission_policy`.
 

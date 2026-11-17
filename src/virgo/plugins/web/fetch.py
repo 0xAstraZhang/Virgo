@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from ..agent.types import ToolCallEvent
-from ..harness.extensions import ROLES_ALL
-from ..tools.web_fetch import FetchError, make_web_fetch
-from .web import web_service
-from .web_access import WebAccess
+from ...agent.types import ToolCallEvent
+from ...harness.extensions import ROLES_ALL
+from ...tools.web_fetch import FetchError, make_web_fetch
+from . import web_service
+from .access import WebAccess
 
 
 class Fetch(WebAccess):

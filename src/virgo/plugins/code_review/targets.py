@@ -451,7 +451,7 @@ class ReviewSnapshot:
         return [AgentTool(name=name if name == "review_git" else "review_" + name, description=description,
                           parameters={"type": "object", "properties": properties, "required": required,
                                       "additionalProperties": False},
-                          execute=lambda args, ctx, name=name: self._execute(name, args, ctx), read_only=True)
+                          execute=lambda args, ctx, name=name: self._execute(name, args, ctx), side_effect="read")
                 for name, description, properties, required in specs]
 
 

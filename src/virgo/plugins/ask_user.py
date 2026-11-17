@@ -170,7 +170,7 @@ def setup(api: ExtensionAPI) -> None:
                 "required": ["question"],
             },
             execute=execute,
-            read_only=True,
+            side_effect="read",
             sequential=True,
             i18n_key="tools.ask_user",
         ),
