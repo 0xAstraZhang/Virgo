@@ -32,6 +32,22 @@ def check_cancel(signal):
         raise GitReadError("Read-only Git operation was cancelled.", "cancelled")
 
 
+def _cancel_windows_pipes(streams):
+    """Cancel outstanding pipe I/O before CRT close waits on a blocked read."""
+    import ctypes
+    import msvcrt
+
+    cancel = ctypes.WinDLL("kernel32", use_last_error=True).CancelIoEx
+    cancel.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    cancel.restype = ctypes.c_int
+    for stream in streams:
+        if stream is not None and not stream.closed:
+            if not cancel(msvcrt.get_osfhandle(stream.fileno()), None):
+                error = ctypes.get_last_error()
+                if error != 1168:  # ERROR_NOT_FOUND: no pending request at this instant.
+                    raise ctypes.WinError(error)
+
+
 class ControlledGit:
     def __init__(self, workspace, signal):
         executable = shutil.which("git")
@@ -94,36 +110,44 @@ class ControlledGit:
         changed, exceeded, stopping = threading.Event(), threading.Event(), threading.Event()
         failures, workers = [], []
 
+        def close_pipe(stream):
+            # Synchronize closure with native cancellation so its handle cannot
+            # be reused for unrelated I/O between lookup and CancelIoEx.
+            with lock:
+                try:
+                    stream.close()
+                except (OSError, ValueError) as error:
+                    failures.append(error)
+
         def read(stream, destination, diagnostic=False):
             nonlocal total
             try:
-                with stream:
-                    while not stopping.is_set():
-                        chunk = stream.read(64 * 1024)
-                        if not chunk:
+                while not stopping.is_set():
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    with lock:
+                        total += len(chunk)
+                        if total > MAX_GIT_BYTES:
+                            exceeded.set()
                             break
-                        with lock:
-                            total += len(chunk)
-                            if total > MAX_GIT_BYTES:
-                                exceeded.set()
-                                break
-                            # Count all stderr against the same budget while
-                            # retaining only the prefix needed for diagnostics.
-                            destination.extend(chunk[:max(0, 4096 - len(destination))] if diagnostic else chunk)
+                        # Count all stderr against the same budget while
+                        # retaining only the prefix needed for diagnostics.
+                        destination.extend(chunk[:max(0, 4096 - len(destination))] if diagnostic else chunk)
             except Exception as error:
                 failures.append(error)
             finally:
+                close_pipe(stream)
                 changed.set()
 
         def write():
             try:
-                with proc.stdin:
-                    remaining = memoryview(data)
-                    while remaining and not stopping.is_set():
-                        written = proc.stdin.write(remaining)
-                        if not written:
-                            raise BrokenPipeError("Controlled Git stdin stopped accepting data")
-                        remaining = remaining[written:]
+                remaining = memoryview(data)
+                while remaining and not stopping.is_set():
+                    written = proc.stdin.write(remaining)
+                    if not written:
+                        raise BrokenPipeError("Controlled Git stdin stopped accepting data")
+                    remaining = remaining[written:]
             except BrokenPipeError:
                 pass  # A Git error can close stdin before consuming all input.
             except OSError as error:
@@ -133,6 +157,7 @@ class ControlledGit:
             except Exception as error:
                 failures.append(error)
             finally:
+                close_pipe(proc.stdin)
                 changed.set()
 
         try:
@@ -185,11 +210,27 @@ class ControlledGit:
                 # can be closed without waiting on a buffered reader's lock.
                 for worker in workers:
                     worker.join(timeout=2)
+                streams = (proc.stdout, proc.stderr, proc.stdin)
+                if os.name == "nt":
+                    deadline = time.monotonic() + 2
+                    while any(worker.is_alive() for worker in workers) and time.monotonic() < deadline:
+                        try:
+                            with lock:
+                                _cancel_windows_pipes(streams)
+                        except OSError as error:
+                            cleanup_error = cleanup_error or error
+                            break
+                        for worker in workers:
+                            worker.join(timeout=0.05)
                 unfinished = any(worker.is_alive() for worker in workers)
                 if unfinished and cleanup_error is None:
                     cleanup_error = GitReadError("Controlled Git pipe cleanup did not finish.", "incomplete")
-                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                for index, stream in enumerate(streams):
                     if stream is not None:
+                        if os.name == "nt" and index < len(workers) and workers[index].is_alive():
+                            # Report incomplete cleanup; that worker retains
+                            # responsibility for closing its pipe on return.
+                            continue
                         try:
                             stream.close()
                         except (OSError, ValueError) as error:
