@@ -223,7 +223,9 @@ def register_builtins(session: AgentSession) -> None:
                 page = s.diagnostics.history_page(before)
                 lines.append(s.t("harness.diagnostics.path", path=s.diagnostics.path))
                 lines.extend(error_summary(record, t=s.t) for record in page["records"])
-                if not page["records"]:
+                if page["storage_unavailable"]:
+                    lines.append(s.t("harness.diagnostics.lookup_failed"))
+                elif not page["records"]:
                     lines.append(s.t("harness.diagnostics.empty"))
                 if page["next_cursor"]:
                     lines.append(s.t("harness.diagnostics.next", cursor=page["next_cursor"]))

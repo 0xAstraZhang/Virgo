@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -15,11 +16,21 @@ from ..diagnostics import capture_error, emergency_write, safe_text, sanitize
 from .diagnostic_store import connect
 
 _ERROR_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+_UNSAVED_SEQUENCE = 2**63 - 1
 _LEGACY = re.compile(r"harness-[\w-]+\.jsonl(?:\.\d+)?\Z")
 
 
 def _json(record: dict) -> str:
     return json.dumps(record, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def _occurred(record, fallback_time=None):
+    try:
+        timestamp = datetime.fromisoformat(record.get("timestamp"))
+        timestamp = timestamp.replace(tzinfo=timestamp.tzinfo or UTC).astimezone(UTC)
+    except (ValueError, TypeError):
+        timestamp = fallback_time or datetime.now(UTC)
+    return timestamp.isoformat()
 
 
 def _fallback_record(details, error) -> dict:
@@ -92,14 +103,8 @@ class DiagnosticLog:
         record.pop("log_pattern", None)
         record.pop("log_expired", None)
         record["log_path"] = str(self.path)
-        timestamp = record.get("timestamp")
-        try:
-            occurred = datetime.fromisoformat(timestamp)
-            occurred = occurred.replace(tzinfo=occurred.tzinfo or UTC).astimezone(UTC)
-        except (ValueError, TypeError):
-            occurred = fallback_time or datetime.now(UTC)
         db.execute("INSERT OR IGNORE INTO errors(error_id, occurred, instance, payload) VALUES (?, ?, ?, ?)",
-                   (record["error_id"], occurred.isoformat(), instance, _json(record)))
+                   (record["error_id"], _occurred(record, fallback_time), instance, _json(record)))
         return record
 
     def record(self, details: dict) -> dict:
@@ -132,6 +137,7 @@ class DiagnosticLog:
                 record.pop("log_path", None)
                 record.pop("log_pattern", None)
                 record["logging_error"] = safe_text(error)
+                record["timestamp"] = _occurred(record)
                 emergency_write(record, error)
                 self._failed[record["error_id"]] = record
                 while len(self._failed) > 100:
@@ -186,26 +192,57 @@ class DiagnosticLog:
             return matches[0] if len(matches) == 1 else None
 
     def history_page(self, before: str | None = None, *, limit: int = 10) -> dict:
+        """Merge bounded emergency evidence with indexed durable history."""
         with self._lock:
-            if not self.path.exists():
-                if before is not None:
-                    raise ValueError("Invalid diagnostic history cursor")
-                return {"records": [], "next_cursor": None}
-            db = self._db()
-            params = []
-            where = ""
+            anchor = None
+            failed_anchor = None
             if before is not None:
-                if not isinstance(before, str) or not re.fullmatch(r"[0-9]{1,19}", before):
+                if isinstance(before, str) and before.startswith("failed:"):
+                    failed_anchor = before.removeprefix("failed:")
+                    record = self._failed.get(failed_anchor)
+                    if record is None:
+                        raise ValueError("Invalid diagnostic history cursor")
+                    anchor = (record["timestamp"], _UNSAVED_SEQUENCE, failed_anchor)
+                elif not isinstance(before, str) or not re.fullmatch(r"[0-9]{1,19}", before):
                     raise ValueError("Invalid diagnostic history cursor")
-                anchor = db.execute("SELECT occurred, seq FROM errors WHERE seq=?", (before,)).fetchone()
-                if anchor is None:
-                    raise ValueError("Invalid diagnostic history cursor")
-                where = "WHERE (occurred, seq) < (?, ?)"
-                params.extend(anchor)
-            rows = db.execute(f"SELECT seq, payload FROM errors {where} ORDER BY occurred DESC, seq DESC LIMIT ?",
-                              (*params, limit + 1)).fetchall()
-            return {"records": [json.loads(row[1]) for row in rows[:limit]],
-                    "next_cursor": str(rows[limit - 1][0]) if len(rows) > limit else None}
+            rows, stored_ids = [], set()
+            storage_unavailable = False
+            try:
+                db = self._db() if self.path.exists() else None
+                if before is not None and failed_anchor is None:
+                    found = db.execute("SELECT occurred, seq FROM errors WHERE seq=?", (before,)).fetchone() if db else None
+                    if found is None:
+                        raise ValueError("Invalid diagnostic history cursor")
+                    anchor = (*found, "")
+                if db is not None:
+                    if self._failed:
+                        placeholders = ",".join("?" for _ in self._failed)
+                        stored_ids = {row[0] for row in db.execute(
+                            f"SELECT error_id FROM errors WHERE error_id IN ({placeholders})", tuple(self._failed))}
+                        if failed_anchor in stored_ids:
+                            raise ValueError("Emergency cursor was persisted; restart diagnostic history")
+                    where = "WHERE (occurred, seq) < (?, ?)" if anchor else ""
+                    params = anchor[:2] if anchor else ()
+                    rows = db.execute(
+                        f"SELECT seq, occurred, payload FROM errors {where} ORDER BY occurred DESC, seq DESC LIMIT ?",
+                        (*params, limit + 1)).fetchall()
+            except (OSError, sqlite3.Error):
+                # A broken database must not hide the emergency records it caused.
+                # Durable cursors cannot be resolved without their database anchor.
+                if before is not None and failed_anchor is None:
+                    raise
+                storage_unavailable = True
+                rows, stored_ids = [], set()
+            items = [((occurred, seq, ""), str(seq), json.loads(payload)) for seq, occurred, payload in rows]
+            stored_ids.update(item[2]["error_id"] for item in items)
+            for error_id, record in self._failed.items():
+                key = (record["timestamp"], _UNSAVED_SEQUENCE, error_id)
+                if error_id not in stored_ids and (anchor is None or key < anchor):
+                    items.append((key, f"failed:{error_id}", record))
+            items.sort(key=lambda item: item[0], reverse=True)
+            return {"records": [item[2] for item in items[:limit]],
+                    "next_cursor": items[limit - 1][1] if len(items) > limit else None,
+                    "storage_unavailable": storage_unavailable}
 
     def import_legacy(self) -> list[str]:
         """Import complete lines in resumable batches, without editing the source files."""
@@ -222,17 +259,17 @@ class DiagnosticLog:
         return warnings
 
     def _import_file(self, path, warnings):
-        info = path.stat()
-        identity = f"{info.st_dev}:{info.st_ino}"
-        fallback_time = datetime.fromtimestamp(info.st_mtime, UTC)
         with path.open("rb") as source:
+            info = os.fstat(source.fileno())
+            identity = f"{info.st_dev}:{info.st_ino}"
+            fallback_time = datetime.fromtimestamp(info.st_mtime, UTC)
             while True:
                 with self._lock:
                     db = self._db()
                     db.execute("BEGIN IMMEDIATE")
                     try:
                         saved = db.execute("SELECT identity, offset FROM imports WHERE path=?", (path.name,)).fetchone()
-                        offset = saved[1] if saved and saved[0] == identity and saved[1] <= info.st_size else 0
+                        offset = saved[1] if saved and saved[0] == identity and saved[1] <= os.fstat(source.fileno()).st_size else 0
                         source.seek(offset)
                         finished = False
                         for _ in range(100):
