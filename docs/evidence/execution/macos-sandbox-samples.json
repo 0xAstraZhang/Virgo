@@ -1,0 +1,723 @@
+{
+  "revision": "60df62697f98949ead0c92669098ec84136e2d4e",
+  "tracked_diff_sha256": "8f9bebb3b400028e8e4d1f1b285997f39587068bdb156bd8f37a6fa59cd706a2",
+  "source_files_sha256": {
+    "src/virgo/__init__.py": "d90fa842bd4405f29dd03375e1456ebaf6ada5d3d0985c398a822e88ca4b8570",
+    "src/virgo/__main__.py": "278a8f8fccbcd9a5e65386e83cc8a3fb2b6252183a63ba7bce3ca15654d4fe53",
+    "src/virgo/agent/__init__.py": "737e3893508fa59521874279e53b886d4a9277d931e26d19dc74178be5f185c8",
+    "src/virgo/agent/agent.py": "cf2a963f29227dd9ab8bb1e121918aa09ad051a4dbeb75291dc085ce4bfee775",
+    "src/virgo/agent/loop.py": "3f02d17945c2385e8fae7df3df0d8a1258220ef62f11800762683aaed6280378",
+    "src/virgo/agent/types.py": "066d17b97471f3677ba270994f8a93add57214a2c88e6909aec15aa00f07c638",
+    "src/virgo/ai/__init__.py": "5f23073937f3c47e353b51819a6341313f59dde5580b4642ce54431f5555641a",
+    "src/virgo/ai/auth.py": "0fa4106b1c13628b6187dddb60f68569fe9df5f70cf45309934b2e91fbd52f00",
+    "src/virgo/ai/auth_presets.py": "ceb71735f2d4f4cc533f06ad2335b4e2e90d573ae721758ed244040dbc965b40",
+    "src/virgo/ai/catalog.py": "69718b13dd5b8b4d93c31f97a59aa53c283008921ec204d21eb54af7d7f04a68",
+    "src/virgo/ai/catalog_versions.py": "78bc663347dd7737b4cb44e0f90df3ae227a35397aefbade8a4ed23695b9be01",
+    "src/virgo/ai/compaction.py": "6daa48e57db811d78dddc7b4952167cb6e0fe9f72faa14b70ef3ff60dc1a8cf9",
+    "src/virgo/ai/model_metadata.py": "8c7268f4b212934c660dd785df8b15f90e16126b417af9e5895149bae6c89f4b",
+    "src/virgo/ai/models.py": "61d54c3fc0416af0f4e57f1fe9a3136c0c8105d9b03bcd07b3e9ad5de36cfc1d",
+    "src/virgo/ai/oauth.py": "19d05f6cef44bbef05ffb5642af539edb22907c8341265df8be53e06af98b046",
+    "src/virgo/ai/providers/__init__.py": "737cca5715264696d6c9528d376ba74af2065993c1008f0a95e73be6f1b14465",
+    "src/virgo/ai/providers/_errors.py": "2adc81f45509c258dea695826eae66b620e78c31e411bc86e258d3c1a893eb5e",
+    "src/virgo/ai/providers/_http.py": "c42b1c4654794cb8f87023ed413a2eeea12667931a70a1013ec9054d996254a9",
+    "src/virgo/ai/providers/anthropic.py": "5c92e4f2e2bd5a92a33243cd7e5b0e2d461ec90f929abe9316e4c6d8b49a7a05",
+    "src/virgo/ai/providers/codex.py": "0ca7d82fce92de0e2a4572b758fabe97550b116665d23b7b3877027d736df734",
+    "src/virgo/ai/providers/faux.py": "c8cb7bf8a366995b6b05442c1233a40c4a44458dd357a2ff6c1215cd3cd6f433",
+    "src/virgo/ai/providers/openai.py": "e371799b955fb4a110c50226ad02592ef2da6edece12a9b4e577a09939341242",
+    "src/virgo/ai/providers/reasoning.py": "3b55f4b9eba4d56cdfd927e82a8ba32e5e972870e6baf0f90b20caa14954df3b",
+    "src/virgo/ai/providers/responses.py": "65afe5720ba7d807fabda97743f84794f127a8d04d30caae88437f47a1c54e60",
+    "src/virgo/ai/providers/web.py": "fe54fdbd164ba4cde43eeb861590b4bb898925c7a68bcb488f55041e75b5e6cf",
+    "src/virgo/ai/search.py": "7a77aa2e2a00ff493d2a0aeaa060d7b3b01886ea0e07d64271a6af64c0d91064",
+    "src/virgo/ai/stream.py": "858499a59cd69bdb4993eec50c8caf175794d1bc1bab8bb0918636e1b960b0c5",
+    "src/virgo/ai/transform.py": "ad0d03dc24a68087b84d480b25967e4d290f69259bca1e8e58fba75d09b03978",
+    "src/virgo/ai/types.py": "784f3408f89fc7f9d553f2e4466ecdb51f68ee8172b0e1d00b97c971b84770f9",
+    "src/virgo/ai/validate.py": "4111373c0b5248046ea00b7bc68673ee42319f9e1909cb5f1fb8fcfe8fa589cb",
+    "src/virgo/ai/web.py": "97a2b8936ea76ecd084a70d925e45bf531caa10b8745a4eca23288a32462980d",
+    "src/virgo/cli/__init__.py": "3c6bedf94e75c28e2db533f3488d4d205eac4c8f42ad4c84fadd58e24a8ed8f7",
+    "src/virgo/cli/console.py": "ebb5262ebd4ad27301ee9192c5f0a34aff572c88cbfa72034ac3b3c0a22296b5",
+    "src/virgo/cli/i18n.py": "269969a42a74cbedfd3c6be5575ba6faf67789423ac06ecaf8fb785645e9f245",
+    "src/virgo/cli/main.py": "ce5bea036ce11626683c8cfedbec7aa1cbf681587802eb43f298c0cba31b7132",
+    "src/virgo/cli/repl.py": "ace647637a5f347acfa5bdbffb7cf5d50d96645e2cc3108cd977f18d20e7595f",
+    "src/virgo/cli/tui/__init__.py": "61ffa74d5bab6cdafefb8342efc9ae824ea3fd48440872953ae74fb3e3a7b97a",
+    "src/virgo/cli/tui/activity.py": "b57d6b7f5bf97e5256c503a83d0f37aca64823e2889d6fcf681df2925177a404",
+    "src/virgo/cli/tui/app.py": "f80338de8ec6b0d67f60a9284cdba9789b6f62d7945d15292f6fc595f32db10e",
+    "src/virgo/cli/tui/bridge.py": "e2ee4d82abc5c1595a05d91b9e9e19051a2ca820ebcdd8ba6fc7a258d7dca197",
+    "src/virgo/cli/tui/choices.py": "d33417cd486d9a7470e65e621c9ee26f8b22b955c7bd3f0c30315ab1ac6bba8c",
+    "src/virgo/cli/tui/controller.py": "de28cf7e25e3dceee89d8c41fb33aa4298935bb82038cb0e97b61a52dbf14370",
+    "src/virgo/cli/tui/conversation.py": "e2d25b66fd0ed9c3202f4ecf9e8eeb0117b346972c3aae385e00b42ec4e375c9",
+    "src/virgo/cli/tui/dialogs.py": "0fd56b297f10a6ca46d3f641b308998ae3f58e3b0fdee551f0e44556a12f17e3",
+    "src/virgo/cli/tui/editor.py": "586c76ebf31854c7ba9aa194b788cd6c043e59c8460ed6f5aea74aedc404cf57",
+    "src/virgo/cli/tui/folding.py": "ed25a86564f98ebf9c75e5dd4e49e1ae0b63417db36b70dfedf587fdf444ec98",
+    "src/virgo/cli/tui/forms.py": "9853dc27023c4d4193f86cd6bfa0b4eab358d9ec1f29637197b154d99aa1a963",
+    "src/virgo/cli/tui/modes.py": "60e42c621e692a3075da8086d11f95957d25044bf866a6726b4241d932cb181f",
+    "src/virgo/cli/tui/preferences.py": "99eacb5c303725ce353e81504f6fd1f9eab3c7325835c80bee6df40468376841",
+    "src/virgo/cli/tui/selection.py": "155358ceee625ab21302209a325daa715f287b330b55a29dc1e4c90b8cd96dfb",
+    "src/virgo/cli/tui/sessions.py": "209ff9e8ec6078398710f23351af59c911da4e4c11353ab6a4ac50c9590d5658",
+    "src/virgo/cli/tui/transcript.py": "d9be595d1a32fd991bb17518e1427e6c7761cad766f5866a05745c3263b11414",
+    "src/virgo/diagnostics.py": "57170c898589ec7500cdf117b6a8fadbe0c1919097c60ed3b0e06d91d74f3c90",
+    "src/virgo/execution.py": "e101207ab896bf3077764ea910ce0992374a541a4a87b80e7aa6b3e31c4203f1",
+    "src/virgo/extensions/__init__.py": "8a5a5beeffe842a40cbc2c88c503a49945828adddc699629694cdf484ee43637",
+    "src/virgo/extensions/sandbox/__init__.py": "8186be031838f6a261186722b0884bfb120c52e06564da7dc77d2b4648d1eb53",
+    "src/virgo/extensions/sandbox/files.py": "093f70f834c65374a4654ed92dbe44568402310c6f7d9bfe2cc2ebbb6b7cb1b6",
+    "src/virgo/extensions/sandbox/mxc.py": "9164ba95ee05e055570a452e618899507a55f6c5ccb670a87230ba57026aa634",
+    "src/virgo/extensions/sandbox/policy.py": "68bdd1573cd03f4e88fa159ba6f432359b1d8998252f2a597174427b5800dd15",
+    "src/virgo/extensions/sandbox/windows_acl.py": "babdf0c78ec10f961cc931d4609aa23b1f1279d388332e58a8a3f7b4bd24cf4d",
+    "src/virgo/extensions/sandbox/windows_files.py": "4a21357cd070f78f42b242543ede3a04c0fdc1417e07f8b006637599a3f80072",
+    "src/virgo/harness/__init__.py": "d3df8649db291538229d568773b550c0f1f3ae24d45f5592ec252d4bb3b392e6",
+    "src/virgo/harness/auth_commands.py": "f249bbe72c2d8e4b85c275f92466813965f94cc6a83bfe2b13001b551d832cd7",
+    "src/virgo/harness/commands.py": "72ec02b7179052f5f5694ee13a359a1cb72f39625d9204cb1a78b0134720e858",
+    "src/virgo/harness/compaction.py": "3cdaf591f612b86ad6082e9bac5413e0ae68125652b81334e1443e27a9fd3294",
+    "src/virgo/harness/diagnostic_access.py": "8279202a1beb563a99f2bdfb920d7a941f980b05bb889676f1fc8329524b4536",
+    "src/virgo/harness/diagnostic_view.py": "1e5ed4647dcb45ce2bc1a41dc2f485fc09d511d53e2054045326c242ef123b7c",
+    "src/virgo/harness/diagnostics.py": "c86eae3c42befa2ac1acce3743c7d56822f152eda064b32b22df452b921fc2e7",
+    "src/virgo/harness/execution.py": "945660106cc69bfd6ed48fe0e31776c3937652373b5a9e9754d0e90b2f7ad7a6",
+    "src/virgo/harness/execution_modes.py": "38c946db87a7066489907c03b37e6f129cb4d70c52abe7cd5fe31f17111a78e1",
+    "src/virgo/harness/extensions.py": "f8e83fbf578b5aab84236be6f52968e96ec047623cb8312a159da5addf0dad32",
+    "src/virgo/harness/jobs.py": "a5c7a9c5fd5fd4845085e41f89fd6230c09f1b0d8ad7164047071ac922c6aa1d",
+    "src/virgo/harness/language_commands.py": "bc21935fa55aa14ff55f6413c47e6b5a16a2a4ff044e2858a740d60bf860d60f",
+    "src/virgo/harness/origin_context.py": "9754d0ff3e261cbd1fd196bf154c0d5f3b996e77f64c2fbeac94524dfa45169e",
+    "src/virgo/harness/permissions.py": "69d9c7506c8045d1e062103874683a93ba48d7966a9ff59bcd477ab3592b251e",
+    "src/virgo/harness/preferences.py": "da21b9e8f2d9011a1b1ac4a0196a55026c04fe8368fa7c966747db5ed00116a7",
+    "src/virgo/harness/prompt.py": "8a3d8ded56fbb5ed7536dbb6d0b9bc2d60d7e657f895fe0c476008d8cad3d0b4",
+    "src/virgo/harness/recovery.py": "e6828ec15a565ca3cf17775ea6e07000173c1748f3f0edede43d3e28393c8253",
+    "src/virgo/harness/retry.py": "36f8c568b9a0e59a2a1dfd2fbe88c7455642ff8612f458414e6e574831c72e55",
+    "src/virgo/harness/runtime.py": "d2f17afb0b1e9e1df244be43ce77306b074172a011642eaa5ee7fea51786d3c3",
+    "src/virgo/harness/runtime_limits.py": "208e6748c266baaf9f79e19eb3fdb29790e1c1e542e71c697472dc449a328a27",
+    "src/virgo/harness/services.py": "e3e2694fa13bc1dbfb59dfb090e0df43f2807c25d7609043733a4644b62e71e3",
+    "src/virgo/harness/session.py": "ba99ba5535f82c404aa29f15697ad4f48d7c088da2395883d39ccb2053845a1b",
+    "src/virgo/harness/settings.py": "7ba84e01e31174898e606daee955fd61e31e634762310723e6047880b2c61baf",
+    "src/virgo/harness/shell_commands.py": "2c69c9ba10a5835bda0eb5b4b8036650b0d496aae3db8b3f58c7b9215d3ee797",
+    "src/virgo/harness/store.py": "f14d1e0857e20247cfb3b0682ab56c9de8fd2fa613921bc74fc8ec0af36d848d",
+    "src/virgo/harness/telemetry.py": "73698e8dc788ebd1a566b093335fb5df23e75153c28d9f3d1ee8fb95958d09c0",
+    "src/virgo/harness/ui.py": "6e1f03a601f3d5dc924d272745a87e0905c5dad9b1dbd826a9a93971783db035",
+    "src/virgo/i18n/__init__.py": "0279b1264740c7ac4732382779a81882a38d173969f5393f231d760bda043656",
+    "src/virgo/i18n/locales/__init__.py": "5324c6f7b0aef649d829f7d98f10a44538c9cf155f48d376760ef5932b6d2b80",
+    "src/virgo/i18n/locales/en/__init__.py": "b1a287df86b1865f4c8ceb600360286049f9b43302b1084f72401a3df6ef5ca0",
+    "src/virgo/i18n/locales/en/core.py": "1d381e045534ef979c383bdd3b67bc3627ca3624a1fefc1eea52d43385214f8c",
+    "src/virgo/i18n/locales/en/features.py": "4505ffc0fc36082092c2199d8f4fb8781a75cc5fc1df1b5c3f623920f7fb386c",
+    "src/virgo/i18n/locales/en/harness.py": "e37ca88c99cc6987512d617e861e9f538442daebece8cce8c76a4eccd396c06d",
+    "src/virgo/i18n/locales/en/tools.py": "61715f4459f2747465097ff1a4dbf3b44025085689ca64bc4b3b60f40e5283a4",
+    "src/virgo/i18n/locales/en/ui.py": "625298fcdf492976c8a956a64e6d6174cbf9e05131899fdaa48a3e428181dc6c",
+    "src/virgo/i18n/locales/zh_CN/__init__.py": "968363c222306f6916f552f566094f07301753a954af8e09125e8294ad5013e4",
+    "src/virgo/i18n/locales/zh_CN/core.py": "e835ec94ec95aa72920c9ddc7a77951343bee9bd807a8509e42570ac472ca9cb",
+    "src/virgo/i18n/locales/zh_CN/features.py": "8f940757c4cae290bb3abc6e94831eed0477c14fb7f0e5c326b0826b2d8ec354",
+    "src/virgo/i18n/locales/zh_CN/harness.py": "c7f34f324b5e4ef3c1eca49df629f6f494792261331f24a9cbc1d941edd0e951",
+    "src/virgo/i18n/locales/zh_CN/tools.py": "a420a8e332a299eecc9214ab977deca39de3a554ab143e0e5eac99458831eb5d",
+    "src/virgo/i18n/locales/zh_CN/ui.py": "246b6341f3826aaf1a0eecd9bbf2ddeaf8c794d1ae7a459d85f589df9bf2d517",
+    "src/virgo/plugins/__init__.py": "804b66b5528373ca3faa102253120082d2abfd139540a2d121a10d986c5d27e9",
+    "src/virgo/plugins/ask_user.py": "ab4febb5861498daa1823580c1f16b2f37bbad83e2a47e1fe9da76a79d721072",
+    "src/virgo/plugins/background.py": "5fee895e1677335ac4fdc7abe732ac5273740e1a37c14ef36b47b0232921b206",
+    "src/virgo/plugins/diagnostic_get.py": "fde31c604b924d88e06c59698aa8e9a482853e0ecee684f8a6c49c252a4862fc",
+    "src/virgo/plugins/skills.py": "6109f2f450d8136c0f3003c5564e8833339d51b1ac756f382aa165f72d9db844",
+    "src/virgo/plugins/subagent.py": "a4fb5a47806d1cca577578142ef1a031e5640af350e7c27e2cff441422207035",
+    "src/virgo/plugins/todo.py": "47d51908a18c807e27bf11ca3d3ad35e108342f216491d0aa56873498a48160c",
+    "src/virgo/plugins/web/__init__.py": "7e7208bbc7f89ad841f06723905790151aaaacdc92be9e68d318d5a8ad87d284",
+    "src/virgo/plugins/web/access.py": "580e7df21bdc4bf3fa33fa4757def1dfc81f8db53a4b9716ddfa61c40b869e81",
+    "src/virgo/plugins/web/fetch.py": "6a9ca7bf5a612970a1452d3f632ebbaa7abb1c6e06292efd69dbb0c31caa3396",
+    "src/virgo/plugins/web/fetch_commands.py": "9bd2f68d7c078dc54b5340df91077dfa8711fc634acad58814ba7883977ca1eb",
+    "src/virgo/plugins/web/search.py": "68ea6022c2c388d50448fc9c4df7a4a0873187187d7c744d81d820f9fa6aa89b",
+    "src/virgo/plugins/web/search_commands.py": "8a820448671cf9ae1905db6a061eb81db0d3097176fe8d42956bb122a1182388",
+    "src/virgo/tools/__init__.py": "44ca1968061a1305b083671c07c59622b84dd2d9eb9aff6748238e888aca6d1b",
+    "src/virgo/tools/bash.py": "5272d8a0fed54f086754202998a89b7d09ace4bf424fcc86671b47441afd38f8",
+    "src/virgo/tools/fs.py": "74f8634aad069e811d394789bcd8e5ba75b42f54d95f46b1058cd98deba7958f",
+    "src/virgo/tools/output.py": "27be2e41ab39089f310a9b6510b05f799e0bae8a24a182192ccfc181aee458e0",
+    "src/virgo/tools/shell.py": "26e3f24732dd75578b3621f91074911194315a7f2b869aad84ef8cdd72244a7e",
+    "src/virgo/tools/web.py": "c269fcb43ca118931c2df943514c23e7d92867a5d28b6b7a8f4eb25c72ae293a",
+    "src/virgo/tools/web_fetch.py": "77e3dd27f2d3223db7c1e0bda25f9103ba11afd864b3de8c2eb0d855edc01c2a",
+    "src/virgo/tools/windows_process.py": "c47242d7419c9fdd66fa48b8e54f498009f5e10518422d5475e8d2f21db36db2"
+  },
+  "script_sha256": "2d509821f6faeba3bef13c4c791304388ed3e31be4df4ef3d0930ce8b642eca0",
+  "lock_sha256": "aef9745183b7cb4789d69d33f6476ac6090959b2ffff7ff843f16f16b1b03c00",
+  "platform": "macOS-15.8.1-arm64-arm-64bit-Mach-O",
+  "python": "3.13.14 (main, Jun 23 2026, 15:20:43) [Clang 22.1.3 ]",
+  "provider": "sandbox",
+  "workload": "fixed input.txt copied to output.txt; fresh temporary workspace and user home",
+  "permission_comparison": "none; Host and Sandbox have different authority",
+  "samples": [
+    {
+      "sample": 0,
+      "provider": "sandbox",
+      "profile": "sandbox",
+      "success": false,
+      "operations": [
+        {
+          "index": 0,
+          "phase": "first",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.3226249973522499,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 1,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.21466700127348304,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 2,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.2104579980368726,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 3,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.22816700220573694,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 4,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.21958299475954846,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 5,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.1961659945663996,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        }
+      ],
+      "import_ms": 53.77404099999694,
+      "construct_ms": 14.86816699616611,
+      "total_ms": 68.64220799616305,
+      "modules": 457,
+      "virgo_modules": 89,
+      "threads": 1,
+      "tools": 15,
+      "schema_chars": 7969,
+      "system_chars": 734,
+      "boundary": {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "workspace": "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-zl22qmey/workspace",
+        "requested": {
+          "read_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-zl22qmey/workspace"
+          ],
+          "write_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-zl22qmey/workspace"
+          ],
+          "network_allowed": true
+        },
+        "effective": {
+          "file_tools": {
+            "read_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-zl22qmey/workspace"
+            ],
+            "write_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-zl22qmey/workspace"
+            ],
+            "network_allowed": true
+          },
+          "native_process": null
+        },
+        "revision": 0,
+        "state": "file_boundary_ready; native_policy_unsupported",
+        "native_support": false,
+        "native_limitation": "shared host paths cannot enforce alias/race isolation",
+        "runtime_read_dependencies": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none"
+        ],
+        "unmanaged": [
+          "broker",
+          "trusted Python extensions",
+          "hooks",
+          "MCP services",
+          "model transport"
+        ]
+      },
+      "peak_memory_bytes": 45563904,
+      "installed_runtime_and_dependencies": {
+        "bytes": 179887757,
+        "files": 13628,
+        "roots": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none",
+          "/Users/zhangyu/Desktop/Virgo/src/virgo",
+          "/private/tmp/virgo-installed-mxc/mxc-exec-mac"
+        ]
+      }
+    },
+    {
+      "sample": 1,
+      "provider": "sandbox",
+      "profile": "sandbox",
+      "success": false,
+      "operations": [
+        {
+          "index": 0,
+          "phase": "first",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.3527919980115257,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 1,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.21824999566888437,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 2,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19883299682987854,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 3,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19883300410583615,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 4,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19745899771805853,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 5,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.20329099788796157,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        }
+      ],
+      "import_ms": 52.57141600304749,
+      "construct_ms": 11.99474999884842,
+      "total_ms": 64.56616600189591,
+      "modules": 457,
+      "virgo_modules": 89,
+      "threads": 1,
+      "tools": 15,
+      "schema_chars": 7969,
+      "system_chars": 734,
+      "boundary": {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "workspace": "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-dvvkwh7z/workspace",
+        "requested": {
+          "read_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-dvvkwh7z/workspace"
+          ],
+          "write_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-dvvkwh7z/workspace"
+          ],
+          "network_allowed": true
+        },
+        "effective": {
+          "file_tools": {
+            "read_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-dvvkwh7z/workspace"
+            ],
+            "write_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-dvvkwh7z/workspace"
+            ],
+            "network_allowed": true
+          },
+          "native_process": null
+        },
+        "revision": 0,
+        "state": "file_boundary_ready; native_policy_unsupported",
+        "native_support": false,
+        "native_limitation": "shared host paths cannot enforce alias/race isolation",
+        "runtime_read_dependencies": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none"
+        ],
+        "unmanaged": [
+          "broker",
+          "trusted Python extensions",
+          "hooks",
+          "MCP services",
+          "model transport"
+        ]
+      },
+      "peak_memory_bytes": 45727744,
+      "installed_runtime_and_dependencies": {
+        "bytes": 179887757,
+        "files": 13628,
+        "roots": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none",
+          "/Users/zhangyu/Desktop/Virgo/src/virgo",
+          "/private/tmp/virgo-installed-mxc/mxc-exec-mac"
+        ]
+      }
+    },
+    {
+      "sample": 2,
+      "provider": "sandbox",
+      "profile": "sandbox",
+      "success": false,
+      "operations": [
+        {
+          "index": 0,
+          "phase": "first",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.33666699891909957,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 1,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.21620900224661455,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 2,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.20804100495297462,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 3,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.20633300300687551,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 4,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19700000120792538,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 5,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19070800044573843,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        }
+      ],
+      "import_ms": 52.54045900073834,
+      "construct_ms": 11.062665995268617,
+      "total_ms": 63.603124996006954,
+      "modules": 457,
+      "virgo_modules": 89,
+      "threads": 1,
+      "tools": 15,
+      "schema_chars": 7969,
+      "system_chars": 734,
+      "boundary": {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "workspace": "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-hbewqgxo/workspace",
+        "requested": {
+          "read_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-hbewqgxo/workspace"
+          ],
+          "write_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-hbewqgxo/workspace"
+          ],
+          "network_allowed": true
+        },
+        "effective": {
+          "file_tools": {
+            "read_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-hbewqgxo/workspace"
+            ],
+            "write_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-hbewqgxo/workspace"
+            ],
+            "network_allowed": true
+          },
+          "native_process": null
+        },
+        "revision": 0,
+        "state": "file_boundary_ready; native_policy_unsupported",
+        "native_support": false,
+        "native_limitation": "shared host paths cannot enforce alias/race isolation",
+        "runtime_read_dependencies": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none"
+        ],
+        "unmanaged": [
+          "broker",
+          "trusted Python extensions",
+          "hooks",
+          "MCP services",
+          "model transport"
+        ]
+      },
+      "peak_memory_bytes": 45907968,
+      "installed_runtime_and_dependencies": {
+        "bytes": 179887757,
+        "files": 13628,
+        "roots": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none",
+          "/Users/zhangyu/Desktop/Virgo/src/virgo",
+          "/private/tmp/virgo-installed-mxc/mxc-exec-mac"
+        ]
+      }
+    },
+    {
+      "sample": 3,
+      "provider": "sandbox",
+      "profile": "sandbox",
+      "success": false,
+      "operations": [
+        {
+          "index": 0,
+          "phase": "first",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.3250419977121055,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 1,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.23554200015496463,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 2,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.21166700025787577,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 3,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19504200463416055,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 4,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19683400023495778,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 5,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19016699661733583,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        }
+      ],
+      "import_ms": 52.17845900187967,
+      "construct_ms": 12.336874999164138,
+      "total_ms": 64.51533400104381,
+      "modules": 457,
+      "virgo_modules": 89,
+      "threads": 1,
+      "tools": 15,
+      "schema_chars": 7969,
+      "system_chars": 734,
+      "boundary": {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "workspace": "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-so2fe3qx/workspace",
+        "requested": {
+          "read_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-so2fe3qx/workspace"
+          ],
+          "write_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-so2fe3qx/workspace"
+          ],
+          "network_allowed": true
+        },
+        "effective": {
+          "file_tools": {
+            "read_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-so2fe3qx/workspace"
+            ],
+            "write_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-so2fe3qx/workspace"
+            ],
+            "network_allowed": true
+          },
+          "native_process": null
+        },
+        "revision": 0,
+        "state": "file_boundary_ready; native_policy_unsupported",
+        "native_support": false,
+        "native_limitation": "shared host paths cannot enforce alias/race isolation",
+        "runtime_read_dependencies": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none"
+        ],
+        "unmanaged": [
+          "broker",
+          "trusted Python extensions",
+          "hooks",
+          "MCP services",
+          "model transport"
+        ]
+      },
+      "peak_memory_bytes": 45350912,
+      "installed_runtime_and_dependencies": {
+        "bytes": 179887757,
+        "files": 13628,
+        "roots": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none",
+          "/Users/zhangyu/Desktop/Virgo/src/virgo",
+          "/private/tmp/virgo-installed-mxc/mxc-exec-mac"
+        ]
+      }
+    },
+    {
+      "sample": 4,
+      "provider": "sandbox",
+      "profile": "sandbox",
+      "success": false,
+      "operations": [
+        {
+          "index": 0,
+          "phase": "first",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.38729100197087973,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 1,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.21695800387533382,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 2,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.22345899924403057,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 3,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.20566699822666124,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 4,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.225042000238318,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        },
+        {
+          "index": 5,
+          "phase": "repeat",
+          "success": false,
+          "latency_ms": null,
+          "failure_elapsed_ms": 0.19200000679120421,
+          "error": "ExecutionUnavailable: MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. Native filesystem policies are unavailable; payload not started. Broker file tools retain their checked file boundary."
+        }
+      ],
+      "import_ms": 53.85641599423252,
+      "construct_ms": 11.345875005645212,
+      "total_ms": 65.20229099987773,
+      "modules": 457,
+      "virgo_modules": 89,
+      "threads": 1,
+      "tools": 15,
+      "schema_chars": 7969,
+      "system_chars": 734,
+      "boundary": {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "workspace": "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-h2g8x_bq/workspace",
+        "requested": {
+          "read_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-h2g8x_bq/workspace"
+          ],
+          "write_paths": [
+            "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-h2g8x_bq/workspace"
+          ],
+          "network_allowed": true
+        },
+        "effective": {
+          "file_tools": {
+            "read_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-h2g8x_bq/workspace"
+            ],
+            "write_paths": [
+              "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-measure-h2g8x_bq/workspace"
+            ],
+            "network_allowed": true
+          },
+          "native_process": null
+        },
+        "revision": 0,
+        "state": "file_boundary_ready; native_policy_unsupported",
+        "native_support": false,
+        "native_limitation": "shared host paths cannot enforce alias/race isolation",
+        "runtime_read_dependencies": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none"
+        ],
+        "unmanaged": [
+          "broker",
+          "trusted Python extensions",
+          "hooks",
+          "MCP services",
+          "model transport"
+        ]
+      },
+      "peak_memory_bytes": 46235648,
+      "installed_runtime_and_dependencies": {
+        "bytes": 179887757,
+        "files": 13628,
+        "roots": [
+          "/Users/zhangyu/Desktop/Virgo/.venv",
+          "/Users/zhangyu/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none",
+          "/Users/zhangyu/Desktop/Virgo/src/virgo",
+          "/private/tmp/virgo-installed-mxc/mxc-exec-mac"
+        ]
+      }
+    }
+  ]
+}

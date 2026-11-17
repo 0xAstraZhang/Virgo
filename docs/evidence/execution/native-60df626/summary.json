@@ -1,0 +1,84 @@
+[
+  {
+    "name": "native-sandbox-macos-latest",
+    "sha": "60df62697f98949ead0c92669098ec84136e2d4e",
+    "run_id": 44123800842,
+    "artifact_id": 14347460025,
+    "archive_digest": "sha256:36d05868e3d7a61ccf081f8ccca43b33725145d66530ca2e5736c98dfcb9f149",
+    "counts": {
+      "failure": 0,
+      "error": 32,
+      "skipped": 0,
+      "passed": 36
+    },
+    "native_passed": false,
+    "launch_succeeded": true,
+    "allowed_write_succeeded": true,
+    "alias_isolated": false,
+    "junit_file": "native-sandbox-macos-latest/native-sandbox.xml.gz",
+    "junit_uncompressed_sha256": "b3eabcf4bf25e64b10c171c6e566a538a5c08bb5a715ab415e1f50f6fd44903c",
+    "probe_original_sha256": "ca9cb1bf8508f62c59b70028791fed888d1638e8789614e3ba37c2bdd38325fe"
+  },
+  {
+    "name": "native-sandbox-ubuntu-latest",
+    "sha": "60df62697f98949ead0c92669098ec84136e2d4e",
+    "run_id": 44123800842,
+    "artifact_id": 14347280520,
+    "archive_digest": "sha256:fee166e27376286404516dc7dec2c9a5997ea0a64c92c4ebfacfaf47f1cf135f",
+    "counts": {
+      "failure": 0,
+      "error": 32,
+      "skipped": 0,
+      "passed": 36
+    },
+    "native_passed": false,
+    "launch_succeeded": false,
+    "allowed_write_succeeded": false,
+    "alias_isolated": null,
+    "junit_file": "native-sandbox-ubuntu-latest/native-sandbox.xml.gz",
+    "junit_uncompressed_sha256": "b624869e9fc491efcbb430988654aaafe5f3530f7b86b6153f3ed9b254cf68ba",
+    "probe_original_sha256": "22f792e1d4dc798291b32cc545668754c5729bf2de026eefac82ce600b0d4518"
+  },
+  {
+    "name": "windows-sandbox-windows-2025",
+    "sha": "60df62697f98949ead0c92669098ec84136e2d4e",
+    "run_id": 44123800490,
+    "artifact_id": 14347061058,
+    "archive_digest": "sha256:d6168f4eefbf65ef25488711a49f0ce0882a7c3ab337f2d3b86baf43a25e52fe",
+    "counts": {
+      "failure": 0,
+      "error": 13,
+      "skipped": 0,
+      "passed": 3
+    },
+    "native_passed": false,
+    "launch_succeeded": false,
+    "allowed_write_succeeded": false,
+    "alias_isolated": null,
+    "junit_file": "windows-sandbox-windows-2025/windows-sandbox.xml.gz",
+    "junit_uncompressed_sha256": "ffed08d7877de11eb469c8afaae9effeca7b630c5c2ade3de239e9bca4c65795",
+    "probe_original_sha256": "1a4d5ec24ffa6d707b64363be64c64ff38c6fd0f768ba467278e2d90d391c68a",
+    "probe_newlines": "readable JSON uses LF; original bytes retained in mxc-probe.raw.json.gz"
+  },
+  {
+    "name": "windows-sandbox-windows-2022",
+    "sha": "60df62697f98949ead0c92669098ec84136e2d4e",
+    "run_id": 44123800490,
+    "artifact_id": 14345758241,
+    "archive_digest": "sha256:9aef9de075b3c0002ea8ded3bd2e3ba3cdc3df0e36bcb9fa1fc0002b3b0182da",
+    "counts": {
+      "failure": 0,
+      "error": 13,
+      "skipped": 0,
+      "passed": 3
+    },
+    "native_passed": false,
+    "launch_succeeded": false,
+    "allowed_write_succeeded": false,
+    "alias_isolated": null,
+    "junit_file": "windows-sandbox-windows-2022/windows-sandbox.xml.gz",
+    "junit_uncompressed_sha256": "2ab19bf28765db722e6dd20dc86b5271ead19796e76247ada4af99bd208ffe77",
+    "probe_original_sha256": "43b37fe1c2482df174045d8d277e363b554fa15aa297728d7d79ef5ced351325",
+    "probe_newlines": "readable JSON uses LF; original bytes retained in mxc-probe.raw.json.gz"
+  }
+]

@@ -1,0 +1,65 @@
+{
+  "platform": "Windows-2022Server-10.0.20348-SP0",
+  "python": "3.13.17 (tags/v3.13.17:64e080d, Oct 21 2026, 14:08:53) [MSC v.1944 64 bit (AMD64)]",
+  "mxc_version": "1.1.0",
+  "kind": "raw_executor_investigation",
+  "product_native_admission": "unsupported",
+  "launch_succeeded": false,
+  "allowed_write_succeeded": false,
+  "alias_isolated": null,
+  "passed": false,
+  "executor_sha256": "cb8f9253a2288bbb5e980d63216068ea3b640ebaf845ba3fccc0d3fe822f7a0d",
+  "exit_code": 4294967295,
+  "observed_boundary": {
+    "provider": "sandbox",
+    "backend": "processcontainer",
+    "workspace": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\virgo-mxc-probe-mvqrbvd_\\workspace",
+    "requested": {
+      "read_paths": [
+        "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\virgo-mxc-probe-mvqrbvd_\\workspace"
+      ],
+      "write_paths": [
+        "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\virgo-mxc-probe-mvqrbvd_\\workspace"
+      ],
+      "network_allowed": true
+    },
+    "effective": {
+      "file_tools": {
+        "read_paths": [
+          "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\virgo-mxc-probe-mvqrbvd_\\workspace"
+        ],
+        "write_paths": [
+          "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\virgo-mxc-probe-mvqrbvd_\\workspace"
+        ],
+        "network_allowed": true
+      },
+      "native_process": null
+    },
+    "revision": 0,
+    "state": "launch_unverified",
+    "native_support": false,
+    "native_limitation": "shared host paths cannot enforce alias/race isolation",
+    "runtime_read_dependencies": [
+      "D:\\a\\Virgo\\Virgo\\.venv",
+      "C:\\hostedtoolcache\\windows\\Python\\3.13.17\\x64"
+    ],
+    "unmanaged": [
+      "broker",
+      "trusted Python extensions",
+      "hooks",
+      "MCP services",
+      "model transport"
+    ],
+    "payload_started": "unknown",
+    "side_effects": "possible",
+    "cleanup": "pending",
+    "executor_version": "1.1.0"
+  },
+  "protected_contents": "protected",
+  "elapsed_ms": 81.069,
+  "diagnostics": "SECTION: JSON Config (redacted)\n{\n  \"containment\": \"processcontainer\",\n  \"fallback\": {\n    \"allowDaclMutation\": false\n  },\n  \"filesystem\": {\n    \"deniedPaths\": [\n      \"D:\\\\a\\\\_temp\\\\virgo-mxc\",\n      \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-control-evdzve7_\"\n    ],\n    \"readonlyPaths\": [\n      \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-signal-hd2yyrtl\",\n      \"D:\\\\a\\\\Virgo\\\\Virgo\\\\.venv\",\n      \"C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.13.17\\\\x64\"\n    ],\n    \"readwritePaths\": [\n      \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-mvqrbvd_\\\\workspace\",\n      \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-scratch-c512docy\"\n    ]\n  },\n  \"network\": {\n    \"egress\": {\n      \"default\": \"allow\"\n    },\n    \"ingress\": {\n      \"default\": \"allow\",\n      \"hostLoopback\": \"allow\"\n    }\n  },\n  \"process\": {\n    \"commandLine\": \"D:\\\\a\\\\Virgo\\\\Virgo\\\\.venv\\\\Scripts\\\\python.exe -I -S -c \\\"import os\\nos.dup2(1,2)\\nimport json,subprocess,sys,time\\nmarker,nonce,cancel,argv=sys.argv[1],sys.argv[2],sys.argv[3],json.loads(sys.argv[4])\\ntry:\\n    child=subprocess.Popen(argv,close_fds=True)\\nexcept OSError as e:\\n    with open(marker,'x',encoding='utf-8') as f: json.dump({'nonce':nonce,'started':False,'error':str(e)},f)\\n    sys.exit(127)\\nwith open(marker,'x',encoding='utf-8') as f: json.dump({'nonce':nonce,'started':True},f)\\nwhile child.poll() is None:\\n    if os.path.exists(cancel): os._exit(125)\\n    time.sleep(.025)\\nsys.exit(child.returncode if child.returncode >= 0 else 128-child.returncode)\\n\\\" C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-scratch-c512docy\\\\started.json 560916b2831b56c8a1a87ed982993cf4b316bd7a1fdfbdc17385688301e3e711 C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-signal-hd2yyrtl\\\\cancel \\\"[\\\\\\\"D:\\\\\\\\a\\\\\\\\Virgo\\\\\\\\Virgo\\\\\\\\.venv\\\\\\\\Scripts\\\\\\\\python.exe\\\\\\\", \\\\\\\"-I\\\\\\\", \\\\\\\"-S\\\\\\\", \\\\\\\"-c\\\\\\\", \\\\\\\"import pathlib,time\\\\npathlib.Path('ready').write_text('allowed')\\\\ndeadline=time.monotonic()+10\\\\nwhile not pathlib.Path('alias').exists():\\\\n    if time.monotonic()>deadline: raise RuntimeError('host alias was not supplied')\\\\n    time.sleep(.01)\\\\npathlib.Path('alias').write_text('changed')\\\\n\\\\\\\"]\\\"\",\n    \"cwd\": \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-mvqrbvd_\\\\workspace\",\n    \"env\": [\n      \"COMSPEC=<redacted>\",\n      \"PATH=<redacted>\",\n      \"PATHEXT=<redacted>\",\n      \"SYSTEMROOT=<redacted>\",\n      \"WINDIR=<redacted>\",\n      \"HOME=<redacted>\",\n      \"TMPDIR=<redacted>\",\n      \"TMP=<redacted>\",\n      \"TEMP=<redacted>\",\n      \"VIRGO=<redacted>\"\n    ],\n    \"inheritDefaultEnv\": false\n  },\n  \"processContainer\": {\n    \"leastPrivilege\": true\n  },\n  \"version\": \"1.0.0\"\n}\nSECTION: Request simplified\nScript code length: 1249\nWorking directory: C:\\Users\\runneradmin\\AppData\\Local\\Temp\\virgo-mxc-probe-mvqrbvd_\\workspace\nScript timeout: 0\nContainer name: (assigned by the backend)\nSECTION: Full `ExecutionRequest` configuration (redacted)\n{\n  \"source_contract\": \"1.0.0\",\n  \"container_id\": \"\",\n  \"env\": [\n    \"COMSPEC=<redacted>\",\n    \"PATH=<redacted>\",\n    \"PATHEXT=<redacted>\",\n    \"SYSTEMROOT=<redacted>\",\n    \"WINDIR=<redacted>\",\n    \"HOME=<redacted>\",\n    \"TMPDIR=<redacted>\",\n    \"TMP=<redacted>\",\n    \"TEMP=<redacted>\",\n    \"VIRGO=<redacted>\"\n  ],\n  \"inherit_default_env\": false,\n  \"script_code\": \"D:\\\\a\\\\Virgo\\\\Virgo\\\\.venv\\\\Scripts\\\\python.exe -I -S -c \\\"import os\\nos.dup2(1,2)\\nimport json,subprocess,sys,time\\nmarker,nonce,cancel,argv=sys.argv[1],sys.argv[2],sys.argv[3],json.loads(sys.argv[4])\\ntry:\\n   ... (1249 chars total)\",\n  \"working_directory\": \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-mvqrbvd_\\\\workspace\",\n  \"script_timeout\": 0,\n  \"containment\": \"processcontainer\",\n  \"lifecycle\": {\n    \"destroy_on_exit\": true,\n    \"preserve_policy\": false\n  },\n  \"policy\": {\n    \"least_privilege_mode\": true,\n    \"capabilities\": [],\n    \"readwrite_paths\": [\n      \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-mvqrbvd_\\\\workspace\",\n      \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-scratch-c512docy\"\n    ],\n    \"readonly_paths\": [\n      \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-signal-hd2yyrtl\",\n      \"D:\\\\a\\\\Virgo\\\\Virgo\\\\.venv\",\n      \"C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.13.17\\\\x64\"\n    ],\n    \"enumerate_paths\": [],\n    \"denied_paths\": [\n      \"D:\\\\a\\\\_temp\\\\virgo-mxc\",\n      \"C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-control-evdzve7_\"\n    ],\n    \"network_egress\": {\n      \"default\": \"allow\",\n      \"allow\": [],\n      \"deny\": []\n    },\n    \"network_ingress\": {\n      \"default\": \"allow\",\n      \"host_loopback\": \"allow\"\n    },\n    \"allowed_proxy_peer\": null,\n    \"ui\": {\n      \"disable\": true,\n      \"clipboard\": \"none\",\n      \"injection\": false\n    },\n    \"base_process_ui\": {\n      \"isolation\": \"container\",\n      \"desktopSystemControl\": false,\n      \"systemSettings\": \"none\",\n      \"ime\": false\n    },\n    \"capture_denials\": null\n  },\n  \"lxc_config\": {\n    \"distribution\": \"\",\n    \"release\": \"\"\n  },\n  \"wslc\": null,\n  \"seatbelt\": null,\n  \"telemetry\": null,\n  \"test_feature\": null,\n  \"windows_sandbox\": null,\n  \"hyperlight\": null,\n  \"microvm_image\": null,\n  \"microvm_memory_mib\": null,\n  \"experimental_enabled\": false,\n  \"dry_run\": false\n}\n[network_proxy: disabled]\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+  "cleanup_error": "MXC reported a backend error or warning; diagnostic resources retained at C:\\Users\\runneradmin\\AppData\\Local\\Temp\\virgo-mxc-control-evdzve7_",
+  "cleanup": "unknown",
+  "stdout": "",
+  "probe_sha256": "82cd1a5061019367c3a22d33f32297cf20907172b186e8fdbac5efb10e793ee6"
+}

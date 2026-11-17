@@ -1,0 +1,65 @@
+{
+  "platform": "macOS-26.7.2-arm64-arm-64bit-Mach-O",
+  "python": "3.13.17 (v3.13.17:64e080d3815, Oct 21 2026, 07:24:09) [Clang 21.0.0 (clang-2100.1.1.101)]",
+  "mxc_version": "1.1.0",
+  "kind": "raw_executor_investigation",
+  "product_native_admission": "unsupported",
+  "launch_succeeded": true,
+  "allowed_write_succeeded": true,
+  "alias_isolated": false,
+  "passed": false,
+  "executor_sha256": "83b27bffd78ae5348d93f32d7686800fe18406658608a78e727d90eacbc22ca1",
+  "exit_code": 0,
+  "observed_boundary": {
+    "provider": "sandbox",
+    "backend": "seatbelt",
+    "workspace": "/private/var/folders/h5/t85nd63d71x27_8gl5gw3l_w0000gn/T/virgo-mxc-probe-eg3adyqe/workspace",
+    "requested": {
+      "read_paths": [
+        "/private/var/folders/h5/t85nd63d71x27_8gl5gw3l_w0000gn/T/virgo-mxc-probe-eg3adyqe/workspace"
+      ],
+      "write_paths": [
+        "/private/var/folders/h5/t85nd63d71x27_8gl5gw3l_w0000gn/T/virgo-mxc-probe-eg3adyqe/workspace"
+      ],
+      "network_allowed": true
+    },
+    "effective": {
+      "file_tools": {
+        "read_paths": [
+          "/private/var/folders/h5/t85nd63d71x27_8gl5gw3l_w0000gn/T/virgo-mxc-probe-eg3adyqe/workspace"
+        ],
+        "write_paths": [
+          "/private/var/folders/h5/t85nd63d71x27_8gl5gw3l_w0000gn/T/virgo-mxc-probe-eg3adyqe/workspace"
+        ],
+        "network_allowed": true
+      },
+      "native_process": null
+    },
+    "revision": 0,
+    "state": "established",
+    "native_support": false,
+    "native_limitation": "shared host paths cannot enforce alias/race isolation",
+    "runtime_read_dependencies": [
+      "/Users/runner/work/Virgo/Virgo/.venv",
+      "/Library/Frameworks/Python.framework/Versions/3.13"
+    ],
+    "unmanaged": [
+      "broker",
+      "trusted Python extensions",
+      "hooks",
+      "MCP services",
+      "model transport"
+    ],
+    "payload_started": true,
+    "side_effects": "possible",
+    "cleanup": "pending",
+    "executor_version": "1.1.0",
+    "wrapper_started": true
+  },
+  "protected_contents": "changed",
+  "elapsed_ms": 476.805,
+  "diagnostics": "",
+  "cleanup": "best_effort",
+  "stdout": "",
+  "probe_sha256": "66e0fcf09a27ddea02734521a88876bee180efabf3cfb6aea15e97487f3156d3"
+}

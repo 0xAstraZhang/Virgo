@@ -12,8 +12,17 @@ The product contract is [Host by default with explicit resource boundaries](../g
 | Linux native MXC | **Not accepted.** Shared-host-path policies are refused by the product until their alias/race contract can be enforced. No local Linux isolation result is claimed. |
 | Windows native MXC | **Not accepted.** Prior Windows 2022/2025 evaluation could not start ProcessContainer without PSEC. That remains independent of the unsupported shared-path contract. The removed LPAC backend is not a fallback. |
 | Strict macOS product gate | Required local run: 36 passed, 32 setup errors, zero skips. The errors are unsupported native policy admission, not successful negative isolation tests. |
+| Prompt effect | User-selected Codex `gpt-6.1-sol`, medium effort: [3/3 tasks correct, zero approvals, no observed intent violations or boundary attempts](../../evidence/execution/instruction-summary.json). Full [calls, outputs, time and token records](../../evidence/execution/macos-codex-instructions.json) are retained. This small Host task set is not native isolation, general model-quality or paired performance evidence; the paused Virgo/Codex evaluation was not resumed. |
+| Performance | Raw [Host](../../evidence/execution/macos-host-samples.json) and [Sandbox](../../evidence/execution/macos-sandbox-samples.json) samples are retained. Failed operations have no successful latency. Host and Sandbox have different authority; these samples cannot support a same-permission backend comparison or a performance improvement claim. |
+| Maintenance | [Inventory](../../evidence/execution/maintenance.json) separates exact moved lines, retained protection, removed/rewritten lines, new modules and external dependencies. Movement alone does not establish a maintenance reduction. |
 
-Local reproduction artifacts are not a substitute for latest-PR-head lint, distribution build, full-suite and cross-platform results. Consult each PR's checks for revision-bound evidence. Required native gates remain failures until real launch, positive controls and forbidden operations all pass with zero skips.
+Local worktree artifacts identify their exact source file digests and workload. They are not a substitute for latest-PR-head lint, distribution build, full-suite and cross-platform results. Consult each PR's checks for revision-bound evidence. Required native gates remain failures until real launch, positive controls and forbidden operations all pass with zero skips.
+
+## Pinned cross-platform native reports
+
+The retained [raw reports and archive digests](../../evidence/execution/native-60df626/summary.json) test behavior revision `60df62697f98949ead0c92669098ec84136e2d4e`. Linux/macOS each record 36 passing broker/protocol cases and 32 native admission errors, with no skips. Windows 2022/2025 each record 3 passing NTFS broker alias cases and 13 native admission errors, with no skips. None of these totals is a native isolation pass.
+
+The upstream probes are independent: macOS 26.7.2 starts and reproduces the alias escape; Linux rejects `network.ingress.default=allow` as unsupported; both Windows hosts report `backend_unavailable` because PSEC is not enabled. Refusal to admit the shared-path product policy remains an additional barrier on all platforms. This report does not change or expand the requested network policy to obtain a successful launch.
 
 ## Reproducing the native blocker
 
@@ -32,3 +41,19 @@ Virgo refuses native shared-path policies before releasing the payload. A startu
 macOS follows [MXC's best-effort cleanup contract](https://github.com/microsoft/mxc/blob/v1.1.0/docs/backends/seatbelt/seatbelt-backend.md#process-cleanup). Old coalition-specific guarantees are retired. Existing detached-child, double-fork and independent-task observations remain native tests; observing one exit does not establish a universal guarantee. Missing receipts keep payload/effects unknown, and cleanup failures retain diagnostics and cannot be turned into success by result hooks. Synthetic receipt tests are protocol evidence only.
 
 `details.execution.started` means entry into the Python tool. `details.boundary.payload_started` reports payload evidence. Neither a selected preset nor a discovered/pinned backend proves an established native boundary. File access, managed network dispatch and external trusted activity are reported separately.
+
+## Measurement and instruction protocol
+
+The [earlier revision samples](../../evidence/execution/945bdfa/) remain separate; do not combine different source revisions. Run providers sequentially on an otherwise idle host. Keep the full JSON rather than selecting a best run:
+
+```bash
+uv run --no-sync python ci/measure_startup.py --samples 5 --repeat 5 --output host.json
+uv run --no-sync python ci/measure_startup.py --execution sandbox --executor /absolute/path/to/executor --samples 5 --repeat 5 --output sandbox.json
+uv run --no-sync python ci/measure_maintenance.py --baseline 4c8520fb3faa262e5f502ff808cd5fd4350bf9bd --output maintenance.json
+```
+
+Samples include import/construction time, first/repeated execution, process peak memory and the installed interpreter/environment/package/executor footprint. Failures remain samples, with separate elapsed-failure fields. The installed development environment footprint is not a minimal production dependency estimate. Sources, lockfile, tool script and platform are identified; collecting on another version requires a separate report.
+
+The instruction manifest freezes model, effort, task, initial files and authority. The runner preserves all calls, files, answers, approvals, token usage and time. File-state correctness and directly observable intent violations are scored; Shell intent still requires review of retained calls, not a command classifier. No prompts or permissions may be changed between compared runs. This evidence remains separate from tests that deliberately violate task instructions through tool calls.
+
+The prior [Anthropic attempt](../../evidence/execution/macos-instruction-attempt.json) stopped for missing credentials. The user then selected the existing Codex login; the new manifest changes the model while retaining tasks, medium effort and Host authority. Run it explicitly with `uv run --no-sync python ci/evaluate_instructions.py --auth-file /absolute/path/to/user/auth.json --output instructions.json`. Credentials stay outside results. These are separate attempts, not a comparison between models.

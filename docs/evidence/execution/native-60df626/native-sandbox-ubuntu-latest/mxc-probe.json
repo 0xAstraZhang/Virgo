@@ -1,0 +1,65 @@
+{
+  "platform": "Linux-7.0.0-1019-azure-x86_64-with-glibc2.43",
+  "python": "3.13.18 (main, Nov 11 2026, 00:17:48) [Clang 23.1.3 ]",
+  "mxc_version": "1.1.0",
+  "kind": "raw_executor_investigation",
+  "product_native_admission": "unsupported",
+  "launch_succeeded": false,
+  "allowed_write_succeeded": false,
+  "alias_isolated": null,
+  "passed": false,
+  "executor_sha256": "938e177c112b83d3f74b60cbe9e7056b56344f1fade8c02590252fb0b5c8224c",
+  "exit_code": 255,
+  "observed_boundary": {
+    "provider": "sandbox",
+    "backend": "bubblewrap",
+    "workspace": "/tmp/virgo-mxc-probe-6r4jlfrn/workspace",
+    "requested": {
+      "read_paths": [
+        "/tmp/virgo-mxc-probe-6r4jlfrn/workspace"
+      ],
+      "write_paths": [
+        "/tmp/virgo-mxc-probe-6r4jlfrn/workspace"
+      ],
+      "network_allowed": true
+    },
+    "effective": {
+      "file_tools": {
+        "read_paths": [
+          "/tmp/virgo-mxc-probe-6r4jlfrn/workspace"
+        ],
+        "write_paths": [
+          "/tmp/virgo-mxc-probe-6r4jlfrn/workspace"
+        ],
+        "network_allowed": true
+      },
+      "native_process": null
+    },
+    "revision": 0,
+    "state": "launch_unverified",
+    "native_support": false,
+    "native_limitation": "shared host paths cannot enforce alias/race isolation",
+    "runtime_read_dependencies": [
+      "/home/runner/work/Virgo/Virgo/.venv",
+      "/home/runner/work/_temp/uv-python-dir/cpython-3.13.18-linux-x86_64-gnu"
+    ],
+    "unmanaged": [
+      "broker",
+      "trusted Python extensions",
+      "hooks",
+      "MCP services",
+      "model transport"
+    ],
+    "payload_started": "unknown",
+    "side_effects": "possible",
+    "cleanup": "pending",
+    "executor_version": "1.1.0"
+  },
+  "protected_contents": "protected",
+  "elapsed_ms": 25.242,
+  "diagnostics": "Bubblewrap: network.ingress.default='allow' is not supported. The sandbox runs in a private network namespace reached through slirp, which has no route in until a host port is forwarded to it, and the schema carries no port list to forward. A listener inside the sandbox is reachable from the sandbox only. Use network.ingress.default='deny'.\n{\"error\":{\"code\":\"backend_error\",\"message\":\"Bubblewrap: network.ingress.default='allow' is not supported. The sandbox runs in a private network namespace reached through slirp, which has no route in until a host port is forwarded to it, and the schema carries no port list to forward. A listener inside the sandbox is reachable from the sandbox only. Use network.ingress.default='deny'.\"}}\n",
+  "cleanup_error": "MXC reported a backend error or warning; diagnostic resources retained at /tmp/virgo-mxc-control-daubeflf",
+  "cleanup": "unknown",
+  "stdout": "",
+  "probe_sha256": "66e0fcf09a27ddea02734521a88876bee180efabf3cfb6aea15e97487f3156d3"
+}
