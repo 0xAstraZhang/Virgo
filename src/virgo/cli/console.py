@@ -177,43 +177,37 @@ class ConsoleBroker:
     def _read_windows_answer(self, waiting: threading.Event, password: bool) -> str | None:
         import msvcrt
 
-        if self._prompt_ready is not None:
-            self._prompt_ready.set()
+        from .windows_console import WindowsConsoleInput
+
         value: list[str] = []
-        extended = False
         try:
-            while not waiting.is_set() and not self.closed:
-                if not msvcrt.kbhit():
-                    waiting.wait(0.05)
-                    continue
-                char = msvcrt.getwch()
-                if extended:
-                    extended = False
-                    continue
-                if char in ("\x00", "\xe0"):
-                    extended = True
-                elif char in ("\r", "\n"):
-                    # The Windows console supplies UTF-16 code units.
-                    return "".join(value).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
-                elif char == "\x1a":
-                    raise EOFError
-                elif char == "\x03":
-                    self.cancel_pending()
-                    return None
-                elif char == "\b":
-                    if value:
-                        value.pop()
-                        if not password:
-                            for erase in "\b \b":
-                                msvcrt.putwch(erase)
-                else:
-                    value.append(char)
-                    if not password:
-                        msvcrt.putwch(char)
-            # Discard an abandoned answer before allowing another form to read.
-            while msvcrt.kbhit():
-                msvcrt.getwch()
-            return None
+            with WindowsConsoleInput(sys.stdin.fileno()) as terminal:
+                if self._prompt_ready is not None:
+                    self._prompt_ready.set()
+                while not waiting.is_set() and not self.closed:
+                    for char in terminal.read():
+                        if char in ("\r", "\n"):
+                            return "".join(value).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+                        if char == "\x1a":
+                            raise EOFError
+                        if char == "\x03":
+                            terminal.flush()
+                            self.cancel_pending()
+                            return None
+                        if char == "\b":
+                            if value:
+                                removed = value.pop()
+                                if "\udc00" <= removed <= "\udfff" and value and "\ud800" <= value[-1] <= "\udbff":
+                                    value.pop()
+                                if not password:
+                                    for erase in "\b \b":
+                                        msvcrt.putwch(erase)
+                        else:
+                            value.append(char)
+                            if not password:
+                                msvcrt.putwch(char)
+                terminal.flush()
+                return None
         finally:
             sys.stdout.write("\n")
             sys.stdout.flush()

@@ -20,9 +20,11 @@ from tests.support.terminal import PtyClient, plain, termios
 
 @pytest.mark.skipif(os.name != "nt", reason="requires a native Windows console")
 def test_plain_repl_starts_on_a_native_windows_console(project):
-    script = """
-import msvcrt, os, sys, threading
+    script = r"""
+import ctypes as ct
+import os, sys, threading
 from virgo.cli.console import ConsoleBroker, TerminalUI
+from virgo.cli.windows_console import InputRecord, WindowsConsoleInput
 from virgo.cli.repl import run_repl
 from virgo.harness.session import AgentSession
 os.environ.pop('TERM', None)
@@ -30,8 +32,32 @@ sys.stdin = open('CONIN$', encoding='utf-8')
 assert sys.stdin.isatty()
 broker = ConsoleBroker()
 ui = TerminalUI(broker)
-msvcrt.ungetwch('\\r')
-assert broker._read_terminal_answer(threading.Event(), True) == ''
+native = WindowsConsoleInput(sys.stdin.fileno())
+write = native.api.WriteConsoleInputW
+write.argtypes = [ct.c_void_p, ct.POINTER(InputRecord), ct.c_uint32, ct.POINTER(ct.c_uint32)]
+write.restype = ct.c_int32
+for password in (False, True):
+    text = 'a\ud83d\ude00\bl\u00e0bas\r'
+    events = (InputRecord * (len(text) + 1))()
+    events[0].type = 1  # Right arrow must not consume the following text.
+    events[0].event.key.down = 1
+    events[0].event.key.virtual_key = 0x27
+    for event, char in zip(events[1:], text):
+        event.type = 1
+        event.event.key.down = 1
+        event.event.key.repeat = 1
+        event.event.key.char = ord(char)
+    count = ct.c_uint32()
+    assert write(native.handle, events, len(events), ct.byref(count))
+    assert broker._read_terminal_answer(threading.Event(), password) == 'al\u00e0bas'
+waiting = threading.Event()
+timer = threading.Timer(0.1, waiting.set)
+timer.start()
+assert broker._read_terminal_answer(waiting, True) is None
+timer.join()
+mode = ct.c_uint32()
+assert native.api.GetConsoleMode(native.handle, ct.byref(mode))
+assert mode.value == native.original.value
 session = AgentSession(model='faux/demo', session=None, ui=ui, extensions=False,
                        refresh_models=False, settings={'profile':'minimal'})
 broker.push('line', '/exit')
@@ -64,17 +90,41 @@ def test_windows_forms_edit_hide_secrets_and_cancel(monkeypatch, capsys):
     from types import SimpleNamespace
 
     from virgo.cli import console
+    from virgo.cli import windows_console
 
     keys = queue.Queue()
     monkeypatch.setattr(console, "os", SimpleNamespace(name="nt"))
     monkeypatch.setitem(sys.modules, "termios", None)
     monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(
-        kbhit=lambda: not keys.empty(), getwch=keys.get, putwch=lambda char: sys.stdout.write(char)))
+        putwch=lambda char: sys.stdout.write(char.encode("utf-8", "backslashreplace").decode())))
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
+
+    class FakeInput:
+        def __init__(self, fd):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def read(self):
+            try:
+                return keys.get(timeout=0.05)
+            except queue.Empty:
+                return ""
+
+        def flush(self):
+            while not keys.empty():
+                keys.get_nowait()
+
+    monkeypatch.setattr(windows_console, "WindowsConsoleInput", FakeInput)
     broker = console.ConsoleBroker()
     for password in (False, True):
-        for char in "ab\b中文\r":
+        for char in "ab\b中文làbas\ud83d\ude00\b\r":
             keys.put(char)
-        assert broker._read_terminal_answer(threading.Event(), password) == "a中文"
+        assert broker._read_terminal_answer(threading.Event(), password) == "a中文làbas"
         output = capsys.readouterr().out
         assert ("中文" in output) is not password
     waiting = threading.Event()
