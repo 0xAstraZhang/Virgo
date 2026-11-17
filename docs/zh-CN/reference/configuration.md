@@ -62,7 +62,7 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 
 ## 插件
 
-官方插件 `skills`、`todo`、`ask_user`、`diagnostic_get`、`subagent`、`background` 和 `web` 默认启用；`mcp` 仅在存在服务器配置时启用。显式 `plugins.<id>.enabled` 覆盖该默认值。未知插件名和非法值会报告配置错误，不会静默启用能力。
+官方插件 `skills`、`todo`、`ask_user`、`diagnostic_get`、`subagent`、`background` 和 `web` 默认启用。显式 `plugins.<id>.enabled` 覆盖该默认值。未知插件名和非法值会报告配置错误，不会静默启用能力。[MCP 扩展](../../../extensions/README.zh-CN.md)是单独的启用路径，不是插件 ID。
 
 ```json
 {
@@ -143,7 +143,7 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 只读保护受管宿主文件数据，私有临时目录和宿主记录仍可写；它不保证远程系统没有副作用。
 工作区范围覆盖受管文件读写，并有明确的系统／运行时例外。POSIX 后端和 Core 文件适配器
 保护 Virgo 私有授权存储。Windows 使用对象 ACL，存在系统 LPAC 读取授权，不是精确路径命名空间。
-网络开关覆盖受管 Shell、Web／原生搜索及远程 MCP 调用，不关闭模型传输或登录。
+网络开关覆盖受管 Shell、Web／原生搜索及 MCP 扩展调用，不关闭模型传输或登录。
 可信 Python 扩展不在 OS 沙箱中。MCP 服务不能执行本地文件边界，在受限文件模式下需申请
 单次、不限文件范围的明确例外。详见[沙箱](../guides/sandbox.md)。
 

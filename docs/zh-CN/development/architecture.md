@@ -73,7 +73,7 @@ ChatGPT 账号传输为每个活跃运行实例发送稳定的不透明缓存标
 
 `diagnostic_view.py` 投影安全、有界摘要，`diagnostic_access.py` 管理逐 Runtime 的授权和分页，`recovery.py` 保存已授权 ID、待投递／已投递证据，并在正常请求边界追加通知。Provider 重试继续由 `Runtime._attempts` 负责，取证不引入另一套重试循环。
 
-MCP 恢复在替换活动句柄前验证新连接和 schema。schema 变化在工具批次结束后的安全请求边界发布，受限 Runtime 保持原能力限制。重连不重放业务操作，状态与预算见[故障排查](../guides/troubleshooting.md)。
+MCP 是可选扩展：发布工具前验证替换连接，只在工具批次结束后的安全请求边界发布，且不重放业务操作。状态见[故障排查](../guides/troubleshooting.md)和[扩展 Virgo](extensions.md)。
 
 ## 扩展入口
 

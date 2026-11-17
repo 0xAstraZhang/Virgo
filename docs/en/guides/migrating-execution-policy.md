@@ -41,8 +41,8 @@ background work and child runtimes keep their original source. Read-only protect
 with private scratch and broker records allowed. It does not promise to prevent remote mutations.
 
 Core file tools enforce file scope at application level. Native Shell backends enforce supported
-process policies; managed Web/native search and remote MCP calls also respect network policy.
-MCP services unable to enforce file scope need an explicit unrestricted one-operation exception.
+process policies; managed Web/native search and MCP extension calls also respect network policy.
+MCP servers unable to enforce file scope need an explicit unrestricted one-operation exception.
 The broker and trusted Python extensions are outside the Shell OS boundary.
 
 Check [Sandbox](sandbox.md) and [Windows limitations](windows-sandbox.md). Windows retains ambient

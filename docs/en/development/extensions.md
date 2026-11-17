@@ -9,7 +9,7 @@
 | Python extensions | `~/.virgo/extensions/*.py` | `.virgo/extensions/*.py` | Trusted `setup(api)` code |
 | Skills | `~/.virgo/skills/<name>/SKILL.md` | `.virgo/skills/<name>/SKILL.md`, then `.agents/skills/<name>/SKILL.md` | `skills` |
 | Prompt templates | `~/.virgo/prompts/*.md` | `.virgo/prompts/*.md` | Core prompt assembly |
-| MCP servers | `~/.virgo/mcp.json` | `.virgo/mcp.json` | `mcp` |
+| MCP servers | `~/.virgo/mcp.json` | `.virgo/mcp.json` | [MCP extension](../../../extensions/README.md) |
 
 `VIRGO_HOME` replaces the user directory. Declarative resources load user-first, then project; later definitions of the same name win. Official plugins live in `virgo.plugins` and use the same `setup(api)` interface as Python extensions. Plugins are loaded once in a fixed order; restart or initialize a workspace session to rediscover files. There is no live unload, dependency installer or plugin sandbox.
 
@@ -55,7 +55,7 @@ Commands retain the `(session, args: str)` callback signature for compatibility;
 
 Every tool, command and event handler has a plugin owner. Duplicate tool/command names fail, including collisions with Core and another plugin. Prompt sections are scoped by owner. A failed optional setup is diagnosed and its partial registrations are rolled back, rather than leaving a half-loaded capability. Core initialization or permission failure blocks execution.
 
-`api.replace_tools(namespace, [(tool, roles), ...])` atomically replaces one owned dynamic set after validating the full candidate. It cannot claim another owner's namespace or overwrite another owner's tools. Existing requests and running batches retain their snapshot; each runtime sees new schemas at its next model request boundary. A transport-specific stale handle can fail conservatively without replaying side effects. MCP uses this API instead of modifying `session._tools`.
+`api.replace_tools(namespace, [(tool, roles), ...])` atomically replaces one owned dynamic set after validating the full candidate. It cannot claim another owner's namespace or overwrite another owner's tools. Existing requests and running batches retain their snapshot; each runtime sees new schemas at its next model request boundary. A transport-specific stale handle can fail conservatively without replaying side effects. The [MCP extension](../../../extensions/README.md) uses this API instead of modifying `session._tools`.
 
 Register resource cleanup immediately after acquiring the resource:
 

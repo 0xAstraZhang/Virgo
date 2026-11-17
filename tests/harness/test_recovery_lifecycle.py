@@ -173,11 +173,10 @@ def test_model_diagnostics_feature_can_be_disabled_without_disabling_logs(make_s
     assert session.diagnostics.recent()
 
 
-def test_mcp_refresh_preserves_runtime_local_tools(make_session):
+def test_runtime_local_tools_survive_refresh(make_session):
     session = make_session(faux.reply(tools=[("runtime_only", {})]), faux.reply("done"), refresh_models=False)
     tool = AgentTool("runtime_only", "local", {"type": "object"}, lambda *_args: "local result")
     child = session.create_runtime("worker", "subagent", tools=[tool])
-    session.services["mcp_refresh"] = lambda _runtime: True
     child.agent.prompt("use your local tool")
     assert child.tools == [tool]
     assert "local result" in wire_text(calls()[-1])

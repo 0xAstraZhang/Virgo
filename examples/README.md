@@ -10,7 +10,7 @@ These files show how a project can extend Virgo. Copy only the parts you need in
 | --- | --- | --- |
 | [Project instructions](project/AGENTS.example.md) | `AGENTS.md` at the project root | Shared instructions read with project context |
 | [Settings](project/.virgo/settings.json) | `.virgo/settings.json` | Language, effort, shell, permissions and an optional local API |
-| [MCP configuration](project/.virgo/mcp.json) | `.virgo/mcp.json` | Disabled placeholder for a stdio server |
+| [MCP configuration](project/.virgo/mcp.json) | `.virgo/mcp.json` | Disabled placeholder for the [MCP extension](../extensions/README.md) |
 | [Secret-file guard](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | A tool hook and a `/stats` command |
 | [Review template](project/.virgo/prompts/inspect.md) | `.virgo/prompts/inspect.md` | `/inspect` with arguments |
 | [Code-review skill](project/.virgo/skills/code-review/SKILL.md) | `.virgo/skills/code-review/` | A skill with a separate checklist |
@@ -32,6 +32,6 @@ After reviewing the Python guard, enable it with `--trust-project-extensions`; p
 
 The settings example's `language` pins that project's language; use `zh-CN` for Chinese or omit the field to follow the user default. The optional `local` provider needs a real server and its installed model ID/context window. It does not change the selected model until you choose it. Obsolete `smallModel` overrides are intentionally absent because auxiliary models are selected by the runtime.
 
-The MCP example is disabled and uses a placeholder path. Replace it with your own stdio server command and arguments before enabling it. Example instructions and prompts are authored resources; `/language` does not rewrite their content.
+The MCP example is disabled and uses a placeholder path. MCP itself comes from the [extension](../extensions/README.md); install that and replace the placeholder with your own stdio server command and arguments before enabling it. Example instructions and prompts are authored resources; `/language` does not rewrite their content.
 
 See [Extensions](../docs/en/development/extensions.md) for the API, [Configuration](../docs/en/reference/configuration.md) for precedence and [Tools and plugins](../docs/en/reference/tools.md) for runtime behavior.

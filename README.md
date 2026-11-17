@@ -11,7 +11,7 @@ Virgo is a lightweight, extensible coding agent for your terminal. Ask it to exp
 - **Keep working in your terminal.** A full-screen conversation, streaming tool activity, resumable sessions, and a plain terminal mode fit different workflows.
 - **Choose your model.** Connect an account, bring an API key, or use a compatible local endpoint. Change models and reasoning effort during a session.
 - **Give larger tasks room to run.** Delegate focused work to subagents and track background jobs without losing the main conversation.
-- **Make it your own.** Add project instructions, skills, prompt templates, Python extensions and MCP tools.
+- **Make it your own.** Add project instructions, skills, prompt templates and Python extensions, including an optional MCP client.
 - **Use Chinese or English.** Switch interface messages, command help, and built-in tool descriptions with `/language 中文` or `/language English`.
 
 Virgo is inspired by [Pi](https://github.com/earendil-works/pi). Its model adapters, agent loop, and session harness are separate, so you can extend the parts you need.

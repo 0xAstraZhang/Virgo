@@ -43,7 +43,7 @@ A failed tool result can include an added diagnostic summary of at most 2 KiB. I
 | `summary` | Allowlisted fields and correlation context |
 | `causes` | Captured exception chain and bounded locations |
 | `trace` | Captured stack text |
-| `stderr` | Collected, sanitized MCP stderr |
+| `stderr` | Bounded, sanitized MCP server stderr when a connection fails |
 | `attempts` | Retained, authorized failures for the same logical call and purpose |
 | `related` | Explicitly propagated related diagnostics |
 
@@ -59,20 +59,20 @@ Old schedules are intentionally inactive. Schedule, Workflow, Team, Tasks, Memor
 
 ## Execution failure does not imply no side effects
 
-`details.execution` records whether a tool started and whether it returned success, error or an unknown outcome. `details.transport` records MCP dispatch and response state. A result-hook failure after successful execution does not undo the operation. A timed-out shell, failed child agent or missing remote response may already have changed files or external state. Verify the outcome before repeating the operation.
+`details.execution` records whether a tool started and whether it returned success, error or an unknown outcome. A result-hook failure after successful execution does not undo the operation. A timed-out shell, failed child agent or missing remote response may already have changed files or external state. Verify the outcome before repeating the operation.
 
 Provider retries remain controlled by the runtime's existing retry policy. Valid `Retry-After` is a minimum delay, and `retry.maxWaitSeconds` bounds cumulative waiting. A request that has already begun a server-side native web operation is not automatically replayed as an unsupported-capability fallback.
 
-## MCP recovery
+## MCP extension
 
-`mcp_status` reads local state without contacting the server. The model's `mcp_reconnect(server, error_id)` requires an authorized diagnostic for that server's active connection generation and passes normal permission checks. It cannot interrupt an in-flight call or compete with another pending recovery.
+MCP is not built in; see the [MCP extension](../../../extensions/README.md) for installation and configuration. `mcp_status` reads the extension's local connection state without contacting servers. `/mcp` lists configured servers; `/mcp reconnect` reloads `mcp.json` and the `mcpServers` setting.
 
-A replacement connection must initialize, list tools and pass schema/name validation before publication. Same-schema recovery replaces the connection; schema changes publish at a safe model-request boundary. Explicitly restricted child tool lists do not gain new capabilities. Invalid candidates leave the old connection and tools in place.
+A reload connects every configured server before publishing anything. If any candidate fails, the previous connections and tools stay in place and the failure is reported. A successful reload publishes the new tool set at the next model-request boundary; an old tool handle fails conservatively after its connection is retired. Reconnection never replays a failed call. A cancelled call sends `notifications/cancelled` to the server, but a response that was already lost leaves the business outcome unknown.
 
-There are at most two recovery attempts without a successful remote tool call; a successful handshake alone does not reset that budget. Reconnection never replays a failed call. If dispatch reached `sending` or `sent` and the response was lost, the business outcome remains unknown. `/mcp reconnect` is the user's broader configuration-reload path and also preserves active-call boundaries.
+Connection failures include a bounded, redacted stderr tail from the server and are recorded as diagnostics.
 
 ## Session-save failure
 
 The session store keeps logical in-memory entries after a write failure and reports the original cause through the independent log. It pauses scheduling and signals the owning runtime so further work does not race ahead of unsaved history. Switching views does not repair the failed store, and a diagnostic notification cannot clear cancellation or a save failure. Avoid closing the process until you have recovered needed unsaved information.
 
-Implementation: [diagnostics](../../../src/virgo/diagnostics.py), [log storage](../../../src/virgo/harness/diagnostics.py), [runtime evidence](../../../src/virgo/harness/diagnostic_access.py), [recovery](../../../src/virgo/harness/recovery.py), [MCP](../../../src/virgo/plugins/mcp/__init__.py).
+Implementation: [diagnostics](../../../src/virgo/diagnostics.py), [log storage](../../../src/virgo/harness/diagnostics.py), [runtime evidence](../../../src/virgo/harness/diagnostic_access.py), [recovery](../../../src/virgo/harness/recovery.py), [MCP extension](../../../extensions/mcp.py).

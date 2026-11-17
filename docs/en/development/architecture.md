@@ -73,7 +73,7 @@ The ChatGPT account transport sends a stable, opaque cache identifier for each a
 
 `diagnostic_view.py` projects bounded safe summaries. `diagnostic_access.py` owns per-runtime authorization and pagination. `recovery.py` persists granted IDs and pending/delivered evidence and appends notifications at normal request boundaries. Provider retry remains in `Runtime._attempts`; evidence collection does not introduce a second retry loop.
 
-MCP recovery validates a new connection and schema before replacing live handles. Schema changes publish after a tool batch at a safe request boundary; restricted runtimes keep their capability limits. Reconnection never replays business operations. Detailed state and budgets are in [Troubleshooting](../guides/troubleshooting.md).
+MCP is an optional extension. It validates a replacement connection before publishing its tools, publishes only after a tool batch at a safe request boundary, and never replays business operations. Detailed state is in [Troubleshooting](../guides/troubleshooting.md) and [Extending Virgo](extensions.md).
 
 ## Where to extend
 

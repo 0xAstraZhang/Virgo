@@ -43,7 +43,7 @@
 | `summary` | 白名单字段和关联上下文 |
 | `causes` | 已采集异常链及有界位置 |
 | `trace` | 已采集堆栈文本 |
-| `stderr` | 已收集且脱敏的 MCP stderr |
+| `stderr` | 连接失败时已收集、有界且脱敏的 MCP 服务 stderr |
 | `attempts` | 同一逻辑调用及用途下，仍被保留且获授权的失败 |
 | `related` | 已明确传播的关联诊断 |
 
@@ -53,23 +53,23 @@
 
 ## 执行失败不等于没有副作用
 
-`details.execution` 记录工具是否已经启动，以及返回成功、错误或未知结果；`details.transport` 记录 MCP 派发和响应状态。工具成功后的结果钩子失败，不会撤销原操作。超时命令、失败的子 Agent 或丢失的远程响应，都可能已经修改文件或外部状态。重复操作前应先核对结果。
+`details.execution` 记录工具是否已经启动，以及返回成功、错误或未知结果。工具成功后的结果钩子失败，不会撤销原操作。超时命令、失败的子 Agent 或丢失的远程响应，都可能已经修改文件或外部状态。重复操作前应先核对结果。
 
 Provider 重试仍由 Runtime 的现有策略统一控制。有效 `Retry-After` 是最短等待，`retry.maxWaitSeconds` 限制累计等待。已经启动服务端原生网页操作的请求，不会作为“不支持能力”的回退而自动重放。
 
-## MCP 恢复
+## MCP 扩展
 
-`mcp_status` 只读取本地状态，不联系服务。模型的 `mcp_reconnect(server, error_id)` 要求当前连接代次中该服务的已授权诊断，并经过正常权限检查。它不能中断进行中的调用，也不能与已有候选恢复并发。计划模式不允许重连。
+MCP 不是内置能力，安装和配置见[MCP 扩展](../../../extensions/README.zh-CN.md)。`mcp_status` 只读取扩展的本地连接状态，不联系服务。`/mcp` 列出已配置服务器；`/mcp reconnect` 重新加载 `mcp.json` 和 `mcpServers` 配置项。
 
-替代连接必须完成初始化、工具列表和 schema／名称验证后才能发布。schema 不变时替换连接；schema 改变时在安全的模型请求边界发布。显式受限的子 Runtime 工具列表不会因此增加能力。候选无效时保留原连接和工具。
+重新加载会先连接所有已配置服务器，再统一发布。任一候选失败时保留原有连接和工具并报告失败。成功后在下一个模型请求边界发布新工具集；连接被替代后，旧工具句柄会保守失败。重连从不重放失败调用。取消的调用会向服务器发送 `notifications/cancelled`，但已经丢失的响应仍使业务结果保持未知。
 
-在没有远程工具调用成功的情况下，最多允许两次恢复尝试；仅握手成功不会重置预算。重连从不重放失败调用。如果请求已进入 `sending` 或 `sent` 而响应丢失，业务结果仍未知。人工 `/mcp reconnect` 可重新加载较大范围的配置，也会遵守活动调用边界。
+连接失败会附带来自服务器的有界、脱敏 stderr 尾部，并记录为诊断。
 
 ## 会话保存失败
 
 写入失败后，会话存储保留逻辑上的内存记录，并通过独立日志报告原始原因。调度暂停，同时通知所属 Runtime，避免继续执行却不断积累未保存历史。切换界面不会修复失败存储，诊断通知也不能清除取消或保存失败状态。在恢复需要的未保存信息前，应避免关闭进程。
 
-实现：[诊断](../../../src/virgo/diagnostics.py)、[日志存储](../../../src/virgo/harness/diagnostics.py)、[Runtime 证据](../../../src/virgo/harness/diagnostic_access.py)、[恢复](../../../src/virgo/harness/recovery.py)、[MCP](../../../src/virgo/plugins/mcp/__init__.py)。
+实现：[诊断](../../../src/virgo/diagnostics.py)、[日志存储](../../../src/virgo/harness/diagnostics.py)、[Runtime 证据](../../../src/virgo/harness/diagnostic_access.py)、[恢复](../../../src/virgo/harness/recovery.py)、[MCP 扩展](../../../extensions/mcp.py)。
 
 ## 插件配置与升级
 

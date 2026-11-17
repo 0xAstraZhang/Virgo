@@ -16,17 +16,16 @@ Official plugins load by default. `--no-extensions` skips user/project Python ex
 {
   "plugins": {
     "web": {"enabled": true},
-    "mcp": {"enabled": false},
     "todo": {"enabled": true}
   }
 }
 ```
 
-Only known plugin IDs are accepted. Defaults merge with user settings, then project settings, then runtime/CLI overrides. Legacy `features` values are translated in each input layer before merging; a `plugins` value wins over its legacy equivalent within the same layer. A higher-priority project setting still wins over a user setting, even when written using the legacy spelling. Translation emits a migration notice without rewriting your settings files.
+Only known plugin IDs are accepted. Defaults merge with user settings, then project settings, then runtime/CLI overrides. Legacy `features` values are translated in each input layer before merging; a `plugins` value wins over its legacy equivalent within the same layer. A higher-priority project setting still wins over a user setting, even when written using the legacy spelling. Translation emits a migration notice without rewriting your settings files. MCP is no longer a plugin ID: install the [MCP extension](../../../extensions/README.md); `plugins.mcp` and `features.mcp` are ignored with a notice.
 
 | Legacy setting | New setting / behavior |
 | --- | --- |
-| `features.skills`, `todo`, `ask_user`, `subagent`, `background`, `mcp` | `plugins.<id>.enabled` |
+| `features.skills`, `todo`, `ask_user`, `subagent`, `background` | `plugins.<id>.enabled` |
 | `features.diagnostics` | `plugins.diagnostic_get.enabled`; Core diagnostics remain available |
 | `features.search`, `features.fetch` | `plugins.web.searchEnabled`, `plugins.web.fetchEnabled`; the `web` plugin groups both capabilities |
 | `features.permission`, `plugins.auto_review` | Retired; configure Core `permissions.approval` and explicit grants |
