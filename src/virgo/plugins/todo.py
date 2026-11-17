@@ -49,7 +49,7 @@ def setup(api: ExtensionAPI) -> None:
         return ToolResult.text(render(todos, ctx.t), details={"todos": todos})
 
     api.register_tool(
-        AgentTool(
+        AgentTool(execution_scope="broker",
             name="todo_write",
             label="Todos",
             description=(

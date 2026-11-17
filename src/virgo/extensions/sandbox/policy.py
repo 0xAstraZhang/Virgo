@@ -1,0 +1,144 @@
+"""Resource policy and checked broker file access, independent of MXC launch."""
+from __future__ import annotations
+
+import os
+import sys
+import uuid
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from ...execution import ExecutionUnavailable, FileAccessDenied
+from ...harness.execution_modes import PermissionPreset
+
+PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
+
+
+@dataclass(frozen=True)
+class SandboxPolicy:
+    workspace: Path
+    resources: PermissionPreset
+    private_paths: tuple[Path, ...]
+    executor: object
+    revision: int = 0
+    provider: str = "sandbox"
+
+    @property
+    def network_allowed(self):
+        return self.resources.network_allowed
+
+    def private_path(self, path: Path) -> bool:
+        return any(path.is_relative_to(root) for root in self.private_paths)
+
+    def runtime_paths(self) -> tuple[Path, ...]:
+        return tuple(dict.fromkeys(Path(value).resolve() for value in (sys.prefix, sys.base_prefix)))
+
+    def read_roots(self) -> tuple[Path, ...]:
+        return tuple(Path(p) for p in (*self.resources.read_paths, *self.resources.write_paths))
+
+    def protected_paths(self) -> tuple[Path, ...]:
+        return (*(self.workspace / name for name in PROTECTED_NAMES), *self.runtime_paths())
+
+    def check_write(self, path: Path):
+        if self.private_path(path) or any(path.is_relative_to(root) for root in self.protected_paths()):
+            raise FileAccessDenied(f"Protected resource is not writable: {path}", dimension="protected_path", target=path)
+        if not any(path.is_relative_to(Path(root)) for root in self.resources.write_paths):
+            raise FileAccessDenied(f"No write grant for {path}", dimension="write_paths", target=path)
+
+    def check_read(self, path: Path):
+        from .files import check_read
+
+        check_read(path, self)
+
+    def read_bytes(self, path: Path, *, max_bytes=None):
+        from .files import read_bytes
+
+        return read_bytes(path, self, max_bytes=max_bytes)
+
+    def open_mutation(self, path: Path, *, create: bool):
+        from .files import open_mutation
+
+        return open_mutation(path, self, create=create)
+
+    def walk_files(self, path, ignore, *, max_depth=None):
+        from .files import walk_files
+
+        return walk_files(path, self, ignore, max_depth=max_depth)
+
+    def validate(self, cwd: Path) -> Path:
+        cwd = Path(cwd).resolve()
+        try:
+            self.check_read(cwd)
+        except FileAccessDenied as error:
+            raise ExecutionUnavailable(str(error), reason="invalid_cwd", dimension=error.dimension,
+                                       target=error.target) from error
+        if not cwd.is_dir():
+            raise ExecutionUnavailable(f"Working directory is unavailable: {cwd}")
+        if any(root.is_relative_to(self.workspace) for root in self.private_paths):
+            raise ExecutionUnavailable("Workspace must not contain broker storage or the MXC installation")
+        return cwd
+
+    def validate_native(self, cwd: Path):
+        self.validate(cwd)
+        # Native pathname rules cannot pin shared host objects. A host can add
+        # a hardlink after launch and expose an out-of-scope inode through a
+        # granted directory. Reject this contract rather than treating a scan
+        # as race protection. See the retained native reproduction/report.
+        raise ExecutionUnavailable(
+            "MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. "
+            "Native filesystem policies are unavailable; payload not started. "
+            "Broker file tools retain their checked file boundary.",
+            reason="unsupported_shared_path_policy", dimension="filesystem_aliases", target=str(cwd))
+
+    def open_output(self, cwd, prefix):
+        self.validate(cwd)
+        if os.name == "nt":
+            from .windows_files import open_output
+
+            try:
+                return open_output(self, prefix)
+            except OSError as error:
+                raise ExecutionUnavailable("Protected output location is unavailable", reason="invalid_output",
+                                           dimension="output_path", target=str(self.workspace / ".virgo")) from error
+        directory = None
+        try:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            directory = os.open(self.workspace, flags)
+            for part in (".virgo", "outputs"):
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass
+                child = os.open(part, flags, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            name = f"{prefix}-{uuid.uuid4().hex}.log"
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            return self.workspace / ".virgo" / "outputs" / name, os.fdopen(fd, "wb", buffering=0)
+        except OSError as error:
+            raise ExecutionUnavailable("Protected output location is unavailable", reason="invalid_output",
+                                       dimension="output_path", target=str(self.workspace / ".virgo")) from error
+        finally:
+            if directory is not None:
+                os.close(directory)
+
+    def spawn(self, argv, cwd, env, stdout, output_path=None, cancellation=None):
+        self.validate_native(cwd)
+        return self.executor.spawn(self, argv, cwd, env, stdout, cancellation)
+
+    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
+        from .files import read_bytes
+
+        # Only Core's owned spool references reach this method. The exception is
+        # for one file, never its directory; retained handles reject aliases.
+        if path.parent != self.workspace / ".virgo" / "outputs":
+            raise FileAccessDenied("Output is outside the originating workspace", target=path)
+        policy = replace(self, resources=replace(self.resources, read_paths=(str(path),), write_paths=()))
+        return read_bytes(path, policy, max_bytes=max_bytes, tail=True)
+
+    def describe(self):
+        return {"provider": "sandbox", "backend": self.executor.backend, "workspace": str(self.workspace),
+                "requested": self.resources.flags(), "effective": {"file_tools": self.resources.flags(), "native_process": None},
+                "revision": self.revision, "state": "file_boundary_ready; native_policy_unsupported",
+                "native_support": False, "native_limitation": "shared host paths cannot enforce alias/race isolation",
+                "runtime_read_dependencies": [str(p) for p in self.runtime_paths()],
+                "unmanaged": ["broker", "trusted Python extensions", "hooks", "MCP services", "model transport"]}

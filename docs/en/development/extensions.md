@@ -75,7 +75,7 @@ def setup(api):
 | `api.settings`, `api.paths`, `api.cwd`, `api.ui`, `api.t` | Effective configuration, resource paths and host services |
 | `api.current_runtime()`, `api.current_store()` | Capture the current owner at command/initialization time |
 | `api.runtime_for_context(ctx)` | Resolve a tool caller without borrowing the currently selected conversation |
-| `api.create_runtime(name, role, parent=..., read_only=True, ...)` | Construct a restricted child with inherited capability and approval ceilings, accounting, cancellation and shared request budget |
+| `api.create_runtime(name, role, parent=..., execution_context=..., ...)` | Construct a restricted child with inherited capability and approval ceilings, accounting, cancellation and shared request budget |
 | `api.release_runtime(runtime)` | Release a completed child's registration and store failure-signal bindings |
 | `api.reserve_child_work(store)` | Register pending agent work for its captured owner and return an idempotent release callback |
 | `api.tools_for(role)`, `api.resolve(spec)` | Resolve permitted tool roles and model configuration |
@@ -86,9 +86,9 @@ def setup(api):
 
 `runtime_for_context` validates the real Runtime, owning Session, exact original `ExecutionOrigin` object and agent name. Invalid or foreign sources return `None`; fail the requested operation explicitly. Resolving a runtime does not grant access to unrelated diagnostic records. For tool calls, use this identity resolution rather than `current_runtime()`; the latter is for deliberately capturing the current conversation at entry time.
 
-Pass the captured trusted parent to the child factory. `read_only=True` adds an execution ceiling without hiding tool schemas; the child inherits a parent's read-only ceiling even if the argument is omitted or false. A child may also select `approval_policy="never"`; a parent's `never` ceiling cannot be loosened. The factory binds `origin_parent` to `parent.origin`, shares accounting and the request budget, and propagates cancellation. `budget.maxModelCalls`, when configured, limits model requests shared with children; `subagents.maxTurns` remains the focused child turn limit. Do not build an independent AgentSession inside a plugin to escape ownership or budgets.
+Pass the captured trusted parent to `api.create_runtime`. Children inherit its immutable execution context, source, cancellation and accounting. `read_only` is removed. `approval_policy="never"` may restrict resource requests; it cannot loosen a parent ceiling. Shared request budgets remain binding.
 
-Children capture their source permission profile before automatic project-context reads. The built-in background agent captures that profile when the task is submitted, so a later parent Mode change cannot widen a queued task. A trusted extension that defers Runtime creation can pass its captured `PermissionMode` through the `execution_mode` factory argument; this argument is not exposed in the model tool schema.
+Capture `parent.execution_context` when submitting deferred work and pass `execution_context` when creating the child. Do not derive authority from a later visible conversation, cwd or preset. Automatic context reads use the captured file interface.
 
 Use `api.services` only for an explicit shared service contract. `api.session` remains a limited escape hatch for official plugins; new extensions should use `api.services` and the documented facade methods. Official plugins use the facade and do not mutate `_tools`, `_lock`, `main` or selected UI state. The 0.3 release removes the `virgo.features` implementation aliases; import `virgo.plugins` or use the Core APIs described here.
 
@@ -117,9 +117,9 @@ Before publishing queued agent work or starting its worker, call `api.reserve_ch
 
 Core determines whether the origin is busy from its own pending reservations and running runtimes, including descendants. Mode transitions require that origin to be idle; the former `runtime_pending_work` inspection hook is retired. State-change notifications run after persistence and state publication. Observers may refresh UI, but cannot synchronously change mode, select a conversation, or admit new work. Start any subsequent explicit action through the normal admission path after notification returns.
 
-`api.register_permission_policy(policy)` adds a hard restriction without replacing the mandatory Core authorization policy. Implement both `preflight(event)` and `before_execute(event)`, returning `Block(reason)` to deny or `None` to continue. At both checkpoints, Sandbox and additional policies run before Core evaluates capability ceilings, deny rules, existing grants and possible human approval. This prevents an approval question for an operation a hard boundary forbids. Core runs the second checkpoint after tool-call hooks and argument changes. Hosted/adapted operations must use `api.authorize_tool(event)` and carry the original caller context. `AgentTool.side_effect` declares a trusted tool's capability; it neither grants all operations nor bypasses other policies. Python extensions themselves remain trusted code outside the Shell sandbox.
+`api.register_execution_provider(provider)` binds one owner before Runtime construction. Only explicitly selected Sandbox loads its required extension; setup failure aborts construction. The retired `register_permission_policy` API is not a second authorization system. Adapted operations use `api.authorize_tool(event)` with their original caller and an `AgentTool.execution_scope` of `file`, `process`, `network`, `delegate`, `broker` or the default `external`. Sandbox rejects external scope it cannot enforce. Trusted Python code and hooks themselves execute outside this boundary.
 
-Core enforces deterministic authorization in `harness/permission_policy.py`. `harness/permissions.py` defines ask/never approval and read-only capability checks; `harness/origin_context.py` binds the Runtime, workspace and accounting branch. Model approval and `register_permission_reviewer` are retired. Plugins may add restrictions through `register_permission_policy`.
+Core uses `virgo.execution` and `harness/execution.py`. Resource grants and file protection live in `virgo.extensions.sandbox`; Host never imports that package. `origin_context.py` binds the source. Ordinary command approval and command rules are removed.
 
 Settings command hooks support `PreToolUse`, `PostToolUse`, `UserPromptSubmit` and `Stop`; JSON is delivered on stdin. Exit `2` is the event's block/continue control result, with stderr feedback. Other failures are diagnosed. See [`extensions.py`](../../../src/virgo/harness/extensions.py) for matching and exact semantics.
 
@@ -149,6 +149,6 @@ Inspect the current changes. Focus on: ${1:-correctness}. Additional context: $@
 
 Templates support `$1`, `$@` / `$ARGUMENTS`, `${1:-value}` and `${@:2}`. Without placeholders, arguments append to the body.
 
-Specialized instructions belong in a [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) or delegated task prompt; create inspection children with `read_only=True`. Custom model or tool policies belong in trusted extensions. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
+Specialized instructions belong in a [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) or delegated task prompt; children inherit the source task resource boundary. Custom model or tool policies belong in trusted extensions. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
 
 For caught exceptions use `virgo.diagnostics.capture_error` and retain structured errors in tool results; on successful recovery keep original evidence under `related_errors`. Prefer the original runtime's `report_error()` for runtime-owned evidence. Propagated results/notifications can grant parent access; an error-ID string alone cannot. See [Troubleshooting](../guides/troubleshooting.md).

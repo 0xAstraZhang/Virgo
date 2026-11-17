@@ -1,66 +1,21 @@
-# Execution-policy migration
+# Migrating execution settings
 
-[Documentation](../README.md) · [简体中文](../../zh-CN/guides/migrating-execution-policy.md)
+Fresh configurations now use Host. Explicit old isolation requirements are **not** silently converted to Host. Remove an old requirement only when Host is your intended authority; otherwise explicitly select Sandbox and review its current [native blockers](../development/execution-acceptance.md).
 
-Execution permissions are independent of task instructions; prompts do not impose a read-only
-ceiling. This guide covers the permission preset, approval and sandbox migration.
-
-## Update configuration
-
-| Previous entry | Current entry |
+| Retired setting or API | Migration |
 | --- | --- |
-| `/mode` | Deprecated alias for `/permissions`; lists/selects editable **permission** presets |
-| `--mode text|json` | `--format text|json`; the old `--mode` preset spelling is a deprecated alias for `--permission` |
-| `sandbox.mode=workspace-write` / `read-only` | Explicit legacy offline policy; remove it to use the new defaults |
-| `sandbox.mode=disabled` | Explicit No-Limit filesystem/network policy |
-| `sandbox.network` | Use a preset's `networkAllowed` boolean |
-| `permissions.mode=plan|default|accept-edits|accept-all|yolo|auto-review` | Removed approval aliases; select `permissions.preset` = `read-only`, `workspace-edit`, `no-limit`, or a custom preset ID |
-| `permissions.readOnlyCommands`, `plugins.auto_review` | Removed; Shell syntax/model verdicts do not establish execution boundaries |
+| `sandbox.mode`, `--sandbox` | Choose `execution.provider` / `--execution` explicitly; install and configure MXC for Sandbox. |
+| `readOnly`, `workspaceOnly` preset flags | Use `readPaths` and `writePaths`. Workspace read-only maps to `readPaths:["."], writePaths:[]`; workspace write maps to both `["."]`. Review network separately. |
+| `no-limit` | Use `execution.provider=host`; it is not a resource preset. |
+| Nonempty `permissions.allow/deny` | Remove command rules. Put task conventions in instructions; express technical capabilities with resources. There is no equivalent resource mapping for a command-intent prohibition such as `git push`. |
+| `permissions.mode/modes` | Deprecated spelling of `preset/presets`; the new path schema and explicit provider requirement still apply. |
+| Project permissions/execution configuration | Move authority to user settings or startup overrides. Project configuration cannot grant authority or change trust. |
+| `/mode`, `/sandbox` | Use `/permissions show`; Sandbox also exposes preset selection, saving and resource-request policy. Host exposes status only. |
+| Agent-tool / Runtime / ExtensionAPI `read_only` argument | Remove it. Children inherit the source task context. |
+| `services.permissions`, `services.sandbox`, `PermissionPolicy`, `register_permission_policy` | Use the single-owner execution-provider contract. Trusted extension code itself is outside the managed boundary. |
+| `sandbox_policy` in command adapters | Pass the captured `execution_context`. Never construct one from the current visible session when servicing older work. |
+| `details.sandbox` / `command_started` | Read `details.boundary` / `payload_started`. `details.execution.started` describes entry into the Python tool function. |
 
-New default: `permissions.preset=workspace-edit` with writable workspace and task networking.
-Read-Only also permits networking; offline operation is a custom three-flag preset. Names and
-permissions are editable independently. See [configuration](../reference/configuration.md#permissions)
-for the full JSON and `/permissions save` syntax. User settings own presets and approvals; projects only add deny rules.
+The legacy native backends, command parser, ordinary tool approvals and session approval cache are removed. `ask` and `never` control only explicit Sandbox resource increments. Existing authorization history remains historical; it cannot restore execution rights.
 
-## Approvals and remembered decisions
-
-Managed operations within the selected profile run directly. `request_permissions` asks for one
-exact operation with explicit permission changes; approval does not execute the operation. The next
-identical call consumes the exception. The permission preset stays unchanged. Different arguments, caller/run,
-resolved targets, shell environment, policy revision or tool instance cannot reuse it.
-
-`ask` permits requests; `never` refuses new requests, not all operations. `/permissions revoke`
-clears remembered decisions and pending exceptions. Explicit deny rules remain binding. Failed
-or possibly side-effectful commands are not replayed automatically. Opening history does not
-restore grants. Trusted extension policies can add restrictions.
-
-## Default execution boundary
-
-Every run captures its source permissions. Permission preset changes during work apply to subsequent runs;
-background work and child runtimes keep their original source. Read-only protects host file data,
-with private scratch and broker records allowed. It does not promise to prevent remote mutations.
-
-Core file tools enforce file scope at application level. Native Shell backends enforce supported
-process policies; managed Web/native search and MCP extension calls also respect network policy.
-MCP servers unable to enforce file scope need an explicit unrestricted one-operation exception.
-The broker and trusted Python extensions are outside the Shell OS boundary.
-
-Check [Sandbox](sandbox.md) and [Windows limitations](windows-sandbox.md). Windows retains ambient
-LPAC read grants and rejects constrained `workspaceOnly=false` combinations. Backend discovery
-is not proof of a successful launch; unsupported/unavailable isolation rejects execution. No-Limit
-uses the host account's existing rights, not automatic administrator privileges.
-
-## Integration APIs
-
-`SandboxManager.mode_for(runtime)` returns the captured `PermissionMode`; `selected_mode` is the
-current conversation's next selection. `select_mode(id)` selects locally and `save_mode(...)`
-persists named flags in user settings. Configuration strings are never used as a substitute for
-the effective flags. `Runtime.prepare_run()` captures the policy.
-
-`read_only=True` remains an explicit child ceiling without removing tool schemas. Profile
-inheritance is separate from that ceiling. Delayed work carries `ToolContext.origin` so a TUI
-conversation change cannot transfer authority. Runtime-only permission exceptions are never
-restored from stored custom records.
-
-Extensions can add request-level instructions with `add_request_system_section`, and use the
-existing Runtime and SessionStore.
+Windows no longer has the old LPAC backend. MXC ProcessContainer startup remains unaccepted on the previously evaluated CI hosts because PSEC was unavailable. macOS no longer uses the coalition supervisor; MXC cleanup is explicitly best effort. See [Sandbox](sandbox.md) for effective scope and [Windows](windows-sandbox.md) for support status.

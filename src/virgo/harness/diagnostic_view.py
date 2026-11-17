@@ -162,16 +162,26 @@ def project_tool_result(call: ToolCall, result: ToolResult, *, query_available=T
     """Preserve content and images, appending evidence only for a final failure."""
     content = list(result.content)
     details = result.details if isinstance(result.details, dict) else {}
-    sandbox = details.get("sandbox")
+    sandbox = details.get("boundary")
     if result.is_error and isinstance(sandbox, dict):
-        boundary = _fields(sandbox, ("kind", "dimension", "target", "command_started", "side_effects",
-                                     "escalation_available", "mode", "workspace"), limit=256)
-        flags = _fields(sandbox.get("effective_permissions", sandbox),
-                        ("read_only", "workspace_only", "network_allowed"))
-        if flags:
-            boundary["effective_permissions"] = flags
+        selected = _fields(sandbox, ("payload_started", "side_effects", "provider", "kind", "dimension",
+                                     "cleanup", "state", "escalation_available", "backend", "target", "workspace"), limit=96)
+        for key in ("requested", "effective"):
+            value = sandbox.get(key)
+            if isinstance(value, (dict, str)):
+                selected[key] = value
+        boundary = {}
+        omitted = False
+        for key, value in selected.items():
+            candidate = {**boundary, key: value}
+            if len(_render({"boundary": candidate, "omitted": True}).encode()) <= MAX_DIAGNOSTIC_BYTES:
+                boundary = candidate
+            else:
+                omitted = True
         if boundary:
-            content.append(TextContent(_render({"sandbox": boundary})))
+            # Full requested/effective policies remain in structured results;
+            # a large path list cannot displace payload and side-effect facts.
+            content.append(TextContent(_render({"boundary": boundary, **({"omitted": True} if omitted else {})})))
     error = details.get("error")
     # A result hook may have recovered an earlier error. Retain that historical
     # evidence in metadata without presenting the successful result as failed.

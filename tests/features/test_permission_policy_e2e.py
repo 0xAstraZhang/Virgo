@@ -37,7 +37,7 @@ def test_project_cannot_turn_user_deny_into_accept_all(project):
 def test_project_cannot_mark_a_mutating_command_read_only(project):
     (project / ".virgo").mkdir()
     (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"readOnlyCommands": ["touch"]}}))
-    with pytest.raises(ValueError, match="readOnlyCommands"):
+    with pytest.raises(ValueError, match="Project permissions"):
         AgentSession(project, model="faux/test", ui=RecordingUI(),
                      settings={"profile": "minimal", "workMode": "plan", "sandbox": {"mode": "disabled"}},
                      extensions=False, refresh_models=False)
@@ -49,22 +49,8 @@ def test_project_deny_rules_cannot_erase_user_restrictions(project, project_deni
     (home / "settings.json").write_text(json.dumps({"permissions": {"deny": ["write(user.txt)"]}}))
     (project / ".virgo").mkdir()
     (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"deny": project_denies}}))
-    session = AgentSession(project, model="faux/test", ui=RecordingUI(),
-                           settings={"profile": "minimal", "sandbox": {"mode": "disabled"},
-                                     "permissions": {"allow": ["write"]}},
-                           extensions=False, refresh_models=False)
-    try:
-        faux.script("test", faux.reply(tools=[
-            ("write", {"path": "user.txt", "content": "user denial"}),
-            ("write", {"path": "repo.txt", "content": "project denial"}),
-            ("write", {"path": "allowed.txt", "content": "allowed"}),
-        ]), faux.reply("done"))
-        session.prompt("Write these files")
-        assert not (project / "user.txt").exists()
-        assert (project / "repo.txt").exists() == (not project_denies)
-        assert (project / "allowed.txt").read_text() == "allowed"
-    finally:
-        session.shutdown()
+    with pytest.raises(ValueError, match="Project permissions"):
+        AgentSession(project, model="faux/test", ui=RecordingUI(), extensions=False, refresh_models=False)
 
 
 def test_never_rejects_unknown_operations_without_blocking_workspace_writes(make_session, project, python_command):
@@ -87,16 +73,16 @@ def test_never_rejects_unknown_operations_without_blocking_workspace_writes(make
 def test_project_cannot_select_authorization_grants(project, permission):
     (project / ".virgo").mkdir()
     (project / ".virgo/settings.json").write_text(json.dumps({"permissions": permission}))
-    with pytest.raises(ValueError, match="Project permissions may only add deny"):
+    with pytest.raises(ValueError, match="Project permissions"):
         AgentSession(project, model="faux/test", extensions=False, refresh_models=False)
 
 
-def test_hard_sandbox_denial_does_not_request_approval(make_session, tmp_path):
+def test_hard_sandbox_denial_does_not_request_approval(broker_session, tmp_path):
     outside = tmp_path / "outside.txt"
     ui = RecordingUI(answers=["y"])
-    session = make_session(
+    session = broker_session(
         faux.reply(tools=[("write", {"path": str(outside), "content": "blocked"})]), faux.reply("done"),
-        allow=False, ui=ui, settings={"sandbox": {"mode": "read-only"}},
+        allow=False, ui=ui, preset="read-only",
     )
     session.prompt("Try this write")
     assert not outside.exists()
@@ -109,9 +95,9 @@ def test_requested_config_cannot_pretend_host_shell_is_isolated(make_session, pr
     shell = session.services["shell"].current
     command = python_command("from pathlib import Path; Path('host-only.txt').touch()", shell=shell)
     faux.script("test", faux.reply(tools=[(shell.tool_name, {"command": command})]), faux.reply("done"))
-    assert session.services["sandbox"].mode == "disabled"
-    session.settings.set("sandbox.mode", "workspace-write")
+    assert session.services["execution"].name == "host"
+    session.settings.set("execution.provider", "sandbox")
     session.prompt("Try the operation")
     assert (project / "host-only.txt").exists()
     assert not tool_results(session)[-1].is_error
-    assert session.services["sandbox"].mode_for(session.main).unrestricted
+    assert session.services["execution"].name == "host"

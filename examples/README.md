@@ -9,7 +9,7 @@ These files show how a project can extend Virgo. Copy only the parts you need in
 | Example | Destination in your project | Purpose |
 | --- | --- | --- |
 | [Project instructions](project/AGENTS.example.md) | `AGENTS.md` at the project root | Shared instructions read with project context |
-| [Settings](project/.virgo/settings.json) | `.virgo/settings.json` | Language, effort, shell, permissions and an optional local API |
+| [Settings](project/.virgo/settings.json) | `.virgo/settings.json` | Language, effort, shell and an optional local API |
 | [MCP configuration](project/.virgo/mcp.json) | `.virgo/mcp.json` | Disabled placeholder for the [MCP extension](../extensions/README.md) |
 | [Secret-file guard](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | A tool hook and a `/stats` command |
 | [Review template](project/.virgo/prompts/inspect.md) | `.virgo/prompts/inspect.md` | `/inspect` with arguments |

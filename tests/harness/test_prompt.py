@@ -9,7 +9,7 @@ from virgo.harness.session import Runtime
 
 MAIN_TOOLS = {
     "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "todo_write", "ask_user", "agent",
-    "bash", "job_output", "job_kill", "diagnostic_get", "request_permissions",
+    "bash", "job_output", "job_kill", "diagnostic_get",
 }
 
 
@@ -57,16 +57,16 @@ def test_user_system_and_project_context_survive_for_their_roles(make_session, p
             assert not {"agent", "ask_user", "memory", "todo_write", "team_spawn"} & {t.name for t in context.tools}
 
 
-def test_permission_switch_updates_requests_and_restores_the_original_prefix(make_session):
-    session = make_session()
-    sandbox = session.services["sandbox"]
+def test_permission_switch_updates_requests_and_restores_the_original_prefix(broker_session):
+    session = broker_session()
+    sandbox = session.services["execution"]
     original_mode = sandbox.mode_for(session.main)
     original = session.main.request_context([])
     sandbox.select_mode("read-only")
     restricted = session.main.request_context([])
     assert restricted.tools == original.tools
-    assert '"read_only": true' in restricted.system
+    assert '"write_paths": []' in restricted.system
     sandbox.select_mode(original_mode.id)
     restored = session.main.request_context([])
-    assert restored.system == original.system
+    assert '"write_paths": [' in restored.system
     assert restored.tools == original.tools

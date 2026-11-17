@@ -54,11 +54,9 @@ def execute_search(session, runtime=None):
 
 
 @pytest.mark.parametrize("denied", [False, True], ids=["allowed", "denied"])
-def test_startup_catalog_refresh_does_not_count_as_search(make_session, search_http, monkeypatch, denied):
+def test_startup_catalog_refresh_does_not_count_as_search(broker_session, search_http, monkeypatch, denied):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
-    session = make_session(allow=not denied, settings={
-        "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
-    })
+    session = broker_session(network=not denied, settings={"compaction": {"enabled": False}})
     session.set_model("deepseek/deepseek-flash")
     # Force the background request to finish before any search assertion. This
     # must exercise startup discovery, rather than win a race against its thread.
@@ -270,11 +268,9 @@ def test_deepseek_tool_loop_keeps_results_or_error_without_other_backend(make_se
         assert "https://docs.python.org/" in result.text()
 
 
-def test_deepseek_native_honors_exact_query_denial(make_session, search_http, monkeypatch):
+def test_deepseek_native_honors_network_denial(broker_session, search_http, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
-    session = make_session(allow=False, settings={
-        "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
-    })
+    session = broker_session(network=False, settings={"compaction": {"enabled": False}})
     session.set_model("deepseek/deepseek-flash")
     install_responses(monkeypatch,
         AssistantMessage(content=[ToolCall("s", "web_search", {"query": "private information"})], stop_reason="tool_use"),

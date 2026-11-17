@@ -882,7 +882,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
         metrics.truncate(width, overflow="ellipsis")
         update_static(root.query_one("#metrics", Static), metrics)
-        manager = self.session.services["sandbox"]
+        manager = self.session.services["execution"]
         selected = manager.selected_mode
         active = manager.mode_for(self.session.main) if self.controller.busy else selected
         footer = Text(no_wrap=True, overflow="ellipsis")
@@ -1066,7 +1066,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if self.controller.closing or self.has_modal:
             return
         controller = self.controller
-        manager = self.session.services["sandbox"]
+        manager = self.session.services["execution"]
+        if manager.name == "host":
+            return
         self.hide_completions()
 
         def selected(choice) -> None:

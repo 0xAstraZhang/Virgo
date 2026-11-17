@@ -16,7 +16,6 @@ from ..harness.session import AgentSession
 from ..harness.settings import Paths, Settings
 from ..harness.store import SessionStore
 from ..i18n import Translator, normalize_language
-from ..tools.sandbox import MODES as SANDBOX_MODES
 from .console import ConsoleBroker, PrintUI, TerminalUI
 from .i18n import tr
 
@@ -74,7 +73,8 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("--no-session", action="store_true", help=tr(t, "ui.cli.no_session"))
     p.add_argument("--permission", dest="permission", help=t("ui.cli.permission_mode"))
     p.add_argument("--mode", dest="legacy_mode", help=argparse.SUPPRESS)
-    p.add_argument("--sandbox", choices=SANDBOX_MODES, help=t("sandbox.cli"))
+    p.add_argument("--sandbox", help=argparse.SUPPRESS)
+    p.add_argument("--execution", choices=("host", "sandbox"), help="Execution provider (default: host)")
     p.add_argument("--no-extensions", action="store_true", help=tr(t, "ui.cli.no_extensions"))
     p.add_argument("--trust-project-extensions", action="store_true", help=t("ui.cli.trust_project_extensions"))
     p.add_argument("-C", "--cwd", default=".", help=tr(t, "ui.cli.cwd"))
@@ -155,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     if selected_permission is not None and args.sandbox is not None:
         parser.error("--permission and the deprecated --sandbox option cannot be combined; select one permission preset")
     if args.sandbox is not None:
-        print(t("ui.cli.deprecated_sandbox"), file=sys.stderr)
+        parser.error("--sandbox is retired; use --execution sandbox and --permission <preset>")
     fullscreen = False
     if not args.print and args.ui != "plain":
         fullscreen = _fullscreen_available()
@@ -194,8 +194,8 @@ def main(argv: list[str] | None = None) -> int:
     overrides = {"effort": args.effort} if args.effort else {}
     if args.language:
         overrides["language"] = args.language
-    if args.sandbox is not None:
-        overrides["sandbox"] = {"mode": args.sandbox}
+    if args.execution is not None:
+        overrides["execution"] = {"provider": args.execution}
     if selected_permission is not None:
         overrides["permissions"] = {"preset": selected_permission}
     if args.no_extensions:

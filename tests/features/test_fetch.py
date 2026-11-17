@@ -91,14 +91,16 @@ def test_private_dns_answer_never_connects(make_session, monkeypatch, http):
     assert result.is_error and not http["requests"]
 
 
-def test_exact_url_permission_blocks_before_network(make_session, monkeypatch, http):
-    s = make_session(settings={"permissions": {"deny": ["web_fetch(https://example.com/*)"]}})
+def test_network_permission_blocks_before_network(broker_session, monkeypatch, http):
+    s = broker_session(network=False)
     result, _ = fetch(s, monkeypatch)
     assert result.is_error and not http["requests"]
 
 
 def test_redirect_rechecks_permission(make_session, monkeypatch, http):
-    s = make_session(settings={"permissions": {"deny": ["web_fetch(https://blocked.example/*)"]}})
+    s = make_session()
+    from virgo.agent.types import Block
+    s.bus.on("tool_call", lambda event, _: Block("blocked redirect") if event.args.get("url", "").startswith("https://blocked.example/") else None)
     http.update(status=302, headers={"location": "https://blocked.example/private"})
     result, _ = fetch(s, monkeypatch)
     assert result.is_error and len(http["requests"]) == 1

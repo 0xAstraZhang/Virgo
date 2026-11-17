@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import os
@@ -11,7 +10,6 @@ from ...agent.types import ToolCallEvent
 from ...ai.providers.web import deepseek_endpoint, endpoint
 from ...ai.types import UserMessage
 from ...ai.web import offers_for
-from ...harness.permission_policy import parse_rule
 
 
 class WebAccess:
@@ -77,18 +75,9 @@ class WebAccess:
                 hashlib.sha256(identity.encode()).hexdigest())
 
     def _permitted(self, runtime, model) -> bool:
-        permissions = self.api.services.get("permissions")
-        if self.api.has_tool_hooks():
-            return False  # Native queries cannot pass through client-tool hooks.
-        if permissions is None:
-            return False  # Missing Core policy must never authorize provider-side operations.
-        rules = self.api.settings.get("permissions", {})
-        # The provider chooses queries internally. Scoped rules must be enforced on
-        # actual queries through the client tool, never guessed from the user's prompt.
-        for rule in [*rules.get("allow", []), *rules.get("deny", [])]:
-            tool, pattern = parse_rule(rule)
-            if pattern is not None and fnmatch.fnmatchcase(f"web_{self.operation}", tool):
-                return False
+        provider = self.api.services.get("execution")
+        if provider is None or self.api.has_tool_hooks():
+            return False
         request = next((m for m in reversed(runtime.messages) if isinstance(m, UserMessage) and m.kind is None), None)
         ev = ToolCallEvent(
             call_id=f"native-{self.operation}-{runtime.name}-{id(request)}", tool_name=f"web_{self.operation}",
@@ -100,8 +89,7 @@ class WebAccess:
         # Reevaluate the current deterministic policy for every model request.
         # If the provider's broad scope is not already authorized, expose the
         # client tool so the user can approve its actual query or URL.
-        decision, _reason = permissions.decide(ev)
-        return decision == "allow"
+        return provider.preflight(ev) is None
 
     def execution_backend(self, ctx):
         runtime = self._runtime(ctx)

@@ -14,29 +14,29 @@ def test_canonical_cli_flags_and_deprecated_aliases():
     assert legacy.legacy_mode == "read-only"
 
 
-def test_permissions_owns_presets_and_approval(make_session):
-    session = make_session()
+def test_permissions_owns_presets_and_approval(broker_session):
+    session = broker_session()
     names = session.commands.names()
     assert "permissions" in names
-    assert "deprecated" in session.commands.get("mode").description
-    assert "deprecated" in session.commands.get("sandbox").description
+    assert session.commands.get("mode") is None
+    assert session.commands.get("sandbox") is None
 
     session.prompt("/permissions workspace-edit")
-    assert session.services["sandbox"].selected_mode.id == "workspace-edit"
+    assert session.services["execution"].selected_mode.id == "workspace-edit"
     session.prompt("/permissions read-only")
-    assert session.services["sandbox"].selected_mode.id == "read-only"
+    assert session.services["execution"].selected_mode.id == "read-only"
     session.prompt("/permissions ask")
     assert session.approval_policy == "ask"
 
 
-def test_deprecated_command_aliases_warn_and_keep_working(make_session):
+def test_host_status_has_no_resource_approval_controls(make_session):
+    import pytest
     session = make_session()
-    session.prompt("/mode read-only")
-    assert session.services["sandbox"].selected_mode.id == "read-only"
-    assert "deprecated" in session.ui.text
-    session.ui.lines.clear()
-    session.prompt("/sandbox")
-    assert "deprecated" in session.ui.text
+    session.prompt("/permissions show")
+    assert "Host" in session.ui.text
+    for args in ("read-only", "workspace-edit", "ask", "never"):
+        with pytest.raises(ValueError, match="Host has no resource approval"):
+            session.services["execution"].command(session, args)
 
 
 def test_removed_task_commands_are_not_registered(make_session):

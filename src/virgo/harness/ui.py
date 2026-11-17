@@ -76,7 +76,7 @@ class UI:
         return None
 
     def confirm_once(self, question: str, agent: str = "main") -> str | None:
-        """Confirm one operation; legacy clients' 'a' answer means once here."""
+        """Confirm one operation; the resource provider accepts only an explicit 'y'."""
         return self.confirm(question, agent)
 
     def select(self, question: str, options: list[str], *, timeout: float | None = None) -> str | None:

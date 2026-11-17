@@ -43,10 +43,10 @@ def test_permission_mode_arguments_and_legacy_aliases(value):
 def test_removed_task_flags_are_rejected_and_permission_output_stays_independent(entry, project):
     result = subprocess.run(
         [*entry, "--no-session", "--no-extensions", "--model", "faux/demo", "-p",
-         "--format", "json", "--approval", "never", "--sandbox", "read-only", "/permissions"],
+         "--format", "json", "--execution", "host", "/permissions"],
         cwd=project, input="", capture_output=True, text=True, check=True, timeout=10,
     )
-    assert "never ask" in result.stdout
+    assert "Host" in result.stdout
     assert all(isinstance(json.loads(line), dict) for line in result.stdout.splitlines())
     for flag, value in (("--work-mode", "plan"), ("--plan", None), ("--profile", "minimal")):
         rejected = subprocess.run(
@@ -61,7 +61,7 @@ def test_removed_task_flags_are_rejected_and_permission_output_stays_independent
         cwd=project, input="", capture_output=True, text=True, timeout=10,
     )
     assert legacy.returncode == 2
-    assert "permissions.mode" in legacy.stderr and not legacy.stdout
+    assert "requires execution.provider=sandbox" in legacy.stderr and not legacy.stdout
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])

@@ -13,6 +13,7 @@ model-facing tools and commands; they never own the supervision itself.
 from __future__ import annotations
 
 import itertools
+import os
 import subprocess
 import threading
 import time
@@ -23,9 +24,9 @@ from typing import TYPE_CHECKING
 
 from ..agent.types import ToolResult
 from ..diagnostics import capture_error, error_summary, safe_text
+from ..execution import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable, cleanup_process
 from ..tools.bash import kill_tree, spawn
 from ..tools.output import open_output, read_output
-from ..tools.sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable, cleanup_process
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -51,7 +52,8 @@ class Job:
     tool_call_id: str | None = None
     cwd: Path | None = None
     error_details: dict | None = None
-    sandbox: dict | None = None
+    boundary: dict | None = None
+    execution_context: object = field(default=None, repr=False)
     related_errors: list[dict] = field(default_factory=list)
 
     def elapsed(self) -> str:
@@ -88,6 +90,14 @@ class JobManager:
         # conversations. Background failures must not move to the selected chat.
         if store is None:
             store = self.current_store()
+        # Preserve the submitting branch as well as its conversation. Trusted
+        # callers may pass a Store; model dispatch already passes BranchSource.
+        from .origin_context import BranchSource
+
+        runtime = self.session.runtime_for_store(store)
+        if not isinstance(store, BranchSource):
+            if runtime is not None:
+                store = runtime.origin.root
         with self._lock:
             job = Job(
                 f"job{next(self._ids)}",
@@ -97,6 +107,7 @@ class JobManager:
                 agent=agent,
                 tool_call_id=tool_call_id,
                 cwd=cwd or store.cwd,
+                execution_context=runtime.execution_context if runtime is not None else None,
             )
             self.jobs[job.id] = job
             return job
@@ -137,7 +148,7 @@ class JobManager:
             "cwd": str(job.cwd),
             "output_path": str(job.log) if job.log else None,
             "duration": round((job.ended or time.time()) - job.started, 6),
-            **({"sandbox": job.sandbox} if job.sandbox is not None else {}),
+            **({"boundary": job.boundary} if job.boundary is not None else {}),
             **(context or {}),
         }
         details = self.session.report_error(
@@ -194,19 +205,19 @@ class JobManager:
                 cleanup_process(job.proc)
         except Exception as error:
             self._report(job, error, phase="background.cleanup",
-                         kind="fatal" if isinstance(error, SandboxProcessError) else None,
-                         code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
+                         kind="fatal" if isinstance(error, ExecutionFailed) else None,
+                         code="EXECUTION_FAILED" if isinstance(error, ExecutionFailed) else None)
             return False
         return True
 
     def _start_failed(self, job: Job, error: BaseException, fh) -> None:
-        cancelled = isinstance(error, (KeyboardInterrupt, SandboxCancelled))
+        cancelled = isinstance(error, (KeyboardInterrupt, ExecutionCancelled))
         job.status = "killed" if cancelled else "failed"
         job.ended = time.time()
         if isinstance(error, Exception):
             self._report(job, error, phase="background.start", kind="aborted" if cancelled else "fatal",
-                         code="SANDBOX_UNAVAILABLE" if isinstance(error, SandboxUnavailable) else (
-                             "SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None))
+                         code="EXECUTION_UNAVAILABLE" if isinstance(error, ExecutionUnavailable) else (
+                             "EXECUTION_FAILED" if isinstance(error, ExecutionFailed) else None))
         self._stop_process(job)
         if fh is not None:
             try:
@@ -232,27 +243,38 @@ class JobManager:
         store=None,
         agent="main",
         tool_call_id=None,
-        sandbox_policy=None,
+        execution_context=None,
         cancellation=None,
     ) -> Job:
         shell = shell or self.session.services["shell"].current
         if shell is None:
             raise ValueError(self.session.t("features.jobs.no_shell"))
+        with self.session._lock:
+            owner = store if store is not None else self.current_store()
+            runtime = self.session.runtime_for_store(owner)
+            if execution_context is None:
+                if runtime is None:
+                    raise ValueError("Background execution requires its originating runtime")
+                execution_context = runtime.execution_context
+            store = owner
         job = self._new(
             shell.tool_name, command, store=store, agent=agent, tool_call_id=tool_call_id, cwd=cwd
         )
+        job.execution_context = execution_context
         fh = None
         try:
-            job.sandbox = sandbox_policy.describe() if sandbox_policy is not None else None
-            job.log, fh = open_output(cwd, job.id, **({"sandbox_policy": sandbox_policy} if sandbox_policy else {}))
+            job.boundary = execution_context.describe() if execution_context is not None else None
+            job.log, fh = open_output(cwd, job.id, **({"execution_context": execution_context} if execution_context else {}))
             proc = spawn(command, cwd, stdout=fh, interpreter=shell,
-                         **({"sandbox_policy": sandbox_policy, "output_path": job.log, "cancellation": cancellation} if sandbox_policy else {}))
+                         **({"execution_context": execution_context, "output_path": job.log, "cancellation": cancellation} if execution_context else {}))
         except BaseException as error:
             # A job that never started must not count as pending work forever.
             self._start_failed(job, error, fh)
             raise
         job.proc = proc
-        job.sandbox = getattr(proc, "_virgo_sandbox", None)
+        job.boundary = getattr(proc, "_virgo_boundary", None) or (
+            {**execution_context.describe(), "payload_started": True, "side_effects": "possible", "cleanup": "pending"}
+            if execution_context is not None else None)
 
         def watch():
             status = "failed"
@@ -283,10 +305,10 @@ class JobManager:
                         context={"timeout_seconds": timeout} if timed_out else None,
                     )
             except Exception as error:
-                status = "killed" if job.signal.is_set() and not isinstance(error, SandboxProcessError) else "failed"
+                status = "killed" if job.signal.is_set() and not isinstance(error, ExecutionFailed) else "failed"
                 details = self._report(job, error, phase="background.watch",
-                                       kind="fatal" if isinstance(error, SandboxProcessError) else None,
-                                       code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
+                                       kind="fatal" if isinstance(error, ExecutionFailed) else None,
+                                       code="EXECUTION_FAILED" if isinstance(error, ExecutionFailed) else None)
                 job.result = error_summary(details, t=self.session.t)
             finally:
                 # A cancellation request is not proof of process termination.
@@ -299,6 +321,8 @@ class JobManager:
                     if status != "killed":
                         status = "failed"
                     self._report(job, error, phase="background.close")
+                if job.boundary is not None and job.boundary.get("provider") == "host":
+                    job.boundary["cleanup"] = "process_group_best_effort" if os.name != "nt" else "job_object"
                 self._finish(job, status)
 
         try:
@@ -372,7 +396,7 @@ class JobManager:
     def output(self, job: Job) -> str:
         if job.log is not None:
             try:
-                return read_output(job.log).text
+                return read_output(job.log, execution_context=job.execution_context).text
             except FileNotFoundError:
                 return ""
         return job.result
@@ -384,8 +408,8 @@ class JobManager:
                 kill_tree(job.proc)
             except Exception as error:
                 self._report(job, error, phase="background.cancel",
-                             kind="fatal" if isinstance(error, SandboxProcessError) else None,
-                             code="SANDBOX_PROCESS_FAILED" if isinstance(error, SandboxProcessError) else None)
+                             kind="fatal" if isinstance(error, ExecutionFailed) else None,
+                             code="EXECUTION_FAILED" if isinstance(error, ExecutionFailed) else None)
                 raise
 
     def _finish(self, job: Job, status: str) -> None:
@@ -394,7 +418,7 @@ class JobManager:
         try:
             try:
                 if job.log is not None:
-                    captured = read_output(job.log, max_bytes=4800)
+                    captured = read_output(job.log, max_bytes=4800, execution_context=job.execution_context)
                     out, total = captured.text.strip(), captured.total_bytes
                     unit = "bytes"
                 else:

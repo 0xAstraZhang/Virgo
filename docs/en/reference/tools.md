@@ -4,7 +4,7 @@
 
 The model receives the tools enabled for its role, configuration and current capabilities. The exact list can change with extensions, MCP connections and web routing. Tool names, argument names and enum values remain stable across interface languages.
 
-Core owns file, selected-shell and permission-request tools. `web`, `todo`, `ask_user`, `subagent`, `background` and `diagnostic_get` supply the optional tools below and are enabled by default; `plugins.<id>.enabled` overrides each one. The [MCP extension](../../../extensions/README.md) adds `mcp_status` and one tool per configured server. See [Configuration](configuration.md#plugins).
+Core owns file and selected-shell tools. The required Sandbox extension supplies resource requests only when selected. `web`, `todo`, `ask_user`, `subagent`, `background` and `diagnostic_get` supply the optional tools below and are enabled by default; `plugins.<id>.enabled` overrides each one. The [MCP extension](../../../extensions/README.md) adds `mcp_status` and one tool per configured server. See [Configuration](configuration.md#plugins).
 
 ## Files, commands and web
 
@@ -23,14 +23,9 @@ Reads and tool output have budgets; long results include a continuation or saved
 
 ## Permission requests
 
-`request_permissions(tool, arguments, permissions, reason)` requests a single-operation exception.
-The three optional flags are `read_only`, `workspace_only`, `network_allowed`. Approval does not
-execute or replay the operation; the next identical call consumes the grant in its originating run.
-Supported targets are managed file, Shell, Web and MCP operations. Child tasks and workflows
-keep their originating permissions and can request exact operations inside their own run.
-Explicit deny rules and explicit read-only child ceilings remain binding. The permission preset is unchanged.
-Structured refusals expose the failed dimension, target, payload-start and side-effect facts in
-model-visible content and the TUI. Backend-unavailable errors are distinct from permission denial.
+Sandbox registers `request_permissions(tool, arguments, permissions, reason)`. `permissions` accepts additional `read_paths`, `write_paths`, and `network_allowed=true`. Supply the complete arguments of one managed file, process or network operation. Approval does not execute it. The identical subsequent call atomically consumes the grant, bound to source runtime/run, tool instance, arguments, cwd, environment, policy version and resource identities. It expires after five minutes or run end. Rejection, cancellation, failure and history replay cannot restore it. Whole agents, workflows, arbitrary MCP calls, broker protection removal and Host switching cannot be granted.
+
+Refusals report requested/effective boundary, restricted resource, payload-start evidence, possible effects and cleanup. Entry into a Python tool function is distinct from execution of the user payload. Current unsupported native policies are rejected before payload release; see [Sandbox](../guides/sandbox.md).
 
 ## Checklists and questions
 
@@ -40,7 +35,7 @@ model-visible content and the TUI. Backend-unavailable errors are distinct from 
 
 ## Focused subagents
 
-The `agent(description, prompt, read_only=false, background=false)` tool delegates a focused task with an independent context and returns its final answer; include relevant context in the task prompt. `read_only=true` keeps the normal tool schemas and adds an enforced host-file write ceiling, including for Shell. By default, the child inherits its parent's captured permissions without an additional ceiling. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. An exhausted turn limit, interrupted final response, or empty final answer is reported as **incomplete**, not success. On a child failure, the parent receives bounded recent tool-error reasons and explicitly linked diagnostics; a successful delegation still returns only the final answer. Calls with the removed `type` argument are rejected. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
+The `agent(description, prompt, background=false)` tool delegates a focused task with an independent model context and returns its final answer. Supply task context in the prompt. Children inherit the source execution context, including queued background tasks. The `read_only` parameter has been removed from this tool and the Runtime/ExtensionAPI factories. Subagents do not recursively spawn subagents and default to 50 turns. Earlier tool calls may have effects even if the final response fails. Cancellation and `budget.maxModelCalls` are shared with the parent. An exhausted turn limit, interrupted final response, or empty final answer is reported as **incomplete**, not success. On a child failure, the parent receives bounded recent tool-error reasons and explicitly linked diagnostics; a successful delegation still returns only the final answer. Calls with the removed `type` argument are rejected. See [migration](../guides/migrating-to-core-plugins.md#subagent-capability-migration).
 
 ## Background jobs
 
@@ -56,7 +51,7 @@ MCP is an extension, not a built-in plugin. Copy [`extensions/mcp.py`](../../../
 
 Without the extension, no MCP connection starts and no `mcp_status` tool is registered. With it, the model's `mcp_status` reads local connection state and tool counts without contacting servers.
 
-MCP invocations respect the network flag and require an explicit operation exception when a server cannot enforce local file scope. Server startup and autonomous activity run outside Virgo's task sandbox; an offline preset does not isolate that service.
+MCP invocations check network policy. Sandbox refuses calls whose local resource scope cannot be enforced; approval cannot bypass that refusal. Server startup and autonomous activity run outside Virgo's task sandbox; an offline preset does not isolate that service.
 
 `/mcp` shows connection state; `/mcp reconnect` reloads server configuration and keeps the previous connections and tools when a replacement fails. There is no model-facing reconnect tool. See [Troubleshooting](../guides/troubleshooting.md) for the runtime boundaries.
 

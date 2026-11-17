@@ -22,11 +22,11 @@ Virgo 将模型传输、Agent 循环和应用策略分离。官方能力插件�
 
 安装后的命令和 `python -m virgo` 均进入 [`cli/main.py`](../../../src/virgo/cli/main.py)。运行时代码放在包内，保证源码和安装后的 wheel 使用同一实现。
 
-用户可见的规范术语见[术语](vocabulary.md)。共享规则归属其语义层：`ai/providers/reasoning.py` 管理推理强度映射；`harness/permissions.py` 管理审批与只读能力；`permission_policy.py` 执行规则与明确授权。`origin_context.py` 固定 Runtime、工作区和来源分支。沙箱负责 Shell 的实际执行边界，文件工具保留应用级写入保护。
+Core 通过 virgo.execution 访问文件和进程；harness/execution.py 绑定默认 Host，不导入 Sandbox。virgo.extensions.sandbox 管理资源授权、文件保护和固定的 MXC 适配器，origin_context.py 固定来源 Runtime 与工作区。原生支持仍受阻塞，参见[验收](execution-acceptance.md)。
 
 ## Core 与插件装配
 
-Core 先初始化基础编程工具、Shell、Store、运行时身份、诊断和必要权限门，再加载能力。官方编程插件默认加载，`plugins.<id>.enabled` 可按插件覆盖。可信 Python 扩展单独控制，因此零扩展路径为 `--no-extensions`。
+Core 先初始化基础编程工具、Shell、Store、运行时身份、诊断和来源绑定的执行 provider，再加载能力。官方编程插件默认加载，`plugins.<id>.enabled` 可按插件覆盖。可信 Python 扩展单独控制，因此零扩展路径为 `--no-extensions`。
 
 注册记录归属，名称冲突失败；初始化回滚移除部分注册，清理按逆序运行。禁用的能力不导入。动态工具集通过有归属的注册表在模型请求边界原子发布。Core 依赖这些契约，不依赖具体插件实现。详见[扩展 API](extensions.md)。
 

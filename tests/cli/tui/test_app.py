@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from dataclasses import replace
 
 import pytest
 from rich.cells import cell_len
@@ -20,7 +19,6 @@ from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalPicker, SessionPicker
 from virgo.cli.tui.modes import PermissionModePicker
 from virgo.cli.tui.transcript import AssistantView
-from virgo.tools.fs import WRITE
 
 from tests.support.tui import has_reply, wait_for
 
@@ -227,54 +225,30 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize(
-    ("keys", "answer"),
-    [
-        (("y",), "y"),
-        (("n",), "n"),
-        (("escape",), "n"),
-        (("a",), "a"),
-        (("1",), "y"),
-        (("2",), "n"),
-        (("3",), "a"),
-        (("enter",), "n"),
-        (("up", "enter"), "y"),
-        (("down", "enter"), "a"),
-        (("left", "enter"), "y"),
-        (("right", "enter"), "a"),
-        (("left", "left", "left", "enter"), "n"),
-        (("right", "right", "right", "enter"), "n"),
-    ],
-)
-def test_permission_answers_control_real_file_writes(make_session, project, keys, answer):
-    outside = project / "extension-output"
-    outside.mkdir()
-
+@pytest.mark.parametrize("keys,answer", [
+    (("y",), "y"), (("n",), "n"), (("escape",), "n"),
+    (("1",), "y"), (("2",), "n"), (("enter",), "n"), (("up", "enter"), "y"),
+], ids=["once-y", "once-n", "once-escape", "once-1", "once-2", "once-enter", "once-up"])
+def test_resource_approval_controls_one_file_write(broker_session, project, keys, answer):
+    target = project.parent / "approved.txt"
     async def scenario():
         ui = FullscreenUI()
-        calls = [("extension_write", {"path": str(outside / "approved.txt"), "content": "first"})]
-        if answer == "a":
-            calls.append(("extension_write", {"path": str(outside / "approved.txt"), "content": "first"}))
-        session = make_session(faux.reply(tools=calls), faux.reply("finished"), ui=ui, allow=False)
-        session.services["sandbox"].select_mode("workspace-edit")
-        session.register_tool(replace(WRITE, name="extension_write", i18n_key=""))
-        app = VirgoApp(session, ui, initial="write files")
+        args = {"path": str(target), "content": "first"}
+        request = ("request_permissions", {"tool": "write", "arguments": args,
+                   "permissions": {"write_paths": [str(target)]}, "reason": "Write requested result"})
+        session = broker_session(faux.reply(tools=[request]), faux.reply(tools=[("write", args)]),
+                                 faux.reply("finished"), ui=ui)
+        app = VirgoApp(session, ui, initial="write file")
         async with app.run_test(size=(80, 24)) as pilot:
             picker = app.query_one(ApprovalPicker)
             await wait_for(pilot, lambda: picker.display and app.focused is not None)
-            assert not app.has_modal
-            assert picker.query_one("#approval-options", OptionList).highlighted == 1
-            assert "approved.txt" in picker.confirmation.question
-            assert not (outside / "approved.txt").exists()
+            assert picker.query_one("#approval-options", OptionList).option_count == 2
+            assert "approved.txt" in picker.confirmation.question and not target.exists()
             await pilot.press(*keys)
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
-            assert (outside / "approved.txt").exists() is (answer != "n")
-            assert not app.has_modal
+            assert target.exists() is (answer == "y")
             assert not picker.display and app.focused is app.editor
-            if answer == "a":
-                assert (outside / "approved.txt").read_text() == "first"
-                assert session.services["permissions"].session_rules
-
+            assert not session.services["execution"]._pending
     asyncio.run(scenario())
 
 
@@ -304,7 +278,7 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 assert app.transcript.display and has_reply(app, "Earlier response.")
                 assert not app.editor.display
                 assert app.query_one("#status").display
-                assert "Network on" in str(app.query_one("#status", Static).content)
+                assert "Host" in str(app.query_one("#status", Static).content)
                 assert choices.highlighted == 1 and question.max_scroll_y > 0
                 highlight = choices.get_component_styles("option-list--option-highlighted")
                 assert highlight.color == Color.parse("#7C3AED")
@@ -365,13 +339,12 @@ def test_single_operation_approval_keeps_permissions_visible_without_session_cho
                 assert choices.highlighted == 1
                 status = app.query_one("#status", Static)
                 assert status.display and status.region.bottom <= app.size.height
-                assert all(value in str(status.content) for value in ("RO:off", "WS:off", "NET:on"))
+                assert "Host" in str(status.content)
                 await pilot.press("a", "3")
                 assert not answers and picker.display
                 await pilot.press("y")
                 await wait_for(pilot, lambda: answers == ["y"])
-                assert session.services["sandbox"].selected_mode_id == "no-limit"
-                assert not session.services["permissions"].session_rules
+                assert session.services["execution"].selected_mode_id == "host"
         finally:
             ui.close()
             if worker.ident is not None:
@@ -538,15 +511,15 @@ def test_slow_shutdown_keeps_ui_responsive(make_session):
         pytest.param("never", "never ask", id="never"),
     ],
 )
-def test_status_preserves_fields_with_wide_path_and_long_model(make_session, project, approval, approval_label):
+def test_status_preserves_fields_with_wide_path_and_long_model(broker_session, project, approval, approval_label):
     directory = project / ("中文项目" * 15)
     directory.mkdir()
 
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, cwd=directory, approval=approval)
-        session.services["sandbox"].save_mode(
-            "no-limit", "Custom permission name " * 4, False, False, True, persist=False,
+        session = broker_session(ui=ui, cwd=directory, approval=approval)
+        session.services["execution"].save_mode(
+            "workspace-edit", "Custom permission name " * 4, ["."], ["."], True, persist=False,
         )
         session.main.model.id = "a-very-long-模型-name-" * 6
         app = VirgoApp(session, ui)
@@ -560,14 +533,14 @@ def test_status_preserves_fields_with_wide_path_and_long_model(make_session, pro
                 status = app.query_one("#status", Static)
                 model_line, flags = str(status.content).splitlines()
                 assert cell_len(model_line) == width - 2
-                authority = session.services["sandbox"].selected_mode.name
+                authority = session.services["execution"].selected_mode.name
                 assert model_line.startswith(authority[:10])
                 if width - 2 >= cell_len(authority):
                     assert model_line.startswith(authority)
                 assert status.render_line(0).text == model_line
                 assert all(part in flags for part in (
-                    ("RO:off", "WS:off", "NET:on") if width < 52
-                    else ("Read-only off", "Workspace off", "Network on")
+                    ("R:1", "W:1", "NET:on") if width < 52
+                    else ("Read paths 1", "Write paths 1", "Network on")
                 ))
                 assert cell_len(flags) <= width - 2
                 assert status.region.bottom <= app.size.height
@@ -622,9 +595,9 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             assert metrics.render_line(0).text.startswith(" ")
             assert status.styles.text_align == "left"
             status_line = status.render_line(0).text
-            assert status_line.startswith("No-Limit  ")
+            assert status_line.startswith("Host  ")
             assert status_line.endswith(f"deepseek-flash · {session.effort}")
-            assert "Read-only off · Workspace off · Network on" in status.render_line(1).text
+            assert "Host" in status.render_line(1).text
             assert cell_len(status_line) == app.editor.region.width
             assert metrics.region.bottom == app.editor.region.y
             assert app.editor.region.bottom == status.region.y
@@ -639,15 +612,15 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
     asyncio.run(scenario())
 
 
-def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
+def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session):
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, allow=False)
+        session = broker_session(ui=ui, allow=False)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             app.editor.load_text("unfinished task")
-            manager = session.services["sandbox"]
-            for mode in ("read-only", "workspace-edit", "no-limit"):
+            manager = session.services["execution"]
+            for mode in ("read-only", "workspace-edit"):
                 original = manager.selected_mode_id
                 await pilot.press("shift+tab")
                 await wait_for(pilot, lambda: isinstance(app.screen, PermissionModePicker))
@@ -668,15 +641,15 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
             await pilot.press("shift+tab")
             await wait_for(pilot, lambda: isinstance(app.screen, PermissionModePicker))
             app.screen.query_one("#mode-name", Input).value = "Offline inspection"
-            app.screen.query_one("#mode-read_only", Switch).value = True
+            app.screen.query_one("#mode-write_paths", Input).value = "[]"
             app.screen.query_one("#mode-network_allowed", Switch).value = False
             await pilot.pause()
             assert app.screen.query_one("#mode-use", Button).disabled
             await pilot.resize_terminal(36, 14)
             await pilot.click("#mode-save")
             await wait_for(pilot, lambda: not app.has_modal and manager.selected_mode.name == "Offline inspection")
-            assert manager.selected_mode.read_only and not manager.selected_mode.network_allowed
-            assert manager.selected_mode_id == "no-limit"
+            assert not manager.selected_mode.write_paths and not manager.selected_mode.network_allowed
+            assert manager.selected_mode_id == "workspace-edit"
 
             # A new preset has a distinct stable identity; saving does not
             # change the current preset. All controls remain reachable compactly.
@@ -686,10 +659,10 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(make_session):
             app.screen.query_one("#mode-name", Input).value = "New profile"
             await pilot.pause()
             await pilot.click("#mode-save")
-            await wait_for(pilot, lambda: not app.has_modal and len(manager.modes) == 4)
-            assert manager.selected_mode_id == "no-limit"
+            await wait_for(pilot, lambda: not app.has_modal and len(manager.modes) == 3)
+            assert manager.selected_mode_id == "workspace-edit"
             saved = json.loads((session.paths.user / "settings.json").read_text())
-            assert saved["permissions"]["presets"]["no-limit"]["name"] == "Offline inspection"
+            assert saved["permissions"]["presets"]["workspace-edit"]["name"] == "Offline inspection"
             assert any(item["name"] == "New profile" for item in saved["permissions"]["presets"].values())
             assert app.editor.text == "unfinished task"
             assert not faux.CALLS["test"]

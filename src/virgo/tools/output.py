@@ -12,7 +12,6 @@ import itertools
 import os
 import tempfile
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +28,7 @@ class CommandOutput:
     path: Path | None = None
     truncated: bool = False
     total_bytes: int = 0
+    boundary: dict | None = None
 
 
 def _cut_bytes(text: str, max_bytes: int, from_end: bool) -> str:
@@ -76,23 +76,28 @@ def _spill_path(cwd: Path, prefix: str, suffix: str) -> Path:
     return outputs_dir(cwd) / _output_name(prefix, suffix)
 
 
-def save_output(text: str, cwd: Path, prefix: str) -> Path:
+def save_output(text: str, cwd: Path, prefix: str, *, execution_context=None) -> Path:
+    if execution_context is not None:
+        path, stream = execution_context.open_output(cwd, prefix)
+        with stream:
+            stream.write(text.encode("utf-8"))
+        return path
     path = _spill_path(cwd, prefix, ".txt")
     path.write_text(text, encoding="utf-8")
     return path
 
 
-def bound(text: str, cwd: Path, prefix: str, keep: str = "head") -> CommandOutput:
+def bound(text: str, cwd: Path, prefix: str, keep: str = "head", *, execution_context=None) -> CommandOutput:
     """Bound in-memory text, spilling the full text to disk when it is cut."""
     shown, cut = (truncate_tail if keep == "tail" else truncate_head)(text)
-    path = save_output(text, cwd, prefix) if cut else None
+    path = save_output(text, cwd, prefix, execution_context=execution_context) if cut else None
     return CommandOutput(shown, path, cut, len(text.encode("utf-8")))
 
 
-def budget(text: str, cwd: Path, prefix: str, keep: str = "head", *, t=None) -> str:
+def budget(text: str, cwd: Path, prefix: str, keep: str = "head", *, t=None, execution_context=None) -> str:
     """Bound `text`; if cut, save the full text and append a pointer to it."""
     t = t or Translator()
-    bounded = bound(text, cwd, prefix, keep)
+    bounded = bound(text, cwd, prefix, keep, execution_context=execution_context)
     if not bounded.truncated:
         return text
     where = t("tools.output.last" if keep == "tail" else "tools.output.first")
@@ -106,53 +111,21 @@ def budget(text: str, cwd: Path, prefix: str, keep: str = "head", *, t=None) -> 
     )
 
 
-def open_output(cwd: Path, prefix: str, *, sandbox_policy=None):
-    """Create the spool file for a running command."""
-    if sandbox_policy is not None:
-        from .sandbox import SandboxUnavailable
-
-        sandbox_policy.validate(cwd)
-        if os.name == "nt":
-            from .windows_sandbox_files import open_output as windows_output
-
-            try:
-                return windows_output(sandbox_policy, prefix)
-            except OSError as error:
-                raise SandboxUnavailable(f"Could not open originating Windows sandbox output: {error}") from error
-        # Logs belong to the originating workspace. Walk by directory descriptor
-        # so a metadata symlink cannot redirect broker writes between check/open.
-        directory = None
-        try:
-            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            directory = os.open(sandbox_policy.workspace, flags)
-            for part in (".virgo", "outputs"):
-                try:
-                    os.mkdir(part, mode=0o700, dir_fd=directory)
-                except FileExistsError:
-                    pass
-                child = os.open(part, flags, dir_fd=directory)
-                os.close(directory)
-                directory = child
-            name = f"{prefix}-{uuid.uuid4().hex}.log"
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                         0o600, dir_fd=directory)
-            path = sandbox_policy.workspace / ".virgo" / "outputs" / name
-            return path, os.fdopen(fd, "wb", buffering=0)
-        except OSError as error:
-            raise SandboxUnavailable(f"Could not open originating sandbox output: {error}") from error
-        finally:
-            if directory is not None:
-                os.close(directory)
+def open_output(cwd: Path, prefix: str, *, execution_context=None):
+    """Create output through the captured provider; Host needs no isolation imports."""
+    if execution_context is not None:
+        return execution_context.open_output(cwd, prefix)
     fd, name = tempfile.mkstemp(prefix=f"{prefix}-", suffix=".log", dir=outputs_dir(cwd))
     return Path(name), os.fdopen(fd, "wb", buffering=0)
 
 
-def read_output(path: Path, *, max_bytes: int = MAX_BYTES, max_lines: int = MAX_LINES) -> CommandOutput:
-    with path.open("rb") as stream:
-        total = stream.seek(0, os.SEEK_END)
-        start = max(0, total - max_bytes)
-        stream.seek(start)
-        data = stream.read(max_bytes)
+def read_output(path: Path, *, max_bytes: int = MAX_BYTES, max_lines: int = MAX_LINES,
+                execution_context=None) -> CommandOutput:
+    from ..execution import HostContext
+
+    access = execution_context or HostContext(path.parent)
+    data, total = access.read_output_tail(path, max_bytes)
+    start = max(0, total - max_bytes)
     # Don't render the continuation bytes of a UTF-8 character cut by the seek.
     if start:
         while data and data[0] & 0xC0 == 0x80:

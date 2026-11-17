@@ -18,9 +18,5 @@ class Services(dict):
         return self["jobs"]
 
     @property
-    def sandbox(self) -> Any:
-        return self["sandbox"]
-
-    @property
-    def permissions(self) -> Any:
-        return self["permissions"]
+    def execution(self) -> Any:
+        return self["execution"]

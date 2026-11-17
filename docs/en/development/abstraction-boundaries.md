@@ -9,7 +9,7 @@ The AI, Agent, Harness/Plugins and CLI layers separate transport, execution and 
 | Rule | Owner | Callers and boundaries |
 | --- | --- | --- |
 | OpenAI reasoning-effort mapping | `ai/providers/reasoning.py` | Chat, Responses, Codex and `completion_request_metadata()` share pure functions. Explicit maps, model declarations and default fallbacks retain their precedence. Adapters still own HTTP clients, authentication and stream events. |
-| Approval and read-only capability | `harness/permissions.py` | ask/never approval is independent of tool capability. `permission_policy.py` owns deterministic rules, explicit grants, execution rechecks and audit. `origin_context.py` owns provenance without a second approval transcript. |
+| Execution and source | `virgo.execution`, `harness/execution.py`, `origin_context.py` | Host direct execution; Sandbox extension owns resource grants and isolation. |
 | Trusted Runtime for a tool context | `AgentSession.runtime_for_context()` | Diagnostics and other privileged capabilities share identity validation; each feature handles denial and its subsequent operation. Resolution does not consult the selected UI conversation or grant diagnostic access. |
 
 Reasoning mapping shares only equivalent semantics: Chat-compatible APIs support `reasoningEffortMap`, while Responses/Codex retain their `max → xhigh` fallback. Keep protocol differences explicit instead of hiding them in a generic provider with many branches. Diagnostic metadata must use the same request policy.
@@ -28,7 +28,7 @@ Runtime resolution requires a `ExecutionOrigin` whose runtime is a real `Runtime
 
 ### Custom permission policy capabilities
 
-`PermissionPolicy` declares `preflight()` and `before_execute()`, the ordinary tool checkpoints. `api.register_permission_policy()` composes extra restrictions with the mandatory Core policy. Hosted web calls use `api.authorize_tool`; child creation uses `api.create_runtime(parent=..., read_only=...)`. Official plugins do not replace the Core guard or set another runtime's mode directly.
+`ExecutionProvider` supplies source capture, file access, process launch, external-operation admission and state. Register one provider owner before Runtime construction. `api.authorize_tool` retains source binding for adapted operations; `api.create_runtime(parent=..., execution_context=...)` inherits the submitted source context. Trusted Python extensions are outside this managed boundary.
 
 Core scope detection and `ExecutionOrigin` live in the harness. Operations needing new authorization ask the user under `ask` and are refused under `never`. Unknown caller identity fails explicitly; it does not select the current UI conversation.
 

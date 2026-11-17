@@ -40,8 +40,9 @@ format:
 The `mcpServers` setting is accepted as well. Server arguments and environment
 values expand `${VARIABLE}`; disabled entries are skipped. Tools appear as
 `mcp__<server>__<tool>` and remain subject to Core permissions: calls are treated
-as unmanaged remote operations, so an offline or file-restricted task needs an
-explicit single-operation exception.
+as unmanaged external operations. Host dispatches directly; Sandbox refuses
+calls whose requested resource scope cannot be enforced. Grants cannot switch
+to Host. Server startup and autonomous activity remain outside the managed boundary.
 
 `/mcp` lists configured servers and tool counts. `/mcp reconnect` reloads the
 configuration; a failed reload keeps the previous connections and tools.

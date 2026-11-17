@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from virgo import ai
-from virgo.agent import AgentTool
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, TextContent, Usage, UserMessage
 from virgo.harness.session import Runtime
@@ -81,54 +80,35 @@ def test_aborted_summary_keeps_context_and_counts_usage(make_session):
 @pytest.mark.parametrize("approval,answer,decision", [
     ("ask", "y", "allow"),
     ("ask", "n", "deny"),
-    ("ask", "a", "allow"),
+    ("ask", "a", "deny"),
     ("never", None, "deny"),
 ], ids=[
     "reply0-None-auto-review-allow", "reply1-n-auto-review-deny",
     "reply2-y-review-error-allow", "reply3-None-review-error-deny",
 ])
-def test_permission_audit_records_review_and_final_decision(make_session, tmp_path, approval, answer, decision):
-    # Preserve the comparison identities while auditing explicit policy and human
-    # decisions instead of the retired model reviewer.
+def test_permission_audit_records_review_and_final_decision(broker_session, tmp_path, approval, answer, decision):
+    from tests.features.test_permission import request
     ui = RecordingUI(answers=[answer])
-    session = make_session(ui=ui, allow=False, approval=approval, persist=True,
-                           settings={"sandbox": {"mode": "workspace-write"}})
-    # An unmanaged trusted extension retains explicit tool approval. Managed
-    # file operations instead obey the selected profile at execution time.
-    session.register_tool(AgentTool("external_write", "External write", {"type": "object"}, lambda *_: "done"))
-    ev = tool_call_event(session, "external_write", {"path": str(tmp_path / "outside"), "content": "private payload"})
-    permissions = session.services["permissions"]
-    permissions.on_tool_call(ev, session)
-    audit = session.store.custom("permission_decision")
-    assert audit[0]["source"] == ("manual-approval" if approval == "ask" else "approval-never")
-    assert audit[-1]["decision"] == decision
-    assert audit[0]["approval_policy"] == approval
-    assert not audit[0]["read_only"]
-    assert all("model" not in record for record in audit)
-    assert audit[0]["tool_call_id"] == ev.call_id
-    assert audit[0]["reason"]
-    assert audit[0]["duration"] >= 0
+    session = broker_session(ui=ui, approval=approval, persist=True)
+    args = {"path": str(tmp_path / "outside"), "content": "private payload"}
+    result = request(session, "write", args)
+    assert result.is_error is (decision == "deny")
+    audit = session.store.custom("permission_request")
+    assert len(audit) == (1 if approval == "ask" else 0)
+    if audit:
+        assert audit[0]["approved"] is (decision == "allow")
+        assert audit[0]["scope"] == "operation" and audit[0]["expires_after_seconds"] == 300
+        assert audit[0]["arguments_sha256"] and "arguments" not in audit[0]
+    assert not session.store.custom("permission_decision")
     assert not session.store.custom("model_call")
-    if approval == "ask":
-        assert audit[-1]["source"] == "human" and len(audit) == 2
-    else:
-        assert len(audit) == 1 and not ui.questions
-    assert "private payload" not in session.store.path.read_text()
-    if decision == "allow":
-        snapshot = copy.deepcopy(session.store.entries)
-        assert permissions.before_execute(ev) is None
-        assert session.store.entries == snapshot
+    assert not session.store.path.exists() or "private payload" not in session.store.path.read_text()
 
 
-def test_revalidation_has_auditable_argument_change(make_session, tmp_path):
-    session = make_session(allow=False, ui=RecordingUI(answers=["y"]),
-                           settings={"sandbox": {"mode": "workspace-write"}})
-    ev = tool_call_event(session, "write", {"path": "inside", "content": "one"})
-    perms = session.services["permissions"]
-    perms.on_tool_call(ev, session)
-    ev.args["path"] = str(tmp_path / "outside")
-    assert perms.before_execute(ev) is not None
-    decisions = session.store.custom("permission_decision")
-    assert [d["source"] for d in decisions] == ["workspace", "execution-policy"]
-    assert decisions[0]["arguments_sha256"] != decisions[1]["arguments_sha256"]
-    assert decisions[1]["decision"] == "deny" and not session.ui.questions
+def test_revalidation_reports_argument_change_without_review(broker_session, tmp_path):
+    session = broker_session(ui=RecordingUI(answers=["y"]))
+    event = tool_call_event(session, "write", {"path": "inside", "content": "one"})
+    assert session._before_tool(event) is None
+    event.args["path"] = str(tmp_path / "outside")
+    denied = session._before_tool_execute(event)
+    assert denied is not None and denied.details["boundary"]["target"] == str(tmp_path / "outside")
+    assert not session.store.custom("permission_decision") and not session.ui.questions

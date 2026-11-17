@@ -179,15 +179,15 @@ class RunController:
         ]
 
     def change_permission_mode(self, choice: PermissionModeChoice) -> None:
-        manager = self.session.services["sandbox"]
+        manager = self.session.services["execution"]
 
         def apply() -> None:
             if choice.action == "select":
                 manager.select_mode(choice.mode_id)
             else:
                 manager.save_mode(
-                    choice.mode_id, name=choice.name, read_only=choice.read_only,
-                    workspace_only=choice.workspace_only, network_allowed=choice.network_allowed, persist=True,
+                    choice.mode_id, name=choice.name, read_paths=choice.read_paths,
+                    write_paths=choice.write_paths, network_allowed=choice.network_allowed, persist=True,
                 )
                 self.ui.print(tr(self, "ui.modes.saved", name=choice.name), "dim")
 

@@ -11,7 +11,7 @@ Virgo deep-merges built-in defaults, user settings and project settings, in that
 3. `<working-directory>/.virgo/settings.json`.
 4. Supported environment and runtime/CLI overrides.
 
-Nested objects merge; a higher-priority value replaces the lower-priority value, except that project authorization settings may only add deny rules. User deny rules cannot be removed by a project. CLI model selection overrides `VIRGO_MODEL`, which overrides settings. `VIRGO_SHELL` overrides the shell selected by user, project and runtime settings. Commands that save a user default preserve unrelated fields; a project or startup override can still win on the next launch. When `<working-directory>/.virgo` is the same directory as the user settings directory (`~/.virgo` or `$VIRGO_HOME`), that file is not read a second time as a project settings layer.
+Nested objects merge; a higher-priority value replaces the lower-priority value, except that project settings cannot supply execution authority or extension trust. CLI model selection overrides `VIRGO_MODEL`, which overrides settings. `VIRGO_SHELL` overrides the shell selected by user, project and runtime settings. Commands that save a user default preserve unrelated fields; a project or startup override can still win on the next launch. When `<working-directory>/.virgo` is the same directory as the user settings directory (`~/.virgo` or `$VIRGO_HOME`), that file is not read a second time as a project settings layer.
 
 Language follows defaults → user settings → project settings → `--language`/runtime settings. `/language` saves a user preference and applies it now; a failed save keeps the active language. No `VIRGO_LANGUAGE` variable is defined. See [Localization](../development/localization.md) for aliases and live-session behavior.
 
@@ -21,10 +21,7 @@ A minimal project configuration:
 {
   "language": "en",
   "effort": "medium",
-  "shell": {"executable": "auto"},
-  "permissions": {
-    "deny": ["bash(git push*)"]
-  }
+  "shell": {"executable": "auto"}
 }
 ```
 
@@ -42,11 +39,11 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `effort` | `medium`; supported UI levels are `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxTokens` | Unset; adapter/model defaults apply |
 | `shell.executable` | `auto`; adapted shell name or executable path |
-| `permissions.preset` | `workspace-edit`; select a user-owned permission preset |
-| `permissions.presets` | Editable names and three flags, keyed by stable ID |
-| `sandbox.mode` | Optional legacy offline compatibility setting |
+| `permissions.preset` | Sandbox: `workspace-edit` |
+| `permissions.presets` | `name/readPaths/writePaths/networkAllowed` |
+| `execution.provider` | `host`; `host` or `sandbox` |
 | `permissions.approval` | `ask`; use `never` to reject operations needing a new approval |
-| `permissions.allow`, `permissions.deny` | Lists of tool rules |
+| `sandbox.executable` | Explicit installed MXC v1.1.0 executor path |
 | `compaction.enabled` | `true` |
 | `compaction.triggerRatio` | `0.8` of the model's context window |
 | `compaction.triggerTokens` | Unset; when supplied, takes precedence over the ratio |
@@ -101,77 +98,23 @@ Catalog caches are scoped to provider, protocol and endpoint and do not store ke
 
 Auxiliary requests automatically choose a small model on the same connection: `claude-haiku-5-5` for official Anthropic connections, `gpt-6-luna` for official OpenAI/Codex connections, and otherwise the main model. Reasoning prefers `low`, then a supported default, otherwise omits the control. The old `smallModel` field is not consulted.
 
-## Permissions
+## Execution and resources
 
-`--permission <id>` and `/permissions <id>` select a permission preset. Shift+Tab opens the TUI picker,
-where preset names and all three switches can be edited or a new preset created. Selection
-is conversation-local; Save persists the preset in user settings. The current task captures
-its permissions; changes during a run are shown as the next selection and do not revoke
-already running processes. Children/background jobs keep their source workspace and policy.
+Fresh settings use `execution.provider=host`. Host performs direct file and process operations with the host account's OS rights; it does not load or probe Sandbox and does not review commands. `--execution host|sandbox` explicitly selects the provider. `/permissions show` distinguishes requested and effective scope.
 
-| Default ID / name | Read only | Workspace only | Network allowed |
-| --- | --- | --- | --- |
-| `read-only` / Read-Only | true | true | true |
-| `workspace-edit` / Workspace-Edit | false | true | true |
-| `no-limit` / No-Limit | false | false | true |
+Sandbox is an explicitly selected required extension. Configure an installed MXC v1.1.0 executor with `sandbox.executable`. A missing extension, invalid executable or unsupported policy refuses execution without Host fallback. **Native shared-path execution is currently blocked** by an observed macOS hardlink alias bypass; backend discovery is not isolation evidence. See [acceptance](../development/execution-acceptance.md).
 
-Workspace-Edit is the default. Names are editable labels, never permission checks. User settings:
+`permissions.preset/presets` belong to Sandbox. Each preset has `name`, `readPaths`, `writePaths` and `networkAllowed`; paths resolve against the source workspace and writable paths are also readable. Built-ins `read-only` and `workspace-edit` grant workspace read and workspace write respectively, both with network allowed. `no-limit` is removed. System runtime dependencies are separate from user grants.
 
 ```json
-{
-  "permissions": {
-    "preset": "workspace-edit",
-    "presets": {
-      "offline-inspection": {
-        "name": "Offline inspection",
-        "readOnly": true,
-        "workspaceOnly": true,
-        "networkAllowed": false
-      },
-      "workspace-edit": {"name": "Daily development"}
-    },
-    "approval": "ask",
-    "deny": ["bash(git push*)"]
-  }
-}
+{"execution":{"provider":"sandbox"},"sandbox":{"executable":"/absolute/path/to/mxc-exec-mac"},"permissions":{"preset":"offline","approval":"ask","presets":{"offline":{"name":"Offline","readPaths":["."],"writePaths":["."],"networkAllowed":false}}}}
 ```
 
-The stable ID is 1–64 letters/digits/underscores/hyphens. `ask`, `never`, `revoke`, `show`, `status`, `sandbox`, `list` and `save` are reserved by `/permissions`. Custom entries require all three
-boolean fields; built-in entries may override individual fields. A name is 1–100 printable
-characters. `/permissions save <id> <JSON>` provides the same editing path in plain/noninteractive
-clients. `/permissions list` lists actual values; `/permissions show` reports the selected/effective policy and
-backend discovery separately. Unsupported backend combinations fail closed.
+`--permission <id>`, `/permissions <id>` and the Sandbox TUI picker select a preset for subsequent runs. `/permissions save <id> <JSON>` saves a user preset. Running, queued and child tasks retain their captured context. `ask|never` controls only explicit resource-increment requests; Host has no resource approval controls. Grants are consumed once for the exact operation and expire after five minutes or run end, whichever comes first. Expiration does not revoke an already running process.
 
-Read-only protects managed host file data, with private scratch and broker records allowed;
-it does not prevent remote side effects. Workspace scope includes managed file reads/writes
-with system/runtime exceptions. Private Virgo authority storage remains protected in POSIX
-profiles and Core file adapters. Windows uses object ACLs with ambient LPAC read grants;
-it is not an exact path namespace. Network policy covers managed Shell, Web/native search
-and MCP extension invocations, not model transport/login. Trusted Python extensions are outside
-the OS boundary. MCP servers cannot enforce local file scope and need an explicit unrestricted
-single-operation exception under constrained file profiles. See [Sandbox](../guides/sandbox.md).
+User settings and explicit startup overrides supply authority. Project settings cannot set execution, permissions or extension trust. Explicit legacy isolation settings without an explicit Sandbox selection are a configuration conflict. Nonempty `allow/deny`, old boolean preset fields and child `read_only` arguments produce migration errors. There is no command whitelist or intent classifier. See [migration](../guides/migrating-execution-policy.md) and [resource presets](../development/permission-profiles.md).
 
-Managed operations within the profile run without Shell syntax classification. Explicit deny
-rules remain binding. `request_permissions(tool, arguments, permissions, reason)` asks for one
-exact operation, then the model must call that tool with identical arguments. It does not run
-or replay the command, change the permission preset, grant sibling tasks access, or persist authorization in
-history. Approval is bound to the runtime/run, arguments, cwd, resolved paths, tool generation,
-shell environment and current policy revision; changes invalidate it. A repeated denied
-request does not prompt again until decisions are revoked or a new run starts.
-
-`permissions.approval=ask` permits interactive requests; `never` refuses new requests while
-allowing operations already within the profile. `/permissions revoke` clears remembered
-approvals/refusals and unconsumed operation exceptions. Additional trusted extension policies
-may still ask for authorization. User `allow` rules remain available for those policies but
-cannot override an execution boundary or explicit deny. Shell allow patterns must match an
-exact full command or a whole tool; deny and path rules support glob patterns.
-
-Only user settings and explicit startup overrides may select/edit modes or grant permissions.
-Project `permissions` accepts only additional `deny` rules; it cannot clear user denials.
-Legacy explicit `sandbox.mode=read-only|workspace-write` / `--sandbox` preserve their offline
-behavior; `disabled` maps to No-Limit. Remove the legacy setting to use network-enabled defaults.
-Do not combine `--permission` and `--sandbox`. `sandbox.network`, model permission approval and old
-approval-mode aliases remain unsupported.
+Trusted Python extensions, hooks, MCP server startup and model transport remain outside the managed boundary. Sandbox refuses external operations whose requested file scope cannot be enforced; a grant cannot switch to Host. Managed Web and native search check the captured network policy.
 
 ## Context and retries
 

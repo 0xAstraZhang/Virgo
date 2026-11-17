@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import copy
-import fnmatch
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from ..tools.sandbox import validate_config as validate_sandbox_config
 from .execution_modes import configured_modes
 from .permissions import normalize_approval_policy
 
@@ -27,12 +24,13 @@ _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
+    "execution": {"provider": "host"},
     "sandbox": {},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
     "providers": {},
-    "permissions": {"preset": "workspace-edit", "presets": {}, "approval": "ask", "allow": [], "deny": []},
+    "permissions": {"preset": "workspace-edit", "presets": {}, "approval": "ask"},
     "hooks": {},
     "shell": {"executable": "auto"},
     "plugins": {},
@@ -184,17 +182,10 @@ def _validate_permissions(value: object) -> None:
     if selected is not None and (not isinstance(selected, str) or not selected.strip()):
         raise ValueError("permissions.preset must be a permission preset ID")
     for name in ("allow", "deny"):
-        rules = value.get(name, [])
-        if not isinstance(rules, list) or any(not isinstance(rule, str) or not rule.strip() for rule in rules):
-            raise ValueError(f"permissions.{name} must be a list of nonempty tool rules")
-        for rule in rules:
-            parsed = re.fullmatch(r"\s*([^()\s]+)\s*(?:\((.*)\))?\s*", rule)
-            if parsed is None:
-                raise ValueError(f"Invalid permissions.{name} rule: {rule!r}")
-            tool, pattern = parsed.groups()
-            if (name == "allow" and pattern is not None and any(char in pattern for char in "*?[")
-                    and any(fnmatch.fnmatchcase(shell, tool) for shell in ("bash", "powershell"))):
-                raise ValueError("Shell allow rules require an exact full command or a tool-only grant; wildcard command patterns are retired")
+        if value.get(name):
+            raise ValueError(f"permissions.{name} is retired; migrate task intent to instructions and authority to resource paths")
+        if name in value and value[name] != []:
+            raise ValueError(f"permissions.{name} is retired; remove the key")
 
 
 def _validate(data: dict) -> None:
@@ -204,7 +195,14 @@ def _validate(data: dict) -> None:
         raise ValueError("permissions.preset is unknown; the legacy key permissions.mode is retired. Choose a configured permission preset ID")
     if data.get("permissions", {}).get("mode") is not None or data.get("permissions", {}).get("modes") is not None:
         raise ValueError("permissions.mode and permissions.modes are retired; use permissions.preset and permissions.presets")
-    validate_sandbox_config(data.get("sandbox", {}))
+    execution = data.get("execution", {})
+    if not isinstance(execution, dict) or set(execution) - {"provider"} or execution.get("provider", "host") not in {"host", "sandbox"}:
+        raise ValueError("execution.provider must be host or sandbox")
+    sandbox = data.get("sandbox", {})
+    if not isinstance(sandbox, dict) or set(sandbox) - {"executable"}:
+        raise ValueError("Legacy sandbox configuration is retired; migrate to execution.provider=sandbox and sandbox.executable")
+    if "executable" in sandbox and (not isinstance(sandbox["executable"], str) or not Path(sandbox["executable"]).is_absolute()):
+        raise ValueError("sandbox.executable must be an absolute path to the installed MXC executor")
     plugins = data.get("plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("plugins must be an object keyed by plugin ID")
@@ -268,6 +266,7 @@ class Settings:
         self.data = data
         self.paths = paths
         self.overrides: dict = {}
+        self.sources: dict[str, str] = {}
         self.migration_warnings: list[str] = []
         self.project_extensions_trusted = False
 
@@ -283,32 +282,36 @@ class Settings:
         if shared_settings and (paths.user / "settings.json").exists():
             notices.append("The working directory resolves to the Virgo state directory; user settings are not re-read as project settings.")
         trusted = _trusted_projects(user)
-        if "sandbox" in project:
-            project = {key: value for key, value in project.items() if key != "sandbox"}
-            notices.append("Project sandbox settings are ignored; use user settings or an explicit startup override.")
+        for key in ("sandbox", "execution", "permissions"):
+            if project.get(key):
+                raise ValueError(f"Project {key} configuration is retired; execution authority belongs in user settings or startup overrides")
+            project.pop(key, None)
         for layer in (project, overrides or {}):
             extension_config = layer.get("extensions", {})
             if isinstance(extension_config, dict) and "trustedProjects" in extension_config:
                 notices.append("Project/runtime extensions.trustedProjects is ignored. Trust must come from user settings or --trust-project-extensions.")
         data = deep_merge(DEFAULTS, _normalize_layer(user, notices))
         project = _normalize_layer(project, notices)
-        project_permissions = project.pop("permissions", {})
-        if set(project_permissions) - {"deny"}:
-            raise ValueError("Project permissions may only add deny rules; grants and approval policy belong in user settings or explicit startup overrides")
-        # A project cannot erase user restrictions through ordinary deep merging.
-        denied = list(dict.fromkeys([*data["permissions"]["deny"], *project_permissions.get("deny", [])]))
-        # Workflow instructions do not confer or restrict execution authority.
         data = deep_merge(data, project)
-        data["permissions"]["deny"] = denied
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         normalized_overrides = _normalize_layer(overrides or {}, notices)
         data = deep_merge(data, normalized_overrides)
-        if "preset" in normalized_overrides.get("permissions", {}) and "sandbox" not in normalized_overrides:
-            # An explicit new preset override wins over an older user's sandbox setting.
-            data["sandbox"] = {}
+        explicit = deep_merge(_normalize_layer(user, []), normalized_overrides)
+        if explicit.get("permissions", {}).get("preset") is not None and data["execution"]["provider"] != "sandbox":
+            raise ValueError("An explicit permission preset requires execution.provider=sandbox; migrate it or remove it to select Host")
         _validate(data)
         settings = cls(data, paths)
+        def record_sources(layer, source, prefix=""):
+            for key, value in layer.items():
+                dotted = f"{prefix}.{key}" if prefix else key
+                settings.sources[dotted] = source
+                if isinstance(value, dict):
+                    record_sources(value, source, dotted)
+        record_sources(DEFAULTS, "default")
+        record_sources(_normalize_layer(user, []), "user")
+        record_sources(project, "project")
+        record_sources(normalized_overrides, "startup")
         settings.overrides = normalized_overrides
         settings.migration_warnings = list(dict.fromkeys(notices))
         settings.project_extensions_trusted = paths.cwd in trusted
@@ -345,7 +348,7 @@ class Settings:
         if name in EXTENSION_ONLY:
             return False
         if name in {"permission", "auto_review"}:
-            raise ValueError("The legacy permission feature is retired; Core authorization is always enabled")
+            raise ValueError("The legacy permission feature is retired; use execution.provider and resource policies")
         if name in REMOVED_FEATURES:
             return False
         if name in {"search", "fetch"}:

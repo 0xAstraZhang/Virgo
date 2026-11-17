@@ -98,15 +98,28 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     return {}, text
 
 
-def load_templates(dirs: list[Path], *, reserved: frozenset[str] = frozenset()) -> dict[str, tuple[str, str]]:
+def load_templates(dirs: list[Path], *, reserved: frozenset[str] = frozenset(), access=None,
+                   source_paths: dict | None = None) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
     for d in dirs:
-        if d.is_dir():
-            for f in sorted(d.glob("*.md")):
+        try:
+            files = (p for p, _ in access.walk_files(d, set(), max_depth=1)
+                     if p.suffix == ".md") if access else d.glob("*.md")
+            for f in sorted(files):
                 if f.stem in reserved:
                     raise ValueError(f"Prompt template {f} conflicts with reserved command /{f.stem}; rename the template.")
-                meta, body = parse_frontmatter(f.read_text(encoding="utf-8"))
+                try:
+                    data = access.read_bytes(f) if access else f.read_bytes()
+                except OSError:
+                    continue
+                if data is None:
+                    continue
+                meta, body = parse_frontmatter(data.decode("utf-8"))
                 out[f.stem] = (str(meta.get("description", "")), body.strip())
+                if source_paths is not None:
+                    source_paths[f.stem] = f
+        except OSError:
+            continue
     return out
 
 

@@ -34,7 +34,7 @@ def test_switch_workspace_reloads_configuration_tools_and_services(make_session,
     (target / ".virgo" / "settings.json").write_text(json.dumps({"effort": "high"}))
     ui = FullscreenUI()
     previous = make_session(faux.reply("continued"), ui=ui, persist=True, extensions=False)
-    previous.services["permissions"].session_rules.append("bash(printf approved)")
+    original_context = previous.main.execution_context
     controller = RunController(previous, ui)
     controller.start()
     assert controller.open_session(path, initial="continue here")
@@ -47,7 +47,7 @@ def test_switch_workspace_reloads_configuration_tools_and_services(make_session,
         assert current.effort == "high"
         assert "other workspace's instructions" in current.main.system
         assert current.approval_policy == "ask"
-        assert not current.services["permissions"].session_rules
+        assert current.main.execution_context is not original_context
         assert [m.text() for m in current.main.messages if isinstance(m, UserMessage)] == [
             "saved question", "continue here"
         ]

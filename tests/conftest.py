@@ -10,7 +10,6 @@ import pytest
 
 from virgo.ai.providers import faux
 from virgo.harness.session import AgentSession
-from virgo.harness.settings import deep_merge
 
 from tests.support.harness import RecordingUI
 from tests.support.terminal import HAS_PTY
@@ -77,10 +76,7 @@ def make_session(project):
             model="faux/test",
             session=kw.pop("session", "new" if persist else None),
             approval_policy=approval,
-            settings=deep_merge({
-                "sandbox": {"mode": "disabled"},
-                "permissions": {"allow": ["*"] if allow else []},
-            }, settings or {}),
+            settings=settings or {},
             # These local fixtures create their own extension files deliberately.
             trust_project_extensions=kw.pop("trust_project_extensions", True),
             **kw,
@@ -108,3 +104,22 @@ def trash(tmp_path, monkeypatch):
 
     monkeypatch.setattr("virgo.harness.store.send2trash", move)
     return moved
+
+
+@pytest.fixture
+def broker_session(make_session, monkeypatch, tmp_path):
+    """Exercise real provider/file/grant behavior without claiming an MXC launch."""
+    from types import SimpleNamespace
+
+    from tests.support.execution import sandbox_config
+
+    installation = tmp_path / 'executor'
+    installation.mkdir()
+    executor = SimpleNamespace(path=installation / 'test-executor', backend='not-launched', identity=('broker-test',))
+    monkeypatch.setattr('virgo.extensions.sandbox.MxcExecutor', lambda _: executor)
+
+    def factory(*responses, preset='workspace-edit', network=True, settings=None, **kw):
+        from virgo.harness.settings import deep_merge
+
+        return make_session(*responses, settings=deep_merge(sandbox_config(preset, network=network), settings or {}), **kw)
+    return factory

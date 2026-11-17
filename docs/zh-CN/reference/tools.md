@@ -23,12 +23,9 @@ Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `
 
 ## 权限申请
 
-`request_permissions(tool, arguments, permissions, reason)` 申请单次操作例外。
-三个可选权限字段为 `read_only`、`workspace_only`、`network_allowed`。批准不执行或重放
-操作；同一来源运行中下一次相同工具调用消费授权。目标限于受管文件、Shell、Web 和 MCP
-操作；子任务继续继承来源权限，可在内部为具体操作申请例外。显式 deny 和显式只读子任务上限始终有效，
-权限预设保持不变。模型可见内容及 TUI 共享结构化拒绝信息：失败维度、目标、命令启动与副作用
-状态。后端不可用与权限拒绝分开报告。
+仅显式启用 Sandbox 后注册 `request_permissions(tool, arguments, permissions, reason)`。permissions 接受新增 `read_paths`、`write_paths` 和 `network_allowed=true`，请求须指定一个受管文件、进程或网络操作的完整参数。批准不执行操作；后续完全相同的调用在最终校验后、调度前原子消费授权。授权绑定来源 Runtime/run、工具实例、参数、cwd、环境、策略版本和资源身份，五分钟或 run 结束即失效。拒绝、取消、失败和历史重放均不能恢复授权。不能授权整个子代理、工作流、任意 MCP 调用、解除 broker 保护或切换 Host。
+
+拒绝信息包含请求与实际边界、受限资源、载荷启动证据、可能副作用和清理结果。进入 Python 工具函数不等于载荷执行。目前不支持的原生策略在载荷释放前拒绝，参见 [Sandbox](../guides/sandbox.md)。
 
 ## 清单与提问
 
@@ -38,7 +35,7 @@ Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `
 
 ## 聚焦的子 Agent
 
-`agent(description, prompt, read_only=false, background=false)` 使用独立上下文处理任务并返回最终答案，所需上下文必须包含在任务提示里。`read_only=true` 保持正常工具 schema，在执行时施加文件写入上限，包括 Shell。只读能力与操作系统沙箱分别设置。默认子代理不施加额外限制，但不能突破父代理权限上限。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。达到轮数上限、最终回答中断或最终回答为空时，会明确报告**未完成**，而不是成功。子代理失败时，父代理能收到有长度限制的近期工具错误原因及明确传递的诊断证据；成功时仍只返回最终回答。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
+`agent(description, prompt, background=false)` 使用独立模型上下文处理任务并返回最终答案，任务所需上下文写入提示。子代理和排队的后台任务继承来源执行边界；工具、Runtime 和 ExtensionAPI 的 `read_only` 参数均已移除。子 Agent 不递归创建子 Agent，默认最多 50 轮；即使最终失败，之前的工具调用仍可能有副作用。父子共享取消信号与 `budget.maxModelCalls` 模型调用预算。达到轮数上限、最终回答中断或最终回答为空时，会明确报告**未完成**，而不是成功。子代理失败时，父代理能收到有长度限制的近期工具错误原因及明确传递的诊断证据；成功时仍只返回最终回答。旧的 `type` 参数不再受支持，传入时会拒绝调用。参见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 ## 后台任务
 
@@ -54,7 +51,7 @@ MCP 是扩展而非内置插件。将 [`extensions/mcp.py`](../../../extensions/
 
 未安装扩展时，不启动 MCP 连接，也不注册 `mcp_status`。安装后，模型的 `mcp_status` 读取本地连接状态和工具数量，不联系服务器。
 
-MCP 调用遵守联网开关；服务无法约束本地文件范围时，需要明确的单次操作例外。服务启动及自主活动在任务沙箱之外运行，离线预设不代表隔离了该服务进程。
+MCP 调度检查网络策略；无法实施所请求本地资源范围时，Sandbox 拒绝调用，授权不能绕过该限制。MCP 服务启动和自主活动仍在受管边界之外。
 
 `/mcp` 显示连接状态，`/mcp reconnect` 重新加载服务器配置；替换失败时保留原有连接和工具。不提供模型侧的重连工具。具体运行时边界见[故障排查](../guides/troubleshooting.md)。
 

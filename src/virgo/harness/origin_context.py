@@ -91,13 +91,13 @@ def origin_key(session, event) -> str:
     source = source_for(session, event)
     if source is None:
         return f"missing:{event.agent}"
-    permissions = session.services["permissions"]
+    provider = session.services["execution"]
     runtime = source.runtime
+    snapshot = runtime.permission_snapshot
     value = {
         "origin": source.identity, "workspace": str(source.workspace), "agent": event.agent,
-        "rules": session.settings.get("permissions", {}),
-        "approval": permissions.approval_for(runtime), "read_only": permissions.is_read_only(runtime),
-        "execution_permissions": session.services["sandbox"].mode_for(runtime).flags(),
-        "revision": permissions.revision, "approval_revision": session.approval_revision,
+        "provider": provider.name, "context": runtime.execution_context.describe(),
+        "approval": snapshot.approval if snapshot is not None else None,
+        "revision": provider.revision, "approval_revision": session.approval_revision,
     }
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

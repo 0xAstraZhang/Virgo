@@ -111,3 +111,11 @@ For the nine duplicate retirements above, CI recognizes a reviewed retirement on
 A failing original case, missing/skipped/failing retained coverage, unrelated deletion, different baseline, unrelated same-name module, or an old case still present but failing/skipped continues to block approval. The acceptance scenarios were added to `ci/checks/comparison.py` and confirmed failing against the old comparator before its implementation changed. They use real temporary pytest projects and the comparison CLI.
 
 Other permission, security, cancellation, malformed-data, protocol, concurrency and TUI scenarios remain. The product refactoring uses existing coverage without adding tests that mirror the extracted implementation.
+
+## Host default and MXC migration
+
+The [exact inventory](../../../ci/pipeline/host_mxc_retirements.json) covers 77 expanded case identities against dependency base `fce6ec617c964cc631049017d27740131d9d50a3`. That foundation adds only neutral interfaces; the original product/test baseline remains `4c8520fb3faa262e5f502ff808cd5fd4350bf9bd`. Every entry records its product-contract change and replacement acceptance identities. There is no directory or prefix exemption.
+
+Command allow/deny, ordinary/session-wide approvals, child `read_only`, mutable in-flight presets and legacy backend internals are retired. Source binding, parameter revalidation, expiration, file-tool races, native filesystem/network controls and lifecycle observations remain. The file broker's unlink race now uses a synchronized host attacker; native alias evidence is retained separately and fails. Windows LPAC/DACL lease introspection cannot serve as ProcessContainer evidence.
+
+Three existing source/background gates must pass at both revisions; four Host/resource-migration gates must pass in head. Individual retired originals must have passed at the exact base. Still-present failures and newly skipped native cases retain ordinary comparison rules. The native workflows remain blocking: this inventory is not an exception to real startup, positive controls or zero failures/errors/skips.

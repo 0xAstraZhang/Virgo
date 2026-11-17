@@ -1,55 +1,19 @@
-# 执行策略迁移
+# 执行配置迁移
 
-[文档](../README.md) · [English](../../en/guides/migrating-execution-policy.md)
+新配置默认 Host，但旧配置明确提出的隔离要求不会静默降级。仅在确实需要宿主权限时删除旧要求；否则显式选择 Sandbox，并阅读[当前阻塞](../development/execution-acceptance.md)。
 
-执行权限独立于任务指令，提示词不会附加只读权限。本文说明权限预设、审批与沙箱迁移。
-
-## 更新配置
-
-| 原入口 | 当前入口 |
+| 旧接口／配置 | 迁移 |
 | --- | --- |
-| `/mode` | `/permissions` 的弃用别名；查看／选择可编辑的**权限**预设 |
-| `--mode text|json` | `--format text|json`；旧 `--mode` 预设写法是 `--permission` 的弃用别名 |
-| `sandbox.mode=workspace-write` / `read-only` | 显式保留旧禁网策略；删除后使用新默认值 |
-| `sandbox.mode=disabled` | 显式选择 No-Limit 文件／网络权限 |
-| `sandbox.network` | 改用预设的 `networkAllowed` 布尔值 |
-| `permissions.mode=plan|default|accept-edits|accept-all|yolo|auto-review` | 旧审批别名已删除；`permissions.preset` 选择 `read-only`、`workspace-edit`、`no-limit` 或自定义 ID |
-| `permissions.readOnlyCommands`、`plugins.auto_review` | 已删除；Shell 字符串分类和模型裁决不构成执行边界 |
+| `sandbox.mode`、`--sandbox` | 明确选择 `execution.provider`／`--execution`；Sandbox 需用户安装并配置 MXC。 |
+| `readOnly/workspaceOnly` | 工作区只读映射为 `readPaths:["."],writePaths:[]`；工作区可写映射为两者 `["."]`。单独核对网络权限，不自动扩大范围。 |
+| `no-limit` | 选择 Host，不再作为 Sandbox 预设。 |
+| 非空 `permissions.allow/deny` | 移除命令规则。操作约定写入提示，技术保证用资源能力表达；“禁止 git push”不能等价映射为路径列表。 |
+| `permissions.mode/modes` | `preset/presets` 的过渡拼写，新路径 schema 和显式 provider 要求仍有效。 |
+| 项目中的执行／权限配置 | 权限和扩展信任移至用户配置或显式启动参数。 |
+| `/mode`、`/sandbox` | 使用 `/permissions show`；只有 Sandbox 提供资源预设和增量请求策略。 |
+| Agent／Runtime／ExtensionAPI 的 `read_only` | 删除参数；子代理继承来源上下文。 |
+| `services.permissions/services.sandbox`、`PermissionPolicy/register_permission_policy` | 改用单一所有者执行 provider。可信 Python 本身在受管边界之外。 |
+| `sandbox_policy` | 传递已捕获的 `execution_context`，不能从后来可见会话取权限。 |
+| `details.sandbox/command_started` | 读取 `details.boundary/payload_started`；`details.execution.started` 只代表进入 Python 工具函数。 |
 
-新默认值为 `permissions.preset=workspace-edit`，允许编辑工作区及任务联网。Read-Only 也允许
-联网；离线工作通过自定义三开关预设表达。名称与权限可独立编辑。完整 JSON 及 `/permissions save`
-语法见[配置](../reference/configuration.md#权限)。权限预设和授权由用户设置管理，项目只能增加 deny。
-
-## 审批与记住的决定
-
-所选权限范围内的受管操作直接执行。`request_permissions` 为一个准确操作申请明确的权限
-变化；批准本身不执行操作，下一次相同工具调用消费例外，权限预设不变。不同参数、来源 Runtime／
-运行、解析路径、Shell 环境、策略版本或工具实例不能复用它。
-
-`ask` 允许交互申请，`never` 拒绝新增申请，而非拒绝全部操作。`/permissions revoke` 清除
-记住的决定和待消费例外。显式 deny 始终生效。失败或可能已有副作用的命令不会自动重放。
-打开历史不恢复授权。可信扩展策略可以增加限制。
-
-## 默认执行边界
-
-每次运行捕获来源权限。运行中切换预设用于后续运行；后台任务及子 Runtime 保留原来源。
-只读保护宿主文件数据，私有临时目录和宿主记录仍可写，也不保证远程系统没有修改。
-
-Core 文件工具在应用层执行文件范围检查；原生 Shell 后端执行支持的进程策略；受管 Web／
-原生搜索和 MCP 扩展调用遵循网络开关。无法执行文件边界的 MCP 服务，需要明确的单次不限
-文件范围例外。宿主和可信 Python 扩展不在 Shell 的 OS 边界中。
-
-参见[沙箱](sandbox.md)与[Windows 限制](windows-sandbox.md)。Windows 保留系统 LPAC 读取
-授权，并拒绝受限的 `workspaceOnly=false` 组合。发现后端不代表已成功隔离；不支持或不可用
-会拒绝执行。No-Limit 使用宿主账户已有权限，不自动取得管理员权限。
-
-## 集成 API
-
-`SandboxManager.mode_for(runtime)` 返回捕获的 `PermissionMode`；`selected_mode` 是当前
-对话下次采用的选择。`select_mode(id)` 只切换当前对话，`save_mode(...)` 将名称与开关写入
-用户设置。实际判断使用三个有效值。`Runtime.prepare_run()` 捕获策略。
-
-`read_only=True` 仍可明确限制子 Runtime，但不移除工具 schema；预设继承与该显式上限分开。
-延迟工作携带 `ToolContext.origin`，TUI 切换对话不会转移授权。存储的历史记录不会恢复单次例外。
-
-扩展使用 `add_request_system_section` 注入每请求指令，复用既有 Runtime 和 SessionStore。
+旧原生后端、命令解析器、普通审批和会话审批缓存已移除。ask/never 只控制 Sandbox 资源增量。历史授权不能恢复执行能力。Windows 旧 LPAC 后端已移除，MXC 替代仍未通过；macOS 不再提供 coalition 监督保证。

@@ -22,9 +22,9 @@ from virgo.ai.types import ToolResultMessage
 from virgo.cli.console import ConsoleBroker, TerminalUI
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
-from virgo.harness.session import AgentSession, Runtime
+from virgo.harness.session import Runtime
 
-from tests.support.harness import RecordingUI, calls
+from tests.support.harness import calls
 from tests.support.shell import invoke, result, selected
 from tests.support.tui import wait_for
 
@@ -34,101 +34,24 @@ SHELLS = [name for name in ("bash", "zsh", "sh", "dash", "pwsh", "powershell")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable fixture")
-@pytest.mark.parametrize("configuration,probe_allowed", [
-    ({}, False),
-    ({"permissions": {"mode": "read-only"}}, False),
-    ({"permissions": {"mode": "no-limit"}}, True),
-    ({"permissions": {"mode": "no-limit", "modes": {"no-limit": {"readOnly": True}}}}, False),
-    ({"permissions": {"mode": "no-limit", "modes": {"no-limit": {"workspaceOnly": True}}}}, False),
-    ({"permissions": {"mode": "no-limit", "modes": {"no-limit": {"networkAllowed": False}}}}, False),
-    ({"permissions": {"mode": "read-only"}, "sandbox": {"mode": "disabled"}}, True),
-    ({"permissions": {"mode": "no-limit"}, "sandbox": {"mode": "read-only"}}, False),
-    ({"permissions": {"mode": "no-limit"}, "sandbox": {"mode": "workspace-write"}}, False),
-    ({"permissions": {"modes": {"legacy-read-only": {"name": "Collision", "readOnly": False,
-                                                       "workspaceOnly": False, "networkAllowed": True}}},
-      "sandbox": {"mode": "read-only"}}, False),
-    ({"permissions": {"modes": {"legacy-workspace-write": {"name": "Collision", "readOnly": False,
-                                                             "workspaceOnly": False, "networkAllowed": True}}},
-      "sandbox": {"mode": "workspace-write"}}, False),
-    ({"permissions": {"modes": {"no-limit": {"readOnly": True, "workspaceOnly": True,
-                                              "networkAllowed": False}}},
-      "sandbox": {"mode": "disabled"}}, True),
-], ids=["default", "read-only", "no-limit", "read-only-flag", "workspace-flag", "network-flag",
-        "legacy-disabled", "legacy-read-only", "legacy-workspace", "read-only-collision",
-        "workspace-collision", "disabled-collision"])
-def test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority(
-    project, monkeypatch, configuration, probe_allowed,
-):
-    """Discovery and explicit selection cannot execute candidates outside startup policy.
-
-    The executable only records a disposable sentinel and prints a valid version;
-    a later selection of No-Limit must not enable previously forbidden probes,
-    and selecting a restricted mode must immediately suppress host probes.
-    """
-    directory = project / "candidate-shell"
-    directory.mkdir()
-    candidate = directory / "bash"
-    sentinel = directory / "host-probe.txt"
-    candidate.write_text(
-        "#!/bin/sh\n"
-        f"printf 'probe\\n' >> {shlex.quote(str(sentinel))}\n"
-        "printf '5.2.0'\n", encoding="utf-8",
-    )
+@pytest.mark.parametrize("provider", ["host", "sandbox"])
+def test_shell_probe_uses_startup_provider_and_cannot_gain_authority(make_session, broker_session, project, provider):
+    candidate, sentinel = project / "bash", project / "probe.txt"
+    candidate.write_text(f"#!/bin/sh\nprintf 'probe' >> {shlex.quote(str(sentinel))}\nprintf '5.2.0'\n")
     candidate.chmod(0o755)
-    monkeypatch.delenv("VIRGO_SHELL", raising=False)
-    monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ.get("PATH", ""))
-    # The common session fixture deliberately chooses legacy disabled; use the
-    # real constructor to exercise new defaults and explicit compatibility input.
-    session = AgentSession(
-        project, model="faux/test", ui=RecordingUI(), session=None, extensions=False,
-        refresh_models=False, settings={"profile": "minimal", "shell": {"executable": str(candidate)},
-                                        **configuration},
-    )
+    factory = make_session if provider == "host" else broker_session
+    session = factory(settings={"shell": {"executable": str(candidate)}}, refresh_models=False, extensions=False)
     try:
-        assert sentinel.exists() is probe_allowed
-        assert selected(session).version == ("5.2.0" if probe_allowed else "unknown")
+        assert sentinel.exists() is (provider == "host")
         sentinel.unlink(missing_ok=True)
-        session.services["sandbox"].save_mode("probe-unrestricted", "Unrestricted", False, False, True,
-                                               persist=False)
-        session.prompt("/mode probe-unrestricted")
+        session.settings.set("execution.provider", "host")
+        if provider == "sandbox":
+            session.services["execution"].select_mode("read-only")
         session.prompt(f"/shell {shlex.quote(str(candidate))}")
-        assert sentinel.exists() is probe_allowed, "Mode changes must not enable host version probes"
-        assert selected(session).version == ("5.2.0" if probe_allowed else "unknown")
-        sentinel.unlink(missing_ok=True)
-        session.prompt("/mode read-only")
-        session.prompt(f"/shell {shlex.quote(str(candidate))}")
-        assert not sentinel.exists(), "A current restriction must suppress startup-authorized host probes"
-        assert selected(session).version == "unknown"
+        assert sentinel.exists() is (provider == "host")
         assert not calls()
     finally:
         session.shutdown()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable fixture")
-def test_shell_probe_uses_mode_selected_during_previous_run(make_session, project):
-    """New broker work cannot reuse a completed run's broader permission snapshot."""
-    directory = project / "candidate-shell"
-    directory.mkdir()
-    candidate, sentinel = directory / "bash", directory / "host-probe.txt"
-    candidate.write_text(
-        f"#!/bin/sh\nprintf 'probe\\n' >> {shlex.quote(str(sentinel))}\nprintf '5.2.0'\n",
-        encoding="utf-8",
-    )
-    candidate.chmod(0o755)
-
-    def restrict_next_run(_context):
-        session.services["sandbox"].select_mode("read-only")
-        return faux.reply("Finished the previous task.")
-
-    session = make_session(restrict_next_run, settings={"profile": "minimal"},
-                           extensions=False, refresh_models=False)
-    session.prompt("Finish the current task")
-    manager = session.services["sandbox"]
-    assert not manager.selected_mode.unrestricted
-    assert manager.mode_for(session.main).unrestricted
-    session.prompt(f"/shell {shlex.quote(str(candidate))}")
-    assert not sentinel.exists(), "A new probe must honor the newly selected restriction"
-    assert selected(session).version == "unknown"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable fixture")

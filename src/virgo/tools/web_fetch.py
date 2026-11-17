@@ -377,5 +377,6 @@ def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=N
         execute,
         label="Read web page",
         side_effect="read",
+        execution_scope="network",
         i18n_key="tools.web_fetch",
     )

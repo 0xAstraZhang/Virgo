@@ -1,0 +1,711 @@
+{
+  "baseline_sha": "fce6ec617c964cc631049017d27740131d9d50a3",
+  "original_product_baseline": "4c8520fb3faa262e5f502ff808cd5fd4350bf9bd",
+  "reason": "Host default, resource grants and MXC-only implementation replace command rules, mutable ceilings and legacy native backend internals. This exact inventory never grants a native isolation pass. Generic native acceptance remains required and blocked.",
+  "preservation_gates": [
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_direct_main_event_binds_once_across_chat_switch"
+    },
+    {
+      "classname": "tests.features.test_permission_context",
+      "name": "test_background_subagent_captures_origin_before_worker_starts"
+    },
+    {
+      "classname": "tests.features.test_background",
+      "name": "test_background_job_notifies_idle_session"
+    }
+  ],
+  "acceptance_gates": [
+    {
+      "classname": "tests.harness.test_host_execution_e2e",
+      "name": "test_fresh_host_executes_without_importing_isolation"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_grant_is_atomically_consumed_once"
+    },
+    {
+      "classname": "tests.harness.test_host_execution_e2e",
+      "name": "test_removed_child_read_only_is_rejected_before_dispatch"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_shared_native_policy_is_rejected_before_payload"
+    }
+  ],
+  "retired_cases": [
+    {
+      "classname": "tests.cli.test_command_surface",
+      "name": "test_deprecated_command_aliases_warn_and_keep_working",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys0-y]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys1-n]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys10-y]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys11-a]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys12-n]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys13-n]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys2-n]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys3-a]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys4-y]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys5-n]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys6-a]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys7-n]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys8-y]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.cli.tui.test_app",
+      "name": "test_permission_answers_control_real_file_writes[keys9-a]",
+      "product": "one-operation-dialog"
+    },
+    {
+      "classname": "tests.features.test_fetch",
+      "name": "test_exact_url_permission_blocks_before_network",
+      "product": "network-resource-policy"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_auto_review_preserves_explicit_allow_and_deny_rules",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_dynamic_shell_approval_is_once_and_inherited_cdpath_needs_review",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_rule_matching_paths",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_shell_session_approval_binds_all_resolved_path_targets[cat fixed link]",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_shell_session_approval_binds_all_resolved_path_targets[cd sub && cat ../fixed link]",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission",
+      "name": "test_shell_session_approval_binds_all_resolved_path_targets[git -C sub diff ../fixed link]",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_approval_boundary_identity_is_not_display_text",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_dynamic_paths_cannot_be_remembered",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_path_targets_change_when_a_symlinked_target_changes",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_permission_scope",
+      "name": "test_static_paths_are_resolved_against_the_command_directory",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.features.test_search",
+      "name": "test_deny_rule_blocks_native_and_builtin_execution",
+      "product": "network-resource-policy"
+    },
+    {
+      "classname": "tests.features.test_search",
+      "name": "test_native_permission_review_is_cached_only_for_current_request",
+      "product": "network-resource-policy"
+    },
+    {
+      "classname": "tests.features.test_search",
+      "name": "test_scoped_rules_keep_search_local_for_exact_query_review[allow]",
+      "product": "network-resource-policy"
+    },
+    {
+      "classname": "tests.features.test_search",
+      "name": "test_scoped_rules_keep_search_local_for_exact_query_review[deny]",
+      "product": "network-resource-policy"
+    },
+    {
+      "classname": "tests.features.test_search_deepseek",
+      "name": "test_deepseek_native_honors_exact_query_denial",
+      "product": "network-resource-policy"
+    },
+    {
+      "classname": "tests.features.test_subagent",
+      "name": "test_read_only_subagent_blocks_shell_writes_even_if_parent_is_unrestricted",
+      "product": "inherited-task-context"
+    },
+    {
+      "classname": "tests.features.test_web_capabilities",
+      "name": "test_bundled_offer_is_removed_when_any_capability_conflicts[settings4]",
+      "product": "network-resource-policy"
+    },
+    {
+      "classname": "tests.harness.test_observability",
+      "name": "test_revalidation_has_auditable_argument_change",
+      "product": "ordinary-command-rules"
+    },
+    {
+      "classname": "tests.harness.test_permission_modes_e2e",
+      "name": "test_default_profile_is_workspace_edit_with_network",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_permission_modes_e2e",
+      "name": "test_explicit_legacy_policy_overrides_colliding_custom_preset[disabled-no-limit-flags2]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_permission_modes_e2e",
+      "name": "test_explicit_legacy_policy_overrides_colliding_custom_preset[read-only-legacy-read-only-flags0]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_permission_modes_e2e",
+      "name": "test_explicit_legacy_policy_overrides_colliding_custom_preset[workspace-write-legacy-workspace-write-flags1]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_default_sandbox_requires_native_boundary",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_disabled_sandbox_keeps_legacy_execution",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_invalid_sandbox_configuration_fails_at_startup[config0]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_invalid_sandbox_configuration_fails_at_startup[config1]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_invalid_sandbox_configuration_fails_at_startup[config2]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_invalid_sandbox_configuration_fails_at_startup[config4]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_invalid_sandbox_configuration_fails_at_startup[off]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_linux_resolver_configuration_accepts_only_trusted_service_metadata",
+      "product": "legacy-native-implementation"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_missing_exec_acknowledgement_does_not_claim_no_effects[False]",
+      "product": "mxc-receipt-protocol"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_missing_exec_acknowledgement_does_not_claim_no_effects[True]",
+      "product": "mxc-receipt-protocol"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_native_core_file_mutation_survives_hardlink_unlink_race[edit]",
+      "product": "broker-race-actor"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_native_core_file_mutation_survives_hardlink_unlink_race[write]",
+      "product": "broker-race-actor"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_wrapper_failure_after_probe_is_not_a_payload_exit[False]",
+      "product": "mxc-receipt-protocol"
+    },
+    {
+      "classname": "tests.harness.test_sandbox_e2e",
+      "name": "test_wrapper_failure_after_probe_is_not_a_payload_exit[True]",
+      "product": "mxc-receipt-protocol"
+    },
+    {
+      "classname": "tests.harness.test_session",
+      "name": "test_mode_switch_blocks_writes_that_already_passed_batch_preflight",
+      "product": "inherited-task-context"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_mode_selected_during_previous_run",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[default]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[disabled-collision]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[legacy-disabled]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[legacy-read-only]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[legacy-workspace]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[network-flag]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[no-limit]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[read-only-collision]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[read-only-flag]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[read-only]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[workspace-collision]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_shell_commands",
+      "name": "test_shell_probe_uses_startup_permission_flags_and_cannot_gain_authority[workspace-flag]",
+      "product": "provider-bound-shell-probes"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_ambient_package_acls_do_not_widen_write_ceiling[read-only]",
+      "product": "legacy-native-implementation"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_ambient_package_acls_do_not_widen_write_ceiling[workspace-write]",
+      "product": "legacy-native-implementation"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_child_lpac_token_and_host_process_access",
+      "product": "legacy-native-implementation"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_core_create_during_command_preflight_preserves_workspace_writes",
+      "product": "legacy-native-implementation"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_core_mutation_preserves_live_background_workspace_writes[edit]",
+      "product": "legacy-native-implementation"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_core_mutation_preserves_live_background_workspace_writes[write]",
+      "product": "legacy-native-implementation"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_existing_metadata_and_runtime_acls_cannot_be_replaced",
+      "product": "legacy-native-implementation"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_readonly_child_policy_is_enforced_by_windows",
+      "product": "inherited-task-context"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_unsupported_full_host_windows_policy_refuses_payload[False-False]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_unsupported_full_host_windows_policy_refuses_payload[True-False]",
+      "product": "host-default-and-config-migration"
+    },
+    {
+      "classname": "tests.harness.test_windows_sandbox_e2e",
+      "name": "test_unsupported_full_host_windows_policy_refuses_payload[True-True]",
+      "product": "host-default-and-config-migration"
+    }
+  ],
+  "products": {
+    "host-default-and-config-migration": {
+      "reason": "Fresh configuration now selects Host; legacy boolean/offline/native-mode settings must migrate explicitly instead of selecting an old backend.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.harness.test_host_execution_e2e",
+          "name": "test_fresh_host_executes_without_importing_isolation"
+        },
+        {
+          "classname": "tests.harness.test_host_execution_e2e",
+          "name": "test_explicit_legacy_authority_never_silently_becomes_host[config0]"
+        },
+        {
+          "classname": "tests.harness.test_host_execution_e2e",
+          "name": "test_explicit_legacy_authority_never_silently_becomes_host[config1]"
+        },
+        {
+          "classname": "tests.harness.test_host_execution_e2e",
+          "name": "test_explicit_legacy_authority_never_silently_becomes_host[config2]"
+        },
+        {
+          "classname": "tests.harness.test_host_execution_e2e",
+          "name": "test_explicit_legacy_authority_never_silently_becomes_host[config3]"
+        },
+        {
+          "classname": "tests.harness.test_permission_modes_e2e",
+          "name": "test_legacy_native_policy_requires_explicit_migration[disabled]"
+        },
+        {
+          "classname": "tests.harness.test_permission_modes_e2e",
+          "name": "test_legacy_native_policy_requires_explicit_migration[read-only]"
+        },
+        {
+          "classname": "tests.harness.test_permission_modes_e2e",
+          "name": "test_legacy_native_policy_requires_explicit_migration[workspace-write]"
+        },
+        {
+          "classname": "tests.cli.test_command_surface",
+          "name": "test_host_status_has_no_resource_approval_controls"
+        }
+      ]
+    },
+    "one-operation-dialog": {
+      "reason": "Ordinary file approvals and session-wide allow-all answers are removed. The dialog grants one resource increment; y/n/cancel/expiry remain tested.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.cli.tui.test_app",
+          "name": "test_resource_approval_controls_one_file_write[once-1]"
+        },
+        {
+          "classname": "tests.cli.tui.test_app",
+          "name": "test_resource_approval_controls_one_file_write[once-2]"
+        },
+        {
+          "classname": "tests.cli.tui.test_app",
+          "name": "test_resource_approval_controls_one_file_write[once-enter]"
+        },
+        {
+          "classname": "tests.cli.tui.test_app",
+          "name": "test_resource_approval_controls_one_file_write[once-escape]"
+        },
+        {
+          "classname": "tests.cli.tui.test_app",
+          "name": "test_resource_approval_controls_one_file_write[once-n]"
+        },
+        {
+          "classname": "tests.cli.tui.test_app",
+          "name": "test_resource_approval_controls_one_file_write[once-up]"
+        },
+        {
+          "classname": "tests.cli.tui.test_app",
+          "name": "test_resource_approval_controls_one_file_write[once-y]"
+        },
+        {
+          "classname": "tests.cli.tui.test_app",
+          "name": "test_single_operation_approval_keeps_permissions_visible_without_session_choice"
+        }
+      ]
+    },
+    "network-resource-policy": {
+      "reason": "Exact query/URL command rules and cached command review are retired. Managed network operations use captured network policy and dispatch checks.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.features.test_fetch",
+          "name": "test_network_permission_blocks_before_network"
+        },
+        {
+          "classname": "tests.features.test_search",
+          "name": "test_network_policy_blocks_native_and_builtin_execution"
+        },
+        {
+          "classname": "tests.features.test_search",
+          "name": "test_native_network_admission_is_rechecked_each_request"
+        },
+        {
+          "classname": "tests.features.test_search",
+          "name": "test_scoped_command_rules_require_migration[allow]"
+        },
+        {
+          "classname": "tests.features.test_search",
+          "name": "test_scoped_command_rules_require_migration[deny]"
+        }
+      ]
+    },
+    "ordinary-command-rules": {
+      "reason": "Command allow/deny rules, intent parsing and remembered ordinary approvals are retired. Exact resource grants bind canonical arguments and source instead.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.harness.test_host_execution_e2e",
+          "name": "test_fresh_host_executes_without_importing_isolation"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_is_atomically_consumed_once"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[arguments]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[cancel]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[cwd]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[environment]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[expiry]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[origin]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[policy]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[resource]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[run]"
+        },
+        {
+          "classname": "tests.features.test_permission_scope",
+          "name": "test_grant_cannot_be_reused_after_context_changes[tool]"
+        }
+      ]
+    },
+    "inherited-task-context": {
+      "reason": "Child read_only parameters are removed. Children inherit immutable source resources; preset changes apply to subsequent runs rather than rewriting an active batch.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.harness.test_host_execution_e2e",
+          "name": "test_removed_child_read_only_is_rejected_before_dispatch"
+        },
+        {
+          "classname": "tests.harness.test_permission_snapshot",
+          "name": "test_child_snapshot_keeps_the_parent_ceiling"
+        },
+        {
+          "classname": "tests.harness.test_session",
+          "name": "test_mode_change_applies_to_next_run_not_dispatched_batch"
+        }
+      ]
+    },
+    "legacy-native-implementation": {
+      "reason": "The in-Core native backends and their LPAC token/DACL lease or Linux resolver-compilation internals are removed. These implementation-specific tests do not certify MXC. Shared native startup, filesystem/network and lifecycle gates remain independently blocking.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_shared_native_policy_is_rejected_before_payload"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_missing_backend_is_fail_closed_in_real_session"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_required_provider_initialization_failure_aborts_session"
+        },
+        {
+          "classname": "tests.harness.test_windows_sandbox_e2e",
+          "name": "test_reparse_and_shared_file_grants_fail_before_payload[hardlink]"
+        },
+        {
+          "classname": "tests.harness.test_windows_sandbox_e2e",
+          "name": "test_reparse_and_shared_file_grants_fail_before_payload[junction]"
+        },
+        {
+          "classname": "tests.harness.test_windows_sandbox_e2e",
+          "name": "test_reparse_and_shared_file_grants_fail_before_payload[metadata-junction]"
+        }
+      ]
+    },
+    "mxc-receipt-protocol": {
+      "reason": "The old native wrapper capability-probe protocol is removed. Synthetic real processes now verify unknown launch receipts and possible effects, without claiming OS isolation.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_unacknowledged_native_launch_keeps_unknown_facts[ack-lost-False]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_unacknowledged_native_launch_keeps_unknown_facts[ack-lost-True]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_unacknowledged_native_launch_keeps_unknown_facts[wrapper-failed-False]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_unacknowledged_native_launch_keeps_unknown_facts[wrapper-failed-True]"
+        }
+      ]
+    },
+    "broker-race-actor": {
+      "reason": "The file-tool unlink race now uses a synchronized host-side attacker thread and retained broker file handles. The separate raw MXC attack fails and native acceptance remains blocked.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_core_file_mutation_survives_hardlink_unlink_race[edit]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_core_file_mutation_survives_hardlink_unlink_race[write]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_file_tools_reject_hardlinks[metadata-edit]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_file_tools_reject_hardlinks[metadata-write]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_file_tools_reject_hardlinks[outside-edit]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_file_tools_reject_hardlinks[outside-write]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_file_tools_reject_hardlinks[workspace-edit]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_file_tools_reject_hardlinks[workspace-write]"
+        }
+      ]
+    },
+    "provider-bound-shell-probes": {
+      "reason": "Boolean/No-Limit/legacy-preset probe combinations no longer exist. Host probes directly; explicit Sandbox never probes candidates on Host.",
+      "replacement_acceptance": [
+        {
+          "classname": "tests.harness.test_shell_commands",
+          "name": "test_shell_probe_uses_startup_provider_and_cannot_gain_authority[host]"
+        },
+        {
+          "classname": "tests.harness.test_shell_commands",
+          "name": "test_shell_probe_uses_startup_provider_and_cannot_gain_authority[sandbox]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_shell_discovery_does_not_execute_candidate_on_host[path]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_shell_discovery_does_not_execute_candidate_on_host[project]"
+        },
+        {
+          "classname": "tests.harness.test_sandbox_e2e",
+          "name": "test_sandbox_shell_discovery_does_not_execute_candidate_on_host[selection]"
+        }
+      ]
+    }
+  }
+}

@@ -1,6 +1,6 @@
 """Sub-agents: delegate focused work with fresh contexts and inherited limits.
 
-The read_only option adds a child execution ceiling without hiding normal tools.
+Children inherit the immutable execution context of their originating task.
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ from ..diagnostics import safe_text
 from ..harness.extensions import ExtensionAPI
 
 _counter = itertools.count(1)
-READ_ONLY_PROMPT = ("Your task may inspect host files but may not modify them. All normal tools remain visible; "
-                    "the execution policy enforces this read-only ceiling.")
+
 
 
 class Subagents:
@@ -23,7 +22,7 @@ class Subagents:
 
     def run(
         self, prompt: str, description: str, signal, cwd=None, origin_parent=None,
-        *, read_only: bool = False, execution_mode=None,
+        *, execution_context=None,
     ) -> ToolResult:
         """Run a child with the caller's authority and optional read-only limits."""
         api = self.api
@@ -39,14 +38,12 @@ class Subagents:
                 name,
                 "subagent",
                 parent=parent,
-                read_only=read_only,
                 cwd=cwd,
-                system_extra=READ_ONLY_PROMPT if read_only else None,
                 max_turns=int(api.settings.get("subagents.maxTurns", 50)),
                 signal=signal,
                 compaction=True,
                 origin_parent=origin_parent,
-                execution_mode=execution_mode,
+                execution_context=execution_context,
             )
             rt.agent.prompt([UserMessage(prompt)])
         except Exception as error:
@@ -190,10 +187,9 @@ def setup(api: ExtensionAPI) -> None:
 
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
         prompt, desc = args["prompt"], args.get("description") or args["prompt"][:60]
-        unknown = set(args) - {"description", "prompt", "read_only", "background"}
+        unknown = set(args) - {"description", "prompt", "background"}
         if unknown:
             return ToolResult.error(f"Unexpected agent argument(s): {', '.join(sorted(unknown))}")
-        read_only = args.get("read_only", False)
         jobs = api.services.get("jobs")
         runtime = api.runtime_for_context(ctx)
         if runtime is None and ctx.origin is None and ctx.agent == "main":
@@ -204,11 +200,11 @@ def setup(api: ExtensionAPI) -> None:
             return ToolResult.error("Subagent requires the originating runtime context.")
         origin_parent = runtime.origin
         origin_parent.root.entries()
-        execution_mode = api.services["sandbox"].mode_for(runtime)
+        execution_context = runtime.execution_context
 
         def run_child(signal):
             return subs.run(prompt, desc, signal, ctx.cwd, origin_parent,
-                            read_only=read_only, execution_mode=execution_mode)
+                            execution_context=execution_context)
 
         if args.get("background") and jobs is not None and jobs.background_enabled:
             job = jobs.start_callable(
@@ -227,14 +223,13 @@ def setup(api: ExtensionAPI) -> None:
         return run_child(ctx.signal)
 
     api.register_tool(
-        AgentTool(
+        AgentTool(execution_scope="delegate",
             name="agent",
             label="Agent",
             description=(
                 "Delegate a self-contained task to a sub-agent with a fresh context. It cannot see this "
                 "conversation, so include the needed context; only its final answer comes back. Several calls in one "
-                "response run in parallel. Set read_only=true to prevent host-file writes while keeping normal "
-                "tool schemas visible. "
+                "response run in parallel. Children inherit the originating task execution boundary. "
                 "Set background=true to keep working while it runs."
             ),
             parameters={
@@ -245,10 +240,6 @@ def setup(api: ExtensionAPI) -> None:
                         "type": "string",
                         "minLength": 1,
                         "description": "Complete instructions for the sub-agent",
-                    },
-                    "read_only": {
-                        "type": "boolean",
-                        "description": "Prevent host-file writes in the child; normal tool schemas remain visible.",
                     },
                     "background": {"type": "boolean"},
                 },

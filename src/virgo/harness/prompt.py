@@ -23,6 +23,7 @@ class RuntimeContext:
     store: object
     accounting_store: object
     origin_parent: object
+    execution_context: object = None
 
 
 IDENTITY = {
@@ -44,7 +45,7 @@ GUIDELINES = (
 CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
-def _project_text(path: Path, workspace: Path, *, errors: str = "strict") -> str | None:
+def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access=None) -> str | None:
     """Read automatic project context without following project-controlled links."""
     try:
         parts = path.relative_to(workspace).parts
@@ -52,6 +53,14 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict") -> str
         return None
     if not parts or ".." in parts:
         return None
+    if access is not None:
+        try:
+            if any(workspace.joinpath(*parts[:i]).is_symlink() for i in range(1, len(parts) + 1)):
+                return None
+            data = access.read_bytes(path)
+            return data.decode("utf-8", errors=errors) if data is not None else None
+        except (OSError, RuntimeError):
+            return None
     directory = descriptor = None
     try:
         if os.name == "nt":
@@ -83,7 +92,7 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict") -> str
             os.close(directory)
 
 
-def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None) -> list[tuple[Path, str]]:
+def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None, access=None) -> list[tuple[Path, str]]:
     found: list[tuple[Path, str]] = []
     user_file = user_dir / "AGENTS.md"
     if user_file.is_file():
@@ -97,7 +106,7 @@ def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None) -
     for d in reversed(chain):
         for name in CONTEXT_FILES:
             f = d / name
-            text = (_project_text(f, workspace, errors="replace") if workspace is not None
+            text = (_project_text(f, workspace, errors="replace", access=access) if workspace is not None
                     else f.read_text(encoding="utf-8", errors="replace") if f.is_file() else None)
             if text is not None:
                 found.append((f, text))
@@ -105,10 +114,10 @@ def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None) -
     return found
 
 
-def _first_file(paths: list[Path], *, workspace: Path | None = None) -> str | None:
+def _first_file(paths: list[Path], *, workspace: Path | None = None, access=None) -> str | None:
     for index in reversed(range(len(paths))):  # project overrides explicitly trusted user configuration
         p = paths[index]
-        text = (_project_text(p, workspace) if workspace is not None and index > 0
+        text = (_project_text(p, workspace, access=access) if workspace is not None and index > 0
                 else p.read_text(encoding="utf-8") if p.is_file() else None)
         if text is not None:
             return text.strip()
@@ -123,13 +132,13 @@ def build_system(
     """Use the supplied tools and originating Runtime's automatic-context permissions."""
     cwd = Path(cwd or session.cwd)
     workspace = None
-    sandbox = session.services.get("sandbox")
+    provider = session.services.get("execution")
     if runtime is None and context is not None:
         if context.origin_parent is not None:
             runtime = context.origin_parent.runtime
         elif context.store is not None or context.accounting_store is not None:
             runtime = session.runtime_for_store(context.store or context.accounting_store)
-    if sandbox is not None and sandbox.mode_for(runtime).workspace_only:
+    if provider is not None and provider.name != "host":
         # Runtime construction precedes ExecutionOrigin creation. Its captured
         # parent/store already identifies the owner, including detached children.
         if context is not None and context.origin_parent is not None:
@@ -139,13 +148,15 @@ def build_system(
         else:
             workspace = cwd.resolve()
 
+    access = getattr(runtime, "execution_context", None) if workspace is not None else None
+
     def instruction_paths(name: str) -> list[Path]:
         if workspace is None:
             return session.paths.both(name)
         return [session.paths.user / name, workspace / ".virgo" / name]
 
     parts: list[str] = []
-    custom = _first_file(instruction_paths("SYSTEM.md"), workspace=workspace) if role == "main" else None
+    custom = _first_file(instruction_paths("SYSTEM.md"), workspace=workspace, access=access) if role == "main" else None
     parts.append(custom or IDENTITY.get(role, IDENTITY["main"]))
     if tools is None:
         tools = session.tools_for(role)
@@ -168,13 +179,13 @@ def build_system(
                                      context={"section": _name, "role": role})
         if text:
             parts.append(text.strip())
-    files = context_files(cwd, session.paths.user, workspace=workspace)
+    files = context_files(cwd, session.paths.user, workspace=workspace, access=access)
     if files:
         body = "\n".join(
             f'<project_instructions path="{p}">\n{t.strip()}\n</project_instructions>' for p, t in files
         )
         parts.append(f"<project_context>\n{body}\n</project_context>")
-    append = _first_file(instruction_paths("APPEND_SYSTEM.md"), workspace=workspace)
+    append = _first_file(instruction_paths("APPEND_SYSTEM.md"), workspace=workspace, access=access)
     if append:
         parts.append(append)
     shell = next((getattr(tool, "shell", None) for tool in tools if getattr(tool, "shell", None)), None)

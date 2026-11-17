@@ -1,43 +1,29 @@
-# Permission presets
+# Execution providers and resource presets
 
-Execution permissions establish the enforced filesystem/network boundary. Task instructions
-do not add or remove that boundary.
+Core calls the neutral interfaces in `virgo.execution`. It has an in-process Host provider; the required Sandbox provider loads only after explicit selection. Providers have one owner and bind before Runtime construction. Optional trusted extension failure handling cannot turn required Sandbox failure into Host execution.
 
-## Permission contract
+A Runtime captures an immutable context containing its source workspace, provider and resource policy. Source binding, argument validation, cancellation and output limits remain Core responsibilities. File editing/search logic remains in Core; file access and process launch belong to the provider. A process handle supports wait, cancellation and cleanup.
 
-User-owned presets contain a stable ID, editable name, and three booleans: `readOnly`,
-`workspaceOnly`, `networkAllowed`. Read-only protects host file data, not remote services.
-Private scratch and broker session/output records remain writable. Workspace scope includes
-user-data reads and writes, with documented system/runtime dependencies. Model transport and
-authentication are broker communication, not task network access. Trusted in-process Python
-extensions, including the MCP extension, and MCP server startup are outside the OS sandbox.
-Offline invocation gating does not prevent an already trusted MCP server from connecting
-autonomously. Unsupported backend combinations fail before launching.
+`execution.provider` defaults to `host`. Host has no resource approval controls. `permissions.approval=ask|never` only controls requests for additional Sandbox resources; it does not classify commands.
 
-Each run captures a policy; children and background work keep their source workspace and policy.
-Selecting/editing a preset affects subsequent work, never claims to revoke a running process.
-A permission request may grant only one exact operation in its originating run. It cannot change
-the selected preset, override a user deny, authorize another agent, survive policy edits/revocation,
-or be restored from historical messages. Only managed file, Shell, Web and MCP extension
-operations can receive an exception; spawning a child or starting a task cannot grant authority
-to its future operations. Approvals are rechecked before execution. Failed or
-partially executed commands are never automatically replayed.
+Sandbox presets have this shape:
 
-## Failure modes and acceptance
+```json
+{
+  "execution": {"provider": "sandbox"},
+  "sandbox": {"executable": "/absolute/path/to/mxc-exec-mac"},
+  "permissions": {
+    "preset": "offline",
+    "approval": "ask",
+    "presets": {
+      "offline": {"name": "Offline", "readPaths": ["."], "writePaths": ["."], "networkAllowed": false}
+    }
+  }
+}
+```
 
-- A visible tool may still fail under the execution policy. Prove write denial through the
-  execution path rather than through tool-schema differences.
-- A workspace escape through a direct file tool, link, subprocess, background job or child must
-  receive the source policy; changing cwd or selected conversation cannot expand access.
-- Offline policy must cover managed Shell, Web/native provider search and MCP extension
-  invocation; no-limit filesystem plus offline must not accidentally disable the network boundary.
-- An approval for one operation cannot authorize changed arguments, another call/runtime, or
-  a second execution. Explicit deny, policy revision, revocation and cancellation invalidate it.
-- Distinguish preflight rejection, unavailable isolation, process-control failure and an ordinary
-  command error. Model-visible results and TUI must share the same bounded evidence, including
-  whether the payload started and whether side effects are known.
-- Keep exact current-head cross-platform/native gates. A simulated failure or skipped test is
-  not evidence of native enforcement. Existing E2E scenarios are updated for changed contracts;
-  focused new scenarios cover newly expressible combinations and single-operation exceptions.
-- In compact terminals and approval panels all three permission values remain visible; replay
-  preserves actual event order.
+This config does **not** certify native support. Current shared-path native policies fail closed; see [acceptance](execution-acceptance.md). Broker file protection and process isolation require separate evidence. Runtime dependencies and unmanaged activities are reported separately from user resource grants.
+
+User settings and startup overrides supply authority. Project settings cannot select Host, change resource grants or alter extension trust. The loader preserves source information and rejects explicit legacy isolation requirements without an explicit Sandbox selection. See [migration](../guides/migrating-execution-policy.md) for retired keys and APIs.
+
+A resource grant is not a reusable session approval. It is consumed once, after final argument validation and before dispatch. Its identity includes caller/run, tool instance, arguments, cwd, environment hash, policy revision, canonical resource names and existing resource identities. The TTL limits new dispatch, not the lifetime of an already launched process. Audit entries never reconstruct live grants.

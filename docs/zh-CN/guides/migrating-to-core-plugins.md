@@ -37,13 +37,7 @@
 
 ## 子代理能力迁移
 
-`agent` 工具现在接收 `description`、`prompt`、可选 `read_only` 和可选 `background`。`type` 参数已被移除，继续传入会导致参数校验失败。
-
-- 原 `type="general"`：直接省略类型参数，默认执行普通委派。
-- 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob` 和 `grep`。只读能力与操作系统沙箱分别设置。
-- 自定义 `agents/*.md`：将任务指令迁移至 Skill 或委派提示，特殊模型和工具策略通过受信任的扩展实现。
-
-Virgo 不再加载 `~/.virgo/agents/*.md` 或 `.virgo/agents/*.md`。现有文件不会被删除或改写，需要时可手动迁移或归档。
+`agent` 接受 description、prompt 和可选 background。type 和 read_only 已移除，传入时拒绝。Runtime 与 ExtensionAPI 工厂也移除 read_only。子代理在提交时继承来源执行上下文。检查意图写入任务提示；需要技术限制时，在来源 Sandbox 任务配置资源范围。参见[执行迁移](migrating-execution-policy.md)。
 
 ## 信任项目扩展
 

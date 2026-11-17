@@ -14,7 +14,7 @@ This decision was implemented from `main@47e1757bda5c5cfafb3a5a508a1a6ec4d629bfa
 | --- | --- | --- |
 | AI/model adapters | Native request/response protocols, authentication, reasoning, provider-specific context and hosted capabilities | Capability plugin implementations |
 | Agent/Tool runtime | Message ordering, streamed events, validation, tool batches, cancellation, bounded results | CLI, TUI or individual plugins |
-| Harness Core | Session stores, runtime identity, context/compaction, mandatory permissions, diagnostic evidence, plugin loading and registration | Imported implementations of disabled plugins |
+| Harness Core | Session stores, runtime identity, context/compaction, source-bound execution provider, diagnostic evidence, plugin loading and registration | Imported implementations of disabled plugins |
 | Base coding tools | `read`, `write`, `edit`, `glob`, `grep`, and the selected shell | Task/team/workflow platforms |
 | Official plugins | Focused optional tools, commands, prompt sections and event handlers | Private Session registries or the currently selected TUI pane |
 | Hosts | CLI, headless output, Textual rendering and interaction | A mandatory `setup(api)` lifecycle |
@@ -40,7 +40,7 @@ The Core owns shell/process execution and cancellation. The background plugin us
 
 ## Runtime invariants
 
-1. Core permission checks run before approval and immediately before execution, including after argument-changing hooks. A missing or failed policy cannot become unrestricted execution. Deterministic rules and explicit user approval authorize operations; a model does not grant permissions.
+1. Core validates source and arguments before dispatch. Host executes with OS authority without ordinary approvals. Explicit Sandbox uses the required extension and exact resource grants, consumed after argument-changing hooks. A missing or failed requested boundary cannot fall back to Host; a model does not grant capabilities.
 2. Runtime identity, stores, diagnostic grants, cancellation and shared request budgets follow the caller. A child cannot raise the parent's permission ceiling. Switching the visible conversation does not transfer ownership.
 3. Tool/command registration records an owner and rejects name collisions. Dynamic replacement validates the full candidate set before publication; new schemas become visible at request boundaries. An executing batch retains its tool snapshot.
 4. MCP is an extension, so its connection lifetime is outside this plugin contract. The [MCP extension](../../../extensions/README.md) publishes tools through `api.replace_tools`, validates a replacement before publishing, and keeps previous connections when a reload fails. It never replays a business operation.

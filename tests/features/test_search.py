@@ -192,62 +192,50 @@ def test_cache_is_invalidated_by_endpoint_model_and_credential_changes(make_sess
         assert runtime.request_context(runtime.messages, changed).web_search is not None
 
 
-def test_deny_rule_blocks_native_and_builtin_execution(make_session, monkeypatch):
-    session = make_session(approval="ask", settings={"fetch": {"mode": "off"}, "permissions": {"deny": ["web_search"]}})
+def test_network_policy_blocks_native_and_builtin_execution(broker_session):
+    session = broker_session(network=False, settings={"fetch": {"mode": "off"}})
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
     assert context.web_search is None
     event = ToolCallEvent(call_id="s", tool_name="web_search", args={"query": "Python"},
                           tool=session.tool("web_search"), cwd=session.cwd, agent="main")
-    assert session.services["permissions"].decide(event)[0] == "deny"
+    assert session._before_tool(event) is not None
 
 
 @pytest.mark.parametrize("kind", ["allow", "deny"])
-def test_scoped_rules_keep_search_local_for_exact_query_review(make_session, monkeypatch, kind):
-    session = make_session(allow=False, settings={"fetch": {"mode": "off"}, "permissions": {kind: ["web_search(*private*)"]}})
-    runtime = select(session)
-    context = runtime.request_context(runtime.messages)
-    assert context.web_search is None
-    assert "web_search" in [t.name for t in context.tools]
+def test_scoped_command_rules_require_migration(make_session, kind):
+    with pytest.raises(ValueError, match="retired"):
+        make_session(settings={"permissions": {kind: ["web_search(*private*)"]}})
 
 
-def test_native_permission_review_is_cached_only_for_current_request(make_session, monkeypatch):
-    # Keep the historical comparison identity; deterministic decisions now
-    # reevaluate every request instead of maintaining a model-review cache.
-    session = make_session(allow=False, settings={"fetch": {"mode": "off"}})
+def test_native_network_admission_is_rechecked_each_request(broker_session, monkeypatch):
+    session = broker_session(settings={"fetch": {"mode": "off"}})
     runtime = select(session)
-    session.settings.set("permissions.allow", ["web_search"])
     decisions = []
-    policy = session.services["permissions"]
-    decide = policy.decide
-
+    provider = session.services["execution"]
+    admit = provider.preflight
     def record(event):
         decisions.append(event)
-        return decide(event)
-
-    monkeypatch.setattr(policy, "decide", record)
+        return admit(event)
+    monkeypatch.setattr(provider, "preflight", record)
     assert runtime.request_context(runtime.messages).web_search
     assert runtime.request_context(runtime.messages).web_search
     assert len(decisions) == 2 and decisions[0].args["native"] is True
-    session.settings.set("permissions.deny", ["web_search"])
+    provider.save_mode("offline", "Offline", ["."], ["."], False, persist=False)
+    provider.select_mode("offline")
     assert runtime.request_context(runtime.messages).web_search is None
     assert len(decisions) == 3
-    session.settings.set("permissions.deny", [])
-    runtime.messages.append(UserMessage("A different public research request"))
+    provider.select_mode("workspace-edit")
+    runtime.messages.append(UserMessage("Another request"))
     assert runtime.request_context(runtime.messages).web_search
     assert len(decisions) == 4
 
 
-def test_unapproved_native_scope_falls_back_without_asking_user(make_session, monkeypatch):
-    # Network is an explicit mode boundary, even with broad allow rules.
-    session = make_session()
-    sandbox = session.services["sandbox"]
-    sandbox.save_mode("offline", "Offline", False, True, False, persist=False)
-    sandbox.select_mode("offline")
+def test_unapproved_native_scope_falls_back_without_asking_user(broker_session):
+    session = broker_session(network=False)
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
-    assert context.web_search is None
-    assert not context.web_tools
+    assert context.web_search is None and not context.web_tools
     assert "web_search" in [t.name for t in context.tools]
     assert session.ui.questions == []
 

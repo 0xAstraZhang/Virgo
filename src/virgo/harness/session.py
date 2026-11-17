@@ -32,13 +32,12 @@ from ..ai.types import (
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
 from ..i18n import Translator, normalize_language
-from ..tools import BASE_TOOLS
 from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
-from .commands import Commands, expand_template, load_templates, register_builtins
+from .commands import Commands, expand_template, load_templates, parse_frontmatter, register_builtins
 from .diagnostics import DiagnosticLog
+from .execution import install_execution
 from .extensions import (
-    ROLES_ALL,
     EventBus,
     Handled,
     install_command_hooks,
@@ -47,8 +46,7 @@ from .extensions import (
 )
 from .jobs import JobManager
 from .origin_context import ExecutionOrigin, source_for
-from .permission_policy import install_permissions
-from .permissions import PermissionPolicy, normalize_approval_policy
+from .permissions import normalize_approval_policy
 from .runtime import Runtime
 from .runtime_limits import ChildCancellation
 from .services import Services
@@ -99,14 +97,13 @@ class AgentSession:
         self.auth = AuthStore(self.paths.user / "auth.json")
         self.bus = EventBus(on_error=lambda m: self.ui.print(m, "error"), on_diagnostic=self._extension_error)
         self.templates: dict = {}
+        self._template_paths: dict[str, Path] = {}
         self.commands = Commands(self.translator)
         self.services: Services = Services()
         self.sections: list = []
         self.runtime_sections: list = []
         self.request_sections: list = []
-        self.permission_policy: PermissionPolicy | None = None
         self._permission_boundary = None
-        self._additional_permission_policies: list[tuple[str, PermissionPolicy]] = []
         self._reported_save_errors: set[int] = set()
         self._failed_stores: list = []
         self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
@@ -135,8 +132,7 @@ class AgentSession:
         self.model = self.resolve(model or self.settings.get("model"))
         self.small_model = self._small_model(self.model)
 
-        for tool in BASE_TOOLS:
-            self.register_tool(tool, ROLES_ALL, owner="core")
+        install_execution(self)
         self.services["shell"] = ShellSelection(self, shell_catalog)
         # Core owns background supervision, so the shell capability and the
         # background plugin both depend on this service instead of on each other.
@@ -149,9 +145,6 @@ class AgentSession:
         self.store = self._open_store(session)
         self._visited_stores = [self.store]
         try:
-            install_permissions(self)
-            if self.permission_policy is None:
-                raise RuntimeError("Core permission policy was not installed")
             load_builtin_features(self)
             if extensions:
                 load_user_extensions(self)
@@ -162,8 +155,10 @@ class AgentSession:
                 jobs.background_enabled = False
                 self.services["shell"].install_tools()
             install_command_hooks(self)
-            self.templates.update(load_templates(self.paths.both("prompts")))
+            self.templates.update(load_templates([self.paths.user / "prompts"]))
             self.main = self._new_main(self.store)
+            self.templates.update(load_templates([self.paths.project / "prompts"],
+                                  access=self.main.execution_context, source_paths=self._template_paths))
         except BaseException:
             self.cleanup_plugins()
             raise
@@ -486,7 +481,9 @@ class AgentSession:
             return SessionStore.new(self.paths.sessions, self.cwd)
         return SessionStore.load(Path(session))
 
-    def create_runtime(self, name: str, role: str, *, parent=None, read_only=False, **kwargs) -> Runtime:
+    def create_runtime(self, name: str, role: str, *, parent=None, **kwargs) -> Runtime:
+        if "read_only" in kwargs:
+            raise ValueError("read_only is retired; child runtimes inherit the originating resource boundary")
         with self._lock:
             self.assert_state_change_allowed()
             origin_parent = kwargs.get("origin_parent")
@@ -502,9 +499,6 @@ class AgentSession:
                 kwargs["origin_parent"] = origin_parent
                 kwargs["request_budget"] = parent.request_budget
                 kwargs["signal"] = ChildCancellation(parent.agent.signal, kwargs.get("signal"))
-                parent_approval = self.services["permissions"].approval_for(parent)
-                if parent_approval == "never":
-                    kwargs["approval_policy"] = "never"
                 parent_limit = parent.agent.cfg.max_turns
                 if parent_limit is not None:
                     kwargs["max_turns"] = min(parent_limit, kwargs.get("max_turns") or parent_limit)
@@ -512,7 +506,7 @@ class AgentSession:
                 origin_parent.root.entries()
             kwargs.setdefault("accounting_store", kwargs.get("store") if role == "main" else origin_parent.root)
             try:
-                runtime = Runtime(self, name, role, read_only=read_only, **kwargs)
+                runtime = Runtime(self, name, role, **kwargs)
                 self.bus.emit("runtime_created", runtime)
                 if role == "main" and runtime.store is not None:
                     self._main_runtimes[runtime.store.id] = runtime
@@ -751,27 +745,14 @@ class AgentSession:
     def tool(self, name: str, role: str = "main") -> AgentTool | None:
         return next((t for t in self.tools_for(role) if t.name == name), None)
 
-    def register_permission_policy(self, policy: PermissionPolicy) -> None:
-        if not callable(getattr(policy, "preflight", None)) or not callable(getattr(policy, "before_execute", None)):
-            raise TypeError("Policy requires preflight(event) and before_execute(event)")
-        if self.permission_policy is not None:
-            self.add_permission_policy(policy, owner="host")
-            return
+    def register_execution_provider(self, provider, *, owner: str) -> None:
+        if "execution" in self.services or hasattr(self, "main"):
+            raise ValueError("Execution provider already bound; it cannot be replaced during a session")
+        if provider.name != self.settings.get("execution.provider", "host"):
+            raise ValueError("Execution provider does not match the explicitly requested provider")
+        self.services["execution"] = provider
+        self._execution_owner = owner
         self._permission_boundary = self.bus.boundary(100)
-        self.permission_policy = policy
-        self.services["permissions"] = policy
-
-    def add_permission_policy(self, policy: PermissionPolicy, *, owner: str):
-        if not callable(getattr(policy, "preflight", None)) or not callable(getattr(policy, "before_execute", None)):
-            raise TypeError("Policy requires preflight(event) and before_execute(event)")
-        entry = (owner, policy)
-        self._additional_permission_policies.append(entry)
-
-        def remove():
-            if entry in self._additional_permission_policies:
-                self._additional_permission_policies.remove(entry)
-
-        return remove
 
     def _persistence_block(self, ev):
         runtime = ev.origin.runtime if ev.origin is not None else self.main
@@ -781,26 +762,24 @@ class AgentSession:
         if block := self._persistence_block(ev):
             return block
         try:
-            policies = getattr(ev, "_additional_permission_policies", tuple(self._additional_permission_policies))
-            for _, policy in policies:
-                if result := getattr(policy, method)(ev):
-                    return result
-            policy = getattr(ev, "_permission_policy", self.permission_policy)
-            return getattr(policy, method)(ev) or self._persistence_block(ev)
+            provider = self.services["execution"]
+            return getattr(provider, method)(ev) or self._persistence_block(ev)
         except Exception as error:
             runtime = ev.origin.runtime if ev.origin is not None else self.main
             details = runtime.report_error(error, phase=f"permission.{method}", context={
                 "tool_name": ev.tool_name, "tool_call_id": ev.call_id,
-                "policy": type(policy).__qualname__,
+                "policy": type(self.services["execution"]).__qualname__,
             })
-            return Block(self.t("harness.permission.failed", error=safe_text(error)), details={"error": details})
+            return Block(self.t("harness.permission.failed", error=safe_text(error)) + "; payload not started", details={
+                "error": details, "status": "execution_unavailable", "boundary": {
+                    **runtime.execution_context.describe(), "state": "admission_failed", "payload_started": False,
+                    "side_effects": "none", "restricted_resource": "execution admission",
+                }})
 
     def _before_tool(self, ev: ToolCallEvent):
         source_for(self, ev)  # Bind direct main integrations before policies or hooks can observe them.
         if block := self._persistence_block(ev):
             return block
-        ev._permission_policy = self.permission_policy
-        ev._additional_permission_policies = tuple(self._additional_permission_policies)
         snapshot = self.bus.snapshot("tool_call")
         boundary = self._permission_boundary
         if boundary is None:
@@ -821,7 +800,8 @@ class AgentSession:
         bounded = []
         for b in res.content:
             if isinstance(b, TextContent) and len(b.text.encode("utf-8")) > MAX_BYTES:
-                b = TextContent(budget(b.text, ev.cwd, ev.tool_name, t=self.t))
+                b = TextContent(budget(b.text, ev.cwd, ev.tool_name, t=self.t,
+                                       execution_context=ev.origin.runtime.execution_context))
             bounded.append(b)
         res.content = bounded
         return res
@@ -855,7 +835,17 @@ class AgentSession:
                     cmd.fn(self, args)
                 return
             if name in self.templates:
-                text = expand_template(self.templates[name][1], args)
+                body = self.templates[name][1]
+                if path := self._template_paths.get(name):
+                    try:
+                        data = self.main.execution_context.read_bytes(path)
+                        if data is None:
+                            raise OSError("Template resource is unavailable")
+                        _, body = parse_frontmatter(data.decode("utf-8"))
+                    except OSError as error:
+                        self.ui.print(f"Prompt template resource denied: {error}", "error")
+                        return
+                text = expand_template(body, args)
             else:
                 if name in {
                     "schedule", "schedules", "team", "tasks", "task", "memory", "goal",

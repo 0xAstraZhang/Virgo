@@ -11,7 +11,7 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 3. `<工作目录>/.virgo/settings.json`。
 4. 支持的环境变量和运行时／CLI 覆盖值。
 
-嵌套对象合并，高优先级值覆盖低优先级值。项目配置只能追加 deny 规则，授权和审批策略必须来自用户配置或显式启动参数。CLI 指定的模型覆盖 `VIRGO_MODEL`，后者覆盖配置文件。`VIRGO_SHELL` 覆盖用户、项目和运行时指定的解释器。命令保存用户默认值时会保留无关字段；下次启动时，项目或启动参数仍可能优先。当 `<工作目录>/.virgo` 与用户配置目录（`~/.virgo` 或 `$VIRGO_HOME`）是同一个目录时，该文件不会被第二次当作项目配置层读取。
+嵌套对象合并，高优先级值覆盖低优先级值。项目配置不能提供执行权限或扩展信任，授权必须来自用户配置或显式启动参数。CLI 指定的模型覆盖 `VIRGO_MODEL`，后者覆盖配置文件。`VIRGO_SHELL` 覆盖用户、项目和运行时指定的解释器。命令保存用户默认值时会保留无关字段；下次启动时，项目或启动参数仍可能优先。当 `<工作目录>/.virgo` 与用户配置目录（`~/.virgo` 或 `$VIRGO_HOME`）是同一个目录时，该文件不会被第二次当作项目配置层读取。
 
 语言优先级为默认值 → 用户配置 → 项目配置 → `--language`／运行时配置。`/language` 保存用户偏好并立即应用，保存失败则保留当前语言。未定义 `VIRGO_LANGUAGE` 环境变量。别名与活动会话行为见[本地化](../development/localization.md)。
 
@@ -21,10 +21,7 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 {
   "language": "zh-CN",
   "effort": "medium",
-  "shell": {"executable": "auto"},
-  "permissions": {
-    "deny": ["bash(git push*)"]
-  }
+  "shell": {"executable": "auto"}
 }
 ```
 
@@ -42,11 +39,11 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `effort` | `medium`；界面支持 `low`、`medium`、`high`、`xhigh`、`max` |
 | `maxTokens` | 未设置，使用适配器／模型默认值 |
 | `shell.executable` | `auto`；受支持的解释器名称或可执行文件路径 |
-| `permissions.preset` | `workspace-edit`；选择用户所有的权限预设 |
-| `permissions.presets` | 按稳定 ID 保存可编辑名称与三个开关 |
-| `sandbox.mode` | 可选的旧禁网兼容配置 |
+| `permissions.preset` | Sandbox: `workspace-edit` |
+| `permissions.presets` | `name/readPaths/writePaths/networkAllowed` |
+| `execution.provider` | `host`; `host` or `sandbox` |
 | `permissions.approval` | `ask`；`never` 拒绝需要新增批准的操作 |
-| `permissions.allow`、`permissions.deny` | 工具规则列表 |
+| `sandbox.executable` | Explicit installed MXC v1.1.0 executor path |
 | `compaction.enabled` | `true` |
 | `compaction.triggerRatio` | 模型上下文窗口的 `0.8` |
 | `compaction.triggerTokens` | 未设置；提供时优先于比例阈值 |
@@ -101,67 +98,23 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 辅助请求自动选择同一连接的小模型：官方 Anthropic 连接使用 `claude-haiku-5-5`，官方 OpenAI/Codex 连接使用 `gpt-6-luna`，其余使用主模型。推理强度优先 `low`，其次为受支持的默认值，否则省略控制参数。旧 `smallModel` 字段不再参与选择。
 
-## 权限
+## 执行与资源权限
 
-`--permission <id>` 和 `/permissions <id>` 选择权限预设。Shift+Tab 打开 TUI 选择器，可以修改
-名称和三个开关，或新建预设。使用只影响当前对话；保存将预设写入用户设置。
-任务开始时捕获权限；运行中修改显示为下次生效，不声称撤销已启动进程的权限。
-子 Agent 和后台任务保留来源工作区及权限。
+全新配置默认 `execution.provider=host`。Host 直接使用宿主文件与进程 API，由宿主操作系统决定权限；不加载或探测 Sandbox，也不审查命令。通过 `--execution host|sandbox` 显式选择执行方式，`/permissions show` 区分请求范围与实际边界。
 
-| 默认 ID／名称 | 只读 | 仅工作区 | 联网 |
-| --- | --- | --- | --- |
-| `read-only` / Read-Only | true | true | true |
-| `workspace-edit` / Workspace-Edit | false | true | true |
-| `no-limit` / No-Limit | false | false | true |
+Sandbox 是按需加载的必要扩展。用户显式安装 MXC v1.1.0 executor，并配置 `sandbox.executable`。扩展缺失、执行器无效或策略无法实施时拒绝执行，不回退 Host。**目前共享宿主路径的原生执行处于阻塞状态**：macOS 实测存在启动后硬链接别名绕过。发现后端不等于建立隔离，参见[验收状态](../development/execution-acceptance.md)。
 
-默认 Workspace-Edit。名称只用于显示，实际权限由开关决定。用户设置示例：
+Sandbox 预设使用 `name/readPaths/writePaths/networkAllowed`。路径相对于来源工作区解释，可写路径同时可读。内置 `read-only` 为工作区只读，`workspace-edit` 为工作区可写，二者默认允许联网。`no-limit` 已移除。系统运行依赖与用户授权范围分别报告。
 
 ```json
-{
-  "permissions": {
-    "preset": "workspace-edit",
-    "presets": {
-      "offline-inspection": {
-        "name": "离线检查",
-        "readOnly": true,
-        "workspaceOnly": true,
-        "networkAllowed": false
-      },
-      "workspace-edit": {"name": "日常开发"}
-    },
-    "approval": "ask",
-    "deny": ["bash(git push*)"]
-  }
-}
+{"execution":{"provider":"sandbox"},"sandbox":{"executable":"/absolute/path/to/mxc-exec-mac"},"permissions":{"preset":"offline","approval":"ask","presets":{"offline":{"name":"离线","readPaths":["."],"writePaths":["."],"networkAllowed":false}}}}
 ```
 
-稳定 ID 使用 1–64 个字母、数字、下划线或连字符。`ask`、`never`、`revoke`、`show`、`status`、`sandbox`、`list`、`save` 由 `/permissions` 保留。自定义预设必须提供三个布尔值；
-内置预设可只覆盖部分字段。名称使用 1–100 个可打印字符。
-逐行客户端使用 `/permissions save <id> <JSON>` 编辑，`/permissions list` 查看实际值，`/permissions show`
-分别显示有效权限和后端发现状态。后端不支持所选组合时拒绝执行。
+`--permission <id>`、`/permissions <id>` 和 Sandbox 的 TUI 选择器为后续 run 选择预设；`/permissions save <id> <JSON>` 保存用户预设。正在运行、排队及子代理任务保留已捕获的来源上下文。`ask|never` 只控制明确的资源增量请求；Host 不提供无效的权限审批操作。授权只用于一次精确操作，五分钟或当前 run 结束即失效，以先到者为准；到期不撤销已启动进程的权限。
 
-只读保护受管宿主文件数据，私有临时目录和宿主记录仍可写；它不保证远程系统没有副作用。
-工作区范围覆盖受管文件读写，并有明确的系统／运行时例外。POSIX 后端和 Core 文件适配器
-保护 Virgo 私有授权存储。Windows 使用对象 ACL，存在系统 LPAC 读取授权，不是精确路径命名空间。
-网络开关覆盖受管 Shell、Web／原生搜索及 MCP 扩展调用，不关闭模型传输或登录。
-可信 Python 扩展不在 OS 沙箱中。MCP 服务不能执行本地文件边界，在受限文件模式下需申请
-单次、不限文件范围的明确例外。详见[沙箱](../guides/sandbox.md)。
+执行权限只能来自用户配置或显式启动覆盖。项目不能设置 execution、permissions 或扩展信任。旧配置明确要求隔离但未显式选择 Sandbox 时报告冲突。非空 allow/deny、旧布尔预设字段、子代理 read_only 参数均报告迁移错误。不使用命令白名单或意图分类器。参见[迁移](../guides/migrating-execution-policy.md)与[权限预设](../development/permission-profiles.md)。
 
-权限范围内的受管操作直接执行，不再根据 Shell 字符串分类进行普通审批。显式 deny 始终生效。
-`request_permissions(tool, arguments, permissions, reason)` 申请一个准确操作；批准后模型必须
-用相同参数调用该工具。它不会执行或重放命令、修改 Mode、给其他任务授权，历史也不恢复授权。
-批准绑定来源 Runtime／运行、参数、cwd、解析路径、工具实例、Shell 环境及策略版本。
-变化会使批准失效。已经拒绝的同一请求不会重复询问，直到撤销决定或开始新的运行。
-
-`permissions.approval=ask` 允许交互申请，`never` 拒绝新增申请，但不拒绝已在权限范围内的操作。
-`/permissions revoke` 清除记住的批准／拒绝以及尚未消费的单次例外。可信扩展策略仍可提出额外
-审批。用户 allow 规则可用于这些策略，但不能突破执行边界或显式 deny。Shell allow 必须精确
-匹配完整命令，或授权整个工具；deny 和路径规则支持 glob。
-
-只有用户设置及显式启动覆盖可以选择／编辑权限预设。项目 `permissions` 只接受额外 deny，
-不能清空用户拒绝。显式旧 `sandbox.mode=read-only|workspace-write`／`--sandbox` 保留禁网行为；
-`disabled` 映射到 No-Limit。删除旧设置后使用新的默认联网预设。不要同时使用 `--permission` 和
-`--sandbox`。`sandbox.network`、模型权限审批和旧审批模式别名仍不支持。
+可信 Python 扩展、hooks、MCP 服务启动和模型通信不受此边界管理。Sandbox 拒绝无法实施文件范围的外部操作，授权不能切换到 Host。受管 Web 和原生搜索检查来源网络策略。
 
 ## 上下文与重试
 

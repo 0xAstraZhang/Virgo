@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -19,11 +20,12 @@ from .choices import ChoiceList
 
 
 def permission_flags(owner, mode, *, compact: bool = False) -> str:
-    values = {
-        name: tr(owner, "ui.modes.on" if getattr(mode, name) else "ui.modes.off")
-        for name in ("read_only", "workspace_only", "network_allowed")
-    }
-    return tr(owner, "ui.modes.flags_short" if compact else "ui.modes.flags", **values)
+    if mode.id == "host":
+        return tr(owner, "sandbox.host_execution")
+    network = tr(owner, "ui.modes.on" if mode.network_allowed else "ui.modes.off")
+    return tr(owner, "ui.modes.flags_short" if compact else "ui.modes.flags",
+              read_paths=len(mode.read_paths), write_paths=len(mode.write_paths), network_allowed=network)
+
 
 
 @dataclass(frozen=True)
@@ -31,8 +33,8 @@ class PermissionModeChoice:
     action: str
     mode_id: str
     name: str
-    read_only: bool
-    workspace_only: bool
+    read_paths: tuple[str, ...]
+    write_paths: tuple[str, ...]
     network_allowed: bool
 
 
@@ -76,7 +78,10 @@ class PermissionModePicker(ModalScreen[PermissionModeChoice | None]):
                 yield ChoiceList(id="modes-list")
                 yield Static(tr(self, "ui.modes.name"), id="mode-name-label", markup=False)
                 yield Input(id="mode-name", max_length=100)
-                for flag in ("read_only", "workspace_only", "network_allowed"):
+                for field in ("read_paths", "write_paths"):
+                    yield Static(tr(self, "ui.modes." + field) + " (JSON)", markup=False)
+                    yield Input(id="mode-" + field)
+                for flag in ("network_allowed",):
                     with Horizontal(classes="mode-flag"):
                         yield Static(tr(self, "ui.modes." + flag), markup=False)
                         yield Switch(id="mode-" + flag)
@@ -103,7 +108,9 @@ class PermissionModePicker(ModalScreen[PermissionModeChoice | None]):
         self.mode_id = mode_id
         self._loading = True
         self.query_one("#mode-name", Input).value = mode.name
-        for flag in ("read_only", "workspace_only", "network_allowed"):
+        for field in ("read_paths", "write_paths"):
+            self.query_one("#mode-" + field, Input).value = json.dumps(getattr(mode, field), ensure_ascii=False)
+        for flag in ("network_allowed",):
             self.query_one("#mode-" + flag, Switch).value = getattr(mode, flag)
         self._loading = False
         self.refresh_actions()
@@ -126,27 +133,41 @@ class PermissionModePicker(ModalScreen[PermissionModeChoice | None]):
             self.use_mode()
 
     def choice(self, action: str) -> PermissionModeChoice:
+        def paths(field):
+            value = json.loads(self.query_one("#mode-" + field, Input).value)
+            if not isinstance(value, list) or any(not isinstance(p, str) or not p or "\0" in p for p in value):
+                raise ValueError("Paths must be a JSON array of nonempty strings")
+            return tuple(value)
+
         return PermissionModeChoice(
             action,
             self.mode_id,
             self.query_one("#mode-name", Input).value.strip(),
-            **{flag: self.query_one("#mode-" + flag, Switch).value
-               for flag in ("read_only", "workspace_only", "network_allowed")},
+            read_paths=paths("read_paths"),
+            write_paths=paths("write_paths"),
+            network_allowed=self.query_one("#mode-network_allowed", Switch).value,
         )
 
     def refresh_actions(self) -> None:
         if self._loading or not self.is_mounted:
             return
-        choice = self.choice("save")
+        try:
+            choice = self.choice("save")
+            if any(not isinstance(p, str) or not p for p in (*choice.read_paths, *choice.write_paths)):
+                raise ValueError("Invalid paths")
+        except (ValueError, TypeError):
+            self.query_one("#mode-save", Button).disabled = True
+            self.query_one("#mode-use", Button).disabled = True
+            return
         original = self.modes.get(self.mode_id)
         changed = original is None or any(
             getattr(original, field) != getattr(choice, field)
-            for field in ("name", "read_only", "workspace_only", "network_allowed")
+            for field in ("name", "read_paths", "write_paths", "network_allowed")
         )
         self.query_one("#mode-save", Button).disabled = not choice.name or not changed
         self.query_one("#mode-use", Button).disabled = changed
 
-    @on(Input.Changed, "#mode-name")
+    @on(Input.Changed)
     @on(Switch.Changed)
     def edited(self) -> None:
         self.refresh_actions()

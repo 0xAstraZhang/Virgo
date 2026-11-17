@@ -37,13 +37,7 @@ Legacy `features.permission` and `plugins.auto_review` are retired. Follow [exec
 
 ## Subagent capability migration
 
-The `agent` tool accepts `description`, `prompt`, optional `read_only` and optional `background`. The `type` parameter is removed and calls containing it are rejected.
-
-- Replace `type="general"` with an omitted type argument; unrestricted delegation is the default.
-- Replace `type="explore"` with `read_only=true`. Only `read`, `glob` and `grep` are available. Read-only capability is separate from the OS sandbox.
-- Move custom `agents/*.md` instructions into a Skill or delegated prompt; use trusted extensions for custom model and tool policies.
-
-Virgo no longer loads `~/.virgo/agents/*.md` or `.virgo/agents/*.md`. Existing files are not deleted or rewritten; archive or migrate them manually.
+The `agent` tool accepts `description`, `prompt` and optional `background`. Removed `type` and `read_only` arguments are rejected. Runtime and ExtensionAPI factories also remove `read_only`. Children inherit the source task execution context at submission. Express inspection goals in the task prompt; select resource limits on the source Sandbox task for technical enforcement. See [execution migration](migrating-execution-policy.md).
 
 ## Trust project extensions
 

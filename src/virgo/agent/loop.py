@@ -198,7 +198,7 @@ def _transport_facts(res: ToolResult) -> dict | None:
 
 
 def _execution_facts(res: ToolResult, *, started=False, outcome="not_started",
-                     result_hook="not_run", transport=None) -> ToolResult:
+                     result_hook="not_run", transport=None, boundary=None) -> ToolResult:
     """Describe this tool invocation, without claiming idempotency or committed effects.
 
     An adapter may know more about remote dispatch than the Python execute boundary.
@@ -210,6 +210,10 @@ def _execution_facts(res: ToolResult, *, started=False, outcome="not_started",
         # no failure to project, so keep that public payload contract unchanged.
         return res
     details = _tool_details(res)
+    if boundary is not None:
+        details["boundary"] = boundary
+    elif started:
+        details.pop("boundary", None)
     details["execution"] = {
         "started": started,
         "outcome": outcome,
@@ -352,6 +356,7 @@ def _execute(
         if not signal.is_set():
             res = _annotate_error(res, calls[i], cfg, phase="tool.execute")
         transport = _transport_facts(res)
+        boundary = copy.deepcopy(res.details.get("boundary")) if isinstance(res.details, dict) else None
         result_hook = "not_run"
         if cfg.after_tool_call:
             previous = []
@@ -371,7 +376,7 @@ def _execute(
             if not signal.is_set():
                 res = _annotate_error(res, calls[i], cfg, phase="tool.result_hook")
             _preserve_errors(res, previous)
-        _execution_facts(res, started=True, outcome=outcome, result_hook=result_hook, transport=transport)
+        _execution_facts(res, started=True, outcome=outcome, result_hook=result_hook, transport=transport, boundary=boundary)
         res.details = res.details if res.details is not None else {}
         if isinstance(res.details, dict):
             res.details.setdefault("duration", round(time.monotonic() - start, 3))

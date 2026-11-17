@@ -262,7 +262,7 @@ def open_child(parent: FileHandle, name: str, access, *, share_delete=True, shar
 @contextmanager
 def replace_staged(source: Path, target: Path, *, expected_identity: tuple[int, int] | None):
     """Replace a name, yield its commit point, then finish the destination DACL."""
-    from .windows_sandbox_acl import _prepare_dacl, _read, acl_lock, inherited_file_dacl
+    from .windows_acl import _prepare_dacl, _read, acl_lock, inherited_file_dacl
 
     source, target = Path(normalize_path(source)), Path(normalize_path(target))
     _component(target.name)

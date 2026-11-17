@@ -7,6 +7,7 @@ import signal as _signal
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
@@ -18,7 +19,7 @@ MAX_TIMEOUT = 3600
 SHELL = os.environ.get("VIRGO_SHELL") or ("bash" if os.name != "nt" else None)
 
 
-def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, sandbox_policy=None, output_path=None, cancellation=None) -> subprocess.Popen:
+def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, execution_context=None, output_path=None, cancellation=None) -> subprocess.Popen:
     from .shell import shell_environment
 
     env = shell_environment()
@@ -33,10 +34,10 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, 
         shell = False
     else:
         argv, shell = command, True
-    if sandbox_policy is not None:
+    if execution_context is not None:
         if shell or isinstance(argv, str):
-            raise ValueError("Sandbox execution requires an explicit interpreter argv")
-        return sandbox_policy.spawn(argv, cwd, env, stdout, output_path, cancellation)
+            raise ValueError("Managed execution requires an explicit interpreter argv")
+        return execution_context.spawn(argv, cwd, env, stdout, output_path, cancellation)
     if os.name == "nt":
         from .windows_process import WindowsProcess
 
@@ -82,19 +83,19 @@ def kill_tree(proc: subprocess.Popen) -> None:
 
 
 def run_command(
-    command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter=None, sandbox_policy=None
+    command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter=None, execution_context=None
 ) -> tuple[CommandOutput, int | None, str]:
     """Spool stdout/stderr directly to disk, returning only a bounded tail and metadata."""
     if signal.is_set():
         return CommandOutput(""), None, "aborted"
     prefix = interpreter.tool_name if interpreter is not None else "bash"
-    path, output_file = open_output(cwd, prefix, **({"sandbox_policy": sandbox_policy} if sandbox_policy else {}))
+    path, output_file = open_output(cwd, prefix, **({"execution_context": execution_context} if execution_context else {}))
     with output_file:
         try:
             proc = spawn(command, cwd, stdout=output_file, interpreter=interpreter,
-                         **({"sandbox_policy": sandbox_policy, "output_path": path, "cancellation": signal} if sandbox_policy else {}))
+                         **({"execution_context": execution_context, "output_path": path, "cancellation": signal} if execution_context else {}))
         except BaseException:
-            if sandbox_policy is not None:
+            if execution_context is not None:
                 # Windows intentionally denies delete sharing for the exact
                 # spool handle. Close it before removing a failed launch's log.
                 output_file.close()
@@ -115,7 +116,7 @@ def run_command(
                 time.sleep(0.05)
             proc.wait(timeout=5)
         finally:
-            from .sandbox import cleanup_process
+            from ..execution import cleanup_process
 
             try:
                 if proc.poll() is None:
@@ -123,7 +124,10 @@ def run_command(
                     proc.wait(timeout=5)
             finally:
                 cleanup_process(proc)
-    return read_output(path), proc.returncode, status
+    boundary = getattr(proc, "_virgo_boundary", None)
+    if boundary is None and execution_context is not None:
+        boundary = {**execution_context.describe(), "payload_started": True, "side_effects": "possible", "cleanup": "process_group_best_effort" if os.name != "nt" else "job_object"}
+    return replace(read_output(path, execution_context=execution_context), boundary=boundary), proc.returncode, status
 
 
 def format_output(

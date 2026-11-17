@@ -22,11 +22,11 @@ Virgo separates model transport, the agent loop and application policy. Official
 
 The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
 
-Canonical user-facing terms are defined in [Vocabulary](vocabulary.md). Shared rules live with their semantics: `ai/providers/reasoning.py` maps reasoning levels; `harness/permissions.py` defines approval and read-only capability; `permission_policy.py` enforces rules and explicit grants. `origin_context.py` binds the Runtime, workspace and source branch. Sandbox enforces Shell boundaries while file tools retain application-level write protection.
+Core uses `virgo.execution` for file and process access. `harness/execution.py` binds the default Host provider without Sandbox imports. `virgo.extensions.sandbox` owns resource grants, protected file access and the pinned MXC adapter. `origin_context.py` binds the source Runtime and workspace. Native support remains blocked as documented in [acceptance](execution-acceptance.md).
 
 ## Core and plugin assembly
 
-Core initializes the base coding toolkit, Shell, store, runtime identity, diagnostics and mandatory permission gate before loading capabilities. Official coding plugins load by default and `plugins.<id>.enabled` overrides that per plugin. Trusted Python extensions are separate, so `--no-extensions` is the zero-extension path.
+Core initializes the base coding toolkit, Shell, store, runtime identity, diagnostics and source-bound execution provider before loading capabilities. Official coding plugins load by default and `plugins.<id>.enabled` overrides that per plugin. Trusted Python extensions are separate, so `--no-extensions` is the zero-extension path.
 
 Registrations have owners; collisions fail. Setup rollback removes partial registrations, and cleanup runs in reverse order. Disabled capabilities are not imported. Dynamic tool sets publish atomically at model-request boundaries through the owned registry. The Core depends on these contracts, not concrete plugin implementations. See [Extension API](extensions.md).
 

@@ -45,14 +45,14 @@ def test_home_and_model_overrides(project, tmp_path, monkeypatch):
 def test_permission_defaults_and_saved_mode_migration(project, configured):
     """Retain historical case identities while retiring silent mode aliases."""
     if configured is not None:
-        with pytest.raises(ValueError, match=r"permissions\.mode.*retired"):
+        with pytest.raises(ValueError, match="retired|requires|unknown"):
             AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False,
                          settings={"permissions": {"mode": configured}})
         return
     session = AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False)
     try:
         assert session.approval_policy == "ask"
-        assert session.services["sandbox"].mode == "workspace-write"
+        assert session.services["execution"].name == "host"
     finally:
         session.shutdown()
 
@@ -61,9 +61,9 @@ def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp
     user = tmp_path / "legacy-user"
     user.mkdir()
     (user / "settings.json").write_text(json.dumps({
-        "workMode": "plan",
+        "workMode": "plan", "execution": {"provider": "sandbox"},
         "permissions": {"mode": "read-only", "modes": {"offline": {
-            "name": "Offline", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}}}))
+            "name": "Offline", "readPaths": ["."], "writePaths": [], "networkAllowed": False}}}}))
     monkeypatch.setenv("VIRGO_HOME", str(user))
     settings = Settings.load(Paths(project))
     assert settings.get("permissions.mode") == "read-only"
@@ -80,9 +80,9 @@ def test_home_directory_is_not_reread_as_project_settings(tmp_path, monkeypatch)
     state = home / ".virgo"
     state.mkdir()
     (state / "settings.json").write_text(json.dumps({
-        "model": "faux/user",
+        "model": "faux/user", "execution": {"provider": "sandbox"},
         "permissions": {"mode": "read-only", "modes": {"offline": {
-            "name": "Offline", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}},
+            "name": "Offline", "readPaths": ["."], "writePaths": [], "networkAllowed": False}}},
     }))
     paths = Paths(home)
     assert paths.user == paths.project
@@ -98,7 +98,7 @@ def test_project_layer_still_rejects_grants_when_the_paths_differ(project, tmp_p
     (home / "settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
     (project / ".virgo").mkdir()
     (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
-    with pytest.raises(ValueError, match="Project permissions may only add deny"):
+    with pytest.raises(ValueError, match="Project permissions"):
         Settings.load(Paths(project))
 
 
@@ -110,7 +110,7 @@ def test_invalid_legacy_modes_value_is_a_configuration_error(project):
 def test_reserved_permission_preset_ids_are_rejected(project):
     with pytest.raises(ValueError, match="reserved"):
         Settings.load(Paths(project), {"permissions": {"presets": {"ask": {
-            "name": "Ask", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}}})
+            "name": "Ask", "readPaths": ["."], "writePaths": [], "networkAllowed": False}}}})
 
 
 def test_invalid_presets_value_is_a_configuration_error(project):
