@@ -65,7 +65,7 @@ class SandboxManager:
                     key: {"type": "boolean"} for key in ("read_only", "workspace_only", "network_allowed")
                 }, "additionalProperties": False},
             }, "required": ["tool", "arguments", "reason", "permissions"], "additionalProperties": False},
-            execute=self.request_permissions, read_only=True, sequential=True,
+            execute=self.request_permissions, side_effect="read", sequential=True,
         ), roles=ROLES_ALL, owner="core")
 
     @property

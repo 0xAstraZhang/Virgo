@@ -132,7 +132,7 @@ READ = AgentTool(
         "required": ["path"],
     },
     execute=_read,
-    read_only=True,
+    side_effect="read",
     i18n_key="tools.read",
 )
 
@@ -455,7 +455,7 @@ GLOB = AgentTool(
         "required": ["pattern"],
     },
     execute=_glob,
-    read_only=True,
+    side_effect="read",
     i18n_key="tools.glob",
 )
 
@@ -537,6 +537,6 @@ GREP = AgentTool(
         "required": ["pattern"],
     },
     execute=_grep,
-    read_only=True,
+    side_effect="read",
     i18n_key="tools.grep",
 )

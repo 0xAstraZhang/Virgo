@@ -35,7 +35,7 @@ def setup(api):
             description="List names directly inside the working directory.",
             parameters={"type": "object", "properties": {}, "required": []},
             execute=overview,
-            read_only=True,
+            side_effect="read",
         ),
         roles=("main", "subagent"),
     )
@@ -119,7 +119,7 @@ def setup(api):
 
 Core 根据自身管理的待执行登记和运行中的 Runtime（含子代）判断来源是否忙碌。实际模式切换与显式计划执行要求该来源空闲；原 `runtime_pending_work` 检查钩子已退休。状态通知在持久化与状态发布后触发。观察者可以刷新 UI，但不能同步重入修改模式或计划、选择对话或登记新工作。后续显式操作应在通知返回后通过正常准入入口发起。
 
-`api.register_permission_policy(policy)` 增加硬性限制，不能替换必要的 Core 授权策略。实现 `preflight(event)` 和 `before_execute(event)`，拒绝时返回 `Block(reason)`，继续时返回 `None`。两个检查点都先运行 Sandbox 和附加策略，再由 Core 检查能力上限、deny、已有授权及是否需要人工批准，避免为硬边界已经禁止的操作弹出审批。第二个检查点位于工具调用钩子和参数调整之后。托管／适配操作应携带原调用方上下文，使用 `api.authorize_tool(event)`。`AgentTool.read_only` 声明可信工具的能力，不授予所有操作，也不绕过其他策略。Python 扩展本身仍是 Shell 沙箱之外的可信代码。
+`api.register_permission_policy(policy)` 增加硬性限制，不能替换必要的 Core 授权策略。实现 `preflight(event)` 和 `before_execute(event)`，拒绝时返回 `Block(reason)`，继续时返回 `None`。两个检查点都先运行 Sandbox 和附加策略，再由 Core 检查能力上限、deny、已有授权及是否需要人工批准，避免为硬边界已经禁止的操作弹出审批。第二个检查点位于工具调用钩子和参数调整之后。托管／适配操作应携带原调用方上下文，使用 `api.authorize_tool(event)`。`AgentTool.side_effect` 声明可信工具的能力，不授予所有操作，也不绕过其他策略。Python 扩展本身仍是 Shell 沙箱之外的可信代码。
 
 Core 在 `harness/permission_policy.py` 执行确定性权限规则。`harness/permissions.py` 只定义 ask/never 审批和只读能力检查；`harness/origin_context.py` 固定来源 Runtime、工作区和记账分支。模型审批及 `register_permission_reviewer` 已退休。插件只能通过 `register_permission_policy` 增加限制。
 

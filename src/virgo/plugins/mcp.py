@@ -1112,7 +1112,7 @@ def setup(api: ExtensionAPI) -> None:
             "Read local MCP connection state, generation, pending calls and accessible diagnostic IDs. Does not contact servers.",
             {"type": "object", "properties": {"server": {"type": "string"}}, "additionalProperties": False},
             manager.status,
-            read_only=True,
+            side_effect="read",
             i18n_key="tools.mcp_status",
         ),
         roles=ROLES_ALL,

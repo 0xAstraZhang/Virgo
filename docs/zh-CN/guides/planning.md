@@ -105,6 +105,6 @@ Plan 状态属于来源主 Runtime。切换对话不会让旧 Runtime 或子任�
 依赖 Plan 服务，不需要另一套任务循环。
 
 实现：[Plan 插件](../../../src/virgo/plugins/plan.py)、
-[Runtime](../../../src/virgo/harness/session.py)、
+[Runtime](../../../src/virgo/harness/runtime.py)、
 [扩展接口](../development/extensions.md)、
 [既有端到端验收](../../../tests/harness/test_plan_workflow_e2e.py)。

@@ -259,6 +259,6 @@ def make_web_search(
         },
         execute,
         label="Web search",
-        read_only=True,
+        side_effect="read",
         i18n_key="tools.web_search",
     )

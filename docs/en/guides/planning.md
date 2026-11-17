@@ -125,6 +125,6 @@ Disable `plugins.plan.enabled` to remove its commands, proposal tool and request
 instructions. Core operation does not require a Plan service or another task loop.
 
 Implementation: [Plan plugin](../../../src/virgo/plugins/plan.py),
-[Runtime](../../../src/virgo/harness/session.py),
+[Runtime](../../../src/virgo/harness/runtime.py),
 [extension API](../development/extensions.md),
 [existing end-to-end acceptance](../../../tests/harness/test_plan_workflow_e2e.py).

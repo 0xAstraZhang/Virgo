@@ -252,5 +252,5 @@ GIT_READ = AgentTool(
         "limit": {"type": "integer", "minimum": 1, "maximum": 100,
                   "description": "Maximum log entries; defaults to 20."},
     }, "required": ["operation"], "additionalProperties": False},
-    _execute, label="Read Git", read_only=True,
+    _execute, label="Read Git", side_effect="read",
 )

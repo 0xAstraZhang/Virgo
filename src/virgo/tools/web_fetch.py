@@ -376,6 +376,6 @@ def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=N
         {"type": "object", "properties": {"url": {"type": "string", "maxLength": 8192}}, "required": ["url"]},
         execute,
         label="Read web page",
-        read_only=True,
+        side_effect="read",
         i18n_key="tools.web_fetch",
     )

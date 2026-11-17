@@ -7,11 +7,11 @@ import hashlib
 import json
 import os
 
-from ..agent.types import ToolCallEvent
-from ..ai.providers.web import deepseek_endpoint, endpoint
-from ..ai.types import UserMessage
-from ..ai.web import offers_for
-from ..harness.permission_policy import parse_rule
+from ...agent.types import ToolCallEvent
+from ...ai.providers.web import deepseek_endpoint, endpoint
+from ...ai.types import UserMessage
+from ...ai.web import offers_for
+from ...harness.permission_policy import parse_rule
 
 
 class WebAccess:
@@ -33,7 +33,7 @@ class WebAccess:
         return runtime
 
     def consume(self, ctx):
-        from .web import web_service
+        from . import web_service
 
         web_service(self.api).consume(self._runtime(ctx), self.operation, self.max_uses)
 

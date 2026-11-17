@@ -7,9 +7,9 @@ import threading
 
 from virgo.agent.types import ToolContext
 from virgo.diagnostics import capture_error
-from virgo.plugins.diagnostic_get import setup
 from virgo.harness.diagnostic_access import MAX_RECORD_BYTES, DiagnosticAccess
 from virgo.harness.extensions import ExtensionAPI
+from virgo.plugins.diagnostic_get import setup
 
 
 def record(error_id, message="backend unavailable", **context):

@@ -95,4 +95,4 @@ DeepSeek Fetch 使用已保存的官方连接、`DEEPSEEK_API_KEY` 或独立的 
 
 只有明确的“不支持该能力”响应才会触发有界回退。认证失败、限流、超时和空结果不会静默切换厂商。服务端操作已经开始后，Virgo 会保留证据并停止自动重放。来源和可读引用在切换模型后仍保留于会话历史。
 
-实现：[能力类型](../../../src/virgo/ai/web.py)、[路由](../../../src/virgo/plugins/web.py)、[搜索](../../../src/virgo/plugins/search.py)、[读取](../../../src/virgo/plugins/fetch.py)。
+实现：[能力类型](../../../src/virgo/ai/web.py)、[路由](../../../src/virgo/plugins/web/__init__.py)、[搜索](../../../src/virgo/plugins/web/search.py)、[读取](../../../src/virgo/plugins/web/fetch.py)。
