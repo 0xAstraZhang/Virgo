@@ -18,7 +18,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from ..diagnostics import sanitize
+from ..diagnostics import capture_error, emergency_write, sanitize
 from .diagnostic_store import connect
 
 SECTIONS = ("summary", "causes", "trace", "stderr", "attempts", "related")
@@ -174,14 +174,18 @@ class DiagnosticAccess:
         return self._connection
 
     def close(self):
-        with self._lock:
-            self._closed = True
-            if self._connection is not None:
-                self._connection.close()
-                self._connection = None
-            if self._temporary is not None:
-                self._temporary.cleanup()
-                self._temporary = None
+        try:
+            with self._lock:
+                self._closed = True
+                if self._connection is not None:
+                    self._connection.close()
+                    self._connection = None
+                if self._temporary is not None:
+                    temporary, self._temporary = self._temporary, None
+                    temporary.cleanup()
+        except Exception as error:
+            # Cleanup is diagnostic bookkeeping, not the child operation's outcome.
+            emergency_write(capture_error(error, phase="diagnostics.cleanup"))
 
     def __del__(self):
         if getattr(self, "_connection", None) is not None:
