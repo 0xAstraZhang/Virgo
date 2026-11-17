@@ -748,10 +748,12 @@ class AgentSession:
     def unregister_tool(self, name: str) -> None:
         """Host compatibility API. Plugins replace only their owned namespaces."""
         with self._lock:
-            self._tool_groups = {
-                key: tuple((tool, roles) for tool, roles in values if tool.name != name)
-                for key, values in self._tool_groups.items()
-            }
+            groups = {}
+            for key, values in self._tool_groups.items():
+                remaining = tuple((tool, roles) for tool, roles in values if tool.name != name)
+                if remaining:
+                    groups[key] = remaining
+            self._tool_groups = groups
             self._tool_version += 1
 
     def tool_snapshot(self, role: str) -> tuple[int, list[AgentTool]]:

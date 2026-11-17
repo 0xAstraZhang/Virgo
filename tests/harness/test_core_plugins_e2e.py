@@ -77,6 +77,23 @@ def test_minimal_permission_rechecks_hook_rewritten_arguments(make_session, proj
     assert tool_results(session)[0].is_error
 
 
+def test_unregistered_tool_can_be_registered_again(make_session):
+    session = make_session(settings={"profile": "minimal"})
+    first = AgentTool("reloadable", "first", {"type": "object"}, lambda args, ctx: "first")
+    second = AgentTool("reloadable", "second", {"type": "object"}, lambda args, ctx: "second")
+    sibling = AgentTool("sibling", "retained", {"type": "object"}, lambda args, ctx: "retained")
+    session.register_tool(first)
+    session.replace_tools("shared", [(first, ("subagent",)), (sibling, ("main",))], owner="plugin")
+    session.unregister_tool("reloadable")
+    assert session.tool("reloadable") is None
+    assert session.tool("reloadable", "subagent") is None
+    assert session.tool("sibling") is sibling
+    session.register_tool(second)
+    faux.script("test", faux.reply(tools=[("reloadable", {})]), faux.reply("done"))
+    session.prompt("use the reloaded tool")
+    assert tool_results(session)[0].text() == "second"
+
+
 def test_owned_publication_preserves_the_running_batch(make_session):
     session = make_session(settings={"profile": "minimal"})
     api = ExtensionAPI(session, "publisher")
