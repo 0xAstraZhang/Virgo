@@ -17,11 +17,11 @@ from virgo.diagnostics import capture_error, error_summary, safe_text, sanitize
 from virgo.harness.diagnostics import DiagnosticLog
 from virgo.harness.store import SessionStore
 
-from tests.support.persistence import fail_session_write
+from tests.support.persistence import diagnostic_records, fail_session_write
 
 
 def records(session):
-    return [json.loads(line) for line in session.diagnostics.path.read_text().splitlines()]
+    return diagnostic_records(session.diagnostics.path)
 
 
 def chained_error():
@@ -92,7 +92,7 @@ def test_diagnostic_log_parallel_writes_are_complete_private_and_deduplicated(tm
     errors = [capture_error(f"failure {index}", phase="test") for index in range(30)]
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(log.record, errors + errors))
-    saved = [json.loads(line) for line in log.path.read_text().splitlines()]
+    saved = diagnostic_records(log.path)
     assert len(saved) == 30
     assert {record["error_id"] for record in saved} == {error["error_id"] for error in errors}
     assert all(record["log_path"] == str(log.path) for record in saved)
@@ -101,17 +101,17 @@ def test_diagnostic_log_parallel_writes_are_complete_private_and_deduplicated(tm
         assert stat.S_IMODE(log.path.parent.stat().st_mode) == 0o700
 
 
-def test_diagnostic_log_rotation_is_bounded_and_only_touches_its_own_files(tmp_path):
-    log = DiagnosticLog(tmp_path, max_bytes=1000, backups=2)
+def test_diagnostic_log_history_is_complete_and_only_touches_its_own_files(tmp_path):
+    log = DiagnosticLog(tmp_path)
     unrelated = tmp_path / "another.jsonl"
     unrelated.write_text("keep")
-    for number in range(12):
+    for number in range(120):
         log.record(capture_error(f"error {number} " + "x" * 200, phase="test"))
     assert unrelated.read_text() == "keep"
-    logs = list(tmp_path.glob(log.path.name + "*"))
-    assert len(logs) == 3
-    assert all(path.stat().st_size <= 1000 for path in logs)
-    assert json.loads(log.path.read_text().splitlines()[-1])["message"].startswith("error 11")
+    saved = diagnostic_records(log.path)
+    assert len(saved) == 120
+    assert saved[0]["message"].startswith("error 0")
+    assert saved[-1]["message"].startswith("error 119")
 
 
 def test_log_write_failure_keeps_original_diagnostic_on_stderr(tmp_path, monkeypatch, capsys):
@@ -121,7 +121,7 @@ def test_log_write_failure_keeps_original_diagnostic_on_stderr(tmp_path, monkeyp
     def fail(*args, **kwargs):
         raise PermissionError("diagnostic directory is read-only")
 
-    monkeypatch.setattr("virgo.harness.diagnostics.os.open", fail)
+    monkeypatch.setattr("virgo.harness.diagnostic_store.os.open", fail)
     saved = log.record(error)
     assert "log_path" not in saved
     assert "read-only" in saved["logging_error"]
@@ -143,8 +143,8 @@ def test_retry_failure_survives_success_and_reload_without_prompt_contents(make_
     assert failure["context"]["run_id"] and failure["context"]["model_call_id"]
     assert failure["context"]["session_id"] == session.store.id
     assert records(session)[0]["error_id"] == failure["error_id"]
-    assert "private user prompt" not in session.diagnostics.path.read_text()
-    assert "private answer" not in session.diagnostics.path.read_text()
+    assert "private user prompt" not in json.dumps(records(session))
+    assert "private answer" not in json.dumps(records(session))
     assert session.main.messages[-1].text() == "private answer"
 
 
@@ -174,7 +174,7 @@ def test_auxiliary_and_child_errors_keep_original_owner_after_session_switch(mak
     assert len(original.custom("model_call")) == 2
     assert not session.store.custom("model_call")
     assert len(records(session)) == 2
-    raw = session.diagnostics.path.read_text()
+    raw = json.dumps(records(session))
     assert "private review" not in raw and "private child prompt" not in raw
 
 

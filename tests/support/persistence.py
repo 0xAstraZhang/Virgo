@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import builtins
-from contextlib import contextmanager
+import json
+import sqlite3
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 
@@ -34,3 +36,11 @@ def fail_session_write(monkeypatch, path, *, partial=False, containing=""):
     with monkeypatch.context() as patch:
         patch.setattr(builtins, "open", open_file)
         yield
+
+
+def diagnostic_records(path):
+    """Read committed records independently of the logger's cache/query helpers."""
+    if not Path(path).exists():
+        return []
+    with closing(sqlite3.connect(f"{Path(path).as_uri()}?mode=ro", uri=True)) as connection:
+        return [json.loads(row[0]) for row in connection.execute("SELECT payload FROM errors ORDER BY seq")]

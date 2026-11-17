@@ -200,23 +200,40 @@ def register_builtins(session: AgentSession) -> None:
         )
 
     def diagnostics(s, args):
-        records = s.diagnostics.recent()
-        query = args.strip()
-        if query:
-            matches = [record for record in records if record["error_id"].startswith(query)]
-            if len(matches) != 1:
-                s.ui.command_result(s.t("harness.diagnostics.unknown"))
-                return
-            import json
+        import json
 
-            s.ui.command_result(json.dumps(matches[0], ensure_ascii=False, indent=2))
-        else:
-            lines = [s.t("harness.diagnostics.path", path=s.diagnostics.path)]
-            lines.extend(error_summary(record, t=s.t) for record in records[-10:])
-            if not records:
-                lines.append(s.t("harness.diagnostics.empty"))
-            lines.append(s.t("harness.diagnostics.help"))
+        try:
+            arguments = shlex.split(args)
+            before = None
+            query = None
+            if len(arguments) == 2 and arguments[0] == "--before":
+                before = arguments[1]
+            elif len(arguments) == 1 and not arguments[0].startswith("--"):
+                query = arguments[0]
+            elif arguments:
+                s.ui.command_result(s.t("harness.diagnostics.help"))
+                return
+            warnings = s.diagnostics.import_legacy()
+            lines = [s.t("harness.diagnostics.import_warning", message=warning) for warning in warnings]
+            if query:
+                record = s.diagnostics.lookup(query)
+                lines.append(json.dumps(record, ensure_ascii=False, indent=2) if record is not None
+                             else s.t("harness.diagnostics.unknown"))
+            else:
+                page = s.diagnostics.history_page(before)
+                lines.append(s.t("harness.diagnostics.path", path=s.diagnostics.path))
+                lines.extend(error_summary(record, t=s.t) for record in page["records"])
+                if not page["records"]:
+                    lines.append(s.t("harness.diagnostics.empty"))
+                if page["next_cursor"]:
+                    lines.append(s.t("harness.diagnostics.next", cursor=page["next_cursor"]))
+                lines.append(s.t("harness.diagnostics.help"))
             s.ui.command_result("\n".join(lines))
+        except ValueError:
+            s.ui.command_result(s.t("harness.diagnostics.invalid_cursor"))
+        except Exception:
+            # A read failure must not create another diagnostic in the broken store.
+            s.ui.command_result(s.t("harness.diagnostics.lookup_failed"))
 
     def sessions(s, args):
         items = s.list_sessions()
@@ -250,5 +267,5 @@ def register_builtins(session: AgentSession) -> None:
     c.register("new", new, "start a fresh session", description_key="harness.commands.new")
     c.register("session", session_, "show session info", description_key="harness.commands.session", concurrent=True)
     c.register("diagnostics", diagnostics, "show diagnostic log and recent errors", description_key="harness.commands.diagnostics", concurrent=True,
-               argument_hint="[error-id]", argument_hint_key="harness.hints.diagnostics")
+               argument_hint="[error-id | --before cursor]", argument_hint_key="harness.hints.diagnostics")
     c.register("sessions", sessions, "browse saved sessions (g toggles workspace grouping in fullscreen)", description_key="harness.commands.sessions", argument_hint="[number]", argument_hint_key="harness.hints.sessions")

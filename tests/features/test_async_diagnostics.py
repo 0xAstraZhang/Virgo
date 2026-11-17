@@ -13,12 +13,12 @@ from virgo.ai.types import AssistantMessage
 from virgo.harness import jobs as supervision
 
 from tests.support.harness import calls, tool_results
+from tests.support.persistence import diagnostic_records
 from tests.support.shell import selected
 
 
 def records(session):
-    return [json.loads(line) for path in (session.paths.user / "logs").glob("*.jsonl")
-            for line in path.read_text().splitlines()]
+    return diagnostic_records(session.diagnostics.path)
 
 
 def test_background_failure_and_failed_notification_keep_original_session(make_session, monkeypatch):

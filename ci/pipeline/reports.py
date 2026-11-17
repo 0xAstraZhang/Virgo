@@ -11,6 +11,27 @@ from .io import read_json
 BAD = {"failed", "error"}
 STATUSES = BAD | {"passed", "skipped"}
 PARAMETER_ALIASES = {
+    # Diagnostics now retain history; budgets apply to query pages, not retention.
+    "test_diagnostic_log_rotation_is_bounded_and_only_touches_its_own_files":
+        "test_diagnostic_log_history_is_complete_and_only_touches_its_own_files",
+    "test_multilingual_record_obeys_escaped_json_byte_budget":
+        "test_multilingual_record_preserves_causes_and_query_byte_budget",
+    "test_rotation_updates_cached_record_locations_and_marks_expired_logs":
+        "test_history_growth_keeps_record_locations_and_deduplicates_old_errors",
+    "test_zero_backups_still_enforces_rotation_budget":
+        "test_history_remains_queryable_after_connection_closes",
+    "test_unusable_log_budget_is_rejected":
+        "test_unusable_query_budget_is_rejected",
+    "test_expired_unknown_and_uncaptured_evidence_are_distinct_without_path_fallback":
+        "test_retained_unknown_and_uncaptured_evidence_are_distinct_without_path_fallback",
+    "test_expired_pending_references_cannot_block_retained_evidence":
+        "test_missing_pending_references_cannot_block_retained_evidence",
+    "test_oversized_log_record_keeps_id_phase_and_cause_summary_within_budget[512]":
+        "test_large_log_record_keeps_causes_with_bounded_query_pages[512]",
+    "test_oversized_log_record_keeps_id_phase_and_cause_summary_within_budget[1000]":
+        "test_large_log_record_keeps_causes_with_bounded_query_pages[1000]",
+    "test_oversized_log_record_keeps_id_phase_and_cause_summary_within_budget[4096]":
+        "test_large_log_record_keeps_causes_with_bounded_query_pages[4096]",
     # Catalog discovery now validates npm metadata without executing the CLI.
     "test_cli_version_probe_is_bounded_and_only_parses_codex_output[codex-cli 0.220.0\\n-0.220.0]":
         "test_cli_metadata_is_bounded_and_only_accepts_codex[stable]",

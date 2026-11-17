@@ -12,9 +12,9 @@
 | A configured shell is unavailable | Use `/shell` or specify an adapted executable path; Virgo does not silently substitute a different language |
 | Work pauses after saving history fails | Keep the current process open, resolve the filesystem problem, and inspect the diagnostic before switching or exiting |
 
-Use `/diagnostics` to find the log path and the latest ten errors. `/diagnostics <error-id>` shows full JSON for a unique ID or prefix among the current instance's last 100 records. After restarting, inspect the JSONL log directly; the command does not scan all historical logs.
+Use `/diagnostics` to find the database path and the latest ten errors across instances, including after a restart. Follow `/diagnostics --before <cursor>` to read earlier pages. `/diagnostics <error-id>` shows full JSON for an exact ID or unique prefix; an exact match takes precedence over prefix matches. These commands do not change model history or grant model access.
 
-Logs are written on the first error under `~/.virgo/logs/`, or `$VIRGO_HOME/logs/`. Each instance has its own `harness-<UTC-time>-<pid>-<id>.jsonl`. `/new` keeps that instance's log and records the original session ID on each event. `--no-session` still permits diagnostic logs.
+Errors are written on first use to `~/.virgo/logs/diagnostics.sqlite3`, or `$VIRGO_HOME/logs/diagnostics.sqlite3`. SQLite transactions and a unique error ID retain one record even when multiple processes report the same error. `/new` keeps the database; each record retains its original session context. `--no-session` still permits diagnostic logs.
 
 When the selected permission preset blocks a shell command, the tool result identifies the first unapproved command, option, or shell construct. This is a permission denial, not a transient shell failure: do not retry the same effect with different syntax. Use the file-inspection tools or recognized read-only commands; request a writable run when the task needs changes. The classifier is conservative and is not an OS sandbox.
 
@@ -30,7 +30,9 @@ When the selected permission preset blocks a shell command, the tool result iden
 
 For model failures, inspect the actual API, HTTP status, request ID and retry information when present. For local failures, inspect phase, exception and cause chain. A successful later retry does not delete earlier failure records. An exception message is evidence, not proof of the unique root cause.
 
-Logs default to 5 MiB per file with two rotated files. Read the `.1` and `.2` siblings when needed. This is a per-instance limit; logs from older instances are not globally purged. New files/directories use restricted permissions where the platform supports them. If logging itself fails, Virgo attempts a sanitized stderr record without replacing the original error.
+Errors have no count limit and are not deleted by rotation. SQLite uses a bounded page cache and WAL journaling; the database and its WAL sidecars belong together while Virgo is running. New files/directories use restricted permissions where the platform supports them. If logging fails or a write lock cannot be obtained within one second, Virgo preserves the original error, marks the save failure and attempts sanitized stderr output. A bounded emergency cache keeps up to 100 unsaved errors in that process; this fallback cannot promise durable retention when storage is unavailable.
+
+History commands incrementally import existing `harness-*.jsonl` files and their numbered rotation siblings. Source files remain unchanged. Complete valid lines are deduplicated by error ID; malformed or oversized lines produce import warnings, and an unfinished final line is retried on a later query. Import progress is committed in batches. Logging a new error and model queries do not trigger legacy import.
 
 Diagnostics do not intentionally collect frame locals, source-code lines, complete request bodies, headers, system prompts or conversation messages. Credentials and sensitive metadata are redacted. Application error messages and server stderr can still contain application text, so review a log before sharing it. This does not change the storage contract of conversation history or full tool-output files.
 
@@ -47,7 +49,7 @@ A failed tool result can include an added diagnostic summary of at most 2 KiB. I
 | `attempts` | Retained, authorized failures for the same logical call and purpose |
 | `related` | Explicitly propagated related diagnostics |
 
-Queries use exact IDs, never arbitrary paths or ID prefixes. Access belongs to the calling runtime; sharing a session accounting store or selecting another UI conversation does not grant access. Defaults retain 100 evidence records and 1000 authorized IDs. Responses distinguish `not_found`, `expired` and `unavailable`. Each complete JSON page is bounded to 8 KiB; a cursor is bound to its error, section and evidence snapshot.
+Queries use exact IDs, never arbitrary paths or ID prefixes. Access belongs to the calling runtime; sharing a session accounting store or selecting another UI conversation does not grant access. Evidence and authorized IDs have no count limit. Filtered snapshots and delivery bookkeeping use a separate private temporary SQLite database for each runtime, under the protected logs directory. Runtime cleanup removes that temporary store; reopening a saved session restores only grants from its own canonical history. Global history never supplies missing model evidence. Individual filtered records remain bounded to 64 KiB. Unknown or unauthorized IDs return `not_found`; uncaptured sections or lookup failures return `unavailable`. Each complete JSON page is bounded to 8 KiB. Cursors are bound to the runtime, error, section and collection revision; restart pagination if evidence changes. Attempt pages seek through an indexed call group instead of materializing all failures.
 
 `plugins.diagnostic_get.enabled=false` disables the model lookup tool. Core logs, error IDs, bounded result summaries and recovery evidence remain available; `/diagnostics` also remains available. Diagnostics append at normal model-request boundaries; gathering evidence does not itself start a model turn or rewrite old messages.
 

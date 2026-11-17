@@ -168,7 +168,7 @@ class AgentSession:
             self.cleanup_plugins()
             raise
         self.main.wakeups = self.wakeups
-        for record in self.diagnostics.recent():
+        for record in self.diagnostics.initial_records():
             context = record.get("context", {})
             if context.get("session_id") == self.store.id and context.get("agent") in (None, "main"):
                 self.main.recovery.safely("queue", record)
@@ -535,7 +535,10 @@ class AgentSession:
                     with store._lock:
                         if runtime.agent.signal in store.failure_signals:
                             store.failure_signals.remove(runtime.agent.signal)
-        self.bus.emit("runtime_closed", runtime)
+        try:
+            self.bus.emit("runtime_closed", runtime)
+        finally:
+            runtime.diagnostic_access.close()
 
     def runtime_for_context(self, ctx: ToolContext) -> Runtime | None:
         """Resolve a trusted caller without borrowing the currently selected runtime."""
@@ -1127,7 +1130,12 @@ class AgentSession:
             try:
                 self.cleanup_plugins()
             finally:
-                self.cleanup_empty_stores()
+                try:
+                    self.cleanup_empty_stores()
+                finally:
+                    for runtime in (*self._main_runtimes.values(), *self._child_runtimes.values()):
+                        runtime.diagnostic_access.close()
+                    self.diagnostics.close()
 
     def cleanup_empty_stores(self) -> None:
         """Remove only empty stores visited by this process, including abandoned /new sessions."""

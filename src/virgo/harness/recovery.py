@@ -7,7 +7,6 @@ continue or whether an operation may be replayed.
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict
 
 from ..agent.types import AgentEvent
 from ..ai.types import UserMessage
@@ -36,11 +35,8 @@ def message_diagnostics(message) -> list[dict]:
 class RuntimeDiagnostics:
     def __init__(self, runtime, messages=()):
         self.runtime = runtime
-        self.access = DiagnosticAccess()
+        self.access = DiagnosticAccess(directory=runtime.session.paths.user / "logs")
         self.scope = f"{runtime.role}:{runtime.name}"
-        self._recorded: set[str] = set()
-        self._presented: set[str] = set()
-        self._pending: OrderedDict[str, None] = OrderedDict()
         self._checkpoint = False
         self._lock = threading.RLock()
         store = runtime.store
@@ -50,19 +46,16 @@ class RuntimeDiagnostics:
             for entry in store.branch():
                 if entry.get("type") == "message":
                     for record in message_diagnostics(entry.get("message", {})):
-                        self._restore_record(record)
+                        self.safely("_restore_record", record)
                 elif entry.get("kind") == "runtime_diagnostic":
                     data = entry.get("data", {})
                     if data.get("scope") != self.scope:
                         continue
                     action, error_id = data.get("action"), data.get("error_id")
                     if action == "record" and isinstance(data.get("record"), dict):
-                        self._restore_record(data["record"])
-                    elif action == "pending" and isinstance(error_id, str) and error_id not in self._presented:
-                        self._pending[error_id] = None
-                    elif action == "presented":
-                        self._presented.add(error_id)
-                        self._pending.pop(error_id, None)
+                        self.safely("_restore_record", data["record"])
+                    elif action in ("pending", "presented"):
+                        self.safely("_restore_delivery", error_id, action)
             compacted = store.last_compaction()
             if compacted is not None:
                 self._checkpoint = not any(
@@ -71,13 +64,15 @@ class RuntimeDiagnostics:
                 )
         for message in messages:
             for record in message_diagnostics(message):
-                self._restore_record(record)
+                self.safely("_restore_record", record)
 
     def _restore_record(self, record):
-        self.access.remember(record)
-        error_id = record.get("error_id")
-        if isinstance(error_id, str):
-            self._recorded.add(error_id)
+        saved = self.access.remember(record)
+        if saved is not None:
+            self.access.mark(saved["error_id"], "record")
+
+    def _restore_delivery(self, error_id, action):
+        self.access.mark(error_id, action)
 
     def _persist(self, **data):
         store = self.runtime.store
@@ -90,39 +85,24 @@ class RuntimeDiagnostics:
 
     def remember(self, record):
         """Grant a reference explicitly propagated to this runtime, once."""
-        self.access.remember(record)
-        error_id = record.get("error_id") if isinstance(record, dict) else None
-        saved = self.access.get(error_id) if isinstance(error_id, str) else None
-        with self._lock:
-            fresh = saved is not None and error_id not in self._recorded
-            if fresh:
-                self._recorded.add(error_id)
-        # Store callbacks may acquire the Session lock. Never hold the journal
-        # lock while persisting, emitting events, or reporting save failures.
-        if fresh:
-            self._persist(action="record", error_id=error_id, record=saved)
+        saved = self.access.remember(record)
+        if saved is not None and self.access.mark(saved["error_id"], "record"):
+            # Database locks are released before callbacks into SessionStore.
+            self._persist(action="record", error_id=saved["error_id"], record=saved)
 
     def queue(self, record):
         """Queue facts without waking an agent or creating an extra model turn."""
         self.remember(record)
         error_id = record.get("error_id")
-        with self._lock:
-            if (record.get("kind") == "aborted" or error_id not in self._recorded
-                    or error_id in self._presented or error_id in self._pending):
-                return
-            self._pending[error_id] = None
-        self._persist(action="pending", error_id=error_id)
+        if record.get("kind") != "aborted" and self.access.get(error_id) is not None:
+            if self.access.mark(error_id, "pending"):
+                self._persist(action="pending", error_id=error_id)
 
     def presented(self, records):
         for record in records:
             self.remember(record)
             error_id = record.get("error_id")
-            with self._lock:
-                fresh = error_id in self._recorded and error_id not in self._presented
-                if fresh:
-                    self._presented.add(error_id)
-                    self._pending.pop(error_id, None)
-            if fresh:
+            if self.access.get(error_id) is not None and self.access.mark(error_id, "presented"):
                 self._persist(action="presented", error_id=error_id)
 
     def after_compaction(self):
@@ -142,26 +122,24 @@ class RuntimeDiagnostics:
             return
         query_available = any(tool.name == "diagnostic_get" for tool in self.runtime.tools)
         with self._lock:
-            pending = list(self._pending)
             checkpoint = self._checkpoint
             self._checkpoint = False
         records, unavailable = [], []
-        for error_id in pending:
-            with self._lock:
-                if error_id in self._presented:
-                    continue
-            record = self.access.get(error_id)
-            if record is None:
-                with self._lock:
-                    self._pending.pop(error_id, None)
-                    self._presented.add(error_id)
-                self._persist(action="presented", error_id=error_id)
-                if len(unavailable) < 3:
-                    unavailable.append(error_id)
-            else:
-                records.append(record)
-                if len(records) == 3:
-                    break
+        while len(records) < 3:
+            pending = self.access.pending(limit=3)
+            if not pending:
+                break
+            for error_id in pending:
+                record = self.access.get(error_id)
+                if record is None:
+                    self.access.mark(error_id, "presented")
+                    self._persist(action="presented", error_id=error_id)
+                    if len(unavailable) < 3:
+                        unavailable.append(error_id)
+                else:
+                    records.append(record)
+            if records:
+                break
         if unavailable:
             self._append("Diagnostic evidence is no longer retained for: " + ", ".join(unavailable) +
                          ". The original outcomes have not been reclassified.")
@@ -171,7 +149,7 @@ class RuntimeDiagnostics:
             ))
             self.presented(records)
         if checkpoint:
-            recent = self.access.recent()[-3:]
+            recent = self.access.recent(limit=3)
             if recent and self.runtime.can_run():
                 lines = [
                     "Retained diagnostic references from earlier work. Check current state before acting; "

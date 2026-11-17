@@ -18,11 +18,12 @@ from virgo.cli.tui.controller import RunController
 from virgo.diagnostics import capture_error
 
 from tests.support.harness import ReplUI, ScriptedBroker, wait_until
+from tests.support.persistence import diagnostic_records
 from tests.support.tui import pump
 
 
 def _records(directory):
-    return [json.loads(line) for path in Path(directory).glob("*.jsonl") for line in path.read_text().splitlines()]
+    return diagnostic_records(Path(directory) / "diagnostics.sqlite3")
 
 
 @pytest.mark.parametrize(("error_type", "code"), [(ValueError, 2), (PermissionError, 2), (RuntimeError, 1)])

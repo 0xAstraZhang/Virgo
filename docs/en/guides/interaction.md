@@ -32,7 +32,7 @@ The first two commands switch the current session and save a user default. `/lan
 | `/permissions [preset-id\|list\|save <id> <JSON>\|ask\|never\|revoke\|show]` | Inspect or change presets, approval policy, remembered decisions and backend availability |
 | `/compact [focus]` | Compact older model context |
 | `/new`, `/sessions [number]`, `/session` | Start, browse or inspect sessions |
-| `/diagnostics [error-id]` | Inspect recent errors and diagnostic records |
+| `/diagnostics [error-id ｜ --before cursor]` | Inspect historical errors and diagnostic records |
 | `/todos`, `/jobs` | Inspect the conversation checklist or background jobs |
 | `/skills`, `/skill:name [args]` | List skills or explicitly use one |
 | `/mcp [reconnect]` | Inspect or reload MCP connections (provided by the MCP extension) |

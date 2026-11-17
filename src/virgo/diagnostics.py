@@ -27,7 +27,7 @@ _PAYLOAD_KEYS = {"body", "headers", "prompt", "messages", "arguments", "args", "
 _SCHEMA_KEYS = {
     "schema_version", "error_id", "timestamp", "code", "phase", "kind", "message", "exception_type",
     "traceback", "cause_chain", "context", "relation", "frames", "file", "line", "function",
-    "omitted_frames", "exceptions", "chain_truncated", "log_path", "log_pattern", "log_expired",
+    "omitted_frames", "exceptions", "chain_truncated", "log_path",
     "logging_error", "reporting_error", "record_warning", "record_truncated", "original_bytes",
 }
 _ASSIGNMENT = re.compile(
@@ -307,8 +307,6 @@ def error_summary(details: dict, *, t=None) -> str:
     summary += f": {text}"
     if details.get("log_path"):
         summary += "\n" + t("harness.diagnostics.path", path=details["log_path"])
-    elif details.get("log_expired"):
-        summary += "\n" + t("harness.diagnostics.rotated", id=details.get("error_id", ""))
     elif details.get("logging_error"):
         summary += "\n" + t("harness.diagnostics.unsaved")
     return safe_text(summary)

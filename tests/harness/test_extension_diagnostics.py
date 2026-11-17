@@ -10,6 +10,8 @@ import pytest
 
 from virgo.harness.extensions import EventBus, _run_hook
 
+from tests.support.persistence import diagnostic_records
+
 
 def test_handler_failure_retains_cause_and_dispatch_context_without_interrupting_handlers():
     seen, records = [], []
@@ -76,8 +78,7 @@ def test_extension_import_failure_is_saved_and_startup_continues(make_session, p
     path.parent.mkdir(parents=True)
     path.write_text('raise RuntimeError("extension import unavailable")\n')
     session = make_session()
-    records = [json.loads(line) for path in (session.paths.user / "logs").glob("*.jsonl")
-               for line in path.read_text().splitlines()]
+    records = diagnostic_records(session.diagnostics.path)
     record = next(row for row in records if row["phase"] == "extension.load")
     assert record["context"]["extension"] == str(path)
     assert record["exception_type"] == "RuntimeError" and "<module>" in record["traceback"]

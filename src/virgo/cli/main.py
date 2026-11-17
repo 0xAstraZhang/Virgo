@@ -118,7 +118,8 @@ def _startup_error(error: Exception, cwd: str, *, t: Translator | None = None) -
         details = capture_error(error, phase="cli.startup", context={"cwd": cwd})
     try:
         if not details.get("log_path") and not details.get("logging_error"):
-            details = DiagnosticLog(Paths(Path(cwd)).user / "logs").record(details)
+            with DiagnosticLog(Paths(Path(cwd)).user / "logs") as log:
+                details = log.record(details)
         print(f"virgo: {error_summary(details, t=t)}", file=sys.stderr)
     except Exception as reporting_error:
         emergency_write(details, reporting_error)
