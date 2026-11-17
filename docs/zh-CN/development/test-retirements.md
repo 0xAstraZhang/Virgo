@@ -121,3 +121,5 @@ CI 仅在以下条件全部满足时接受这批产品退役：
 保留 gate 必须在 base/head 均通过，迁移 gate 必须在 head 通过，旧用例必须在精确 base 通过才能识别退役。现存失败及新增跳过仍按普通比较规则处理，原生 workflow 继续阻塞。这不是对真实启动与零失败、错误、跳过要求的豁免。
 
 保留的 `test_powershell_failure_and_permission_boundaries[pwsh|powershell]` 用例继续验证命令失败时停止后续操作，改为验证运行时设置旧命令规则会报迁移错误、Host 正常执行且审批为零。原规则断言来自基线 `4c8520fb3faa262e5f502ff808cd5fd4350bf9bd`；资源隔离由独立原生场景验证，没有删除或豁免这些用例。
+
+保留的硬链接 unlink 竞争用例在 POSIX 仍强制于 broker 打开别名后 unlink。Windows 若由真实句柄产生 `ERROR_SHARING_VIOLATION`（32）而阻止 unlink，则必须确认两个链接仍存在、修改被拒绝且内容不变；其他 unlink 错误仍失败。这是在验证句柄保护，没有跳过竞争或放宽资源断言。

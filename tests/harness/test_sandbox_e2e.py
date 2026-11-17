@@ -351,17 +351,28 @@ def test_core_file_mutation_survives_hardlink_unlink_race(broker_session, projec
     previous = threading.gettrace()
     threading.settrace(trace)
     worker = threading.Thread(target=lambda: session.prompt("Mutate the alias"))
+    unlink_blocked = False
     try:
         worker.start()
         assert opened.wait(5)
-        alias.unlink()
-        assert outside.stat().st_nlink == 1
+        try:
+            alias.unlink()
+        except PermissionError as error:
+            # Windows may stop the attack at the retained handle. Require the
+            # precise sharing violation; do not turn arbitrary failures into a pass.
+            assert os.name == 'nt' and error.winerror == 32
+            unlink_blocked = True
+            assert alias.exists() and outside.stat().st_nlink == 2
+        else:
+            assert outside.stat().st_nlink == 1
     finally:
         resume.set()
         worker.join(5)
         threading.settrace(previous)
     assert not worker.is_alive()
     assert outside.read_text() == "original\n"
+    if unlink_blocked:
+        assert tool_results(session)[-1].is_error and alias.read_text() == "original\n"
 
 
 def test_native_existing_metadata_is_readonly(native, project):
