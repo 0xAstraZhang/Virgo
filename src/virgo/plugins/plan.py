@@ -292,6 +292,7 @@ def setup(api: ExtensionAPI) -> None:
         execute=propose, side_effect="read", sequential=True,
     ))
     api.register_command("plan", plans.command, "plan a task, or view, edit, execute or leave its proposal",
+                         description_key="plan.description",
                          argument_hint="[goal|off|show|edit [Markdown]|execute <id>:<revision>]")
 
     def workflow(session, args):

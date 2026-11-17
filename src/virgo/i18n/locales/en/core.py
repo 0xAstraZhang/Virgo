@@ -22,7 +22,7 @@ MESSAGES = {
     "work_mode.approval_unchanged": "Approval and permissions are unchanged. Use /plan off to leave Plan without executing; /plan shows the proposal and its execution action.",
     "work_mode.busy": "Cannot leave Plan while this conversation is running. Stop it or wait, then switch again.",
     "work_mode.running": "Plan changes task instructions only. Execution permissions remain unchanged.",
-    "plan.description": "view, edit, or explicitly execute a proposed plan",
+    "plan.description": "plan a task, or view, edit, execute or leave its proposal",
     "plan.main_only": "Only the originating main runtime can update its proposed plan.",
     "plan.empty_body": "The proposed plan must contain Markdown text.",
     "plan.missing": "No proposed plan in this conversation. Enter /plan and ask Virgo to investigate and propose a plan.",

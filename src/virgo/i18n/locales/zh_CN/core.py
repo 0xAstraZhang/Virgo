@@ -22,7 +22,7 @@ MESSAGES = {
     "work_mode.approval_unchanged": "审批策略和权限保持不变。/plan off 只退出 Plan，不执行计划；/plan 显示方案及明确执行入口。",
     "work_mode.busy": "当前对话仍在运行，无法退出 Plan。请停止或等待结束后再切换。",
     "work_mode.running": "Plan 只改变任务指令，执行权限保持不变。",
-    "plan.description": "查看、修改或明确执行提出的计划",
+    "plan.description": "规划任务，或查看、修改、执行、退出计划",
     "plan.main_only": "只有来源主运行时可以更新自己的计划。",
     "plan.empty_body": "计划必须包含 Markdown 正文。",
     "plan.missing": "当前对话尚无计划。使用 /plan，然后请 Virgo 调查并提出方案。",
