@@ -7,7 +7,9 @@ import difflib
 import fnmatch
 import os
 import re
+import stat
 import threading
+from bisect import bisect_left
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
@@ -75,8 +77,13 @@ def _read(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
     if p.is_dir():
         return ToolResult.error(ctx.t("tools.fs.is_directory", path=args["path"]))
     if p.suffix.lower() in IMAGE_TYPES:
-        data = read_bytes(p, sandbox_policy) if sandbox_policy is not None else p.read_bytes()
-        if len(data) > 5 * 1024 * 1024:
+        maximum = 5 * 1024 * 1024
+        if sandbox_policy is not None:
+            data = read_bytes(p, sandbox_policy, max_bytes=maximum)
+        else:
+            with p.open("rb") as source:
+                data = source.read(maximum + 1)
+        if data is None or len(data) > maximum:
             return ToolResult.error(ctx.t("tools.fs.large_image"))
         return image_result(
             base64.b64encode(data).decode(),
@@ -278,8 +285,10 @@ def _edit(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
         bom = raw.startswith(BOM)
         if bom:
             raw = raw[1:]
-        crlf = "\r\n" in raw
         content = raw.replace("\r\n", "\n")
+        # Map normalized offsets back to the original bytes' decoded text.
+        # A boundary before a normalized newline stays before its original CR.
+        crlf_positions = [match.start() - index for index, match in enumerate(re.finditer("\r\n", raw))]
         spans: list[tuple[int, int, str]] = []
         for n, e in enumerate(args["edits"], 1):
             old = (e.get("old_text") or "").replace("\r\n", "\n")
@@ -299,12 +308,17 @@ def _edit(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
             if s2 < e1:
                 return ToolResult.error(ctx.t("tools.fs.edit_overlap"))
         updated = content
+        updated_raw = raw
         for s, e, new in reversed(spans):
             updated = updated[:s] + new + updated[e:]
+            start, end = s + bisect_left(crlf_positions, s), e + bisect_left(crlf_positions, e)
+            ending = re.search(r"\r?\n", raw[start:])
+            last = raw.rfind("\n", 0, start)
+            newline = ending[0] if ending else "\r\n" if last > 0 and raw[last - 1] == "\r" else "\n"
+            updated_raw = updated_raw[:start] + new.replace("\n", newline) + updated_raw[end:]
         if updated == content:
             return ToolResult.error(ctx.t("tools.fs.edit_unchanged"))
-        final = updated.replace("\n", "\r\n") if crlf else updated
-        final = (BOM if bom else "") + final
+        final = (BOM if bom else "") + updated_raw
         if stream is not None:
             stream.seek(0)
             stream.write(final.encode("utf-8"))
@@ -314,8 +328,8 @@ def _edit(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
             p.write_text(final, encoding="utf-8", newline="")
     diff = "".join(
         difflib.unified_diff(
-            content.splitlines(keepends=True),
-            updated.splitlines(keepends=True),
+            raw.splitlines(keepends=True),
+            updated_raw.splitlines(keepends=True),
             "a/" + p.name,
             "b/" + p.name,
             n=2,
@@ -469,7 +483,8 @@ def _grep(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
     base = resolve(args.get("path") or ".", ctx.cwd)
     if sandbox_policy is not None:
         check_read(base, sandbox_policy)
-    files = [base] if base.is_file() else (
+    single_file = base.is_file()
+    files = [base] if single_file else (
         (path for path, _info in walk_files(base, sandbox_policy, IGNORE_DIRS))
         if sandbox_policy is not None else _walk(base)
     )
@@ -487,11 +502,14 @@ def _grep(args: dict, ctx: ToolContext, *, sandbox_policy=None) -> ToolResult:
                 if raw is None or len(raw) > 5 * 1024 * 1024:
                     continue
             else:
-                if f.stat().st_size > 5 * 1024 * 1024:
+                info = f.stat()
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 5 * 1024 * 1024:
                     continue
                 raw = f.read_bytes()
         except SandboxFileDenied:
-            raise
+            if single_file:
+                raise
+            continue
         except OSError:
             continue
         if b"\x00" in raw[:8192]:

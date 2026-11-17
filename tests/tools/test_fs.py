@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -16,6 +17,67 @@ from virgo.tools.sandbox import SandboxPolicy
 
 def ctx(cwd: Path) -> ToolContext:
     return ToolContext("c1", cwd, threading.Event())
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_edit_preserves_unmatched_mixed_line_endings(project, scoped):
+    file = project / "mixed.txt"
+    file.write_bytes(b"\xef\xbb\xbfalpha\nbeta\r\ngamma\ndelta\r\n")
+    tool = make_file_tool(EDIT, lambda _: SandboxPolicy("workspace-write", project)) if scoped else EDIT
+    result = tool.execute({"path": "mixed.txt", "edits": [
+        {"old_text": "beta", "new_text": "BETA\nadded"},
+        {"old_text": "gamma", "new_text": "GAMMA"},
+    ]}, ctx(project))
+    assert not result.is_error
+    assert file.read_bytes() == b"\xef\xbb\xbfalpha\nBETA\r\nadded\r\nGAMMA\ndelta\r\n"
+
+
+@pytest.mark.parametrize("kind", ["fifo", "outside-link"])
+def test_directory_grep_skips_unreadable_entries_without_losing_matches(project, kind):
+    if kind == "fifo" and not hasattr(os, "mkfifo"):
+        pytest.skip("requires POSIX FIFOs")
+    special = project / "special"
+    if kind == "fifo":
+        os.mkfifo(special)
+    else:
+        outside = project.parent / "private.txt"
+        outside.write_text("private needle")
+        try:
+            special.symlink_to(outside)
+        except OSError:
+            pytest.skip("creating symlinks unavailable")
+    (project / "normal.txt").write_text("public needle")
+    tool = make_file_tool(GREP, lambda _: SandboxPolicy("read-only", project))
+    result = tool.execute({"pattern": "needle"}, ctx(project))
+    assert not result.is_error and "public needle" in result.as_text()
+    assert "private needle" not in result.as_text()
+    assert tool.execute({"path": "special", "pattern": "needle"}, ctx(project)).is_error
+
+
+def test_image_size_limit_applies_before_reading_payload(project, monkeypatch):
+    import virgo.tools.sandbox_files as files
+
+    image = project / "large.png"
+    with image.open("wb") as stream:
+        stream.truncate(6 * 1024 * 1024)
+    original = files.os.fdopen
+
+    class CheckedReader:
+        def __init__(self, stream):
+            self.stream = stream
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.stream.close()
+        def fileno(self):
+            return self.stream.fileno()
+        def read(self, size=-1):
+            assert 0 <= size <= 5 * 1024 * 1024 + 1, "unbounded image payload read"
+            return self.stream.read(size)
+
+    monkeypatch.setattr(files.os, "fdopen", lambda *a, **kw: CheckedReader(original(*a, **kw)))
+    tool = make_file_tool(READ, lambda _: SandboxPolicy("read-only", project))
+    assert tool.execute({"path": "large.png"}, ctx(project)).is_error
 
 
 def edit(cwd, path, *pairs):

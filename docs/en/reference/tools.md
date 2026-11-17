@@ -22,6 +22,8 @@ Core owns file, selected-shell and permission-request tools. The optional Plan p
 
 Reads and tool output have budgets; long results include a continuation or saved output path. File writes to the same file are serialized. Native web providers may expose server-side tools instead of the client names above. See [shells](../guides/shells.md) and [web capabilities](../guides/web.md).
 
+`edit` preserves line endings outside replacement spans, including mixed LF/CRLF files; inserted newlines use the local line ending. Directory `grep` skips unreadable or forbidden file entries without reading their content; an explicitly requested forbidden path still fails. Images larger than 5 MiB are rejected with a bounded payload read.
+
 ## Permission requests
 
 `request_permissions(tool, arguments, permissions, reason)` requests a single-operation exception.
