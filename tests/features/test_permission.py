@@ -160,12 +160,14 @@ def test_search_review_matches_actual_ignored_and_filtered_files(make_session, t
         ("grep", {"pattern": "value", "glob": "*.py"}),
         ("glob", {"pattern": "**/*.py"}),
         ("grep", {"pattern": "value"}),
+        ("grep", {"pattern": "value", "path": "secret.txt"}),
     ]), faux.reply("done"))
     session.prompt("Search without following outside aliases")
     results = tool_results(session)
     assert not results[0].is_error and not results[1].is_error
     assert "linked-directory" not in results[1].text()
-    assert results[2].is_error and results[2].details["sandbox"]["dimension"] == "workspace_only"
+    assert not results[2].is_error
+    assert results[3].is_error and results[3].details["sandbox"]["dimension"] == "workspace_only"
     assert "OUTSIDE_SECRET" not in repr(results)
     assert not session.ui.questions
 
@@ -188,7 +190,7 @@ def test_search_review_selects_the_same_files_as_the_glob_tools(make_session, tm
     assert {Path(line) for line in results[0].text().splitlines()} == {
         Path("src/link.py"), Path("src/pkg/inside.py"),
     }
-    assert results[1].is_error
+    assert not results[1].is_error and "value = 1" in results[1].text()
     assert not results[2].is_error
     assert {Path(line) for line in results[2].text().splitlines()} == {Path("src/pkg/inside.py")}
     assert not results[3].is_error and "value = 1" in results[3].text()
