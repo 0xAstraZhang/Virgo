@@ -247,7 +247,7 @@ class ShellTool(AgentTool):
 
 def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
     from .bash import BASH_PARAMS, DEFAULT_TIMEOUT, MAX_TIMEOUT, format_output, run_command
-    from .truncate import MAX_BYTES, MAX_LINES
+    from .output import MAX_BYTES, MAX_LINES
 
     def execute(args, ctx):
         from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable

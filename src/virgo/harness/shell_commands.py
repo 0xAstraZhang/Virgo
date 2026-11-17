@@ -56,10 +56,17 @@ class ShellSelection:
         if self.current is None:
             s.replace_tools("shell", tools, owner="core.shell")
             return
-        jobs = s.services.get("jobs")
-        tools.append((make_shell_tool(self.current, sandbox=lambda ctx: s.services["sandbox"].for_context(ctx)), ("subagent",) if jobs else ROLES_ALL))
-        if jobs:
-            tools.append((make_shell_tool(self.current, jobs, sandbox=lambda ctx: s.services["sandbox"].for_context(ctx)), ("main",)))
+        jobs = s.services["jobs"]
+
+        def sandbox(ctx):
+            return s.services["sandbox"].for_context(ctx)
+
+        if jobs.background_enabled:
+            # Children keep a foreground-only shell; the main runtime may background a command.
+            tools.append((make_shell_tool(self.current, sandbox=sandbox), ("subagent",)))
+            tools.append((make_shell_tool(self.current, jobs, sandbox=sandbox), ("main",)))
+        else:
+            tools.append((make_shell_tool(self.current, sandbox=sandbox), ROLES_ALL))
         s.replace_tools("shell", tools, owner="core.shell")
 
     def select(self, shell: Shell, *, automatic=False) -> None:

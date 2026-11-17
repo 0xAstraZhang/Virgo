@@ -321,7 +321,7 @@ def test_handshake_bounds_tools_list_pagination(monkeypatch, repeated):
     requested = []
     monkeypatch.setattr(client, "start", lambda: None)
     monkeypatch.setattr(client, "notify", lambda *_args: None)
-    monkeypatch.setattr("virgo.plugins.mcp.MAX_TOOL_PAGES", 2)
+    monkeypatch.setattr("virgo.plugins.mcp.client.MAX_TOOL_PAGES", 2)
 
     def request(method, *args):
         requested.append(method)
@@ -340,7 +340,7 @@ def test_handshake_bounds_tools_list_pagination(monkeypatch, repeated):
 def test_handshake_uses_one_deadline_across_requests(monkeypatch):
     client = MCPClient("deadline", "unused")
     clock, requested = [0.0], []
-    monkeypatch.setattr("virgo.plugins.mcp.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("virgo.plugins.mcp.client.time.monotonic", lambda: clock[0])
     monkeypatch.setattr(client, "start", lambda: None)
     monkeypatch.setattr(client, "notify", lambda *_args: None)
 

@@ -16,27 +16,39 @@ from ...harness.store import SessionStore
 from ...harness.ui import UI
 from ..i18n import tr
 from ..repl import EXIT
+from .activity import RunActivity
 from .bridge import FullscreenUI, RunFinished, StagedFullscreenUI, Update
+from .conversation import ConversationState
 
 if TYPE_CHECKING:
+    from .editor import InputHistory
     from .modes import PermissionModeChoice
 
 
 class RunController:
     """All methods except worker closures run on the UI thread.
 
+    The controller owns exactly one ``ConversationState``; selecting another
+    pane selects another controller and therefore another state.
     ``poll`` returns presentation updates and schedules queued work. A worker
     remains busy until its completion is consumed here, avoiding overlapping
     calls during the gap between a fast worker exiting and the next UI frame.
     """
 
-    def __init__(self, session: AgentSession, ui: FullscreenUI) -> None:
+    def __init__(
+        self, session: AgentSession, ui: FullscreenUI, *, history: InputHistory | None = None
+    ) -> None:
         self.session = session
         self.ui = ui
+        if history is None:
+            # Kept as a local import so controller-only callers stay Textual-free.
+            from .editor import InputHistory
+
+            history = InputHistory(session.paths.user)
+        self.state = ConversationState(activity=RunActivity(session.translator), history=history)
         self.busy = False
         self.closing = False
         self.closed = False
-        self.browsing = False
         self._lifecycle_lock = threading.RLock()
         self._switch_candidate: AgentSession | None = None
         self._started = False
@@ -44,9 +56,6 @@ class RunController:
         self._worker: threading.Thread | None = None
         self._helpers: dict[int, threading.Thread] = {}
         self._ids = itertools.count(1)
-        self._deferred: deque[str] = deque()
-        self._steering: list[str] = []
-        self._task_runtime = None
         self._initial_reset: Update | None = None
         self._shutdown_worker: threading.Thread | None = None
         self._unsubscribers = [
@@ -62,8 +71,21 @@ class RunController:
         ui.bind_signal("main", session.main.agent.signal)
 
     @property
+    def browsing(self) -> bool:
+        return self.state.browsing
+
+    @browsing.setter
+    def browsing(self, browsing: bool) -> None:
+        self.state.browsing = browsing
+
+    @property
+    def _deferred(self) -> deque[str]:
+        """Prompts queued while a run was busy, kept as a read-only view."""
+        return self.state.deferred
+
+    @property
     def can_switch(self) -> bool:
-        return not self.busy and not self.closing and not self._helpers and not self._deferred
+        return not self.busy and not self.closing and not self._helpers and not self.state.deferred
 
     def open_session(self, path: Path | str, *, initial: str | None = None,
                      work_mode: str | None = None) -> bool:
@@ -158,14 +180,14 @@ class RunController:
             else []
         )
         return [
-            *[tr(self, "ui.controller.steering", text=text) for text in self._steering],
-            *[tr(self, "ui.controller.deferred", text=text) for text in self._deferred],
+            *[tr(self, "ui.controller.steering", text=text) for text in self.state.steering],
+            *[tr(self, "ui.controller.deferred", text=text) for text in self.state.deferred],
             *unsaved,
         ]
 
     @property
     def task_runtime(self):
-        return self._task_runtime or self.session.main
+        return self.state.task_runtime or self.session.main
 
     @property
     def workflow(self) -> str:
@@ -188,9 +210,9 @@ class RunController:
 
     def cancel_pending(self) -> int:
         """Cancel inputs not yet consumed; leave the running task and notifications alone."""
-        count = len(self._deferred) + self.session.cancel_pending_input()
-        self._deferred.clear()
-        self._steering.clear()
+        count = len(self.state.deferred) + self.session.cancel_pending_input()
+        self.state.deferred.clear()
+        self.state.steering.clear()
         if count:
             self.ui.print(tr(self, "ui.controller.cleared", count=count), "dim")
         return count
@@ -201,7 +223,7 @@ class RunController:
 
     def _command_start(self, command, runtime) -> None:
         if runtime.session is self.session and command.isolated:
-            self._task_runtime = runtime
+            self.state.task_runtime = runtime
             self.ui.push("state_changed", None)
         if runtime.session is self.session and command.isolated and (self.closing or self._interrupted):
             self.session.abort_runtime(runtime)
@@ -209,8 +231,8 @@ class RunController:
     def _runtime_created(self, runtime) -> None:
         if runtime.session is self.session:
             self.ui.bind_signal(runtime.name, runtime.agent.signal)
-            if runtime.parent is self._task_runtime and runtime.workflow:
-                self._task_runtime = runtime
+            if runtime.parent is self.state.task_runtime and runtime.workflow:
+                self.state.task_runtime = runtime
                 self.ui.push("state_changed", None)
 
     def _runtime_closed(self, runtime) -> None:
@@ -221,7 +243,7 @@ class RunController:
         if runtime.session is not self.session:
             return
         self.ui.bind_signal(event.agent, runtime.agent.signal)
-        if (event.agent == "main" or runtime is self._task_runtime) and event.type == "agent_start" and (self.closing or self._interrupted):
+        if (event.agent == "main" or runtime is self.state.task_runtime) and event.type == "agent_start" and (self.closing or self._interrupted):
             # Agent.prompt resets its own signal. An interrupt may have arrived
             # after scheduling but before that reset on the worker thread.
             self.session.abort_runtime(runtime)
@@ -246,7 +268,7 @@ class RunController:
         ticket = next(self._ids)
         if not concurrent:
             self.busy = True
-            self._task_runtime = None
+            self.state.task_runtime = None
             self._interrupted = False
             self.session.main.agent.signal.clear()
             self.ui.push("run_start", ticket)
@@ -302,15 +324,15 @@ class RunController:
             self._launch(invoke, concurrent=True, command=cmd.name)
         elif self.busy:
             if text.startswith("/") and not text.startswith("//"):
-                self._deferred.append(text)
+                self.state.deferred.append(text)
             elif self.session.steer(text):
-                self._steering.append(text)
+                self.state.steering.append(text)
             else:
                 # The worker may be starting, executing a slash command, or
                 # already finished with its done event still waiting for poll.
                 # Queue a normal prompt in those windows instead of stranding
                 # it in an agent queue that nobody will drain.
-                self._deferred.append(text)
+                self.state.deferred.append(text)
         else:
             self._launch(lambda: self.session.prompt(text))
 
@@ -322,7 +344,7 @@ class RunController:
         for update in self.ui.drain():
             if update.kind == "done":
                 self.busy = False
-                self._task_runtime = None
+                self.state.task_runtime = None
                 out.append(update)
             elif update.kind == "helper_done":
                 self._helpers.pop(update.payload, None)
@@ -332,8 +354,8 @@ class RunController:
                 ev = update.payload
                 if ev.type == "message_end" and ev.agent == "main" and isinstance(ev.message, UserMessage):
                     text = ev.message.text()
-                    if text in self._steering:
-                        self._steering.remove(text)
+                    if text in self.state.steering:
+                        self.state.steering.remove(text)
                 out.append(update)
             elif update.kind == "confirmation":
                 if self.ui.is_confirmation_pending(update.payload.id):
@@ -343,17 +365,17 @@ class RunController:
                     out.append(update)
             else:
                 if update.kind == "reset":
-                    self._steering.clear()
+                    self.state.steering.clear()
                 if update.kind == "closed":
                     self.closed = True
                     self.busy = False
                 out.append(update)
         if not self.closing and not self.busy:
-            if self._deferred:
+            if self.state.deferred:
                 # Browsing must not strand work that was queued before it opened.
-                text = self._deferred.popleft()
+                text = self.state.deferred.popleft()
                 self._launch(lambda: self.session.prompt(text))
-            elif self.session.wakeups and not self.browsing and self.session.main.can_run():
+            elif self.session.wakeups and not self.state.browsing and self.session.main.can_run():
                 self._launch(self.session.run_pending)
         return out
 
@@ -374,8 +396,8 @@ class RunController:
             sessions = [self.session]
             if self._switch_candidate is not None:
                 sessions.append(self._switch_candidate)
-        self._deferred.clear()
-        self._steering.clear()
+        self.state.deferred.clear()
+        self.state.steering.clear()
         self.ui.close()
         self.session.abort()
         threads = [self._worker, *self._helpers.values()]

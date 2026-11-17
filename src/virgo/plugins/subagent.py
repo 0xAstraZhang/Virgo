@@ -210,7 +210,7 @@ def setup(api: ExtensionAPI) -> None:
             return subs.run(prompt, desc, signal, ctx.cwd, origin_parent,
                             read_only=read_only, execution_mode=execution_mode)
 
-        if args.get("background") and jobs is not None:
+        if args.get("background") and jobs is not None and jobs.background_enabled:
             job = jobs.start_callable(
                 f"agent: {desc}",
                 run_child,

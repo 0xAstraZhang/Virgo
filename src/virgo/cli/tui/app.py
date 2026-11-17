@@ -26,9 +26,10 @@ from ...harness.session import AgentSession
 from ...harness.store import SessionStore
 from ..i18n import tr
 from .activity import RunActivity
-from .bridge import FullscreenUI
+from .bridge import Confirmation, FullscreenUI, InputRequest
 from .choices import ChoiceList, CommandChoice
 from .controller import RunController
+from .conversation import ConversationState
 from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .forms import MultilineInput
@@ -105,14 +106,16 @@ def input_hints(owner=None) -> Text:
 
 
 class ConversationPane(Vertical):
-    """Keep a live conversation's widgets and buffered updates when it is hidden."""
+    """Keep a live conversation's widgets and state when it is hidden."""
 
-    def __init__(self, controller: RunController, history: InputHistory):
+    def __init__(self, controller: RunController):
         super().__init__()
         self.controller = controller
-        self.history = history
-        self.state: dict = {}
         self.updates = deque()
+
+    @property
+    def state(self) -> ConversationState:
+        return self.controller.state
 
     @property
     def key(self):
@@ -136,7 +139,7 @@ class ConversationPane(Vertical):
             yield Input(id="auth-value")
             yield MultilineInput(id="input-multiline")
             yield Static("", id="metrics", markup=False)
-            yield ChatEditor(self.history)
+            yield ChatEditor(self.state.history)
             yield Static("", id="status", markup=False)
 
 
@@ -189,21 +192,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         background: $background; color: #7C3AED; text-style: bold; }
     ModalScreen { align: center middle; background: $background; }
     """
-    # State associated with the visible pane; widgets keep drafts, selections,
-    # scroll positions and partially completed forms without answering them.
-    CONVERSATION_STATE = (
-        "activity",
-        "history",
-        "confirmations",
-        "active_confirmation",
-        "input_requests",
-        "active_input",
-        "input_request",
-        "completion_names",
-        "completion_query",
-        "completion_suppressed",
-        "last_interrupt",
-    )
     BINDINGS = [
         Binding("ctrl+c", "interrupt", priority=True, show=False),
         Binding("ctrl+d", "eof", priority=True, show=False),
@@ -222,37 +210,123 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def __init__(self, session, ui: FullscreenUI, initial: str | None = None, pick_session=False,
                  work_mode: str | None = None):
         super().__init__(ansi_color=True)
-        self.session = session
-        self.ui = ui
-        self.controller = RunController(session, ui)
-        self.activity = RunActivity(session.translator)
         self.initial = initial
         self.pick_session = pick_session
         self.startup_work_mode = work_mode if pick_session else None
         self.session_grouped = session.settings.get("tui.sessionGrouping", "workspace") != "none"
         self._session_picker: SessionPicker | None = None
         self.exit_code = 0
-        self.history = InputHistory(session.paths.user)
+        history = InputHistory(session.paths.user)
         self.register_theme(terminal_theme())
         self.theme = "virgo-terminal"
-        self.confirmations = deque()
-        self.active_confirmation = None
-        self.input_requests = deque()
-        self.active_input = None
-        self.input_request = None
-        self.completion_names: list[str] = []
-        self.completion_query: str | None = None
-        self.completion_suppressed: str | None = None
-        self.last_interrupt = 0.0
         self.last_status = 0.0
         self._polling = False
-        self._pane = ConversationPane(self.controller, self.history)
+        self._pane = ConversationPane(RunController(session, ui, history=history))
         self._panes = [self._pane]
         self._pending_switch = None
 
     def compose(self) -> ComposeResult:
         yield Static(Text.assemble(("V_", f"bold {PURPLE}"), (f" Virgo {__version__}", "dim")), id="brand")
         yield self._pane
+
+    # The application exposes the visible conversation through these read-only
+    # views. Each pane owns the only stored copy of its state, so switching
+    # panes never copies attributes between the app and a pane.
+    @property
+    def state(self) -> ConversationState:
+        return self._pane.state
+
+    @property
+    def controller(self) -> RunController:
+        return self._pane.controller
+
+    @property
+    def session(self) -> AgentSession:
+        return self.controller.session
+
+    @property
+    def ui(self) -> FullscreenUI:
+        return self.controller.ui
+
+    @property
+    def activity(self) -> RunActivity:
+        return self.state.activity
+
+    @property
+    def history(self) -> InputHistory:
+        return self.state.history
+
+    @property
+    def confirmations(self) -> deque[Confirmation]:
+        return self.state.confirmations
+
+    @confirmations.setter
+    def confirmations(self, confirmations: deque[Confirmation]) -> None:
+        self.state.confirmations = confirmations
+
+    @property
+    def active_confirmation(self) -> int | None:
+        return self.state.active_confirmation
+
+    @active_confirmation.setter
+    def active_confirmation(self, confirmation: int | None) -> None:
+        self.state.active_confirmation = confirmation
+
+    @property
+    def input_requests(self) -> deque[InputRequest]:
+        return self.state.input_requests
+
+    @input_requests.setter
+    def input_requests(self, requests: deque[InputRequest]) -> None:
+        self.state.input_requests = requests
+
+    @property
+    def active_input(self) -> int | None:
+        return self.state.active_input
+
+    @active_input.setter
+    def active_input(self, request: int | None) -> None:
+        self.state.active_input = request
+
+    @property
+    def input_request(self) -> InputRequest | None:
+        return self.state.input_request
+
+    @input_request.setter
+    def input_request(self, request: InputRequest | None) -> None:
+        self.state.input_request = request
+
+    @property
+    def completion_names(self) -> list[str]:
+        return self.state.completion_names
+
+    @completion_names.setter
+    def completion_names(self, names: list[str]) -> None:
+        self.state.completion_names = names
+
+    @property
+    def completion_query(self) -> str | None:
+        return self.state.completion_query
+
+    @completion_query.setter
+    def completion_query(self, query: str | None) -> None:
+        self.state.completion_query = query
+
+    @property
+    def completion_suppressed(self) -> str | None:
+        return self.state.completion_suppressed
+
+    @completion_suppressed.setter
+    def completion_suppressed(self, text: str | None) -> None:
+        self.state.completion_suppressed = text
+
+    @property
+    def last_interrupt(self) -> float:
+        return self.state.last_interrupt
+
+    @last_interrupt.setter
+    def last_interrupt(self, at: float) -> None:
+        self.state.last_interrupt = at
 
     @property
     def editor(self) -> ChatEditor:
@@ -459,7 +533,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     self.notify(tr(self, "ui.session.other_active"), severity="warning")
                     return
                 owner.query_one(ChatEditor).clear()
-                owner.history.reset()
+                owner.state.history.reset()
                 target = owner
         if target is None and not self.can_change_session():
             ui = FullscreenUI()
@@ -487,7 +561,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             if self.controller.closing or not self.is_running:
                 await asyncio.to_thread(candidate.shutdown)
                 return
-            target = ConversationPane(RunController(candidate, ui), self.history)
+            target = ConversationPane(RunController(candidate, ui, history=self.history))
             target.display = False
             self._panes.append(target)
             await self.screen_stack[0].mount(target)
@@ -495,27 +569,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 target.query_one(selector).display = False
             target.controller.start(initial)
         if target is not None:
-            self._pane.state = {name: getattr(self, name) for name in self.CONVERSATION_STATE}
+            # Selecting the pane selects its ConversationState: the old pane
+            # keeps its queued requests, activity and drafts for a later return.
             self._pane.display = False
             self._pane = target
-            self.controller = target.controller
-            self.session = self.controller.session
-            self.ui = self.controller.ui
-            defaults = dict(
-                activity=RunActivity(self.session.translator),
-                history=target.history,
-                confirmations=deque(),
-                active_confirmation=None,
-                input_requests=deque(),
-                active_input=None,
-                input_request=None,
-                completion_names=[],
-                completion_query=None,
-                completion_suppressed=None,
-                last_interrupt=0.0,
-            )
-            for name, value in (target.state or defaults).items():
-                setattr(self, name, value)
             target.display = True
             self.update_status()
             self.focus_composer()
@@ -553,7 +610,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 if update.kind == "language_changed":
                     self.refresh_language()
                 elif update.kind == "session_changed":
-                    self.session = update.payload
                     self.activity.translator = self.session.translator
                     self.refresh_language()
                 elif update.kind == "reset":

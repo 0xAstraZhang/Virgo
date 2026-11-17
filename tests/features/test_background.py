@@ -6,8 +6,9 @@ import threading
 
 import pytest
 
+from virgo.agent.types import ToolContext
 from virgo.ai.providers import faux
-from virgo.plugins import background
+from virgo.harness import jobs as supervision
 
 from tests.support.harness import RecordingUI, calls, last_message_text, tool_results, wait_until
 from tests.support.shell import selected
@@ -43,7 +44,7 @@ def test_job_that_cannot_start_is_not_left_pending(make_session, project, monkey
     def broken(*args, **kwargs):
         raise OSError("no shell")
 
-    monkeypatch.setattr(background, "spawn", broken)
+    monkeypatch.setattr(supervision, "spawn", broken)
     with pytest.raises(OSError):
         jobs.start_command("echo hi", project)
     assert not jobs.jobs and not pending_work(session)
@@ -83,3 +84,39 @@ def test_failed_job_notification_is_reported_and_does_not_hold_print_mode(make_s
     assert not pending_work(session)
     assert f"could not deliver the notification for {job.id}" in session.ui.text
     assert "queue gone" in session.ui.text
+
+def test_disabled_background_capability_keeps_the_shell_foreground_only(make_session):
+    session = make_session(settings={"profile": "minimal"})
+    jobs = session.services["jobs"]
+    assert not jobs.background_enabled
+    assert session.tool("job_output") is None and session.tool("job_kill") is None
+    assert session.commands.get("jobs") is None
+    shell_tool = session.tool(selected(session).tool_name)
+    assert "background" not in shell_tool.parameters["properties"]
+
+
+def test_disabled_background_capability_runs_an_agent_synchronously(make_session):
+    session = make_session(
+        faux.reply("foreground result"),
+        settings={"profile": "minimal", "plugins": {"subagent": {"enabled": True}}},
+    )
+    ctx = ToolContext("agent-origin", session.cwd, threading.Event(), origin=session.main.origin)
+    result = session.tool("agent").execute(
+        {"description": "private label", "prompt": "private prompt", "background": True}, ctx
+    )
+    assert not result.is_error and result.as_text() == "foreground result"
+    assert not session.services["jobs"].jobs
+
+def test_failed_background_setup_keeps_the_shell_foreground_only(make_session, monkeypatch):
+    from virgo.plugins import background
+
+    def broken(api):
+        raise ValueError("background setup failed")
+
+    monkeypatch.setattr(background, "setup", broken)
+    session = make_session()
+    assert "background" not in session.loaded_plugins
+    assert not session.services["jobs"].background_enabled
+    shell_tool = session.tool(selected(session).tool_name)
+    assert "background" not in shell_tool.parameters["properties"]
+    assert session.tool("job_output") is None

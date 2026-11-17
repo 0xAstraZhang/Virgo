@@ -20,7 +20,7 @@ import httpx
 
 from ..agent.types import AgentTool, ToolResult
 from ..i18n import Translator
-from .truncate import save_output, truncate_head
+from .output import save_output, truncate_head
 
 DEEPSEEK_URL = "https://api.deepseek.com/v1/tools/fetch"
 

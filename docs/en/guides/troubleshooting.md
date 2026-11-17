@@ -75,4 +75,4 @@ There are at most two recovery attempts without a successful remote tool call; a
 
 The session store keeps logical in-memory entries after a write failure and reports the original cause through the independent log. It pauses scheduling and signals the owning runtime so further work does not race ahead of unsaved history. Switching views does not repair the failed store, and a diagnostic notification cannot clear cancellation or a save failure. Avoid closing the process until you have recovered needed unsaved information.
 
-Implementation: [diagnostics](../../../src/virgo/diagnostics.py), [log storage](../../../src/virgo/harness/diagnostics.py), [runtime evidence](../../../src/virgo/harness/diagnostic_access.py), [recovery](../../../src/virgo/harness/recovery.py), [MCP](../../../src/virgo/plugins/mcp.py).
+Implementation: [diagnostics](../../../src/virgo/diagnostics.py), [log storage](../../../src/virgo/harness/diagnostics.py), [runtime evidence](../../../src/virgo/harness/diagnostic_access.py), [recovery](../../../src/virgo/harness/recovery.py), [MCP](../../../src/virgo/plugins/mcp/__init__.py).

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from virgo.tools.truncate import MAX_LINES, budget
+from virgo.tools.output import MAX_LINES, budget
 
 
 def test_budget_reports_truncation_only_when_text_is_cut(tmp_path):
