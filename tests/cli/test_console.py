@@ -89,8 +89,7 @@ def test_plain_windows_reader_starts_without_termios(monkeypatch):
 def test_windows_forms_edit_hide_secrets_and_cancel(monkeypatch, capsys):
     from types import SimpleNamespace
 
-    from virgo.cli import console
-    from virgo.cli import windows_console
+    from virgo.cli import console, windows_console
 
     keys = queue.Queue()
     monkeypatch.setattr(console, "os", SimpleNamespace(name="nt"))
