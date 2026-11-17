@@ -66,6 +66,14 @@ finally:
     {"permissions": {"deny": ["bash(git push*)"]}},
 ])
 def test_explicit_legacy_authority_never_silently_becomes_host(project, config):
+    from virgo.harness.settings import Paths, Settings
+
+    settings = Settings.load(Paths(project))
+    for rule in ('allow', 'deny'):
+        if rule in config.get('permissions', {}):
+            with pytest.raises(ValueError, match='migrat|retired'):
+                settings.set(f'permissions.{rule}', config['permissions'][rule])
+            assert not settings.get(f'permissions.{rule}')
     home = Path(os.environ["VIRGO_HOME"])
     (home / "settings.json").write_text(json.dumps(config))
     with pytest.raises(ValueError, match="migrat|retired|execution.provider"):

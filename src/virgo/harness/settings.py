@@ -328,11 +328,16 @@ class Settings:
 
     def set(self, dotted: str, value: Any) -> None:
         dotted = _canonical_key(dotted)
-        cur = self.data
         parts = dotted.split(".")
+        checked = parts[0] in {"permissions", "execution", "sandbox"}
+        data = copy.deepcopy(self.data) if checked else self.data
+        cur = data
         for part in parts[:-1]:
             cur = cur.setdefault(part, {})
         cur[parts[-1]] = value
+        if checked:
+            _validate(data)
+        self.data = data
 
     def plugin_enabled(self, name: str) -> bool:
         if name not in PLUGIN_IDS:

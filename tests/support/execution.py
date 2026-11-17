@@ -14,9 +14,9 @@ def file_policy(workspace, *, read_paths=None, write_paths=(), network_allowed=F
     return SandboxPolicy(workspace, resources, tuple(private_paths), SimpleNamespace(backend="not-launched"))
 
 
-def sandbox_config(preset="workspace-edit", *, executable="/unavailable/test-executor", network=True):
+def sandbox_config(preset="workspace-edit", *, executable=None, network=True):
     return {
         "execution": {"provider": "sandbox"},
-        "sandbox": {"executable": executable},
+        "sandbox": {"executable": executable or str(Path("/unavailable/test-executor").resolve())},
         "permissions": {"preset": preset, "presets": {preset: {"networkAllowed": network}}},
     }

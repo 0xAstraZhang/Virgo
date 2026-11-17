@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from ...execution import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable
@@ -75,9 +76,9 @@ class MxcExecutor:
             raise ExecutionCancelled("Cancelled before MXC launch")
         if self.identity != self._identity():
             raise ExecutionUnavailable("MXC executable changed; restart the session to bind its identity")
-        control = Path(tempfile.mkdtemp(prefix="virgo-mxc-control-"))
-        scratch = Path(tempfile.mkdtemp(prefix="virgo-mxc-scratch-"))
-        channel = Path(tempfile.mkdtemp(prefix="virgo-mxc-signal-"))
+        control = Path(tempfile.mkdtemp(prefix="virgo-mxc-control-")).resolve()
+        scratch = Path(tempfile.mkdtemp(prefix="virgo-mxc-scratch-")).resolve()
+        channel = Path(tempfile.mkdtemp(prefix="virgo-mxc-signal-")).resolve()
         nonce = secrets.token_hex(32)
         marker = scratch / "started.json"
         home = scratch / "home"
@@ -153,14 +154,19 @@ class MxcProcess:
         return result
 
     def _observe(self):
+        from .files import read_bytes
+
         try:
-            data = json.loads(self.marker.read_text())
+            access = replace(self.policy, resources=replace(self.policy.resources,
+                              read_paths=(str(self.marker),), write_paths=()))
+            data = json.loads(read_bytes(self.marker, access, max_bytes=4096) or b'{}')
         except (OSError, ValueError):
             return
-        if data.get("nonce") == self.nonce:
+        # Scratch is writable by the payload: a rewritten negative receipt
+        # cannot prove nonexecution. Never downgrade observed side effects.
+        if isinstance(data, dict) and data.get("nonce") == self.nonce and data.get("started") is True:
             self._virgo_boundary.update(state="established", wrapper_started=True,
-                                        payload_started=data["started"],
-                                        side_effects="possible" if data["started"] else "none")
+                                        payload_started=True, side_effects="possible")
 
     def kill_tree(self):
         # Ask the executor to run its own cleanup first. Forced termination

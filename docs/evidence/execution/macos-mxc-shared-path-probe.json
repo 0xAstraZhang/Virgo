@@ -13,23 +13,23 @@
   "observed_boundary": {
     "provider": "sandbox",
     "backend": "seatbelt",
-    "workspace": "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-6e5s4c2n/workspace",
+    "workspace": "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-yga86mml/workspace",
     "requested": {
       "read_paths": [
-        "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-6e5s4c2n/workspace"
+        "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-yga86mml/workspace"
       ],
       "write_paths": [
-        "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-6e5s4c2n/workspace"
+        "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-yga86mml/workspace"
       ],
       "network_allowed": true
     },
     "effective": {
       "file_tools": {
         "read_paths": [
-          "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-6e5s4c2n/workspace"
+          "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-yga86mml/workspace"
         ],
         "write_paths": [
-          "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-6e5s4c2n/workspace"
+          "/private/var/folders/13/5ckqvgqx4r11wycjwr5t2g980000gn/T/virgo-mxc-probe-yga86mml/workspace"
         ],
         "network_allowed": true
       },
@@ -57,7 +57,7 @@
     "wrapper_started": true
   },
   "protected_contents": "changed",
-  "elapsed_ms": 2341.44,
+  "elapsed_ms": 70.956,
   "diagnostics": "",
   "cleanup": "best_effort",
   "stdout": "",

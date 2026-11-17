@@ -6,6 +6,7 @@ on:
       - 'src/virgo/**'
       - 'tests/support/**'
       - 'ci/*mxc*.py'
+      - 'docs/evidence/execution/**'
       - 'tests/harness/test_windows_sandbox_e2e.py'
       - '.github/workflows/windows-sandbox.yml'
       - 'pyproject.toml'

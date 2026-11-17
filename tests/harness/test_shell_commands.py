@@ -250,23 +250,22 @@ def test_error_timeout_and_truncation_through_agent_loop(make_session, name):
 
 
 @pytest.mark.parametrize("name", [n for n in SHELLS if n in ("pwsh", "powershell")])
-def test_powershell_failure_and_permission_boundaries(make_session, monkeypatch, name):
+def test_powershell_failure_and_permission_boundaries(make_session, name):
     session = make_session()
     session.prompt(f"/shell {name}")
     assert selected(session) is not None and selected(session).kind == name, session.ui.text
     res = invoke(session, "Write-Error 'failure'; Set-Content -LiteralPath unexpected -Value bad")
     assert res.is_error and not (session.cwd / "unexpected").exists()
-    session.settings.set("permissions.allow", [])
-    session.settings.set("permissions.deny", ["powershell(Set-Content*)"])
+    with pytest.raises(ValueError, match="retired"):
+        session.settings.set("permissions.deny", ["powershell(Set-Content*)"])
     session.approval_policy = "never"
     res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
-    assert res.is_error and not (session.cwd / "unexpected").exists()
+    assert not res.is_error and (session.cwd / "unexpected").read_text().strip() == "bad"
+    assert res.details['boundary']['provider'] == 'host' and not session.ui.questions
     assert "powershell" in [t.name for t in session.main.request_context([]).tools]
-    res = invoke(session, "Set-Content -LiteralPath unexpected -Value bad")
-    assert res.is_error and not (session.cwd / "unexpected").exists()
     session.approval_policy = "ask"
-    session.settings.set("permissions.deny", ["powershell(Write-Output*)"])
-    assert invoke(session, "Write-Output denied").is_error
+    assert not invoke(session, "Write-Output allowed").is_error
+    assert not session.ui.questions
 
 
 @pytest.mark.parametrize("name", [n for n in SHELLS if n in ("pwsh", "powershell")])

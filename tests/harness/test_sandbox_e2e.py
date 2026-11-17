@@ -835,7 +835,7 @@ def test_unacknowledged_native_launch_keeps_unknown_facts(broker_session, projec
     """Real synthetic processes test acknowledgement handling, never isolation.
 
     No launch receipt means unknown even when stderr claims rejection. A receipt
-    lost after a write must not erase possible effects or trigger a replay.
+    overwritten by the payload must not erase possible effects or trigger replay.
     """
     import subprocess
     import tempfile
@@ -855,11 +855,13 @@ def test_unacknowledged_native_launch_keeps_unknown_facts(broker_session, projec
         scratch, channel = control / 'scratch', control / 'channel'
         scratch.mkdir()
         channel.mkdir()
-        source = ("from pathlib import Path; Path('payload-ran').write_text('once')" if payload else
+        marker = scratch / 'missing-receipt'
+        source = ("from pathlib import Path; Path('payload-ran').write_text('once'); "
+                  f"Path({str(marker)!r}).write_text(" + repr('{"nonce":"expected-nonce","started":false}') + ")" if payload else
                   "import sys; sys.stderr.write('sandbox denied everything'); raise SystemExit(42)")
         process = subprocess.Popen([sys.executable, '-I', '-S', '-c', source], cwd=cwd,
                                    stdout=stdout, stderr=subprocess.STDOUT)
-        return MxcProcess(process, policy, control, scratch, scratch / 'missing-receipt',
+        return MxcProcess(process, policy, control, scratch, marker,
                           'expected-nonce', control / 'diagnostics.log', channel)
 
     monkeypatch.setattr(provider.executor, 'spawn', spawn, raising=False)
