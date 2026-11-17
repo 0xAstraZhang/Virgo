@@ -9,6 +9,7 @@ import errno
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -80,7 +81,7 @@ class ControlledGit:
                 [*(self.metadata_argv if configuration else self.argv), *args], cwd=self.workspace,
                 env=self.metadata_env if configuration else self.env, shell=False,
                 stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                 start_new_session=os.name != "nt",
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
@@ -98,7 +99,7 @@ class ControlledGit:
             try:
                 with stream:
                     while not stopping.is_set():
-                        chunk = stream.read1(64 * 1024)
+                        chunk = stream.read(64 * 1024)
                         if not chunk:
                             break
                         with lock:
@@ -117,7 +118,12 @@ class ControlledGit:
         def write():
             try:
                 with proc.stdin:
-                    proc.stdin.write(data)
+                    remaining = memoryview(data)
+                    while remaining and not stopping.is_set():
+                        written = proc.stdin.write(remaining)
+                        if not written:
+                            raise BrokenPipeError("Controlled Git stdin stopped accepting data")
+                        remaining = remaining[written:]
             except BrokenPipeError:
                 pass  # A Git error can close stdin before consuming all input.
             except OSError as error:
@@ -161,25 +167,38 @@ class ControlledGit:
                 raise GitReadError(f"Git {args[0]} failed: {reason or proc.returncode}")
             return bytes(output)
         finally:
+            primary_error = sys.exception()
+            cleanup_error = None
             stopping.set()
-            if proc.poll() is None:
-                kill_tree(proc)
             try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2)
+                if proc.poll() is None:
+                    kill_tree(proc)
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
+            except Exception as error:
+                cleanup_error = error
             finally:
-                # Reaping Git closes its pipe ends and releases blocked readers
-                # and the optional stdin writer. Never drain through communicate.
+                # Descendants may retain pipe ends after Git exits. Raw pipes
+                # can be closed without waiting on a buffered reader's lock.
                 for worker in workers:
                     worker.join(timeout=2)
                 unfinished = any(worker.is_alive() for worker in workers)
-                if unfinished:
-                    raise GitReadError("Controlled Git pipe cleanup did not finish.", "incomplete")
+                if unfinished and cleanup_error is None:
+                    cleanup_error = GitReadError("Controlled Git pipe cleanup did not finish.", "incomplete")
                 for stream in (proc.stdin, proc.stdout, proc.stderr):
                     if stream is not None:
-                        stream.close()
+                        try:
+                            stream.close()
+                        except (OSError, ValueError) as error:
+                            if cleanup_error is None:
+                                cleanup_error = error
+            if cleanup_error is not None:
+                if primary_error is None:
+                    raise cleanup_error
+                primary_error.add_note(f"Controlled Git cleanup: {cleanup_error}")
 
     def commit(self, ref, *, optional=False):
         if not isinstance(ref, str) or not ref or ref.startswith("-") or any(c in ref for c in "\x00\r\n"):
