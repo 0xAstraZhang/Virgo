@@ -272,7 +272,13 @@ class Settings:
     def load(cls, paths: Paths, overrides: dict | None = None) -> Settings:
         notices: list[str] = []
         user = _read_json(paths.user / "settings.json")
-        project = _read_json(paths.project / "settings.json")
+        # Running Virgo from its own home directory makes the project path the user
+        # path, so reading it again as an untrusted project layer would reject the
+        # user's own grants. The user layer already carries those settings.
+        shared_home = paths.project.resolve() == paths.user.resolve()
+        project = {} if shared_home else _read_json(paths.project / "settings.json")
+        if shared_home:
+            notices.append("Virgo is running from its home directory; user settings are not re-read as project settings.")
         trusted = _trusted_projects(user)
         if "sandbox" in project:
             project = {key: value for key, value in project.items() if key != "sandbox"}

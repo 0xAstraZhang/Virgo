@@ -75,6 +75,36 @@ def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp
     assert settings.get("plan") is True
 
 
+def test_home_directory_is_not_reread_as_project_settings(tmp_path, monkeypatch):
+    """Launching from the Virgo home must not reject the user's own grants."""
+    home = tmp_path / "home"
+    monkeypatch.delenv("VIRGO_HOME")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    state = home / ".virgo"
+    state.mkdir()
+    (state / "settings.json").write_text(json.dumps({
+        "model": "faux/user",
+        "permissions": {"mode": "read-only", "modes": {"offline": {
+            "name": "Offline", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}},
+    }))
+    paths = Paths(home)
+    assert paths.user == paths.project
+    settings = Settings.load(paths)
+    assert settings.get("model") == "faux/user"
+    assert settings.get("permissions.preset") == "read-only"
+    assert settings.get("permissions.presets.offline.name") == "Offline"
+    assert any("home directory" in notice for notice in settings.migration_warnings)
+
+
+def test_project_layer_still_rejects_grants_when_the_paths_differ(project, tmp_path):
+    state = tmp_path / "home"
+    (state / "settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
+    (project / ".virgo").mkdir()
+    (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
+    with pytest.raises(ValueError, match="Project permissions may only add deny"):
+        Settings.load(Paths(project))
+
+
 def test_invalid_legacy_modes_value_is_a_configuration_error(project):
     with pytest.raises(ValueError, match="permissions.modes"):
         Settings.load(Paths(project), {"permissions": {"modes": "nope", "presets": {}}})
