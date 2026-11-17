@@ -6,7 +6,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import stat
 import tempfile
 import threading
 import time
@@ -36,18 +36,36 @@ def valid_version(value) -> str | None:
 
 
 def installed_codex_version() -> str | None:
+    """Read npm installation metadata; PATH candidates are never executed.
+
+    npm links its bin script on POSIX and installs a sibling shim on Windows.
+    Standalone binaries without a package manifest use cached/release metadata.
+    """
     executable = shutil.which("codex")
     if not executable:
         return None
     try:
-        result = subprocess.run(
-            [executable, "--version"], cwd=tempfile.gettempdir(), stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=1.5, check=True,
-        )
-    except (OSError, UnicodeError, subprocess.SubprocessError):
+        path = Path(executable).resolve()
+    except (OSError, RuntimeError):
         return None
-    match = re.fullmatch(r"codex(?:-cli)?\s+v?(\S+)\s*", result.stdout)
-    return valid_version(match[1]) if match else None
+    for manifest in (path.parent.parent / "package.json",
+                     path.parent / "node_modules" / "@openai" / "codex" / "package.json"):
+        try:
+            fd = os.open(manifest, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+                         | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    continue
+                raw = stream.read(64 * 1024 + 1)
+                if len(raw) > 64 * 1024:
+                    continue
+                data = json.loads(raw)
+            if isinstance(data, dict) and data.get("name") == "@openai/codex":
+                if version := valid_version(data.get("version")):
+                    return version
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 class CodexCatalogVersion:

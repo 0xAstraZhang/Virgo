@@ -11,6 +11,16 @@ from .io import read_json
 BAD = {"failed", "error"}
 STATUSES = BAD | {"passed", "skipped"}
 PARAMETER_ALIASES = {
+    # Catalog discovery now validates npm metadata without executing the CLI.
+    "test_cli_version_probe_is_bounded_and_only_parses_codex_output[codex-cli 0.220.0\\n-0.220.0]":
+        "test_cli_metadata_is_bounded_and_only_accepts_codex[stable]",
+    "test_cli_version_probe_is_bounded_and_only_parses_codex_output[codex v1.2.3-1.2.3]":
+        "test_cli_metadata_is_bounded_and_only_accepts_codex[major]",
+    "test_cli_version_probe_is_bounded_and_only_parses_codex_output[codex-cli 0.220.0-alpha.1-None]":
+        "test_cli_metadata_is_bounded_and_only_accepts_codex[prerelease]",
+    "test_cli_version_probe_is_bounded_and_only_parses_codex_output[arbitrary 1.2.3-None]":
+        "test_cli_metadata_is_bounded_and_only_accepts_codex[wrong-package]",
+    "test_cli_probe_failure_is_optional": "test_cli_metadata_failure_is_optional",
     "test_compaction_does_not_enable_native_search[openai-responses]":
         "test_compaction_does_not_enable_native_search[virgo.ai.providers.responses]",
     "test_compaction_does_not_enable_native_search[openai-codex]":
