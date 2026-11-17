@@ -4,7 +4,7 @@
 
 模型只会获得当前角色、配置和能力允许的工具。扩展、MCP 连接和网页路由可能改变实际列表。工具名、参数名和枚举值不随界面语言变化。
 
-Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`diagnostic_get` 提供，默认启用；`plugins.<id>.enabled` 可逐个覆盖。[MCP 扩展](../../../extensions/README.zh-CN.md)另外提供 `mcp_status` 和每个服务器对应的工具。详见[配置](configuration.md#插件)。
+Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `web`、`ask_user`、`subagent`、`background`、`diagnostic_get` 提供，默认启用；`plugins.<id>.enabled` 可逐个覆盖。[Todos 扩展](../../../extensions/README.zh-CN.md#todos)提供 `todo_write`。[MCP 扩展](../../../extensions/README.zh-CN.md)另外提供 `mcp_status` 和每个服务器对应的工具。详见[配置](configuration.md#插件)。
 
 ## 文件、命令与网页
 
@@ -32,7 +32,9 @@ Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `
 
 ## 清单与提问
 
-`todo_write` 使用传入的完整列表替换现有执行清单。状态为 `pending`、`in_progress` 和 `completed`，允许多个事项同时进行；输入不合法时保留旧列表。`/todos` 显示清单，未完成事项本身不会强制触发下一轮模型调用。
+`todo_write` 仅在安装 [Todos 扩展](../../../extensions/README.zh-CN.md#todos)后提供。调用时以完整 `todos` 列表替换当前清单，每项必填 `step`、`content`、`status`；状态为 `pending`、`in_progress` 或 `completed`。`StepA`、`StepB`……`StepZ`、`StepAA`……表示执行顺序，同一 Step 的事项可并行，允许多个事项同时处于 `in_progress`。顺序由模型遵循，工具不强制调度。顶层可选 `explanation` 说明整个更新，省略时不沿用上次说明。空列表清空清单，非法输入保留旧状态。
+
+成功调用只向模型返回“Todos 状态更新成功”，完整状态保存在会话结果的 `details` 中。若压缩移除了最新完整调用及成功结果，且仍有未完成事项，请求中会完整保留最新列表与说明，包括已完成项；适用于摘要压缩、原生压缩、再次压缩和恢复会话。全部完成或清空后不再固定保留。无 `/todos` 或 `/plan` 命令，未完成事项本身不会强制触发下一轮模型调用。
 
 `ask_user` 允许主 Agent 提问，提供最多三个选项加自定义输入，或仅使用自由输入。回答澄清问题不确认执行。非交互、取消和超时结果会报告 `answered=false`，不会编造答案。无人值守运行使用 `askUser.unattendedTimeout`；用户加入对话后可以撤销该超时。
 

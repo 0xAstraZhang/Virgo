@@ -16,7 +16,7 @@ Official plugins load by default. `--no-extensions` skips user/project Python ex
 {
   "plugins": {
     "web": {"enabled": true},
-    "todo": {"enabled": true}
+    "ask_user": {"enabled": true}
   }
 }
 ```
@@ -25,7 +25,7 @@ Only known plugin IDs are accepted. Defaults merge with user settings, then proj
 
 | Legacy setting | New setting / behavior |
 | --- | --- |
-| `features.skills`, `todo`, `ask_user`, `subagent`, `background` | `plugins.<id>.enabled` |
+| `features.skills`, `ask_user`, `subagent`, `background` | `plugins.<id>.enabled` |
 | `features.diagnostics` | `plugins.diagnostic_get.enabled`; Core diagnostics remain available |
 | `features.search`, `features.fetch` | `plugins.web.searchEnabled`, `plugins.web.fetchEnabled`; the `web` plugin groups both capabilities |
 | `features.permission`, `plugins.auto_review` | Retired; configure Core `permissions.approval` and explicit grants |
@@ -80,7 +80,7 @@ Read JSON/JSONL/Markdown as plain files or copy them to an export directory. No 
 
 Session deserialization does not require tools to remain installed. Old tool results can still be rendered and included in context; a new call to an unavailable tool reports that it is unavailable. Historical records never replay an operation automatically.
 
-`/schedule`, `/schedules`, `/workflow`, `/team`, `/tasks`, `/memory` and `/goal` no longer provide those capabilities. `/todos`, `/jobs`, Skills and `agent` remain available when their plugin is enabled. An incomplete Todo does not force a continuation loop; normal agent stopping remains intact.
+`/schedule`, `/schedules`, `/workflow`, `/team`, `/tasks`, `/memory` and `/goal` no longer provide those capabilities. `/jobs`, Skills and `agent` remain available when their plugin is enabled. Todos now requires the [Todos extension](../../../extensions/README.md#todos); `plugins.todo` and `features.todo` are ignored with a notice. The extension exposes only `todo_write`; `/todos` is removed. Old session results remain readable, and missing historical step labels are not inferred. An incomplete Todo does not force a continuation loop; normal agent stopping remains intact.
 
 ## Extension authors
 

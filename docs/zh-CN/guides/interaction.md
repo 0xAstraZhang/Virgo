@@ -33,7 +33,7 @@
 | `/compact [focus]` | 压缩较早的模型上下文 |
 | `/new`、`/sessions [number]`、`/session` | 新建、浏览或查看会话 |
 | `/diagnostics [error-id]` | 查看近期错误和诊断记录 |
-| `/todos`、`/jobs` | 查看当前对话清单或后台任务 |
+| `/jobs` | 查看后台任务 |
 | `/skills`、`/skill:name [args]` | 列出技能或显式使用技能 |
 | `/mcp [reconnect]` | 查看或重新加载 MCP 连接（由 MCP 扩展提供） |
 | `/exit` | 退出交互程序 |

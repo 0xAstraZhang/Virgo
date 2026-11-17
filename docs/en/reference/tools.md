@@ -4,7 +4,7 @@
 
 The model receives the tools enabled for its role, configuration and current capabilities. The exact list can change with extensions, MCP connections and web routing. Tool names, argument names and enum values remain stable across interface languages.
 
-Core owns file, selected-shell and permission-request tools. `web`, `todo`, `ask_user`, `subagent`, `background` and `diagnostic_get` supply the optional tools below and are enabled by default; `plugins.<id>.enabled` overrides each one. The [MCP extension](../../../extensions/README.md) adds `mcp_status` and one tool per configured server. See [Configuration](configuration.md#plugins).
+Core owns file, selected-shell and permission-request tools. `web`, `ask_user`, `subagent`, `background` and `diagnostic_get` supply the optional tools below and are enabled by default; `plugins.<id>.enabled` overrides each one. The [Todos extension](../../../extensions/README.md#todos) provides `todo_write`. The [MCP extension](../../../extensions/README.md) adds `mcp_status` and one tool per configured server. See [Configuration](configuration.md#plugins).
 
 ## Files, commands and web
 
@@ -34,7 +34,9 @@ model-visible content and the TUI. Backend-unavailable errors are distinct from 
 
 ## Checklists and questions
 
-`todo_write` replaces the existing execution checklist with the complete supplied list. Statuses are `pending`, `in_progress` and `completed`; multiple items can be in progress. Invalid input leaves the old list intact. `/todos` displays it. An incomplete checklist does not itself force another model turn.
+`todo_write` is available only with the [Todos extension](../../../extensions/README.md#todos). It replaces the checklist with the complete `todos` list. Each item requires `step`, `content` and `status`; statuses are `pending`, `in_progress` and `completed`. `StepA`, `StepB`, …, `StepZ`, `StepAA`, … describe execution order, and items sharing a step may run in parallel. Multiple items may be `in_progress`; the model follows the order without a scheduler enforcing it. Optional top-level `explanation` describes the entire update; omitting it clears the previous explanation. An empty list clears the checklist, and invalid input leaves the previous state intact.
+
+Successful calls return only `Todos 状态更新成功` to the model. Full state is retained in session result details. When compaction removes the latest complete call/result pair while work remains unfinished, a request section preserves the entire latest list and explanation, including completed items. This covers summary and native compaction, repeated compaction and session resume; finished or cleared lists are not pinned. There is no `/todos` or `/plan` command. An incomplete checklist does not force another model turn.
 
 `ask_user` lets the main agent ask a question with up to three options, plus custom input, or free-form input alone. Answering a clarification does not confirm execution. Noninteractive, cancelled and timed-out questions report `answered=false` without inventing an answer. Unattended runs use `askUser.unattendedTimeout`; a user joining the conversation can cancel that timeout.
 

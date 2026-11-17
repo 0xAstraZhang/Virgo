@@ -26,7 +26,6 @@ Model adapters, hosts and capability plugins have different lifecycles. They nee
 | Plugin ID | Responsibility | Default |
 | --- | --- | --- |
 | `skills` | Index and explicitly expand skill instructions | Enabled |
-| `todo` | Checklist belonging to the current conversation | Enabled |
 | `ask_user` | Questions, cancellation and unattended timeout handling | Enabled |
 | `diagnostic_get` | Expose evidence already authorized to the caller | Enabled |
 | `subagent` | Focused children with independent context and inherited restrictions | Enabled |

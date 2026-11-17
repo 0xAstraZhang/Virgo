@@ -16,7 +16,7 @@
 {
   "plugins": {
     "web": {"enabled": true},
-    "todo": {"enabled": true}
+    "ask_user": {"enabled": true}
   }
 }
 ```
@@ -25,7 +25,7 @@
 
 | 旧配置 | 新配置／行为 |
 | --- | --- |
-| `features.skills`、`todo`、`ask_user`、`subagent`、`background` | `plugins.<id>.enabled` |
+| `features.skills`、`ask_user`、`subagent`、`background` | `plugins.<id>.enabled` |
 | `features.diagnostics` | `plugins.diagnostic_get.enabled`；Core 诊断仍保留 |
 | `features.search`、`features.fetch` | `plugins.web.searchEnabled`、`plugins.web.fetchEnabled`；由 `web` 插件组合提供 |
 | `features.permission`、`plugins.auto_review` | 已退休；改用 Core `permissions.approval` 与明确授权规则 |
@@ -80,7 +80,7 @@ Virgo 不再加载 `~/.virgo/agents/*.md` 或 `.virgo/agents/*.md`。现有文�
 
 解析会话不要求历史工具仍然安装。旧工具结果仍可展示并进入上下文；新调用不存在的工具时会明确返回不可用。历史记录不会自动重放操作。
 
-`/schedule`、`/schedules`、`/workflow`、`/team`、`/tasks`、`/memory` 和 `/goal` 不再提供原能力。插件开启时，`/todos`、`/jobs`、Skills 和 `agent` 仍可使用。未完成的 Todo 不强制续跑，Agent 的正常停止行为保留。
+`/schedule`、`/schedules`、`/workflow`、`/team`、`/tasks`、`/memory` 和 `/goal` 不再提供原能力。插件开启时，`/jobs`、Skills 和 `agent` 仍可使用。Todos 现在需要安装 [Todos 扩展](../../../extensions/README.zh-CN.md#todos)；`plugins.todo`、`features.todo` 被忽略并给出提示。扩展只提供 `todo_write`，`/todos` 已移除。旧会话结果仍可读取，历史清单缺少 Step 时不推断分组。未完成的 Todo 不强制续跑，Agent 的正常停止行为保留。
 
 ## 扩展作者
 

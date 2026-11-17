@@ -130,7 +130,7 @@ class Permissions:
         # Managed tools enforce the selected profile in their execution adapters.
         # Shell syntax is not an authorization or isolation boundary.
         managed = {"read", "write", "edit", "glob", "grep", "bash", "powershell",
-                   "web_search", "web_fetch", "request_permissions", "todo_write"}
+                   "web_search", "web_fetch", "request_permissions"}
         if ev.tool_name in managed or ev.tool_name.startswith("mcp__"):
             return None
         if ev.tool and ev.tool.read_only:
@@ -152,7 +152,7 @@ class Permissions:
         if block := sandbox._check(event):
             return finish("deny", block.reason, "execution-policy")
         mode = sandbox.mode_for_event(event)
-        metadata = {"todo_write", "request_permissions", "job_kill"}
+        metadata = {"request_permissions", "job_kill"}
         if (mode.read_only and event.tool_name not in SHELL_TOOLS | metadata
                 and event.tool is not None and not event.tool.read_only):
             return finish("deny", self.session.t("features.permission.read_only"), "read-only")

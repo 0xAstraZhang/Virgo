@@ -33,7 +33,7 @@ The first two commands switch the current session and save a user default. `/lan
 | `/compact [focus]` | Compact older model context |
 | `/new`, `/sessions [number]`, `/session` | Start, browse or inspect sessions |
 | `/diagnostics [error-id]` | Inspect recent errors and diagnostic records |
-| `/todos`, `/jobs` | Inspect the conversation checklist or background jobs |
+| `/jobs` | Inspect background jobs |
 | `/skills`, `/skill:name [args]` | List skills or explicitly use one |
 | `/mcp [reconnect]` | Inspect or reload MCP connections (provided by the MCP extension) |
 | `/exit` | Exit the interactive application |

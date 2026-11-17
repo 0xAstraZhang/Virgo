@@ -62,16 +62,16 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 
 ## 插件
 
-官方插件 `skills`、`todo`、`ask_user`、`diagnostic_get`、`subagent`、`background` 和 `web` 默认启用。显式 `plugins.<id>.enabled` 覆盖该默认值。未知插件名和非法值会报告配置错误，不会静默启用能力。[MCP 扩展](../../../extensions/README.zh-CN.md)是单独的启用路径，不是插件 ID。
+官方插件 `skills`、`ask_user`、`diagnostic_get`、`subagent`、`background` 和 `web` 默认启用。显式 `plugins.<id>.enabled` 覆盖该默认值。未知插件名和非法值会报告配置错误，不会静默启用能力。[MCP 和 Todos 扩展](../../../extensions/README.zh-CN.md)需要单独安装，不是插件 ID。旧 `plugins.todo`、`features.todo` 配置被忽略并给出迁移提示；需要安装扩展才能启用 Todos。
 
 ```json
 {
-  "plugins": {"todo": {"enabled": true}, "web": {"enabled": false}},
+  "plugins": {"web": {"enabled": false}},
   "budget": {"maxModelCalls": 40}
 }
 ```
 
-示例显式保留 Todo 并关闭 Web，其余官方插件保持默认。权限、会话和诊断仍属于 Core。Python 扩展是单独的可信代码路径；使用 `--no-extensions` 禁用。项目不能自行授予信任；应使用 `--trust-project-extensions`，或将绝对目录加入用户 `extensions.trustedProjects`。
+示例关闭 Web，其余官方插件保持默认。权限、会话和诊断仍属于 Core。Python 扩展是单独的可信代码路径；使用 `--no-extensions` 禁用。项目不能自行授予信任；应使用 `--trust-project-extensions`，或将绝对目录加入用户 `extensions.trustedProjects`。
 
 旧 `features` 按配置层转换并提示；同层 `plugins` 优先，再应用通常的用户／项目／运行时顺序。`features.permission`、`plugins.auto_review` 和旧权限模式已退休，会报告迁移错误。退役产品不再运行，原文件保留。别名、数据位置和兼容期限见[迁移](../guides/migrating-to-core-plugins.md)。
 
@@ -165,7 +165,7 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 ## 上下文与重试
 
-所有 provider 使用配置的压缩阈值。受支持的官方 OpenAI/Anthropic 连接使用原生压缩，其他连接使用结构化续接摘要，完整会话历史仍然保留。原生上下文与兼容的模型、系统提示和工具配置绑定，必要时在配置变化后从完整历史重建。`keepRecentTokens` 仅用于保留近期片段的压缩路径，不会再次裁剪 OpenAI 返回的完整窗口。
+所有 provider 使用配置的压缩阈值。受支持的官方 OpenAI/Anthropic 连接使用原生压缩，其他连接使用结构化续接摘要，完整会话历史仍然保留。安装 Todos 扩展后，若最新未完成清单的原始调用及结果已不在上下文中，会另外完整保留该清单。原生上下文与兼容的模型、系统提示和工具配置绑定，必要时在配置变化后从完整历史重建。`keepRecentTokens` 仅用于保留近期片段的压缩路径，不会再次裁剪 OpenAI 返回的完整窗口。
 
 重试采用带抖动的指数退避，并将有效 `Retry-After` 作为最短等待时间。累计等待预算不包含请求执行时间；下一次等待超过剩余预算时停止重试，不会缩短服务端要求的等待时间。恢复边界见[故障排查](../guides/troubleshooting.md)。
 

@@ -62,16 +62,16 @@ Web-specific fields are documented in [Web search and reading](../guides/web.md)
 
 ## Plugins
 
-The official plugins `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background` and `web` are enabled by default. An explicit `plugins.<id>.enabled` value overrides that default. Unknown plugin names and malformed values fail configuration rather than silently enabling something. The [MCP extension](../../../extensions/README.md) is a separate opt-in path, not a plugin ID.
+The official plugins `skills`, `ask_user`, `diagnostic_get`, `subagent`, `background` and `web` are enabled by default. An explicit `plugins.<id>.enabled` value overrides that default. Unknown plugin names and malformed values fail configuration rather than silently enabling something. The [MCP and Todos extensions](../../../extensions/README.md) are separate opt-in capabilities, not plugin IDs. Legacy `plugins.todo` and `features.todo` settings are ignored with a migration notice; install the extension to enable Todos.
 
 ```json
 {
-  "plugins": {"todo": {"enabled": true}, "web": {"enabled": false}},
+  "plugins": {"web": {"enabled": false}},
   "budget": {"maxModelCalls": 40}
 }
 ```
 
-The example keeps Todo enabled explicitly and turns Web off; every other official plugin keeps its default. Permissions, sessions and diagnostics stay in Core. Python extensions are a separate trusted-code path: use `--no-extensions` to disable them. A project cannot grant itself trust; use `--trust-project-extensions` or add its absolute directory to user `extensions.trustedProjects`.
+The example turns Web off; every other official plugin keeps its default. Permissions, sessions and diagnostics stay in Core. Python extensions are a separate trusted-code path: use `--no-extensions` to disable them. A project cannot grant itself trust; use `--trust-project-extensions` or add its absolute directory to user `extensions.trustedProjects`.
 
 Legacy `features` keys are translated per configuration layer with a notice; same-layer `plugins` values win, then normal user/project/runtime precedence applies. `features.permission`, `plugins.auto_review` and the old permission modes are retired and report a migration error. Removed products no longer execute and their files are retained. See [Migration](../guides/migrating-to-core-plugins.md) for aliases, storage locations and the compatibility window.
 
@@ -175,7 +175,7 @@ approval-mode aliases remain unsupported.
 
 ## Context and retries
 
-All providers use the configured compaction threshold. Supported official OpenAI/Anthropic connections use native compaction; other connections use a structured continuation summary. Full session history remains available. Native context is bound to compatible model/system/tool settings and is rebuilt from history when needed after a change. `keepRecentTokens` applies where the provider's compaction path retains a recent segment; it does not trim an OpenAI-returned full window.
+All providers use the configured compaction threshold. Supported official OpenAI/Anthropic connections use native compaction; other connections use a structured continuation summary. Full session history remains available. With the Todos extension installed, the complete latest unfinished checklist is retained separately when its original call/result pair is no longer visible. Native context is bound to compatible model/system/tool settings and is rebuilt from history when needed after a change. `keepRecentTokens` applies where the provider's compaction path retains a recent segment; it does not trim an OpenAI-returned full window.
 
 Retries use exponential backoff with jitter and honor valid `Retry-After` as a minimum wait. The wait budget excludes request execution time. If the next wait exceeds the remaining budget, Virgo stops retrying rather than shortening the server's requested delay. See [Troubleshooting](../guides/troubleshooting.md) for recovery limits.
 
