@@ -44,6 +44,14 @@ GUIDELINES = (
 CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
+def _instruction_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        error.reason += f" (instruction file: {path})"
+        raise
+
+
 def _project_text(path: Path, workspace: Path, *, errors: str = "strict") -> str | None:
     """Read automatic project context without following project-controlled links."""
     try:
@@ -74,6 +82,9 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict") -> str
         with os.fdopen(descriptor, "r", encoding="utf-8", errors=errors) as stream:
             descriptor = None
             return stream.read()
+    except UnicodeDecodeError as error:
+        error.reason += f" (instruction file: {path})"
+        raise
     except (OSError, RuntimeError):
         return None
     finally:
@@ -87,7 +98,7 @@ def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None) -
     found: list[tuple[Path, str]] = []
     user_file = user_dir / "AGENTS.md"
     if user_file.is_file():
-        found.append((user_file, user_file.read_text(encoding="utf-8")))
+        found.append((user_file, _instruction_text(user_file)))
     start = Path(cwd).resolve()
     if workspace is not None and not start.is_relative_to(workspace):
         start = workspace
@@ -109,7 +120,7 @@ def _first_file(paths: list[Path], *, workspace: Path | None = None) -> str | No
     for index in reversed(range(len(paths))):  # project overrides explicitly trusted user configuration
         p = paths[index]
         text = (_project_text(p, workspace) if workspace is not None and index > 0
-                else p.read_text(encoding="utf-8") if p.is_file() else None)
+                else _instruction_text(p) if p.is_file() else None)
         if text is not None:
             return text.strip()
     return None

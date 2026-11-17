@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+import pytest
+
 from virgo.ai.providers import faux
 from virgo.harness.session import Runtime
 
@@ -11,6 +13,23 @@ MAIN_TOOLS = {
     "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "todo_write", "ask_user", "agent",
     "bash", "job_output", "job_kill", "diagnostic_get", "git_read", "propose_plan", "request_permissions",
 }
+
+
+@pytest.mark.parametrize("location,name,permission", [
+    ("home", "AGENTS.md", "disabled"),
+    ("home", "SYSTEM.md", "disabled"),
+    ("home", "APPEND_SYSTEM.md", "disabled"),
+    ("project", "SYSTEM.md", "workspace-write"),
+    ("project", "APPEND_SYSTEM.md", "disabled"),
+])
+def test_invalid_instruction_encoding_identifies_file(make_session, project, tmp_path, location, name, permission):
+    directory = tmp_path / "home" if location == "home" else project / ".virgo"
+    directory.mkdir(exist_ok=True)
+    path = directory / name
+    path.write_bytes(b"invalid instruction: \xff")
+    with pytest.raises(UnicodeDecodeError) as caught:
+        make_session(settings={"sandbox": {"mode": permission}})
+    assert str(path) in str(caught.value)
 
 
 def test_default_request_keeps_tool_definitions_without_duplicate_or_empty_sections(make_session):
