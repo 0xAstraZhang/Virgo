@@ -31,6 +31,8 @@ PARAMETER_ALIASES = {
         "test_noninteractive_sessions_get_a_fallback_without_a_prompt",
     "test_runs_woken_by_notifications_time_out_without_an_answer":
         "test_runs_woken_by_notifications_time_out_to_the_recommendation",
+    "test_mcp_refresh_preserves_runtime_local_tools":
+        "test_runtime_local_tools_survive_refresh",
     "test_parallel_todos_have_no_size_cap_or_stop_continuation":
         "test_todo_validation_and_stop_reminder",
     "test_unreadable_thoughts_are_hidden_live_and_in_history":
@@ -150,6 +152,7 @@ PRODUCT_RETIREMENTS = tuple(read_json(Path(__file__).with_name(filename)) for fi
     "execution_policy_retirements.json",
     "shell_scope_retirements.json",
     "plan_review_login_retirements.json",
+    "mcp_extension_retirements.json",
 ))
 
 

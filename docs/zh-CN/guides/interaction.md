@@ -35,7 +35,7 @@
 | `/diagnostics [error-id]` | 查看近期错误和诊断记录 |
 | `/todos`、`/jobs` | 查看当前对话清单或后台任务 |
 | `/skills`、`/skill:name [args]` | 列出技能或显式使用技能 |
-| `/mcp [reconnect]` | 查看或重新加载 MCP 连接 |
+| `/mcp [reconnect]` | 查看或重新加载 MCP 连接（由 MCP 扩展提供） |
 | `/exit` | 退出交互程序 |
 
 `/mode` 和 `/sandbox` 是 `/permissions` 的一个版本弃用别名，会打印弃用提示。规范词汇见[术语](../development/vocabulary.md)。

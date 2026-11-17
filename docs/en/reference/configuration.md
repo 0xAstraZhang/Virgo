@@ -62,7 +62,7 @@ Web-specific fields are documented in [Web search and reading](../guides/web.md)
 
 ## Plugins
 
-The official plugins `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background` and `web` are enabled by default; `mcp` is enabled only when server configuration exists. An explicit `plugins.<id>.enabled` value overrides that default. Unknown plugin names and malformed values fail configuration rather than silently enabling something.
+The official plugins `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background` and `web` are enabled by default. An explicit `plugins.<id>.enabled` value overrides that default. Unknown plugin names and malformed values fail configuration rather than silently enabling something. The [MCP extension](../../../extensions/README.md) is a separate opt-in path, not a plugin ID.
 
 ```json
 {
@@ -147,8 +147,8 @@ it does not prevent remote side effects. Workspace scope includes managed file r
 with system/runtime exceptions. Private Virgo authority storage remains protected in POSIX
 profiles and Core file adapters. Windows uses object ACLs with ambient LPAC read grants;
 it is not an exact path namespace. Network policy covers managed Shell, Web/native search
-and remote MCP invocation, not model transport/login. Trusted Python extensions are outside
-the OS boundary. MCP services cannot enforce local file scope and need an explicit unrestricted
+and MCP extension invocations, not model transport/login. Trusted Python extensions are outside
+the OS boundary. MCP servers cannot enforce local file scope and need an explicit unrestricted
 single-operation exception under constrained file profiles. See [Sandbox](../guides/sandbox.md).
 
 Managed operations within the profile run without Shell syntax classification. Explicit deny

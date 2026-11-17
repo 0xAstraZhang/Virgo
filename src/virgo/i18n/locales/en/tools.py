@@ -107,14 +107,6 @@ MESSAGES = {
     "tools.job_output.description": "Show a background job's status and output. wait=N blocks up to N seconds "
     "for it to finish.",
     "tools.job_output.label": "Background output",
-    "tools.mcp_reconnect.description": "Reconnect one configured MCP server using an accessible diagnostic ID. "
-    "Starts its configured process; never replays failed calls. Only use "
-    "after checking the failure and previous operation's outcome; in-flight "
-    "calls and repeated recovery without progress block this action.",
-    "tools.mcp_reconnect.label": "Reconnect MCP",
-    "tools.mcp_status.description": "Read local MCP connection state, generation, pending calls and accessible "
-    "diagnostic IDs. Does not contact servers.",
-    "tools.mcp_status.label": "MCP status",
     "tools.output.aborted": "{text}\n\n[Command aborted]",
     "tools.output.budget": "{shown}\n"
     "\n"

@@ -22,7 +22,7 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 ## Look up a detail
 
 - [Configuration](reference/configuration.md): precedence, settings, environment variables, permissions and stored files.
-- [Tools and plugins](reference/tools.md): files, web, questions, checklists, subagents, background jobs and MCP.
+- [Tools and plugins](reference/tools.md): files, web, questions, checklists, subagents, background jobs and the optional MCP extension.
 - [Example files](../../examples/README.md): copy individual files into your own project.
 
 ## Extend or contribute

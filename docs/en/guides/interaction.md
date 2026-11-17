@@ -35,7 +35,7 @@ The first two commands switch the current session and save a user default. `/lan
 | `/diagnostics [error-id]` | Inspect recent errors and diagnostic records |
 | `/todos`, `/jobs` | Inspect the conversation checklist or background jobs |
 | `/skills`, `/skill:name [args]` | List skills or explicitly use one |
-| `/mcp [reconnect]` | Inspect or reload MCP connections |
+| `/mcp [reconnect]` | Inspect or reload MCP connections (provided by the MCP extension) |
 | `/exit` | Exit the interactive application |
 
 `/mode` and `/sandbox` remain one-release aliases for `/permissions`; they print a deprecation notice. The canonical vocabulary is in [Vocabulary](../development/vocabulary.md).

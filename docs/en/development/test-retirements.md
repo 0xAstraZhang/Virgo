@@ -80,6 +80,12 @@ Every case remains visible in `removed`; `retired_products` records the product 
 
 Reviewed baseline: `0ffc23707de6e87a579a46a8f027679c253b78dc`. Nine non-parameterized duplicate cases were removed, reducing product tests by 105 lines. Retained tests were neither rewritten nor renamed. Existing fuller scenarios already covered the same behavior; test size or layer was not a reason for removal.
 
+## MCP extension migration
+
+Reviewed baseline: `d94a1c0b757b5ae9ba06a8728f89caf0db40cb97`. This change retires **40 cases** from the hand-written MCP stdio client, its diagnostics mapping, recovery loop and response-lease scenarios. MCP is now an [extension](../../../extensions/README.md) built on the official MCP Python SDK; the retired cases exercise transport, generation and recovery contracts that no longer exist. Exact identities are in [`mcp_extension_retirements.json`](../../../ci/pipeline/mcp_extension_retirements.json).
+
+Three preservation gates pass in base and head: `mcp__` permission matching, atomic dynamic tool publication, and project-extension trust. Six head-only acceptance cases exercise the extension end to end (not built in, tool exposure and rebinding, unavailable servers, terminated connections, malformed configuration, unsupported schemas).
+
 ## Removed cases and retained coverage
 
 Names below are the complete function identities used by CI; HTTP entries include parameter IDs. Exact original modules are recorded in [`ci/pipeline/reports.py::APPROVED_RETIREMENTS`](../../../ci/pipeline/reports.py).

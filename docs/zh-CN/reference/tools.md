@@ -4,7 +4,7 @@
 
 模型只会获得当前角色、配置和能力允许的工具。扩展、MCP 连接和网页路由可能改变实际列表。工具名、参数名和枚举值不随界面语言变化。
 
-Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`mcp`、`diagnostic_get` 提供，默认启用；`plugins.<id>.enabled` 可逐个覆盖。详见[配置](configuration.md#插件)。
+Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `web`、`todo`、`ask_user`、`subagent`、`background`、`diagnostic_get` 提供，默认启用；`plugins.<id>.enabled` 可逐个覆盖。[MCP 扩展](../../../extensions/README.zh-CN.md)另外提供 `mcp_status` 和每个服务器对应的工具。详见[配置](configuration.md#插件)。
 
 ## 文件、命令与网页
 
@@ -48,18 +48,17 @@ Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `
 
 客户端 `web_search` 和 `web_fetch` 的传输错误会标明异常类型（如 `ConnectError` 或 `ReadTimeout`），但不会显示可能包含私密 URL 或凭据的原始异常文本。
 
-## MCP 与诊断
+## MCP 扩展
 
-没有服务器配置时，Virgo 不启动 MCP 连接，也不注册 MCP 管理工具；显式启用后可在新增服务器前使用管理入口。
+MCP 是扩展而非内置插件。将 [`extensions/mcp.py`](../../../extensions/README.zh-CN.md) 复制到用户扩展目录或受信任项目的扩展目录，安装可选 `mcp` SDK 附加依赖，再在用户或项目的 `mcp.json` 或 `mcpServers` 配置项中配置 stdio 服务器。参数和环境字段支持 `${VARIABLE}` 插值。工具名为 `mcp__<server>__<tool>`，禁用的条目不会启动。服务描述保留第三方原文。
 
-stdio MCP 服务器配置在用户或项目的 `mcp.json`，或 `mcpServers` 配置项中。参数和环境字段支持 `${VARIABLE}` 插值。工具名为 `mcp__<server>__<tool>`，禁用的条目不会启动。除非作者提供本地化，服务和扩展的描述保留第三方原文。
+未安装扩展时，不启动 MCP 连接，也不注册 `mcp_status`。安装后，模型的 `mcp_status` 读取本地连接状态和工具数量，不联系服务器。
 
-受管 MCP 调用遵守联网开关；服务无法约束本地文件范围时，需要明确的单次操作例外。
-可信 MCP 服务的启动及自主活动在任务沙箱之外运行，离线预设不代表隔离了该服务进程。
+MCP 调用遵守联网开关；服务无法约束本地文件范围时，需要明确的单次操作例外。服务启动及自主活动在任务沙箱之外运行，离线预设不代表隔离了该服务进程。
 
-`/mcp` 显示连接状态，`/mcp reconnect` 重新加载服务器配置。模型的 `mcp_status` 读取本地状态，`mcp_reconnect` 针对特定服务和已知错误执行有界、受权限约束的恢复。重连不会重放失败的业务操作。`diagnostic_get` 只暴露已授予调用 Runtime 的诊断证据，具体边界见[故障排查](../guides/troubleshooting.md)。
+`/mcp` 显示连接状态，`/mcp reconnect` 重新加载服务器配置；替换失败时保留原有连接和工具。不提供模型侧的重连工具。具体运行时边界见[故障排查](../guides/troubleshooting.md)。
 
-实现：[基础工具](../../../src/virgo/tools)、[官方插件](../../../src/virgo/plugins)、[扩展 API](../../../src/virgo/harness/extensions.py)。
+实现：[基础工具](../../../src/virgo/tools)、[官方插件](../../../src/virgo/plugins)、[MCP 扩展](../../../extensions/mcp.py)、[扩展 API](../../../src/virgo/harness/extensions.py)。
 
 ## 已移除的产品功能
 

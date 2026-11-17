@@ -22,7 +22,7 @@
 ## 查阅细节
 
 - [配置参考](reference/configuration.md)：优先级、配置项、环境变量、权限和存储位置。
-- [工具与插件](reference/tools.md)：文件、联网、询问、清单、子 Agent、后台任务和 MCP。
+- [工具与插件](reference/tools.md)：文件、联网、询问、清单、子 Agent、后台任务和可选 MCP 扩展。
 - [示例文件](../../examples/README.zh-CN.md)：按需将单个文件复制到自己的项目。
 
 ## 扩展与开发

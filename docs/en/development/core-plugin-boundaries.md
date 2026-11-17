@@ -32,7 +32,7 @@ Model adapters, hosts and capability plugins have different lifecycles. They nee
 | `subagent` | Focused children with independent context and inherited restrictions | Enabled |
 | `background` | Job tools, status, cancellation and owner-bound notifications | Enabled |
 | `web` | Search/fetch routing, permission-aware access and configurable budgets | Enabled |
-| `mcp` | Configured connections, tools and bounded recovery | Only when server configuration exists |
+
 
 Official capabilities load by default; `plugins.<id>.enabled` disables individual plugins. General Git operations remain available through the shell.
 
@@ -43,7 +43,7 @@ The Core owns shell/process execution and cancellation. The background plugin us
 1. Core permission checks run before approval and immediately before execution, including after argument-changing hooks. A missing or failed policy cannot become unrestricted execution. Deterministic rules and explicit user approval authorize operations; a model does not grant permissions.
 2. Runtime identity, stores, diagnostic grants, cancellation and shared request budgets follow the caller. A child cannot raise the parent's permission ceiling. Switching the visible conversation does not transfer ownership.
 3. Tool/command registration records an owner and rejects name collisions. Dynamic replacement validates the full candidate set before publication; new schemas become visible at request boundaries. An executing batch retains its tool snapshot.
-4. MCP recovery validates a candidate before publication and retains a healthy connection when recovery fails. An active old response keeps its original schema and client until its batch completes; retired handles outside that response are rejected. Unused generations are reclaimed at request/turn/end boundaries. Recovery never replays a business operation. This also applies when the replacement advertises identical schemas: every reconnect publishes new handles at a request boundary.
+4. MCP is an extension, so its connection lifetime is outside this plugin contract. The [MCP extension](../../../extensions/README.md) publishes tools through `api.replace_tools`, validates a replacement before publishing, and keeps previous connections when a reload fails. It never replays a business operation.
 5. Optional plugin setup failure is diagnosed, partial registration is rolled back, and degradation is visible. Cleanup callbacks execute in reverse registration order; a failed cleanup does not prevent later callbacks.
 6. A disabled plugin is not imported, does not register tools or prompt sections, and does not start its own connections or background services. Runtime hot unload is not supported; configuration takes effect when constructing a new session.
 7. Python extensions are trusted code in the process. Tool permission checks do not sandbox arbitrary Python. Project extensions require trust granted outside project-controlled settings. CLI trust applies only to the initial workspace; both saved-session switches and additional TUI panes reset it when opening another workspace.
@@ -65,7 +65,7 @@ Existing message/tool-result records are data, not executable registrations. Old
 
 ## Acceptance and measurement
 
-The pre-implementation acceptance suite is `tests/harness/test_core_plugins_e2e.py`. It exercises a real assembled session with a deterministic model: the file/edit/shell loop and resume, execution-time permissions, registry publication, failed setup/cleanup, project trust, child restrictions and shared budget, historical data, and configuration precedence. Existing provider, MCP, background, cancellation, session and TUI scenarios remain the regression checks. [Test retirements](test-retirements.md) distinguishes removed product behavior from retained guarantees.
+The pre-implementation acceptance suite is `tests/harness/test_core_plugins_e2e.py`. It exercises a real assembled session with a deterministic model: the file/edit/shell loop and resume, execution-time permissions, registry publication, failed setup/cleanup, project trust, child restrictions and shared budget, historical data, and configuration precedence. Existing provider, background, cancellation, session and TUI scenarios remain the regression checks. [Test retirements](test-retirements.md) distinguishes removed product behavior from retained guarantees.
 
 `ci/measure_startup.py` samples fresh-process import/construction time, module/thread/tool counts and schema/system character counts using a temporary home and the offline `faux` provider. Run it under the same interpreter and machine when comparing revisions. Character counts are not tokens. The script does not measure coding quality, live-provider cost or success rate.
 

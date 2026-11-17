@@ -9,7 +9,7 @@
 | Python 扩展 | `~/.virgo/extensions/*.py` | `.virgo/extensions/*.py` | 可信的 `setup(api)` 代码 |
 | 技能 | `~/.virgo/skills/<name>/SKILL.md` | `.virgo/skills/<name>/SKILL.md`，然后 `.agents/skills/<name>/SKILL.md` | `skills` |
 | 提示模板 | `~/.virgo/prompts/*.md` | `.virgo/prompts/*.md` | Core 提示装配 |
-| MCP 服务器 | `~/.virgo/mcp.json` | `.virgo/mcp.json` | `mcp` |
+| MCP 服务器 | `~/.virgo/mcp.json` | `.virgo/mcp.json` | [MCP 扩展](../../../extensions/README.zh-CN.md) |
 
 `VIRGO_HOME` 替换用户目录。声明式资源先加载用户级，再加载项目级，同名项以较后的定义为准。官方插件位于 `virgo.plugins`，与 Python 扩展共用 `setup(api)`。插件按固定顺序装载一次；重启或初始化工作区会话后重新发现文件。不提供运行时卸载、依赖安装器或插件沙箱。
 
@@ -55,7 +55,7 @@ def setup(api):
 
 工具、命令和事件处理器都有所属插件。重复的工具／命令名称明确失败，包括与 Core 或其他插件冲突；提示章节按插件归属命名。可选插件初始化失败会记录诊断并回滚部分注册，不留下只装配一半的能力。Core 初始化或权限失败会阻断执行。
 
-`api.replace_tools(namespace, [(tool, roles), ...])` 验证整个候选集后，原子替换一个属于本插件的动态工具集。它不能占用其他插件的命名空间或覆盖别人的工具。已有请求和工具批次保持快照；每个 Runtime 在下一次模型请求边界看到新 Schema。传输专用的旧句柄可以保守失败，不重放副作用。MCP 通过此接口发布，不再修改 `session._tools`。
+`api.replace_tools(namespace, [(tool, roles), ...])` 验证整个候选集后，原子替换一个属于本插件的动态工具集。它不能占用其他插件的命名空间或覆盖别人的工具。已有请求和工具批次保持快照；每个 Runtime 在下一次模型请求边界看到新 Schema。传输专用的旧句柄可以保守失败，不重放副作用。[MCP 扩展](../../../extensions/README.zh-CN.md)通过此接口发布，不再修改 `session._tools`。
 
 获得资源后立即注册清理：
 

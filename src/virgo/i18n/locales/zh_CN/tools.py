@@ -89,11 +89,6 @@ MESSAGES = {
     "tools.job_kill.label": "停止任务",
     "tools.job_output.description": "查看后台任务的状态和输出。wait=N 最多等待 N 秒，让任务完成。",
     "tools.job_output.label": "后台任务输出",
-    "tools.mcp_reconnect.description": "使用可访问的诊断 ID 重连一个已配置的 MCP "
-    "服务器。会启动其配置的进程，但绝不重放失败调用。请先确认失败原因和上一操作的结果；存在进行中的调用或恢复未取得进展时，此操作会被阻止。",
-    "tools.mcp_reconnect.label": "重连 MCP",
-    "tools.mcp_status.description": "读取本地 MCP 连接状态、连接代次、待处理调用和可访问的诊断 ID，不联系服务器。",
-    "tools.mcp_status.label": "MCP 状态",
     "tools.output.aborted": "{text}\n\n[命令已中止]",
     "tools.output.budget": "{shown}\n"
     "\n"

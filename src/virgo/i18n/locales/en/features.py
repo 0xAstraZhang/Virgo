@@ -29,7 +29,6 @@ MESSAGES = {
     "features.ask_user.timed_out": "The user did not answer within {duration}; the question was withdrawn.",
     "features.commands.fetch": "choose page reader (/fetch [auto|http|deepseek|off])",
     "features.commands.jobs": "list background jobs",
-    "features.commands.mcp": "show MCP servers (/mcp reconnect)",
     "features.commands.permissions": "show or change permission presets, approval policy and remembered decisions",
     "features.commands.mode_alias": "deprecated alias for /permissions",
     "features.commands.mode_deprecated": 'virgo: /mode is deprecated; use /permissions',
@@ -73,34 +72,6 @@ MESSAGES = {
     "features.jobs.stopping": "Stopping {id}.",
     "features.jobs.unit.bytes": "bytes",
     "features.jobs.unit.chars": "chars",
-    "features.mcp.budget": "The MCP recovery budget is exhausted. Inspect the cause or request user "
-    "intervention.",
-    "features.mcp.cancelled": "Recovery was cancelled before starting.",
-    "features.mcp.cancelled_retained": "Recovery was cancelled; the original connection was retained.",
-    "features.mcp.empty": "No MCP servers configured (.virgo/mcp.json).",
-    "features.mcp.error": "error: {error}",
-    "features.mcp.evidence_mismatch": "This diagnostic does not describe a failure of the requested MCP server.",
-    "features.mcp.evidence_missing": "The diagnostic is unavailable in this runtime; obtain an authorized error "
-    "ID first.",
-    "features.mcp.failed": "MCP reconnection failed; the original connection was retained.",
-    "features.mcp.inflight": "MCP has in-flight calls or recovery; wait before /mcp reconnect.",
-    "features.mcp.invalid_config": "[mcp: invalid {path}: {error}]",
-    "features.mcp.invalid_settings": "[mcp: invalid settings: mcpServers must be an object]",
-    "features.mcp.no_replay": "\n"
-    "No failed call was replayed. Check the previous operation's outcome before "
-    "issuing another mutating call.",
-    "features.mcp.no_server": "No configured MCP server with that name.",
-    "features.mcp.old_connection": "This diagnostic refers to an older MCP connection; inspect current status "
-    "first.",
-    "features.mcp.pending": "Recovery is already pending for this server; no additional process was started.",
-    "features.mcp.reconnected": "MCP servers reconnected (tool set changed: the prompt cache restarts).",
-    "features.mcp.recovering": "MCP recovery is in progress; this call was not dispatched.",
-    "features.mcp.recovery_runtime": "MCP recovery requires a trusted calling runtime.",
-    "features.mcp.removed": "The server was removed while reconnecting; the candidate was discarded.",
-    "features.mcp.retired": "This MCP connection was removed; refresh the tool set before continuing.",
-    "features.mcp.schema_changed": "The MCP tool schema changed; refresh the tool set before calling it again.",
-    "features.mcp.status_runtime": "MCP status requires a trusted calling runtime.",
-    "features.mcp.tools": "{count} tools",
     "features.permission.allow": "allow",
     "features.permission.allow_suffix": "  Allow? [y]es / [n]o / [a]lways this session",
     "features.permission.cannot_remember": "Allowed once; dynamic shell paths cannot be remembered for this "

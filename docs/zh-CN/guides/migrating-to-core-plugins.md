@@ -16,17 +16,16 @@
 {
   "plugins": {
     "web": {"enabled": true},
-    "mcp": {"enabled": false},
     "todo": {"enabled": true}
   }
 }
 ```
 
-只接受已知插件 ID。默认值、用户、项目、运行时／CLI 配置依次合并。每一层先转换旧 `features` 设置，再执行合并；同一层的新 `plugins` 设置覆盖对应旧字段。更高优先级的项目配置仍覆盖用户配置，即使项目使用旧写法。转换只给出提示，不改写配置文件。
+只接受已知插件 ID。默认值、用户、项目、运行时／CLI 配置依次合并。每一层先转换旧 `features` 设置，再执行合并；同一层的新 `plugins` 设置覆盖对应旧字段。更高优先级的项目配置仍覆盖用户配置，即使项目使用旧写法。转换只给出提示，不改写配置文件。MCP 不再是插件 ID：请安装[MCP 扩展](../../../extensions/README.zh-CN.md)；`plugins.mcp` 和 `features.mcp` 会被忽略并给出提示。
 
 | 旧配置 | 新配置／行为 |
 | --- | --- |
-| `features.skills`、`todo`、`ask_user`、`subagent`、`background`、`mcp` | `plugins.<id>.enabled` |
+| `features.skills`、`todo`、`ask_user`、`subagent`、`background` | `plugins.<id>.enabled` |
 | `features.diagnostics` | `plugins.diagnostic_get.enabled`；Core 诊断仍保留 |
 | `features.search`、`features.fetch` | `plugins.web.searchEnabled`、`plugins.web.fetchEnabled`；由 `web` 插件组合提供 |
 | `features.permission`、`plugins.auto_review` | 已退休；改用 Core `permissions.approval` 与明确授权规则 |

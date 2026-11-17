@@ -4,7 +4,7 @@
 
 The model receives the tools enabled for its role, configuration and current capabilities. The exact list can change with extensions, MCP connections and web routing. Tool names, argument names and enum values remain stable across interface languages.
 
-Core owns file, selected-shell and permission-request tools. `web`, `todo`, `ask_user`, `subagent`, `background`, `mcp` and `diagnostic_get` supply the optional tools below and are enabled by default; `plugins.<id>.enabled` overrides each one. See [Configuration](configuration.md#plugins).
+Core owns file, selected-shell and permission-request tools. `web`, `todo`, `ask_user`, `subagent`, `background` and `diagnostic_get` supply the optional tools below and are enabled by default; `plugins.<id>.enabled` overrides each one. The [MCP extension](../../../extensions/README.md) adds `mcp_status` and one tool per configured server. See [Configuration](configuration.md#plugins).
 
 ## Files, commands and web
 
@@ -50,19 +50,17 @@ Background subagent completion notifications include the full final answer. Back
 
 Client-side `web_search` and `web_fetch` transport errors identify the exception class (such as `ConnectError` versus `ReadTimeout`), but deliberately omit raw exception messages that might contain private URLs or credentials.
 
-## MCP and diagnostics
+## MCP extension
 
-Without configured servers, Virgo starts no MCP connection and registers no MCP management tools. An explicitly enabled MCP plugin can expose management even before servers are added.
+MCP is an extension, not a built-in plugin. Copy [`extensions/mcp.py`](../../../extensions/README.md) into a user or trusted project extensions directory, install the optional `mcp` SDK extra, then configure stdio servers in user or project `mcp.json` or the `mcpServers` setting. Server arguments and environment entries can use `${VARIABLE}` interpolation. A server's tools appear as `mcp__<server>__<tool>`. Disabled entries are not started. Server descriptions remain third-party content.
 
-Configure stdio MCP servers in user or project `mcp.json`, or the `mcpServers` setting. Server arguments and environment entries can use `${VARIABLE}` interpolation. A server's tools appear as `mcp__<server>__<tool>`. Disabled entries are not started. Server and extension descriptions remain third-party content unless their author supplies localization.
+Without the extension, no MCP connection starts and no `mcp_status` tool is registered. With it, the model's `mcp_status` reads local connection state and tool counts without contacting servers.
 
-Managed MCP invocations respect the network flag and require an explicit operation exception
-when a server cannot enforce local file scope. Trusted MCP service startup and autonomous
-activity run outside Virgo's task sandbox; an offline preset does not isolate that service.
+MCP invocations respect the network flag and require an explicit operation exception when a server cannot enforce local file scope. Server startup and autonomous activity run outside Virgo's task sandbox; an offline preset does not isolate that service.
 
-`/mcp` shows connection state; `/mcp reconnect` reloads server configuration. The model's `mcp_status` reads local state, while `mcp_reconnect` performs bounded, permission-checked recovery for a specific server and known error. Reconnecting never replays a failed business operation. `diagnostic_get` exposes scoped evidence already granted to the calling runtime. See [Troubleshooting](../guides/troubleshooting.md) for the exact boundaries.
+`/mcp` shows connection state; `/mcp reconnect` reloads server configuration and keeps the previous connections and tools when a replacement fails. There is no model-facing reconnect tool. See [Troubleshooting](../guides/troubleshooting.md) for the runtime boundaries.
 
-Implementation: [base tools](../../../src/virgo/tools), [official plugins](../../../src/virgo/plugins), [extension API](../../../src/virgo/harness/extensions.py).
+Implementation: [base tools](../../../src/virgo/tools), [official plugins](../../../src/virgo/plugins), [MCP extension](../../../extensions/mcp.py), [extension API](../../../src/virgo/harness/extensions.py).
 
 ## Removed product features
 

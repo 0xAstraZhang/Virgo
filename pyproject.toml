@@ -15,6 +15,9 @@ dependencies = [
     "textual>=8.2.8,<9",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=2.3.0,<3"]
+
 [project.scripts]
 virgo = "virgo.cli.main:main"
 
@@ -24,6 +27,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "mcp>=2.3.0,<3",
     "pytest>=9.2.0",
     "ruff>=0.17.4",
 ]

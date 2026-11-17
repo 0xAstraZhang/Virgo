@@ -16,12 +16,13 @@ from .execution_modes import configured_modes
 from .permissions import normalize_approval_policy
 
 PLUGIN_IDS = (
-    "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web", "mcp",
+    "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web",
 )
 REMOVED_FEATURES = frozenset({
     "schedule", "workflow", "team", "tasks", "memory", "goal", "plan", "code_review", "workMode", "profile",
 })
 RETIRED_PLUGINS = frozenset({"plan", "code_review"})
+EXTENSION_ONLY = frozenset({"mcp"})
 _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {
@@ -39,7 +40,6 @@ DEFAULTS: dict[str, Any] = {
     "compaction": {"enabled": True, "triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": None},
     "retry": {"maxRetries": 3, "fallbackModel": None, "maxWaitSeconds": 120},
     "anthropic": {"fallbacks": True, "thinkingDisplay": "summarized", "thinkingBinding": True},
-    "mcpServers": {},
     "fetch": {"mode": "auto", "backend": "http", "timeout": 20, "maxBytes": 2097152, "maxUses": None, "maxContentTokens": 8000},
     "search": {"mode": "auto", "backend": "duckduckgo", "timeout": 15, "maxUses": None},
     "subagents": {"maxTurns": 50},
@@ -111,6 +111,9 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
             raise ValueError(f"features.{name} is retired; use permissions.approval=ask or never")
         if not isinstance(enabled, bool):
             raise ValueError(f"features.{name} must be a boolean")
+        if name in EXTENSION_ONLY:
+            notices.append(f"features.{name} is no longer built in; install the {name} extension instead.")
+            continue
         if name in REMOVED_FEATURES:
             notices.append(f"features.{name} is retired and ignored; existing data is preserved.")
             continue
@@ -136,6 +139,9 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     for name in sorted(RETIRED_PLUGINS.intersection(out["plugins"])):
         out["plugins"].pop(name)
         notices.append(f"plugins.{name} is retired and ignored; existing data is preserved.")
+    for name in sorted(EXTENSION_ONLY.intersection(out["plugins"])):
+        out["plugins"].pop(name)
+        notices.append(f"plugins.{name} is no longer built in; install the {name} extension instead.")
     for name in sorted(REMOVED_FEATURES.intersection(out)):
         out.pop(name)
         notices.append(f"The retired {name} configuration is ignored; existing data is preserved.")
@@ -329,33 +335,15 @@ class Settings:
         if name not in PLUGIN_IDS:
             raise ValueError(f"Unknown plugin {name!r}")
         explicit = self.get(f"plugins.{name}.enabled")
-        enabled = explicit if explicit is not None else (name != "mcp" or self._mcp_configured())
+        enabled = explicit if explicit is not None else True
         if name == "web":
             enabled = enabled and (self.get("plugins.web.searchEnabled", True) or self.get("plugins.web.fetchEnabled", True))
         return bool(enabled)
 
-    def _mcp_configured(self) -> bool:
-        """Discover legacy configuration only after the preset/explicit flag gate.
-
-        Empty configuration does not expose MCP management tools. Malformed
-        configuration enables its loader so the existing structured diagnostic
-        explains the error; it must not disappear silently during migration.
-        """
-        configured = self.get("mcpServers", {})
-        if configured or not isinstance(configured, dict):
-            return True
-        for path in self.paths.both("mcp.json"):
-            try:
-                data = _read_json(path)
-            except (OSError, ValueError):
-                return True
-            servers = data.get("mcpServers", {})
-            if servers or not isinstance(servers, dict):
-                return True
-        return False
-
     def feature_enabled(self, name: str) -> bool:
         """Compatibility read for extensions migrating from the old feature flags."""
+        if name in EXTENSION_ONLY:
+            return False
         if name in {"permission", "auto_review"}:
             raise ValueError("The legacy permission feature is retired; Core authorization is always enabled")
         if name in REMOVED_FEATURES:

@@ -80,6 +80,12 @@ CI 仅在以下条件全部满足时接受这批产品退役：
 
 审查基线：`0ffc23707de6e87a579a46a8f027679c253b78dc`。删除 9 个未参数化用例，净减少 105 行产品测试；保留测试不改写、不重命名。删除依据是现有更完整场景已经覆盖同一行为，而非用例大小或所在测试层级。
 
+## MCP 扩展迁移
+
+审阅基线：`d94a1c0b757b5ae9ba06a8728f89caf0db40cb97`。本次改动退役 **40 个用例**，来自手写 MCP stdio 客户端、其诊断映射、恢复循环和响应租约场景。MCP 现在是由官方 MCP Python SDK 构建的[扩展](../../../extensions/README.zh-CN.md)；退役用例覆盖的传输、代次和恢复契约已不存在。完整身份见[`mcp_extension_retirements.json`](../../../ci/pipeline/mcp_extension_retirements.json)。
+
+三个保留门槛在基线和候选版本均通过：`mcp__` 权限匹配、动态工具原子发布、项目扩展信任。六个仅在候选版本执行的验收用例端到端覆盖扩展（非内置、工具暴露与重绑定、不可用服务器、连接终止、错误配置、不支持的 schema）。
+
 ## 删除与保留覆盖
 
 表中名称是 CI 使用的完整函数 identity；HTTP 项还包含参数 ID。完整模块对应关系保存在 [`ci/pipeline/reports.py::APPROVED_RETIREMENTS`](../../../ci/pipeline/reports.py)。

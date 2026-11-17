@@ -164,7 +164,6 @@ def test_explicit_plugin_overrides_and_layering(make_session, project):
     disabled = make_session(settings={"plugins": {"todo": {"enabled": False},
                                                    "web": {"enabled": False}}})
     assert disabled.tool("todo_write") is None and disabled.tool("web_search") is None
-    assert "mcp" not in disabled.services
     with pytest.raises(ValueError, match="(?i)(unknown|plugin)"):
         AgentSession(project, model="faux/test", session=None, settings={"plugins": {"typo": {"enabled": True}}},
                      refresh_models=False, ui=RecordingUI())

@@ -28,7 +28,7 @@ Workspace-Edit 允许文件访问范围内的联网操作。外部 SDK／缓存�
 
 `read_only` 控制宿主数据写入，`workspace_only` 控制用户文件访问范围；解释器目录与既有控制元数据保留固定保护。工作区受限时，Linux/macOS 暴露下文所列系统／运行时目录；Windows 使用对象 ACL，并保留系统 LPAC 读取授权，详见 [Windows 命令沙箱](windows-sandbox.md)。每条命令都有可写临时目录和私有 HOME。输出日志保存在来源工作区的 `.virgo/outputs`，即使从其他获准目录运行也不改变归属。宿主在记录前检查路径并保留精确输出描述符。子进程仅继承 PATH、语言／时区／终端变量、私有 home/temp 与 VIRGO=1（Windows 另有固定原生运行时变量），不转发继承的厂商密钥。
 
-`network_allowed=false` 时，Linux 使用独立网络命名空间并通过 seccomp 禁止 socket；macOS 不授予 Seatbelt 网络权限；Windows 不提供网络 capability。允许联网时，Linux 共享宿主网络并仅允许 IPv4／IPv6 socket 类型，macOS 授予 TCP／UDP 权限，以及 DNS 所需的精确系统解析器／路由 IPC 端点。任意 Unix socket 和进程控制逃逸路径仍受限制。Linux 只额外暴露精确解析器配置文件，不暴露 `/run` 下的宿主服务 socket。Windows 增加互联网／私有网络 capability，不修改防火墙规则或 loopback 豁免。联网权限可以访问宿主 TCP 服务，不是域名或远端主机白名单。Core 在应用层另行约束 Web／MCP 操作；模型传输仍在命令沙箱之外。
+`network_allowed=false` 时，Linux 使用独立网络命名空间并通过 seccomp 禁止 socket；macOS 不授予 Seatbelt 网络权限；Windows 不提供网络 capability。允许联网时，Linux 共享宿主网络并仅允许 IPv4／IPv6 socket 类型，macOS 授予 TCP／UDP 权限，以及 DNS 所需的精确系统解析器／路由 IPC 端点。任意 Unix socket 和进程控制逃逸路径仍受限制。Linux 只额外暴露精确解析器配置文件，不暴露 `/run` 下的宿主服务 socket。Windows 增加互联网／私有网络 capability，不修改防火墙规则或 loopback 豁免。联网权限可以访问宿主 TCP 服务，不是域名或远端主机白名单。Core 在应用层另行约束 Web 及 MCP 扩展调用；模型传输仍在命令沙箱之外。
 
 Linux 将解析器配置作为数据处理，与可执行文件／运行时的信任检查分开。root 控制的 `/etc/resolv.conf` 可以指向 `/run/systemd/resolve/stub-resolv.conf` 或 `/run/systemd/resolve/resolv.conf`，后者允许由 root 或本机 `systemd-resolve` 账户持有。服务账户所有权例外仅适用于该精确普通文件和其服务目录；其他祖先仍须由 root 控制，且拒绝组／其他用户可写权限。只读挂载的是精确文件，不是其所在目录。启动器和库仍严格要求 root 所有。
 
@@ -68,7 +68,7 @@ Linux 将命令放入独立的 PID 命名空间。macOS 由可信监督进程在
 
 macOS 上 Virgo 宿主突然消失，例如收到 `SIGKILL` 或进程崩溃，不属于上述已确认清理路径。控制连接消失时，监督进程会尽力请求移除自己的任务，但该请求不能证明所有脱离后代已经退出。这些后代仍受 Seatbelt 限制，但可能继续执行原边界允许的操作；临时资源也可能保留。本阶段不提供资源配额，也不保证任意进程负载下都能在固定时间内完成清理。
 
-宿主 Harness、可信 Python 扩展、项目 hooks、远程 MCP 服务、厂商托管工具或可信集成直接调用底层函数，不处于这层 OS 沙箱内。Core 文件、Web 与 MCP 入口另有应用层检查。可信 MCP 扩展初始化可能在模型调用工具之前启动并连接服务；stdio 服务进程在命令沙箱外运行，也可能自行联网。工具调用门禁不隔离该服务的整个生命周期或 Virgo 全进程。可写工作区仍允许破坏普通项目文件；不提供资源配额或运行中进程的权限撤销。
+宿主 Harness、可信 Python 扩展、项目 hooks、MCP 服务、厂商托管工具或可信集成直接调用底层函数，不处于这层 OS 沙箱内。Core 文件、Web 入口及 MCP 扩展调用另有应用层检查。[MCP 扩展](../../../extensions/README.zh-CN.md)可能在模型调用工具之前启动并连接服务；stdio 服务进程在命令沙箱外运行，也可能自行联网。工具调用门禁不隔离该服务的整个生命周期或 Virgo 全进程。可写工作区仍允许破坏普通项目文件；不提供资源配额或运行中进程的权限撤销。
 
 ## 实现与验证
 
