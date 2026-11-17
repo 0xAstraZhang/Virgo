@@ -1,4 +1,4 @@
-"""Exercise installed command, module and checkout entry points in fresh processes."""
+"""Exercise the installed command and module entry points in fresh processes."""
 
 from __future__ import annotations
 

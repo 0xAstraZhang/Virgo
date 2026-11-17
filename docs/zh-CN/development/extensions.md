@@ -90,7 +90,7 @@ def setup(api):
 
 子任务会在自动读取项目上下文前捕获来源权限模式。官方后台代理在提交任务时捕获该模式，因此稍后修改父对话 Mode 不会扩大排队任务的权限。延迟创建 Runtime 的受信任扩展可通过工厂的 `execution_mode` 参数传递已捕获的 `PermissionMode`；模型工具定义不暴露这个参数。
 
-`api.services` 仅用于明确的共享服务契约。官方插件使用 facade，不要修改 `_tools`、`_lock`、`main` 或 UI 选择状态。0.3 已删除 `virgo.features` 实现别名；请导入 `virgo.plugins` 或使用本文中的 Core API。
+`api.services` 仅用于明确的共享服务契约。`api.session` 仍作为官方插件的受限入口保留；新扩展应使用 `api.services` 和文档化的 facade 方法。 官方插件使用 facade，不要修改 `_tools`、`_lock`、`main` 或 UI 选择状态。0.3 已删除 `virgo.features` 实现别名；请导入 `virgo.plugins` 或使用本文中的 Core API。
 
 ## 事件与权限
 

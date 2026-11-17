@@ -39,8 +39,6 @@ from .telemetry import record_call
 if TYPE_CHECKING:
     from .session import AgentSession
 
-
-_DEFAULT_EFFORT = object()
 _TRANSCRIPT_STREAM_TYPES = {
     "text_start", "thinking_start", "toolcall_start",
     "native_tool_start", "native_tool_delta", "native_tool_end", "retry",

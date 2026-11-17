@@ -90,7 +90,7 @@ Pass the captured trusted parent to the child factory. `read_only=True` adds an 
 
 Children capture their source permission profile before automatic project-context reads. The built-in background agent captures that profile when the task is submitted, so a later parent Mode change cannot widen a queued task. A trusted extension that defers Runtime creation can pass its captured `PermissionMode` through the `execution_mode` factory argument; this argument is not exposed in the model tool schema.
 
-Use `api.services` only for an explicit shared service contract. Official plugins use the facade and do not mutate `_tools`, `_lock`, `main` or selected UI state. The 0.3 release removes the `virgo.features` implementation aliases; import `virgo.plugins` or use the Core APIs described here.
+Use `api.services` only for an explicit shared service contract. `api.session` remains a limited escape hatch for official plugins; new extensions should use `api.services` and the documented facade methods. Official plugins use the facade and do not mutate `_tools`, `_lock`, `main` or selected UI state. The 0.3 release removes the `virgo.features` implementation aliases; import `virgo.plugins` or use the Core APIs described here.
 
 ## Events and permissions
 
