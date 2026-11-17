@@ -62,7 +62,7 @@ class ConsoleBroker:
         self.events.put(item)
 
     def start_reader(self) -> None:
-        if sys.stdin.isatty():
+        if os.name == "posix" and sys.stdin.isatty():
             import termios
 
             self._terminal_state = (sys.stdin.fileno(), termios.tcgetattr(sys.stdin.fileno()))
@@ -143,6 +143,8 @@ class ConsoleBroker:
 
     def _read_terminal_answer(self, waiting: threading.Event, password: bool) -> str | None:
         """Read forms on the single reader thread, with cancellable hidden input."""
+        if os.name == "nt":
+            return self._read_windows_answer(waiting, password)
         import termios
 
         fd = sys.stdin.fileno()
@@ -171,6 +173,50 @@ class ConsoleBroker:
             if password:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
+
+    def _read_windows_answer(self, waiting: threading.Event, password: bool) -> str | None:
+        import msvcrt
+
+        if self._prompt_ready is not None:
+            self._prompt_ready.set()
+        value: list[str] = []
+        extended = False
+        try:
+            while not waiting.is_set() and not self.closed:
+                if not msvcrt.kbhit():
+                    waiting.wait(0.05)
+                    continue
+                char = msvcrt.getwch()
+                if extended:
+                    extended = False
+                    continue
+                if char in ("\x00", "\xe0"):
+                    extended = True
+                elif char in ("\r", "\n"):
+                    # The Windows console supplies UTF-16 code units.
+                    return "".join(value).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+                elif char == "\x1a":
+                    raise EOFError
+                elif char == "\x03":
+                    self.cancel_pending()
+                    return None
+                elif char == "\b":
+                    if value:
+                        value.pop()
+                        if not password:
+                            for erase in "\b \b":
+                                msvcrt.putwch(erase)
+                else:
+                    value.append(char)
+                    if not password:
+                        msvcrt.putwch(char)
+            # Discard an abandoned answer before allowing another form to read.
+            while msvcrt.kbhit():
+                msvcrt.getwch()
+            return None
+        finally:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
     def read_value(
         self, question: str, write, *, password: bool = False, timeout: float | None = None

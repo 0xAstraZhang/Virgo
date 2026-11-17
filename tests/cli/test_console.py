@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import queue
 import signal
+import subprocess
 import sys
 import threading
 
@@ -13,6 +16,75 @@ from virgo.agent.types import ToolResult
 from virgo.ai.types import TextContent
 
 from tests.support.terminal import PtyClient, plain, termios
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires a native Windows console")
+def test_plain_repl_starts_on_a_native_windows_console(project):
+    script = """
+import msvcrt, os, sys, threading
+from virgo.cli.console import ConsoleBroker, TerminalUI
+from virgo.cli.repl import run_repl
+from virgo.harness.session import AgentSession
+os.environ.pop('TERM', None)
+sys.stdin = open('CONIN$', encoding='utf-8')
+assert sys.stdin.isatty()
+broker = ConsoleBroker()
+ui = TerminalUI(broker)
+msvcrt.ungetwch('\\r')
+assert broker._read_terminal_answer(threading.Event(), True) == ''
+session = AgentSession(model='faux/demo', session=None, ui=ui, extensions=False,
+                       refresh_models=False, settings={'profile':'minimal'})
+broker.push('line', '/exit')
+run_repl(session, ui, broker)
+print('windows-console-ok')
+"""
+    result = subprocess.run([sys.executable, "-c", script], cwd=project, capture_output=True,
+                            text=True, timeout=15, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    assert result.returncode == 0, result.stderr
+    assert "windows-console-ok" in result.stdout
+
+
+def test_plain_windows_reader_starts_without_termios(monkeypatch):
+    from types import SimpleNamespace
+
+    from virgo.cli import console
+
+    monkeypatch.setattr(console, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setitem(sys.modules, "termios", None)
+    broker = console.ConsoleBroker()
+    try:
+        broker.start_reader()
+        assert broker._reader.is_alive()
+    finally:
+        broker.close()
+
+
+def test_windows_forms_edit_hide_secrets_and_cancel(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from virgo.cli import console
+
+    keys = queue.Queue()
+    monkeypatch.setattr(console, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setitem(sys.modules, "termios", None)
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(
+        kbhit=lambda: not keys.empty(), getwch=keys.get, putwch=lambda char: sys.stdout.write(char)))
+    broker = console.ConsoleBroker()
+    for password in (False, True):
+        for char in "ab\b中文\r":
+            keys.put(char)
+        assert broker._read_terminal_answer(threading.Event(), password) == "a中文"
+        output = capsys.readouterr().out
+        assert ("中文" in output) is not password
+    waiting = threading.Event()
+    broker._prompt_ready = threading.Event()
+    worker = threading.Thread(target=lambda: broker._read_terminal_answer(waiting, True))
+    worker.start()
+    assert broker._prompt_ready.wait(2)
+    waiting.set()
+    worker.join(2)
+    assert not worker.is_alive()
 
 LOGIN_SCRIPT = """
 from virgo.cli.console import ConsoleBroker, TerminalUI
