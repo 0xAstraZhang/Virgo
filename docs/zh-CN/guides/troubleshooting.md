@@ -69,7 +69,7 @@ Provider 重试仍由 Runtime 的现有策略统一控制。有效 `Retry-After`
 
 写入失败后，会话存储保留逻辑上的内存记录，并通过独立日志报告原始原因。调度暂停，同时通知所属 Runtime，避免继续执行却不断积累未保存历史。切换界面不会修复失败存储，诊断通知也不能清除取消或保存失败状态。在恢复需要的未保存信息前，应避免关闭进程。
 
-实现：[诊断](../../../src/virgo/diagnostics.py)、[日志存储](../../../src/virgo/harness/diagnostics.py)、[Runtime 证据](../../../src/virgo/harness/diagnostic_access.py)、[恢复](../../../src/virgo/harness/recovery.py)、[MCP](../../../src/virgo/plugins/mcp.py)。
+实现：[诊断](../../../src/virgo/diagnostics.py)、[日志存储](../../../src/virgo/harness/diagnostics.py)、[Runtime 证据](../../../src/virgo/harness/diagnostic_access.py)、[恢复](../../../src/virgo/harness/recovery.py)、[MCP](../../../src/virgo/plugins/mcp/__init__.py)。
 
 ## 插件配置与升级
 
