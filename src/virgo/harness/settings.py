@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -72,6 +73,13 @@ class Paths:
 
     @property
     def sessions(self) -> Path:
+        identity = os.path.normcase(str(self.cwd)).encode("utf-8")
+        suffix = hashlib.sha256(identity).hexdigest()[:32]
+        slug = self.legacy_sessions.name.encode("utf-8")[:96].decode("utf-8", errors="ignore")
+        return self.user / "sessions" / f"{slug}-{suffix}"
+
+    @property
+    def legacy_sessions(self) -> Path:
         slug = str(self.cwd).strip("/\\").replace("/", "-").replace("\\", "-").replace(":", "") or "root"
         return self.user / "sessions" / slug
 

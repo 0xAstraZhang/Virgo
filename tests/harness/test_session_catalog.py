@@ -14,6 +14,49 @@ from virgo.harness.store import SessionStore
 from tests.support.harness import write_legacy_session
 
 
+def test_continue_and_catalog_keep_colliding_workspaces_separate(make_session, tmp_path):
+    first, second = tmp_path / "x" / "a" / "b", tmp_path / "x" / "a-b"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    original = make_session(cwd=first, persist=True, refresh_models=False, extensions=False)
+    original.store.append_message(UserMessage("first workspace"))
+    resumed = make_session(cwd=second, session="continue", refresh_models=False, extensions=False)
+    assert resumed.main.origin.workspace == second
+    assert resumed.paths.sessions != original.paths.sessions
+    assert original.store.path not in {row["path"] for row in resumed.list_sessions()}
+
+
+def test_legacy_collision_catalog_filters_by_saved_workspace(make_session, tmp_path):
+    from virgo.harness.settings import Paths
+
+    first, second = tmp_path / "x" / "a" / "b", tmp_path / "x" / "a-b"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    paths = Paths(first)
+    slug = str(first).strip("/\\").replace("/", "-").replace("\\", "-").replace(":", "")
+    directory = paths.user / "sessions" / slug
+    older, newer = directory / "first.jsonl", directory / "second.jsonl"
+    write_legacy_session(older, first, "2025-01-01T00:00:00", "first")
+    write_legacy_session(newer, second, "2025-01-02T00:00:00", "second")
+    os.utime(older, (100, 100))
+    os.utime(newer, (200, 200))
+    resumed = make_session(cwd=first, session="continue", refresh_models=False, extensions=False)
+    assert resumed.store.path == older
+    assert [row["path"] for row in resumed.list_sessions()] == [older]
+    assert older.exists() and newer.exists(), "legacy history must not be moved or discarded"
+
+
+def test_session_load_rejects_cyclic_parent_records(tmp_path):
+    path = tmp_path / "cycle.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in [
+        {"type": "session", "cwd": str(tmp_path)},
+        {"type": "custom", "id": "a", "parent_id": "b"},
+        {"type": "custom", "id": "b", "parent_id": "a"},
+    ]))
+    with pytest.raises(ValueError, match="parent"):
+        SessionStore.load(path)
+
+
 def test_global_catalog_sorts_updates_and_keeps_workspace_creation_order(tmp_path):
     root = tmp_path / "sessions"
     older, newer = root / "older", root / "newer"

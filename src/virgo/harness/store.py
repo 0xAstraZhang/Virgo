@@ -187,6 +187,14 @@ class SessionStore:
         if not lines or lines[0].get("type") != "session":
             raise ValueError(f"{path} is not a Virgo session file")
         header = lines[0]
+        seen = set()
+        for entry in lines[1:]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or entry["id"] in seen:
+                raise ValueError(f"Invalid or duplicate session entry in {path}")
+            parent = entry.get("parent_id")
+            if parent is not None and (not isinstance(parent, str) or parent not in seen):
+                raise ValueError(f"Invalid session parent in {path}: {parent!r}")
+            seen.add(entry["id"])
         store = cls(Path(path), Path(header.get("cwd", ".")), header.get("id"), lines[1:])
         stat = Path(path).stat()
         store.created_at = _created_at(header, getattr(stat, "st_birthtime", stat.st_mtime))
@@ -208,6 +216,19 @@ class SessionStore:
         created = _workspace_created_at(directory, items)
         for item in items:
             item["workspace_created_at"] = created
+        return sorted(items, key=lambda item: (-item["mtime"], str(item["path"])))
+
+    @classmethod
+    def list_workspace(cls, paths) -> list[dict]:
+        """Read new and legacy directories, checking the saved workspace identity."""
+        items = []
+        for directory in (paths.sessions, paths.legacy_sessions):
+            for item in cls.list(directory):
+                try:
+                    if item["cwd"].resolve() == paths.cwd:
+                        items.append(item)
+                except (OSError, RuntimeError):
+                    continue
         return sorted(items, key=lambda item: (-item["mtime"], str(item["path"])))
 
     @classmethod
@@ -339,7 +360,11 @@ class SessionStore:
     # -- reading --------------------------------------------------------------
     def branch(self) -> list[dict]:
         path, cur = [], self.leaf
+        seen = set()
         while cur is not None:
+            if cur in seen:
+                raise ValueError(f"Cyclic session parent in {self.path or self.id}")
+            seen.add(cur)
             e = self.by_id.get(cur)
             if e is None:
                 break
@@ -358,7 +383,11 @@ class SessionStore:
         counted_leaf, counted = self._usage
         leaf = self.leaf
         new, cur = [], leaf
+        seen = set()
         while cur is not None and cur != counted_leaf:
+            if cur in seen:
+                raise ValueError(f"Cyclic session parent in {self.path or self.id}")
+            seen.add(cur)
             entry = self.by_id.get(cur)
             if entry is None:
                 break

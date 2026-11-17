@@ -204,7 +204,10 @@ def test_moved_version_one_session_resumes(make_session, project, tmp_path):
     sessions.mkdir(parents=True)
     migrated = sessions / previous.name
     shutil.copy2(previous, migrated)
-    session = make_session(faux.reply("resumed"), session="continue")
+    automatic = make_session(session="continue")
+    assert automatic.store.path != migrated
+    # Moving history must not silently change the workspace selected by --continue.
+    session = make_session(faux.reply("resumed"), cwd=previous.parent, session=migrated)
     assert session.store.path == migrated and session.store.id == "previous"
     assert session.main.messages[0].text() == "remember the earlier task"
     session.prompt("continue")

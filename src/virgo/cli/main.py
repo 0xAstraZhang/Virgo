@@ -88,9 +88,10 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     return p
 
 
-def _pick_session(sessions_dir: Path, t: Translator | None = None) -> Path | None:
+def _pick_session(sessions_dir: Path | Paths, t: Translator | None = None) -> Path | None:
     t = t or Translator()
-    items = SessionStore.list(sessions_dir) if sessions_dir.is_dir() else []
+    items = (SessionStore.list_workspace(sessions_dir) if isinstance(sessions_dir, Paths)
+             else SessionStore.list(sessions_dir))
     if not items:
         print(tr(t, "ui.cli.no_saved_sessions"), file=sys.stderr)
         return None
@@ -195,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         elif fullscreen:
             pick_session = True
         else:
-            picked = _pick_session(Paths(Path(args.cwd)).sessions, t)
+            picked = _pick_session(Paths(Path(args.cwd)), t)
             if picked is None:
                 return 1
             session_arg = picked

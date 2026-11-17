@@ -483,7 +483,7 @@ class AgentSession:
         if session is None:
             return SessionStore(None, self.cwd)
         if session == "continue":
-            items = SessionStore.list(self.paths.sessions) if self.paths.sessions.is_dir() else []
+            items = SessionStore.list_workspace(self.paths)
             return (
                 SessionStore.load(items[0]["path"])
                 if items
@@ -576,7 +576,7 @@ class AgentSession:
 
     def list_sessions(self) -> list[dict]:
         """Merge this workspace's disk catalog with recoverable in-process history."""
-        items = {item["path"]: item for item in SessionStore.list(self.paths.sessions)}
+        items = {item["path"]: item for item in SessionStore.list_workspace(self.paths)}
         with self._lock:
             stores = self.retained_stores()
             if self.store.save_error is not None:

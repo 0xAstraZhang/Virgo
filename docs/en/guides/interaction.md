@@ -96,6 +96,8 @@ Opening another conversation does not stop the original run. Each live conversat
 
 Session history is stored as JSONL under the user data directory. Compaction changes the context sent to the model while retaining full history for replay. Newly opened empty sessions are cleaned up at exit. A save failure pauses further work and keeps unsaved in-memory history available; see [Troubleshooting](troubleshooting.md).
 
+New session directories include a hash of the resolved workspace path. Current-workspace lists and `--continue` also read legacy directories, but only include records whose saved workspace matches. Copying another workspace's JSONL into that directory does not select it automatically; open it explicitly from its saved workspace. Invalid parent links in saved history are reported instead of traversed indefinitely.
+
 The plain interface keeps numbered prompts and line-oriented input. Ctrl+C interrupts a run; press it twice within two seconds while idle to exit.
 
 Implementation: [CLI](../../../src/virgo/cli), [commands](../../../src/virgo/harness/commands.py), [session store](../../../src/virgo/harness/store.py).
