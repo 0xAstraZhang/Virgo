@@ -59,6 +59,35 @@ PARAMETER_ALIASES = {
 # Coverage and rationale: docs/en/development/test-retirements.md. These are not aliases:
 # the removed test stays visible and its retained coverage must pass in both runs.
 APPROVED_RETIREMENTS = {
+    "a722c9d3b13edbbd99b835072bae13ed6d7ebf01": {
+        "test_work_mode_startup_is_separate_from_output_approval_and_sandbox[checkout]": (
+            "tests.cli.test_main", (
+                "test_work_mode_startup_is_separate_from_output_approval_and_sandbox[command]",
+                "test_work_mode_startup_is_separate_from_output_approval_and_sandbox[module]",
+            )),
+        "test_cli_identity[checkout]": (
+            "tests.cli.test_main", ("test_cli_identity[command]", "test_cli_identity[module]")),
+        "test_cli_loads_features_and_streams_json[checkout]": (
+            "tests.cli.test_main", (
+                "test_cli_loads_features_and_streams_json[command]",
+                "test_cli_loads_features_and_streams_json[module]",
+            )),
+        "test_fullscreen_rejects_non_terminal_before_starting_session[checkout]": (
+            "tests.cli.test_main", (
+                "test_fullscreen_rejects_non_terminal_before_starting_session[command]",
+                "test_fullscreen_rejects_non_terminal_before_starting_session[module]",
+            )),
+        "test_non_terminal_uses_plain_repl[checkout]": (
+            "tests.cli.test_main", (
+                "test_non_terminal_uses_plain_repl[command]",
+                "test_non_terminal_uses_plain_repl[module]",
+            )),
+        "test_print_text_ignores_fullscreen_option[checkout]": (
+            "tests.cli.test_main", (
+                "test_print_text_ignores_fullscreen_option[command]",
+                "test_print_text_ignores_fullscreen_option[module]",
+            )),
+    },
     "0ffc23707de6e87a579a46a8f027679c253b78dc": {
         "test_tool_calls_and_results_are_paired_in_order": ("tests.agent.test_loop", (
             "test_parallel_results_are_emitted_as_completed_but_history_keeps_call_order",

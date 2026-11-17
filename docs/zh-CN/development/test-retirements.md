@@ -34,6 +34,10 @@
 
 比较器实现修改前，新增真实 CLI 验收先生成 base 的 50 个通过场景（42 个原场景和八个保留门禁），以及 head 的 17 个通过场景（八个保留门禁和九个新验收）。旧比较器按预期拒绝尚未识别的新政策，报告 `42 previously executed tests disappeared`。完整验收覆盖全部清单，并拒绝错误基线、原始模块和参数 ID，原场景失败，每一个门禁缺失，门禁失败／跳过／移位，无关删除，以及仍存在的失败／跳过。历史退役验收和普通失败／跳过／删除检查保留；该清单不豁免原生沙箱验证或其他 CI。
 
+## 移除 checkout 入口
+
+0.3 删除根目录 `main.py` 兼容启动器。`tests.cli.test_main` 的六个用例只少了 `[checkout]` 参数；`[command]` 与 `[module]` 变体在 base 与 head 保留相同断言。`ci/pipeline/reports.py::APPROVED_RETIREMENTS` 记录该基线及确切的保留覆盖，比较器会将其视为已评审的重复删除，而不是六个测试丢失。
+
 ## 改名的用例
 
 本次有三个既有用例行为不变、身份变化：规划/只读用例的函数名，以及两个本地化 `Work mode` 参数标签。`ci/pipeline/reports.py::PARAMETER_ALIASES` 将旧身份映射到新名称，并包含 JUnit 转义后的中文参数 ID。别名同时应用于 base 与 head 报告，比较器因此看到的是改名而不是测试丢失。
