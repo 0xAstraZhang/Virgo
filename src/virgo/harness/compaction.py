@@ -7,7 +7,7 @@
 Compaction runs at model-call boundaries. OpenAI returns a complete replacement window;
 Anthropic and portable summaries retain about ``keepRecentTokens`` of recent messages.
 Native provider blocks are persisted verbatim; the complete original history stays on disk.
-Per-result output budgets live in tools/truncate.py.
+Per-result output budgets live in tools/output.py.
 """
 
 from __future__ import annotations

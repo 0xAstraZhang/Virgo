@@ -33,8 +33,8 @@ from ..ai.types import (
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
 from ..i18n import Translator, normalize_language
 from ..tools import BASE_TOOLS
+from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
-from ..tools.truncate import MAX_BYTES, budget
 from .commands import Commands, expand_template, load_templates, register_builtins
 from .diagnostics import DiagnosticLog
 from .extensions import (

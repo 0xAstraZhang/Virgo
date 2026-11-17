@@ -13,8 +13,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult, image_result
+from .output import MAX_BYTES, MAX_LINES
 from .sandbox_files import SandboxFileDenied, check_read, open_mutation, read_bytes, walk_files
-from .truncate import MAX_BYTES, MAX_LINES
 
 IGNORE_DIRS = {
     ".git",

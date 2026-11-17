@@ -11,8 +11,7 @@ from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..i18n import Translator
-from .command_output import CommandOutput, display_output, open_output, read_output
-from .truncate import MAX_BYTES, MAX_LINES, save_output, truncate_tail
+from .output import MAX_BYTES, MAX_LINES, CommandOutput, bound, display_output, open_output, read_output
 
 DEFAULT_TIMEOUT = 300
 MAX_TIMEOUT = 3600
@@ -140,9 +139,7 @@ def format_output(
     t = t or Translator()
     if isinstance(output, str):
         # Compatibility for extensions that format a pre-existing in-memory result.
-        text, cut = truncate_tail(output)
-        path = save_output(output, cwd, prefix) if cut else None
-        output = CommandOutput(text, path, cut, len(output.encode("utf-8")))
+        output = bound(output, cwd, prefix, keep="tail")
     text = display_output(output, max_bytes=MAX_BYTES - 256, t=t)
     details = {
         "exit_code": code,

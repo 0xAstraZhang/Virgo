@@ -25,7 +25,7 @@ import pytest
 
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage
-from virgo.tools.truncate import MAX_BYTES
+from virgo.tools.output import MAX_BYTES
 
 from tests.support.shell import invoke, selected
 

@@ -17,7 +17,7 @@ import pytest
 from virgo.agent.types import ToolContext
 from virgo.tools import BASH
 from virgo.tools import bash as bash_module
-from virgo.tools.truncate import MAX_LINES
+from virgo.tools.output import MAX_LINES
 
 from tests.support.http import serve
 

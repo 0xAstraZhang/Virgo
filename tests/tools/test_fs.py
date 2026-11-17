@@ -10,8 +10,8 @@ import pytest
 from virgo.agent.types import ToolContext
 from virgo.tools import EDIT, GLOB, GREP, READ, WRITE
 from virgo.tools.fs import _prepare_edit, make_file_tool
+from virgo.tools.output import MAX_LINES
 from virgo.tools.sandbox import SandboxPolicy
-from virgo.tools.truncate import MAX_LINES
 
 
 def ctx(cwd: Path) -> ToolContext:

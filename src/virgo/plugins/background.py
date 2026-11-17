@@ -13,8 +13,7 @@ from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..diagnostics import error_summary
 from ..harness.extensions import ExtensionAPI
 from ..harness.jobs import Job, JobManager
-from ..tools.command_output import display_output, read_output
-from ..tools.truncate import MAX_BYTES, budget
+from ..tools.output import MAX_BYTES, budget, display_output, read_output
 
 
 def setup(api: ExtensionAPI) -> None:

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from ..agent.types import ToolResult
 from ..diagnostics import capture_error, error_summary, safe_text
 from ..tools.bash import kill_tree, spawn
-from ..tools.command_output import open_output, read_output
+from ..tools.output import open_output, read_output
 from ..tools.sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable, cleanup_process
 
 if TYPE_CHECKING:
