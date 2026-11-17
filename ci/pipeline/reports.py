@@ -15,6 +15,8 @@ PARAMETER_ALIASES = {
         "test_compaction_does_not_enable_native_search[virgo.ai.providers.responses]",
     "test_compaction_does_not_enable_native_search[openai-codex]":
         "test_compaction_does_not_enable_native_search[virgo.ai.providers.codex]",
+    "test_one_shot_completions_reserve_reasoning_headroom[never-below-the-request]":
+        "test_one_shot_completions_reserve_reasoning_headroom[visible-budget-capped-by-model]",
     "test_subagent_request_exposes_only_its_own_tools":
         "test_subagent_system_prompt_lists_only_its_own_tools",
     "test_noninteractive_sessions_report_no_answer_without_a_prompt":

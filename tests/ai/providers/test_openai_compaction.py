@@ -207,7 +207,9 @@ def test_compaction_does_not_enable_native_search(compact_server, api):
     compact_server["content_type"] = "text/event-stream" if provider is codex else "application/json"
     context = _context()
     context.web_search = {"type": "web_search"}
+    context.web_tools = [{"type": "web_search"}]
     out = provider.compact(_model(compact_server, api), context, StreamOptions())
     assert out.stop_reason == "compaction", out.error_message
     assert all(tool.get("type") != "web_search" for tool in compact_server["requests"][0]["json"].get("tools", []))
     assert context.web_search == {"type": "web_search"}
+    assert context.web_tools == [{"type": "web_search"}]

@@ -55,7 +55,7 @@ def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consu
 @pytest.mark.parametrize("limit,model_max,expected", [
     pytest.param(512, 32_768, 512 + ai.REASONING_HEADROOM, id="headroom-for-hidden-reasoning"),
     pytest.param(8000, 10_000, 10_000, id="capped-by-model-maximum"),
-    pytest.param(8000, 4096, 8000, id="never-below-the-request"),
+    pytest.param(8000, 4096, 4096, id="visible-budget-capped-by-model"),
     pytest.param(None, 32_768, None, id="no-limit-requested"),
 ])
 def test_one_shot_completions_reserve_reasoning_headroom(monkeypatch, limit, model_max, expected):

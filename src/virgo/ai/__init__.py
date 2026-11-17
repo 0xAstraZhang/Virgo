@@ -100,7 +100,7 @@ def completion_token_limit(model: Model, max_tokens: int | None, total_max_token
             raise ValueError("total_max_tokens must be a positive integer")
         return min(total_max_tokens, model.max_tokens)
     if max_tokens is not None:
-        return max(max_tokens, min(max_tokens + REASONING_HEADROOM, model.max_tokens))
+        return min(max_tokens + REASONING_HEADROOM, model.max_tokens)
     return None
 
 

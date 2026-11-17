@@ -28,6 +28,18 @@ def _model(server):
     )
 
 
+def test_codex_stream_preserves_web_declarations_without_legacy_search(account_server):
+    account_server["body"] = sse([{"type": "response.completed", "response": {
+        "status": "completed", "output": [],
+    }}], done=False)
+    declaration = {"type": "web_search"}
+    context = Context("", [UserMessage("read a page")], web_tools=[declaration])
+    codex.stream(_model(account_server), context, StreamOptions()).result()
+    assert account_server["requests"][0]["json"]["tools"] == [declaration]
+    context.web_search = declaration
+    assert codex.build_params(_model(account_server), context, StreamOptions())["tools"] == [declaration]
+
+
 def test_codex_account_stream_and_request(account_server):
     text = {"type": "message", "id": "msg_1", "content": [{"type": "output_text", "text": "Reading."}]}
     call = {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "read", "arguments": '{"path":"a"}'}
