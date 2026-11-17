@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import subprocess
+import sys
 import threading
 import time
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -22,6 +24,30 @@ def no_installed_cli(monkeypatch):
 
 def resolver():
     return versions.CodexCatalogVersion(resolve_model("openai-codex/test"))
+
+
+def test_catalog_discovery_never_executes_path_candidates(project, monkeypatch):
+    marker = project / "executed"
+    script = project / "probe.py"
+    script.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\nprint('codex-cli 0.220.0')\n")
+    candidate = project / ("codex.cmd" if os.name == "nt" else "codex")
+    command = [sys.executable, str(script)]
+    candidate.write_text(("@" + subprocess.list2cmdline(command) if os.name == "nt" else
+                          "#!/bin/sh\n" + shlex.join(command)) + "\n")
+    candidate.chmod(0o755)
+    monkeypatch.setattr(versions.shutil, "which", lambda _: str(candidate))
+    monkeypatch.setattr(versions.CodexCatalogVersion, "_published_version", lambda _: "0.230.0")
+    launches = []
+    original = subprocess.Popen
+
+    def launch(*args, **kwargs):
+        launches.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    assert resolver().choose() == "0.230.0"
+    assert not launches, "catalog refresh attempted to execute a PATH candidate"
+    assert not marker.exists(), "catalog refresh executed a workspace-controlled program"
 
 
 def test_official_stable_release_is_cached_without_credentials(monkeypatch):
@@ -91,29 +117,37 @@ def test_explicit_pin_never_probes_or_updates_any_version_source(monkeypatch):
         versions.CodexCatalogVersion(model).choose()
 
 
-@pytest.mark.parametrize("stdout, expected", [
-    ("codex-cli 0.220.0\n", "0.220.0"), ("codex v1.2.3", "1.2.3"),
-    ("codex-cli 0.220.0-alpha.1", None), ("arbitrary 1.2.3", None),
-])
-def test_cli_version_probe_is_bounded_and_only_parses_codex_output(monkeypatch, stdout, expected):
-    monkeypatch.setattr(versions.shutil, "which", lambda _: "/test/codex")
-
-    def run(argv, **kwargs):
-        assert argv == ["/test/codex", "--version"]
-        assert kwargs["timeout"] == 1.5 and not kwargs.get("shell")
-        return SimpleNamespace(stdout=stdout)
-
-    monkeypatch.setattr(versions.subprocess, "run", run)
+@pytest.mark.parametrize("version, name, expected", [
+    ("0.220.0", "@openai/codex", "0.220.0"),
+    ("1.2.3", "@openai/codex", "1.2.3"),
+    ("0.220.0-alpha.1", "@openai/codex", None),
+    ("1.2.3", "another-package", None),
+], ids=["stable", "major", "prerelease", "wrong-package"])
+def test_cli_metadata_is_bounded_and_only_accepts_codex(tmp_path, monkeypatch, version, name, expected):
+    installation = tmp_path / "codex-package"
+    (installation / "bin").mkdir(parents=True)
+    executable = installation / "bin" / "codex.js"
+    executable.touch()
+    manifest = installation / "package.json"
+    manifest.write_text(json.dumps({"name": name, "version": version}))
+    monkeypatch.setattr(versions.shutil, "which", lambda _: str(executable))
     assert versions.installed_codex_version() == expected
+    manifest.write_text(" " * (64 * 1024) + manifest.read_text())
+    assert versions.installed_codex_version() is None
 
 
-def test_cli_probe_failure_is_optional(monkeypatch):
-    monkeypatch.setattr(versions.shutil, "which", lambda _: "/test/codex")
-
-    def timeout(*a, **kw):
-        raise subprocess.TimeoutExpired("codex", 1.5)
-
-    monkeypatch.setattr(versions.subprocess, "run", timeout)
+def test_cli_metadata_failure_is_optional(tmp_path, monkeypatch):
+    shim = tmp_path / "codex.cmd"
+    shim.touch()
+    monkeypatch.setattr(versions.shutil, "which", lambda _: str(shim))
+    assert versions.installed_codex_version() is None
+    manifest = tmp_path / "node_modules" / "@openai" / "codex" / "package.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"@openai/codex","version":"1.2.3"}')
+    assert versions.installed_codex_version() == "1.2.3"
+    manifest.write_text("broken json")
+    assert versions.installed_codex_version() is None
+    manifest.write_text('[' * 10000 + '0' + ']' * 10000)
     assert versions.installed_codex_version() is None
 
 

@@ -100,7 +100,7 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 启动时，已连接的厂商在后台刷新模型目录，最多四个并发；`/model` 读取缓存快照。显式的 `providers.<id>.models` 字段优先于服务端元数据，之后依次为内置资料和协议兜底值。添加元数据并不等于向远程目录增加模型。Google Code Assist 目前通过直接指定模型使用，没有适配实时目录。刷新失败保留旧快照。
 
-目录缓存按 provider、协议和地址隔离，不保存密钥。Codex 目录的客户端版本从本机、缓存和发布元数据选择，也可用 `providers.openai-codex.clientVersion` 固定。`providers.<id>.apiVersion` 可以固定 Anthropic 协议版本。这些值控制接口兼容性，与 Virgo 应用版本不同。
+目录缓存按 provider、协议和地址隔离，不保存密钥。Codex 目录的客户端版本从本机 npm 包清单（不执行 Codex）、缓存和官方发布元数据选择；没有包清单的独立安装使用缓存或发布来源，也可用 `providers.openai-codex.clientVersion` 固定。`providers.<id>.apiVersion` 可以固定 Anthropic 协议版本。这些值控制接口兼容性，与 Virgo 应用版本不同。
 
 辅助请求自动选择同一连接的小模型：官方 Anthropic 连接使用 `claude-haiku-5-5`，官方 OpenAI/Codex 连接使用 `gpt-6-luna`，其余使用主模型。推理强度优先 `low`，其次为受支持的默认值，否则省略控制参数。旧 `smallModel` 字段不再参与选择。
 
