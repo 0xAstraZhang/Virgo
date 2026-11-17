@@ -10,7 +10,7 @@ import pytest
 from virgo.agent.types import ToolContext, ToolResult
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage
-from virgo.plugins import background
+from virgo.harness import jobs as supervision
 
 from tests.support.harness import calls, tool_results
 from tests.support.shell import selected
@@ -88,8 +88,8 @@ def fake_command_io(monkeypatch, project, *, failure=None, close_failure=False):
             if close_failure:
                 raise OSError("close unavailable")
 
-    monkeypatch.setattr(background, "open_output", lambda *args: (path, OutputFile()))
-    monkeypatch.setattr(background, "spawn", lambda *args, **kwargs: FakeProcess(failure))
+    monkeypatch.setattr(supervision, "open_output", lambda *args: (path, OutputFile()))
+    monkeypatch.setattr(supervision, "spawn", lambda *args, **kwargs: FakeProcess(failure))
     return path
 
 
@@ -104,7 +104,7 @@ def test_command_watcher_failures_finish_and_report(make_session, monkeypatch, p
         def broken_read(*args, **kwargs):
             raise OSError("read unavailable")
 
-        monkeypatch.setattr(background, "read_output", broken_read)
+        monkeypatch.setattr(supervision, "read_output", broken_read)
     jobs = session.services["jobs"]
     job = jobs.start_command("private command", project)
     assert job.done.wait(5)
@@ -133,7 +133,7 @@ def test_start_cleanup_cannot_mask_spawn_error(make_session, monkeypatch, projec
     def broken_spawn(*args, **kwargs):
         raise OSError("spawn root cause")
 
-    monkeypatch.setattr(background, "spawn", broken_spawn)
+    monkeypatch.setattr(supervision, "spawn", broken_spawn)
     jobs = session.services["jobs"]
     with pytest.raises(OSError, match="spawn root cause") as caught:
         jobs.start_command("private command", project)

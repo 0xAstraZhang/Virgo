@@ -45,6 +45,7 @@ from .extensions import (
     load_builtin_features,
     load_user_extensions,
 )
+from .jobs import JobManager
 from .origin_context import ExecutionOrigin, source_for
 from .permission_policy import install_permissions
 from .permissions import PermissionPolicy, normalize_approval_policy
@@ -141,6 +142,11 @@ class AgentSession:
         for tool in BASE_TOOLS:
             self.register_tool(tool, ROLES_ALL, owner="core")
         self.services["shell"] = ShellSelection(self, shell_catalog)
+        # Core owns background supervision, so the shell capability and the
+        # background plugin both depend on this service instead of on each other.
+        self.services["jobs"] = JobManager(
+            self, background_enabled=self.settings.plugin_enabled("background")
+        )
         self.session_options["shell_catalog"] = self.services["shell"].catalog
         self.services["shell"].install_tools()
         register_builtins(self)
@@ -153,6 +159,12 @@ class AgentSession:
             load_builtin_features(self)
             if extensions:
                 load_user_extensions(self)
+            # A plugin that failed setup is not loaded. Background supervision
+            # must not outlive the capability that exposes its tools.
+            jobs = self.services["jobs"]
+            if jobs.background_enabled and "background" not in self.loaded_plugins:
+                jobs.background_enabled = False
+                self.services["shell"].install_tools()
             install_command_hooks(self)
             self.templates.update(load_templates(
                 self.paths.both("prompts"),

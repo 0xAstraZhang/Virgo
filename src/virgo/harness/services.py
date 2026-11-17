@@ -14,6 +14,10 @@ class Services(dict):
         return self["shell"]
 
     @property
+    def jobs(self) -> Any:
+        return self["jobs"]
+
+    @property
     def sandbox(self) -> Any:
         return self["sandbox"]
 
