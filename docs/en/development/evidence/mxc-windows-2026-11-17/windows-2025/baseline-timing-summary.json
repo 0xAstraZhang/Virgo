@@ -1,0 +1,42 @@
+{
+  "groups": [
+    {
+      "workspace_files": 0,
+      "mode": "read-only",
+      "samples": 6,
+      "failures": 0,
+      "first_seconds": 5.363556399999993,
+      "warm_median_seconds": 5.371909999999957,
+      "warm_p95_seconds": 5.564134200000012
+    },
+    {
+      "workspace_files": 0,
+      "mode": "workspace-write",
+      "samples": 6,
+      "failures": 0,
+      "first_seconds": 5.37277830000005,
+      "warm_median_seconds": 5.324127999999973,
+      "warm_p95_seconds": 5.511215800000059
+    },
+    {
+      "workspace_files": 1000,
+      "mode": "read-only",
+      "samples": 6,
+      "failures": 0,
+      "first_seconds": 5.727499299999977,
+      "warm_median_seconds": 5.842051699999956,
+      "warm_p95_seconds": 5.890968300000054
+    },
+    {
+      "workspace_files": 1000,
+      "mode": "workspace-write",
+      "samples": 6,
+      "failures": 0,
+      "first_seconds": 5.788069299999961,
+      "warm_median_seconds": 5.774375299999974,
+      "warm_p95_seconds": 6.124163199999998
+    }
+  ],
+  "peak_memory_bytes": null,
+  "note": "Tiny serial sample; no paired MXC speed or memory claim."
+}

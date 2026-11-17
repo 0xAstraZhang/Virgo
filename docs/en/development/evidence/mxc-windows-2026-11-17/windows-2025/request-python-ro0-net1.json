@@ -1,0 +1,53 @@
+{
+  "version": "1.0.0",
+  "containment": "processcontainer",
+  "process": {
+    "commandLine": "D:\\a\\Virgo\\Virgo\\baseline\\.venv\\Scripts\\python.exe -I -S -c \"from pathlib import Path;Path('C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-w5jjkkby\\\\scratch\\\\python-ro0-net1.txt').write_text('started');print('mxc-payload-started')\"",
+    "cwd": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace",
+    "env": [
+      "COMSPEC=C:\\Windows\\system32\\cmd.exe",
+      "PATH=D:\\a\\Virgo\\Virgo\\baseline\\.venv\\Scripts;C:\\Program Files\\PowerShell\\7;D:\\a\\_temp\\uv-python-dir;C:\\hostedtoolcache\\windows\\uv\\0.13.8\\x86_64;D:\\a\\_temp\\uv-tool-bin-dir;C:\\Program Files\\MongoDB\\Server\\7.0\\bin;C:\\vcpkg;C:\\tools\\zstd;C:\\hostedtoolcache\\windows\\stack\\3.11.1\\x64;C:\\cabal\\bin;C:\\\\ghcup\\bin;C:\\mingw64\\bin;C:\\Program Files\\dotnet;C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin;C:\\Program Files\\R\\R-4.6.2\\bin\\x64;C:\\SeleniumWebDrivers\\GeckoDriver;C:\\SeleniumWebDrivers\\EdgeDriver\\;C:\\SeleniumWebDrivers\\ChromeDriver;C:\\Program Files (x86)\\sbt\\bin;C:\\Program Files (x86)\\GitHub CLI;C:\\Program Files\\Git\\bin;C:\\Program Files (x86)\\pipx_bin;C:\\npm\\prefix;C:\\hostedtoolcache\\windows\\go\\1.24.13\\x64\\bin;C:\\hostedtoolcache\\windows\\Python\\3.12.10\\x64\\Scripts;C:\\hostedtoolcache\\windows\\Python\\3.12.10\\x64;C:\\hostedtoolcache\\windows\\Ruby\\3.3.13\\x64\\bin;C:\\Program Files\\OpenSSL\\bin;C:\\tools\\kotlinc\\bin;C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.21-9\\x64\\bin;C:\\Program Files\\ImageMagick-7.1.2-Q16-HDRI;C:\\Program Files\\Microsoft SDKs\\Azure\\CLI2\\wbin;C:\\ProgramData\\kind;C:\\ProgramData\\Chocolatey\\bin;C:\\Windows\\system32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\;C:\\Windows\\System32\\OpenSSH\\;C:\\Program Files\\WSL\\;C:\\Program Files\\PowerShell\\7\\;C:\\Program Files\\Microsoft\\Web Platform Installer\\;C:\\Program Files\\Microsoft SQL Server\\170\\Tools\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\;C:\\Program Files\\dotnet\\;C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\;C:\\Program Files (x86)\\WiX Toolset v3.14\\bin;C:\\Program Files\\Microsoft SQL Server\\130\\DTS\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\140\\DTS\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\150\\DTS\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\160\\DTS\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\170\\DTS\\Binn\\;C:\\ProgramData\\chocolatey\\lib\\pulumi\\tools\\Pulumi\\bin;C:\\Program Files\\CMake\\bin;C:\\Strawberry\\c\\bin;C:\\Strawberry\\perl\\site\\bin;C:\\Strawberry\\perl\\bin;C:\\ProgramData\\chocolatey\\lib\\maven\\apache-maven-3.9.16\\bin;C:\\Program Files\\Microsoft Service Fabric\\bin\\Fabric\\Fabric.Code;C:\\Program Files\\Microsoft SDKs\\Service Fabric\\Tools\\ServiceFabricLocalClusterManager;C:\\Program Files\\LLVM\\bin;C:\\Program Files (x86)\\LLVM\\bin;C:\\Program Files\\nodejs\\;C:\\Program Files\\Git\\cmd;C:\\Program Files\\Git\\ucrt64\\bin;C:\\Program Files\\Git\\usr\\bin;C:\\Program Files\\GitHub CLI\\;c:\\tools\\php;C:\\Program Files (x86)\\sbt\\bin;C:\\Program Files\\Amazon\\AWSCLIV2\\;C:\\Program Files\\Amazon\\SessionManagerPlugin\\bin\\;C:\\Program Files\\Amazon\\AWSSAMCLI\\bin\\;C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\;C:\\Program Files\\mongosh\\;C:\\Users\\runneradmin\\.dotnet\\tools;C:\\Users\\runneradmin\\.cargo\\bin;C:\\Users\\runneradmin\\AppData\\Local\\Microsoft\\WindowsApps",
+      "PATHEXT=.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL",
+      "SYSTEMROOT=C:\\Windows",
+      "WINDIR=C:\\Windows",
+      "HOME=C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\scratch",
+      "USERPROFILE=C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\scratch",
+      "TEMP=C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\scratch",
+      "TMP=C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\scratch",
+      "POWERSHELL_TELEMETRY_OPTOUT=1",
+      "POWERSHELL_UPDATECHECK=Off",
+      "VIRGO=1"
+    ],
+    "inheritDefaultEnv": false,
+    "timeout": 15000
+  },
+  "filesystem": {
+    "readonlyPaths": [
+      "D:\\a\\Virgo\\Virgo\\baseline\\.venv",
+      "C:\\hostedtoolcache\\windows\\Python\\3.13.17\\x64",
+      "C:\\Program Files\\PowerShell\\7"
+    ],
+    "readwritePaths": [
+      "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\scratch",
+      "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace"
+    ],
+    "deniedPaths": [
+      "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\private.txt"
+    ]
+  },
+  "processContainer": {
+    "leastPrivilege": true
+  },
+  "network": {
+    "egress": {
+      "default": "allow"
+    },
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "deny"
+    }
+  },
+  "fallback": {
+    "allowDaclMutation": false
+  }
+}

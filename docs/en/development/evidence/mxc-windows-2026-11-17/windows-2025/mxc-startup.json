@@ -1,0 +1,326 @@
+[
+  {
+    "case": "python-ro0-net0",
+    "host_control": {
+      "argv": [
+        "D:\\a\\Virgo\\Virgo\\baseline\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-S",
+        "-c",
+        "from pathlib import Path;Path('C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-w5jjkkby\\\\scratch\\\\python-ro0-net0.txt').write_text('started');print('mxc-payload-started')"
+      ],
+      "exit_code": 0,
+      "stdout": "mxc-payload-started\n",
+      "stderr": "",
+      "elapsed_seconds": 0.02979830000001016,
+      "marker_created": true
+    },
+    "probe": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "--probe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-python-ro0-net0.json"
+      ],
+      "exit_code": 1,
+      "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": true,\n      \"canBlockInputMethodChanges\": true,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+      "stderr": "",
+      "elapsed_seconds": 0.014461600000004182
+    },
+    "launch": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-python-ro0-net0.json"
+      ],
+      "exit_code": 4294967295,
+      "stdout": "",
+      "stderr": "SECTION: Request simplified\nScript code length: 243\nWorking directory: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace\nScript timeout: 15000\nContainer name: (assigned by the backend)\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+      "elapsed_seconds": 0.011665599999986398,
+      "marker_created": false
+    }
+  },
+  {
+    "case": "python-ro1-net0",
+    "host_control": {
+      "argv": [
+        "D:\\a\\Virgo\\Virgo\\baseline\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-S",
+        "-c",
+        "from pathlib import Path;Path('C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-w5jjkkby\\\\scratch\\\\python-ro1-net0.txt').write_text('started');print('mxc-payload-started')"
+      ],
+      "exit_code": 0,
+      "stdout": "mxc-payload-started\n",
+      "stderr": "",
+      "elapsed_seconds": 0.029175000000009277,
+      "marker_created": true
+    },
+    "probe": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "--probe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-python-ro1-net0.json"
+      ],
+      "exit_code": 1,
+      "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": true,\n      \"canBlockInputMethodChanges\": true,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+      "stderr": "",
+      "elapsed_seconds": 0.015502900000001318
+    },
+    "launch": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-python-ro1-net0.json"
+      ],
+      "exit_code": 4294967295,
+      "stdout": "",
+      "stderr": "SECTION: Request simplified\nScript code length: 243\nWorking directory: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace\nScript timeout: 15000\nContainer name: (assigned by the backend)\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+      "elapsed_seconds": 0.013133600000003298,
+      "marker_created": false
+    }
+  },
+  {
+    "case": "python-ro0-net1",
+    "host_control": {
+      "argv": [
+        "D:\\a\\Virgo\\Virgo\\baseline\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-S",
+        "-c",
+        "from pathlib import Path;Path('C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-w5jjkkby\\\\scratch\\\\python-ro0-net1.txt').write_text('started');print('mxc-payload-started')"
+      ],
+      "exit_code": 0,
+      "stdout": "mxc-payload-started\n",
+      "stderr": "",
+      "elapsed_seconds": 0.030354799999997795,
+      "marker_created": true
+    },
+    "probe": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "--probe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-python-ro0-net1.json"
+      ],
+      "exit_code": 1,
+      "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": true,\n      \"canBlockInputMethodChanges\": true,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+      "stderr": "",
+      "elapsed_seconds": 0.014034199999997554
+    },
+    "launch": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-python-ro0-net1.json"
+      ],
+      "exit_code": 4294967295,
+      "stdout": "",
+      "stderr": "SECTION: Request simplified\nScript code length: 243\nWorking directory: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace\nScript timeout: 15000\nContainer name: (assigned by the backend)\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+      "elapsed_seconds": 0.011821200000014187,
+      "marker_created": false
+    }
+  },
+  {
+    "case": "python-ro1-net1",
+    "host_control": {
+      "argv": [
+        "D:\\a\\Virgo\\Virgo\\baseline\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-S",
+        "-c",
+        "from pathlib import Path;Path('C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\virgo-mxc-probe-w5jjkkby\\\\scratch\\\\python-ro1-net1.txt').write_text('started');print('mxc-payload-started')"
+      ],
+      "exit_code": 0,
+      "stdout": "mxc-payload-started\n",
+      "stderr": "",
+      "elapsed_seconds": 0.029905799999994542,
+      "marker_created": true
+    },
+    "probe": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "--probe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-python-ro1-net1.json"
+      ],
+      "exit_code": 1,
+      "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": true,\n      \"canBlockInputMethodChanges\": true,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+      "stderr": "",
+      "elapsed_seconds": 0.01439969999998425
+    },
+    "launch": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-python-ro1-net1.json"
+      ],
+      "exit_code": 4294967295,
+      "stdout": "",
+      "stderr": "SECTION: Request simplified\nScript code length: 243\nWorking directory: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace\nScript timeout: 15000\nContainer name: (assigned by the backend)\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+      "elapsed_seconds": 0.012153399999988324,
+      "marker_created": false
+    }
+  },
+  {
+    "case": "pwsh-python-ro0-net0",
+    "host_control": {
+      "argv": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.EXE",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-OutputFormat",
+        "Text",
+        "-EncodedCommand",
+        "JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAdABvAHAAJwAKACQAUAByAG8AZwByAGUAcwBzAFAAcgBlAGYAZQByAGUAbgBjAGUAIAA9ACAAJwBTAGkAbABlAG4AdABsAHkAQwBvAG4AdABpAG4AdQBlACcACgBbAEMAbwBuAHMAbwBsAGUAXQA6ADoASQBuAHAAdQB0AEUAbgBjAG8AZABpAG4AZwAgAD0AIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnACAAPQAgACQATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnACAAPQAgAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBVAFQARgA4AEUAbgBjAG8AZABpAG4AZwAgACQAZgBhAGwAcwBlAAoAJABQAFMATgBhAHQAaQB2AGUAQwBvAG0AbQBhAG4AZABVAHMAZQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAkAHQAcgB1AGUACgAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFACAAPQAgADAACgB0AHIAeQAgAHsACgAmACAAJwBEADoAXABhAFwAVgBpAHIAZwBvAFwAVgBpAHIAZwBvAFwAYgBhAHMAZQBsAGkAbgBlAFwALgB2AGUAbgB2AFwAUwBjAHIAaQBwAHQAcwBcAHAAeQB0AGgAbwBuAC4AZQB4AGUAJwAgACcALQBJACcAIAAnAC0AUwAnACAAJwAtAGMAJwAgACcAaQBtAHAAbwByAHQAIABiAGEAcwBlADYANAA7AGUAeABlAGMAKABiAGEAcwBlADYANAAuAGIANgA0AGQAZQBjAG8AZABlACgAJwAnAFoAbgBKAHYAYgBTAEIAdwBZAFgAUgBvAGIARwBsAGkASQBHAGwAdABjAEcAOQB5AGQAQwBCAFEAWQBYAFIAbwBPADEAQgBoAGQARwBnAG8ASgAwAE0ANgBYAEYAeABWAGMAMgBWAHkAYwAxAHgAYwBVAGwAVgBPAFQAawBWAFMAZgBqAEYAYwBYAEUARgB3AGMARQBSAGgAZABHAEYAYwBYAEUAeAB2AFkAMgBGAHMAWABGAHgAVQBaAFcAMQB3AFgARgB4ADIAYQBYAEoAbgBiAHkAMQB0AGUARwBNAHQAYwBIAEoAdgBZAG0AVQB0AGQAegBWAHEAYQBtAHQAcgBZAG4AbABjAFgASABOAGoAYwBtAEYAMABZADIAaABjAFgASABCADMAYwAyAGcAdABjAEgAbAAwAGEARwA5AHUATABYAEoAdgBNAEMAMQB1AFoAWABRAHcATABuAFIANABkAEMAYwBwAEwAbgBkAHkAYQBYAFIAbABYADMAUgBsAGUASABRAG8ASgAzAE4AMABZAFgASgAwAFoAVwBRAG4ASwBUAHQAdwBjAG0AbAB1AGQAQwBnAG4AYgBYAGgAagBMAFgAQgBoAGUAVwB4AHYAWQBXAFEAdABjADMAUgBoAGMAbgBSAGwAWgBDAGMAcAAnACcAKQApACcACgBpAGYAIAAoAC0AbgBvAHQAIAAkAD8AKQAgAHsAIABlAHgAaQB0ACAAMQAgAH0ACgBpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0ACgB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwAuAFQAbwBTAHQAcgBpAG4AZwAoACkAKQA7ACAAZQB4AGkAdAAgADEAIAB9AAoA"
+      ],
+      "exit_code": 0,
+      "stdout": "mxc-payload-started\n",
+      "stderr": "",
+      "elapsed_seconds": 0.3945805999999834,
+      "marker_created": true
+    },
+    "probe": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "--probe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-pwsh-python-ro0-net0.json"
+      ],
+      "exit_code": 1,
+      "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": true,\n      \"canBlockInputMethodChanges\": true,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+      "stderr": "",
+      "elapsed_seconds": 0.015705199999985098
+    },
+    "launch": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-pwsh-python-ro0-net0.json"
+      ],
+      "exit_code": 4294967295,
+      "stdout": "",
+      "stderr": "SECTION: Request simplified\nScript code length: 2135\nWorking directory: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace\nScript timeout: 15000\nContainer name: (assigned by the backend)\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+      "elapsed_seconds": 0.012226099999992357,
+      "marker_created": false
+    }
+  },
+  {
+    "case": "pwsh-python-ro1-net0",
+    "host_control": {
+      "argv": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.EXE",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-OutputFormat",
+        "Text",
+        "-EncodedCommand",
+        "JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAdABvAHAAJwAKACQAUAByAG8AZwByAGUAcwBzAFAAcgBlAGYAZQByAGUAbgBjAGUAIAA9ACAAJwBTAGkAbABlAG4AdABsAHkAQwBvAG4AdABpAG4AdQBlACcACgBbAEMAbwBuAHMAbwBsAGUAXQA6ADoASQBuAHAAdQB0AEUAbgBjAG8AZABpAG4AZwAgAD0AIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnACAAPQAgACQATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnACAAPQAgAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBVAFQARgA4AEUAbgBjAG8AZABpAG4AZwAgACQAZgBhAGwAcwBlAAoAJABQAFMATgBhAHQAaQB2AGUAQwBvAG0AbQBhAG4AZABVAHMAZQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAkAHQAcgB1AGUACgAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFACAAPQAgADAACgB0AHIAeQAgAHsACgAmACAAJwBEADoAXABhAFwAVgBpAHIAZwBvAFwAVgBpAHIAZwBvAFwAYgBhAHMAZQBsAGkAbgBlAFwALgB2AGUAbgB2AFwAUwBjAHIAaQBwAHQAcwBcAHAAeQB0AGgAbwBuAC4AZQB4AGUAJwAgACcALQBJACcAIAAnAC0AUwAnACAAJwAtAGMAJwAgACcAaQBtAHAAbwByAHQAIABiAGEAcwBlADYANAA7AGUAeABlAGMAKABiAGEAcwBlADYANAAuAGIANgA0AGQAZQBjAG8AZABlACgAJwAnAFoAbgBKAHYAYgBTAEIAdwBZAFgAUgBvAGIARwBsAGkASQBHAGwAdABjAEcAOQB5AGQAQwBCAFEAWQBYAFIAbwBPADEAQgBoAGQARwBnAG8ASgAwAE0ANgBYAEYAeABWAGMAMgBWAHkAYwAxAHgAYwBVAGwAVgBPAFQAawBWAFMAZgBqAEYAYwBYAEUARgB3AGMARQBSAGgAZABHAEYAYwBYAEUAeAB2AFkAMgBGAHMAWABGAHgAVQBaAFcAMQB3AFgARgB4ADIAYQBYAEoAbgBiAHkAMQB0AGUARwBNAHQAYwBIAEoAdgBZAG0AVQB0AGQAegBWAHEAYQBtAHQAcgBZAG4AbABjAFgASABOAGoAYwBtAEYAMABZADIAaABjAFgASABCADMAYwAyAGcAdABjAEgAbAAwAGEARwA5AHUATABYAEoAdgBNAFMAMQB1AFoAWABRAHcATABuAFIANABkAEMAYwBwAEwAbgBkAHkAYQBYAFIAbABYADMAUgBsAGUASABRAG8ASgAzAE4AMABZAFgASgAwAFoAVwBRAG4ASwBUAHQAdwBjAG0AbAB1AGQAQwBnAG4AYgBYAGgAagBMAFgAQgBoAGUAVwB4AHYAWQBXAFEAdABjADMAUgBoAGMAbgBSAGwAWgBDAGMAcAAnACcAKQApACcACgBpAGYAIAAoAC0AbgBvAHQAIAAkAD8AKQAgAHsAIABlAHgAaQB0ACAAMQAgAH0ACgBpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0ACgB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwAuAFQAbwBTAHQAcgBpAG4AZwAoACkAKQA7ACAAZQB4AGkAdAAgADEAIAB9AAoA"
+      ],
+      "exit_code": 0,
+      "stdout": "mxc-payload-started\n",
+      "stderr": "",
+      "elapsed_seconds": 0.3504982000000041,
+      "marker_created": true
+    },
+    "probe": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "--probe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-pwsh-python-ro1-net0.json"
+      ],
+      "exit_code": 1,
+      "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": true,\n      \"canBlockInputMethodChanges\": true,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+      "stderr": "",
+      "elapsed_seconds": 0.014235399999989795
+    },
+    "launch": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-pwsh-python-ro1-net0.json"
+      ],
+      "exit_code": 4294967295,
+      "stdout": "",
+      "stderr": "SECTION: Request simplified\nScript code length: 2135\nWorking directory: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace\nScript timeout: 15000\nContainer name: (assigned by the backend)\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+      "elapsed_seconds": 0.012197999999983722,
+      "marker_created": false
+    }
+  },
+  {
+    "case": "pwsh-python-ro0-net1",
+    "host_control": {
+      "argv": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.EXE",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-OutputFormat",
+        "Text",
+        "-EncodedCommand",
+        "JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAdABvAHAAJwAKACQAUAByAG8AZwByAGUAcwBzAFAAcgBlAGYAZQByAGUAbgBjAGUAIAA9ACAAJwBTAGkAbABlAG4AdABsAHkAQwBvAG4AdABpAG4AdQBlACcACgBbAEMAbwBuAHMAbwBsAGUAXQA6ADoASQBuAHAAdQB0AEUAbgBjAG8AZABpAG4AZwAgAD0AIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnACAAPQAgACQATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnACAAPQAgAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBVAFQARgA4AEUAbgBjAG8AZABpAG4AZwAgACQAZgBhAGwAcwBlAAoAJABQAFMATgBhAHQAaQB2AGUAQwBvAG0AbQBhAG4AZABVAHMAZQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAkAHQAcgB1AGUACgAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFACAAPQAgADAACgB0AHIAeQAgAHsACgAmACAAJwBEADoAXABhAFwAVgBpAHIAZwBvAFwAVgBpAHIAZwBvAFwAYgBhAHMAZQBsAGkAbgBlAFwALgB2AGUAbgB2AFwAUwBjAHIAaQBwAHQAcwBcAHAAeQB0AGgAbwBuAC4AZQB4AGUAJwAgACcALQBJACcAIAAnAC0AUwAnACAAJwAtAGMAJwAgACcAaQBtAHAAbwByAHQAIABiAGEAcwBlADYANAA7AGUAeABlAGMAKABiAGEAcwBlADYANAAuAGIANgA0AGQAZQBjAG8AZABlACgAJwAnAFoAbgBKAHYAYgBTAEIAdwBZAFgAUgBvAGIARwBsAGkASQBHAGwAdABjAEcAOQB5AGQAQwBCAFEAWQBYAFIAbwBPADEAQgBoAGQARwBnAG8ASgAwAE0ANgBYAEYAeABWAGMAMgBWAHkAYwAxAHgAYwBVAGwAVgBPAFQAawBWAFMAZgBqAEYAYwBYAEUARgB3AGMARQBSAGgAZABHAEYAYwBYAEUAeAB2AFkAMgBGAHMAWABGAHgAVQBaAFcAMQB3AFgARgB4ADIAYQBYAEoAbgBiAHkAMQB0AGUARwBNAHQAYwBIAEoAdgBZAG0AVQB0AGQAegBWAHEAYQBtAHQAcgBZAG4AbABjAFgASABOAGoAYwBtAEYAMABZADIAaABjAFgASABCADMAYwAyAGcAdABjAEgAbAAwAGEARwA5AHUATABYAEoAdgBNAEMAMQB1AFoAWABRAHgATABuAFIANABkAEMAYwBwAEwAbgBkAHkAYQBYAFIAbABYADMAUgBsAGUASABRAG8ASgAzAE4AMABZAFgASgAwAFoAVwBRAG4ASwBUAHQAdwBjAG0AbAB1AGQAQwBnAG4AYgBYAGgAagBMAFgAQgBoAGUAVwB4AHYAWQBXAFEAdABjADMAUgBoAGMAbgBSAGwAWgBDAGMAcAAnACcAKQApACcACgBpAGYAIAAoAC0AbgBvAHQAIAAkAD8AKQAgAHsAIABlAHgAaQB0ACAAMQAgAH0ACgBpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0ACgB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwAuAFQAbwBTAHQAcgBpAG4AZwAoACkAKQA7ACAAZQB4AGkAdAAgADEAIAB9AAoA"
+      ],
+      "exit_code": 0,
+      "stdout": "mxc-payload-started\n",
+      "stderr": "",
+      "elapsed_seconds": 0.35547579999999357,
+      "marker_created": true
+    },
+    "probe": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "--probe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-pwsh-python-ro0-net1.json"
+      ],
+      "exit_code": 1,
+      "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": true,\n      \"canBlockInputMethodChanges\": true,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+      "stderr": "",
+      "elapsed_seconds": 0.014929499999993823
+    },
+    "launch": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-pwsh-python-ro0-net1.json"
+      ],
+      "exit_code": 4294967295,
+      "stdout": "",
+      "stderr": "SECTION: Request simplified\nScript code length: 2135\nWorking directory: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace\nScript timeout: 15000\nContainer name: (assigned by the backend)\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+      "elapsed_seconds": 0.012025700000009465,
+      "marker_created": false
+    }
+  },
+  {
+    "case": "pwsh-python-ro1-net1",
+    "host_control": {
+      "argv": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.EXE",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-OutputFormat",
+        "Text",
+        "-EncodedCommand",
+        "JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAdABvAHAAJwAKACQAUAByAG8AZwByAGUAcwBzAFAAcgBlAGYAZQByAGUAbgBjAGUAIAA9ACAAJwBTAGkAbABlAG4AdABsAHkAQwBvAG4AdABpAG4AdQBlACcACgBbAEMAbwBuAHMAbwBsAGUAXQA6ADoASQBuAHAAdQB0AEUAbgBjAG8AZABpAG4AZwAgAD0AIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnACAAPQAgACQATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnACAAPQAgAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBVAFQARgA4AEUAbgBjAG8AZABpAG4AZwAgACQAZgBhAGwAcwBlAAoAJABQAFMATgBhAHQAaQB2AGUAQwBvAG0AbQBhAG4AZABVAHMAZQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAkAHQAcgB1AGUACgAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFACAAPQAgADAACgB0AHIAeQAgAHsACgAmACAAJwBEADoAXABhAFwAVgBpAHIAZwBvAFwAVgBpAHIAZwBvAFwAYgBhAHMAZQBsAGkAbgBlAFwALgB2AGUAbgB2AFwAUwBjAHIAaQBwAHQAcwBcAHAAeQB0AGgAbwBuAC4AZQB4AGUAJwAgACcALQBJACcAIAAnAC0AUwAnACAAJwAtAGMAJwAgACcAaQBtAHAAbwByAHQAIABiAGEAcwBlADYANAA7AGUAeABlAGMAKABiAGEAcwBlADYANAAuAGIANgA0AGQAZQBjAG8AZABlACgAJwAnAFoAbgBKAHYAYgBTAEIAdwBZAFgAUgBvAGIARwBsAGkASQBHAGwAdABjAEcAOQB5AGQAQwBCAFEAWQBYAFIAbwBPADEAQgBoAGQARwBnAG8ASgAwAE0ANgBYAEYAeABWAGMAMgBWAHkAYwAxAHgAYwBVAGwAVgBPAFQAawBWAFMAZgBqAEYAYwBYAEUARgB3AGMARQBSAGgAZABHAEYAYwBYAEUAeAB2AFkAMgBGAHMAWABGAHgAVQBaAFcAMQB3AFgARgB4ADIAYQBYAEoAbgBiAHkAMQB0AGUARwBNAHQAYwBIAEoAdgBZAG0AVQB0AGQAegBWAHEAYQBtAHQAcgBZAG4AbABjAFgASABOAGoAYwBtAEYAMABZADIAaABjAFgASABCADMAYwAyAGcAdABjAEgAbAAwAGEARwA5AHUATABYAEoAdgBNAFMAMQB1AFoAWABRAHgATABuAFIANABkAEMAYwBwAEwAbgBkAHkAYQBYAFIAbABYADMAUgBsAGUASABRAG8ASgAzAE4AMABZAFgASgAwAFoAVwBRAG4ASwBUAHQAdwBjAG0AbAB1AGQAQwBnAG4AYgBYAGgAagBMAFgAQgBoAGUAVwB4AHYAWQBXAFEAdABjADMAUgBoAGMAbgBSAGwAWgBDAGMAcAAnACcAKQApACcACgBpAGYAIAAoAC0AbgBvAHQAIAAkAD8AKQAgAHsAIABlAHgAaQB0ACAAMQAgAH0ACgBpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0ACgB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwAuAFQAbwBTAHQAcgBpAG4AZwAoACkAKQA7ACAAZQB4AGkAdAAgADEAIAB9AAoA"
+      ],
+      "exit_code": 0,
+      "stdout": "mxc-payload-started\n",
+      "stderr": "",
+      "elapsed_seconds": 0.34914660000001163,
+      "marker_created": true
+    },
+    "probe": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "--probe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-pwsh-python-ro1-net1.json"
+      ],
+      "exit_code": 1,
+      "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": true,\n      \"canBlockInputMethodChanges\": true,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+      "stderr": "",
+      "elapsed_seconds": 0.014656099999996286
+    },
+    "launch": {
+      "argv": [
+        "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+        "D:\\a\\Virgo\\Virgo\\evidence\\request-pwsh-python-ro1-net1.json"
+      ],
+      "exit_code": 4294967295,
+      "stdout": "",
+      "stderr": "SECTION: Request simplified\nScript code length: 2135\nWorking directory: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\virgo-mxc-probe-w5jjkkby\\workspace\nScript timeout: 15000\nContainer name: (assigned by the backend)\n{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"Windows ProcessContainer is unavailable: PSEC is not enabled\"}}\n",
+      "elapsed_seconds": 0.011705899999981284,
+      "marker_created": false
+    }
+  }
+]

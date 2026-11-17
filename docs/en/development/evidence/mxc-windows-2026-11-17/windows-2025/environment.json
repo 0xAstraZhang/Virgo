@@ -1,0 +1,42 @@
+{
+  "baseline_sha": "f33be1cae82d4e25006d88411aea68d9be9c8033",
+  "harness_sha": "955dc9bfe813d1f58af9956ee0cd0f90b9bb2df8",
+  "platform": "Windows-2025Server-10.0.26100-SP0",
+  "windows_version": [
+    10,
+    0,
+    26100,
+    2,
+    ""
+  ],
+  "python": "3.13.17 (tags/v3.13.17:64e080d, Oct 21 2026, 14:08:53) [MSC v.1944 64 bit (AMD64)]",
+  "python_executable": "D:\\a\\Virgo\\Virgo\\baseline\\.venv\\Scripts\\python.exe",
+  "runner_image": "win25-vs2026",
+  "runner_image_version": "20261103.298.1",
+  "architecture": "AMD64",
+  "mxc_version": "v1.1.0",
+  "os": {
+    "argv": [
+      "pwsh",
+      "-NoProfile",
+      "-Command",
+      "Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture | ConvertTo-Json"
+    ],
+    "exit_code": 0,
+    "stdout": "{\n  \"Caption\": \"Microsoft Windows Server 2025 Datacenter\",\n  \"Version\": \"10.0.26100\",\n  \"BuildNumber\": \"26100\",\n  \"OSArchitecture\": \"64-bit\"\n}\n",
+    "stderr": "",
+    "elapsed_seconds": 0.3087692000000004
+  },
+  "powershell": {
+    "argv": [
+      "pwsh",
+      "-NoProfile",
+      "-Command",
+      "$PSVersionTable.PSVersion.ToString()"
+    ],
+    "exit_code": 0,
+    "stdout": "7.6.9\n",
+    "stderr": "",
+    "elapsed_seconds": 0.21783490000001393
+  }
+}

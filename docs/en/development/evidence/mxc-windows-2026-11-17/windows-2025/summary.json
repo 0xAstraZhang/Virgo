@@ -1,0 +1,17 @@
+{
+  "baseline": {
+    "executed": 25,
+    "failure": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "mxc": {
+    "status": "blocked-no-native-startup",
+    "host_controls_passed": true,
+    "started_cases": [],
+    "sandbox_acceptance": false,
+    "note": "Startup is not boundary acceptance; rejection duration is not execution performance."
+  },
+  "replacement_accepted": false,
+  "product_lines_removed": 0
+}

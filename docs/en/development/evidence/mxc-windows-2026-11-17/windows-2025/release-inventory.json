@@ -1,0 +1,1510 @@
+[
+  {
+    "path": "arm64/",
+    "size": 0
+  },
+  {
+    "path": "arm64/mxc_ffi.dll",
+    "size": 6470968
+  },
+  {
+    "path": "arm64/wxc-exec.exe",
+    "size": 7278440
+  },
+  {
+    "path": "arm64/wxc-wslc-daemon.exe",
+    "size": 1798456
+  },
+  {
+    "path": "arm64/wxc-windows-sandbox-guest.exe",
+    "size": 1268584
+  },
+  {
+    "path": "arm64/wxc-windows-sandbox-daemon.exe",
+    "size": 1409336
+  },
+  {
+    "path": "arm64/unix-test-proxy",
+    "size": 2303168
+  },
+  {
+    "path": "arm64/wslcsdk.dll",
+    "size": 8123720
+  },
+  {
+    "path": "arm64/symbols/",
+    "size": 0
+  },
+  {
+    "path": "arm64/symbols/wxc_windows_sandbox_guest.pdb",
+    "size": 66768896
+  },
+  {
+    "path": "arm64/symbols/unix_test_proxy.pdb",
+    "size": 7925760
+  },
+  {
+    "path": "arm64/symbols/wxc_test_driver.pdb",
+    "size": 10391552
+  },
+  {
+    "path": "arm64/symbols/libmxc_ffi.so.dwp",
+    "size": 60028088
+  },
+  {
+    "path": "arm64/symbols/mxc_diagnostic_console.pdb",
+    "size": 68235264
+  },
+  {
+    "path": "arm64/symbols/mxc_wslc_gateway.pdb",
+    "size": 7925760
+  },
+  {
+    "path": "arm64/symbols/mxc_exec_mac.pdb",
+    "size": 77139968
+  },
+  {
+    "path": "arm64/symbols/lxc_exec.pdb",
+    "size": 92934144
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/",
+    "size": 0
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/Contents/",
+    "size": 0
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/Contents/Resources/",
+    "size": 0
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/Contents/Resources/DWARF/",
+    "size": 0
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/Contents/Resources/DWARF/mxc_exec_mac-cffd5691a73049fd",
+    "size": 50718260
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/Contents/Resources/Relocations/",
+    "size": 0
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/Contents/Resources/Relocations/aarch64/",
+    "size": 0
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/Contents/Resources/Relocations/aarch64/mxc_exec_mac-cffd5691a73049fd.yml",
+    "size": 1912457
+  },
+  {
+    "path": "arm64/symbols/mxc-exec-mac.dSYM/Contents/Info.plist",
+    "size": 658
+  },
+  {
+    "path": "arm64/symbols/wxc_ui_probe.pdb",
+    "size": 8466432
+  },
+  {
+    "path": "arm64/symbols/wxc_exec.pdb",
+    "size": 109350912
+  },
+  {
+    "path": "arm64/symbols/wxc_test_proxy.pdb",
+    "size": 27701248
+  },
+  {
+    "path": "arm64/symbols/unix-test-proxy.dwp",
+    "size": 19690808
+  },
+  {
+    "path": "arm64/symbols/mxc_schema_gen.pdb",
+    "size": 77402112
+  },
+  {
+    "path": "arm64/symbols/wxc_wslc_daemon.pdb",
+    "size": 72085504
+  },
+  {
+    "path": "arm64/symbols/mxc_ffi.pdb",
+    "size": 98177024
+  },
+  {
+    "path": "arm64/symbols/lxc-exec.dwp",
+    "size": 65860568
+  },
+  {
+    "path": "arm64/symbols/wxc_windows_sandbox_daemon.pdb",
+    "size": 67670016
+  },
+  {
+    "path": "arm64/mxc-exec-mac",
+    "size": 4637712
+  },
+  {
+    "path": "arm64/lxc-exec",
+    "size": 6200568
+  },
+  {
+    "path": "arm64/_manifest/",
+    "size": 0
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/",
+    "size": 0
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/bsi.cose",
+    "size": 5788
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/bsi.json",
+    "size": 730
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/manifest.spdx.cose",
+    "size": 5788
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/ESRPClientLogs1114194635022.json",
+    "size": 49512
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/ESRPClientLogs1114193316564.json",
+    "size": 49505
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/manifest.spdx.json.sha256",
+    "size": 64
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/manifest.cat",
+    "size": 12083
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/ESRPClientLogs1114193938709.json",
+    "size": 32987
+  },
+  {
+    "path": "arm64/_manifest/spdx_2.2/manifest.spdx.json",
+    "size": 334637
+  },
+  {
+    "path": "arm64/_manifest/comparison-result.json",
+    "size": 898
+  },
+  {
+    "path": "arm64/_manifest/spdx_3.0/",
+    "size": 0
+  },
+  {
+    "path": "arm64/_manifest/spdx_3.0/manifest.spdx.json.sha256",
+    "size": 64
+  },
+  {
+    "path": "arm64/_manifest/spdx_3.0/manifest.spdx.json",
+    "size": 609255
+  },
+  {
+    "path": "arm64/libmxc_ffi.so",
+    "size": 7364048
+  },
+  {
+    "path": "arm64/wxc-test-proxy.exe",
+    "size": 1615672
+  },
+  {
+    "path": "arm64/mxc-diagnostic-console.exe",
+    "size": 1006952
+  },
+  {
+    "path": "arm64/libmxc_ffi.dylib",
+    "size": 5643856
+  },
+  {
+    "path": "arm64/mxc-wslc-gateway.tar",
+    "size": 706560
+  },
+  {
+    "path": "x64/",
+    "size": 0
+  },
+  {
+    "path": "x64/mxc_ffi.dll",
+    "size": 8278328
+  },
+  {
+    "path": "x64/wxc-exec.exe",
+    "size": 12700472
+  },
+  {
+    "path": "x64/wxc-wslc-daemon.exe",
+    "size": 2013544
+  },
+  {
+    "path": "x64/wxc-windows-sandbox-guest.exe",
+    "size": 1508704
+  },
+  {
+    "path": "x64/wxc-windows-sandbox-daemon.exe",
+    "size": 1611072
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/SOURCE-MANIFEST.json",
+    "size": 734
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/COPYING",
+    "size": 496
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/preferred/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/preferred/BSD-3-Clause",
+    "size": 1845
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/preferred/LGPL-2.0",
+    "size": 26144
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/preferred/LGPL-2.1",
+    "size": 27391
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/preferred/MIT",
+    "size": 1372
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/preferred/GPL-2.0",
+    "size": 18600
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/preferred/BSD-3-Clause-Clear",
+    "size": 2035
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/preferred/BSD-2-Clause",
+    "size": 1641
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/dual/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/dual/CC-BY-4.0",
+    "size": 19355
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/dual/MPL-1.1",
+    "size": 26321
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/dual/Apache-2.0",
+    "size": 10045
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/dual/copyleft-next-0.3.1",
+    "size": 11429
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/dual/CDDL-1.0",
+    "size": 19511
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/GFDL-1.1",
+    "size": 19177
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/CC0-1.0",
+    "size": 7386
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/0BSD",
+    "size": 983
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/GPL-1.0",
+    "size": 12951
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/Linux-OpenIB",
+    "size": 1317
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/Zlib",
+    "size": 1165
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/X11",
+    "size": 1625
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/GFDL-1.2",
+    "size": 21352
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/deprecated/ISC",
+    "size": 1046
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/exceptions/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/exceptions/GCC-exception-2.0",
+    "size": 997
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/licenses/linux/LICENSES/exceptions/Linux-syscall-note",
+    "size": 1258
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/bundle-manifest.json",
+    "size": 50006
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/guest/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/guest/nvx-edge-agent",
+    "size": 2200512
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/guest/initramfs-edge.cpio.gz",
+    "size": 1237491
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/guest/vmlinux",
+    "size": 21594072
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/guest/vmlinux.config",
+    "size": 51746
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/openvmm.provenance.json",
+    "size": 204
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/edge-windows.json",
+    "size": 29642
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/licenses/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/licenses/openvmm/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/licenses/openvmm/LICENSE",
+    "size": 1141
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/licenses/linux/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/licenses/linux/COPYING-LINUX",
+    "size": 495
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/licenses/nvx/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/licenses/nvx/LICENSE",
+    "size": 1074
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/licenses/nvx/THIRD_PARTY_NOTICES.md",
+    "size": 12582
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/vmlinux.provenance.json",
+    "size": 1281
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/direct-images-manifest.json",
+    "size": 23498
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/cgmanifest.json",
+    "size": 6585
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/002/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/002/LICENSE",
+    "size": 10765
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/snappy/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/snappy/AUTHORS",
+    "size": 560
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/snappy/xerial/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/snappy/xerial/LICENSE",
+    "size": 1106
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/snappy/LICENSE",
+    "size": 1486
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/snappy/CONTRIBUTORS",
+    "size": 1553
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/internal/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/internal/lz4ref/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/internal/lz4ref/LICENSE",
+    "size": 1477
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/internal/snapref/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/internal/snapref/LICENSE",
+    "size": 1486
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/s2/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/s2/cmd/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/s2/cmd/internal/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/s2/cmd/internal/readahead/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/s2/cmd/internal/readahead/LICENSE",
+    "size": 1100
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/s2/cmd/internal/filepathx/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/s2/cmd/internal/filepathx/LICENSE",
+    "size": 1061
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/s2/LICENSE",
+    "size": 1538
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/LICENSE",
+    "size": 16733
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/zstd/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/zstd/internal/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/zstd/internal/xxhash/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/zstd/internal/xxhash/LICENSE.txt",
+    "size": 1068
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/gzhttp/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/009/gzhttp/LICENSE",
+    "size": 11361
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/008/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/008/LICENSE",
+    "size": 11357
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/019/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/019/LICENSE",
+    "size": 1079
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/013/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/013/LICENSE.md",
+    "size": 1058
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/018/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/018/LICENSE",
+    "size": 1082
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/022/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/022/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/022/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/007/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/007/LICENSE",
+    "size": 10273
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/016/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/016/LICENSE",
+    "size": 1312
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/011/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/011/LICENSE",
+    "size": 1077
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/003/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/003/LICENSE",
+    "size": 10765
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/017/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/017/LICENSE.txt",
+    "size": 1416
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/024/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/024/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/024/LICENSE",
+    "size": 1479
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/AUTHORS",
+    "size": 36875
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/LICENSE",
+    "size": 10765
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/cli/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/cli/connhelper/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/cli/connhelper/internal/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/cli/connhelper/internal/syntax/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/cli/connhelper/internal/syntax/LICENSE",
+    "size": 1488
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/005/NOTICE",
+    "size": 635
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/020/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/020/LICENSE",
+    "size": 1104
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/006/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/006/LICENSE",
+    "size": 1058
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/cmd/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/cmd/runhcs/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/cmd/runhcs/LICENSE",
+    "size": 10758
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/cmd/runhcs/NOTICE",
+    "size": 584
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/LICENSE",
+    "size": 1075
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/pkg/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/pkg/go-runhcs/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/pkg/go-runhcs/LICENSE",
+    "size": 11357
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/012/pkg/go-runhcs/NOTICE",
+    "size": 589
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/010/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/010/LICENSE",
+    "size": 1085
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/023/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/023/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/023/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/021/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/021/AUTHORS",
+    "size": 12
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/021/LICENSE",
+    "size": 11357
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/015/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/015/LICENSE",
+    "size": 10767
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/001/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/001/LICENSE",
+    "size": 11357
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/004/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/004/LICENSE.md",
+    "size": 1077
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/014/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/014/LICENSE.docs",
+    "size": 20004
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/modules/014/LICENSE",
+    "size": 10801
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/source/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/source/EULA.txt",
+    "size": 11234
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/sys/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/sys/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/sys/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/net/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/net/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/net/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/crypto/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/crypto/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/crypto/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/text/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/text/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/golang.org/x/text/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/github.com/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/github.com/microsoft/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/github.com/microsoft/go-crypto-darwin/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/github.com/microsoft/go-crypto-darwin/LICENSE",
+    "size": 1141
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/github.com/microsoft/go-crypto-winnative/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/github.com/microsoft/go-crypto-winnative/LICENSE",
+    "size": 1141
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/github.com/microsoft/go-crypto-openssl/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/vendor/github.com/microsoft/go-crypto-openssl/LICENSE",
+    "size": 1089
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/rsc.io/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/rsc.io/markdown/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/rsc.io/markdown/LICENSE",
+    "size": 1479
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/sys/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/sys/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/sys/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/build/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/build/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/build/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/tools/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/tools/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/tools/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/term/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/term/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/term/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/sync/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/sync/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/sync/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/text/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/text/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/text/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/arch/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/arch/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/arch/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/mod/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/mod/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/mod/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/telemetry/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/telemetry/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/golang.org/x/telemetry/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/microsoft/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/microsoft/go-infra/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/microsoft/go-infra/telemetry/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/microsoft/go-infra/telemetry/LICENSE",
+    "size": 1141
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/microsoft/go-infra/telemetry/config/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/microsoft/go-infra/telemetry/config/LICENSE",
+    "size": 1141
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/google/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/google/pprof/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/google/pprof/AUTHORS",
+    "size": 305
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/google/pprof/third_party/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/google/pprof/third_party/svgpan/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/google/pprof/third_party/svgpan/LICENSE",
+    "size": 1754
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/google/pprof/LICENSE",
+    "size": 11358
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/google/pprof/CONTRIBUTORS",
+    "size": 654
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/ianlancetaylor/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/ianlancetaylor/demangle/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/vendor/github.com/ianlancetaylor/demangle/LICENSE",
+    "size": 1479
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/ssa/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/ssa/_gen/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/ssa/_gen/vendor/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/ssa/_gen/vendor/golang.org/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/ssa/_gen/vendor/golang.org/x/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/ssa/_gen/vendor/golang.org/x/tools/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/ssa/_gen/vendor/golang.org/x/tools/PATENTS",
+    "size": 1303
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/cmd/compile/internal/ssa/_gen/vendor/golang.org/x/tools/LICENSE",
+    "size": 1453
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/crypto/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/crypto/internal/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/crypto/internal/boring/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/crypto/internal/boring/LICENSE",
+    "size": 9714
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/runtime/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/runtime/testdata/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/runtime/testdata/testgoroutineleakprofile/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/runtime/testdata/testgoroutineleakprofile/goker/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/licenses/toolchain/src/runtime/testdata/testgoroutineleakprofile/goker/LICENSE",
+    "size": 1138
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/dependency-inventory.json",
+    "size": 22128
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/NOTICE.txt",
+    "size": 338419
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/direct-images/SHA256SUMS",
+    "size": 10805
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/provenance/edge-guest.json",
+    "size": 2736
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/SOURCE-MANIFEST.json",
+    "size": 3330
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/SOURCE.md",
+    "size": 4501
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/BUILD-ENVIRONMENT.txt",
+    "size": 12057
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/patches/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/patches/0001-microvm-xe9-earlycon.patch",
+    "size": 4306
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/patches/0002-microvm-hvc-xe9.patch",
+    "size": 3897
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/patches/0004-hvc-push-flip-buffer-under-lock.patch",
+    "size": 1972
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/patches/0003-microvm-virtio-mmio-shared-status.patch",
+    "size": 5436
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/source/linux/config-microvm",
+    "size": 51674
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/bin/",
+    "size": 0
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/bin/aci_edge_agent.dll",
+    "size": 4922672
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/bin/openvmm.exe",
+    "size": 25086264
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/bin/direct-images.exe",
+    "size": 12214624
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/bin/EULA.txt",
+    "size": 11234
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/NOTICE.txt",
+    "size": 4379685
+  },
+  {
+    "path": "x64/aci-edge-sandboxes/SHA256SUMS",
+    "size": 18430
+  },
+  {
+    "path": "x64/unix-test-proxy",
+    "size": 2712336
+  },
+  {
+    "path": "x64/wslcsdk.dll",
+    "size": 6911856
+  },
+  {
+    "path": "x64/symbols/",
+    "size": 0
+  },
+  {
+    "path": "x64/symbols/wxc_windows_sandbox_guest.pdb",
+    "size": 101068800
+  },
+  {
+    "path": "x64/symbols/unix_test_proxy.pdb",
+    "size": 7950336
+  },
+  {
+    "path": "x64/symbols/wxc_test_driver.pdb",
+    "size": 10579968
+  },
+  {
+    "path": "x64/symbols/libmxc_ffi.so.dwp",
+    "size": 61232728
+  },
+  {
+    "path": "x64/symbols/mxc_diagnostic_console.pdb",
+    "size": 102166528
+  },
+  {
+    "path": "x64/symbols/mxc_wslc_gateway.pdb",
+    "size": 7950336
+  },
+  {
+    "path": "x64/symbols/mxc_exec_mac.pdb",
+    "size": 111177728
+  },
+  {
+    "path": "x64/symbols/lxc_exec.pdb",
+    "size": 152457216
+  },
+  {
+    "path": "x64/symbols/wxc_ui_probe.pdb",
+    "size": 8499200
+  },
+  {
+    "path": "x64/symbols/wxc_exec.pdb",
+    "size": 165515264
+  },
+  {
+    "path": "x64/symbols/wxc_test_proxy.pdb",
+    "size": 28045312
+  },
+  {
+    "path": "x64/symbols/wxc-windows-sandbox-guest.dwp",
+    "size": 3888
+  },
+  {
+    "path": "x64/symbols/unix-test-proxy.dwp",
+    "size": 19872016
+  },
+  {
+    "path": "x64/symbols/mxc_schema_gen.pdb",
+    "size": 111456256
+  },
+  {
+    "path": "x64/symbols/wxc_wslc_daemon.pdb",
+    "size": 106295296
+  },
+  {
+    "path": "x64/symbols/mxc_ffi.pdb",
+    "size": 202895360
+  },
+  {
+    "path": "x64/symbols/lxc-exec.dwp",
+    "size": 98372128
+  },
+  {
+    "path": "x64/symbols/wxc_windows_sandbox_daemon.pdb",
+    "size": 101888000
+  },
+  {
+    "path": "x64/symbols/wxc-windows-sandbox-daemon.dwp",
+    "size": 3904
+  },
+  {
+    "path": "x64/lxc-exec",
+    "size": 12240928
+  },
+  {
+    "path": "x64/_manifest/",
+    "size": 0
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/",
+    "size": 0
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/bsi.cose",
+    "size": 5788
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/bsi.json",
+    "size": 730
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/manifest.spdx.cose",
+    "size": 5788
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/ESRPClientLogs1114234411068.json",
+    "size": 49519
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/ESRPClientLogs1114200621400.json",
+    "size": 49511
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/manifest.spdx.json.sha256",
+    "size": 64
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/manifest.cat",
+    "size": 12080
+  },
+  {
+    "path": "x64/_manifest/spdx_2.2/manifest.spdx.json",
+    "size": 335614
+  },
+  {
+    "path": "x64/_manifest/comparison-result.json",
+    "size": 898
+  },
+  {
+    "path": "x64/_manifest/spdx_3.0/",
+    "size": 0
+  },
+  {
+    "path": "x64/_manifest/spdx_3.0/manifest.spdx.json.sha256",
+    "size": 64
+  },
+  {
+    "path": "x64/_manifest/spdx_3.0/manifest.spdx.json",
+    "size": 611973
+  },
+  {
+    "path": "x64/libmxc_ffi.so",
+    "size": 7648192
+  },
+  {
+    "path": "x64/wxc-test-proxy.exe",
+    "size": 1782120
+  },
+  {
+    "path": "x64/mxc-diagnostic-console.exe",
+    "size": 1196352
+  },
+  {
+    "path": "x64/mxc-wslc-gateway.tar",
+    "size": 788480
+  },
+  {
+    "path": "x64/dotnet/",
+    "size": 0
+  },
+  {
+    "path": "x64/dotnet/NativeMethods.g.cs",
+    "size": 50414
+  }
+]

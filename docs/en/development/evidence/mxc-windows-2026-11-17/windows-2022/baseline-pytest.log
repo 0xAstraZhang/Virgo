@@ -1,0 +1,52 @@
+.........................                                                [100%]
+============================== slowest durations ==============================
+22.34s call     tests/harness/test_windows_sandbox_e2e.py::test_repeated_commands_release_owned_acls_scratch_and_handles
+10.76s call     tests/harness/test_windows_sandbox_e2e.py::test_child_lpac_token_and_host_process_access
+10.29s call     tests/harness/test_windows_sandbox_e2e.py::test_background_cancel_preserves_other_job_and_origin_after_switch
+9.07s call     tests/harness/test_windows_sandbox_e2e.py::test_actual_start_failure_is_fail_closed_and_nonzero_payload_is_not_replayed
+7.79s call     tests/harness/test_windows_sandbox_e2e.py::test_completion_drains_descendants_before_scratch_cleanup[timeout]
+7.22s setup    tests/harness/test_windows_sandbox_e2e.py::test_private_host_files_denied_with_positive_workspace_control
+6.91s call     tests/harness/test_windows_sandbox_e2e.py::test_core_create_during_command_preflight_preserves_workspace_writes
+6.40s call     tests/harness/test_windows_sandbox_e2e.py::test_reparse_and_shared_file_grants_fail_before_payload[junction]
+5.91s setup    tests/harness/test_windows_sandbox_e2e.py::test_ambient_package_acls_do_not_widen_write_ceiling[read-only]
+5.55s setup    tests/harness/test_windows_sandbox_e2e.py::test_core_mutation_preserves_live_background_workspace_writes[edit]
+5.53s call     tests/harness/test_windows_sandbox_e2e.py::test_completion_drains_descendants_before_scratch_cleanup[cancel]
+5.49s setup    tests/harness/test_windows_sandbox_e2e.py::test_reparse_and_shared_file_grants_fail_before_payload[hardlink]
+5.44s setup    tests/harness/test_windows_sandbox_e2e.py::test_background_cancel_preserves_other_job_and_origin_after_switch
+5.42s setup    tests/harness/test_windows_sandbox_e2e.py::test_network_permission_grants_real_egress_without_host_fallback
+5.40s call     tests/harness/test_windows_sandbox_e2e.py::test_core_mutation_preserves_live_background_workspace_writes[write]
+5.34s setup    tests/harness/test_windows_sandbox_e2e.py::test_core_mutation_preserves_live_background_workspace_writes[write]
+5.33s call     tests/harness/test_windows_sandbox_e2e.py::test_network_permission_grants_real_egress_without_host_fallback
+5.33s call     tests/harness/test_windows_sandbox_e2e.py::test_live_ipv4_ipv6_and_nonloopback_connections_are_denied
+5.33s setup    tests/harness/test_windows_sandbox_e2e.py::test_unsupported_full_host_windows_policy_refuses_payload[True-False]
+5.30s setup    tests/harness/test_windows_sandbox_e2e.py::test_unsupported_full_host_windows_policy_refuses_payload[True-True]
+5.29s call     tests/harness/test_windows_sandbox_e2e.py::test_ambient_package_acls_do_not_widen_write_ceiling[read-only]
+5.29s setup    tests/harness/test_windows_sandbox_e2e.py::test_live_ipv4_ipv6_and_nonloopback_connections_are_denied
+5.26s setup    tests/harness/test_windows_sandbox_e2e.py::test_unsupported_full_host_windows_policy_refuses_payload[False-False]
+5.25s call     tests/harness/test_windows_sandbox_e2e.py::test_core_mutation_preserves_live_background_workspace_writes[edit]
+5.22s setup    tests/harness/test_windows_sandbox_e2e.py::test_readonly_child_policy_is_enforced_by_windows
+5.22s setup    tests/harness/test_windows_sandbox_e2e.py::test_reparse_and_shared_file_grants_fail_before_payload[metadata-junction]
+5.21s setup    tests/harness/test_windows_sandbox_e2e.py::test_completion_drains_descendants_before_scratch_cleanup[exit]
+5.20s setup    tests/harness/test_windows_sandbox_e2e.py::test_child_runtime_keeps_origin_with_canonical_cwd_and_rejects_escape
+5.16s setup    tests/harness/test_windows_sandbox_e2e.py::test_completion_drains_descendants_before_scratch_cleanup[timeout]
+5.14s call     tests/harness/test_windows_sandbox_e2e.py::test_credentials_and_unlisted_handles_are_not_inherited
+5.14s setup    tests/harness/test_windows_sandbox_e2e.py::test_existing_metadata_and_runtime_acls_cannot_be_replaced
+5.12s setup    tests/harness/test_windows_sandbox_e2e.py::test_reparse_and_shared_file_grants_fail_before_payload[junction]
+5.10s setup    tests/harness/test_windows_sandbox_e2e.py::test_child_lpac_token_and_host_process_access
+5.10s call     tests/harness/test_windows_sandbox_e2e.py::test_completion_drains_descendants_before_scratch_cleanup[exit]
+5.05s setup    tests/harness/test_windows_sandbox_e2e.py::test_actual_start_failure_is_fail_closed_and_nonzero_payload_is_not_replayed
+5.05s call     tests/harness/test_windows_sandbox_e2e.py::test_readonly_child_policy_is_enforced_by_windows
+5.04s call     tests/harness/test_windows_sandbox_e2e.py::test_ambient_package_acls_do_not_widen_write_ceiling[workspace-write]
+5.03s setup    tests/harness/test_windows_sandbox_e2e.py::test_credentials_and_unlisted_handles_are_not_inherited
+5.03s setup    tests/harness/test_windows_sandbox_e2e.py::test_core_create_during_command_preflight_preserves_workspace_writes
+5.02s call     tests/harness/test_windows_sandbox_e2e.py::test_existing_metadata_and_runtime_acls_cannot_be_replaced
+5.01s call     tests/harness/test_windows_sandbox_e2e.py::test_private_host_files_denied_with_positive_workspace_control
+5.00s call     tests/harness/test_windows_sandbox_e2e.py::test_child_runtime_keeps_origin_with_canonical_cwd_and_rejects_escape
+4.99s setup    tests/harness/test_windows_sandbox_e2e.py::test_completion_drains_descendants_before_scratch_cleanup[cancel]
+4.95s setup    tests/harness/test_windows_sandbox_e2e.py::test_ambient_package_acls_do_not_widen_write_ceiling[workspace-write]
+4.92s setup    tests/harness/test_windows_sandbox_e2e.py::test_repeated_commands_release_owned_acls_scratch_and_handles
+0.03s call     tests/harness/test_windows_sandbox_e2e.py::test_reparse_and_shared_file_grants_fail_before_payload[metadata-junction]
+0.02s call     tests/harness/test_windows_sandbox_e2e.py::test_reparse_and_shared_file_grants_fail_before_payload[hardlink]
+
+(28 durations < 0.005s hidden.  Use -vv to show these durations.)
+25 passed in 274.28s (0:04:34)

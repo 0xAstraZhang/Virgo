@@ -1,0 +1,59 @@
+{
+  "version": "v1.1.0",
+  "url": "https://github.com/microsoft/mxc/releases/download/v1.1.0/mxc-release-binaries.zip",
+  "archive_sha256": "31a44963e288e3af23bc2e7e350608ed28f7c76b922ee7a7f1758a486dda37b3",
+  "archive_bytes": 533829612,
+  "selected_member": "x64/wxc-exec.exe",
+  "installed_files": [
+    {
+      "name": "mxc_ffi.dll",
+      "bytes": 8278328
+    },
+    {
+      "name": "wxc-exec.exe",
+      "bytes": 12700472
+    },
+    {
+      "name": "wxc-wslc-daemon.exe",
+      "bytes": 2013544
+    },
+    {
+      "name": "wxc-windows-sandbox-guest.exe",
+      "bytes": 1508704
+    },
+    {
+      "name": "wxc-windows-sandbox-daemon.exe",
+      "bytes": 1611072
+    },
+    {
+      "name": "unix-test-proxy",
+      "bytes": 2712336
+    },
+    {
+      "name": "wslcsdk.dll",
+      "bytes": 6911856
+    },
+    {
+      "name": "lxc-exec",
+      "bytes": 12240928
+    },
+    {
+      "name": "libmxc_ffi.so",
+      "bytes": 7648192
+    },
+    {
+      "name": "wxc-test-proxy.exe",
+      "bytes": 1782120
+    },
+    {
+      "name": "mxc-diagnostic-console.exe",
+      "bytes": 1196352
+    },
+    {
+      "name": "mxc-wslc-gateway.tar",
+      "bytes": 788480
+    }
+  ],
+  "executor_bytes": 12700472,
+  "executor_sha256": "cb8f9253a2288bbb5e980d63216068ea3b640ebaf845ba3fccc0d3fe822f7a0d"
+}

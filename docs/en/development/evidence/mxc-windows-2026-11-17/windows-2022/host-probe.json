@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "D:\\a\\_temp\\virgo-mxc-v1.1.0\\x64\\wxc-exec.exe",
+    "--probe"
+  ],
+  "exit_code": 0,
+  "stdout": "{\n  \"warnings\": [],\n  \"probes\": {\n    \"baseContainerApiPresent\": false,\n    \"nativeCaptureAvailable\": false,\n    \"guardedCaptureAvailable\": false,\n    \"bfscfgPresent\": false,\n    \"bfsCompiledIn\": false,\n    \"baseContainerSupportsDenyPaths\": false,\n    \"baseContainerSupportsEnumeratePaths\": false,\n    \"baseContainerSupportsIngressHostLoopbackAllow\": false,\n    \"baseContainerSupportsIdentitylessLoopbackProxy\": false,\n    \"isolationSessionAvailable\": false,\n    \"hyperlightAvailable\": true,\n    \"uiCapabilities\": {\n      \"canBlockClipboardRead\": true,\n      \"canBlockClipboardWrite\": true,\n      \"canBlockInputInjection\": false,\n      \"canBlockInputMethodChanges\": false,\n      \"canBlockExternalUiObjects\": true,\n      \"canBlockGlobalUiNamespace\": true,\n      \"canBlockDesktopSwitching\": true,\n      \"canBlockLogoffOrShutdown\": true,\n      \"canBlockSystemParameterChanges\": true,\n      \"canBlockDisplaySettingsChanges\": true\n    }\n  },\n  \"error\": \"Windows ProcessContainer is unavailable: PSEC is not enabled\"\n}\n",
+  "stderr": "",
+  "elapsed_seconds": 0.0810309000000018
+}

@@ -1,0 +1,7 @@
+{
+  "status": "blocked-no-native-startup",
+  "host_controls_passed": true,
+  "started_cases": [],
+  "sandbox_acceptance": false,
+  "note": "Startup is not boundary acceptance; rejection duration is not execution performance."
+}
