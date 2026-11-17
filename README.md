@@ -41,16 +41,6 @@ uv run virgo --model faux/demo
 
 The demo uses scripted responses; connect a real model for coding work.
 
-## Choose the capability preset
-
-`coding` is the default: focused subagents, skills, web tools, questions, checklists, background jobs and diagnostic lookup. MCP starts only when configured. `minimal` keeps the Core file/shell tools, model loop, permissions, sessions and diagnostics:
-
-```bash
-uv run virgo --profile minimal --no-extensions
-```
-
-Explicit plugin settings can add selected capabilities to either preset. Project Python extensions require explicit trust. See [Core + plugins](docs/en/development/core-plugin-boundaries.md) and the [upgrade guide](docs/en/guides/migrating-to-core-plugins.md).
-
 ## Fit it into your workflow
 
 ```bash
@@ -67,7 +57,7 @@ uv run virgo --continue
 uv run virgo -p --format json "Summarize the README"
 ```
 
-The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/permissions` selects or edits permission presets and approval policy. `/plan` and `/review` are optional tasks using the normal tools; choose Read-Only separately when file protection is required. The model can request a single-operation permission exception. See [Planning](docs/en/guides/planning.md), [Sandbox boundaries](docs/en/guides/sandbox.md), and [breaking migration](docs/en/guides/migrating-execution-policy.md).
+The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/permissions` selects or edits permission presets and approval policy. The model can request a single-operation permission exception. See [Sandbox boundaries](docs/en/guides/sandbox.md) and [breaking migration](docs/en/guides/migrating-execution-policy.md).
 
 ## Explore
 

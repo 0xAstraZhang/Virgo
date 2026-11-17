@@ -13,9 +13,8 @@ from ..diagnostics import capture_error, emergency_write, error_summary, safe_te
 from ..harness.diagnostics import DiagnosticLog
 from ..harness.permissions import APPROVAL_POLICIES, normalize_approval_policy
 from ..harness.session import AgentSession
-from ..harness.settings import PROFILES, Paths, Settings
+from ..harness.settings import Paths, Settings
 from ..harness.store import SessionStore
-from ..harness.work_modes import WORK_MODES
 from ..i18n import Translator, normalize_language
 from ..tools.sandbox import MODES as SANDBOX_MODES
 from .console import ConsoleBroker, PrintUI, TerminalUI
@@ -56,8 +55,6 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("prompt", nargs="*", help=tr(t, "ui.cli.prompt"))
     p.add_argument("-p", "--print", action="store_true", help=tr(t, "ui.cli.print"))
     p.add_argument("--format", choices=["text", "json"], default="text", help=tr(t, "ui.cli.format"))
-    p.add_argument("--plan", action="store_true", help=t("ui.cli.plan"))
-    p.add_argument("--work-mode", choices=WORK_MODES, help=tr(t, "ui.cli.work_mode"))
     p.add_argument(
         "--ui",
         choices=["auto", "fullscreen", "plain"],
@@ -75,7 +72,6 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("-c", "--continue", dest="cont", action="store_true", help=tr(t, "ui.cli.continue"))
     p.add_argument("-r", "--resume", nargs="?", const="", metavar="FILE", help=tr(t, "ui.cli.resume"))
     p.add_argument("--no-session", action="store_true", help=tr(t, "ui.cli.no_session"))
-    p.add_argument("--profile", choices=PROFILES, help=t("ui.cli.profile"))
     p.add_argument("--permission", dest="permission", help=t("ui.cli.permission_mode"))
     p.add_argument("--mode", dest="legacy_mode", help=argparse.SUPPRESS)
     p.add_argument("--sandbox", choices=SANDBOX_MODES, help=t("sandbox.cli"))
@@ -160,11 +156,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--permission and the deprecated --sandbox option cannot be combined; select one permission preset")
     if args.sandbox is not None:
         print(t("ui.cli.deprecated_sandbox"), file=sys.stderr)
-    if args.plan and args.work_mode not in (None, "plan"):
-        parser.error("--plan and --work-mode default conflict; use --plan alone")
-    if args.work_mode is not None:
-        print(t("ui.cli.deprecated_work_mode"), file=sys.stderr)
-    work_mode = args.work_mode or ("plan" if args.plan else None)
     fullscreen = False
     if not args.print and args.ui != "plain":
         fullscreen = _fullscreen_available()
@@ -203,8 +194,6 @@ def main(argv: list[str] | None = None) -> int:
     overrides = {"effort": args.effort} if args.effort else {}
     if args.language:
         overrides["language"] = args.language
-    if args.profile:
-        overrides["profile"] = args.profile
     if args.sandbox is not None:
         overrides["sandbox"] = {"mode": args.sandbox}
     if selected_permission is not None:
@@ -227,7 +216,6 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             session=session_arg,
             approval_policy=args.approval,
-            work_mode=work_mode,
             settings=overrides,
             extensions=not args.no_extensions,
             trust_project_extensions=args.trust_project_extensions,
@@ -243,8 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             if fullscreen:
                 from .tui import run_fullscreen
 
-                startup = {"work_mode": work_mode} if pick_session and work_mode is not None else {}
-                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session, **startup)
+                return run_fullscreen(session, ui, initial=prompt or None, pick_session=pick_session)
 
             from .repl import run_repl
 

@@ -117,9 +117,6 @@ class FullscreenUI(UI):
     def print(self, text: str, style: str | None = None) -> None:
         self.push("print", (str(text), style))
 
-    def review_result(self, report: dict, text: str) -> None:
-        self.push("review_result", (copy.deepcopy(report), text))
-
     def wake(self) -> None:
         self.push("wake")
 

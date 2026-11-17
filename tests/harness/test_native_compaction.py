@@ -63,7 +63,7 @@ def test_native_routing_is_provider_specific(model, expected):
 
 @pytest.mark.parametrize("provider,api", [
     ("openai", "openai"), ("anthropic", "anthropic"), ("deepseek", "openai"),
-    ("xai", "openai-responses"), ("google-gemini-cli", "google-gemini-cli"),
+    ("xai", "openai-responses"),
 ])
 def test_default_threshold_is_eighty_percent_for_every_provider(make_session, provider, api):
     session = make_session(settings={"compaction": {"reserveTokens": 1}})

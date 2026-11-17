@@ -8,8 +8,9 @@ from urllib.parse import urlsplit
 
 from ..ai.auth_presets import API_PRESETS, AUTH_PRESETS
 from ..ai.models import BUILTIN_PROVIDERS
+from .preferences import provider_name, refresh_provider_catalog
 
-_ALIASES = {"openai": "openai-codex", "google": "google-gemini-cli", "anthropic": "anthropic"}
+_ALIASES = {"openai": "openai-codex", "anthropic": "anthropic"}
 
 
 class _Cancelled(Exception):
@@ -119,6 +120,15 @@ def login(session, args):
         )
         session.set_model(spec)
         ui.print(session.t("harness.auth.success", provider=provider, model=spec), "ok")
+        # Discover this provider's model directory once so /model is usable immediately.
+        # Credentials are already saved; discovery must never fail the login.
+        try:
+            count = refresh_provider_catalog(session, provider)
+        except Exception as error:  # noqa: BLE001 - report and keep the successful login
+            session.report_error(error, phase="catalog.login", notify=False)
+            count = None
+        if count:
+            ui.print(session.t("harness.models.login_ready", provider=provider_name(provider), count=count), "ok")
     except _Cancelled:
         ui.print(session.t("harness.auth.cancelled"), "dim")
     except Exception as exc:  # noqa: BLE001 - OAuth errors are redacted by the auth layer.

@@ -95,7 +95,7 @@ def start_model_refresh(session: AgentSession) -> None:
             model = session.resolve(f"{provider}/_catalog")
         except (TypeError, ValueError):
             continue
-        if model.api not in {"faux", "google-gemini-cli"} and _model_available(model, credentials):
+        if model.api != "faux" and _model_available(model, credentials):
             connections.append(model)
     if not connections:
         session._catalog_refresh_done.set()
@@ -109,16 +109,7 @@ def start_model_refresh(session: AgentSession) -> None:
                 return
             try:
                 models = fetch_model_catalog(connection, session._catalog_stop)
-                with session._lock:
-                    if session._catalog_stop.is_set():
-                        return
-                    # A settings/login change during the request must not publish into a different endpoint.
-                    current = session.resolve(f"{connection.provider}/_catalog")
-                    if current.api != connection.api or base_url(current) != base_url(connection):
-                        return
-                    session.remember_model_metadata(connection, models, diagnostic_store=owner)
-                    if not models:
-                        session.ui.print(session.t("harness.models.empty_live", provider=provider_name(connection.provider)), "warn")
+                _publish_catalog(session, connection, models, owner)
             except CatalogCancelled:
                 pass
             except CatalogError as error:
@@ -145,6 +136,44 @@ def start_model_refresh(session: AgentSession) -> None:
     threading.Thread(target=run, daemon=True, name="virgo-startup-catalog").start()
 
 
+def _publish_catalog(session: AgentSession, connection: Model, models: list, owner) -> int | None:
+    """Publish one connection's directory snapshot after the endpoint still matches."""
+    with session._lock:
+        if session._catalog_stop.is_set():
+            return None
+        # A settings/login change during the request must not publish into a different endpoint.
+        current = session.resolve(f"{connection.provider}/_catalog")
+        if current.api != connection.api or base_url(current) != base_url(connection):
+            return None
+        session.remember_model_metadata(connection, models, diagnostic_store=owner)
+        if not models:
+            session.ui.print(session.t("harness.models.empty_live", provider=provider_name(connection.provider)), "warn")
+    return len(models)
+
+
+def refresh_provider_catalog(session: AgentSession, provider: str) -> int | None:
+    """Fetch one provider's live directory exactly once and publish it for /model."""
+    try:
+        connection = session.resolve(f"{provider}/_catalog")
+    except (TypeError, ValueError):
+        return None
+    if connection.api == "faux" or not _model_available(connection, session.auth.all()):
+        return None
+    try:
+        models = fetch_model_catalog(connection, session.main.agent.signal)
+    except CatalogCancelled:
+        return None
+    except Exception as error:
+        if not session._catalog_stop.is_set():
+            if not isinstance(error, CatalogError):
+                error = CatalogError("Could not read the model directory. Check the connection and login, then retry /model.")
+            session.report_error(error, phase="catalog.login", store=session.store,
+                                 context={"provider": connection.provider, "api": connection.api}, notify=False)
+            session.ui.print(session.t("harness.models.login_failed", provider=provider_name(connection.provider)), "warn")
+        return None
+    return _publish_catalog(session, connection, models, session.store)
+
+
 def provider_name(provider: str) -> str:
     preset = AUTH_PRESETS.get(provider) or API_PRESETS.get(provider)
     return preset["name"] if preset else {"openai": "OpenAI", "faux": "Faux"}.get(provider, provider)
@@ -159,7 +188,7 @@ def _model_available(model: Model, credentials: dict) -> bool:
         return False
     if model.api == "faux":
         return True
-    if model.api not in ("anthropic", "openai", "openai-codex", "openai-responses", "google-gemini-cli"):
+    if model.api not in ("anthropic", "openai", "openai-codex", "openai-responses"):
         return False
     if not model.base_url and model.provider not in ("anthropic", "openai", "openai-codex"):
         return False
@@ -203,7 +232,7 @@ def _model_available(model: Model, credentials: dict) -> bool:
         metadata = credential
     else:
         key = model.options.get("apiKey")
-        if model.api not in ("openai-codex", "google-gemini-cli"):
+        if model.api != "openai-codex":
             key = key or os.environ.get(model.api_key_env or "")
         if model.provider == "anthropic":
             key = key or os.environ.get("ANTHROPIC_AUTH_TOKEN")
@@ -227,8 +256,6 @@ def _model_available(model: Model, credentials: dict) -> bool:
         return False
     if model.api == "openai-codex":
         return bool(metadata.get("accountId"))
-    if model.api == "google-gemini-cli":
-        return bool(metadata.get("projectId"))
     return True
 
 

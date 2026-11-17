@@ -13,7 +13,7 @@
 
 `VIRGO_HOME` 替换用户目录。声明式资源先加载用户级，再加载项目级，同名项以较后的定义为准。官方插件位于 `virgo.plugins`，与 Python 扩展共用 `setup(api)`。插件按固定顺序装载一次；重启或初始化工作区会话后重新发现文件。不提供运行时卸载、依赖安装器或插件沙箱。
 
-项目 Python 扩展需要项目配置之外的信任：为所选项目使用 `--trust-project-extensions`，或配置用户级 `extensions.trustedProjects`。授权前审查代码。用户级扩展属于用户控制的可信代码。`--no-extensions` 跳过这两类 Python 扩展，不关闭官方插件；`minimal` 关闭官方预设能力，但可信 Python 扩展仍独立加载；同时使用 `--profile minimal --no-extensions` 才关闭两者。详见[迁移](../guides/migrating-to-core-plugins.md#信任项目扩展)。
+项目 Python 扩展需要项目配置之外的信任：为所选项目使用 `--trust-project-extensions`，或配置用户级 `extensions.trustedProjects`。授权前审查代码。用户级扩展属于用户控制的可信代码。`--no-extensions` 跳过这两类 Python 扩展，不关闭官方插件。详见[迁移](../guides/migrating-to-core-plugins.md#信任项目扩展)。
 
 ## 添加工具与命令
 
@@ -86,7 +86,7 @@ def setup(api):
 
 `runtime_for_context` 验证真实 Runtime、所属 Session、原始 `ExecutionOrigin` 对象的严格身份和 Agent 名称；非法或外来来源返回 `None`，请求应明确失败。解析 Runtime 不授予其他证据访问权。工具调用应通过该入口解析身份，不能改用 `current_runtime()`；后者用于在入口刻意捕获当前对话。
 
-向子 Runtime 工厂传入已捕获的可信父对象。`read_only=True` 施加执行权限上限，不隐藏工具定义，也不选择 Plan；即使省略该参数或传入 false，子任务仍继承父运行时的只读上限。子任务也可选择 `approval_policy="never"`，但不能放宽父运行时的 `never` 上限。工厂将 `origin_parent` 固定为 `parent.origin`，共享记账与请求预算，并传播取消信号。配置后，`budget.maxModelCalls` 限制与子任务共享的模型请求数；`subagents.maxTurns` 仍限制单个聚焦子任务的轮数。插件不应另建独立 AgentSession 来绕过归属或预算。
+向子 Runtime 工厂传入已捕获的可信父对象。`read_only=True` 施加执行权限上限，不隐藏工具定义；即使省略该参数或传入 false，子任务仍继承父运行时的只读上限。子任务也可选择 `approval_policy="never"`，但不能放宽父运行时的 `never` 上限。工厂将 `origin_parent` 固定为 `parent.origin`，共享记账与请求预算，并传播取消信号。配置后，`budget.maxModelCalls` 限制与子任务共享的模型请求数；`subagents.maxTurns` 仍限制单个聚焦子任务的轮数。插件不应另建独立 AgentSession 来绕过归属或预算。
 
 子任务会在自动读取项目上下文前捕获来源权限模式。官方后台代理在提交任务时捕获该模式，因此稍后修改父对话 Mode 不会扩大排队任务的权限。延迟创建 Runtime 的受信任扩展可通过工厂的 `execution_mode` 参数传递已捕获的 `PermissionMode`；模型工具定义不暴露这个参数。
 
@@ -110,14 +110,12 @@ def setup(api):
 | `agent_stop` | `(runtime)` → `Continue` 或 `None` |
 | `agent_end`、`before_compact` | `(runtime)` |
 | `compact` | `(runtime, summary)` |
-| `work_mode_changed` | `(origin_runtime, mode)`；观察已提交的模式状态 |
-| `proposed_plan_changed` | `(origin_runtime, proposal)`；观察已提交的计划提案 |
 
 `Block(reason)` 阻止工具；只有明确启用的继续策略才使用 `Continue(text)`。处理器失败进入诊断并与后续处理器隔离。上下文视图应保留追加式的消息前缀。
 
 发布排队中的代理工作或启动工作线程前，使用已捕获的来源记账 Store 调用 `api.reserve_child_work(owner)`。完成或启动失败时释放登记；释放必须在插件锁之外、向调用方发出完成信号之前进行。登记和释放使用与模式准入相同的 Core 锁。登记保留来源 Runtime 供策略检查，直到最后一个待完成任务释放，即使对话已被删除。官方后台服务为 callable 代理任务登记，子进程仍保留启动时策略。
 
-Core 根据自身管理的待执行登记和运行中的 Runtime（含子代）判断来源是否忙碌。实际模式切换与显式计划执行要求该来源空闲；原 `runtime_pending_work` 检查钩子已退休。状态通知在持久化与状态发布后触发。观察者可以刷新 UI，但不能同步重入修改模式或计划、选择对话或登记新工作。后续显式操作应在通知返回后通过正常准入入口发起。
+Core 根据自身管理的待执行登记和运行中的 Runtime（含子代）判断来源是否忙碌。实际模式切换要求该来源空闲；原 `runtime_pending_work` 检查钩子已退休。状态通知在持久化与状态发布后触发。观察者可以刷新 UI，但不能同步重入修改模式、选择对话或登记新工作。后续显式操作应在通知返回后通过正常准入入口发起。
 
 `api.register_permission_policy(policy)` 增加硬性限制，不能替换必要的 Core 授权策略。实现 `preflight(event)` 和 `before_execute(event)`，拒绝时返回 `Block(reason)`，继续时返回 `None`。两个检查点都先运行 Sandbox 和附加策略，再由 Core 检查能力上限、deny、已有授权及是否需要人工批准，避免为硬边界已经禁止的操作弹出审批。第二个检查点位于工具调用钩子和参数调整之后。托管／适配操作应携带原调用方上下文，使用 `api.authorize_tool(event)`。`AgentTool.side_effect` 声明可信工具的能力，不授予所有操作，也不绕过其他策略。Python 扩展本身仍是 Shell 沙箱之外的可信代码。
 
@@ -131,8 +129,7 @@ Core 在 `harness/permission_policy.py` 执行确定性权限规则。`harness/p
 
 `api.add_request_system_section(name, fn, order=50)` 在每次请求和压缩上下文构建时
 调用 `fn(runtime)`，返回指令或 `None`。用于必须跨工具循环、压缩和恢复保留的
-任务指令，不过滤工具、不改变执行权限。Plan 与 Code Review 使用此入口，
-任务状态和结果处理属于各自可选插件。
+任务指令，不过滤工具、不改变执行权限。
 
 `api.append_entry(kind, data)` 和 `api.entries(kind)` 访问当前 Store 的自定义状态。后台工作需先捕获真实所有者，再使用其 Store 和 `api.notify(..., store=owner)`。保存失败是真正的执行边界，不能当作持久化成功。Todo 仍是当前对话状态，不是持久任务图。
 
@@ -151,10 +148,6 @@ Inspect the current changes. Focus on: ${1:-correctness}. Additional context: $@
 
 模板支持 `$1`、`$@`／`$ARGUMENTS`、`${1:-value}`、`${@:2}`；没有占位符时，参数追加到正文。
 
-[独立代码审查插件](../guides/code-review.md)启用时拥有 `/review`。`review.md` 模板会导致启动报错，必须改名；扩展也不能注册同名命令。不再提供官方 `/code-review` 别名。`/inspect` 模板使用普通对话及其工具，`/review` 则运行独立审查任务。
-
 专门的工作方法应写成 [Skill](../../../examples/project/.virgo/skills/code-review/SKILL.md) 或委派任务提示；创建检查子运行时时设置 `read_only=True`。特殊模型和工具策略通过受信任的扩展实现。详见[迁移指南](../guides/migrating-to-core-plugins.md#子代理能力迁移)。
 
 捕获异常后用 `virgo.diagnostics.capture_error` 保留结构化诊断；成功恢复时将原始证据保留在 `related_errors`。属于某个 Runtime 的错误优先使用其 `report_error()`；结果／通知的显式传播可以授予父任务访问权，单独的错误 ID 字符串不能。详见[故障排查](../guides/troubleshooting.md)。
-
-独立任务命令使用 `api.register_command(..., isolated=True)`，回调为 `fn(session, args, origin_runtime)`。Host 固定来源并管理 busy/取消；子 Runtime 使用 `parent=origin_runtime`，仅在需要显式子任务上限时选择 `read_only=True`。`review` 保留普通子工具，增加有独立名称的快照读取器并提供审查指令。重复命令名会被拒绝；独立任务命令名不能被提示词模板占用，包括已启用 Review 插件保留的 `/review`。

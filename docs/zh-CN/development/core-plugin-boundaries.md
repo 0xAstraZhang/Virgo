@@ -23,7 +23,7 @@ Virgo 是围绕编程工作的 Harness。Core 负责可靠地运行模型—工�
 
 ## 官方能力
 
-| 插件 ID | 职责 | `coding` 默认行为 |
+| 插件 ID | 职责 | 默认行为 |
 | --- | --- | --- |
 | `skills` | 技能索引与显式展开 | 启用 |
 | `todo` | 当前对话的轻量清单 | 启用 |
@@ -33,10 +33,8 @@ Virgo 是围绕编程工作的 Harness。Core 负责可靠地运行模型—工�
 | `background` | 后台任务工具、状态、取消和归属明确的通知 | 启用 |
 | `web` | 搜索与读取路由、权限审查和可配置预算 | 启用 |
 | `mcp` | 已配置的连接、工具和有界恢复 | 存在服务器配置时启用 |
-| `plan` | 版本化 Markdown 计划的提示词任务 | 启用 |
-| `code_review` | 固定目标、校验报告的独立提示词审查 | 启用 |
 
-`minimal` 关闭预设中的可选能力；显式 `plugins.<id>.enabled` 覆盖预设。一般 Git 操作仍通过 Shell 使用；[代码审查](../guides/code-review.md)只在独立 Runtime 中提供冻结的 status/diff 视图。
+官方能力默认加载；`plugins.<id>.enabled` 可按插件关闭。一般 Git 操作仍通过 Shell 使用。
 
 Core 拥有 Shell／进程执行和取消原语；background 插件复用这些原语，不复制执行器。Core 同样拥有诊断服务和面向用户的 `/diagnostics` 命令；禁用 `diagnostic_get` 只移除面向模型的证据读取工具。
 
@@ -69,8 +67,6 @@ Core 拥有 Shell／进程执行和取消原语；background 插件复用这些�
 
 生产改动前加入的验收位于 `tests/harness/test_core_plugins_e2e.py`。它以确定性模型驱动完整会话，覆盖文件／编辑／Shell 闭环与恢复、执行期权限、注册表发布、初始化失败与清理、项目信任、子任务限制与共享预算、历史数据和配置优先级。既有 Provider、MCP、后台任务、取消、会话和 TUI 场景继续作为回归检查。[测试退役记录](test-retirements.md)区分已取消的产品行为和仍需保留的保证。
 
-`ci/measure_startup.py` 用临时用户目录和离线 `faux` 模型，在新进程中测量导入／构造耗时、模块／线程／工具数量，以及 Schema／系统提示字符数。在同一解释器与机器上分别使用 `--profile minimal` 和 `--profile coding`。字符数不是 Token 数；该脚本不测量编程质量、真实模型费用或成功率。
+`ci/measure_startup.py` 用临时用户目录和离线 `faux` 模型，在新进程中测量导入／构造耗时、模块／线程／工具数量，以及 Schema／系统提示字符数。比较不同修订时应在同一解释器与机器上运行。字符数不是 Token 数；该脚本不测量编程质量、真实模型费用或成功率。
 
 编程质量对照需要固定仓库快照、模型与推理强度、任务集、权限和预算，再记录完成情况、人工介入、工具失败、模型调用、耗时和费用。不从删除行数或离线验收推断质量提升；将实际结果及环境记录在 PR 或带日期的报告中。
-
-带日期的[验收记录](core-plugins-validation.md)保留基线测试结果、五进程启动样本及已测证据的边界。

@@ -18,7 +18,6 @@ from .permissions import (
     approval_policy_label,
     normalize_approval_policy,
 )
-from .work_modes import normalize_work_mode
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -66,29 +65,10 @@ def rule_matches(rule: str, ev: ToolCallEvent, *, allow: bool = False) -> bool:
 class Permissions:
     def __init__(self, session: AgentSession):
         self.session = session
-        self._work_mode = "plan" if session.settings.get("plan", False) else "default"
         self.revision = 0
         self.session_rules: list[str] = []
         self.session_approvals: set[str] = set()
         self.denials: dict[str, str] = {}
-
-    @property
-    def work_mode(self) -> str:
-        return self.work_mode_for(getattr(self.session, "main", None))
-
-    def _root_runtime(self, runtime):
-        if runtime is not None and runtime.session is not self.session:
-            raise ValueError("Work mode runtime must belong to this session")
-        while runtime is not None and runtime.parent is not None:
-            runtime = runtime.parent
-        return runtime
-
-    def work_mode_for(self, runtime) -> str:
-        root = self._root_runtime(runtime)
-        return root.work_mode if root is not None else self._work_mode
-
-    def planning_for(self, runtime) -> bool:
-        return self.work_mode_for(runtime) == "plan"
 
     def is_read_only(self, runtime) -> bool:
         sandbox = self.session.services.get("sandbox")
@@ -118,44 +98,6 @@ class Permissions:
                 approval = "never"
             runtime = runtime.parent
         return approval
-
-    def restore_work_mode(self, runtime, override: str | None = None) -> None:
-        """Restore task intent only, publishing it after persistence succeeds."""
-        saved: bool | None = None
-        if runtime.store is not None:
-            records = runtime.store.custom("plan")
-            if records:
-                saved = bool(records[-1].get("plan"))
-            else:
-                legacy = runtime.store.custom("work_mode")
-                if legacy:
-                    saved = normalize_work_mode(legacy[-1].get("mode", "default")) == "plan"
-        mode = normalize_work_mode(override) if override is not None else (
-            "plan" if self._work_mode == "plan" or saved else "default"
-        )
-        if runtime.store is not None and saved != (mode == "plan") and (saved is not None or mode != "default"):
-            runtime.store.append("custom", kind="plan", data={"plan": mode == "plan"})
-        runtime.work_mode = mode
-        runtime.work_mode_revision = getattr(runtime, "work_mode_revision", -1) + 1
-
-    def set_work_mode(self, mode: str, *, runtime=None) -> None:
-        mode = normalize_work_mode(mode)
-        with self.session._lock:
-            self.session.assert_state_change_allowed()
-            root = self._root_runtime(runtime or getattr(self.session, "main", None))
-            if self.work_mode_for(root) == mode:
-                return
-            if root is not None and self.session.runtime_is_busy(root):
-                raise ValueError(self.session.t("work_mode.busy"))
-            if root is not None and root.store is not None:
-                root.store.append("custom", kind="plan", data={"plan": mode == "plan"})
-            if root is None:
-                self._work_mode = mode
-            else:
-                root.work_mode = mode
-                root.work_mode_revision += 1
-            self.revision += 1
-            self.session.notify_state_change("work_mode_changed", root, mode)
 
     def _event_runtime(self, event):
         source = source_for(self.session, event)
@@ -187,9 +129,9 @@ class Permissions:
     def _boundary(self, ev: ToolCallEvent) -> ApprovalBoundary | None:
         # Managed tools enforce the selected profile in their execution adapters.
         # Shell syntax is not an authorization or isolation boundary.
-        managed = {"read", "write", "edit", "glob", "grep", "git_read", "bash", "powershell",
+        managed = {"read", "write", "edit", "glob", "grep", "bash", "powershell",
                    "web_search", "web_fetch", "request_permissions", "todo_write"}
-        if ev.tool_name in managed or ev.tool_name.startswith(("mcp__", "review_")):
+        if ev.tool_name in managed or ev.tool_name.startswith("mcp__"):
             return None
         if ev.tool and ev.tool.read_only:
             return None
@@ -210,7 +152,7 @@ class Permissions:
         if block := sandbox._check(event):
             return finish("deny", block.reason, "execution-policy")
         mode = sandbox.mode_for_event(event)
-        metadata = {"todo_write", "propose_plan", "request_permissions", "job_kill"}
+        metadata = {"todo_write", "request_permissions", "job_kill"}
         if (mode.read_only and event.tool_name not in SHELL_TOOLS | metadata
                 and event.tool is not None and not event.tool.read_only):
             return finish("deny", self.session.t("features.permission.read_only"), "read-only")
@@ -238,7 +180,7 @@ class Permissions:
         runtime = self._event_runtime(event)
         origin_store(self.session, event).append("custom", kind="permission_decision", data={
             "tool_call_id": event.call_id, "tool": event.tool_name, "agent": event.agent,
-            "cwd": str(event.cwd), "work_mode": self.work_mode_for(runtime),
+            "cwd": str(event.cwd),
             "read_only": self.is_read_only(runtime), "approval_policy": self.approval_for(runtime),
             "source": source, "decision": decision, "reason": reason,
             "arguments_sha256": hashlib.sha256(arguments.encode()).hexdigest(),
@@ -349,7 +291,6 @@ def install_permissions(session: AgentSession) -> Permissions:
             lines = [
                 session.t("features.permission.status",
                           label=approval_policy_label(selected, session.t)),
-                session.t("work_mode.status", mode=session.t("work_mode." + permissions.work_mode)),
             ]
             snapshot = getattr(session.main, "permission_snapshot", None)
             if snapshot is not None and snapshot.approval != selected:

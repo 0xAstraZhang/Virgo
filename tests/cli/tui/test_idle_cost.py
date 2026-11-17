@@ -30,9 +30,9 @@ def test_idle_frames_neither_relayout_nor_walk_the_transcript(make_session, monk
             # Each Static.update relayouts every widget, and query truthiness matches every
             # widget: both made an idle long conversation use a full CPU core.
             assert updates == [] and walks == []
-            session.services["permissions"].set_work_mode("plan")
+            session.services["sandbox"].select_mode("read-only")
             app.update_status()
-            assert "Plan · " in str(app.screen_stack[0].query_one("#status", Static).content)
+            assert "Read-Only" in str(app.screen_stack[0].query_one("#status", Static).content)
 
     asyncio.run(scenario())
 

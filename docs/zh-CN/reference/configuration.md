@@ -34,8 +34,7 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 
 | 键 | 默认值／含义 |
 | --- | --- |
-| `profile` | `coding`；`minimal` 不选择官方能力 |
-| `plugins.<id>.enabled` | 显式布尔值覆盖预设 |
+| `plugins.<id>.enabled` | 显式布尔值覆盖插件默认值 |
 | `budget.maxModelCalls` | `null`；可选的父子运行时共享模型请求正整数上限 |
 | `extensions.trustedProjects` | 仅用户配置；获准运行项目 Python 的规范化绝对路径 |
 | `language` | `en`；内置语言为 `en` 和 `zh-CN` |
@@ -46,7 +45,6 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `permissions.preset` | `workspace-edit`；选择用户所有的权限预设 |
 | `permissions.presets` | 按稳定 ID 保存可编辑名称与三个开关 |
 | `sandbox.mode` | 可选的旧禁网兼容配置 |
-| `plan` | `false`；`true` 启动可选规划任务 |
 | `permissions.approval` | `ask`；`never` 拒绝需要新增批准的操作 |
 | `permissions.allow`、`permissions.deny` | 工具规则列表 |
 | `compaction.enabled` | `true` |
@@ -62,19 +60,18 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 
 网页配置见[联网搜索与读取](../guides/web.md)，解释器的具体优先级与平台语义见[命令解释器](../guides/shells.md)。
 
-## 预设与插件
+## 插件
 
-默认 `coding` 启用 `skills`、`todo`、`ask_user`、`diagnostic_get`、`subagent`、`background`、`web`、`code_review`。MCP 仅在存在服务器配置时启用。`minimal` 默认无官方能力；显式 `plugins.<id>.enabled` 可覆盖任一预设。未知插件名和非法值会报告配置错误，不会静默启用能力。
+官方插件 `skills`、`todo`、`ask_user`、`diagnostic_get`、`subagent`、`background` 和 `web` 默认启用；`mcp` 仅在存在服务器配置时启用。显式 `plugins.<id>.enabled` 覆盖该默认值。未知插件名和非法值会报告配置错误，不会静默启用能力。
 
 ```json
 {
-  "profile": "minimal",
-  "plugins": {"skills": {"enabled": true}, "todo": {"enabled": true}},
+  "plugins": {"todo": {"enabled": true}, "web": {"enabled": false}},
   "budget": {"maxModelCalls": 40}
 }
 ```
 
-示例仅选择 Skills 和 Todo 两个官方插件。权限、会话和诊断仍属于 Core。Python 扩展是单独的可信代码路径；使用 `--no-extensions` 禁用。项目不能自行授予信任；应使用 `--trust-project-extensions`，或将绝对目录加入用户 `extensions.trustedProjects`。
+示例显式保留 Todo 并关闭 Web，其余官方插件保持默认。权限、会话和诊断仍属于 Core。Python 扩展是单独的可信代码路径；使用 `--no-extensions` 禁用。项目不能自行授予信任；应使用 `--trust-project-extensions`，或将绝对目录加入用户 `extensions.trustedProjects`。
 
 旧 `features` 按配置层转换并提示；同层 `plugins` 优先，再应用通常的用户／项目／运行时顺序。`features.permission`、`plugins.auto_review` 和旧权限模式已退休，会报告迁移错误。退役产品不再运行，原文件保留。别名、数据位置和兼容期限见[迁移](../guides/migrating-to-core-plugins.md)。
 
@@ -98,19 +95,11 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 用 `/model local/your-installed-model` 选择该模型。模型 ID 和上下文窗口需替换为你的服务实际支持的值。`api: "openai"` 使用 Chat Completions，`openai-responses` 使用 Responses，`anthropic` 使用 Messages；账号预设自行配置相应适配器与认证元数据。
 
-启动时，已连接的厂商在后台刷新模型目录，最多四个并发；`/model` 读取缓存快照。显式的 `providers.<id>.models` 字段优先于服务端元数据，之后依次为内置资料和协议兜底值。添加元数据并不等于向远程目录增加模型。Google Code Assist 目前通过直接指定模型使用，没有适配实时目录。刷新失败保留旧快照。
+启动时，已连接的厂商在后台刷新模型目录，最多四个并发。`/login` 成功后还会拉取该厂商的模型目录一次，使 `/model` 立即有可用条目；这次拉取失败只会打印警告。`/model` 读取缓存快照。显式的 `providers.<id>.models` 字段优先于服务端元数据，之后依次为内置资料和协议兜底值。添加元数据并不等于向远程目录增加模型。刷新失败保留旧快照。
 
 目录缓存按 provider、协议和地址隔离，不保存密钥。Codex 目录的客户端版本从本机 npm 包清单（不执行 Codex）、缓存和官方发布元数据选择；没有包清单的独立安装使用缓存或发布来源，也可用 `providers.openai-codex.clientVersion` 固定。`providers.<id>.apiVersion` 可以固定 Anthropic 协议版本。这些值控制接口兼容性，与 Virgo 应用版本不同。
 
 辅助请求自动选择同一连接的小模型：官方 Anthropic 连接使用 `claude-haiku-5-5`，官方 OpenAI/Codex 连接使用 `gpt-6-luna`，其余使用主模型。推理强度优先 `low`，其次为受支持的默认值，否则省略控制参数。旧 `smallModel` 字段不再参与选择。
-
-## Plan 任务
-
-Plan 和 Code Review 是可选的规划与审查任务。`/plan <任务>` 开始规划，`/plan off`
-退出规划但不实施。`/review` 使用正常工具与固定审查证据启动独立审查。两者都不改变权限。
-提示词要求输出计划或报告；需要强制保护文件时，另选 Read-Only。
-`--plan` 选择初始 Plan 指令，`--format text|json` 控制输出格式。
-见[规划](../guides/planning.md)和[代码审查](../guides/code-review.md)。
 
 ## 权限
 

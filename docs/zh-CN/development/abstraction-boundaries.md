@@ -9,7 +9,7 @@ AI、Agent、Harness/Plugins、CLI 分层分别承担传输、执行与应用策
 | 规则 | 维护位置 | 调用方与边界 |
 | --- | --- | --- |
 | OpenAI 推理强度映射 | `ai/providers/reasoning.py` | Chat、Responses、Codex 请求及 `completion_request_metadata()` 共用纯函数；显式映射、模型声明与默认回退保留原优先级。HTTP 客户端、认证和流事件仍由适配器维护。 |
-| 审批与只读能力 | `harness/permissions.py` | ask/never 与 Plan 指令独立；`permission_policy.py` 处理确定性规则、明确授权、执行前复核和审计。来源身份在 `origin_context.py`，不保存第二套审批 transcript。 |
+| 审批与只读能力 | `harness/permissions.py` | ask/never 审批与工具能力独立；`permission_policy.py` 处理确定性规则、明确授权、执行前复核和审计。来源身份在 `origin_context.py`，不保存第二套审批 transcript。 |
 | 工具上下文对应的可信 Runtime | `AgentSession.runtime_for_context()` | 诊断与 MCP 使用同一身份判定；具体功能负责处理拒绝和执行后续操作。解析不查询当前 UI 选择，不授予新的诊断访问权。 |
 
 推理强度映射只共享真正一致的语义：Chat 兼容接口支持 `reasoningEffortMap`，Responses/Codex 保留各自的 `max → xhigh` 回退。不要用一个带大量分支的通用 Provider 对象掩盖协议差异，也不要在诊断记录里另写一套请求策略。
@@ -44,4 +44,4 @@ Runtime 解析要求来源是 `ExecutionOrigin`，来源中的对象是本 Sessi
 
 ## 现有验证入口
 
-请求映射由 `test_credentials.py`、`test_codex.py`、`test_responses.py`、`test_auxiliary_requests.py` 验证；权限兼容由 CLI 参数、TUI 模式切换、计划模式及执行前复核场景验证；Runtime 身份由 `test_diagnostic_access.py`、`test_mcp_recovery.py` 的缺失、外来、伪造来源与会话切换场景验证。这些既有产品场景继续保留。本次 Core／插件改动在生产实现前加入 `test_core_plugins_e2e.py`，覆盖装配、信任、归属、清理、预算和迁移的新契约。
+请求映射由 `test_credentials.py`、`test_codex.py`、`test_responses.py`、`test_auxiliary_requests.py` 验证；权限兼容由 CLI 参数、TUI 模式切换及执行前复核场景验证；Runtime 身份由 `test_diagnostic_access.py`、`test_mcp_recovery.py` 的缺失、外来、伪造来源与会话切换场景验证。这些既有产品场景继续保留。本次 Core／插件改动在生产实现前加入 `test_core_plugins_e2e.py`，覆盖装配、信任、归属、清理、预算和迁移的新契约。

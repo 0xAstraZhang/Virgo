@@ -34,17 +34,6 @@ AUTH_PRESETS = {
             "models": {"grok-4.3": {"contextWindow": 1_000_000, "maxTokens": 30_000, "reasoning": True}},
         },
     },
-    "google-gemini-cli": {
-        "name": "Google",
-        "model": "gemini-2.5-pro",
-        "config": {
-            "api": "google-gemini-cli",
-            "baseUrl": "https://cloudcode-pa.googleapis.com",
-            "models": {
-                "gemini-2.5-pro": {"contextWindow": 1_048_576, "maxTokens": 65_536, "reasoning": True}
-            },
-        },
-    },
     "kimi-coding": {
         "name": "Kimi",
         "model": "kimi-for-coding",

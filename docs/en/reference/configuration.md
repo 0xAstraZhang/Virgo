@@ -34,8 +34,7 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 
 | Key | Default / meaning |
 | --- | --- |
-| `profile` | `coding`; use `minimal` for no preset capabilities |
-| `plugins.<id>.enabled` | Explicit boolean override of the preset |
+| `plugins.<id>.enabled` | Explicit boolean override of the plugin's default |
 | `budget.maxModelCalls` | `null`; optional positive shared parent/child model-request limit |
 | `extensions.trustedProjects` | User settings only; canonical absolute paths authorized for project Python |
 | `language` | `en`; built-in choices are `en` and `zh-CN` |
@@ -46,7 +45,6 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `permissions.preset` | `workspace-edit`; select a user-owned permission preset |
 | `permissions.presets` | Editable names and three flags, keyed by stable ID |
 | `sandbox.mode` | Optional legacy offline compatibility setting |
-| `plan` | `false`; `true` starts the optional planning task |
 | `permissions.approval` | `ask`; use `never` to reject operations needing a new approval |
 | `permissions.allow`, `permissions.deny` | Lists of tool rules |
 | `compaction.enabled` | `true` |
@@ -62,19 +60,18 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 
 Web-specific fields are documented in [Web search and reading](../guides/web.md). Shell-specific precedence and platform behavior are in [Command shells](../guides/shells.md).
 
-## Profiles and plugins
+## Plugins
 
-`coding` is the default. It enables `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background`, `web`, `plan` and `code_review`. MCP is enabled only when server configuration exists. `minimal` starts with no official capabilities; explicit `plugins.<id>.enabled` overrides either preset. Unknown plugin names and malformed values fail configuration rather than silently enabling something.
+The official plugins `skills`, `todo`, `ask_user`, `diagnostic_get`, `subagent`, `background` and `web` are enabled by default; `mcp` is enabled only when server configuration exists. An explicit `plugins.<id>.enabled` value overrides that default. Unknown plugin names and malformed values fail configuration rather than silently enabling something.
 
 ```json
 {
-  "profile": "minimal",
-  "plugins": {"skills": {"enabled": true}, "todo": {"enabled": true}},
+  "plugins": {"todo": {"enabled": true}, "web": {"enabled": false}},
   "budget": {"maxModelCalls": 40}
 }
 ```
 
-The example selects only Skills and Todo from the official set. Permissions, sessions and diagnostics stay in Core. Python extensions are a separate trusted-code path: use `--no-extensions` to disable them. A project cannot grant itself trust; use `--trust-project-extensions` or add its absolute directory to user `extensions.trustedProjects`.
+The example keeps Todo enabled explicitly and turns Web off; every other official plugin keeps its default. Permissions, sessions and diagnostics stay in Core. Python extensions are a separate trusted-code path: use `--no-extensions` to disable them. A project cannot grant itself trust; use `--trust-project-extensions` or add its absolute directory to user `extensions.trustedProjects`.
 
 Legacy `features` keys are translated per configuration layer with a notice; same-layer `plugins` values win, then normal user/project/runtime precedence applies. `features.permission`, `plugins.auto_review` and the old permission modes are retired and report a migration error. Removed products no longer execute and their files are retained. See [Migration](../guides/migrating-to-core-plugins.md) for aliases, storage locations and the compatibility window.
 
@@ -98,21 +95,11 @@ Provider entries can declare `api`, `baseUrl`, `apiKeyEnv` and model metadata:
 
 Select it with `/model local/your-installed-model`. Replace the model ID and context window with values appropriate to your endpoint. `api: "openai"` uses Chat Completions; `openai-responses` selects Responses; `anthropic` selects Messages. Account presets configure their own adapter and authentication metadata.
 
-At startup, connected providers refresh their model catalog in the background, at most four concurrently. `/model` reads the cached snapshot. Explicit `providers.<id>.models` fields override fetched metadata, which overrides built-in metadata and protocol fallback values. Configuring a metadata entry does not itself add a model to a remote catalog. Google Code Assist currently uses direct model selection rather than an adapted live catalog. A failed refresh keeps the previous snapshot.
+At startup, connected providers refresh their model catalog in the background, at most four concurrently. A successful `/login` also fetches that provider's model directory once, so `/model` is immediately populated; if that fetch fails, Virgo prints a warning. `/model` reads the cached snapshot. Explicit `providers.<id>.models` fields override fetched metadata, which overrides built-in metadata and protocol fallback values. Configuring a metadata entry does not itself add a model to a remote catalog. A failed refresh keeps the previous snapshot.
 
 Catalog caches are scoped to provider, protocol and endpoint and do not store keys. Codex catalog client-version selection reads local npm package manifests (without executing Codex), cached versions and official release metadata; standalone installations without a manifest use the cache or release source; `providers.openai-codex.clientVersion` pins it. `providers.<id>.apiVersion` can pin the Anthropic protocol version. These values govern protocol compatibility, not the Virgo application version.
 
 Auxiliary requests automatically choose a small model on the same connection: `claude-haiku-5-5` for official Anthropic connections, `gpt-6-luna` for official OpenAI/Codex connections, and otherwise the main model. Reasoning prefers `low`, then a supported default, otherwise omits the control. The old `smallModel` field is not consulted.
-
-## Plan task
-
-Plan and Code Review are optional tasks. `/plan <task>` starts planning;
-`/plan off` leaves planning without implementing it. `/review` runs an independent
-review using the normal tools and fixed review evidence. Neither workflow changes permissions.
-Their prompts request a plan/report without making changes; use Read-Only when enforced file
-protection is needed. `--plan` selects initial planning instructions, while
-`--format text|json` controls output. See [Planning](../guides/planning.md) and
-[Code Review](../guides/code-review.md).
 
 ## Permissions
 

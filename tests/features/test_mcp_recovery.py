@@ -416,10 +416,8 @@ def test_write_failure_cannot_claim_request_was_not_sent(make_session, monkeypat
     assert not_started.details["transport"]["side_effects"] == "none"
 
 
-def test_plan_permission_blocks_reconnection_before_process_start(make_session):
-    # Keep the historical identity; the independent Read-Only profile now
-    # supplies this ceiling, while Plan itself only contributes instructions.
-    session = make_session(work_mode="plan", settings={**settings("echo"), "sandbox": {"mode": "read-only"}})
+def test_read_only_permission_blocks_reconnection_before_process_start(make_session):
+    session = make_session(settings={**settings("echo"), "sandbox": {"mode": "read-only"}})
     error = incident(session)
     original = session.services["mcp"]["echo"]
     faux.script("test", faux.reply(tools=[("mcp_reconnect", {"server": "echo", "error_id": error["error_id"]})]),

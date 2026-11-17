@@ -25,14 +25,13 @@ if TYPE_CHECKING:
 @dataclass
 class Command:
     name: str
-    fn: Callable  # fn(session, args: str[, origin_runtime for isolated tasks]) -> None
+    fn: Callable  # fn(session, args: str) -> None
     description: str = ""
     source: str = "builtin"
     argument_hint: str = field(default="", kw_only=True)
     description_key: str = field(default="", kw_only=True)
     argument_hint_key: str = field(default="", kw_only=True)
     concurrent: bool = False  # only reads state: may run while the agent is busy
-    isolated: bool = field(default=False, kw_only=True)  # host task; bypass prompt hooks/templates
 
 
 class Commands:
@@ -51,7 +50,6 @@ class Commands:
         argument_hint: str = "",
         description_key: str = "",
         argument_hint_key: str = "",
-        isolated: bool = False,
     ) -> None:
         key = name.lstrip("/")
         if key in self._cmds:
@@ -59,7 +57,6 @@ class Commands:
         self._cmds[name.lstrip("/")] = Command(
             name.lstrip("/"), fn, description, source, concurrent, argument_hint=argument_hint,
             description_key=description_key, argument_hint_key=argument_hint_key,
-            isolated=isolated,
         )
 
     def remove_source(self, source: str) -> None:

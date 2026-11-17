@@ -9,7 +9,7 @@ from virgo.harness.session import Runtime
 
 MAIN_TOOLS = {
     "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "todo_write", "ask_user", "agent",
-    "bash", "job_output", "job_kill", "diagnostic_get", "git_read", "propose_plan", "request_permissions",
+    "bash", "job_output", "job_kill", "diagnostic_get", "request_permissions",
 }
 
 
@@ -62,18 +62,10 @@ def test_permission_switch_updates_requests_and_restores_the_original_prefix(mak
     sandbox = session.services["sandbox"]
     original_mode = sandbox.mode_for(session.main)
     original = session.main.request_context([])
-    session.services["permissions"].set_work_mode("plan")
-    planning = session.main.request_context([])
-    assert {"read", "ask_user", "propose_plan", "git_read"} <= {t.name for t in planning.tools}
-    assert planning.tools == original.tools
-    assert sandbox.mode_for(session.main) == original_mode
-    assert "<work_mode>" in planning.system
     sandbox.select_mode("read-only")
     restricted = session.main.request_context([])
     assert restricted.tools == original.tools
-    assert '"read_only": true' in restricted.system and "<work_mode>" in restricted.system
-    session.services["permissions"].set_work_mode("default")
-    assert sandbox.mode_for(session.main).read_only
+    assert '"read_only": true' in restricted.system
     sandbox.select_mode(original_mode.id)
     restored = session.main.request_context([])
     assert restored.system == original.system

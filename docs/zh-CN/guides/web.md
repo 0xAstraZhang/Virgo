@@ -22,7 +22,7 @@ Virgo 可以检索来源并读取公开网页。搜索和读取分别配置、�
 | `deepseek` | 使用官方 DeepSeek Search API，需要可用密钥 |
 | `off` | 关闭搜索 |
 
-适配器包含受支持的 Anthropic、OpenAI Responses/Codex 和 xAI 原生搜索，以及独立的 DeepSeek Search API。Google Code Assist 和未知的兼容连接默认使用内置回退路径。协议兼容不代表一定支持原生功能。
+适配器包含受支持的 Anthropic、OpenAI Responses/Codex 和 xAI 原生搜索，以及独立的 DeepSeek Search API。未知的兼容连接默认使用内置回退路径。协议兼容不代表一定支持原生功能。
 
 DeepSeek 搜索可搭配其他对话模型使用。先配置 `/login api deepseek` 或 `DEEPSEEK_API_KEY`；显式选择时若没有可用的官方连接，会提示错误并保留原选择。`search.apiKeyEnv` 可指定独立密钥环境变量。DuckDuckGo 无需密钥，但可能限流或要求浏览器验证；Virgo 会明确报告该错误。
 

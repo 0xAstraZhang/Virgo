@@ -48,8 +48,6 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
             from .providers import codex as impl
         elif model.api == "openai-responses":
             from .providers import responses as impl
-        elif model.api == "google-gemini-cli":
-            from .providers import google as impl
         elif model.api == "faux":
             from .providers import faux as impl
         else:
@@ -111,11 +109,6 @@ def completion_request_metadata(model: Model, effort: str | None, limit: int | N
         effective = chat_effort(model, effective)
     elif effective and model.api in {"openai-responses", "openai-codex"}:
         effective = responses_effort(model, effective)
-    elif effective and model.api == "google-gemini-cli":
-        # The adapter sends a thinking level for Gemini 3, a token budget for older models.
-        effective = "low" if effective == "low" else (
-            "medium" if effective == "medium" and ("gemini-3" not in model.id or "pro" not in model.id) else "high"
-        )
     supported = model.api != "openai-codex"
     actual_limit = limit or model.max_tokens
     if model.api == "anthropic" and limit is None:

@@ -162,7 +162,7 @@ class SandboxManager:
     def instructions(self, runtime) -> str:
         mode = self.mode_for(runtime)
         return ("<execution_permissions>\n" + json.dumps(mode.flags(), sort_keys=True) + "\n"
-                "These are execution permissions, independent of planning/review instructions. All normal tools "
+                "These are execution permissions, independent of task instructions. All normal tools "
                 "remain visible. Read-only protects host file data, with private scratch and broker records allowed. "
                 "Workspace scope includes managed user-file reads/writes with system/runtime exceptions. Network "
                 "controls managed task operations, not model transport or trusted service startup. Trusted Python "

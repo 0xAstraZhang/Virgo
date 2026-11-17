@@ -2,16 +2,13 @@
 
 [Documentation](../README.md) · [简体中文](../../zh-CN/guides/migrating-execution-policy.md)
 
-Task instructions and execution permissions are now independent. Plan and Code Review are
-optional plugins with normal tool access. They request plans/reports through prompts; they do
-not impose a read-only permission ceiling. Existing conversation content and plans remain readable.
+Execution permissions are independent of task instructions; prompts do not impose a read-only
+ceiling. This guide covers the permission preset, approval and sandbox migration.
 
 ## Update configuration
 
 | Previous entry | Current entry |
 | --- | --- |
-| `/mode plan` / `/mode default` | `/plan` / `/plan off` |
-| `workMode=plan`, `--work-mode plan` | Use `plan: true` / `--plan`; still selects planning instructions when the Plan plugin is enabled |
 | `/mode` | Deprecated alias for `/permissions`; lists/selects editable **permission** presets |
 | `--mode text|json` | `--format text|json`; the old `--mode` preset spelling is a deprecated alias for `--permission` |
 | `sandbox.mode=workspace-write` / `read-only` | Explicit legacy offline policy; remove it to use the new defaults |
@@ -35,7 +32,7 @@ resolved targets, shell environment, policy revision or tool instance cannot reu
 `ask` permits requests; `never` refuses new requests, not all operations. `/permissions revoke`
 clears remembered decisions and pending exceptions. Explicit deny rules remain binding. Failed
 or possibly side-effectful commands are not replayed automatically. Opening history does not
-restore grants or execute a plan. Trusted extension policies can add restrictions.
+restore grants. Trusted extension policies can add restrictions.
 
 ## Default execution boundary
 
@@ -65,8 +62,5 @@ inheritance is separate from that ceiling. Delayed work carries `ToolContext.ori
 conversation change cannot transfer authority. Runtime-only permission exceptions are never
 restored from stored custom records.
 
-Plan is installed through `plugins.plan`; Core has no mandatory Plan service. Extensions can add
-request-level instructions with `add_request_system_section`, and use the existing Runtime and
-SessionStore. Review retains target resolution, frozen evidence and validated findings, with
-normal tools and request/interaction handling. The 0.3 release removes the `harness.plans` alias;
-new integrations use the plugin API.
+Extensions can add request-level instructions with `add_request_system_section`, and use the
+existing Runtime and SessionStore.

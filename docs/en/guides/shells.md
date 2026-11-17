@@ -44,7 +44,7 @@ Foreground commands default to a 300-second timeout. The maximum is 3600 seconds
 
 ## Permissions
 
-PowerShell has independent `powershell(...)` rules; existing `bash(...)` rules do not automatically authorize it. Auto-review receives the actual shell information. Plan mode omits PowerShell and uses file tools for investigation. Dynamic PowerShell paths cannot be safely cached as “allow for this session.” Changing the interpreter does not reuse approval cached for a different interpreter.
+PowerShell has independent `powershell(...)` rules; existing `bash(...)` rules do not automatically authorize it. Auto-review receives the actual shell information. Dynamic PowerShell paths cannot be safely cached as “allow for this session.” Changing the interpreter does not reuse approval cached for a different interpreter.
 
 See [permission presets](../reference/configuration.md#permissions) and [development checks](../development/testing-and-ci.md) for configuration and platform coverage.
 

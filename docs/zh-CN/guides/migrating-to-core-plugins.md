@@ -4,22 +4,16 @@
 
 ## 有哪些变化
 
-Virgo 默认使用 `coding` 预设。基础 Harness 保留模型请求、文件／Shell 工具、权限、上下文、会话和诊断；编程相关的可选能力通过插件提供。Schedule、Workflow、Team、持久 Tasks、通用 Memory 和 Goal 退出官方维护。
+基础 Harness 保留模型请求、文件／Shell 工具、权限、上下文、会话和诊断；编程相关能力通过插件提供。Schedule、Workflow、Team、持久 Tasks、通用 Memory 和 Goal 退出官方维护。
 
 升级不会删除或改写这些功能的数据。已保存的定时任务不再执行；工作流脚本和记忆文件不再自动装载。Virgo 会提示已退役配置及残留的定时任务文件。将工作迁往外部调度器前，先检查下列数据位置。
 
-```bash
-virgo --profile coding
-virgo --profile minimal --no-extensions
-```
-
-`minimal` 关闭预设中的全部能力插件；显式插件配置仍可添加需要的能力。`--no-extensions` 保留原有含义：跳过用户／项目 Python 扩展，它不是预设的别名。`minimal` 仍可加载已信任的用户／项目扩展；如上同时使用两个参数才是零扩展会话。
+官方插件默认加载。`--no-extensions` 跳过用户／项目 Python 扩展，但不启用或关闭官方插件。
 
 ## 转换配置
 
 ```json
 {
-  "profile": "coding",
   "plugins": {
     "web": {"enabled": true},
     "mcp": {"enabled": false},
@@ -38,7 +32,7 @@ virgo --profile minimal --no-extensions
 | `features.permission`、`plugins.auto_review` | 已退休；改用 Core `permissions.approval` 与明确授权规则 |
 | 已移除功能开关及 `memory`、`workflow`、`goal` 配置 | 只提示，不执行后台工作或存储迁移 |
 
-旧 `features.permission` 和 `plugins.auto_review` 已退休；请按[执行策略迁移](migrating-execution-policy.md)配置 `permissions.approval`、明确授权与独立 WorkMode。
+旧 `features.permission` 和 `plugins.auto_review` 已退休；请按[执行策略迁移](migrating-execution-policy.md)配置 `permissions.approval` 和明确授权。
 
 `search.maxUses` 和 `fetch.maxUses` 从默认三次改为 `null`；需要时可显式设置正整数上限。`plugins.web.maxCalls` 可限制每个调用运行时的一次用户请求中客户端搜索与读取的总调用数；单次操作的时间和输出限制保留。详见[联网能力](web.md)。
 
@@ -47,7 +41,7 @@ virgo --profile minimal --no-extensions
 `agent` 工具现在接收 `description`、`prompt`、可选 `read_only` 和可选 `background`。`type` 参数已被移除，继续传入会导致参数校验失败。
 
 - 原 `type="general"`：直接省略类型参数，默认执行普通委派。
-- 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob`、`grep` 和受控 `git_read`。只读能力与操作系统沙箱分别设置。
+- 原 `type="explore"`：改用 `read_only=true`；仅允许 `read`、`glob` 和 `grep`。只读能力与操作系统沙箱分别设置。
 - 自定义 `agents/*.md`：将任务指令迁移至 Skill 或委派提示，特殊模型和工具策略通过受信任的扩展实现。
 
 Virgo 不再加载 `~/.virgo/agents/*.md` 或 `.virgo/agents/*.md`。现有文件不会被删除或改写，需要时可手动迁移或归档。

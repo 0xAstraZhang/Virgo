@@ -10,14 +10,12 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 | --- | --- |
 | [Getting started](guides/getting-started.md) | Installation, login, your first session, print mode |
 | [Using Virgo](guides/interaction.md) | Commands, keyboard shortcuts, language, sessions, steering |
-| [Planning a change](guides/planning.md) | Repository investigation, versioned proposals, revision and explicit execution |
 | [Web search and reading](guides/web.md) | Backends, routing, permissions, fetch limits |
 | [Command shells](guides/shells.md) | Shell selection, execution behavior, output and cancellation |
 | [Native command sandbox](guides/sandbox.md) | Default process isolation, effective boundaries and platform limits |
-| [Independent code review](guides/code-review.md) | Frozen targets, reviewer instructions, validated findings and stale reports |
 | [Troubleshooting](guides/troubleshooting.md) | Errors, logs, diagnostic evidence, recovery boundaries |
 
-[Upgrading an existing installation?](guides/migrating-to-core-plugins.md) Review profile changes, project trust and preserved historical data.
+[Upgrading an existing installation?](guides/migrating-to-core-plugins.md) Review plugin changes, project trust and preserved historical data.
 
 [Execution-policy migration](guides/migrating-execution-policy.md) explains the new approval settings, default sandbox and removed permission modes.
 
@@ -31,7 +29,7 @@ Start with a task you want to complete. The guides explain everyday use; the ref
 
 - [Core and plugin boundaries](development/core-plugin-boundaries.md): ownership, capability inventory and acceptance.
 - [Architecture](development/architecture.md): module responsibilities, execution flow and stable boundaries.
-- [Vocabulary](development/vocabulary.md): canonical terms for capabilities, permissions, Plan and Review.
+- [Vocabulary](development/vocabulary.md): canonical terms for plugins, permissions and configuration keys.
 - [Extensions](development/extensions.md): Python tools and commands, events, lifecycle, runtime services, skills and templates.
 - [Localization](development/localization.md): language packs, session ownership, fallback and adding a language.
 - [Development and CI](development/testing-and-ci.md): local commands, end-to-end checks, result comparison and runner maintenance.

@@ -23,7 +23,7 @@ Enter `/login` inside Virgo. Choose account authentication or API configuration.
 
 | Method | Available presets | Connection |
 | --- | --- | --- |
-| Account (`auth`) | OpenAI, Anthropic, xAI, Google, Kimi | Browser, authorization-code or device-code flow, depending on the provider |
+| Account (`auth`) | OpenAI, Anthropic, xAI, Kimi | Browser, authorization-code or device-code flow, depending on the provider |
 | API (`api`) | DeepSeek, GLM, Kimi | A preset endpoint and an API key you provide |
 | Custom API | A provider ID you choose | OpenAI-compatible or Anthropic Messages endpoint, model ID and key |
 
@@ -36,7 +36,7 @@ Examples:
 /logout
 ```
 
-Follow the login flow for the endpoint and account you intend to use. Account access does not imply that every model or API product is available. Google authentication may request a Cloud project ID; `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_PROJECT_ID` are also recognized.
+Follow the login flow for the endpoint and account you intend to use. Account access does not imply that every model or API product is available.
 
 Existing environment credentials are supported. For example, set `ANTHROPIC_API_KEY` in your shell before starting Virgo to use the built-in Anthropic connection. Provider-specific and custom endpoint settings are documented in [Configuration](../reference/configuration.md).
 
@@ -69,7 +69,7 @@ git diff | uv run virgo -p "Review this diff for correctness issues"
 
 Text print mode prints the final answer. JSON mode emits JSONL events; slash commands with explicit results emit `command_result` records. `-p` requires a prompt from arguments or stdin. It cannot answer interactive questions, so tools report unanswered requests instead of choosing on your behalf.
 
-Use `--no-session` to avoid saving conversation history. This does not disable diagnostic logs or outputs created by tools. Use `--no-extensions` to skip user and project Python extensions; official plugins are controlled by `--profile` and `plugins` settings. `--profile minimal --no-extensions` starts with Core capabilities only. The default `coding` preset keeps the standard coding tools and optional helpers. Project Python extensions require `--trust-project-extensions` or user-level trust; see [Migration](migrating-to-core-plugins.md).
+Use `--no-session` to avoid saving conversation history. This does not disable diagnostic logs or outputs created by tools. Use `--no-extensions` to skip user and project Python extensions; official plugins are enabled by default and each one can be turned off with `plugins.<id>.enabled`. Project Python extensions require `--trust-project-extensions` or user-level trust; see [Migration](migrating-to-core-plugins.md).
 
 ## Try the offline demo
 

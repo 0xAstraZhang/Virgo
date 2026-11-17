@@ -10,14 +10,12 @@
 | --- | --- |
 | [快速开始](guides/getting-started.md) | 安装、登录、首次会话、打印模式 |
 | [使用 Virgo](guides/interaction.md) | 命令、快捷键、语言、会话和运行中补充指令 |
-| [先规划，再执行](guides/planning.md) | 仓库调查、带版本的方案、修订和明确执行 |
 | [联网搜索与网页读取](guides/web.md) | 后端、能力路由、权限和读取限制 |
 | [命令解释器](guides/shells.md) | Shell 选择、执行语义、输出和取消 |
 | [原生命令沙箱](guides/sandbox.md) | 默认进程隔离、有效边界与平台限制 |
-| [独立代码审查](guides/code-review.md) | 固定目标、审查指令、Findings 校验和报告过时判断 |
 | [故障排查](guides/troubleshooting.md) | 错误、日志、诊断证据和恢复边界 |
 
-[升级已有安装？](guides/migrating-to-core-plugins.md) 先了解预设变化、项目信任和保留的历史数据。
+[升级已有安装？](guides/migrating-to-core-plugins.md) 先了解插件变化、项目信任和保留的历史数据。
 
 [执行策略迁移](guides/migrating-execution-policy.md)说明新的审批设置、默认沙箱和已移除的权限模式。
 
@@ -31,7 +29,7 @@
 
 - [Core 与插件边界](development/core-plugin-boundaries.md)：职责归属、能力清单和验收。
 - [架构](development/architecture.md)：模块职责、执行流程和稳定边界。
-- [术语](development/vocabulary.md)：能力、权限、Plan 与 Review 的规范词汇。
+- [术语](development/vocabulary.md)：插件、权限与配置键的规范词汇。
 - [扩展](development/extensions.md)：Python 工具与命令、事件、生命周期、运行时服务、技能和提示模板。
 - [本地化](development/localization.md)：语言包、会话归属、回退策略和新增语言。
 - [开发与 CI](development/testing-and-ci.md)：本地命令、端到端验收、结果比较和运行器维护。

@@ -4,22 +4,16 @@
 
 ## What changes
 
-Virgo now defaults to the `coding` preset. The base harness keeps model requests, file/shell tools, permissions, context, sessions and diagnostics. Coding-specific capabilities are optional plugins. Schedule, Workflow, Team, durable Tasks, general Memory and Goal are no longer official features.
+The base harness keeps model requests, file/shell tools, permissions, context, sessions and diagnostics. Coding-specific capabilities are plugins. Schedule, Workflow, Team, durable Tasks, general Memory and Goal are no longer official features.
 
 Upgrading does not delete or rewrite their data. Saved schedules no longer execute; workflow scripts and memory files are not loaded automatically. Virgo reports retired configuration and the presence of old schedule data. Inspect the paths below before moving any recurring work to an external scheduler.
 
-```bash
-virgo --profile coding
-virgo --profile minimal --no-extensions
-```
-
-`minimal` disables all preset capability plugins; explicit plugin overrides can add selected capabilities. `--no-extensions` keeps its existing meaning: skip user/project Python extensions. It is not an alias for a profile. Trusted user/project extensions can still load with `minimal`; combine both flags, as above, for a zero-extension session.
+Official plugins load by default. `--no-extensions` skips user/project Python extensions; it does not disable official plugins or load them.
 
 ## Translate settings
 
 ```json
 {
-  "profile": "coding",
   "plugins": {
     "web": {"enabled": true},
     "mcp": {"enabled": false},
@@ -38,7 +32,7 @@ Only known plugin IDs are accepted. Defaults merge with user settings, then proj
 | `features.permission`, `plugins.auto_review` | Retired; configure Core `permissions.approval` and explicit grants |
 | Removed feature flags and `memory`, `workflow`, `goal` settings | Notice only; no automatic work or storage migration |
 
-Legacy `features.permission` and `plugins.auto_review` are retired. Follow [execution-policy migration](migrating-execution-policy.md) for `permissions.approval`, explicit grants and independent WorkMode.
+Legacy `features.permission` and `plugins.auto_review` are retired. Follow [execution-policy migration](migrating-execution-policy.md) for `permissions.approval` and explicit grants.
 
 `search.maxUses` and `fetch.maxUses` default to `null` rather than three. Configure a positive explicit limit when required. `plugins.web.maxCalls` can bound client search and reading together per calling runtime/user request; operation time and output limits remain. See [Web](web.md).
 
@@ -47,7 +41,7 @@ Legacy `features.permission` and `plugins.auto_review` are retired. Follow [exec
 The `agent` tool accepts `description`, `prompt`, optional `read_only` and optional `background`. The `type` parameter is removed and calls containing it are rejected.
 
 - Replace `type="general"` with an omitted type argument; unrestricted delegation is the default.
-- Replace `type="explore"` with `read_only=true`. Only `read`, `glob`, `grep` and controlled `git_read` are available. Read-only capability is separate from the OS sandbox.
+- Replace `type="explore"` with `read_only=true`. Only `read`, `glob` and `grep` are available. Read-only capability is separate from the OS sandbox.
 - Move custom `agents/*.md` instructions into a Skill or delegated prompt; use trusted extensions for custom model and tool policies.
 
 Virgo no longer loads `~/.virgo/agents/*.md` or `.virgo/agents/*.md`. Existing files are not deleted or rewritten; archive or migrate them manually.

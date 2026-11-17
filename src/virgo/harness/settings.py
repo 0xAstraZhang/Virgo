@@ -14,19 +14,18 @@ from typing import Any
 from ..tools.sandbox import validate_config as validate_sandbox_config
 from .execution_modes import configured_modes
 from .permissions import normalize_approval_policy
-from .work_modes import normalize_work_mode
 
-PROFILES = ("minimal", "coding")
 PLUGIN_IDS = (
     "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web", "mcp",
-    "plan", "code_review",
 )
-REMOVED_FEATURES = frozenset({"schedule", "workflow", "team", "tasks", "memory", "goal"})
+REMOVED_FEATURES = frozenset({
+    "schedule", "workflow", "team", "tasks", "memory", "goal", "plan", "code_review", "workMode", "profile",
+})
+RETIRED_PLUGINS = frozenset({"plan", "code_review"})
 _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
-    "plan": False,
     "sandbox": {},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
@@ -35,7 +34,6 @@ DEFAULTS: dict[str, Any] = {
     "permissions": {"preset": "workspace-edit", "presets": {}, "approval": "ask", "allow": [], "deny": []},
     "hooks": {},
     "shell": {"executable": "auto"},
-    "profile": "coding",
     "plugins": {},
     "budget": {"maxModelCalls": None},
     "compaction": {"enabled": True, "triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": None},
@@ -100,15 +98,6 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     permissions = out.get("permissions")
     if isinstance(permissions, dict):
         _canonicalize_permissions(permissions, notices)
-    if "workMode" in out:
-        legacy_mode = out.pop("workMode")
-        plan = normalize_work_mode(legacy_mode) == "plan"
-        if "plan" in out and type(out["plan"]) is not bool:
-            raise ValueError("plan must be true or false")
-        if "plan" in out and out["plan"] != plan:
-            raise ValueError("workMode and plan disagree; remove workMode and use plan")
-        out["plan"] = plan
-        notices.append("workMode is deprecated; use plan: true or false.")
     if "permissions" in out:
         _validate_permissions(out["permissions"])
     if isinstance(out.get("plugins"), dict) and "auto_review" in out["plugins"]:
@@ -123,7 +112,7 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
         if not isinstance(enabled, bool):
             raise ValueError(f"features.{name} must be a boolean")
         if name in REMOVED_FEATURES:
-            notices.append(f"features.{name} is retired and ignored; existing data is preserved. See the Core/plugins migration guide.")
+            notices.append(f"features.{name} is retired and ignored; existing data is preserved.")
             continue
         if name in {"search", "fetch"}:
             web = translated.setdefault("web", {})
@@ -144,8 +133,12 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     if not isinstance(plugins, dict):
         raise ValueError("plugins must be an object keyed by plugin ID")
     out["plugins"] = deep_merge(translated, plugins)
+    for name in sorted(RETIRED_PLUGINS.intersection(out["plugins"])):
+        out["plugins"].pop(name)
+        notices.append(f"plugins.{name} is retired and ignored; existing data is preserved.")
     for name in sorted(REMOVED_FEATURES.intersection(out)):
-        notices.append(f"The retired {name} configuration is ignored; existing data is preserved. See the Core/plugins migration guide.")
+        out.pop(name)
+        notices.append(f"The retired {name} configuration is ignored; existing data is preserved.")
     return out
 
 
@@ -206,11 +199,6 @@ def _validate(data: dict) -> None:
     if data.get("permissions", {}).get("mode") is not None or data.get("permissions", {}).get("modes") is not None:
         raise ValueError("permissions.mode and permissions.modes are retired; use permissions.preset and permissions.presets")
     validate_sandbox_config(data.get("sandbox", {}))
-    if type(data.get("plan", False)) is not bool:
-        raise ValueError("plan must be true or false")
-    profile = data.get("profile", "coding")
-    if profile not in PROFILES:
-        raise ValueError(f"profile must be one of {', '.join(PROFILES)}")
     plugins = data.get("plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("plugins must be an object keyed by plugin ID")
@@ -266,8 +254,6 @@ def _canonical_key(dotted: str) -> str:
         return "permissions.presets"
     if dotted.startswith("permissions.modes."):
         return "permissions.presets." + dotted[len("permissions.modes."):]
-    if dotted == "workMode":
-        return "plan"
     return dotted
 
 
@@ -323,8 +309,6 @@ class Settings:
         return settings
 
     def get(self, dotted: str, default: Any = None) -> Any:
-        if dotted == "workMode":
-            return "plan" if self.get("plan") else "default"
         dotted = _canonical_key(dotted)
         cur: Any = self.data
         for part in dotted.split("."):
@@ -334,8 +318,6 @@ class Settings:
         return cur if cur is not None else default
 
     def set(self, dotted: str, value: Any) -> None:
-        if dotted == "workMode":
-            dotted, value = "plan", normalize_work_mode(value) == "plan"
         dotted = _canonical_key(dotted)
         cur = self.data
         parts = dotted.split(".")
@@ -347,9 +329,7 @@ class Settings:
         if name not in PLUGIN_IDS:
             raise ValueError(f"Unknown plugin {name!r}")
         explicit = self.get(f"plugins.{name}.enabled")
-        enabled = explicit if explicit is not None else (
-            self.get("profile", "coding") == "coding" and (name != "mcp" or self._mcp_configured())
-        )
+        enabled = explicit if explicit is not None else (name != "mcp" or self._mcp_configured())
         if name == "web":
             enabled = enabled and (self.get("plugins.web.searchEnabled", True) or self.get("plugins.web.fetchEnabled", True))
         return bool(enabled)

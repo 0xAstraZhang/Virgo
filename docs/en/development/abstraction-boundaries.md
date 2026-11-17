@@ -9,7 +9,7 @@ The AI, Agent, Harness/Plugins and CLI layers separate transport, execution and 
 | Rule | Owner | Callers and boundaries |
 | --- | --- | --- |
 | OpenAI reasoning-effort mapping | `ai/providers/reasoning.py` | Chat, Responses, Codex and `completion_request_metadata()` share pure functions. Explicit maps, model declarations and default fallbacks retain their precedence. Adapters still own HTTP clients, authentication and stream events. |
-| Approval and read-only capability | `harness/permissions.py` | ask/never is separate from Plan instructions. `permission_policy.py` owns deterministic rules, explicit grants, execution rechecks and audit. `origin_context.py` owns provenance without a second approval transcript. |
+| Approval and read-only capability | `harness/permissions.py` | ask/never approval is independent of tool capability. `permission_policy.py` owns deterministic rules, explicit grants, execution rechecks and audit. `origin_context.py` owns provenance without a second approval transcript. |
 | Trusted Runtime for a tool context | `AgentSession.runtime_for_context()` | Diagnostics and MCP share identity validation; each feature handles denial and its subsequent operation. Resolution does not consult the selected UI conversation or grant diagnostic access. |
 
 Reasoning mapping shares only equivalent semantics: Chat-compatible APIs support `reasoningEffortMap`, while Responses/Codex retain their `max → xhigh` fallback. Keep protocol differences explicit instead of hiding them in a generic provider with many branches. Diagnostic metadata must use the same request policy.
@@ -44,4 +44,4 @@ See [Core/plugin boundaries](core-plugin-boundaries.md) and the [public API](ext
 
 ## Existing validation entry points
 
-Request mapping is covered by `test_credentials.py`, `test_codex.py`, `test_responses.py` and `test_auxiliary_requests.py`. CLI arguments, TUI mode switching, plan mode and execution-time permission checks cover permission compatibility. `test_diagnostic_access.py` and `test_mcp_recovery.py` cover missing, foreign and forged sources as well as conversation switching. These existing product scenarios remain. The Core/plugin refactor added `test_core_plugins_e2e.py` before production changes to cover the new assembly, trust, ownership, cleanup, budget and migration contracts.
+Request mapping is covered by `test_credentials.py`, `test_codex.py`, `test_responses.py` and `test_auxiliary_requests.py`. CLI arguments, TUI mode switching and execution-time permission checks cover permission compatibility. `test_diagnostic_access.py` and `test_mcp_recovery.py` cover missing, foreign and forged sources as well as conversation switching. These existing product scenarios remain. The Core/plugin refactor added `test_core_plugins_e2e.py` before production changes to cover the new assembly, trust, ownership, cleanup, budget and migration contracts.

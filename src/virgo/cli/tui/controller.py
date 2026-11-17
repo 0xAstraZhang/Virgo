@@ -63,10 +63,7 @@ class RunController:
             session.bus.on("agent_event", self._agent_event, priority=100),
             session.bus.on("runtime_created", self._runtime_created, priority=100),
             session.bus.on("runtime_closed", self._runtime_closed),
-            session.bus.on("command_start", self._command_start, priority=100),
-            session.bus.on("work_mode_changed", self._state_changed),
             session.bus.on("permission_mode_changed", self._state_changed),
-            session.bus.on("proposed_plan_changed", self._state_changed),
         ]
         ui.bind_signal("main", session.main.agent.signal)
 
@@ -87,8 +84,7 @@ class RunController:
     def can_switch(self) -> bool:
         return not self.busy and not self.closing and not self._helpers and not self.state.deferred
 
-    def open_session(self, path: Path | str, *, initial: str | None = None,
-                     work_mode: str | None = None) -> bool:
+    def open_session(self, path: Path | str, *, initial: str | None = None) -> bool:
         """Open a saved conversation without retaining another workspace's services."""
         if not self.can_switch:
             return False
@@ -102,12 +98,12 @@ class RunController:
             if target.cwd.resolve() == previous.cwd:
                 if self.closing:
                     return
-                previous.open_session(path, work_mode=work_mode)
+                previous.open_session(path)
             else:
                 if not target.cwd.is_dir():
                     raise FileNotFoundError(tr(self, "ui.session.missing_workspace", path=target.cwd))
                 candidate = AgentSession(
-                    target.cwd, ui=StagedFullscreenUI(self.ui), session=path, work_mode=work_mode,
+                    target.cwd, ui=StagedFullscreenUI(self.ui), session=path,
                     **{**previous.session_options, "trust_project_extensions": False},
                 )
                 with self._lifecycle_lock:
@@ -136,10 +132,7 @@ class RunController:
                                 candidate.bus.on("agent_event", self._agent_event, priority=100),
                                 candidate.bus.on("runtime_created", self._runtime_created, priority=100),
                                 candidate.bus.on("runtime_closed", self._runtime_closed),
-                                candidate.bus.on("command_start", self._command_start, priority=100),
-                                candidate.bus.on("work_mode_changed", self._state_changed),
                                 candidate.bus.on("permission_mode_changed", self._state_changed),
-                                candidate.bus.on("proposed_plan_changed", self._state_changed),
                             ]
                             self.ui.push("session_changed", candidate)
                             self._session_reset(candidate)
@@ -158,14 +151,14 @@ class RunController:
         self._launch(open_saved)
         return True
 
-    def new_session(self, *, initial: str | None = None, work_mode: str | None = None) -> bool:
+    def new_session(self, *, initial: str | None = None) -> bool:
         if not self.can_switch:
             return False
 
         def start_new() -> None:
             if self.closing:
                 return
-            self.session.new_session(work_mode=work_mode)
+            self.session.new_session()
             if initial and not self.closing:
                 self.session.prompt(initial)
 
@@ -184,14 +177,6 @@ class RunController:
             *[tr(self, "ui.controller.deferred", text=text) for text in self.state.deferred],
             *unsaved,
         ]
-
-    @property
-    def task_runtime(self):
-        return self.state.task_runtime or self.session.main
-
-    @property
-    def workflow(self) -> str:
-        return getattr(self.task_runtime, "workflow", None) or self.session.services["permissions"].work_mode
 
     def change_permission_mode(self, choice: PermissionModeChoice) -> None:
         manager = self.session.services["sandbox"]
@@ -221,19 +206,9 @@ class RunController:
         self.ui.bind_signal("main", session.main.agent.signal)
         self.ui.push("reset", copy.deepcopy(session.store.branch()))
 
-    def _command_start(self, command, runtime) -> None:
-        if runtime.session is self.session and command.isolated:
-            self.state.task_runtime = runtime
-            self.ui.push("state_changed", None)
-        if runtime.session is self.session and command.isolated and (self.closing or self._interrupted):
-            self.session.abort_runtime(runtime)
-
     def _runtime_created(self, runtime) -> None:
         if runtime.session is self.session:
             self.ui.bind_signal(runtime.name, runtime.agent.signal)
-            if runtime.parent is self.state.task_runtime and runtime.workflow:
-                self.state.task_runtime = runtime
-                self.ui.push("state_changed", None)
 
     def _runtime_closed(self, runtime) -> None:
         if runtime.session is self.session:
@@ -243,7 +218,7 @@ class RunController:
         if runtime.session is not self.session:
             return
         self.ui.bind_signal(event.agent, runtime.agent.signal)
-        if (event.agent == "main" or runtime is self.state.task_runtime) and event.type == "agent_start" and (self.closing or self._interrupted):
+        if event.agent == "main" and event.type == "agent_start" and (self.closing or self._interrupted):
             # Agent.prompt resets its own signal. An interrupt may have arrived
             # after scheduling but before that reset on the worker thread.
             self.session.abort_runtime(runtime)
@@ -268,7 +243,6 @@ class RunController:
         ticket = next(self._ids)
         if not concurrent:
             self.busy = True
-            self.state.task_runtime = None
             self._interrupted = False
             self.session.main.agent.signal.clear()
             self.ui.push("run_start", ticket)
@@ -312,10 +286,6 @@ class RunController:
             self.request_close()
             return
         cmd = self.session.commands.get(text[1:].split(" ", 1)[0]) if text.startswith("/") else None
-        if (cmd is not None and cmd.name == "plan"
-                and text.partition(" ")[2].split(maxsplit=1)[:1] in (["edit"], ["execute"]) and self.busy):
-            self.ui.print(tr(self, "plan.busy"), "warn")
-            return
         if cmd is not None and cmd.concurrent:
             def invoke():
                 with self.session.ui.command_scope():
@@ -344,7 +314,6 @@ class RunController:
         for update in self.ui.drain():
             if update.kind == "done":
                 self.busy = False
-                self.state.task_runtime = None
                 out.append(update)
             elif update.kind == "helper_done":
                 self._helpers.pop(update.payload, None)

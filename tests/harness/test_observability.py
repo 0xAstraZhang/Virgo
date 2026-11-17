@@ -103,7 +103,7 @@ def test_permission_audit_records_review_and_final_decision(make_session, tmp_pa
     assert audit[0]["source"] == ("manual-approval" if approval == "ask" else "approval-never")
     assert audit[-1]["decision"] == decision
     assert audit[0]["approval_policy"] == approval
-    assert audit[0]["work_mode"] == "default" and not audit[0]["read_only"]
+    assert not audit[0]["read_only"]
     assert all("model" not in record for record in audit)
     assert audit[0]["tool_call_id"] == ev.call_id
     assert audit[0]["reason"]

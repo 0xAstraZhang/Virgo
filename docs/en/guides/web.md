@@ -22,7 +22,7 @@ Virgo can search for sources and read public webpages. The two capabilities have
 | `deepseek` | Use the official DeepSeek Search API with an available key |
 | `off` | Disable search |
 
-The adapters include native search for supported Anthropic, OpenAI Responses/Codex and xAI connections, plus the separate DeepSeek Search API. Google Code Assist and unknown compatible connections use the built-in fallback by default. A compatible protocol does not guarantee a native feature.
+The adapters include native search for supported Anthropic, OpenAI Responses/Codex and xAI connections, plus the separate DeepSeek Search API. Unknown compatible connections use the built-in fallback by default. A compatible protocol does not guarantee a native feature.
 
 DeepSeek search can be used with another conversation model. Configure `/login api deepseek` or `DEEPSEEK_API_KEY` first; an explicit selection fails without a usable official connection and retains the previous choice. `search.apiKeyEnv` can select a dedicated key environment variable. DuckDuckGo needs no key, but can rate-limit or require browser verification; Virgo reports that condition as an error.
 

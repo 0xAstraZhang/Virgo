@@ -57,7 +57,6 @@ def run_repl(
             permissions=approval_policy_label(
                 session.approval_policy, session.t
             ),
-            work_mode=session.t("work_mode." + session.services["permissions"].work_mode),
             sandbox=session.services["sandbox"].effective_mode(session.main),
             cwd=session.cwd,
         ),
@@ -129,11 +128,6 @@ def run_repl(
                     session.abort()
                 break
             cmd = session.commands.get(line[1:].split(" ", 1)[0]) if line.startswith("/") else None
-            if (cmd is not None and cmd.name == "plan"
-                    and line.partition(" ")[2].split(maxsplit=1)[:1] in (["edit"], ["execute"]) and busy()):
-                ui.print(tr(session, "plan.busy"), "warn")
-                broker.resume_reading()
-                continue
             if cmd is not None and cmd.concurrent:
                 try:
                     with session.ui.command_scope():

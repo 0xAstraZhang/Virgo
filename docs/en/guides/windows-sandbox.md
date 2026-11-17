@@ -19,7 +19,7 @@ The following sections distinguish the previously exercised boundary from the cu
 
 ## Permission model
 
-Ordinary tool approval does not replace OS enforcement. An explicit `request_permissions` grant may change one operation’s flags; Plan/Code Review instructions do not. An explicit read-only child ceiling remains binding. The originating Runtime supplies the workspace; changing the selected conversation or cwd does not select a new grant root. Constrained policies with `workspace_only=false` are rejected as unsupported before the payload starts.
+Ordinary tool approval does not replace OS enforcement. An explicit `request_permissions` grant may change one operation’s flags. An explicit read-only child ceiling remains binding. The originating Runtime supplies the workspace; changing the selected conversation or cwd does not select a new grant root. Constrained policies with `workspace_only=false` are rejected as unsupported before the payload starts.
 
 | Mechanism | Implemented responsibility | Scope limit |
 | --- | --- | --- |

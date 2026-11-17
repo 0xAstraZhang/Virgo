@@ -67,11 +67,8 @@ class Runtime:
         origin_parent: ExecutionOrigin | None = None,
         accounting_store=None,
         request_budget: RequestBudget | None = None,
-        work_mode: str | None = None,
         read_only: bool = False,
         approval_policy: str | None = None,
-        workflow: str | None = None,
-        suppress_message_events: bool = False,
         execution_mode: PermissionMode | None = None,
     ):
         self.session = session
@@ -86,10 +83,6 @@ class Runtime:
         self.parent = origin_parent.runtime if origin_parent is not None else None
         self.read_only = bool(read_only)
         self.approval_policy = approval_policy
-        self.workflow = workflow
-        self.suppress_message_events = suppress_message_events
-        if role == "main":
-            session.services["permissions"].restore_work_mode(self, work_mode)
         if origin_parent is not None:
             origin_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
             self.accounting_store = origin_parent.root
@@ -204,9 +197,7 @@ class Runtime:
         self.session.bus.emit("agent_event", ev, self)
         if ev.type == "turn_end":
             self.session.bus.emit("turn_end", ev, self)
-        # Structured-result clients publish their validated conclusion separately.
-        if not self.suppress_message_events or ev.type not in {"message_start", "message_update", "message_end"}:
-            self.session.ui.on_event(ev)
+        self.session.ui.on_event(ev)
 
     def diagnostic_context(self, **extra) -> dict:
         owner = self.store if self.store is not None else self.accounting_store

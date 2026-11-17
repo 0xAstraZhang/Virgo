@@ -1,8 +1,7 @@
-# Permission presets and prompt tasks
+# Permission presets
 
-This change separates task instructions from execution permissions. Plan and Code Review use
-the normal Runtime and registered tools; their prompts request planning/review without implementing.
-Only execution permissions establish an enforced filesystem/network boundary.
+Execution permissions establish the enforced filesystem/network boundary. Task instructions
+do not add or remove that boundary.
 
 ## Permission contract
 
@@ -26,8 +25,8 @@ partially executed commands are never automatically replayed.
 
 ## Failure modes and acceptance
 
-- A tool visible to Plan/Review may still fail under the execution policy. Check identical normal
-  tool schemas under each task and prove write denial through the execution path.
+- A visible tool may still fail under the execution policy. Prove write denial through the
+  execution path rather than through tool-schema differences.
 - A workspace escape through a direct file tool, link, subprocess, background job or child must
   receive the source policy; changing cwd or selected conversation cannot expand access.
 - Offline policy must cover managed Shell, Web/native provider search and remote MCP invocation;
@@ -41,5 +40,4 @@ partially executed commands are never automatically replayed.
   not evidence of native enforcement. Existing E2E scenarios are updated for changed contracts;
   focused new scenarios cover newly expressible combinations and single-operation exceptions.
 - In compact terminals and approval panels all three permission values remain visible; replay
-  preserves actual event order. A cancelled/incomplete review never appears as a successful
-  review with zero findings.
+  preserves actual event order.

@@ -68,13 +68,12 @@ def test_risky_review_respects_allow_once_and_exact_session_approval(make_sessio
     assert session.services["sandbox"].mode_for(session.main).workspace_only
 
 
-def test_planning_task_does_not_restrict_writes_and_child_ceiling_still_applies(make_session):
-    session = make_session(settings={"workMode": "plan"})
+def test_children_inherit_permission_ceilings_without_task_instructions(make_session):
+    session = make_session()
     permissions = session.services["permissions"]
     child = session.create_runtime("child", "subagent", parent=session.main, read_only=False)
     restricted = session.create_runtime("restricted", "subagent", parent=child, read_only=True)
     try:
-        assert "Plan mode is active" in child.request_context([]).system
         assert not permissions.is_read_only(child) and permissions.is_read_only(restricted)
         assert {"read", "write", "edit", "request_permissions"}.issubset(
             tool.name for tool in child.request_context([]).tools
@@ -83,7 +82,6 @@ def test_planning_task_does_not_restrict_writes_and_child_ceiling_still_applies(
             event = tool_call_event(session, "write", {"path": "a.txt", "content": "x"}, agent=runtime.name)
             event.origin = runtime.origin
             assert permissions.decide(event)[0] == expected
-        assert permissions.work_mode_for(child) == permissions.work_mode_for(restricted) == "plan"
     finally:
         session.release_runtime(restricted)
         session.release_runtime(child)

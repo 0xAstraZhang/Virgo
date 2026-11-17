@@ -121,8 +121,6 @@ class EventView(Foldable):
             title.append(f"[{self.agent}] ")
         if self.tool_name:
             title.append(self.tool_name, style="bold")
-        elif self.kind == "review":
-            title.append(tr(self, "work_mode.review"))
         else:
             key = {
                 "thinking": "thought",
@@ -936,17 +934,6 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                         await self._result(data.get("agent", "main"), message)
                 except (KeyError, TypeError, ValueError):
                     await self.add_notice(tr(self, "ui.event.saved_tool_error"), "warn")
-            elif entry.get("type") == "custom" and entry.get("kind") == "code_review":
-                report = entry.get("data", {})
-                if isinstance(report, dict) and report.get("status") not in (None, "running"):
-                    # The plugin's saved terminal record is the validated report;
-                    # raw reviewer JSON is not a user-facing transcript message.
-                    from ...plugins.code_review.report import render_report
-
-                    try:
-                        await self.add_review_result(report, render_report(report))
-                    except (KeyError, TypeError, ValueError, AttributeError):
-                        await self.add_notice(tr(self, "ui.event.saved_message_error"), "warn")
             elif entry.get("type") == "compaction":
                 await self.add_notice(tr(self, "ui.event.compacted"), "dim")
 
@@ -961,13 +948,6 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 style, ""
             )
             await self._place(Static(Text(text, style=rich_style), classes="notice"))
-
-    async def add_review_result(self, report: dict, text: str) -> None:
-        row = EventView("review", text)
-        row.add_class("message", "review-report")
-        row.set_expanded(True)
-        row.set_class(report.get("status") not in ("completed", "cancelled"), "error")
-        await self._append(row)
 
     def toggle_tools(self) -> None:
         self.show_tools = self._older_tools = not self.show_tools
