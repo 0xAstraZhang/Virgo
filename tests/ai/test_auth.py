@@ -6,10 +6,44 @@ import os
 import threading
 import time
 
+import httpx
 import pytest
 
 from virgo import ai
 from virgo.ai.auth import AuthStore, authenticated_model
+
+
+@pytest.mark.parametrize("boundary", ["response", "returned", "google-response"])
+def test_cancelled_refresh_persists_rotated_credentials(tmp_path, monkeypatch, boundary):
+    from virgo.ai import oauth, oauth_google
+
+    provider = "google-gemini-cli" if boundary == "google-response" else "xai"
+    store = AuthStore(tmp_path / "auth.json")
+    store.set(provider, {"type": "oauth", "access": "old", "refresh": "old-refresh", "expires": 0,
+                         **({"projectId": "project"} if boundary == "google-response" else {})})
+    signal = threading.Event()
+    body = {"access_token": "new", "refresh_token": "rotated", "expires_in": 3600}
+
+    def response(*args, **kwargs):
+        signal.set()
+        return httpx.Response(200, json=body)
+
+    if boundary == "google-response":
+        client = httpx.Client
+        monkeypatch.setattr(oauth_google.httpx, "Client", lambda **kw: client(
+            transport=httpx.MockTransport(response), **kw))
+    elif boundary == "response":
+        monkeypatch.setattr(oauth.httpx, "post", response)
+    else:
+        def refresh(*args, **kwargs):
+            signal.set()
+            return {"access": "new", "refresh": "rotated", "expires": time.time() + 3600}
+        monkeypatch.setattr(oauth, "refresh", refresh)
+    with pytest.raises(ValueError, match="[Cc]ancel"):
+        store.credential(provider, signal)
+    saved = AuthStore(store.path).all()[provider]
+    assert saved["access"] == "new" and saved["refresh"] == "rotated"
+    assert saved["expires"] > time.time()
 
 
 def test_store_permissions_merge_logout_and_malformed_preservation(tmp_path):

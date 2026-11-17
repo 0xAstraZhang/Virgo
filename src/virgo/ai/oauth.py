@@ -70,7 +70,7 @@ def _positive(value, default=None) -> float:
     return float(value)
 
 
-def _request(url: str, fields: dict, signal=None, *, json_body=False) -> tuple[int, dict]:
+def _request(url: str, fields: dict, signal=None, *, json_body=False, defer_cancel=False) -> tuple[int, dict]:
     _check(signal)
     try:
         response = httpx.post(
@@ -83,7 +83,8 @@ def _request(url: str, fields: dict, signal=None, *, json_body=False) -> tuple[i
     except httpx.HTTPError:
         _check(signal)
         raise AuthError("OAuth request failed. Check your connection and try again.") from None
-    _check(signal)
+    if not defer_cancel:
+        _check(signal)
     try:
         body = response.json()
     except (ValueError, TypeError):
@@ -484,6 +485,7 @@ def refresh(provider_id: str, credential: dict, signal=None) -> dict:
         },
         signal,
         json_body=provider_id == "anthropic",
+        defer_cancel=True,  # The credential store must save a rotated token before cancelling.
     )
     _success(status)
     result = _credential(body, credential, default_expiry=3600 if provider_id == "xai" else None)

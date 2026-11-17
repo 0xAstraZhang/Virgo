@@ -71,7 +71,7 @@ def _error_detail(body, request_options: dict) -> str:
     return message[:1000] + ("…" if len(message) > 1000 else "")
 
 
-def _request(method: str, url: str, signal=None, **kwargs) -> dict:
+def _request(method: str, url: str, signal=None, *, defer_cancel=False, **kwargs) -> dict:
     _check_cancelled(signal)
     try:
         with httpx.Client(timeout=30.0, follow_redirects=False) as client:
@@ -80,7 +80,8 @@ def _request(method: str, url: str, signal=None, **kwargs) -> dict:
         raise GoogleOAuthError(
             "Google authentication request failed; check your connection and retry"
         ) from None
-    _check_cancelled(signal)
+    if not defer_cancel:
+        _check_cancelled(signal)
     if not response.is_success:
         message = f"Google authentication request failed (HTTP {response.status_code})"
         try:
@@ -262,6 +263,7 @@ def refresh(credential: dict, signal=None) -> dict:
         "POST",
         TOKEN_URL,
         signal,
+        defer_cancel=True,
         data={
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,

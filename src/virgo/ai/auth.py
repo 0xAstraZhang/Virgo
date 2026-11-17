@@ -105,14 +105,14 @@ class AuthStore:
             if not credential or credential.get("type") != "oauth":
                 return credential
             if float(credential.get("expires", 0)) <= time.time() + 60:
-                from .oauth import refresh
+                from .oauth import AuthCancelled, refresh
 
                 updated = refresh(provider, copy.deepcopy(credential), signal=signal)
                 credential = {**credential, **updated}
-                if signal is not None and signal.is_set():
-                    raise ValueError("Authentication cancelled")
                 data[provider] = credential
                 self._write(data)
+                if signal is not None and signal.is_set():
+                    raise AuthCancelled("Authentication cancelled")
             return credential
 
 
