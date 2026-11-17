@@ -5,7 +5,7 @@
 | 范围 | 当前结论 |
 | --- | --- |
 | Host/Core | 独立 Python 进程测试真实读写、复杂 Shell 和普通子代理，并禁止导入 Sandbox；没有普通审查或审批。来源、单次授权、UI 与事实保留分别验证。 |
-| 文件工具 | 保留句柄固定、新 inode 替换、编码／权限、失败编辑和硬链接 unlink 竞争用例；不能替代原生 Shell 验收，Windows 仍需真实平台证据。 |
+| 文件工具 | 保留句柄固定、新 inode 替换、编码／权限、失败编辑和硬链接 unlink 竞争用例；Windows 2022/2025 记录中 3 个真实 NTFS broker 别名场景通过；仍不能替代原生 Shell 验收。 |
 | macOS MXC | **未通过**。1.1.0 ARM64 实际启动和允许写入成功，启动后硬链接别名却能修改工作区外文件。[原始报告](../../evidence/execution/macos-mxc-shared-path-probe.json)保留了失败。 |
 | Linux MXC | **未验收**。共享宿主路径策略在载荷启动前拒绝；没有本地 Linux 原生成功证据。 |
 | Windows MXC | **未验收／阻塞**。此前 2022／2025 主机因 PSEC 不可用无法启动；与共享路径策略不支持分别记录，不回退旧 LPAC。 |
