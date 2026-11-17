@@ -36,7 +36,7 @@
 
 ## 移除 checkout 入口
 
-0.3 删除根目录 `main.py` 兼容启动器。`tests.cli.test_main` 的六个用例只少了 `[checkout]` 参数；`[command]` 与 `[module]` 变体在 base 与 head 保留相同断言。`ci/pipeline/reports.py::APPROVED_RETIREMENTS` 记录该基线及确切的保留覆盖，比较器会将其视为已评审的重复删除，而不是六个测试丢失。
+0.3 删除根目录 `main.py` 兼容启动器。`tests.cli.test_main` 的七个用例只少了 `[checkout]` 参数；`[command]` 与 `[module]` 变体（包括 `test_non_terminal_uses_plain_repl` 的两个 `ui` 变体）在 base 与 head 保留相同断言。`ci/pipeline/reports.py::APPROVED_RETIREMENTS` 记录该基线及确切的保留覆盖，比较器会将其视为已评审的重复删除，而不是七个测试丢失。
 
 ## 改名的用例
 

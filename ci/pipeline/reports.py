@@ -77,10 +77,15 @@ APPROVED_RETIREMENTS = {
                 "test_fullscreen_rejects_non_terminal_before_starting_session[command]",
                 "test_fullscreen_rejects_non_terminal_before_starting_session[module]",
             )),
-        "test_non_terminal_uses_plain_repl[checkout]": (
+        "test_non_terminal_uses_plain_repl[checkout-auto]": (
             "tests.cli.test_main", (
-                "test_non_terminal_uses_plain_repl[command]",
-                "test_non_terminal_uses_plain_repl[module]",
+                "test_non_terminal_uses_plain_repl[command-auto]",
+                "test_non_terminal_uses_plain_repl[module-auto]",
+            )),
+        "test_non_terminal_uses_plain_repl[checkout-plain]": (
+            "tests.cli.test_main", (
+                "test_non_terminal_uses_plain_repl[command-plain]",
+                "test_non_terminal_uses_plain_repl[module-plain]",
             )),
         "test_print_text_ignores_fullscreen_option[checkout]": (
             "tests.cli.test_main", (

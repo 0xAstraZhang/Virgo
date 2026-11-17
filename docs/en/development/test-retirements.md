@@ -36,7 +36,7 @@ Before the comparator implementation changed, its new real-CLI acceptance genera
 
 ## Removed checkout entry point
 
-The 0.3 change removes the root `main.py` compatibility launcher. Six `tests.cli.test_main` cases lose their `[checkout]` parameter only; the `[command]` and `[module]` variants retain the same assertions in base and head. `ci/pipeline/reports.py::APPROVED_RETIREMENTS` records this baseline and the exact retained coverage, so the comparison reports a reviewed duplicate removal rather than six lost tests.
+The 0.3 change removes the root `main.py` compatibility launcher. Seven `tests.cli.test_main` identities lose their `[checkout]` parameter; the `[command]` and `[module]` variants (including both `ui` variants of `test_non_terminal_uses_plain_repl`) retain the same assertions in base and head. `ci/pipeline/reports.py::APPROVED_RETIREMENTS` records this baseline and the exact retained coverage, so the comparison reports a reviewed duplicate removal rather than seven lost tests.
 
 ## Renamed identities
 
