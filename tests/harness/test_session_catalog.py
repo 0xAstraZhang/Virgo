@@ -178,6 +178,9 @@ def test_cleanup_removes_header_only_and_model_only_records(tmp_path):
         assert store.discard_if_empty()
         assert not path.exists()
         assert not store.discard_if_empty()
+        store.append("model_change", model="faux/after-cleanup")
+        assert SessionStore.load(path).entries == store.entries
+        assert store.discard_if_empty()
     assert not SessionStore.new(None, tmp_path).discard_if_empty()
 
 

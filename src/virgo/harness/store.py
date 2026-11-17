@@ -297,7 +297,10 @@ class SessionStore:
     def _write(self, obj: dict) -> None:
         if self.path is None:
             return
-        line = json.dumps(obj, ensure_ascii=False, default=str) + "\n"
+        # Empty-session cleanup can remove a file while a final model change
+        # is still pending. Recreate its history so parent IDs remain valid.
+        rows = [obj] if self._header_written else self.entries
+        line = "".join(json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in rows)
         header = "" if self._header_written else json.dumps({
             "type": "session", "version": self.VERSION, "id": self.id,
             "cwd": str(self.cwd), "timestamp": _now(),
