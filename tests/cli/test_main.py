@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -10,7 +11,7 @@ import sysconfig
 from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -43,10 +44,10 @@ def test_permission_mode_arguments_and_legacy_aliases(value):
 def test_removed_task_flags_are_rejected_and_permission_output_stays_independent(entry, project):
     result = subprocess.run(
         [*entry, "--no-session", "--no-extensions", "--model", "faux/demo", "-p",
-         "--format", "json", "--approval", "never", "--sandbox", "read-only", "/permissions"],
+         "--format", "json", "--execution", "host", "/permissions"],
         cwd=project, input="", capture_output=True, text=True, check=True, timeout=10,
     )
-    assert "never ask" in result.stdout
+    assert "Host" in result.stdout
     assert all(isinstance(json.loads(line), dict) for line in result.stdout.splitlines())
     for flag, value in (("--work-mode", "plan"), ("--plan", None), ("--profile", "minimal")):
         rejected = subprocess.run(
@@ -61,7 +62,36 @@ def test_removed_task_flags_are_rejected_and_permission_output_stays_independent
         cwd=project, input="", capture_output=True, text=True, timeout=10,
     )
     assert legacy.returncode == 2
-    assert "permissions.mode" in legacy.stderr and not legacy.stdout
+    assert "invalid choice" in legacy.stderr and not legacy.stdout
+
+
+@pytest.mark.parametrize("language_args", [[], ["--language", "en"]])
+def test_cli_applies_execution_override_before_validating_user_preset(project, monkeypatch, capsys, language_args):
+    cli = import_module("virgo.cli.main")
+    home = Path(os.environ["VIRGO_HOME"])
+    executor = SimpleNamespace(backend="not-launched")
+    monkeypatch.setattr("virgo.extensions.sandbox.NativeExecutor", lambda: executor)
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    (home / "settings.json").write_text(json.dumps({"language": "zh-CN", "permissions": {"preset": "workspace-edit"}}))
+
+    result = cli.main(["-C", str(project), "--execution", "sandbox", "--no-session", "-m", "faux/demo",
+                       *language_args, "-p", "/permissions show"])
+
+    assert result == 0
+    assert '"provider": "sandbox"' in capsys.readouterr().out
+
+
+def test_localized_help_works_before_migrating_execution_settings(project, capsys):
+    cli = import_module("virgo.cli.main")
+    (Path(os.environ["VIRGO_HOME"]) / "settings.json").write_text(
+        json.dumps({"permissions": {"preset": "read-only"}})
+    )
+    (project / ".virgo").mkdir()
+    (project / ".virgo/settings.json").write_text(json.dumps({"language": "zh-CN"}))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["-C", str(project), "--help"])
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.startswith(cli.build_parser("zh-CN").format_usage().rstrip())
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])

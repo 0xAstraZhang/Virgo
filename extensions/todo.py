@@ -103,6 +103,7 @@ def setup(api):
             execute=execute,
             prepare_arguments=snapshot,
             side_effect="read",
+            execution_scope="broker",
         ),
         roles=("main",),
     )

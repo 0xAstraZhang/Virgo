@@ -56,7 +56,8 @@ def test_background_failure_and_failed_notification_keep_original_session(make_s
     assert notification["context"]["related_error_id"] == root["error_id"]
     assert notification["context"]["session_id"] == owner.id
     assert "private description" not in json.dumps(records(session))
-    result = session.tool("job_output").execute({"id": job.id}, ToolContext("read-job", session.cwd, threading.Event()))
+    result = session.tool("job_output").execute({"id": job.id}, ToolContext(
+        "read-job", session.cwd, threading.Event(), origin=session.runtime_for_store(owner).origin))
     assert result.details["error"]["error_id"] == root["error_id"]
 
 
@@ -88,7 +89,7 @@ def fake_command_io(monkeypatch, project, *, failure=None, close_failure=False):
             if close_failure:
                 raise OSError("close unavailable")
 
-    monkeypatch.setattr(supervision, "open_output", lambda *args: (path, OutputFile()))
+    monkeypatch.setattr(supervision, "open_output", lambda *args, **kwargs: (path, OutputFile()))
     monkeypatch.setattr(supervision, "spawn", lambda *args, **kwargs: FakeProcess(failure))
     return path
 

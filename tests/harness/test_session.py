@@ -230,27 +230,23 @@ def test_requests_are_append_only(make_session):
         assert b["messages"][: len(a["messages"])] == a["messages"]
 
 
-def test_mode_switch_blocks_writes_that_already_passed_batch_preflight(make_session, project):
-    s = make_session(
-        faux.reply(tools=[
-            ("write", {"path": "first.txt", "content": "one"}),
-            ("write", {"path": "second.txt", "content": "two"}),
-        ]),
-        faux.reply("Stopped."),
-        approval="never",
-    )
-
-    def switch_after_preflight(event, session):
+def test_mode_change_applies_to_next_run_not_dispatched_batch(broker_session, project):
+    s = broker_session(faux.reply(tools=[
+        ("write", {"path": "first.txt", "content": "one"}),
+        ("write", {"path": "second.txt", "content": "two"}),
+    ]), faux.reply("Done"), approval="never")
+    def select_next(event, session):
         if event.args.get("path") == "second.txt":
-            session.main.read_only = True
-
-    s.bus.on("tool_call", switch_after_preflight)
+            session.services["execution"].select_mode("read-only")
+    s.bus.on("tool_call", select_next)
     s.prompt("write two files")
-    assert not (project / "first.txt").exists()
-    assert not (project / "second.txt").exists()
-    results = [message for message in s.main.messages if isinstance(message, ToolResultMessage)]
-    assert len(results) == 2
-    assert all(result.is_error and result.details["sandbox"]["dimension"] == "read_only" for result in results)
+    assert (project / "first.txt").read_text() == "one"
+    assert (project / "second.txt").read_text() == "two"
+    faux.script("test", faux.reply(tools=[("write", {"path": "next.txt", "content": "blocked"})]), faux.reply("done"))
+    s.prompt("new run")
+    assert not (project / "next.txt").exists()
+    result = [m for m in s.main.messages if isinstance(m, ToolResultMessage)][-1]
+    assert result.is_error and result.details["boundary"]["dimension"] == "write_paths"
 
 
 def test_commands_and_templates(make_session, project):

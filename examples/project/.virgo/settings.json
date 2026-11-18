@@ -4,12 +4,6 @@
   "shell": {
     "executable": "auto"
   },
-  "permissions": {
-    "deny": [
-      "read(~/.ssh/*)",
-      "bash(git push*)"
-    ]
-  },
   "providers": {
     "local": {
       "api": "openai",

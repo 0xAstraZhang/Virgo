@@ -233,9 +233,9 @@ class WindowsProcess:
                 if self.stdout is not None:
                     self.stdout.close()
             if sandbox is not None and isinstance(error, Exception):
-                from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable
+                from ..execution import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable
 
-                if not isinstance(error, (SandboxCancelled, SandboxProcessError, SandboxUnavailable)):
+                if not isinstance(error, (ExecutionCancelled, ExecutionFailed, ExecutionUnavailable)):
                     raise self._failure(f"Could not create Windows sandbox process: {error}") from error
             raise
 
@@ -246,16 +246,15 @@ class WindowsProcess:
     def _check_cancelled(self):
         if self._sandbox is not None and self._sandbox.cancellation is not None:
             if self._sandbox.cancellation.is_set():
-                from .sandbox import SandboxCancelled
+                from ..execution import ExecutionCancelled
 
-                raise SandboxCancelled("Windows sandbox command cancelled before release")
+                raise ExecutionCancelled("Windows sandbox command cancelled before release")
 
     def _failure(self, message, *, uncertain=False):
-        from .sandbox import SandboxProcessError, SandboxUnavailable
+        from virgo.execution import ExecutionFailed, ExecutionUnavailable
 
-        error = (SandboxProcessError if self._released or uncertain else SandboxUnavailable)(message)
-        if self._finalizer is not None:
-            error.process = self
+        error = (ExecutionFailed if self._released or uncertain else ExecutionUnavailable)(message)
+        error.process = self
         return error
 
     def poll(self):
@@ -271,14 +270,8 @@ class WindowsProcess:
                 code = w.DWORD()
                 _check(GetExitCode(self._process, ctypes.byref(code)))
             except OSError as error:
-                if self._sandbox is not None:
-                    raise self._failure(f"Could not observe Windows sandbox process: {error}", uncertain=True) from error
-                raise
+                raise self._failure(f"Could not observe Windows process: {error}", uncertain=True) from error
             self.returncode = code.value
-            # An exited root may have live descendants. Active sandboxes retain
-            # the job until the complete tree drains, before the envelope is freed.
-            if self._sandbox is None:
-                self._finalizer()
             return self.returncode
 
     def wait(self, timeout=None):
@@ -290,12 +283,7 @@ class WindowsProcess:
         return self.returncode
 
     def kill(self):
-        if self._sandbox is not None:
-            self.kill_tree()
-            return
-        with self._lock:
-            if self.returncode is None:
-                _check(TerminateJob(self._job, 1))
+        self.kill_tree()
 
     terminate = kill
 
@@ -305,9 +293,6 @@ class WindowsProcess:
         return accounting.ActiveProcesses
 
     def kill_tree(self):
-        if self._sandbox is None:
-            self.kill()
-            return
         with self._lock:
             if self._drained:
                 return
@@ -317,24 +302,18 @@ class WindowsProcess:
                     _check(TerminateJob(self._job, 1))
                 while self._active_processes():
                     if time.monotonic() >= deadline:
-                        raise TimeoutError("Windows sandbox job still has active processes")
+                        raise TimeoutError("Windows job still has active processes")
                     time.sleep(0.01)
                 # The root handle must also signal before an unsuccessful job
                 # membership verification can release any envelope resources.
                 self.wait(timeout=max(0, deadline - time.monotonic()))
                 self._drained = True
             except (OSError, subprocess.TimeoutExpired) as error:
-                raise self._failure(f"Could not drain Windows sandbox job: {error}", uncertain=True) from error
+                raise self._failure(f"Could not drain Windows job: {error}", uncertain=True) from error
 
     def cleanup_tree(self):
-        if self._sandbox is None:
-            self.kill()
-            self.wait(timeout=_DRAIN_TIMEOUT)
-            return
         with self._lock:
             self.kill_tree()
-            # Revoke the token envelope only after the kernel proved drain.
-            # Closing a kill-on-close job by itself is not that proof.
             self._finalizer()
 
     def communicate(self, input=None, timeout=None):
@@ -346,9 +325,8 @@ class WindowsProcess:
             reader = threading.Thread(target=lambda: chunks.append(self.stdout.read()), daemon=True)
             reader.start()
         self.wait(timeout)
-        if self._sandbox is not None:
-            # A detached child may hold stdout open after the root exits.
-            self.cleanup_tree()
+        # A detached child may hold stdout open after the root exits.
+        self.cleanup_tree()
         if reader is not None:
             reader.join()
             self.stdout.close()

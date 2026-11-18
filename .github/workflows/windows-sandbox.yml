@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/virgo/**'
+      - 'tests/support/**'
       - 'tests/harness/test_windows_sandbox_e2e.py'
       - '.github/workflows/windows-sandbox.yml'
       - 'pyproject.toml'
@@ -24,7 +25,7 @@ jobs:
     timeout-minutes: 20
     env:
       PYTHONUTF8: '1'
-      VIRGO_REQUIRE_WINDOWS_SANDBOX_TESTS: '1'
+      VIRGO_REQUIRE_SANDBOX_TESTS: '1'
     steps:
       - name: Check out the exact requested revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

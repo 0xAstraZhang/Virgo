@@ -41,6 +41,7 @@ class ToolContext:
     on_update: Callable[[str], None] | None = None
     origin: Any = None  # Bound task/runtime source, never the currently selected chat.
     translator: Translator | None = field(default=None, kw_only=True)
+    dispatch_event: ToolCallEvent | None = field(default=None, kw_only=True, repr=False, compare=False)
 
     def t(self, key: str, /, **values: object) -> str:
         return (self.translator or Translator())(key, **values)
@@ -54,6 +55,7 @@ class AgentTool:
     execute: Callable[[dict, ToolContext], ToolResult | str]
     label: str = ""
     side_effect: str = "write"  # "read" or "write"; separate from the run permission
+    execution_scope: str = "external"  # trusted adapter contract, never inferred from command text
     sequential: bool = False  # force the whole batch to run sequentially
     prepare_arguments: Callable[[dict], dict] | None = None
     i18n_key: str = field(default="", kw_only=True)
@@ -71,6 +73,7 @@ class AgentTool:
         prepare_arguments: Callable[[dict], dict] | None = None,
         *,
         read_only: bool | None = None,
+        execution_scope: str = "external",
         i18n_key: str = "",
         i18n_values: dict | Callable[[Translator], dict] | None = None,
     ):
@@ -84,6 +87,7 @@ class AgentTool:
         self.parameters = parameters
         self.execute = execute
         self.label = label
+        self.execution_scope = execution_scope
         self.side_effect = side_effect
         self.sequential = sequential
         self.prepare_arguments = prepare_arguments

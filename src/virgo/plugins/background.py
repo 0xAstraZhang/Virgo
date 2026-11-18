@@ -11,6 +11,7 @@ import time
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..diagnostics import error_summary
+from ..execution import FileAccessDenied
 from ..harness.extensions import ExtensionAPI
 from ..harness.jobs import Job, JobManager
 from ..tools.output import MAX_BYTES, budget, display_output, read_output
@@ -19,8 +20,13 @@ from ..tools.output import MAX_BYTES, budget, display_output, read_output
 def setup(api: ExtensionAPI) -> None:
     jobs: JobManager = api.services["jobs"]
 
-    def find(args: dict) -> Job | ToolResult:
+    def find(args: dict, ctx: ToolContext) -> Job | ToolResult:
+        runtime = api.runtime_for_context(ctx)
+        if runtime is None:
+            return ToolResult.error("Background operations require their originating task context")
         job = jobs.get(args["id"])
+        if job is not None and job.accounting_store is not ctx.origin.root:
+            return ToolResult.error("This background job belongs to another task")
         return (
             job
             if job
@@ -28,13 +34,14 @@ def setup(api: ExtensionAPI) -> None:
                 api.t(
                     "features.jobs.missing",
                     id=args["id"],
-                    known=", ".join(jobs.jobs) or api.t("features.jobs.none"),
+                    known=", ".join(j.id for j in jobs.jobs.values() if j.accounting_store is ctx.origin.root)
+                    or api.t("features.jobs.none"),
                 )
             )
         )
 
     def output(args: dict, ctx: ToolContext) -> ToolResult:
-        job = find(args)
+        job = find(args, ctx)
         if isinstance(job, ToolResult):
             return job
         wait = min(float(args.get("wait") or 0), 600)
@@ -44,13 +51,19 @@ def setup(api: ExtensionAPI) -> None:
         label = job.label if len(job.label) <= 300 else job.label[:300] + "…"
         head = f"{job.id} [{ctx.t('features.jobs.state.' + job.status)}] {ctx.t('features.jobs.kind.' + job.kind)}: {label} ({job.elapsed()})"
         details = {"job_id": job.id, "status": job.status, "exit_code": job.exit_code}
-        if job.sandbox is not None:
-            details["sandbox"] = job.sandbox
+        if job.boundary is not None:
+            details["boundary"] = job.boundary
         if job.error_details is not None:
             details.update(error=job.error_details, related_errors=job.related_errors)
             head += "\n" + error_summary(job.error_details, t=api.t)
         if job.log is not None:
-            captured = read_output(job.log)
+            try:
+                captured = read_output(job.log, execution_context=job.execution_context)
+            except FileAccessDenied as error:
+                return ToolResult.error(str(error), details={**details, "status": "resource_denied", "boundary": {
+                    **job.execution_context.describe(), "kind": "resource_denied", "dimension": error.dimension,
+                    "target": error.target, "payload_started": False, "side_effects": "none",
+                }})
             displayed = display_output(captured, max_bytes=MAX_BYTES - len(head.encode("utf-8")) - 1, t=ctx.t)
             return ToolResult.text(
                 head + "\n" + displayed,
@@ -66,12 +79,13 @@ def setup(api: ExtensionAPI) -> None:
         return ToolResult.text(
             head
             + "\n"
-            + budget(job.result or ctx.t("features.jobs.no_output"), ctx.cwd, job.id, keep="tail", t=ctx.t),
+            + budget(job.result or ctx.t("features.jobs.no_output"), ctx.cwd, job.id, keep="tail", t=ctx.t,
+                     execution_context=api.services["execution"].for_context(ctx)),
             details,
         )
 
     def kill(args: dict, ctx: ToolContext) -> ToolResult:
-        job = find(args)
+        job = find(args, ctx)
         if isinstance(job, ToolResult):
             return job
         jobs.kill(job)
@@ -88,6 +102,7 @@ def setup(api: ExtensionAPI) -> None:
             },
             output,
             side_effect="read",
+            execution_scope="broker",
             i18n_key="tools.job_output",
         ),
         roles=("main",),
@@ -99,6 +114,7 @@ def setup(api: ExtensionAPI) -> None:
             {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
             kill,
             side_effect="read",
+            execution_scope="broker",
             i18n_key="tools.job_kill",
         ),
         roles=("main",),

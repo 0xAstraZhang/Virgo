@@ -18,6 +18,8 @@ mkdir -p ~/.virgo/extensions
 cp extensions/todo.py ~/.virgo/extensions/todo.py
 ```
 
+Repeat the copy when upgrading an older installation. The current extension updates
+the conversation checklist directly in Read-Only and Workspace-Edit.
 Restart Virgo after installing. A project-local copy requires project extension
 trust; `--no-extensions` disables both locations. Todos is not an official plugin:
 old `plugins.todo` and `features.todo` settings are ignored with a migration notice.
@@ -81,8 +83,9 @@ format:
 The `mcpServers` setting is accepted as well. Server arguments and environment
 values expand `${VARIABLE}`; disabled entries are skipped. Tools appear as
 `mcp__<server>__<tool>` and remain subject to Core permissions: calls are treated
-as unmanaged remote operations, so an offline or file-restricted task needs an
-explicit single-operation exception.
+as unmanaged external operations. Host dispatches directly; Sandbox refuses
+calls whose requested resource scope cannot be enforced. Grants cannot switch
+to Host. Server startup and autonomous activity remain outside the managed boundary.
 
 `/mcp` lists configured servers and tool counts. `/mcp reconnect` reloads the
 configuration; a failed reload keeps the previous connections and tools.

@@ -245,34 +245,35 @@ class ShellTool(AgentTool):
     shell: Shell | None = None
 
 
-def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
+def make_shell_tool(shell: Shell, jobs=None, *, execution=None) -> ShellTool:
     from .bash import BASH_PARAMS, DEFAULT_TIMEOUT, MAX_TIMEOUT, format_output, run_command
     from .output import MAX_BYTES, MAX_LINES
 
     def execute(args, ctx):
-        from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable
+        from ..execution import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable
 
         policy = None
         try:
-            policy = sandbox(ctx) if sandbox is not None else None
+            policy = execution(ctx) if execution is not None else None
             result = execute_with_policy(args, ctx, policy)
-        except SandboxCancelled as error:
+        except ExecutionCancelled as error:
             result = ToolResult.error(str(error), details={"status": "aborted", "cancelled": True,
-                                      "sandbox": {"kind": "aborted", "command_started": False,
+                                      "boundary": {"kind": "aborted", "payload_started": False,
                                                   "side_effects": "none", "escalation_available": False}})
-        except SandboxUnavailable as error:
-            result = ToolResult.error(str(error), details={"status": "sandbox_unavailable", "sandbox": {
-                "kind": "sandbox_unavailable", "dimension": getattr(error, "dimension", None),
-                "command_started": False, "side_effects": "none", "escalation_available": False,
+        except ExecutionUnavailable as error:
+            result = ToolResult.error(str(error), details={"status": "execution_unavailable", "boundary": {
+                "kind": "execution_unavailable", "dimension": getattr(error, "dimension", None),
+                "target": getattr(error, "target", None), "reason": getattr(error, "reason", None),
+                "payload_started": False, "side_effects": "none", "escalation_available": False,
             }})
-        except SandboxProcessError as error:
-            result = ToolResult.error(str(error), details={"status": "sandbox_failed", "sandbox": {
-                "kind": "sandbox_failed", "command_started": "unknown", "side_effects": "possible",
-                "escalation_available": False,
+        except ExecutionFailed as error:
+            result = ToolResult.error(str(error), details={"status": "execution_failed", "boundary": {
+                "kind": "execution_failed", "payload_started": "unknown", "side_effects": "possible",
+                "escalation_available": False, **getattr(error, "boundary", {}),
             }})
         if policy is not None:
-            facts = (result.details or {}).get("sandbox", {})
-            result.details = {**(result.details or {}), "sandbox": {**policy.describe(), **facts}}
+            facts = (result.details or {}).get("boundary", {})
+            result.details = {**(result.details or {}), "boundary": {**policy.describe(), **facts}}
         return result
 
     def execute_with_policy(args, ctx, policy):
@@ -286,21 +287,18 @@ def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
                 store=ctx.origin.root if ctx.origin is not None else None,
                 agent=ctx.agent,
                 tool_call_id=ctx.call_id,
-                **({"sandbox_policy": policy, "cancellation": ctx.signal} if policy is not None else {}),
+                execution_context=policy, cancellation=ctx.signal,
             )
             return ToolResult.text(
-                ctx.t("tools.shell.job_started", id=job.id, kind=shell.kind, version=shell.version)
+                ctx.t("tools.shell.job_started", id=job.id, kind=shell.kind, version=shell.version),
+                details={"job_id": job.id, "boundary": dict(job.boundary or {})},
             )
         out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell,
-                                        **({"sandbox_policy": policy} if policy is not None else {}))
+                                        **({"execution_context": policy} if policy is not None else {}))
         result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name, t=ctx.t)
         result.details.update(shell=shell.kind, executable=shell.executable, version=shell.version)
-        if policy is not None:
-            started = out.path is not None
-            result.details["sandbox"] = {
-                "kind": "command_failed" if result.is_error else "command_completed",
-                "command_started": started, "side_effects": "possible" if started else "none",
-            }
+        if out.boundary is not None:
+            result.details["boundary"] = out.boundary
         return result
 
     params = {**BASH_PARAMS, "properties": {**BASH_PARAMS["properties"]}}
@@ -330,6 +328,7 @@ def make_shell_tool(shell: Shell, jobs=None, *, sandbox=None) -> ShellTool:
 
     translator = Translator()
     return ShellTool(
+        execution_scope="process",
         name=shell.tool_name,
         label=shell.syntax,
         description=translator("tools.shell.description", **values(translator)),

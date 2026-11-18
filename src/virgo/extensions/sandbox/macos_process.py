@@ -181,14 +181,14 @@ while True:
 
 
 def _unavailable(message: str):
-    from .sandbox import SandboxUnavailable
+    from .platform import SandboxUnavailable
 
     return SandboxUnavailable(message)
 
 
 def _check_cancel(cancellation) -> None:
     if cancellation is not None and cancellation.is_set():
-        from .sandbox import SandboxCancelled
+        from .platform import SandboxCancelled
 
         raise SandboxCancelled("Sandbox launch cancelled")
 
@@ -351,7 +351,7 @@ class LaunchdProcess:
     def __init__(self, policy, cwd: Path, env: dict[str, str]):
         if sys.platform != "darwin":
             raise _unavailable("Launchd command containment requires macOS")
-        from .sandbox import _system_file
+        from .platform import _system_file
 
         self._launchctl = str(_system_file(Path("/bin/launchctl")))
         self._env_program = str(_system_file(Path("/usr/bin/env")))
@@ -429,7 +429,7 @@ class LaunchdProcess:
 
     def _failure(self, message: str):
         if self._mode == "command" and self._released:
-            from .sandbox import SandboxProcessError
+            from .platform import SandboxProcessError
 
             return SandboxProcessError(
                 f"{message}. The command may already have executed; do not replay it."
@@ -564,7 +564,7 @@ class LaunchdProcess:
             except Exception as cleanup_error:
                 raise self._failure(f"{error}; launchd cleanup failed: {cleanup_error}") from error
             if isinstance(error, Exception):
-                from .sandbox import SandboxCancelled
+                from .platform import SandboxCancelled
 
                 if not isinstance(error, SandboxCancelled):
                     raise self._failure(f"Could not launch macOS command job: {error}") from error
@@ -757,7 +757,7 @@ def _ensure_capability(policy, cwd, env, cancellation) -> None:
             except Exception as error:
                 failure = _unavailable(f"{failure or 'Capability cleanup failed'}; {error}")
         if failure is not None:
-            from .sandbox import SandboxCancelled
+            from .platform import SandboxCancelled
 
             if isinstance(failure, SandboxCancelled):
                 raise failure

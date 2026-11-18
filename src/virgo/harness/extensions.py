@@ -226,9 +226,9 @@ class ExtensionAPI:
         """fn(role) -> text for the system prompt."""
         self._add_section(self._session.sections, name, fn, order)
 
-    def register_permission_policy(self, policy) -> None:
-        """Add restrictions without replacing the mandatory Core policy."""
-        self._undos.append(self._session.add_permission_policy(policy, owner=self.name))
+    def register_execution_provider(self, provider) -> None:
+        """Bind the explicitly selected provider once, before any runtime exists."""
+        self._session.register_execution_provider(provider, owner=self.name)
 
     def add_runtime_system_section(self, name: str, fn: Callable, order: int = 50) -> None:
         """fn(RuntimeContext) -> text; construction errors reject the candidate."""
@@ -270,13 +270,13 @@ class ExtensionAPI:
     def runtime_for(self, event):
         return self.runtime_for_context(event)
 
-    def create_runtime(self, name: str, role: str, *, parent=None, read_only=False, **kwargs):
+    def create_runtime(self, name: str, role: str, *, parent=None, **kwargs):
         if role == "main":
             raise ValueError("Plugins create child runtimes; the Host owns main sessions")
         parent = parent or self.current_runtime()
         if parent.session is not self._session:
             raise ValueError("Child runtime parent belongs to another session")
-        return self._session.create_runtime(name, role, parent=parent, read_only=read_only, **kwargs)
+        return self._session.create_runtime(name, role, parent=parent, **kwargs)
 
     def release_runtime(self, runtime):
         self._session.release_runtime(runtime)
@@ -298,14 +298,10 @@ class ExtensionAPI:
         return self._session._before_tool(event) or self._session._before_tool_execute(event)
 
     def has_tool_hooks(self):
-        # Native web authorization still evaluates the Core sandbox policy.
-        # Its result handler only releases local operation grants; it is not a
-        # user hook that needs to observe provider-hosted queries/results.
-        sandbox = self._session.services.get("sandbox")
-        return (any(owner != "core.sandbox" or policy is not sandbox
-                    for owner, policy in self._session._additional_permission_policies)
-                or self._session.bus.has_handlers("tool_call")
-                or self._session.bus.has_handlers("tool_result", exclude=sandbox._result if sandbox else None))
+        router = self._session.services.get("execution")
+        sandbox = getattr(router, "sandbox", None)
+        return (self._session.bus.has_handlers("tool_call")
+                or self._session.bus.has_handlers("tool_result", exclude=getattr(sandbox, "_result", None)))
 
     def report_error(self, error, **kwargs):
         return self._session.report_error(error, **kwargs)

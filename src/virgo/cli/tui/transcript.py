@@ -238,10 +238,10 @@ class ToolView(EventView):
                 if isinstance(value := self.args.get(name), str) and value:
                     return value
             return self.text
-        sandbox = self.details.get("sandbox")
+        sandbox = self.details.get("boundary")
         if self.status == "blocked" and isinstance(sandbox, dict):
             dimension, target = sandbox.get("dimension"), sandbox.get("target")
-            if dimension in ("read_only", "workspace_only", "network_allowed") and target:
+            if dimension in ("read_paths", "write_paths", "network_allowed") and target:
                 return f"{tr(self, 'ui.modes.' + dimension)} · {target} · {self.result}"
         return self.result or self.text
 
@@ -253,7 +253,7 @@ class ToolView(EventView):
         if self.details.get("cancelled") is True:
             self.status = "cancelled"
         elif is_error and (
-            self.details.get("status") in {"sandbox_denied", "permission_denied"}
+            self.details.get("status") in {"resource_denied"}
             or isinstance(error, dict) and error.get("kind") == "blocked"
         ):
             self.status = "blocked"
@@ -263,9 +263,9 @@ class ToolView(EventView):
         if isinstance(value, (int, float)):
             self.duration = value
         self.set_class(is_error, "error")
-        sandbox = self.details.get("sandbox")
+        sandbox = self.details.get("boundary")
         if is_error and isinstance(sandbox, dict):
-            if sandbox.get("command_started") is False:
+            if sandbox.get("payload_started") is False:
                 text += "\n" + tr(self, "ui.tool.not_started")
             if sandbox.get("escalation_available") is True:
                 text += "\n" + tr(self, "ui.tool.escalation_available")

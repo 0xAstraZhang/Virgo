@@ -30,7 +30,7 @@ def setup(api: ExtensionAPI) -> None:
         return ToolResult.text(json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
 
     api.register_tool(
-        AgentTool(
+        AgentTool(execution_scope="broker",
             name="diagnostic_get",
             label="Diagnostic evidence",
             description=(

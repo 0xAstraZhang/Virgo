@@ -17,7 +17,8 @@ mkdir -p ~/.virgo/extensions
 cp extensions/todo.py ~/.virgo/extensions/todo.py
 ```
 
-安装后重启 Virgo。项目目录中的副本需要扩展信任；`--no-extensions` 禁用两个位置。
+升级已安装的旧版时，再次运行复制命令。当前扩展可在 Read-Only 和 Workspace-Edit
+中直接更新会话清单。安装后重启 Virgo。项目目录中的副本需要扩展信任；`--no-extensions` 禁用两个位置。
 Todos 不再是内置插件，旧 `plugins.todo`、`features.todo` 配置被忽略并给出迁移提示。
 
 主模型获得 `todo_write` 工具，无 `/todos` 或 `/plan` 命令：

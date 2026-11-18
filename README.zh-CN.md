@@ -6,6 +6,8 @@
 
 Virgo 是一个轻量、可扩展的终端编程 Agent。你可以让它理解代码库、实现改动、调查故障或审查 diff。它能够读取和编辑文件、执行命令，并在持续对话中推进任务。
 
+Virgo 首次启动使用 **No-Limit**，直接使用当前宿主账户权限。**Read-Only** 与 **Workspace-Edit** 使用原生沙箱访问真实工作区，支持按具体操作申请额外权限。见[执行边界](docs/zh-CN/guides/sandbox.md)。
+
 ## 为什么使用 Virgo？
 
 - **留在熟悉的终端里。** 全屏对话、实时工具活动、可恢复的会话，以及适用于不同环境的逐行模式。
@@ -57,7 +59,7 @@ uv run virgo --continue
 uv run virgo -p --format json "总结 README"
 ```
 
-默认权限预设为 Workspace-Edit：允许编辑工作区、允许任务联网。`/permissions` 选择或编辑权限预设与审批策略。模型可以申请单次操作的权限例外。
+使用 `/permissions show` 查看当前任务和下一任务的模式，使用 `/permissions` 在三种模式间切换。见[权限模式与审批](docs/zh-CN/development/permission-profiles.md)。
 
 ## 查看错误记录
 

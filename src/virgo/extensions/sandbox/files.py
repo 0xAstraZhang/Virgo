@@ -1,4 +1,4 @@
-"""Core file mutations staged away from untrusted writable workspace entries."""
+"""Sandbox broker mutations staged away from untrusted workspace entries."""
 
 from __future__ import annotations
 
@@ -10,32 +10,24 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .sandbox import PROTECTED_NAMES, SandboxPolicy
-
-
-class SandboxFileDenied(PermissionError):
-    """A file operation cannot retain its checked boundary."""
-
-    def __init__(self, message, *, dimension="filesystem", target=None):
-        super().__init__(message)
-        self.dimension = dimension
-        self.target = str(target) if target is not None else None
+from ...execution import FileAccessDenied
+from .policy import SandboxPolicy
 
 
 def check_read(path: Path, policy: SandboxPolicy) -> None:
     if policy.private_path(path):
-        raise SandboxFileDenied(f"Sandbox read denied for private Virgo storage: {path}",
+        raise FileAccessDenied(f"Sandbox read denied for private Virgo storage: {path}",
                                 dimension="protected_path", target=path)
-    if policy.workspace_only and not any(path.is_relative_to(root) for root in policy.read_roots()):
-        raise SandboxFileDenied(f"Sandbox read is outside the permitted filesystem scope: {path}",
-                                dimension="workspace_only", target=path)
+    if not any(path.is_relative_to(root) for root in policy.read_roots()):
+        raise FileAccessDenied(f"Sandbox read is outside the permitted filesystem scope: {path}",
+                                dimension="read_paths", target=path)
 
 
 @contextmanager
 def _open_directory(path: Path):
     """Retain directory identity and reject links introduced after resolution."""
     if os.name == "nt":
-        from .windows_sandbox_files import open_path
+        from .windows_files import open_path
 
         with open_path(path, 0x81, directory=True, share_delete=False) as handle:
             yield handle
@@ -51,7 +43,8 @@ def _open_directory(path: Path):
         os.close(directory)
 
 
-def read_bytes(path: Path, policy: SandboxPolicy, *, max_bytes: int | None = None) -> bytes | None:
+def read_bytes(path: Path, policy: SandboxPolicy, *, max_bytes: int | None = None,
+               tail: bool = False) -> bytes | tuple[bytes, int] | None:
     """Read through a retained no-link handle; never open FIFO/device paths."""
     check_read(path, policy)
     try:
@@ -59,7 +52,7 @@ def read_bytes(path: Path, policy: SandboxPolicy, *, max_bytes: int | None = Non
             if os.name == "nt":
                 import msvcrt
 
-                from .windows_sandbox_files import open_child
+                from .windows_files import open_child
 
                 with open_child(directory, path.name, 0x81, directory=False) as handle:
                     descriptor = msvcrt.open_osfhandle(handle.detach(), os.O_RDONLY | os.O_BINARY)
@@ -69,18 +62,28 @@ def read_bytes(path: Path, policy: SandboxPolicy, *, max_bytes: int | None = Non
             with os.fdopen(descriptor, "rb") as stream:
                 info = os.fstat(stream.fileno())
                 if not stat.S_ISREG(info.st_mode):
-                    raise SandboxFileDenied(f"Sandbox read requires a regular file: {path}", target=path)
-                if max_bytes is not None and info.st_size > max_bytes:
+                    raise FileAccessDenied(f"Sandbox read requires a regular file: {path}", target=path)
+                if not tail and max_bytes is not None and info.st_size > max_bytes:
                     return None
-                return stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+                if info.st_nlink != 1:
+                    raise FileAccessDenied(f"Shared file cannot be read through a resource alias: {path}", target=path)
+                if tail:
+                    stream.seek(max(0, info.st_size - max_bytes))
+                    data = stream.read(max_bytes)
+                else:
+                    data = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+                current = path.stat(follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or current.st_nlink != 1:
+                    raise FileAccessDenied(f"File identity changed during read: {path}", target=path)
+                return (data, info.st_size) if tail else data
     except OSError as error:
         if error.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise SandboxFileDenied(f"Sandbox read path changed or contains a symbolic link: {path}",
+            raise FileAccessDenied(f"Sandbox read path changed or contains a symbolic link: {path}",
                                     target=path) from error
         raise
 
 
-def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str]):
+def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str], *, max_depth=None):
     """Yield paths and no-follow metadata without traversing outside aliases."""
     check_read(path, policy)
     try:
@@ -91,6 +94,8 @@ def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str]):
                     current = path / relative
                     names[:] = sorted(name for name in names if name not in ignore
                                       and not policy.private_path((current / name).resolve()))
+                    if max_depth is not None and len(Path(relative).parts) >= max_depth - 1:
+                        names.clear()
                     for name in files:
                         file = current / name
                         if policy.private_path(file.resolve()):
@@ -102,7 +107,7 @@ def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str]):
             else:
                 # The retained native handle denies directory replacement. Keep
                 # every parent pinned while recursively inspecting its children.
-                from .windows_sandbox_files import (
+                from .windows_files import (
                     FILE_ATTRIBUTE_DIRECTORY,
                     FILE_ATTRIBUTE_REPARSE_POINT,
                     open_child,
@@ -115,9 +120,10 @@ def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str]):
                             continue
                         info = entry.stat(follow_symlinks=False)
                         if info.st_file_attributes & FILE_ATTRIBUTE_DIRECTORY:
-                            if (entry.name not in ignore
+                            if (entry.name not in ignore and (max_depth is None or max_depth > 1)
                                     and not info.st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT):
-                                yield from walk_files(file, policy, ignore)
+                                yield from walk_files(file, policy, ignore,
+                                                      max_depth=max_depth - 1 if max_depth is not None else None)
                         else:
                             # Inspect only this final object's metadata, including
                             # file links. Content reads resolve and check scope later.
@@ -125,7 +131,7 @@ def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str]):
                                 yield file, info
     except OSError as error:
         if error.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise SandboxFileDenied(f"Sandbox search path changed or contains a symbolic link: {path}",
+            raise FileAccessDenied(f"Sandbox search path changed or contains a symbolic link: {path}",
                                     target=path) from error
         raise
 
@@ -140,20 +146,11 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
     cannot modify .virgo (created before every native launch), nor can Core
     file tools. Only a successful caller commits the fresh inode to its target.
     """
-    protected = (*(policy.workspace / name for name in PROTECTED_NAMES), *policy.runtime_paths())
-    if policy.read_only:
-        raise SandboxFileDenied(f"Sandbox file mutation denied by read-only policy: {path}",
-                                dimension="read_only", target=path)
-    if policy.workspace_only and not path.is_relative_to(policy.workspace):
-        raise SandboxFileDenied(f"Sandbox file mutation is outside the workspace: {path}",
-                                dimension="workspace_only", target=path)
-    if policy.private_path(path) or any(path.is_relative_to(root.resolve()) for root in protected):
-        raise SandboxFileDenied(f"Sandbox file operation denied for protected path: {path}",
-                                dimension="protected_path", target=path)
+    policy.check_write(path)
     within_workspace = path.is_relative_to(policy.workspace)
     parts = path.relative_to(policy.workspace).parts if within_workspace else path.parts[1:]
     if not parts:
-        raise SandboxFileDenied("Sandbox file operation requires a file below the workspace root")
+        raise FileAccessDenied("Sandbox file operation requires a file below the workspace root")
 
     root = directory = staging = descriptor = staged_descriptor = None
     staged_name = None
@@ -175,7 +172,7 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
                 directory = child
             target = parts[-1]
         else:
-            # These broker operations run outside the Windows shell's LPAC.
+            # Windows broker operations retain the checked file boundary.
             # Keep the application-level path checks and fresh-file staging;
             # this branch does not provide POSIX descriptor-relative traversal.
             if create:
@@ -193,11 +190,11 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
         info = os.fstat(descriptor) if existed else None
         if info is not None:
             if not stat.S_ISREG(info.st_mode):
-                raise SandboxFileDenied(f"Sandbox file operation requires a regular file: {path}")
+                raise FileAccessDenied(f"Sandbox file operation requires a regular file: {path}")
             if info.st_nlink != 1:
-                raise SandboxFileDenied(f"Sandbox file operation rejects hard-linked files: {path}")
+                raise FileAccessDenied(f"Sandbox file operation rejects hard-linked files: {path}")
             if os.name == "nt":
-                from .windows_sandbox_files import descriptor_identity
+                from .windows_files import descriptor_identity
 
                 expected_identity = descriptor_identity(descriptor)
 
@@ -211,7 +208,7 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
         else:
             metadata.mkdir(mode=0o700, exist_ok=True)
             if metadata.resolve() != metadata or metadata.is_symlink():
-                raise SandboxFileDenied(f"Sandbox file staging must not be an alias: {metadata}")
+                raise FileAccessDenied(f"Sandbox file staging must not be an alias: {metadata}")
         name = f"mutation-{uuid.uuid4().hex}.tmp"
         staged_target = name if staging is not None else metadata / name
         # Do not briefly expose a private source with broader staging permissions.
@@ -246,12 +243,12 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
                 try:
                     current = os.stat(target, dir_fd=directory, follow_symlinks=False)
                 except FileNotFoundError as error:
-                    raise SandboxFileDenied(f"Sandbox file changed before commit: {path}") from error
+                    raise FileAccessDenied(f"Sandbox file changed before commit: {path}") from error
                 if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                    raise SandboxFileDenied(f"Sandbox file changed before commit: {path}")
+                    raise FileAccessDenied(f"Sandbox file changed before commit: {path}")
             stream.close()  # Windows replacement requires closing the staged handle.
             if os.name == "nt":
-                from .windows_sandbox_files import replace_staged
+                from .windows_files import replace_staged
 
                 with replace_staged(staged_target, target, expected_identity=expected_identity):
                     staged_name = None
@@ -262,7 +259,7 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
         yield stream, existed, commit
     except OSError as error:
         if error.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise SandboxFileDenied(f"Sandbox file path changed or contains a symbolic link: {path}") from error
+            raise FileAccessDenied(f"Sandbox file path changed or contains a symbolic link: {path}") from error
         raise
     finally:
         try:

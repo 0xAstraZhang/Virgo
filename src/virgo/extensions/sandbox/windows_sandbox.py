@@ -17,8 +17,8 @@ from ctypes import wintypes as w
 from dataclasses import dataclass
 from pathlib import Path
 
-from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable
-from .windows_sandbox_files import normalize_path, open_path
+from .platform import SandboxCancelled, SandboxProcessError, SandboxUnavailable
+from .windows_files import normalize_path, open_path
 
 HANDLE = ctypes.c_void_p
 PSID = ctypes.c_void_p
@@ -407,7 +407,7 @@ class WindowsSandbox:
             for path in (self.home, self.home / "AppData", self.home / "AppData" / "Roaming",
                          self.home / "AppData" / "Local", self.scratch):
                 path.mkdir(exist_ok=True)
-            from .windows_sandbox_acl import AclGrants
+            from .windows_acl import AclGrants
 
             self._grants = AclGrants(self.package_sid, self.write_sid, cancellation)
             # Exactly the measured native BCrypt open, plus the CRT O_RDWR
@@ -425,8 +425,10 @@ class WindowsSandbox:
             # inode cannot move out of .virgo between preflight and its update.
             # Runtime/profile grants retain their per-object locking below.
             with self._grants._locked():
-                self._grants.grant_tree(policy.workspace, not policy.read_only, protected,
-                                        reject_hardlinks=True, excluded=runtime_roots)
+                roots = ((policy.workspace, not policy.read_only), *policy.grants)
+                for root, writable in roots:
+                    excluded = (*runtime_roots, *(p for p, _ in roots if p != root and p.is_relative_to(root)))
+                    self._grants.grant_tree(root, writable, protected, reject_hardlinks=True, excluded=excluded)
             for root in runtime_roots:
                 self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)
             self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
@@ -480,7 +482,7 @@ class WindowsSandbox:
             CloseHandle(source)
 
     def _prepare_device(self, name, access, sids):
-        from .windows_sandbox_acl import GetSecurity, _ace, _read
+        from .windows_acl import GetSecurity, _ace, _read
 
         # These fixed devices each need a machine-wide mutex, separate from
         # the filesystem's per-user mutex. Only authorized administrators or
@@ -495,9 +497,16 @@ class WindowsSandbox:
         ))
         try:
             attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
-            lease.mutex = _check(CreateMutexEx(
-                ctypes.byref(attributes), rf"Global\Virgo.NativeSandbox.{name}.v1", 0, 0x120001,
-            ))  # SYNCHRONIZE | MUTEX_MODIFY_STATE | READ_CONTROL.
+            try:
+                lease.mutex = _check(CreateMutexEx(
+                    ctypes.byref(attributes), rf"Global\Virgo.NativeSandbox.{name}.v1", 0, 0x120001,
+                ))  # SYNCHRONIZE | MUTEX_MODIFY_STATE | READ_CONTROL.
+            except OSError as error:
+                raise SandboxUnavailable(
+                    f"The current Windows account cannot acquire the protected {name} device ACL lease "
+                    f"required by LPAC (WinError {error.winerror}).",
+                    reason="device_acl_unavailable", dimension="windows_device_acl",
+                ) from error
         finally:
             LocalFree(descriptor)
         size = DWORD()
@@ -526,7 +535,7 @@ class WindowsSandbox:
         self._device_access(lease)
 
     def _device_access(self, lease, *, cleanup=False):
-        from .windows_sandbox_acl import _ace, _read, _sid_in_ace, _write
+        from .windows_acl import _ace, _read, _sid_in_ace, _write
 
         with self._grants._locked(cleanup=cleanup, mutex=lease.mutex):
             previous = _read(lease.handle, cleanup=cleanup)
@@ -559,7 +568,7 @@ class WindowsSandbox:
             raise SandboxProcessError(f"Could not release Windows sandbox device resources: {error}") from error
 
     def _station_access(self, *, cleanup=False):
-        from .windows_sandbox_acl import _ace, _read, _sid_in_ace, _write
+        from .windows_acl import _ace, _read, _sid_in_ace, _write
 
         # Limit the station lease to attributes/global atoms for the private
         # desktop. Do not grant clipboard, screen or desktop creation
@@ -694,7 +703,7 @@ class WindowsSandbox:
 
 
 def spawn(policy, argv, cwd, env, stdout, cancellation):
-    from .windows_process import WindowsProcess
+    from ...tools.windows_process import WindowsProcess
 
     envelope, proc = None, None
     try:

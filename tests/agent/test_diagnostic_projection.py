@@ -27,17 +27,23 @@ def _result(agent):
 
 
 def test_sandbox_boundary_is_visible_to_model_even_without_exception_record():
-    result = ToolResult.error("Write refused", details={"status": "sandbox_denied", "sandbox": {
-        "kind": "sandbox_denied", "dimension": "read_only", "target": "src/config.py",
-        "effective_permissions": {"read_only": True, "workspace_only": True, "network_allowed": False},
-        "command_started": False, "side_effects": "none", "escalation_available": True,
+    result = ToolResult.error("Write refused", details={"status": "resource_denied", "boundary": {
+        "kind": "resource_denied", "dimension": "write_paths", "target": "src/config.py",
+        "effective": {"read_paths": ["."], "write_paths": [], "network_allowed": False},
+        "payload_started": False, "side_effects": "none", "escalation_available": True,
     }})
     content = project_tool_result(ToolCall("blocked", "write", {}), result)
     text = "\n".join(block.text for block in content if isinstance(block, TextContent))
-    assert '"dimension":"read_only"' in text
-    assert '"command_started":false' in text
+    assert '"dimension":"write_paths"' in text
+    assert '"payload_started":false' in text
     assert '"network_allowed":false' in text
     assert '"escalation_available":true' in text
+    result.details['boundary']['requested'] = {'read_paths': ['directory/' * 200] * 300}
+    content = project_tool_result(ToolCall('blocked', 'write', {}), result)
+    capsule = content[-1].text
+    assert len(capsule.encode()) <= 2048
+    assert '"payload_started":false' in capsule and '"omitted":true' in capsule
+    assert len(result.details['boundary']['requested']['read_paths']) == 300
 
 
 def test_projection_sees_final_hooks_and_recorded_evidence_once_in_provider_content():
@@ -132,14 +138,18 @@ def test_hooks_cannot_erase_or_override_execution_and_adapter_facts():
     transport = {"protocol": "mcp", "server": "local", "generation": 3, "dispatch": "sent",
                  "outcome": "unknown", "side_effects": "unknown"}
 
+    boundary = {"provider": "sandbox", "payload_started": True, "side_effects": "possible", "cleanup": "unknown"}
+
     def run(*_):
-        return ToolResult.error("connection lost", details={"transport": dict(transport)})
+        return ToolResult.error("connection lost", details={"transport": dict(transport), "boundary": dict(boundary)})
 
     def recover(event, result):
         result.details["transport"]["dispatch"] = "not_started"
+        result.details["boundary"]["side_effects"] = "none"
         return ToolResult.text("recovered", details={
             "execution": {"started": False, "side_effects": "none"},
             "transport": {"dispatch": "not_started", "side_effects": "none"},
+            "boundary": {"payload_started": False},
         })
 
     agent, _ = make_agent([AgentTool("remote", "", {"type": "object"}, run, read_only=True)],
@@ -152,6 +162,7 @@ def test_hooks_cannot_erase_or_override_execution_and_adapter_facts():
         "started": True, "outcome": "returned_error", "side_effects": "unknown", "result_hook": "returned",
     }
     assert result.details["transport"] == transport
+    assert result.details["boundary"] == boundary
     assert result.details["related_errors"]
 
 

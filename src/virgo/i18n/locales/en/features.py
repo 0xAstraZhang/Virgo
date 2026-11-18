@@ -71,50 +71,7 @@ MESSAGES = {
     "features.jobs.stopping": "Stopping {id}.",
     "features.jobs.unit.bytes": "bytes",
     "features.jobs.unit.chars": "chars",
-    "features.permission.allow": "allow",
-    "features.permission.allow_suffix": "  Allow? [y]es / [n]o / [a]lways this session",
-    "features.permission.cannot_remember": "Allowed once; dynamic shell paths cannot be remembered for this "
-    "session.",
-    "features.permission.check_failed": "Permission checking failed; the action was not executed.",
-    "features.permission.denied_rule": "Denied by permission rule {rule!r}.",
-    "features.permission.deny": "deny",
-    "features.permission.no_approver": "Permission required ({reason}) but nobody is available to approve it. "
-    "Ask the user to rerun with an allow rule or "
-    "--approval ask.",
-    "features.permission.scope.action_path": "action accesses a path outside the workspace: {path}",
-    "features.permission.scope.cdpath": "CDPATH makes directory changes ambiguous",
-    "features.permission.scope.command_outside": "command runs outside the workspace",
-    "features.permission.scope.command_path": "command accesses a path outside the workspace: {path}",
-    "features.permission.scope.conditional_cd": "conditional or subshell directory changes need review",
-    "features.permission.scope.environment": "shell environment changes need review",
-    "features.permission.scope.expansion": "shell expansion or control flow needs review",
-    "features.permission.scope.external": "external service access needs review",
-    "features.permission.scope.fetch": "web fetch sends URLs to external services and retrieves untrusted page "
-    "content",
-    "features.permission.scope.git_hooks": "git command may invoke hooks or change configuration",
-    "features.permission.scope.git_network": "git command may use the network",
-    "features.permission.scope.git_outside": "git operates outside the workspace",
-    "features.permission.scope.git_review": "git invocation needs review",
-    "features.permission.scope.network": "command uses the network",
-    "features.permission.scope.outside_cd": "directory change leaves or cannot be confined to the workspace",
-    "features.permission.scope.possible_network": "command may use the network",
-    "features.permission.scope.powershell": "PowerShell scripts require review; POSIX command boundary checks "
-    "do not apply",
-    "features.permission.scope.redirection": "redirection accesses a path outside the workspace",
-    "features.permission.scope.script": "executing a script or nonstandard executable needs review",
-    "features.permission.scope.search": "web search sends queries to an external search service",
-    "features.permission.scope.search_link": "search can follow a link outside the workspace: {path} -> "
-    "{target}",
-    "features.permission.scope.search_paths": "search paths could not be verified",
-    "features.permission.scope.unknown_command": "command behavior cannot be confined to the workspace without "
-    "review",
-    "features.permission.scope.unknown_tool": "tool effects cannot be confined to the workspace without review",
-    "features.permission.scope.wildcard": "wildcard paths may follow links outside the workspace",
-    "features.permission.session_rules": "approved this session: {rules}",
-    "features.permission.status": "approval policy: {label}",
-    "features.permission.captured": 'current run: {label}',
-    "features.permission.user_denied": "The user denied this tool call. Use a materially safer alternative or "
-    "ask what they want instead.",
+    "features.permission.allow_suffix": "  Allow once [y] / Deny [n] / Always allow [a]",
     "features.search.key": "DeepSeek search requires an official API key. Use /login api deepseek with "
     "https://api.deepseek.com or set DEEPSEEK_API_KEY (search.apiKeyEnv can select a "
     "separate search key).",
@@ -139,7 +96,6 @@ MESSAGES = {
     "features.web.permissions": "native scope cannot satisfy permissions or tool hooks",
     "features.web.rejected": "provider rejected this capability",
     "features.web.requires_capabilities": "combined native tool requires disabled or unassigned capabilities",
-    "features.permission.approval_required_manual": "permission required: {reason}",
     "features.web.max_calls": "plugins.web.maxCalls must be null or a positive integer.",
     "features.web.call_limit": "Web tools reached plugins.web.maxCalls for this user request.",
     "features.web.operation_limit": "Web {operation} reached {operation}.maxUses for this user request.",
@@ -148,7 +104,4 @@ MESSAGES = {
     "features.fetch.max_uses": "fetch.maxUses must be null or a positive integer.",
     'features.permission.approval.ask': 'ask when needed',
     'features.permission.approval.never': 'never ask',
-    'features.permission.never': 'This operation requires new approval, but approval policy is never.',
-    'features.permission.read_only': 'This runtime permits only read-only tools; arbitrary shell commands and mutations are unavailable.',
-    'features.permission.scope.host_shell': 'host shell execution requires explicit authorization',
 }
