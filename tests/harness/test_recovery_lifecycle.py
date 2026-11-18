@@ -13,7 +13,6 @@ from virgo.agent import AgentTool
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, TextContent
 from virgo.diagnostics import capture_error
-from virgo.harness.diagnostic_access import DiagnosticAccess
 from virgo.harness.retry import retry_after_seconds
 
 from tests.support.harness import calls, install_responses, tool_results
@@ -134,12 +133,13 @@ def test_notification_failure_retains_evidence_without_waking_another_runtime(ma
     assert "delivery-independent evidence" in wire_text(calls()[-1])
 
 
-def test_expired_pending_references_cannot_block_retained_evidence(make_session):
+def test_missing_pending_references_cannot_block_retained_evidence(make_session):
     session = make_session(faux.reply("inspected"), refresh_models=False)
     recovery = session.main.recovery
-    recovery.access = session.main.diagnostic_access = DiagnosticAccess(max_records=2, max_ids=8)
     records = [capture_error(f"cause {index}", phase="fixture.pending") for index in range(5)]
-    for record in records:
+    for record in records[:3]:
+        recovery.access.mark(record["error_id"], "pending")
+    for record in records[3:]:
         recovery.queue(record)
     session.prompt("inspect pending facts")
     body = wire_text(calls()[-1])

@@ -152,15 +152,15 @@ def test_cursor_cannot_cross_error_section_or_evidence_snapshot():
     assert access.read("first", "trace", cursor)["status"] == "invalid_cursor"
 
 
-def test_expired_unknown_and_uncaptured_evidence_are_distinct_without_path_fallback(tmp_path):
+def test_retained_unknown_and_uncaptured_evidence_are_distinct_without_path_fallback(tmp_path):
     path = tmp_path / "private.jsonl"
     path.write_text("private-file-payload")
-    access = DiagnosticAccess(max_records=1, max_ids=3)
+    access = DiagnosticAccess()
     access.remember({**record("older-error"), "log_path": str(path), "log_pattern": str(tmp_path / "*")})
     access.remember(record("newer-error"))
 
-    assert access.read("older-error")["status"] == "expired"
-    assert access.get("older-error") is None
+    assert access.read("older-error")["status"] == "ok"
+    assert access.get("older-error")["error_id"] == "older-error"
     for unknown in ("newer", str(path), "../private.jsonl", "another-runtime-error"):
         assert access.read(unknown)["status"] == "not_found"
     for section in ("causes", "trace", "stderr", "attempts"):
@@ -210,3 +210,34 @@ def test_broken_lookup_returns_unavailable_without_recursive_failure(make_sessio
     assert query(tool, session.main, "original-error")["status"] == "unavailable"
     assert access.get("original-error")["message"] == "original-evidence"
     assert len(emergency) == 1 and emergency[0]["phase"] == "diagnostics.lookup"
+
+
+def test_many_attempts_page_from_index_and_cursors_are_runtime_bound():
+    access = DiagnosticAccess(page_bytes=512)
+    other = DiagnosticAccess(page_bytes=512)
+    common = {"runtime_id": "runtime", "model_call_id": "call", "purpose": "agent"}
+    for index in range(1050):
+        source = record(f"attempt-{index}", **common)
+        access.remember(source)
+    other.remember(source)
+    pieces, cursor = [], None
+    while True:
+        page = access.read("attempt-1049", "attempts", cursor)
+        assert page["status"] == "ok"
+        assert len(json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode()) <= 512
+        assert page["text"]
+        pieces.append(page["text"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+        assert other.read("attempt-1049", "attempts", cursor)["status"] == "invalid_cursor"
+    records = json.loads("".join(pieces))["records"]
+    assert [item["error_id"] for item in records] == [f"attempt-{index}" for index in range(1050)]
+    assert access.get("attempt-0") is not None
+    with access._lock:
+        plan = access._db().execute(
+            "EXPLAIN QUERY PLAN SELECT seq, payload FROM evidence WHERE call_key=? AND seq>=? ORDER BY seq",
+            ("fixture", 1)).fetchall()
+    assert any("evidence_call" in row[-1] for row in plan)
+    access.close()
+    other.close()

@@ -59,6 +59,16 @@ uv run virgo -p --format json "总结 README"
 
 默认权限预设为 Workspace-Edit：允许编辑工作区、允许任务联网。`/permissions` 选择或编辑权限预设与审批策略。模型可以申请单次操作的权限例外。
 
+## 查看错误记录
+
+用 `/diagnostics` 查看最近十条错误和数据库路径。用
+`/diagnostics --before <cursor>` 翻到更早的记录，或用
+`/diagnostics <error-id>` 按完整 ID 或唯一前缀查看详情。
+
+错误保存在 `~/.virgo/logs/diagnostics.sqlite3`（若设置了 `VIRGO_HOME`，
+则位于 `$VIRGO_HOME/logs/diagnostics.sqlite3`），重启后仍可查询。
+该命令会增量导入旧的 JSONL 日志并保留源文件。分享诊断详情前请先检查内容。
+
 ## 继续了解
 
 [安装可选扩展](extensions/README.zh-CN.md) · [示例](examples/README.zh-CN.md) · [反馈问题](https://github.com/0xAstraZhang/Virgo/issues)

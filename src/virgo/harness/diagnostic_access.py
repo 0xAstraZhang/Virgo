@@ -8,23 +8,29 @@ diagnostic log files are opened here.
 
 from __future__ import annotations
 
-import copy
 import hashlib
+import hmac
 import json
+import os
 import re
+import tempfile
 import threading
-from collections import OrderedDict
+import uuid
+from pathlib import Path
 
-from ..diagnostics import sanitize
+from ..diagnostics import capture_error, emergency_write, sanitize
+from .diagnostic_store import connect
 
 SECTIONS = ("summary", "causes", "trace", "stderr", "attempts", "related")
 MAX_RESPONSE_BYTES = 8192
 MAX_RECORD_BYTES = 64 * 1024
 _ERROR_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
-_CURSOR = re.compile(r"([a-f0-9]{24}):([0-9]{1,8})\Z")
+_CURSOR = re.compile(r"([a-f0-9]{24}):([0-9]{1,19}):([0-9]{1,8})\Z")
+_END = 2**63 - 1
+_CALL_KEYS = ("model_call_id", "runtime_id", "session_id", "run_id", "agent", "purpose")
 _RECORD_FIELDS = (
     "schema_version", "error_id", "timestamp", "code", "phase", "kind", "message", "exception_type",
-    "traceback", "chain_truncated", "record_truncated", "log_expired", "logging_error", "record_warning",
+    "traceback", "chain_truncated", "record_truncated", "logging_error", "record_warning",
 )
 _CONTEXT_FIELDS = (
     "runtime_id", "session_id", "accounting_session_id", "run_id", "agent", "role", "tool_call_id",
@@ -123,125 +129,219 @@ def _record_view(record) -> dict | None:
 
 
 class DiagnosticAccess:
-    """A bounded collection of explicit grants, with tombstones for expired records."""
+    """Disk-backed private snapshots. Only remember grants access; no global fallback."""
 
-    def __init__(self, *, max_records: int = 100, max_ids: int = 1000, page_bytes: int = MAX_RESPONSE_BYTES):
-        if type(max_records) is not int or max_records < 1:
-            raise ValueError("max_records must be a positive integer")
-        if type(max_ids) is not int or max_ids < max_records:
-            raise ValueError("max_ids must be an integer at least as large as max_records")
+    def __init__(self, *, directory: Path | None = None, page_bytes: int = MAX_RESPONSE_BYTES):
         if type(page_bytes) is not int or not 512 <= page_bytes <= MAX_RESPONSE_BYTES:
             raise ValueError(f"page_bytes must be between 512 and {MAX_RESPONSE_BYTES}")
-        self.max_records, self.max_ids, self.page_bytes = max_records, max_ids, page_bytes
-        self._records: OrderedDict[str, dict] = OrderedDict()
-        self._grants: OrderedDict[str, None] = OrderedDict()
+        self.page_bytes = page_bytes
+        self.directory = directory or Path(os.environ.get("VIRGO_HOME", Path.home() / ".virgo")) / "logs"
         self._lock = threading.RLock()
+        self._connection = None
+        self._temporary = None
+        self._closed = False
+        self._version = 0
+        self._pending_sequence = 0
+        self._cursor_key = uuid.uuid4().bytes
 
-    def remember(self, record: dict) -> None:
-        """Grant exactly this error ID and retain a detached, filtered snapshot."""
+    def _db(self):
+        if self._closed:
+            raise OSError("Runtime diagnostic evidence has been closed")
+        if self._connection is None:
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            temporary = tempfile.TemporaryDirectory(prefix="runtime-", dir=self.directory)
+            db = None
+            try:
+                db = connect(Path(temporary.name) / "evidence.sqlite3", durable=False)
+                db.executescript("""
+                    CREATE TABLE evidence (
+                        seq INTEGER PRIMARY KEY, error_id TEXT NOT NULL UNIQUE,
+                        call_key TEXT NOT NULL, payload TEXT NOT NULL
+                    );
+                    CREATE INDEX evidence_call ON evidence(call_key, seq);
+                    CREATE TABLE delivery (
+                        error_id TEXT PRIMARY KEY, recorded INTEGER NOT NULL DEFAULT 0,
+                        presented INTEGER NOT NULL DEFAULT 0, pending INTEGER
+                    );
+                    CREATE INDEX delivery_pending ON delivery(pending) WHERE pending IS NOT NULL;
+                """)
+            except BaseException:
+                if db is not None:
+                    db.close()
+                temporary.cleanup()
+                raise
+            self._connection, self._temporary = db, temporary
+        return self._connection
+
+    def close(self):
+        try:
+            with self._lock:
+                self._closed = True
+                if self._connection is not None:
+                    self._connection.close()
+                    self._connection = None
+                if self._temporary is not None:
+                    temporary, self._temporary = self._temporary, None
+                    temporary.cleanup()
+        except Exception as error:
+            # Cleanup is diagnostic bookkeeping, not the child operation's outcome.
+            emergency_write(capture_error(error, phase="diagnostics.cleanup"))
+
+    def __del__(self):
+        if getattr(self, "_connection", None) is not None:
+            self._connection.close()
+
+    def remember(self, record: dict) -> dict | None:
+        """Persist a detached, filtered snapshot in this runtime's private database."""
         view = _record_view(record)
         if view is None:
-            return
-        error_id = view["error_id"]
+            return None
+        payload = _json(view)
+        call_key = _json([view["context"].get(key) for key in _CALL_KEYS])
         with self._lock:
-            self._grants[error_id] = None
-            self._records[error_id] = view
-            while len(self._records) > self.max_records:
-                self._records.popitem(last=False)
-            while len(self._grants) > self.max_ids:
-                expired, _ = self._grants.popitem(last=False)
-                self._records.pop(expired, None)
+            changed = self._db().execute("""
+                INSERT INTO evidence(error_id, call_key, payload) VALUES (?, ?, ?)
+                ON CONFLICT(error_id) DO UPDATE SET call_key=excluded.call_key, payload=excluded.payload
+                WHERE evidence.payload != excluded.payload
+            """, (view["error_id"], call_key, payload)).rowcount
+            self._version += bool(changed)
+        return view
 
     def get(self, error_id: str) -> dict | None:
-        """Read an exact, explicitly granted ID; never fall back to a similar error."""
         if not isinstance(error_id, str) or not _ERROR_ID.fullmatch(error_id):
             return None
         with self._lock:
-            return copy.deepcopy(self._records.get(error_id))
+            if self._connection is None and not self._closed:
+                return None
+            row = self._db().execute("SELECT payload FROM evidence WHERE error_id=?", (error_id,)).fetchone()
+            return json.loads(row[0]) if row else None
 
-    def recent(self) -> list[dict]:
-        """Return retained snapshots without granting or reading any other scope."""
+    def recent(self, limit: int = 100) -> list[dict]:
         with self._lock:
-            return copy.deepcopy(list(self._records.values()))
+            if self._connection is None and not self._closed:
+                return []
+            rows = self._db().execute("SELECT payload FROM evidence ORDER BY seq DESC LIMIT ?", (limit,)).fetchall()
+            return [json.loads(row[0]) for row in reversed(rows)]
+
+    def mark(self, error_id: str, action: str) -> bool:
+        """Delivery bookkeeping is disk-backed too; it cannot create evidence grants."""
+        if not isinstance(error_id, str) or not _ERROR_ID.fullmatch(error_id):
+            return False
+        with self._lock:
+            db = self._db()
+            db.execute("INSERT OR IGNORE INTO delivery(error_id) VALUES (?)", (error_id,))
+            if action == "record":
+                return bool(db.execute("UPDATE delivery SET recorded=1 WHERE error_id=? AND recorded=0",
+                                       (error_id,)).rowcount)
+            if action == "presented":
+                return bool(db.execute("UPDATE delivery SET presented=1, pending=NULL WHERE error_id=? AND presented=0",
+                                       (error_id,)).rowcount)
+            if action == "pending":
+                self._pending_sequence += 1
+                return bool(db.execute("""UPDATE delivery SET pending=?
+                    WHERE error_id=? AND presented=0 AND pending IS NULL""",
+                                       (self._pending_sequence, error_id)).rowcount)
+            raise ValueError("Unknown diagnostic delivery action")
+
+    def pending(self, limit: int = 3) -> list[str]:
+        with self._lock:
+            if self._connection is None and not self._closed:
+                return []
+            return [row[0] for row in self._db().execute(
+                "SELECT error_id FROM delivery WHERE pending IS NOT NULL ORDER BY pending LIMIT ?", (limit,))]
 
     @staticmethod
     def _summary(record: dict) -> dict:
         result = {key: record[key] for key in _SUMMARY_FIELDS if key in record}
-        result["context"] = {key: value for key, value in record.get("context", {}).items()
-                             if key != "stderr_tail"}
+        result["context"] = {key: value for key, value in record.get("context", {}).items() if key != "stderr_tail"}
         result["cause_count"] = len(record.get("cause_chain", []))
         return result
 
-    def _section(self, record: dict, section: str) -> str | None:
-        if section == "summary":
-            return _json(self._summary(record))
-        if section == "causes":
-            causes = record.get("cause_chain")
-            return _json(causes) if causes else None
-        if section == "trace":
-            trace = record.get("traceback")
-            return trace if isinstance(trace, str) and trace else None
-        if section == "stderr":
-            stderr = record.get("context", {}).get("stderr_tail")
-            return stderr if isinstance(stderr, str) and stderr else None
+    def _segments(self, record, section, position):
+        """Resume at a row key, never serialize or scan all previous result rows."""
+        if section in ("summary", "causes", "trace", "stderr"):
+            value = {"summary": lambda: _json(self._summary(record)),
+                     "causes": lambda: _json(record["cause_chain"]) if record.get("cause_chain") else None,
+                     "trace": lambda: record.get("traceback"),
+                     "stderr": lambda: record.get("context", {}).get("stderr_tail")}[section]()
+            if isinstance(value, str) and value and position == 0:
+                yield 0, value
+            return
         if section == "attempts":
             context = record.get("context", {})
             if not context.get("model_call_id"):
-                return None
-            keys = ("model_call_id", "runtime_id", "session_id", "run_id", "agent", "purpose")
-            records = [self._summary(item) for item in self._records.values()
-                       if all(item.get("context", {}).get(key) == context.get(key) for key in keys)]
-            return _json({"scope": "retained_authorized_failures", "records": records})
-        if section == "related":
-            records = []
-            for reference in record.get("related_error_ids", []):
-                if reference in self._grants:
-                    related = self._records.get(reference)
-                    records.append(self._summary(related) if related else {"error_id": reference, "status": "expired"})
-            return _json({"scope": "explicitly_authorized_references", "records": records})
-        return None
+                return
+            key = _json([context.get(name) for name in _CALL_KEYS])
+            db = self._db()
+            first = db.execute("SELECT seq FROM evidence WHERE call_key=? ORDER BY seq LIMIT 1", (key,)).fetchone()[0]
+            if position == 0:
+                yield 0, '{"scope":"retained_authorized_failures","records":['
+            for seq, payload in db.execute(
+                "SELECT seq, payload FROM evidence WHERE call_key=? AND seq>=? ORDER BY seq", (key, max(1, position))):
+                yield seq, ("" if seq == first else ",") + _json(self._summary(json.loads(payload)))
+        else:
+            if position == 0:
+                yield 0, '{"scope":"explicitly_authorized_references","records":['
+            seen = False
+            for index, reference in enumerate(record.get("related_error_ids", []), 1):
+                related = self.get(reference)
+                if related is not None:
+                    if index >= position:
+                        yield index, ("," if seen else "") + _json(self._summary(related))
+                    seen = True
+        yield _END, "]}"
+
+    def _token(self, error_id, section, position, offset):
+        data = f"{self._version}\0{error_id}\0{section}\0{position}\0{offset}"
+        signature = hmac.new(self._cursor_key, data.encode(), hashlib.sha256).hexdigest()[:24]
+        return f"{signature}:{position}:{offset}"
 
     def read(self, error_id: str, section: str = "summary", cursor: str | None = None) -> dict:
-        """Return a bounded JSON envelope; concatenate ``text`` pages for one section.
-
-        Cursors are bound to the error, section and evidence snapshot. If evidence
-        changes between pages the caller must restart, rather than silently mix it.
-        """
+        """Return an 8 KiB envelope; concatenate text pages to reconstruct a section."""
         if not isinstance(error_id, str) or not _ERROR_ID.fullmatch(error_id):
             return {"status": "not_found", "message": "No diagnostic with that ID is available to this runtime."}
         if section not in SECTIONS:
             return {"status": "invalid_section", "message": "Choose summary, causes, trace, stderr, attempts or related."}
         with self._lock:
-            if error_id not in self._grants:
-                return {"status": "not_found", "message": "No diagnostic with that ID is available to this runtime."}
-            record = self._records.get(error_id)
+            record = self.get(error_id)
             if record is None:
-                return {"status": "expired", "error_id": error_id,
-                        "message": "This runtime's retained evidence has expired; no substitute record was read."}
-            body = self._section(record, section)
+                return {"status": "not_found", "message": "No diagnostic with that ID is available to this runtime."}
+            invalid = {"status": "invalid_cursor", "message": "Restart this error ID and section without a cursor."}
+            position, offset = 0, 0
+            if cursor is not None:
+                match = _CURSOR.fullmatch(cursor) if isinstance(cursor, str) else None
+                if match is None:
+                    return invalid
+                position, offset = int(match[2]), int(match[3])
+                if not hmac.compare_digest(cursor, self._token(error_id, section, position, offset)):
+                    return invalid
+            segments = iter(self._segments(record, section, position))
+            segment = next(segments, None)
+            if segment is None:
+                return invalid if cursor else {"status": "unavailable", "error_id": error_id, "section": section,
+                                               "message": "This section was not captured in the retained diagnostic."}
+            if cursor and (segment[0] != position or offset >= len(segment[1])):
+                return invalid
             truncated = bool(record.get("record_truncated") or record.get("chain_truncated")
                              or section == "stderr" and record.get("context", {}).get("stderr_truncated"))
-        if body is None:
-            return {"status": "unavailable", "error_id": error_id, "section": section,
-                    "message": "This section was not captured in the retained diagnostic."}
-        digest = hashlib.sha256(f"{error_id}\0{section}\0{body}".encode()).hexdigest()[:24]
-        start = 0
-        if cursor is not None:
-            match = _CURSOR.fullmatch(cursor) if isinstance(cursor, str) else None
-            if match is None or match[1] != digest or not 0 < int(match[2]) < len(body):
-                return {"status": "invalid_cursor", "message": "Restart this error ID and section without a cursor."}
-            start = int(match[2])
+            text = ""
 
-        def page(end):
-            return {"status": "ok", "error_id": error_id, "section": section, "text": body[start:end],
-                    "next_cursor": f"{digest}:{end}" if end < len(body) else None,
-                    "source_truncated": truncated}
+            def page(value, token):
+                return {"status": "ok", "error_id": error_id, "section": section, "text": value,
+                        "next_cursor": token, "source_truncated": truncated}
 
-        low, high = start, min(len(body), start + self.page_bytes)
-        while low < high:
-            end = (low + high + 1) // 2
-            if len(_json(page(end)).encode("utf-8")) <= self.page_bytes:
-                low = end
-            else:
-                high = end - 1
-        return page(low)
+            while segment is not None:
+                position, body = segment
+                low, high = offset, min(len(body), offset + self.page_bytes)
+                while low < high:
+                    end = (low + high + 1) // 2
+                    token = self._token(error_id, section, position, end)
+                    if len(_json(page(text + body[offset:end], token)).encode("utf-8")) <= self.page_bytes:
+                        low = end
+                    else:
+                        high = end - 1
+                text += body[offset:low]
+                if low < len(body):
+                    return page(text, self._token(error_id, section, position, low))
+                segment, offset = next(segments, None), 0
+            return page(text, None)

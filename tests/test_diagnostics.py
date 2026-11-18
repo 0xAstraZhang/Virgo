@@ -8,7 +8,10 @@ import re
 import pytest
 
 from virgo.diagnostics import capture_error, error_summary, safe_text, sanitize
+from virgo.harness.diagnostic_access import DiagnosticAccess
 from virgo.harness.diagnostics import DiagnosticLog
+
+from tests.support.persistence import diagnostic_records
 
 
 def test_native_exception_fields_cannot_be_hidden_by_broken_properties():
@@ -118,7 +121,7 @@ def test_invalid_error_id_is_repaired_without_losing_the_error(tmp_path):
     log = DiagnosticLog(tmp_path)
     saved = log.record({"error_id": [], "phase": "test", "message": "original failure"})
     assert isinstance(saved["error_id"], str) and saved["message"] == "original failure"
-    assert json.loads(log.path.read_text())["error_id"] == saved["error_id"]
+    assert diagnostic_records(log.path)[0]["error_id"] == saved["error_id"]
 
 
 def test_log_preprocessing_failure_preserves_original_error_on_stderr(tmp_path, monkeypatch, capsys):
@@ -137,7 +140,7 @@ def test_log_preprocessing_failure_preserves_original_error_on_stderr(tmp_path, 
 
 
 @pytest.mark.parametrize("limit", [512, 1000, 4096])
-def test_oversized_log_record_keeps_id_phase_and_cause_summary_within_budget(tmp_path, limit):
+def test_large_log_record_keeps_causes_with_bounded_query_pages(tmp_path, limit):
     try:
         try:
             raise ValueError("root cause " + "r" * 20_000)
@@ -145,13 +148,15 @@ def test_oversized_log_record_keeps_id_phase_and_cause_summary_within_budget(tmp
             raise RuntimeError("outer cause " + "o" * 50_000) from cause
     except RuntimeError as error:
         details = capture_error(error, phase="tool.execute")
-    log = DiagnosticLog(tmp_path, max_bytes=limit)
+    log = DiagnosticLog(tmp_path)
     saved = log.record(details)
-    assert log.path.stat().st_size <= limit
-    record = json.loads(log.path.read_text())
+    access = DiagnosticAccess(directory=tmp_path, page_bytes=limit)
+    access.remember(saved)
+    assert len(json.dumps(access.read(saved["error_id"]), ensure_ascii=False, separators=(",", ":")).encode()) <= limit
+    record = diagnostic_records(log.path)[0]
     assert record["error_id"] == details["error_id"]
     assert record["phase"] == "tool.execute"
-    assert record["record_truncated"]
+    assert "truncated" in record["message"]
     assert record["message"].startswith("outer cause")
     assert any(cause["message"].startswith("root cause") for cause in record["cause_chain"])
     assert saved["log_path"] == str(log.path)
@@ -168,7 +173,7 @@ def test_default_budget_keeps_full_diagnostic_stack(tmp_path):
     assert not saved.get("record_truncated")
 
 
-def test_multilingual_record_obeys_escaped_json_byte_budget(tmp_path):
+def test_multilingual_record_preserves_causes_and_query_byte_budget(tmp_path):
     try:
         try:
             raise ValueError("根因是服务器断开。" * 1000)
@@ -176,36 +181,36 @@ def test_multilingual_record_obeys_escaped_json_byte_budget(tmp_path):
             raise RuntimeError("模型调用失败，请查看诊断。" * 1000) from cause
     except RuntimeError as error:
         details = capture_error(error, phase="tool.execute")
-    log = DiagnosticLog(tmp_path, max_bytes=512)
+    log = DiagnosticLog(tmp_path)
     saved = log.record(details)
     assert "logging_error" not in saved
-    assert log.path.stat().st_size <= 512
+    access = DiagnosticAccess(directory=tmp_path, page_bytes=512)
+    access.remember(saved)
+    assert len(json.dumps(access.read(saved["error_id"]), ensure_ascii=False, separators=(",", ":")).encode()) <= 512
     assert saved["message"].startswith("模型调用失败")
-    assert saved["cause_chain"][0]["message"].startswith("根因是服务器断开")
+    assert saved["cause_chain"][-1]["message"].startswith("根因是服务器断开")
 
 
-def test_rotation_updates_cached_record_locations_and_marks_expired_logs(tmp_path):
-    log = DiagnosticLog(tmp_path, max_bytes=1000, backups=1)
-    original = capture_error("first " * 80, phase="test")
-    first = log.record(original)
-    log.record(capture_error("second " * 80, phase="test"))
-    assert first["log_path"] == str(log.path.with_suffix(".jsonl.1"))
-    assert log.record(original)["log_path"] == first["log_path"]
-    log.record(capture_error("third " * 80, phase="test"))
-    assert first["log_expired"] and "log_path" not in first
-    assert first["log_pattern"] == str(log.path) + "*"
-    assert "/diagnostics " + first["error_id"] in error_summary(first)
+def test_history_growth_keeps_record_locations_and_deduplicates_old_errors(tmp_path):
+    with DiagnosticLog(tmp_path) as log:
+        original = capture_error("first failure", phase="test")
+        first = log.record(original)
+        for index in range(120):
+            log.record(capture_error(f"later {index}", phase="test"))
+        assert log.record(original)["log_path"] == first["log_path"]
+        assert len(diagnostic_records(log.path)) == 121
+        assert log.lookup(first["error_id"]) == first
+        assert str(log.path) in error_summary(first)
 
 
-def test_zero_backups_still_enforces_rotation_budget(tmp_path):
-    log = DiagnosticLog(tmp_path, max_bytes=1000, backups=0)
-    first = log.record(capture_error("first " * 80, phase="test"))
-    log.record(capture_error("second " * 80, phase="test"))
-    assert log.path.stat().st_size <= 1000
-    assert first["log_expired"]
-    assert list(tmp_path.glob(log.path.name + "*")) == [log.path]
+def test_history_remains_queryable_after_connection_closes(tmp_path):
+    with DiagnosticLog(tmp_path) as log:
+        first = log.record(capture_error("first failure", phase="test"))
+    with DiagnosticLog(tmp_path) as reopened:
+        assert reopened.lookup(first["error_id"])["message"] == "first failure"
+        assert reopened.recent() == []  # Startup delivery must not reuse historical errors.
 
 
-def test_unusable_log_budget_is_rejected(tmp_path):
-    with pytest.raises(ValueError, match="at least 512"):
-        DiagnosticLog(tmp_path, max_bytes=1)
+def test_unusable_query_budget_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="page_bytes"):
+        DiagnosticAccess(directory=tmp_path, page_bytes=1)

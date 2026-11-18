@@ -59,6 +59,17 @@ uv run virgo -p --format json "Summarize the README"
 
 The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/permissions` selects or edits permission presets and approval policy. The model can request a single-operation permission exception.
 
+## Inspect errors
+
+Run `/diagnostics` to list the latest ten errors and show the database path.
+Use `/diagnostics --before <cursor>` for earlier pages or
+`/diagnostics <error-id>` to view details for an exact ID or a unique prefix.
+
+Errors remain available across restarts in `~/.virgo/logs/diagnostics.sqlite3`
+(or `$VIRGO_HOME/logs/diagnostics.sqlite3`). The command incrementally imports
+older JSONL logs and leaves the source files in place. Review diagnostic details
+before sharing them.
+
 ## Explore
 
 [Install optional extensions](extensions/README.md) · [Examples](examples/README.md) · [Report an issue](https://github.com/0xAstraZhang/Virgo/issues)

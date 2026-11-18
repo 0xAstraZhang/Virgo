@@ -13,12 +13,12 @@ from virgo.ai.types import AssistantMessage
 from virgo.harness import jobs as supervision
 
 from tests.support.harness import calls, tool_results
+from tests.support.persistence import diagnostic_records
 from tests.support.shell import selected
 
 
 def records(session):
-    return [json.loads(line) for path in (session.paths.user / "logs").glob("*.jsonl")
-            for line in path.read_text().splitlines()]
+    return diagnostic_records(session.diagnostics.path)
 
 
 def test_background_failure_and_failed_notification_keep_original_session(make_session, monkeypatch):
@@ -266,3 +266,30 @@ def test_background_subagent_preserves_child_error_in_job(make_session):
     link = next(row for row in records(session) if row["code"] == "BACKGROUND_ERROR_LINK")
     assert link["context"]["related_error_id"] == error_id
     assert link["context"]["job_id"] == job.id and link["context"]["tool_call_id"] == "agent-origin"
+
+
+def test_diagnostic_cleanup_failure_cannot_replace_successful_delegation(make_session, monkeypatch, capsys):
+    from virgo.diagnostics import capture_error
+
+    session = make_session(
+        faux.reply(tools=[("agent", {"description": "inspect", "prompt": "inspect the fixture"})]),
+        faux.reply("child completed successfully"), faux.reply("parent completed"), refresh_models=False,
+    )
+
+    def prepare_cleanup_failure(runtime):
+        if runtime.role != "subagent":
+            return
+        access = runtime.diagnostic_access
+        access.remember(capture_error("retained observation", phase="fixture.cleanup"))
+
+        def fail():
+            raise OSError("temporary evidence cleanup unavailable")
+
+        monkeypatch.setattr(access._temporary, "cleanup", fail)
+
+    session.bus.on("runtime_created", prepare_cleanup_failure)
+    session.prompt("delegate inspection")
+    result = tool_results(session)[0]
+    assert not result.is_error
+    assert "child completed successfully" in result.text()
+    assert "temporary evidence cleanup unavailable" in capsys.readouterr().err

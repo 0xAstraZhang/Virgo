@@ -80,7 +80,7 @@ def test_retry_reports_stderr_fallback_when_its_log_cannot_be_written(make_sessi
     def unavailable(*args):
         raise OSError("diagnostic directory unavailable")
 
-    monkeypatch.setattr(session.diagnostics, "_rotate", unavailable)
+    monkeypatch.setattr(session.diagnostics, "_db", unavailable)
     session.prompt("work")
     record = session.diagnostics.recent()[0]
     assert record["error_id"] in session.ui.text
