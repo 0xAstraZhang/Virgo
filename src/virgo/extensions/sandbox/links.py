@@ -50,15 +50,31 @@ def external_writable_links(roots: tuple[Path, ...], protected: tuple[Path, ...]
             return
         if not stat.S_ISDIR(info.st_mode):
             return
-        for parent, directories, files, descriptor in os.fwalk(root, onerror=failed):
+        if hasattr(os, "fwalk"):
+            for parent, directories, files, descriptor in os.fwalk(root, onerror=failed):
+                parent = Path(parent)
+                directories[:] = [name for name in directories if not readonly(parent / name)]
+                for name in files:
+                    path = parent / name
+                    if readonly(path):
+                        continue
+                    try:
+                        entry = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISREG(entry.st_mode):
+                        record(path, entry)
+            return
+        for parent, directories, files in os.walk(root, followlinks=False):
             parent = Path(parent)
-            directories[:] = [name for name in directories if not readonly(parent / name)]
+            directories[:] = [name for name in directories
+                              if not readonly(parent / name) and not (parent / name).is_symlink()]
             for name in files:
                 path = parent / name
                 if readonly(path):
                     continue
                 try:
-                    entry = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                    entry = path.stat(follow_symlinks=False)
                 except FileNotFoundError:
                     continue
                 if stat.S_ISREG(entry.st_mode):
