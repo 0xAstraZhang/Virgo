@@ -1,6 +1,6 @@
 # Virgo 扩展
 
-[项目首页](../README.zh-CN.md) · [English](README.md) · [扩展 API](../docs/zh-CN/development/extensions.md)
+[项目首页](../README.zh-CN.md) · [English](README.md)
 
 位于已安装包之外的可选能力。把文件复制到 `~/.virgo/extensions/`（或受信任项目的
 `.virgo/extensions/`）；Virgo 在会话启动时加载其中的每个 `*.py` 文件。

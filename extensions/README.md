@@ -1,6 +1,6 @@
 # Virgo extensions
 
-[Project home](../README.md) · [简体中文](README.zh-CN.md) · [Extension API](../docs/en/development/extensions.md)
+[Project home](../README.md) · [简体中文](README.zh-CN.md)
 
 Optional capabilities that live outside the installed package. Copy a file into
 `~/.virgo/extensions/` (or `.virgo/extensions/` in a trusted project); Virgo loads
