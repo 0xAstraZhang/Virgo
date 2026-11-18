@@ -373,5 +373,6 @@ def test_foreground_abort_uses_bound_shell_and_rejects_midrun_switch(make_sessio
         session.abort()
         worker.join(timeout=8)
     assert not worker.is_alive()
-    assert result(session).details["status"] == "aborted"
+    observed = result(session)
+    assert observed.details.get("status") == "aborted", (observed.text(), observed.details)
     assert not (session.cwd / "unexpected").exists()
