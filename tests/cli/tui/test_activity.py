@@ -205,7 +205,11 @@ def test_failure_and_interruption_end_animation_and_next_run_starts_cleanly(make
             assert summaries(app)[0].startswith("✻ Failed after ")
             assert not app.activity.display
             app.controller.submit("request to interrupt")
-            await wait_for(pilot, lambda: session.main.agent.running and app.activity.display)
+            # Wait for the delayed model response to be claimed. The agent and
+            # activity start earlier; interrupting then leaves that reply queued
+            # for the recovery request.
+            await wait_for(pilot, lambda: len(faux.CALLS["test"]) == 2
+                           and session.main.agent.running and app.activity.display)
             await pilot.press("escape")
             await wait_for(pilot, lambda: len(summaries(app)) == 2)
             assert summaries(app)[1].startswith("✻ Interrupted after ")
