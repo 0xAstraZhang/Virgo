@@ -67,9 +67,8 @@ def test_fullscreen_pty_paste_resize_and_clean_exit(project, tmp_path):
         # No-Limit can open the three-mode picker without starting a sandbox.
         before_switch = len(terminal.output)
         terminal.send(b"\x1b[Z")
-        picker = terminal.wait_for(lambda data: "Permission modes" in plain(data), start=before_switch)
-        for label in ("Read-Only", "Workspace-Edit", "No-Limit"):
-            assert label in plain(picker)
+        labels = ("Permission modes", "Read-Only", "Workspace-Edit", "No-Limit")
+        terminal.wait_for(lambda data: all(label in plain(data) for label in labels), start=before_switch)
         terminal.send(b"\x1b")
         terminal.pump(0.3)
 

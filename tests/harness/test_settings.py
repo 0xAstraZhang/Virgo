@@ -173,3 +173,10 @@ def test_unselected_legacy_presets_cannot_widen_to_no_limit(project):
     config = {"permissions": {"presets": {"workspace-edit": {"networkAllowed": False}}}}
     with pytest.raises(ValueError, match="choose execution.mode"):
         Settings.load(Paths(project), config)
+
+@pytest.mark.parametrize(("saved", "expected"), [("no-limit", "workspace-edit"), ("read-only", "read-only")])
+def test_explicit_sandbox_override_keeps_its_boundary_with_a_saved_mode(project, saved, expected):
+    paths = Paths(project)
+    (paths.user / "settings.json").write_text(json.dumps({"execution": {"mode": saved}}))
+    settings = Settings.load(paths, {"execution": {"provider": "sandbox"}})
+    assert settings.get("execution.mode") == expected

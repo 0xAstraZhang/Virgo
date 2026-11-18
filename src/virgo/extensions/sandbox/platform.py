@@ -419,7 +419,12 @@ class NativePolicy:
                 if not path.is_dir() or path.is_symlink():
                     raise SandboxUnavailable(f"Private Virgo storage must be a directory: {path}")
                 args += ["--tmpfs", str(path), "--remount-ro", str(path)]
-        args += ["--bind", str(scratch), str(scratch), "--chdir", str(cwd),
+        # Bubblewrap creates mount-point parents in its empty root and /tmp.
+        # Keep those synthetic directories read-only, even when the project
+        # lives below /tmp. Only the explicit writable mounts and private
+        # command scratch should accept new files.
+        args += ["--bind", str(scratch), str(scratch), "--remount-ro", "/tmp", "--remount-ro", "/",
+                 "--chdir", str(cwd),
                  "--seccomp", str(seccomp_fd), "--"]
         return args
 

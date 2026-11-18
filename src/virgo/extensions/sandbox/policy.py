@@ -1,6 +1,7 @@
 """Resource policy and checked broker file access, for native execution."""
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import uuid
@@ -21,6 +22,7 @@ class SandboxPolicy:
     executor: object
     permission_snapshot: PermissionSnapshot | None = None
     provider: str = "sandbox"
+    spool_home: Path | None = None
 
     @property
     def revision(self) -> int:
@@ -48,15 +50,25 @@ class SandboxPolicy:
         if not any(path.is_relative_to(Path(root)) for root in self.resources.write_paths):
             raise FileAccessDenied(f"No write grant for {path}", dimension="write_paths", target=path)
 
+    def _output_reader(self, path):
+        return replace(self, private_paths=(), resources=replace(self.resources, read_paths=(str(path),), write_paths=()))
+
+    def _owns_private_output(self, path):
+        if self.spool_home is None:
+            return False
+        root, parts = self.spool_location()
+        return path.parent == root.joinpath(*parts)
+
     def check_read(self, path: Path):
         from .files import check_read
 
-        check_read(path, self)
+        check_read(path, self._output_reader(path) if self._owns_private_output(path) else self)
 
     def read_bytes(self, path: Path, *, max_bytes=None):
         from .files import read_bytes
 
-        return read_bytes(path, self, max_bytes=max_bytes)
+        reader = self._output_reader(path) if self._owns_private_output(path) else self
+        return read_bytes(path, reader, max_bytes=max_bytes)
 
     def open_mutation(self, path: Path, *, create: bool):
         from .files import open_mutation
@@ -85,21 +97,30 @@ class SandboxPolicy:
         self.validate(cwd)
         return self.executor.policy(self).validate(cwd)
 
+    def spool_location(self):
+        if self.spool_home is None:
+            return self.workspace, (".virgo", "outputs")
+        workspace_id = hashlib.sha256(os.fsencode(self.workspace)).hexdigest()
+        return self.spool_home, ("outputs", workspace_id)
+
     def open_output(self, cwd, prefix):
         self.validate(cwd)
+        root, parts = self.spool_location()
+        if self.spool_home is not None:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name == "nt":
             from .windows_files import open_output
 
             try:
-                return open_output(self, prefix)
+                return open_output(root, parts, prefix)
             except OSError as error:
                 raise ExecutionUnavailable("Protected output location is unavailable", reason="invalid_output",
-                                           dimension="output_path", target=str(self.workspace / ".virgo")) from error
+                                           dimension="output_path", target=str(root.joinpath(*parts))) from error
         directory = None
         try:
             flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            directory = os.open(self.workspace, flags)
-            for part in (".virgo", "outputs"):
+            directory = os.open(root, flags)
+            for part in parts:
                 try:
                     os.mkdir(part, mode=0o700, dir_fd=directory)
                 except FileExistsError:
@@ -109,10 +130,10 @@ class SandboxPolicy:
                 directory = child
             name = f"{prefix}-{uuid.uuid4().hex}.log"
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-            return self.workspace / ".virgo" / "outputs" / name, os.fdopen(fd, "wb", buffering=0)
+            return root.joinpath(*parts, name), os.fdopen(fd, "wb", buffering=0)
         except OSError as error:
             raise ExecutionUnavailable("Protected output location is unavailable", reason="invalid_output",
-                                       dimension="output_path", target=str(self.workspace / ".virgo")) from error
+                                       dimension="output_path", target=str(root.joinpath(*parts))) from error
         finally:
             if directory is not None:
                 os.close(directory)
@@ -126,10 +147,10 @@ class SandboxPolicy:
 
         # Only Core's owned spool references reach this method. The exception is
         # for one file, never its directory; retained handles reject aliases.
-        if path.parent != self.workspace / ".virgo" / "outputs":
+        root, parts = self.spool_location()
+        if path.parent != root.joinpath(*parts):
             raise FileAccessDenied("Output is outside the originating workspace", target=path)
-        policy = replace(self, resources=replace(self.resources, read_paths=(str(path),), write_paths=()))
-        return read_bytes(path, policy, max_bytes=max_bytes, tail=True)
+        return read_bytes(path, self._output_reader(path), max_bytes=max_bytes, tail=True)
 
     def describe(self):
         return {"provider": "sandbox", "backend": self.executor.backend, "workspace": str(self.workspace),

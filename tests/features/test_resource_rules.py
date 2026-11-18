@@ -85,3 +85,18 @@ def test_project_settings_cannot_supply_user_grants(broker_session, project, tmp
     fake_store.allow((str(project), "read-only", str(project), operation_id(event)), [("read_paths", str(resource))])
     assert ask(session, "read", {"path": str(resource)}, {"read_paths": [str(resource)]}).is_error
     assert len(session.ui.questions) == 1
+
+
+
+def test_read_only_broker_output_leaves_the_project_untouched(broker_session, project):
+    session = broker_session(preset="read-only")
+    context = session.main.execution_context
+    original = list(project.iterdir())
+    path, stream = context.open_output(project, "shell")
+    with stream:
+        stream.write(b"result")
+    assert list(project.iterdir()) == original
+    assert path.is_relative_to(session.paths.user)
+    context.check_read(path)
+    assert context.read_bytes(path) == b"result"
+    assert context.read_output_tail(path, 3) == (b"ult", 6)

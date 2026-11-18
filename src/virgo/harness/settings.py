@@ -326,6 +326,18 @@ class Settings:
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         normalized_overrides = _normalize_layer(overrides or {}, notices)
+        # A legacy provider override still has startup precedence over a saved
+        # modern mode. Preserve a saved sandbox mode when it already matches.
+        startup_execution = normalized_overrides.get("execution", {})
+        saved_execution = user.get("execution", {})
+        if (isinstance(startup_execution, dict) and "mode" not in startup_execution
+                and isinstance(saved_execution, dict) and isinstance(saved_execution.get("mode"), str)
+                and saved_execution["mode"] in DEFAULT_MODES):
+            if startup_execution.get("provider") == "sandbox":
+                saved_mode = saved_execution["mode"]
+                startup_execution["mode"] = "workspace-edit" if saved_mode == "no-limit" else saved_mode
+            elif startup_execution.get("provider") == "host":
+                startup_execution["mode"] = "no-limit"
         data = deep_merge(data, normalized_overrides)
         explicit = deep_merge(user, normalized_overrides)
         _migrate_execution(data, explicit, paths.cwd, notices)
