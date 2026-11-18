@@ -33,6 +33,13 @@ def native(make_session):
     return native_session(make_session, {"linux", "darwin"})
 
 
+@pytest.fixture
+def short_workspace():
+    """Keep AF_UNIX paths under Darwin's sun_path limit."""
+    with tempfile.TemporaryDirectory(prefix="vgf-", dir="/tmp") as directory:
+        yield Path(directory).resolve()
+
+
 def test_workspace_file_tools_obey_sandbox_even_with_accept_all(broker_session, project):
     session = broker_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}}, refresh_models=False
