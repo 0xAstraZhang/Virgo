@@ -884,7 +884,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         update_static(root.query_one("#metrics", Static), metrics)
         manager = self.session.services["execution"]
         selected = manager.selected_mode
-        active = manager.mode_for(self.session.main) if self.controller.busy else selected
+        snapshot = self.session.main.permission_snapshot
+        active = snapshot.mode if snapshot is not None and self.controller.busy else selected
         footer = Text(no_wrap=True, overflow="ellipsis")
         if self.session.store.save_error is not None:
             footer.append(tr(self, "ui.state.unsaved_footer"), style="bold red")

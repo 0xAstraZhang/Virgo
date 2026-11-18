@@ -115,7 +115,7 @@ def setup(api):
 
 发布排队中的代理工作或启动工作线程前，使用已捕获的来源记账 Store 调用 `api.reserve_child_work(owner)`。完成或启动失败时释放登记；释放必须在插件锁之外、向调用方发出完成信号之前进行。登记和释放使用与模式准入相同的 Core 锁。登记保留来源 Runtime 供策略检查，直到最后一个待完成任务释放，即使对话已被删除。官方后台服务为 callable 代理任务登记，子进程仍保留启动时策略。
 
-Core 根据自身管理的待执行登记和运行中的 Runtime（含子代）判断来源是否忙碌。实际模式切换要求该来源空闲；原 `runtime_pending_work` 检查钩子已退休。状态通知在持久化与状态发布后触发。观察者可以刷新 UI，但不能同步重入修改模式、选择对话或登记新工作。后续显式操作应在通知返回后通过正常准入入口发起。
+Core 根据自身管理的待执行登记和运行中的 Runtime（含子代）判断来源是否忙碌。空闲来源立即采用已验证的预设，忙碌来源在下次运行时采用。状态通知在持久化与状态发布后触发。观察者可以刷新 UI，但不能同步重入修改模式、选择对话或登记新工作。后续显式操作应在通知返回后通过正常准入入口发起。
 
 `api.register_execution_provider(provider)` 在 Runtime 创建前绑定单一所有者。仅显式选择 Sandbox 时加载必要扩展；初始化失败终止构造。旧 register_permission_policy 已移除。适配操作携带原调用来源，通过 `api.authorize_tool(event)` 检查，并用 `AgentTool.execution_scope` 声明 file、process、network、delegate、broker 或默认 external。Sandbox 拒绝无法实施范围的 external 调用。可信 Python 代码和 hooks 本身仍运行在边界之外。
 

@@ -28,6 +28,7 @@ from ..tools.shell import ShellTool
 from . import compaction
 from .diagnostic_view import project_tool_result
 from .origin_context import ExecutionOrigin
+from .permissions import normalize_approval_policy
 from .prompt import RuntimeContext, build_system
 from .recovery import RuntimeDiagnostics, message_diagnostics
 from .retry import retry_after_seconds
@@ -79,7 +80,7 @@ class Runtime:
         if role != "main" and origin_parent is None:
             origin_parent = getattr(getattr(session, "main", None), "origin", None)
         self.parent = origin_parent.runtime if origin_parent is not None else None
-        self.approval_policy = approval_policy
+        self.approval_policy = normalize_approval_policy(approval_policy) if approval_policy is not None else None
         if origin_parent is not None:
             origin_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
             self.accounting_store = origin_parent.root
@@ -104,7 +105,6 @@ class Runtime:
         self._model_call_id: str | None = None
         self._attempt_number = 0
         self.wakeups: deque = deque()
-        self.permission_snapshot = None
         self.diagnostic_id = uuid.uuid4().hex
         self.recovery = RuntimeDiagnostics(self, messages or ())
         self.diagnostic_access = self.recovery.access
@@ -167,6 +167,10 @@ class Runtime:
     def _project_tool_result(self, call, result):
         return project_tool_result(call, result,
                                    query_available=any(tool.name == "diagnostic_get" for tool in self.tools))
+
+    @property
+    def permission_snapshot(self):
+        return getattr(self.execution_context, "permission_snapshot", None)
 
     def refresh_permission_snapshot(self) -> None:
         """Capture the current selection for a new task, not an older run."""

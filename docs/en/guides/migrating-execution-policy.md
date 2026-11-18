@@ -2,6 +2,8 @@
 
 Fresh configurations now use Host. Explicit old isolation requirements are **not** silently converted to Host. Remove an old requirement only when Host is your intended authority; otherwise explicitly select Sandbox and review its current [native blockers](../development/execution-acceptance.md).
 
+If your user settings already select a supported preset such as `read-only`, you can select the provider at startup with `--execution sandbox`. Startup validates the preset after applying this option.
+
 | Retired setting or API | Migration |
 | --- | --- |
 | `sandbox.mode`, `--sandbox` | Choose `execution.provider` / `--execution` explicitly; install and configure MXC for Sandbox. |

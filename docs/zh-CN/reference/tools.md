@@ -23,7 +23,7 @@ Core 负责文件、所选 Shell 和权限申请工具。下列可选工具由 `
 
 ## 权限申请
 
-仅显式启用 Sandbox 后注册 `request_permissions(tool, arguments, permissions, reason)`。permissions 接受新增 `read_paths`、`write_paths` 和 `network_allowed=true`，请求须指定一个受管文件、进程或网络操作的完整参数。批准不执行操作；后续完全相同的调用在最终校验后、调度前原子消费授权。授权绑定来源 Runtime/run、工具实例、参数、cwd、环境、策略版本和资源身份，五分钟或 run 结束即失效。拒绝、取消、失败和历史重放均不能恢复授权。不能授权整个子代理、工作流、任意 MCP 调用、解除 broker 保护或切换 Host。
+仅显式启用 Sandbox 后注册 `request_permissions(tool, arguments, permissions, reason)`。permissions 接受新增 `read_paths`、`write_paths` 和 `network_allowed`（如 `["egress"]`，或用 `true` 请求全部三个网络方向），请求须指定一个受管文件、进程或网络操作的完整参数。批准不执行操作；后续完全相同的调用在最终校验后、调度前原子消费授权。授权绑定来源 Runtime/run、工具实例、参数、cwd、环境、策略版本和资源身份，五分钟或 run 结束即失效。拒绝、取消、失败和历史重放均不能恢复授权。不能授权整个子代理、工作流、任意 MCP 调用、解除 broker 保护或切换 Host。
 
 拒绝信息包含请求与实际边界、受限资源、载荷启动证据、可能副作用和清理结果。进入 Python 工具函数不等于载荷执行。目前不支持的原生策略在载荷释放前拒绝，参见 [Sandbox](../guides/sandbox.md)。
 

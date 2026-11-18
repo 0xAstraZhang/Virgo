@@ -45,6 +45,14 @@ sys.exit(child.returncode if child.returncode >= 0 else 128-child.returncode)
 """
 
 
+def _network_request(directions):
+    def permission(direction):
+        return "allow" if direction in directions else "deny"
+
+    return {"egress": {"default": permission("egress")},
+            "ingress": {"default": permission("ingress"), "hostLoopback": permission("hostLoopback")}}
+
+
 class MxcExecutor:
     def __init__(self, executable):
         if not executable:
@@ -96,9 +104,7 @@ class MxcExecutor:
                    "filesystem": {"readonlyPaths": list(dict.fromkeys(readonly)),
                                   "readwritePaths": [*policy.resources.write_paths, str(scratch)],
                                   "deniedPaths": [*(str(p) for p in policy.private_paths), str(control)]},
-                   "network": {"egress": {"default": "allow" if policy.network_allowed else "deny"},
-                               "ingress": {"default": "allow" if policy.network_allowed else "deny",
-                                           "hostLoopback": "allow" if policy.network_allowed else "deny"}},
+                   "network": _network_request(policy.resources.network),
                    "fallback": {"allowDaclMutation": False}}
         if self.backend == "seatbelt":
             request["seatbelt"] = {"guiAccess": False, "keychainAccess": False}

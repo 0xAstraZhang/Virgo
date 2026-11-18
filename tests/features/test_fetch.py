@@ -97,6 +97,26 @@ def test_network_permission_blocks_before_network(broker_session, monkeypatch, h
     assert result.is_error and not http["requests"]
 
 
+def test_directional_web_grant_adds_only_egress_for_the_approved_fetch(broker_session, http):
+    from virgo.ai.providers import faux
+
+    from tests.support.harness import RecordingUI
+
+    args = {"url": "https://example.com/article"}
+    grant = {"tool": "web_fetch", "arguments": args,
+             "permissions": {"network_allowed": ["egress"]}, "reason": "Read the selected article"}
+    session = broker_session(
+        faux.reply(tools=[("web_fetch", args)]), faux.reply(tools=[("request_permissions", grant)]),
+        faux.reply(tools=[("web_fetch", args)]), faux.reply(tools=[("web_fetch", args)]), faux.reply("done"),
+        network=["ingress"], ui=RecordingUI(["y"]),
+    )
+    session.prompt("Read the selected article with a single grant")
+    assert [r.is_error for r in tool_results(session)] == [True, False, False, True]
+    assert len(http["requests"]) == 1
+    assert session.store.custom("permission_request")[0]["permissions"]["network_allowed"] == ["egress", "ingress"]
+    assert session.main.execution_context.resources.network == {"ingress"}
+
+
 def test_redirect_rechecks_permission(make_session, monkeypatch, http):
     s = make_session()
     from virgo.agent.types import Block

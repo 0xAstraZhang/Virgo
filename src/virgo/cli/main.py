@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap.add_argument("-C", "--cwd", default=".")
     early, _ = bootstrap.parse_known_args(argv)
     try:
-        language = early.language or Settings.load(Paths(Path(early.cwd))).get("language", "en")
+        language = early.language or Settings.startup_language(Paths(Path(early.cwd)))
         t = Translator(language)
     except (OSError, ValueError) as error:
         _startup_error(error, early.cwd)

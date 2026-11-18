@@ -106,6 +106,8 @@ Sandbox 是按需加载的必要扩展。用户显式安装 MXC v1.1.0 executor�
 
 Sandbox 预设使用 `name/readPaths/writePaths/networkAllowed`。路径相对于来源工作区解释，可写路径同时可读。内置 `read-only` 为工作区只读，`workspace-edit` 为工作区可写，二者默认允许联网。`no-limit` 已移除。系统运行依赖与用户授权范围分别报告。
 
+网络配置 `networkAllowed: true` 请求出站、入站和宿主回环，`false` 关闭三者。数组仅请求列出的方向，可选 `egress`、`ingress`、`hostLoopback`。例如，`"networkAllowed": ["egress"]` 只请求出站。受管的公开 Web 工具需要出站权限。原生网络策略的支持情况单独报告，当前共享路径下的原生 Shell 仍不可用。
+
 ```json
 {"execution":{"provider":"sandbox"},"sandbox":{"executable":"/absolute/path/to/mxc-exec-mac"},"permissions":{"preset":"offline","approval":"ask","presets":{"offline":{"name":"离线","readPaths":["."],"writePaths":["."],"networkAllowed":false}}}}
 ```

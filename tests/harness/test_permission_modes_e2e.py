@@ -151,3 +151,110 @@ def test_default_profile_is_host_without_resource_approval(project):
 def test_legacy_native_policy_requires_explicit_migration(broker_session, legacy):
     with pytest.raises(ValueError, match="migrate"):
         broker_session(settings={"sandbox": {"mode": legacy}})
+
+
+@pytest.mark.parametrize("operation", ["select", "save"])
+def test_failed_preset_change_preserves_effective_and_saved_state(broker_session, operation):
+    from virgo.execution import ExecutionUnavailable
+
+    restricted = {"name": "Subdirectory", "readPaths": ["subdir"], "writePaths": [], "networkAllowed": False}
+    session = broker_session(settings={"permissions": {"presets": {"subdir": restricted}}})
+    provider = session.services["execution"]
+    active = session.main.execution_context
+    revision = provider.revision
+    settings_file = session.paths.user / "settings.json"
+    previous = settings_file.read_bytes() if settings_file.exists() else None
+    with pytest.raises(ExecutionUnavailable):
+        if operation == "select":
+            provider.select_mode("subdir")
+        else:
+            provider.save_mode("workspace-edit", "Invalid here", ["subdir"], [], False)
+    assert provider.selected_mode_id == "workspace-edit" and provider.revision == revision
+    assert session.main.execution_context is active
+    assert (settings_file.read_bytes() if settings_file.exists() else None) == previous
+    faux.push("test", faux.reply(tools=[("read", {"path": "note.txt"})]), faux.reply("done"))
+    (session.cwd / "note.txt").write_text("ready")
+    session.prompt("Read note.txt")
+    assert not tool_results(session)[0].is_error
+
+
+def test_child_approval_ceiling_survives_nested_creation_and_new_runs(broker_session):
+    session = broker_session(ui=RecordingUI(["n"]), preset="read-only", approval="ask")
+    child = session.create_runtime("child", "subagent", parent=session.main, approval_policy="never")
+    grandchild = session.create_runtime("grandchild", "subagent", parent=child, approval_policy="ask")
+    try:
+        for runtime in (child, grandchild):
+            faux.push("test", faux.reply(tools=[request(write_paths=["result.txt"])]), faux.reply("done"))
+            runtime.agent.prompt("Request permission for the next operation")
+            assert runtime.permission_snapshot.approval == "never"
+            assert not session.ui.questions
+    finally:
+        session.release_runtime(grandchild)
+        session.release_runtime(child)
+
+
+def test_queued_child_uses_submitting_runs_approval_and_resources(broker_session, monkeypatch):
+    import threading
+
+    from virgo.agent.types import ToolContext
+    from virgo.plugins.subagent import Subagents
+
+    session = broker_session(ui=RecordingUI(["n"]), preset="read-only", approval="never")
+    owner = session.main
+    release, waiting = threading.Event(), threading.Event()
+    run = Subagents.run
+    captured = []
+    session.bus.on("runtime_created", lambda rt: captured.append(rt) if rt.role == "subagent" else None)
+
+    def delayed(self, *args, **kwargs):
+        waiting.set()
+        assert release.wait(10)
+        return run(self, *args, **kwargs)
+
+    monkeypatch.setattr(Subagents, "run", delayed)
+    ctx = ToolContext("queued", session.cwd, threading.Event(), origin=owner.origin)
+    session.tool("agent").execute({"description": "inspect", "prompt": "inspect", "background": True}, ctx)
+    job = next(iter(session.services["jobs"].jobs.values()))
+    try:
+        assert waiting.wait(10)
+        session.approval_policy = "ask"
+        session.services["execution"].select_mode("workspace-edit")
+        owner.refresh_permission_snapshot()
+        session.new_session()
+        faux.push("test", faux.reply(tools=[request(write_paths=["result.txt"])]), faux.reply("done"))
+        release.set()
+        assert job.done.wait(10)
+        child, = captured
+        assert child.origin.root is owner.origin.root
+        assert not child.execution_context.resources.write_paths
+        assert child.permission_snapshot.approval == "never"
+        assert not session.ui.questions
+    finally:
+        release.set()
+        job.done.wait(10)
+
+
+def test_next_preset_selected_after_admission_applies_to_next_task(broker_session, monkeypatch):
+    import json
+    from contextlib import contextmanager
+
+    session = broker_session(preset="read-only")
+    provider = session.services["execution"]
+
+    @contextmanager
+    def admitted():
+        provider.select_mode("workspace-edit")
+        provider.status(session, "")
+        yield
+
+    monkeypatch.setattr(session.ui, "command_suspended", admitted)
+    faux.push("test", faux.reply("done"))
+    session.prompt("Inspect the workspace")
+    status = json.loads(session.ui.lines[0].split("Sandbox / MXC\n")[1])
+    assert "File tools are available" in status["availability"] and "unavailable" in status["availability"]
+    assert status["current_preset"]["id"] == "read-only"
+    assert status["next_preset"]["id"] == "workspace-edit"
+    assert session.main.permission_snapshot.mode.id == "read-only"
+    faux.push("test", faux.reply("done"))
+    session.prompt("Continue with the selected preset")
+    assert session.main.permission_snapshot.mode.id == "workspace-edit"

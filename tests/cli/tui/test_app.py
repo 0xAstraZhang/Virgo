@@ -642,13 +642,14 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session
             await wait_for(pilot, lambda: isinstance(app.screen, PermissionModePicker))
             app.screen.query_one("#mode-name", Input).value = "Offline inspection"
             app.screen.query_one("#mode-write_paths", Input).value = "[]"
-            app.screen.query_one("#mode-network_allowed", Switch).value = False
+            for direction in ("egress", "ingress", "hostLoopback"):
+                app.screen.query_one("#mode-" + direction, Switch).value = False
             await pilot.pause()
             assert app.screen.query_one("#mode-use", Button).disabled
             await pilot.resize_terminal(36, 14)
             await pilot.click("#mode-save")
             await wait_for(pilot, lambda: not app.has_modal and manager.selected_mode.name == "Offline inspection")
-            assert not manager.selected_mode.write_paths and not manager.selected_mode.network_allowed
+            assert not manager.selected_mode.write_paths and not manager.selected_mode.network
             assert manager.selected_mode_id == "workspace-edit"
 
             # A new preset has a distinct stable identity; saving does not
@@ -657,13 +658,15 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session
             await wait_for(pilot, lambda: isinstance(app.screen, PermissionModePicker))
             await pilot.click("#mode-new")
             app.screen.query_one("#mode-name", Input).value = "New profile"
+            app.screen.query_one("#mode-egress", Switch).value = True
             await pilot.pause()
             await pilot.click("#mode-save")
             await wait_for(pilot, lambda: not app.has_modal and len(manager.modes) == 3)
             assert manager.selected_mode_id == "workspace-edit"
             saved = json.loads((session.paths.user / "settings.json").read_text())
             assert saved["permissions"]["presets"]["workspace-edit"]["name"] == "Offline inspection"
-            assert any(item["name"] == "New profile" for item in saved["permissions"]["presets"].values())
+            assert next(item for item in saved["permissions"]["presets"].values()
+                        if item["name"] == "New profile")["networkAllowed"] == ["egress"]
             assert app.editor.text == "unfinished task"
             assert not faux.CALLS["test"]
 

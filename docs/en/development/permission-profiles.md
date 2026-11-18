@@ -26,4 +26,8 @@ This config does **not** certify native support. Current shared-path native poli
 
 User settings and startup overrides supply authority. Project settings cannot select Host, change resource grants or alter extension trust. The loader preserves source information and rejects explicit legacy isolation requirements without an explicit Sandbox selection. See [migration](../guides/migrating-execution-policy.md) for retired keys and APIs.
 
+A task captures its resource and approval policy together at admission. A queued child takes that context at submission. Its own `approval_policy="never"` disables requests for it and its descendants. A session-wide change to `never` also blocks new requests from already running tasks.
+
+Preset selection validates the candidate against the conversation's workspace before publishing it. An idle conversation adopts it immediately. A busy conversation uses it for its next run. A failed validation or save preserves the earlier selection and outstanding approvals. `/permissions show` reports the current preset, the next preset and native Shell availability.
+
 A resource grant is not a reusable session approval. It is consumed once, after final argument validation and before dispatch. Its identity includes caller/run, tool instance, arguments, cwd, environment hash, policy revision, canonical resource names and existing resource identities. The TTL limits new dispatch, not the lifetime of an already launched process. Audit entries never reconstruct live grants.

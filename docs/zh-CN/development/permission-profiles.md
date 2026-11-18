@@ -6,4 +6,8 @@ Runtime 捕获不可变执行上下文，包括来源工作区、provider、资�
 
 预设使用 name、readPaths、writePaths、networkAllowed；可写同时可读。`ask|never` 仅控制资源增量申请。来源、完整参数、环境、策略及资源身份共同绑定一次授权，最终校验后原子消费，五分钟或 run 结束失效，不能由历史恢复。
 
+任务在接纳时同时固定资源和审批策略，排队子任务在提交时携带这份上下文。子任务显式选择 `approval_policy="never"` 会禁止它及其后代申请额外资源。会话切换为 `never` 也会阻止运行中任务发起新申请。
+
+选择预设时先针对当前对话的工作区验证候选配置。空闲对话立即采用新预设，忙碌对话在下次运行时采用。验证或保存失败会保留原预设和待处理授权。`/permissions show` 显示当前预设、下次预设和原生 Shell 的可用状态。
+
 配置例子、迁移和信任范围见[配置参考](../reference/configuration.md)、[迁移](../guides/migrating-execution-policy.md)。原生共享路径策略当前拒绝执行，不能将文件工具保护当作 Shell 隔离，见[验收状态](execution-acceptance.md)。

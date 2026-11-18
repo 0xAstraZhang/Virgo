@@ -139,3 +139,29 @@ def test_retired_task_configuration_is_ignored_with_a_notice(project, tmp_path, 
     notices = "\n".join(settings.migration_warnings)
     for name in ("plan", "profile", "workMode", "plugins.plan", "plugins.code_review"):
         assert name in notices
+
+
+@pytest.mark.parametrize(("selection", "expected"), [
+    (True, ("allow", "allow", "allow")),
+    (False, ("deny", "deny", "deny")),
+    (["egress"], ("allow", "deny", "deny")),
+    (["ingress", "hostLoopback"], ("deny", "allow", "allow")),
+])
+def test_network_directions_survive_preset_resolution_and_native_mapping(tmp_path, selection, expected):
+    from virgo.extensions.sandbox.mxc import _network_request
+    from virgo.harness.execution_modes import configured_modes
+
+    preset = configured_modes({"workspace-edit": {"networkAllowed": selection}})["workspace-edit"]
+    resolved = preset.resolve(tmp_path)
+    assert resolved.config()["networkAllowed"] == selection
+    request = _network_request(resolved.network)
+    assert (request["egress"]["default"], request["ingress"]["default"],
+            request["ingress"]["hostLoopback"]) == expected
+
+
+@pytest.mark.parametrize("invalid", [["public"], ["egress", "egress"], ["ingress", True], 1, "egress"])
+def test_invalid_network_directions_rejected(invalid):
+    from virgo.harness.execution_modes import configured_modes
+
+    with pytest.raises(ValueError, match="networkAllowed"):
+        configured_modes({"workspace-edit": {"networkAllowed": invalid}})
