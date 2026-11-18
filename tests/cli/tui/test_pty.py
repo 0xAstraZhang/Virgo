@@ -154,7 +154,8 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session',
 def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_path, monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     home = tmp_path / "pty-session-home"
-    argv = [sys.executable, "-m", "virgo", "--ui", "fullscreen", "--no-extensions", "--model", "faux/demo"]
+    argv = [sys.executable, "-m", "virgo", "--ui", "fullscreen", "--no-extensions",
+            "--permission", "no-limit", "--model", "faux/demo"]
     with PtyClient(project, home, argv) as terminal:
         terminal.wait_for(lambda data: ENTER_SCREEN in data and b"Host" in data)
         before_browser = len(terminal.output)
