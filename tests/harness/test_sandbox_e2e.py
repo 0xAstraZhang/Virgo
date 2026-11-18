@@ -1025,7 +1025,7 @@ def test_native_independent_permission_combinations(native, project, short_works
     outside = extra / 'outside.txt'
     inside.write_text('original')
     outside.write_text('original')
-    secret = native.session.paths.user / 'private-secret.txt'
+    secret = native.paths.user / 'private-secret.txt'
     secret.parent.mkdir(parents=True, exist_ok=True)
     secret.write_text('secret')
     before = {path: (path.stat().st_dev, path.stat().st_ino, path.read_text()) for path in (inside, outside)}
