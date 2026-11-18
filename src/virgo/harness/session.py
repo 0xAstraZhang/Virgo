@@ -859,7 +859,7 @@ class AgentSession:
             else:
                 if name in {
                     "schedule", "schedules", "team", "tasks", "task", "memory", "goal",
-                    "plan", "review", "workflow",
+                    "plan", "review", "workflow", "todos",
                 }:
                     self.ui.print(self.t("harness.commands.retired", name=name), "error")
                 else:

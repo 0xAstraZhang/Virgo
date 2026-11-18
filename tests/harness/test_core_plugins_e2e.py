@@ -156,14 +156,14 @@ def test_retired_data_stays_untouched_and_history_remains_readable(make_session,
 
 def test_explicit_plugin_overrides_and_layering(make_session, project):
     home = project.parent / "home"
-    (home / "settings.json").write_text(json.dumps({"plugins": {"todo": {"enabled": False}}}))
+    (home / "settings.json").write_text(json.dumps({"plugins": {"ask_user": {"enabled": False}}}))
     (project / ".virgo").mkdir()
-    (project / ".virgo" / "settings.json").write_text(json.dumps({"features": {"todo": True}}))
+    (project / ".virgo" / "settings.json").write_text(json.dumps({"features": {"ask_user": True}}))
     session = make_session()
-    assert session.tool("todo_write") is not None
-    disabled = make_session(settings={"plugins": {"todo": {"enabled": False},
+    assert session.tool("ask_user") is not None
+    disabled = make_session(settings={"plugins": {"ask_user": {"enabled": False},
                                                    "web": {"enabled": False}}})
-    assert disabled.tool("todo_write") is None and disabled.tool("web_search") is None
+    assert disabled.tool("ask_user") is None and disabled.tool("web_search") is None
     with pytest.raises(ValueError, match="(?i)(unknown|plugin)"):
         AgentSession(project, model="faux/test", session=None, settings={"plugins": {"typo": {"enabled": True}}},
                      refresh_models=False, ui=RecordingUI())

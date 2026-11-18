@@ -16,13 +16,13 @@ from .execution_modes import configured_modes
 from .permissions import normalize_approval_policy
 
 PLUGIN_IDS = (
-    "diagnostic_get", "skills", "todo", "ask_user", "subagent", "background", "web",
+    "diagnostic_get", "skills", "ask_user", "subagent", "background", "web",
 )
 REMOVED_FEATURES = frozenset({
     "schedule", "workflow", "team", "tasks", "memory", "goal", "plan", "code_review", "workMode", "profile",
 })
 RETIRED_PLUGINS = frozenset({"plan", "code_review"})
-EXTENSION_ONLY = frozenset({"mcp"})
+EXTENSION_ONLY = frozenset({"mcp", "todo"})
 _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {

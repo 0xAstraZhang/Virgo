@@ -41,7 +41,7 @@ def test_deprecated_command_aliases_warn_and_keep_working(make_session):
 
 def test_removed_task_commands_are_not_registered(make_session):
     session = make_session()
-    for name in ("plan", "review", "workflow"):
+    for name in ("plan", "review", "workflow", "todos"):
         assert session.commands.get(name) is None
     assert session.tool("propose_plan") is None
     assert session.tool("git_read") is None
