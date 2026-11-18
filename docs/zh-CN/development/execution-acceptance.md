@@ -30,7 +30,7 @@ macOS 清理采用尽力契约；后代退出的个例不会升级为普遍保�
 
 ## 离线复核
 
-指令评分检查最终文件、要求的工具调用及其返回结果、禁止的操作。需要理解 Shell 命令是否实际完成复制和校验时，须核对原始调用记录。待核实的结果记为 `needs_review`。以下命令使用留存记录和与其摘要匹配的人工观察离线复算。
+指令评分检查最终文件、要求的工具调用及其返回结果、禁止的操作。需要理解 Shell 命令是否实际完成复制和校验时，须核对原始调用记录。待核实的结果记为 `needs_review`。新轨迹记录各文件的 SHA-256，支持逐字节比对；只有文本的历史记录标为 `legacy_text_only`。以下命令使用留存记录和与其摘要匹配的人工观察离线复算。
 
 ```bash
 uv run --no-sync python ci/evaluate_instructions.py --rescore docs/evidence/execution/macos-codex-instructions.json --review docs/evidence/execution/instruction-summary.json --output rescored.json

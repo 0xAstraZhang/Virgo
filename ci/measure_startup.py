@@ -63,6 +63,7 @@ def sample(args):
                           threads=len(threading.enumerate()), tools=len(session.main.tools),
                           schema_chars=len(json.dumps([asdict(t.spec()) for t in session.main.tools])),
                           system_chars=len(session.main.system), boundary=session.main.execution_context.describe())
+            from virgo.execution import ExecutionCancelled, ExecutionUnavailable
             from virgo.tools.bash import run_command
 
             shell = session.services['shell'].current
@@ -78,21 +79,35 @@ def sample(args):
                                                  'success': False, 'latency_ms': None,
                                                  'failure_elapsed_ms': (time.perf_counter()-begin)*1000,
                                                  'error': f'{type(error).__name__}: {error}'})
-                    continue
+                    if isinstance(error, (ExecutionUnavailable, ExecutionCancelled)):
+                        continue  # The provider rejected admission before starting the payload.
+                    result['cleanup'] = 'unknown'
+                    break
                 elapsed = (time.perf_counter()-begin)*1000
-                succeeded = (code == 0 and status == 'ok' and (workspace / 'output.txt').is_file()
+                boundary = output.boundary or {}
+                cleanup_completed = boundary.get('cleanup') in {
+                    'job_object', 'process_group_best_effort', 'executor_completed', 'best_effort',
+                }
+                succeeded = (cleanup_completed and code == 0 and status == 'ok' and (workspace / 'output.txt').is_file()
                              and (workspace / 'output.txt').read_text() == (workspace / 'input.txt').read_text())
                 result['operations'].append({'index': index, 'phase': 'first' if index == 0 else 'repeat',
                                              'success': succeeded, 'latency_ms': elapsed if succeeded else None,
                                              'failure_elapsed_ms': elapsed if not succeeded else None,
                                              'exit_code': code, 'status': status, 'boundary': output.boundary})
+                if not cleanup_completed:
+                    result['cleanup'] = 'unknown'
+                    break
             result['success'] = all(op['success'] for op in result['operations'])
         except Exception as error:
             result['error'] = f'{type(error).__name__}: {error}'
             result['failure_elapsed_ms'] = (time.perf_counter()-start)*1000
         finally:
             if session:
-                session.shutdown()
+                try:
+                    session.shutdown()
+                except Exception as error:
+                    result.update(success=False, cleanup='unknown', error=f'Shutdown: {error}',
+                                  failure_elapsed_ms=(time.perf_counter()-start)*1000)
         try:
             import resource
 
@@ -154,8 +169,14 @@ def read_worker_record(stdout, expected_operations):
                 raise ValueError('Successful operation requires a measured latency')
         elif latency is not None:
             raise ValueError('Failed operation cannot report a successful latency')
-    if record['success'] and (len(operations) != expected_operations or not all(op['success'] for op in operations)):
-        raise ValueError('Successful worker did not complete the requested operations')
+    error = record.get('error')
+    unknown_cleanup = record.get('cleanup') == 'unknown'
+    if not operations and not error:
+        raise ValueError('Worker returned no operations or error')
+    if len(operations) > expected_operations or (len(operations) != expected_operations and not (error or unknown_cleanup)):
+        raise ValueError('Worker operation count disagrees with the workload')
+    if record['success'] != (not error and not unknown_cleanup and all(op['success'] for op in operations)):
+        raise ValueError('Worker success disagrees with its operations or failure')
     return record
 
 

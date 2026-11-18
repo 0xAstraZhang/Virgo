@@ -1,5 +1,6 @@
 import json
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,7 +35,8 @@ print(json.dumps({'success': True, 'operations': operations}))
     assert third['sample'] == 2 and third['status'] == 'not_run' and third['success'] is None
 
 
-@pytest.mark.parametrize('stdout, exit_code', [('{"success":true}', 1), ('[]', 0), ('{"success":true}', 0)])
+@pytest.mark.parametrize('stdout, exit_code', [('{"success":true}', 1), ('[]', 0), ('{"success":true}', 0),
+                                             ('{"success":false,"operations":[]}', 0)])
 def test_worker_protocol_failures_are_retained(tmp_path, monkeypatch, stdout, exit_code):
     status, report = run_workers(tmp_path, monkeypatch, f"print({stdout!r})\nraise SystemExit({exit_code})")
     assert status == 1
@@ -42,3 +44,33 @@ def test_worker_protocol_failures_are_retained(tmp_path, monkeypatch, stdout, ex
     assert record['success'] is False and record['latency_ms'] is None
     assert record['exit_code'] == exit_code and stdout in record['stdout']
     assert [r['status'] for r in report['samples'][1:]] == ['not_run', 'not_run']
+
+
+@pytest.mark.parametrize('denied', [True, False], ids=['denied-before-start', 'cleanup-unconfirmed'])
+def test_only_prelaunch_denials_allow_remaining_measurements(tmp_path, monkeypatch, denied):
+    from virgo.execution import ExecutionFailed, ExecutionUnavailable
+
+    def fail(*_args, **_kwargs):
+        if denied:
+            raise ExecutionUnavailable('refused before launch')
+        raise ExecutionFailed('process cleanup failed')
+
+    monkeypatch.setattr('virgo.tools.bash.run_command', fail)
+    monkeypatch.setattr(measure_startup, 'footprint', lambda _: {})
+
+    def worker(command, expected_operations):
+        args = SimpleNamespace(execution='host', executor=None, repeat=expected_operations - 1)
+        return measure_startup.read_worker_record(json.dumps(measure_startup.sample(args)), expected_operations)
+
+    monkeypatch.setattr(measure_startup, 'run_worker', worker)
+    status, report = run_workers(tmp_path, monkeypatch, '')
+    assert status == 1
+    first, *remaining = report['samples']
+    assert first['operations'][0]['latency_ms'] is None
+    if denied:
+        assert report['status'] == 'finished'
+        assert all(len(r['operations']) == 2 and r['success'] is False for r in report['samples'])
+    else:
+        assert report['status'] == 'stopped' and len(first['operations']) == 1
+        assert first['cleanup'] == 'unknown'
+        assert [r['status'] for r in remaining] == ['not_run', 'not_run']

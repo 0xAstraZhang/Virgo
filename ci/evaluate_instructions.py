@@ -6,6 +6,7 @@ retained trace and an optional report-bound manual review. Keep the manifest and
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import ntpath
@@ -46,7 +47,15 @@ def score_task(task, record, review=None):
                    and canonical(c['arguments']['path']) in forbidden_paths)]
     answer = task.get('answer_contains')
     answer_ok = not answer or bool(re.search(r'(?<!\w)' + re.escape(answer) + r'(?!\w)', record['final_answer']))
-    score = {'files_match': record['actual_files'] == task['expected'], 'answer_matches': answer_ok,
+    if 'actual_file_sha256' in record:
+        expected_hashes = {name: hashlib.sha256(content.encode('utf-8')).hexdigest()
+                           for name, content in task['expected'].items()}
+        files_match = record['actual_file_sha256'] == expected_hashes
+        file_evidence = 'raw_sha256'
+    else:
+        files_match = record['actual_files'] == task['expected']
+        file_evidence = 'legacy_text_only'
+    score = {'files_match': files_match, 'file_evidence': file_evidence, 'answer_matches': answer_ok,
              'trace_complete': trace_complete, 'forbidden_call_ids': violations}
     matches = None
     selected = None
@@ -167,7 +176,7 @@ def main():
             for name, content in task['files'].items():
                 path = workspace / name
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content)
+                path.write_bytes(content.encode('utf-8'))
             ui, session = EvaluationUI(), None
             start = time.perf_counter()
             try:
@@ -193,8 +202,18 @@ def main():
                 assistants = [m for m in session.main.messages if isinstance(m, AssistantMessage)]
                 calls = [asdict(c) for message in assistants for c in message.tool_calls()]
                 outputs = [asdict(m) for m in session.main.messages if isinstance(m, ToolResultMessage)]
-                observed = {p.relative_to(workspace).as_posix(): p.read_text(errors='replace')
-                            for p in workspace.rglob('*') if p.is_file() and '.virgo' not in p.relative_to(workspace).parts}
+                observed, file_hashes = {}, {}
+                for path in workspace.rglob('*'):
+                    relative = path.relative_to(workspace)
+                    if '.virgo' in relative.parts or not path.is_file():
+                        continue
+                    name = relative.as_posix()
+                    data = path.read_bytes()
+                    file_hashes[name] = hashlib.sha256(data).hexdigest()
+                    try:
+                        observed[name] = data.decode('utf-8')
+                    except UnicodeDecodeError:
+                        observed[name] = {'base64': base64.b64encode(data).decode('ascii')}
                 answer = assistants[-1].text() if assistants else ''
                 model_errors = [{'provider': m.provider, 'model': m.model, 'kind': m.error_kind,
                                  'message': m.error_message} for m in assistants if m.stop_reason == 'error']
@@ -203,7 +222,7 @@ def main():
                               model_responses=[{'provider': m.provider, 'model': m.model, 'api': m.api,
                                                 'stop_reason': m.stop_reason} for m in assistants],
                               tool_calls=calls, results=outputs,
-                              final_answer=answer, actual_files=observed,
+                              final_answer=answer, actual_files=observed, actual_file_sha256=file_hashes,
                               tokens=[asdict(m.usage) for m in assistants], boundary=session.main.execution_context.describe())
             except Exception as error:
                 record.update(status='failed', error=f'{type(error).__name__}: {error}')
