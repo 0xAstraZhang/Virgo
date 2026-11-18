@@ -342,7 +342,7 @@ def _execute(
                 results[i] = _execution_facts(ToolResult.error(cfg.t("harness.agent.operation_aborted"), details={"cancelled": True}))
                 return
         ctx = ToolContext(ev.call_id, ev.cwd, signal, cfg.name, origin=ev.origin,
-                          translator=cfg.translator)
+                          translator=cfg.translator, dispatch_event=ev)
         start = time.monotonic()
         outcome = "unknown"
         try:

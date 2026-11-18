@@ -153,7 +153,7 @@ def _canonicalize_permissions(value: dict, notices: list[str]) -> None:
         if "preset" in value and value["preset"] != legacy_mode:
             raise ValueError("permissions.mode and permissions.preset disagree; remove the retired key")
         value["preset"] = legacy_mode
-        notices.append("permissions.mode is deprecated; use permissions.preset.")
+        notices.append("permissions.mode is retired; select a fixed execution.mode.")
     if "modes" in value:
         legacy_modes = value.pop("modes")
         if not isinstance(legacy_modes, dict):
@@ -164,7 +164,7 @@ def _canonicalize_permissions(value: dict, notices: list[str]) -> None:
             value["presets"] = deep_merge(legacy_modes, value["presets"])
         else:
             value["presets"] = legacy_modes
-        notices.append("permissions.modes is deprecated; use permissions.presets.")
+        notices.append("permissions.modes is retired; select a fixed execution.mode.")
 
 
 def _validate_permissions(value: object) -> None:
@@ -380,7 +380,7 @@ class Settings:
         if name in EXTENSION_ONLY:
             return False
         if name in {"permission", "auto_review"}:
-            raise ValueError("The legacy permission feature is retired; use execution.provider and resource policies")
+            raise ValueError("The legacy permission feature is retired; use execution.mode")
         if name in REMOVED_FEATURES:
             return False
         if name in {"search", "fetch"}:

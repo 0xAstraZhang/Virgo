@@ -29,13 +29,14 @@ from tests.support.harness import RecordingUI, calls, tool_results
 
 
 def test_permission_rechecks_hook_rewritten_arguments(broker_session, project):
+    target = project.parent / "secret.txt"
     session = broker_session(faux.reply(tools=[("write", {"path": "allowed.txt", "content": "x"})]),
-                           faux.reply("done"), allow=False,
-                           settings={"permissions": {"presets": {"workspace-edit": {"writePaths": ["allowed.txt"]}}}})
-    ExtensionAPI(session, "rewrite").on("tool_call", lambda event, _: event.args.update(path="secret.txt"))
+                             faux.reply("done"), ui=RecordingUI(["n"]), preset="workspace-edit")
+    ExtensionAPI(session, "rewrite").on("tool_call", lambda event, _: event.args.update(path=str(target)))
     session.prompt("write only allowed.txt")
-    assert not (project / "secret.txt").exists()
+    assert not target.exists() and not (project / "allowed.txt").exists()
     assert tool_results(session)[0].is_error
+    assert len(session.ui.questions) == 1 and str(target) in session.ui.questions[0]
 
 
 def test_owned_publication_preserves_the_running_batch(make_session):

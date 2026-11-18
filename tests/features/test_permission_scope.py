@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from virgo.agent.types import Block, ToolCallEvent
+from virgo.agent.types import Block, ToolCallEvent, ToolContext
 
 from tests.features.test_permission import request
 from tests.support.harness import RecordingUI, tool_call_event
@@ -88,3 +88,24 @@ def test_grant_is_atomically_consumed_once(broker_session, tmp_path):
         thread.join()
     assert sum(r is None for r in results) == 1
     assert sum(isinstance(r, Block) for r in results) == 1
+
+def test_overlapping_dispatches_keep_their_context_when_call_labels_repeat(broker_session, tmp_path):
+    session = broker_session(ui=RecordingUI(["y", "y"]))
+    session.main.prepare_run()
+    runtime = session.main
+    provider = session.services["execution"]
+    events = []
+    signal = threading.Event()
+    for filename in ("one.txt", "two.txt"):
+        path = tmp_path / filename
+        args = {"path": str(path)}
+        assert not request(session, "read", args, permissions={"read_paths": [str(path)]}).is_error
+        event = ToolCallEvent("label", "read", args, session.tool("read"), "main", session.cwd,
+                              origin=runtime.origin, signal=signal)
+        assert session._before_tool_execute(event) is None
+        events.append(event)
+    context = ToolContext("label", session.cwd, signal, origin=runtime.origin)
+    assert provider.for_context(context) is runtime.execution_context
+    for event in events:
+        policy = provider.for_context(replace(context, dispatch_event=event))
+        assert policy.resources.read_paths == (*runtime.execution_context.resources.read_paths, event.args["path"])
