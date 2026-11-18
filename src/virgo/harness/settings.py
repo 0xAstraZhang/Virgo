@@ -257,6 +257,10 @@ def _migrate_execution(data: dict, explicit: dict, workspace: Path, notices: lis
     if provider not in (None, "host", "sandbox"):
         raise ValueError("execution.provider must be host or sandbox")
     sandbox = data.get("sandbox", {})
+    if (sandbox == {"mode": "disabled"} and selected is None and not presets
+            and provider in (None, "host") and execution.get("mode") == "no-limit"):
+        sandbox = data["sandbox"] = {}
+        notices.append("Legacy sandbox.mode=disabled migrated to execution.mode=no-limit.")
     if not isinstance(sandbox, dict) or set(sandbox) - {"executable"}:
         raise ValueError("Legacy sandbox configuration is retired; migrate to execution.mode")
     if sandbox:
