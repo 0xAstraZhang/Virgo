@@ -1281,7 +1281,7 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
 
     def lose_ack(*_args):
         nonlocal delayed
-        wait_until(marker.exists, timeout=3)
+        wait_until(lambda: marker.exists() and marker.read_text() == "once", timeout=3)
         delayed = True
         return [], [], []
 
