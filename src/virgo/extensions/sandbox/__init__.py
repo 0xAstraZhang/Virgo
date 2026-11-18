@@ -61,7 +61,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
         self.revision = 0
         self._pending: dict[str, Grant] = {}
         self._active: dict[tuple[int, str], tuple[Grant, ToolCallEvent]] = {}
-        self._denied: set[str] = set()
+        self._denied: dict[str, object] = {}
         session.bus.on("tool_result", self._result, owner="sandbox")
         session.bus.on("agent_event", self._event, owner="sandbox")
 
@@ -101,7 +101,8 @@ class SandboxExecutionProvider(HostExecutionProvider):
                 runtime.execution_context = policy
                 return
             mode = self.modes[getattr(runtime, "permission_mode_id", self._selected_mode_id)]
-            policy = self._candidate(runtime, mode, self.revision)
+            origin = getattr(runtime, "origin", None)
+            policy = self._candidate(runtime, mode, origin.root.preset_revision if origin else 0)
             runtime.permission_mode_id = mode.id
             runtime.execution_context = policy
             self._discard(runtime)
@@ -127,7 +128,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
         # Bind the exact effective environment without retaining credential values.
         environment = hashlib.sha256(json.dumps(dict(os.environ), sort_keys=True).encode()).hexdigest()
         return json.dumps([environment, origin_key(self.session, event), runtime.diagnostic_id, runtime.run_id,
-                           self.revision, id(event.tool), event.tool_name, event.args, str(event.cwd.resolve()), target,
+                           id(event.tool), event.tool_name, event.args, str(event.cwd.resolve()), target,
                            shell.environment() if shell else None, self.executor.identity], sort_keys=True, ensure_ascii=False)
 
     def _valid(self, grant, event):
@@ -196,6 +197,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
         with self.session._lock:
             self._pending = {k: g for k, g in self._pending.items() if g.runtime is not runtime}
             self._active = {k: g for k, g in self._active.items() if k[0] != id(runtime)}
+            self._denied = {key: owner for key, owner in self._denied.items() if owner is not runtime}
 
     def _event(self, event, runtime):
         if event.type == "agent_end":
@@ -209,7 +211,11 @@ class SandboxExecutionProvider(HostExecutionProvider):
             self._denied.clear()
 
     def _publish_mode(self, runtime, policy):
-        self.revoke()
+        # Only unconsumed decisions for this originating conversation change.
+        owner = runtime.origin.root
+        owner.preset_revision = policy.revision
+        self._pending = {key: grant for key, grant in self._pending.items() if grant.runtime.origin.root is not owner}
+        self._denied = {key: rt for key, rt in self._denied.items() if rt.origin.root is not owner}
         if not runtime.execution_active and not self.session.runtime_is_busy(runtime):
             runtime.execution_context = policy
         self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
@@ -220,7 +226,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
             if identifier not in self.modes:
                 raise ValueError("Unknown resource preset; use /permissions list")
             runtime = self.session.main
-            policy = self._candidate(runtime, self.modes[identifier], self.revision + 1)
+            policy = self._candidate(runtime, self.modes[identifier], runtime.origin.root.preset_revision + 1)
             runtime.permission_mode_id = identifier
             self._publish_mode(runtime, policy)
 
@@ -230,7 +236,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
         with self.session._lock:
             self.session.assert_state_change_allowed()
             runtime = self.session.main
-            candidate = self._candidate(runtime, mode, self.revision + 1)
+            candidate = self._candidate(runtime, mode, runtime.origin.root.preset_revision + 1)
             if persist:
                 self.session.settings.save_user({"permissions": {"presets": {identifier: mode.config()}}})
             self.modes[identifier] = mode
@@ -338,7 +344,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
                 "permissions": resources.flags(), "approved": answer == "y", "scope": "operation", "expires_after_seconds": 300,
             })
             if answer != "y":
-                self._denied.add(key)
+                self._denied[key] = runtime
                 return ToolResult.error("Additional resources were not granted")
             self._pending[key] = Grant(key, policy, time.monotonic() + 300, runtime, runtime.run_id, targets)
         return ToolResult.text("Approved once for 5 minutes in this run. Call the exact tool and arguments. "

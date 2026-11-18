@@ -161,7 +161,7 @@ def test_failed_preset_change_preserves_effective_and_saved_state(broker_session
     session = broker_session(settings={"permissions": {"presets": {"subdir": restricted}}})
     provider = session.services["execution"]
     active = session.main.execution_context
-    revision = provider.revision
+    revision = session.main.origin.root.preset_revision
     settings_file = session.paths.user / "settings.json"
     previous = settings_file.read_bytes() if settings_file.exists() else None
     with pytest.raises(ExecutionUnavailable):
@@ -169,7 +169,7 @@ def test_failed_preset_change_preserves_effective_and_saved_state(broker_session
             provider.select_mode("subdir")
         else:
             provider.save_mode("workspace-edit", "Invalid here", ["subdir"], [], False)
-    assert provider.selected_mode_id == "workspace-edit" and provider.revision == revision
+    assert provider.selected_mode_id == "workspace-edit" and session.main.origin.root.preset_revision == revision
     assert session.main.execution_context is active
     assert (settings_file.read_bytes() if settings_file.exists() else None) == previous
     faux.push("test", faux.reply(tools=[("read", {"path": "note.txt"})]), faux.reply("done"))
@@ -258,3 +258,35 @@ def test_next_preset_selected_after_admission_applies_to_next_task(broker_sessio
     faux.push("test", faux.reply("done"))
     session.prompt("Continue with the selected preset")
     assert session.main.permission_snapshot.mode.id == "workspace-edit"
+
+
+@pytest.mark.parametrize(("action", "change_at", "allowed"), [
+    ("workspace-edit", "confirmation", True), ("workspace-edit", "dispatch", True),
+    ("revoke", "confirmation", False), ("never", "dispatch", False),
+])
+def test_child_grant_respects_scope_of_changes_in_other_conversation(broker_session, monkeypatch, action, change_at, allowed):
+    session = broker_session(ui=RecordingUI(["y"]), preset="read-only")
+    child = session.create_runtime("worker", "subagent", parent=session.main)
+    args = {"path": "result.txt", "content": "ok"}
+    session.new_session()
+    provider = session.services["execution"]
+
+    def switch(*_):
+        provider.command(session, action)
+        return "y"
+
+    def dispatch(_):
+        if change_at == "dispatch":
+            switch()
+        return faux.reply(tools=[("write", args)])
+
+    if change_at == "confirmation":
+        monkeypatch.setattr(session.ui, "confirm_once", switch)
+    try:
+        faux.push("test", faux.reply(tools=[request(write_paths=["result.txt"])]), dispatch, faux.reply("done"))
+        child.agent.prompt("Create the approved file")
+        assert child.permission_snapshot.mode.id == "read-only"
+        target = session.cwd / "result.txt"
+        assert (target.read_text() if target.exists() else None) == ("ok" if allowed else None)
+    finally:
+        session.release_runtime(child)

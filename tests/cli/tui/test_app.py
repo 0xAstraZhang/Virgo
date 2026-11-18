@@ -792,3 +792,24 @@ def test_context_usage_stays_zero_until_submit_and_resets_on_new(make_session):
             assert "  0.0%/" in str(metrics.content)
 
     asyncio.run(scenario())
+
+
+def test_status_shows_active_preset_while_only_a_child_is_queued(broker_session):
+    ui = FullscreenUI()
+    session = broker_session(ui=ui)
+
+    async def scenario():
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(120, 24)) as pilot:
+            await pilot.pause()
+            release = session.reserve_child_work(session.main.origin.root)
+            try:
+                assert not app.controller.busy
+                session.services["execution"].select_mode("read-only")
+                app.update_status()
+                text = str(app.query_one("#status", Static).content).splitlines()[0]
+                assert text.startswith("Workspace-Edit") and "Next: Read-Only" in text
+            finally:
+                release()
+
+    asyncio.run(scenario())
