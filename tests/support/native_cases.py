@@ -115,8 +115,12 @@ def network_and_environment_isolation(native, project, monkeypatch):
 
 
 def failure_and_timeout_are_not_reclassified(native):
-    result = run(native, python_command(native, "raise SystemExit(7)"))
+    # The process contract reports the selected shell's exit status.
+    marker = native.cwd / "nonzero-once.txt"
+    payload = "from pathlib import Path\nwith Path('nonzero-once.txt').open('a') as f: f.write('once')"
+    result = run(native, python_command(native, payload) + "\nexit 7")
     assert result.is_error and result.details["exit_code"] == 7
+    assert marker.read_text() == "once" and result.details["boundary"]["payload_started"] is True
     result = run(native, python_command(native, "import time; time.sleep(10)"), timeout=0.2)
     assert result.is_error
     assert result.details["status"] in {"timeout", "execution_failed"}

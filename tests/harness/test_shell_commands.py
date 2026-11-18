@@ -44,7 +44,7 @@ def test_shell_probe_uses_startup_provider_and_cannot_gain_authority(make_sessio
     try:
         assert sentinel.exists() is (provider == "host")
         sentinel.unlink(missing_ok=True)
-        session.settings.set("execution.provider", "host")
+        session.settings.set("execution.mode", "no-limit")
         if provider == "sandbox":
             session.services["execution"].select_mode("read-only")
         session.prompt(f"/shell {shlex.quote(str(candidate))}")

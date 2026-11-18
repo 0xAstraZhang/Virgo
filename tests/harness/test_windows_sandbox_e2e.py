@@ -153,7 +153,12 @@ assert 'VIRGO_PRIVATE_CREDENTIAL_CANARY' not in os.environ
 kernel=ctypes.WinDLL('kernel32',use_last_error=True)
 kernel.ReadFile.argtypes=[wintypes.HANDLE,wintypes.LPVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID]
 content=ctypes.create_string_buffer(128); count=wintypes.DWORD()
-success=kernel.ReadFile({handle},content,128,ctypes.byref(count),None)
+try:
+    success=kernel.ReadFile({handle},content,128,ctypes.byref(count),None)
+except OSError as error:
+    if (getattr(error, 'winerror', 0) & 0xffffffff) != 0xC0000008:
+        raise
+    success=False
 assert not success or b'private-handle-canary' not in content.raw
 print('credentials and handle protected')
 '''
@@ -248,14 +253,23 @@ def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native, record_pr
             listener.bind((address, 0))
             listener.listen()
             destination = listener.getsockname()
-            source = f'import socket; s=socket.socket({int(family)}); s.settimeout(2); s.connect({destination!r}); s.close(); print("connected")'
+            source = f"""import json, socket
+try:
+    with socket.socket({int(family)}) as s:
+        s.settimeout(2)
+        s.connect({destination!r})
+except OSError as error:
+    print(json.dumps({{'error': error.winerror}}))
+else:
+    print(json.dumps({{'connected': True}}))
+"""
             provider.select_mode('workspace-edit')
             allowed = run(native, python_command(native, source))
-            assert allowed.details["boundary"]["payload_started"] is True, allowed.text()
-            record_property(f"workspace_edit_connect_{address}", allowed.text())
+            assert not allowed.is_error and allowed.details["boundary"]["payload_started"] is True, allowed.text()
+            record_property(f"workspace_edit_connect_{address}", json.dumps(data(allowed)))
             provider.select_mode('read-only')
             denied = run(native, python_command(native, source))
-            assert denied.is_error and 'connected' not in denied.text(), denied.text()
+            assert data(denied) == {"error": 10013}, denied.text()
 
 
 def test_workspace_edit_inbound_from_host_interface(native, project, record_property):

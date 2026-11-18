@@ -76,3 +76,22 @@ def test_child_without_a_snapshot_inherits_the_parent_capture(broker_session):
         assert child.permission_snapshot.approval == "ask"
     finally:
         session.release_runtime(child)
+
+def test_opening_a_stored_workspace_binds_new_tools_and_children_to_its_cwd(broker_session, tmp_path):
+    from virgo.ai.types import UserMessage
+    from virgo.harness.store import SessionStore
+
+    session = broker_session(persist=True)
+    original = session.main
+    workspace = tmp_path / "opened-project"
+    workspace.mkdir()
+    store = SessionStore.new(session.paths.sessions, workspace)
+    store.append_message(UserMessage("Resume this project"))
+    session.open_session(store.path)
+    assert session.main.cwd == workspace == session.main.execution_context.workspace
+    child = session.create_runtime("opened-child", "subagent", parent=session.main)
+    try:
+        assert child.cwd == workspace == child.execution_context.workspace
+        assert original.execution_context.workspace == original.cwd != workspace
+    finally:
+        session.release_runtime(child)

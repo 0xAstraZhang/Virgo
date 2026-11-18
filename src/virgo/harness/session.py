@@ -498,6 +498,7 @@ class AgentSession:
                     raise ValueError(f"Runtime name {name!r} is already in use")
                 origin_parent = parent.origin
                 kwargs["origin_parent"] = origin_parent
+                kwargs.setdefault("cwd", parent.cwd)
                 kwargs["request_budget"] = parent.request_budget
                 kwargs["signal"] = ChildCancellation(parent.agent.signal, kwargs.get("signal"))
                 parent_limit = parent.agent.cfg.max_turns
@@ -543,7 +544,7 @@ class AgentSession:
 
     def _new_main(self, store: SessionStore) -> Runtime:
         messages, ids = store.build_context()
-        return self.create_runtime("main", "main", store=store, messages=messages, ids=ids)
+        return self.create_runtime("main", "main", store=store, cwd=store.cwd, messages=messages, ids=ids)
 
     def _prepare_main(self, store: SessionStore) -> Runtime:
         return self._new_main(store)
