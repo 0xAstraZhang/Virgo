@@ -4,7 +4,7 @@ No-Limit runs on Host with the current account's permissions. Read-Only and Work
 
 ## Live workspace
 
-The command's working tree is the same directory edited by file tools and host editors. File tools open retained objects, stage changed content and replace the destination. A watcher can reopen the path immediately after the edit. Commands have private writable scratch and a private home. Core owns the output handles in the originating workspace.
+The command's working tree is the same directory edited by file tools and host editors. File tools open retained objects, stage changed content and replace the destination. A watcher can reopen the path immediately after the edit. Commands have private writable scratch and a private home. In Read-Only, Core stores command output under the Virgo user directory, keyed by workspace. Workspace-Edit stores it under the project’s protected .virgo/outputs directory.
 
 Linux uses Bubblewrap and a libseccomp filter. macOS uses Seatbelt and a launchd coalition supervisor. Windows uses LPAC, a write-restricted token, per-process ACL grants and a Job Object. A failed preflight or native launch reports the error to the caller. Each running process retains the resources it was granted at launch.
 

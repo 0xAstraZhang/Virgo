@@ -501,7 +501,7 @@ def test_native_detached_descendant_is_reaped_with_command(native, project, fini
     assert not Path(scratch_file.read_text()).exists(), "Private scratch must be removed after completion"
     if denied.exists():
         assert not result.is_error and result.details["status"] == "ok", result.text()
-        assert result.details["boundary"]["cleanup"] == ("best_effort" if sys.platform == "darwin" else "executor_completed")
+        assert result.details["boundary"]["cleanup"] == "executor_completed"
         assert not ready.exists() and not late.exists()
         return
     assert ready.exists(), result.text()
@@ -554,7 +554,7 @@ while not Path('spawn-detached-ready').exists():
 """
     result = run(native, python_command(native, source), timeout=10)
     assert not result.is_error and result.details["status"] == "ok", result.text()
-    assert result.details["boundary"]["cleanup"] == ("best_effort" if sys.platform == "darwin" else "executor_completed")
+    assert result.details["boundary"]["cleanup"] == "executor_completed"
     assert (project / "ordinary-posix-spawn").read_text() == "spawned"
     late = project / "spawn-detached-late-write"
     if (project / "spawn-detachment-denied").exists():
@@ -608,7 +608,7 @@ while not Path('double-fork-ready').exists() and not Path('double-fork-detachmen
 """
     result = run(native, python_command(native, source), timeout=12)
     assert not result.is_error and result.details["status"] == "ok", result.text()
-    assert result.details["boundary"]["cleanup"] == ("best_effort" if sys.platform == "darwin" else "executor_completed")
+    assert result.details["boundary"]["cleanup"] == "executor_completed"
     late = project / "double-fork-late-write"
     if (project / "double-fork-detachment-denied").exists():
         assert not (project / "double-fork-ready").exists() and not late.exists()

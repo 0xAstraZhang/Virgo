@@ -28,7 +28,8 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
         approval = "never" if runtime.approval_policy == "never" else self.session.approval_policy
         policy = SandboxPolicy(workspace, mode.resolve(workspace),
                                (self.session.paths.user.resolve(),),
-                               self.executor, PermissionSnapshot(mode, approval, revision))
+                               self.executor, PermissionSnapshot(mode, approval, revision),
+                               spool_home=self.session.paths.user.resolve() if mode.id == "read-only" else None)
         policy.validate(runtime.cwd)
         return policy
 

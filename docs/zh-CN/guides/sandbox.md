@@ -4,7 +4,7 @@ No-Limit 直接使用当前账户的 Host 权限。Read-Only 和 Workspace-Edit 
 
 ## 实时工作区
 
-命令、文件工具和宿主编辑器访问同一目录。文件工具保留打开对象的身份，写入新文件并替换目标。编辑器和运行中的监听器可以立即重新打开该路径读取结果。每条命令拥有私有临时目录和 HOME。Core 持有来源工作区中的输出句柄。
+命令、文件工具和宿主编辑器访问同一目录。文件工具保留打开对象的身份，写入新文件并替换目标。编辑器和运行中的监听器可以立即重新打开该路径读取结果。每条命令拥有私有临时目录和 HOME。Read-Only 的命令输出由 Core 按工作区保存在 Virgo 用户目录，Workspace-Edit 的输出保存在项目中受保护的 .virgo/outputs 目录。
 
 Linux 使用 Bubblewrap 和 libseccomp，macOS 使用 Seatbelt 和 launchd coalition 进程监督，Windows 使用 LPAC、受限令牌、临时 ACL 和 Job Object。平台建立边界失败时向调用者返回原因。已启动的进程保留启动时获得的资源。
 
