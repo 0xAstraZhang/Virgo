@@ -1,39 +1,15 @@
-# 执行验收与阻塞
+# 权限模式验收
 
-本次实现采用默认 Host、显式 MXC Sandbox，不能将组件测试概括为“全部隔离已通过”。完整证据与复现命令见[英文验收记录](../../en/development/execution-acceptance.md)。
+验收时核对同一 Git 提交的三类结果。Linux 和 macOS 查看 `Native sandbox boundaries`，Windows Server 2022 和 2025 查看 `Windows sandbox boundaries`。严格原生测试要求实际执行且零失败、零错误、零跳过。`Cross-platform CI` 对比完整测试与 PR 基线。`Permission mode performance` 提供每个平台、每种模式的同机性能比较。
 
-| 范围 | 当前结论 |
-| --- | --- |
-| Host/Core | 独立 Python 进程测试真实读写、复杂 Shell 和普通子代理，并禁止导入 Sandbox；没有普通审查或审批。来源、单次授权、UI 与事实保留分别验证。 |
-| 文件工具 | 保留句柄固定、新 inode 替换、编码／权限、失败编辑和硬链接 unlink 竞争用例；Windows 2022/2025 记录中 3 个真实 NTFS broker 别名场景通过；仍不能替代原生 Shell 验收。 |
-| macOS MXC | **未通过**。1.1.0 ARM64 实际启动和允许写入成功，启动后硬链接别名却能修改工作区外文件。[原始报告](../../evidence/execution/macos-mxc-shared-path-probe.json)保留了失败。 |
-| Linux MXC | **未验收**。共享宿主路径策略在载荷启动前拒绝；没有本地 Linux 原生成功证据。 |
-| Windows MXC | **未验收／阻塞**。此前 2022／2025 主机因 PSEC 不可用无法启动；与共享路径策略不支持分别记录，不回退旧 LPAC。 |
-| 严格 macOS gate | 本地运行 36 通过、32 个初始化错误、零跳过；错误是原生策略未获支持，不能计为隔离成功。 |
-| 提示词效果 | 用户指定 Codex `gpt-6.1-sol`、medium；[3/3 任务正确、审批为零，未观察到意图违反或越界尝试](../../evidence/execution/instruction-summary.json)。[全部调用、输出、耗时和 token](../../evidence/execution/macos-codex-instructions.json)已保留。仅限此小规模 Host 任务集，不代表原生隔离或通用模型质量，没有恢复暂停的 Virgo/Codex 对比评测。 |
-| 性能 | 保留全部 Host／Sandbox 样本。失败不计成功执行延迟，两条路径权限不同，不能推断同权限后端优势。 |
-| 维护成本 | 分开记录移动、保留、删除／重写、新增适配与依赖，未声称维护成本已经下降。 |
+| 模式 | 固定基线 | 改代码和跑测试 |
+| --- | --- | --- |
+| No-Limit | `98cc711cdb9bbb80a9ad9a2ae11c8d92f94ceec8` 的 Host | Virgo 文件工具修改源码后运行测试 |
+| Workspace-Edit | `6346255146f11b8024e11fd3f3faae19f41d5862` 的原生 Workspace-Edit | Virgo 文件工具修改源码后运行测试 |
+| Read-Only | `6346255146f11b8024e11fd3f3faae19f41d5862` 的原生工作区只读、Shell 断网配置 | 外部编辑器保存源码，Virgo 运行测试 |
 
-本地工作区报告记录源文件摘要，不能替代同一 PR 最新 head 的 lint、构建、完整测试和跨平台比较。所需原生用例必须真实启动并通过正反对照，零失败、错误、跳过；当前 gate 继续阻塞。
+每组在同一台运行器上依次执行两个版本。每个版本取三个样本，每次使用新解释器、独立工作区和用户目录。冷启动覆盖解释器、导入和会话构造，排除准备测试文件的耗时。首条短命令单列，连续五条短命令取总耗时。最后一项从修改源码开始计时，到测试导入新代码并验证返回值为止。成功样本需全程零资源审批。
 
-原生复现只操作临时测试资源，直接调用适配器调查 MXC，明确绕过产品“不支持策略”入口。它不是用户执行回退。启动前扫描、模型主动守规矩、网络整体失效和后端探测都不能证明隔离。
+工作流保存双方原始样本，并检查提交、源码工作树、脚本摘要、平台、Python、负载和样本数。结果包含各项中位数、毫秒差和比值。启动失败保留原因；清理状态未知时停止后续采样。完整样本才能生成比较结果。执行命令见[英文说明](../../en/development/execution-acceptance.md)。
 
-macOS 清理采用尽力契约；后代退出的个例不会升级为普遍保证。缺少回执时保留 unknown，清理失败明确报告，不重放有副作用的操作。可信 Python、hooks、MCP 启动和模型通信仍在受管范围外。
-
-## 固定版本的跨平台原生记录
-
-[原始报告及归档摘要](../../evidence/execution/native-60df626/summary.json)绑定行为提交 `60df62697f98949ead0c92669098ec84136e2d4e`。Linux/macOS 各 36 个 broker／协议场景通过、32 个原生准入错误；Windows 2022/2025 各 3 个 NTFS broker 别名场景通过、13 个原生准入错误，均零跳过。这些通过项不代表原生隔离通过。
-
-独立上游 probe 中，macOS 26.7.2 启动成功并复现别名绕过；Linux 明确拒绝不支持的 `network.ingress.default=allow`；两类 Windows 主机均报告 PSEC 未启用。没有为了获得成功启动而放宽或改写请求的网络策略。[旧版本样本](../../evidence/execution/945bdfa/)独立保留，不与新版本合并比较。
-
-此前 [Anthropic 尝试](../../evidence/execution/macos-instruction-attempt.json)因缺少凭据停止；用户随后选择现有 Codex 登录。新 manifest 只更换模型，任务、medium 强度及 Host 权限保持一致，凭据不写入结果。这些是独立尝试，不用于模型间比较。
-
-## 离线复核
-
-指令评分检查最终文件、要求的工具调用及其返回结果、禁止的操作。需要理解 Shell 命令是否实际完成复制和校验时，须核对原始调用记录。待核实的结果记为 `needs_review`。新轨迹记录各文件的 SHA-256，支持逐字节比对；只有文本的历史记录标为 `legacy_text_only`。以下命令使用留存记录和与其摘要匹配的人工观察离线复算。
-
-```bash
-uv run --no-sync python ci/evaluate_instructions.py --rescore docs/evidence/execution/macos-codex-instructions.json --review docs/evidence/execution/instruction-summary.json --output rescored.json
-```
-
-采样命令指定 `--output` 后，每个样本结束时原子保存报告。超时样本保留等待时间，若无法确认子进程已收回，余项标为 `not_run`。维护统计以两次提交的 Git 树为准，可用 `--baseline` 和 `--target` 指定版本。
+POSIX 实时工作区需核对并发链接变更的支持条件。Windows 分别记录外部 TCP 出站、入站、宿主回环与普通桌面账户的验证结果。Windows Server 报告注明其运行账户和环境。历史 MXC、模型评测和旧测时结果按各自提交归档。[历史证据](../../evidence/execution/README.md)

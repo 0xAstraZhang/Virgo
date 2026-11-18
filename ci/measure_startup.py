@@ -11,13 +11,12 @@ import json
 import math
 import os
 import platform
+import shlex
 import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-from dataclasses import asdict
 from pathlib import Path
 
 WORKER_TIMEOUT_SECONDS = 180
@@ -38,76 +37,149 @@ def footprint(roots):
     return {'bytes': total, 'files': len(seen), 'roots': [str(p) for p in roots]}
 
 
+def session_settings(contract, mode):
+    if contract == "current":
+        return {"execution": {"mode": mode}}
+    if contract == "legacy-host":
+        if mode != "no-limit":
+            raise ValueError("The Host baseline measures No-Limit")
+        return {"execution": {"provider": "host"}}
+    if mode == "read-only":
+        settings = {"sandbox": {"mode": "read-only"}}
+    elif mode == "workspace-edit":
+        settings = {"permissions": {"preset": "workspace-edit"}}
+    else:
+        raise ValueError("The native baseline measures the two sandbox modes")
+    # Retired tool-review rules must not prompt during a native timing sample.
+    settings.setdefault("permissions", {})["allow"] = ["*"]
+    return settings
+
+
+class MeasurementFailure(RuntimeError):
+    def __init__(self, message, *, before_launch=False):
+        super().__init__(message)
+        self.before_launch = before_launch
+
+
+def issue_operation(session, name, arguments, *, expected=None):
+    from virgo.ai.providers import faux
+    from virgo.ai.types import ToolResultMessage
+
+    offset = len(session.main.messages)
+    faux.script("measure", faux.reply(tools=[(name, arguments)]), faux.reply("done"))
+    session.prompt("Run the supplied local operation")
+    results = [m for m in session.main.messages[offset:] if isinstance(m, ToolResultMessage)]
+    if len(results) != 1 or results[0].tool_name != name:
+        raise MeasurementFailure(f"Expected one {name} result, got {len(results)}")
+    result = results[0]
+    details = result.details or {}
+    boundary = details.get("boundary") or {}
+    if result.is_error:
+        prelaunch = (boundary.get("payload_started") is False
+                     or details.get("status") == "sandbox_unavailable"
+                     or (details.get("execution") or {}).get("started") is False)
+        raise MeasurementFailure(result.text(), before_launch=prelaunch)
+    if expected is not None and (details.get("exit_code") != 0 or expected not in result.text().splitlines()):
+        raise MeasurementFailure(f"Command did not return the expected output: {result.text()}")
+    return boundary
+
+
 def sample(args):
-    start = time.perf_counter()
-    from virgo.harness.session import AgentSession
-
-    imported = time.perf_counter()
-    result = {'provider': args.execution, 'profile': args.execution, 'success': False, 'operations': []}
-    session = None
-    with tempfile.TemporaryDirectory(prefix='virgo-measure-') as directory:
+    from_environment = os.environ.get("VIRGO_BENCHMARK_START_NS")
+    interpreter_ms = (time.perf_counter_ns() - int(from_environment)) / 1e6 if from_environment else 0.0
+    result = {"mode": args.mode, "contract": args.contract, "success": False, "operations": []}
+    with tempfile.TemporaryDirectory(prefix="virgo-measure-") as directory:
         root = Path(directory).resolve()
-        workspace = root / 'workspace'
+        workspace = root / "workspace"
         workspace.mkdir()
-        (workspace / 'input.txt').write_text('fixed measurement input\n')
-        settings = {'execution': {'provider': args.execution}}
-        if args.execution == 'sandbox':
-            settings['sandbox'] = {'executable': args.executor}
+        source = workspace / "answer.py"
+        source.write_text("def answer():\n    return 41\n", encoding="utf-8")
+        (workspace / "check_answer.py").write_text(
+            "from answer import answer\nassert answer() == 42\nprint('tested-edit')\n", encoding="utf-8")
+        start = time.perf_counter()
+        session = None
         try:
-            session = AgentSession(workspace, home=root / 'home', model='faux/measure', session=None,
-                                   settings=settings, extensions=False, refresh_models=False)
-            ready = time.perf_counter()
-            result.update(import_ms=(imported-start)*1000, construct_ms=(ready-imported)*1000,
-                          total_ms=(ready-start)*1000, modules=len(sys.modules),
-                          virgo_modules=sum(name.startswith('virgo.') for name in sys.modules),
-                          threads=len(threading.enumerate()), tools=len(session.main.tools),
-                          schema_chars=len(json.dumps([asdict(t.spec()) for t in session.main.tools])),
-                          system_chars=len(session.main.system), boundary=session.main.execution_context.describe())
-            from virgo.execution import ExecutionCancelled, ExecutionUnavailable
-            from virgo.tools.bash import run_command
+            from virgo.harness.session import AgentSession
+            from virgo.harness.ui import UI
 
-            shell = session.services['shell'].current
-            # Same fixed file operation; shell syntax follows the selected host interpreter.
-            command = "Get-Content input.txt | Set-Content output.txt" if shell.tool_name == 'powershell' else 'cat input.txt > output.txt'
+            class OfflineUI(UI):
+                def __init__(self):
+                    self.questions = []
+
+                def confirm(self, question, agent="main"):
+                    self.questions.append(question)
+                    return "n"
+
+                def select(self, question, options, *, timeout=None):
+                    self.questions.append(question)
+                    return None
+
+            imported = time.perf_counter()
+            ui = OfflineUI()
+            session = AgentSession(workspace, home=root / "home", session=None, model="faux/measure",
+                                   ui=ui, settings=session_settings(args.contract, args.mode),
+                                   extensions=False, refresh_models=False)
+            ready = time.perf_counter()
+            result.update(import_ms=(imported - start) * 1000, construct_ms=(ready - imported) * 1000,
+                          cold_start_ms=interpreter_ms + (ready - start) * 1000)
+            mode_owner = session.services["sandbox" if args.contract == "legacy-native" else "execution"]
+            if args.contract == "legacy-host":
+                if session.main.execution_context.provider != "host":
+                    raise ValueError("Expected the historical Host execution provider")
+            elif mode_owner.selected_mode_id != ("legacy-read-only" if args.contract == "legacy-native"
+                                                 and args.mode == "read-only" else args.mode):
+                raise ValueError(f"Wrong mode selected: {mode_owner.selected_mode_id}")
+            shell = session.services["shell"].current
+            short = "echo measured-short-command"
             for index in range(args.repeat + 1):
                 begin = time.perf_counter()
+                operation = {"index": index, "phase": "first" if index == 0 else "repeat",
+                             "success": False, "latency_ms": None}
+                result["operations"].append(operation)
                 try:
-                    output, code, status = run_command(command, workspace, 15, threading.Event(),
-                                                      interpreter=shell, execution_context=session.main.execution_context)
-                except Exception as error:
-                    result['operations'].append({'index': index, 'phase': 'first' if index == 0 else 'repeat',
-                                                 'success': False, 'latency_ms': None,
-                                                 'failure_elapsed_ms': (time.perf_counter()-begin)*1000,
-                                                 'error': f'{type(error).__name__}: {error}'})
-                    if isinstance(error, (ExecutionUnavailable, ExecutionCancelled)):
-                        continue  # The provider rejected admission before starting the payload.
-                    result['cleanup'] = 'unknown'
+                    boundary = issue_operation(session, shell.tool_name, {"command": short},
+                                               expected="measured-short-command")
+                except MeasurementFailure as error:
+                    operation.update(error=str(error), failure_elapsed_ms=(time.perf_counter() - begin) * 1000)
+                    if error.before_launch:
+                        continue
+                    result["cleanup"] = "unknown"
                     break
-                elapsed = (time.perf_counter()-begin)*1000
-                boundary = output.boundary or {}
-                cleanup_completed = boundary.get('cleanup') in {
-                    'job_object', 'process_group_best_effort', 'executor_completed', 'best_effort',
-                }
-                succeeded = (cleanup_completed and code == 0 and status == 'ok' and (workspace / 'output.txt').is_file()
-                             and (workspace / 'output.txt').read_text() == (workspace / 'input.txt').read_text())
-                result['operations'].append({'index': index, 'phase': 'first' if index == 0 else 'repeat',
-                                             'success': succeeded, 'latency_ms': elapsed if succeeded else None,
-                                             'failure_elapsed_ms': elapsed if not succeeded else None,
-                                             'exit_code': code, 'status': status, 'boundary': output.boundary})
-                if not cleanup_completed:
-                    result['cleanup'] = 'unknown'
-                    break
-            result['success'] = all(op['success'] for op in result['operations'])
+                operation.update(success=True, latency_ms=(time.perf_counter() - begin) * 1000,
+                                 boundary=boundary)
+            if all(op["success"] for op in result["operations"]):
+                begin = time.perf_counter()
+                if args.mode == "read-only":
+                    source.write_text("def answer():\n    return 42\n", encoding="utf-8")
+                    result["edit_actor"] = "external_editor"
+                else:
+                    issue_operation(session, "edit", {"path": "answer.py", "edits": [
+                        {"old_text": "return 41", "new_text": "return 42"}]})
+                    result["edit_actor"] = "virgo_file_tool"
+                if source.read_text(encoding="utf-8") != "def answer():\n    return 42\n":
+                    raise MeasurementFailure("The original workspace did not contain the edit")
+                argv = [sys.executable, "-B", "check_answer.py"]
+                command = ("& " + " ".join("'" + word.replace("'", "''") + "'" for word in argv)
+                           if shell.tool_name == "powershell" else shlex.join(argv))
+                result["edit_test_boundary"] = issue_operation(session, shell.tool_name, {"command": command},
+                                                               expected="tested-edit")
+                result["edit_to_test_ms"] = (time.perf_counter() - begin) * 1000
+                result["short_sequence_ms"] = sum(op["latency_ms"] for op in result["operations"][1:])
+                result["success"] = True
+            result["approval_questions"] = ui.questions
+            if ui.questions:
+                result.update(success=False, error="The benchmark required approval")
         except Exception as error:
-            result['error'] = f'{type(error).__name__}: {error}'
-            result['failure_elapsed_ms'] = (time.perf_counter()-start)*1000
+            result.update(error=f"{type(error).__name__}: {error}", failure_elapsed_ms=(time.perf_counter() - start) * 1000)
+            if isinstance(error, MeasurementFailure) and not error.before_launch:
+                result["cleanup"] = "unknown"
         finally:
             if session:
                 try:
                     session.shutdown()
                 except Exception as error:
-                    result.update(success=False, cleanup='unknown', error=f'Shutdown: {error}',
-                                  failure_elapsed_ms=(time.perf_counter()-start)*1000)
+                    result.update(success=False, cleanup="unknown", error=f"Shutdown: {error}")
+
         try:
             import resource
 
@@ -133,8 +205,6 @@ def sample(args):
                 raise ctypes.WinError(ctypes.get_last_error()) from None
             result['peak_memory_bytes'] = counters.PeakWorkingSetSize
         roots = list(dict.fromkeys(Path(p).resolve() for p in (sys.prefix, sys.base_prefix, 'src/virgo')))
-        if args.executor:
-            roots.append(Path(args.executor).resolve())
         result['installed_runtime_and_dependencies'] = footprint(roots)
     return result
 
@@ -187,7 +257,8 @@ def run_worker(command, expected_operations):
     # from blocking the parent on a pipe EOF during timeout handling.
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         try:
-            proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
+            env = {**os.environ, 'VIRGO_BENCHMARK_START_NS': str(time.perf_counter_ns())}
+            proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=env)
         except OSError as error:
             return {**failure, 'error': str(error), 'cleanup': 'not_started',
                     'failure_elapsed_ms': (time.perf_counter() - started) * 1000}
@@ -231,8 +302,8 @@ def stop_worker(_signum, _frame):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--execution', choices=['host', 'sandbox'], default='host')
-    parser.add_argument('--executor', default=os.environ.get('VIRGO_MXC_EXECUTABLE'))
+    parser.add_argument('--mode', choices=['no-limit', 'read-only', 'workspace-edit'], default='no-limit')
+    parser.add_argument('--contract', choices=['current', 'legacy-host', 'legacy-native'], default='current')
     parser.add_argument('--samples', type=int, default=3)
     parser.add_argument('--repeat', type=int, default=3)
     parser.add_argument('--output', type=Path)
@@ -245,10 +316,8 @@ def main():
             signal.signal(signal.SIGTERM, stop_worker)
         print(json.dumps(sample(args)))
         return
-    command = [sys.executable, str(Path(__file__).resolve()), '--worker', '--execution', args.execution,
+    command = [sys.executable, str(Path(__file__).resolve()), '--worker', '--mode', args.mode, '--contract', args.contract,
                '--repeat', str(args.repeat)]
-    if args.executor:
-        command.extend(['--executor', args.executor])
     head = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     diff = subprocess.run(['git', 'diff', '--binary', 'HEAD'], capture_output=True, check=True).stdout
     sources = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path('src').rglob('*.py'))}
@@ -256,9 +325,9 @@ def main():
               'source_files_sha256': sources,
               'script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'lock_sha256': hashlib.sha256(Path('uv.lock').read_bytes()).hexdigest(),
-              'platform': platform.platform(), 'python': sys.version, 'provider': args.execution,
-              'workload': 'fixed input.txt copied to output.txt; fresh temporary workspace and user home',
-              'permission_comparison': 'none; Host and Sandbox have different authority', 'planned_samples': args.samples,
+              'platform': platform.platform(), 'python': sys.version, 'mode': args.mode, 'contract': args.contract,
+              'workload': 'cold session, repeated shell echo, edit answer.py and run check_answer.py',
+              'repeats': args.repeat, 'planned_samples': args.samples,
               'status': 'running', 'samples': []}
     if args.output:
         checkpoint(args.output, report)

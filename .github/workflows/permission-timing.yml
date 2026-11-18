@@ -1,0 +1,87 @@
+name: Permission mode performance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/virgo/**'
+      - 'ci/measure_startup.py'
+      - 'ci/compare_permission_timing.py'
+      - '.github/workflows/permission-timing.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+permissions:
+  contents: read
+concurrency:
+  group: permission-timing-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  compare:
+    name: ${{ matrix.os }} / ${{ matrix.mode }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        mode: [no-limit, read-only, workspace-edit]
+    env:
+      PYTHONUTF8: '1'
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      MODE: ${{ matrix.mode }}
+      BASELINE: ${{ matrix.mode == 'no-limit' && '98cc711cdb9bbb80a9ad9a2ae11c8d92f94ceec8' || '6346255146f11b8024e11fd3f3faae19f41d5862' }}
+      BASELINE_CONTRACT: ${{ matrix.mode == 'no-limit' && 'legacy-host' || 'legacy-native' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASELINE }}
+          path: baseline
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+          enable-cache: false
+      - name: Install native Linux dependencies
+        if: runner.os == 'Linux' && matrix.mode != 'no-limit'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap libseccomp2
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Install the locked environments
+        shell: bash
+        run: |
+          uv sync --directory baseline --locked --dev
+          uv sync --directory head --locked --dev
+      - name: Measure baseline
+        id: baseline
+        working-directory: baseline
+        shell: bash
+        run: uv run --no-sync python ../head/ci/measure_startup.py --mode "$MODE" --contract "$BASELINE_CONTRACT" --samples 3 --repeat 5 --output ../baseline.json
+      - name: Measure final revision
+        if: ${{ !cancelled() && (success() || steps.baseline.outcome == 'failure') }}
+        working-directory: head
+        shell: bash
+        run: uv run --no-sync python ci/measure_startup.py --mode "$MODE" --samples 3 --repeat 5 --output ../head.json
+      - name: Compare validated samples
+        if: ${{ !cancelled() && hashFiles('head.json', 'baseline.json') != '' }}
+        working-directory: head
+        shell: bash
+        run: uv run --no-sync python ci/compare_permission_timing.py --mode "$MODE" --head-sha "$HEAD_SHA" --head ../head.json --baseline ../baseline.json --output ../comparison.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: permission-timing-${{ matrix.os }}-${{ matrix.mode }}
+          path: |
+            head.json
+            baseline.json
+            comparison.json
+          if-no-files-found: error
+          retention-days: 14

@@ -48,18 +48,14 @@ def test_worker_protocol_failures_are_retained(tmp_path, monkeypatch, stdout, ex
 
 @pytest.mark.parametrize('denied', [True, False], ids=['denied-before-start', 'cleanup-unconfirmed'])
 def test_only_prelaunch_denials_allow_remaining_measurements(tmp_path, monkeypatch, denied):
-    from virgo.execution import ExecutionFailed, ExecutionUnavailable
-
     def fail(*_args, **_kwargs):
-        if denied:
-            raise ExecutionUnavailable('refused before launch')
-        raise ExecutionFailed('process cleanup failed')
+        raise measure_startup.MeasurementFailure('unable to complete operation', before_launch=denied)
 
-    monkeypatch.setattr('virgo.tools.bash.run_command', fail)
+    monkeypatch.setattr(measure_startup, 'issue_operation', fail)
     monkeypatch.setattr(measure_startup, 'footprint', lambda _: {})
 
     def worker(command, expected_operations):
-        args = SimpleNamespace(execution='host', executor=None, repeat=expected_operations - 1)
+        args = SimpleNamespace(mode='no-limit', contract='legacy-host', repeat=expected_operations - 1)
         return measure_startup.read_worker_record(json.dumps(measure_startup.sample(args)), expected_operations)
 
     monkeypatch.setattr(measure_startup, 'run_worker', worker)
@@ -74,3 +70,27 @@ def test_only_prelaunch_denials_allow_remaining_measurements(tmp_path, monkeypat
         assert report['status'] == 'stopped' and len(first['operations']) == 1
         assert first['cleanup'] == 'unknown'
         assert [r['status'] for r in remaining] == ['not_run', 'not_run']
+
+
+
+def test_paired_comparison_requires_clean_complete_same_workload():
+    import hashlib
+
+    from ci.compare_permission_timing import BASELINES, comparison
+
+    mode = 'workspace-edit'
+    contract, revision = BASELINES[mode]
+    sample = {'success': True, 'edit_actor': 'virgo_file_tool', 'approval_questions': [],
+              'operations': [{'success': True}, {'success': True}], 'cold_start_ms': 4.0,
+              'short_sequence_ms': 3.0, 'edit_to_test_ms': 2.0}
+    base = {'platform': 'test', 'python': 'test', 'script_sha256': 'script', 'workload': 'test',
+            'planned_samples': 1, 'samples': [sample], 'repeats': 1, 'status': 'finished',
+            'mode': mode, 'contract': contract, 'revision': revision,
+            'tracked_diff_sha256': hashlib.sha256(b'').hexdigest()}
+    head = {**base, 'revision': 'head', 'contract': 'current', 'samples': [{**sample, 'cold_start_ms': 2.0}]}
+    compare = comparison(head, base, 'head', mode)
+    assert compare['metrics']['cold_start_ms']['head_over_baseline'] == 0.5
+    for change in ({'revision': 'old'}, {'script_sha256': 'other'}, {'samples': []},
+                   {'tracked_diff_sha256': 'dirty'}, {'samples': [{**sample, 'approval_questions': ['allow?']}]}):
+        with pytest.raises(ValueError):
+            comparison({**head, **change}, base, 'head', mode)
