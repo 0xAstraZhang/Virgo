@@ -68,6 +68,10 @@ def test_windows_live_workspace_reader_observes_edit(native, project):
     native_cases.live_workspace_reader_observes_edit(native, project)
 
 
+def test_windows_readonly_shell_grant_writes_one_existing_file(native, project):
+    native_cases.readonly_shell_grant_writes_one_existing_file(native, project)
+
+
 def test_windows_partial_execution_preserves_denied_file(native, project):
     native_cases.partial_execution_preserves_denied_file(native, project)
 

@@ -31,6 +31,40 @@ def readonly_including_child_shell(native, project):
     assert not (project / "blocked.txt").exists()
 
 
+def readonly_shell_grant_writes_one_existing_file(native, project):
+    from virgo.ai.providers import faux
+
+    from tests.support.harness import tool_results
+    from tests.support.shell import selected
+
+    target = project.parent / "approved.txt"
+    target.write_text("before")
+    operation = {"command": python_command(native, f"""from pathlib import Path
+path = Path({str(target)!r})
+assert path.read_text() == 'before'
+path.write_text('after')
+assert path.read_text() == 'after'
+""")}
+    shell = selected(native).tool_name
+    native.services["execution"].select_mode("read-only")
+    native.ui.answers.append("y")
+    before = len(tool_results(native))
+    faux.script("test", faux.reply(tools=[("request_permissions", {
+        "tool": shell, "arguments": operation, "permissions": {"write_paths": [str(target)]},
+        "reason": "Update this existing data file.",
+    })]), faux.reply(tools=[(shell, operation)]), faux.reply("done"))
+    native.prompt("Use one Shell operation to update the approved data file")
+    approval, result = tool_results(native)[before:]
+    assert not approval.is_error, approval.text()
+    assert not result.is_error, result.text()
+    boundary = result.details["boundary"]
+    assert boundary["state"] == "established" and boundary["payload_started"] is True
+    assert boundary["effective"]["native_process"]["write_paths"] == [str(target)]
+    assert target.read_text() == "after" and len(native.ui.questions) == 1
+    assert native.main.permission_snapshot.mode.id == "read-only"
+    assert not native.main.execution_context.resources.write_paths
+
+
 def live_workspace_reader_observes_edit(native, project):
     from virgo.ai.providers import faux
 

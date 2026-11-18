@@ -303,6 +303,10 @@ def test_native_live_workspace_reader_observes_edit(native, project):
     native_cases.live_workspace_reader_observes_edit(native, project)
 
 
+def test_posix_readonly_shell_grant_writes_one_existing_file(native, project):
+    native_cases.readonly_shell_grant_writes_one_existing_file(native, project)
+
+
 def test_native_readonly_including_child_shell(native, project):
     native_cases.readonly_including_child_shell(native, project)
 
