@@ -260,9 +260,9 @@ class NativePolicy:
 
     @staticmethod
     def _system_roots() -> list[Path]:
-        values = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"]
+        values = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]
         if sys.platform == "darwin":
-            values += ["/System/Library", "/System/Cryptexes",
+            values += ["/opt/homebrew", "/System/Library", "/System/Cryptexes",
                        "/System/Volumes/Preboot/Cryptexes/OS", "/Library", "/dev", "/private/etc"]
         return list(dict.fromkeys(Path(value).resolve() for value in values if Path(value).is_dir()))
 

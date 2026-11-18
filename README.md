@@ -59,7 +59,7 @@ uv run virgo --continue
 uv run virgo -p --format json "Summarize the README"
 ```
 
-The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/permissions` selects or edits permission presets and approval policy. The model can request a single-operation permission exception. See [Sandbox boundaries](docs/en/guides/sandbox.md) and [breaking migration](docs/en/guides/migrating-execution-policy.md).
+Use `/permissions show` to inspect the active task and next-task mode. Select one of the three modes with `/permissions`. See [permission modes and grants](docs/en/development/permission-profiles.md).
 
 ## Explore
 

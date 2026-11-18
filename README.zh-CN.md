@@ -59,7 +59,7 @@ uv run virgo --continue
 uv run virgo -p --format json "总结 README"
 ```
 
-默认权限预设为 Workspace-Edit：允许编辑工作区、允许任务联网。`/permissions` 选择或编辑权限预设与审批策略。模型可以申请单次操作的权限例外。见[沙箱范围](docs/zh-CN/guides/sandbox.md)和[不兼容迁移说明](docs/zh-CN/guides/migrating-execution-policy.md)。
+使用 `/permissions show` 查看当前任务和下一任务的模式，使用 `/permissions` 在三种模式间切换。见[权限模式与审批](docs/zh-CN/development/permission-profiles.md)。
 
 ## 继续了解
 
