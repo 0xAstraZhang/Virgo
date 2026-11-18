@@ -52,8 +52,16 @@ uv run --no-sync python ci/measure_startup.py --execution sandbox --executor /ab
 uv run --no-sync python ci/measure_maintenance.py --baseline 4c8520fb3faa262e5f502ff808cd5fd4350bf9bd --output maintenance.json
 ```
 
+With `--output`, the parent atomically checkpoints the report after each sample. A worker timeout retains the earlier samples and records the elapsed failure time. If worker cleanup is uncertain, the report marks the remaining samples `not_run` and exits with failure. The maintenance inventory compares committed Git trees. Supply `--target <commit>` to reproduce a historical target.
+
 Samples include import/construction time, first/repeated execution, process peak memory and the installed interpreter/environment/package/executor footprint. Failures remain samples, with separate elapsed-failure fields. The installed development environment footprint is not a minimal production dependency estimate. Sources, lockfile, tool script and platform are identified; collecting on another version requires a separate report.
 
-The instruction manifest freezes model, effort, task, initial files and authority. The runner preserves all calls, files, answers, approvals, token usage and time. File-state correctness and directly observable intent violations are scored; Shell intent still requires review of retained calls, not a command classifier. No prompts or permissions may be changed between compared runs. This evidence remains separate from tests that deliberately violate task instructions through tool calls.
+The instruction manifest freezes model, effort, task, initial files and authority. The runner preserves all calls, files, answers, approvals, token usage and time. The scorer checks the final state, prohibited actions, and evidence that required tools returned successfully. A Shell operation that requires verifying file contents also needs a review of the actual command and its result. Records awaiting review receive `needs_review`. No prompts or permissions may be changed between compared runs. This evidence remains separate from tests that deliberately violate task instructions through tool calls.
+
+Rescore the archived Codex run offline against its recorded observations:
+
+```bash
+uv run --no-sync python ci/evaluate_instructions.py --rescore docs/evidence/execution/macos-codex-instructions.json --review docs/evidence/execution/instruction-summary.json --output rescored.json
+```
 
 The prior [Anthropic attempt](../../evidence/execution/macos-instruction-attempt.json) stopped for missing credentials. The user then selected the existing Codex login; the new manifest changes the model while retaining tasks, medium effort and Host authority. Run it explicitly with `uv run --no-sync python ci/evaluate_instructions.py --auth-file /absolute/path/to/user/auth.json --output instructions.json`. Credentials stay outside results. These are separate attempts, not a comparison between models.

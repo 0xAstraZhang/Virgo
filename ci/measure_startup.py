@@ -8,8 +8,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
+import signal
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,8 @@ import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
+
+WORKER_TIMEOUT_SECONDS = 180
 
 
 def footprint(roots):
@@ -120,6 +124,90 @@ def sample(args):
     return result
 
 
+def checkpoint(path, report):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as output:
+            json.dump(report, output, indent=2)
+            output.write('\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def read_worker_record(stdout, expected_operations):
+    record = json.loads(stdout)
+    if not isinstance(record, dict) or type(record.get('success')) is not bool:
+        raise ValueError('Worker result requires a boolean success field')
+    operations = record.get('operations')
+    if not isinstance(operations, list) or any(
+        not isinstance(op, dict) or type(op.get('success')) is not bool for op in operations
+    ):
+        raise ValueError('Worker result requires operation records')
+    for operation in operations:
+        latency = operation.get('latency_ms')
+        if operation['success']:
+            if type(latency) not in (int, float) or not math.isfinite(latency) or latency < 0:
+                raise ValueError('Successful operation requires a measured latency')
+        elif latency is not None:
+            raise ValueError('Failed operation cannot report a successful latency')
+    if record['success'] and (len(operations) != expected_operations or not all(op['success'] for op in operations)):
+        raise ValueError('Successful worker did not complete the requested operations')
+    return record
+
+
+def run_worker(command, expected_operations):
+    started = time.perf_counter()
+    failure = {'success': False, 'status': 'worker_error', 'latency_ms': None}
+    # A child can inherit standard streams. Files keep a dead worker's descendants
+    # from blocking the parent on a pipe EOF during timeout handling.
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
+        except OSError as error:
+            return {**failure, 'error': str(error), 'cleanup': 'not_started',
+                    'failure_elapsed_ms': (time.perf_counter() - started) * 1000}
+        try:
+            proc.wait(timeout=WORKER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            failure.update(status='timeout', error=f'Worker exceeded {WORKER_TIMEOUT_SECONDS} s',
+                           timeout_seconds=WORKER_TIMEOUT_SECONDS,
+                           timeout_elapsed_ms=(time.perf_counter() - started) * 1000)
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                failure['error'] += f'; worker termination unconfirmed: {error}'
+        stdout.seek(0)
+        stderr.seek(0)
+        output = stdout.read().decode('utf-8', errors='replace')
+        errors = stderr.read().decode('utf-8', errors='replace')
+        if failure['status'] != 'timeout':
+            if proc.returncode:
+                failure['error'] = f'Worker exited with status {proc.returncode}'
+            else:
+                try:
+                    return read_worker_record(output, expected_operations)
+                except ValueError as error:
+                    failure['error'] = str(error)
+        # The measured shell can occupy a different process group. A missing
+        # completion record leaves descendant cleanup unknown, even after wait().
+        return {**failure, 'exit_code': proc.returncode, 'stdout': output, 'stderr': errors,
+                'cleanup': 'unknown', 'failure_elapsed_ms': (time.perf_counter() - started) * 1000}
+
+
+def stop_worker(_signum, _frame):
+    # Let the measured operation and AgentSession execute their finally blocks.
+    raise SystemExit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execution', choices=['host', 'sandbox'], default='host')
@@ -132,20 +220,14 @@ def main():
     if args.samples < 1 or args.repeat < 1:
         parser.error('samples and repeat must be positive')
     if args.worker:
+        if os.name == 'posix':
+            signal.signal(signal.SIGTERM, stop_worker)
         print(json.dumps(sample(args)))
         return
     command = [sys.executable, str(Path(__file__).resolve()), '--worker', '--execution', args.execution,
                '--repeat', str(args.repeat)]
     if args.executor:
         command.extend(['--executor', args.executor])
-    records = []
-    for index in range(args.samples):
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=180)
-        try:
-            record = json.loads(proc.stdout)
-        except ValueError:
-            record = {'success': False, 'error': proc.stderr, 'stdout': proc.stdout, 'exit_code': proc.returncode}
-        records.append({'sample': index, **record})
     head = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     diff = subprocess.run(['git', 'diff', '--binary', 'HEAD'], capture_output=True, check=True).stdout
     sources = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path('src').rglob('*.py'))}
@@ -155,14 +237,27 @@ def main():
               'lock_sha256': hashlib.sha256(Path('uv.lock').read_bytes()).hexdigest(),
               'platform': platform.platform(), 'python': sys.version, 'provider': args.execution,
               'workload': 'fixed input.txt copied to output.txt; fresh temporary workspace and user home',
-              'permission_comparison': 'none; Host and Sandbox have different authority', 'samples': records}
-    text = json.dumps(report, indent=2)
+              'permission_comparison': 'none; Host and Sandbox have different authority', 'planned_samples': args.samples,
+              'status': 'running', 'samples': []}
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(text+'\n')
-    else:
-        print(text)
-    return 0 if all(r['success'] for r in records) else 1
+        checkpoint(args.output, report)
+    for index in range(args.samples):
+        record = run_worker(command, args.repeat + 1)
+        report['samples'].append({**record, 'sample': index})
+        if record.get('cleanup') == 'unknown':
+            report['status'] = 'stopped'
+            report['samples'].extend({'sample': remaining, 'status': 'not_run', 'success': None,
+                                      'reason': 'Previous worker cleanup unconfirmed'}
+                                     for remaining in range(index + 1, args.samples))
+        elif index == args.samples - 1:
+            report['status'] = 'finished'
+        if args.output:
+            checkpoint(args.output, report)
+        if report['status'] == 'stopped':
+            break
+    if not args.output:
+        print(json.dumps(report, indent=2))
+    return 0 if all(r['success'] for r in report['samples']) else 1
 
 
 if __name__ == '__main__':

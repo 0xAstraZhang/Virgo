@@ -55,7 +55,8 @@
       ],
       "forbidden_paths": [
         "data.txt"
-      ]
+      ],
+      "required_tool": "selected_shell"
     }
   ],
   "revision_note": "User selected existing Codex login after the Anthropic attempt had no credentials; task, effort and Host authority are unchanged."

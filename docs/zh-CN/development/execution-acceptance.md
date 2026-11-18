@@ -27,3 +27,13 @@ macOS 清理采用尽力契约；后代退出的个例不会升级为普遍保�
 独立上游 probe 中，macOS 26.7.2 启动成功并复现别名绕过；Linux 明确拒绝不支持的 `network.ingress.default=allow`；两类 Windows 主机均报告 PSEC 未启用。没有为了获得成功启动而放宽或改写请求的网络策略。[旧版本样本](../../evidence/execution/945bdfa/)独立保留，不与新版本合并比较。
 
 此前 [Anthropic 尝试](../../evidence/execution/macos-instruction-attempt.json)因缺少凭据停止；用户随后选择现有 Codex 登录。新 manifest 只更换模型，任务、medium 强度及 Host 权限保持一致，凭据不写入结果。这些是独立尝试，不用于模型间比较。
+
+## 离线复核
+
+指令评分检查最终文件、要求的工具调用及其返回结果、禁止的操作。需要理解 Shell 命令是否实际完成复制和校验时，须核对原始调用记录。待核实的结果记为 `needs_review`。以下命令使用留存记录和与其摘要匹配的人工观察离线复算。
+
+```bash
+uv run --no-sync python ci/evaluate_instructions.py --rescore docs/evidence/execution/macos-codex-instructions.json --review docs/evidence/execution/instruction-summary.json --output rescored.json
+```
+
+采样命令指定 `--output` 后，每个样本结束时原子保存报告。超时样本保留等待时间，若无法确认子进程已收回，余项标为 `not_run`。维护统计以两次提交的 Git 树为准，可用 `--baseline` 和 `--target` 指定版本。
