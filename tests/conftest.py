@@ -70,13 +70,20 @@ def make_session(project):
 
     def factory(*responses, ui=None, approval="ask", allow=True, persist=False, settings=None, **kw) -> AgentSession:
         faux.script("test", *responses)
+        configured = dict(settings or {})
+        # Most tests exercise Host command/process behavior directly. Keep the
+        # fixture explicit so changing the product default cannot silently turn
+        # them into native-sandbox tests; default-mode coverage uses AgentSession.
+        # Migration tests opt out by supplying sandbox/permission configuration.
+        if not {"execution", "sandbox", "permissions"}.intersection(configured):
+            configured["execution"] = {"mode": "no-limit"}
         s = AgentSession(
             kw.pop("cwd", project),
             ui=ui or RecordingUI(),
             model="faux/test",
             session=kw.pop("session", "new" if persist else None),
             approval_policy=approval,
-            settings=settings or {},
+            settings=configured,
             # These local fixtures create their own extension files deliberately.
             trust_project_extensions=kw.pop("trust_project_extensions", True),
             **kw,

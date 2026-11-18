@@ -24,7 +24,7 @@ _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
-    "execution": {"mode": "no-limit"},
+    "execution": {"mode": "workspace-edit"},
     "sandbox": {},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",

@@ -284,6 +284,7 @@ class AclGrants:
         self._grants = {}
         self._owned = set()
         self._roots = []
+        self._link_counts = {}
         try:
             self._mutex = _check(CreateMutex(None, False, _user_mutex_name()))
         except OSError as error:
@@ -374,15 +375,15 @@ class AclGrants:
             # every opened object; path replacements cannot redirect later edits.
             for path, handle in self._walk(root, excluded_keys, skip_reparse=skip_reparse):
                 pending.append((path, handle))
-                if reject_hardlinks and not handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY:
-                    if handle.info.nlinks != 1:
-                        raise SandboxUnavailable(f"Sandbox file grants must not be hard-linked: {path}")
+                if handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY or handle.info.nlinks == 1:
+                    continue
+                key = _key(path)
+                can_write = writable and not any(_inside(key, item) for item in protected_keys)
+                if can_write:
+                    self._link_counts[handle.identity] = self._link_counts.get(handle.identity, 0) + 1
             self._roots.append((root, excluded_keys))
             for path, handle in pending:
                 self._cancel()
-                info = handle.refresh_info()
-                if reject_hardlinks and not info.attributes & FILE_ATTRIBUTE_DIRECTORY and info.nlinks != 1:
-                    raise SandboxUnavailable(f"Sandbox file changed into a hard link: {path}")
                 key = _key(path)
                 can_write = writable and not any(_inside(key, item) for item in protected_keys)
                 can_delete = can_write and key != root_key and not any(
@@ -405,6 +406,23 @@ class AclGrants:
             for _, handle in pending:
                 if handle not in self._owned:
                     handle.close()
+
+    def validate_hardlinks(self):
+        """Allow a writable hardlinked inode only when every link is writable.
+
+        NTFS has no reverse-link enumeration. The preflight walk counts the
+        writable-path links for each inode; a lower count means at least one
+        link lives outside this launch's writable grants.
+        """
+        for identity, count in self._link_counts.items():
+            grant = self._grants.get(identity)
+            if grant is None or not grant.writable:
+                continue
+            info = grant.handle.refresh_info()
+            if info.nlinks > count:
+                raise SandboxUnavailable(
+                    f"Writable sandbox files must not link outside the writable scope: {grant.path}"
+                )
 
     def cleanup(self):
         """Remove only this launch's SIDs, preserving all other current ACEs."""

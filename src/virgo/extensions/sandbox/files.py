@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ...execution import FileAccessDenied
+from .links import has_external_writable_link
 from .policy import SandboxPolicy
 
 
@@ -65,15 +66,13 @@ def read_bytes(path: Path, policy: SandboxPolicy, *, max_bytes: int | None = Non
                     raise FileAccessDenied(f"Sandbox read requires a regular file: {path}", target=path)
                 if not tail and max_bytes is not None and info.st_size > max_bytes:
                     return None
-                if info.st_nlink != 1:
-                    raise FileAccessDenied(f"Shared file cannot be read through a resource alias: {path}", target=path)
                 if tail:
                     stream.seek(max(0, info.st_size - max_bytes))
                     data = stream.read(max_bytes)
                 else:
                     data = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
                 current = path.stat(follow_symlinks=False)
-                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or current.st_nlink != 1:
+                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
                     raise FileAccessDenied(f"File identity changed during read: {path}", target=path)
                 return (data, info.st_size) if tail else data
     except OSError as error:
@@ -140,11 +139,13 @@ def walk_files(path: Path, policy: SandboxPolicy, ignore: set[str], *, max_depth
 def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
     """Yield a staged stream and explicit commit; never modify an existing inode.
 
-    The caller holds its normal file lock. Reject known hardlinks, but do not
-    rely on link count staying unchanged: unlinking the workspace alias can
-    make an outside inode appear singly linked after opening. Native commands
-    cannot modify .virgo (created before every native launch), nor can Core
-    file tools. Only a successful caller commits the fresh inode to its target.
+    The caller holds its normal file lock. A hardlinked file is accepted only
+    when every link is inside the writable roots; an outside alias could mutate
+    a path outside the task boundary. Unlinking an alias can make an outside
+    inode appear singly linked after opening, so the native launch scan and the
+    broker check both remain launch-time checks. Native commands cannot modify
+    .virgo (created before every native launch), nor can Core file tools. Only
+    a successful caller commits the fresh inode to its target.
     """
     policy.check_write(path)
     within_workspace = path.is_relative_to(policy.workspace)
@@ -191,8 +192,12 @@ def open_mutation(path: Path, policy: SandboxPolicy, *, create: bool):
         if info is not None:
             if not stat.S_ISREG(info.st_mode):
                 raise FileAccessDenied(f"Sandbox file operation requires a regular file: {path}")
-            if info.st_nlink != 1:
-                raise FileAccessDenied(f"Sandbox file operation rejects hard-linked files: {path}")
+            if info.st_nlink != 1 and has_external_writable_link(
+                    path, policy.writable_roots(), policy.protected_paths()):
+                raise FileAccessDenied(
+                    f"Sandbox file operation rejects a hardlink outside the writable scope: {path}",
+                    target=path,
+                )
             if os.name == "nt":
                 from .windows_files import descriptor_identity
 

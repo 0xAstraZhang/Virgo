@@ -247,6 +247,10 @@ def test_resource_approval_controls_one_file_write(broker_session, project, keys
             await pilot.press(*keys)
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
             assert target.exists() is (answer in {"y", "a"})
+            if answer == "a":
+                from virgo.harness.resource_rules import ResourceRules
+
+                assert ResourceRules(session.paths.user).list(str(session.cwd))
             assert not picker.display and app.focused is app.editor
             assert not session.services["execution"].sandbox._pending
     asyncio.run(scenario())
@@ -255,7 +259,8 @@ def test_resource_approval_controls_one_file_write(broker_session, project, keys
 def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_session):
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(faux.reply("Earlier response."), ui=ui)
+        session = make_session(faux.reply("Earlier response."), ui=ui,
+                               settings={"execution": {"mode": "no-limit"}})
         app = VirgoApp(session, ui, initial="hello")
         answers = []
         worker = threading.Thread(
@@ -324,7 +329,7 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
 def test_single_operation_approval_keeps_permissions_visible_without_session_choice(make_session):
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui)
+        session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
         app = VirgoApp(session, ui)
         answers = []
         worker = threading.Thread(target=lambda: answers.append(ui.confirm_once("Allow this exact write?")))
@@ -563,7 +568,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
     monkeypatch.setenv("TERM_PROGRAM", terminal)
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, allow=False)
+        session = make_session(ui=ui, allow=False, settings={"execution": {"mode": "no-limit"}})
         session.main.model.provider = "deepseek"
         session.main.model.id = "deepseek-flash"
         app = VirgoApp(session, ui)

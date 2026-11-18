@@ -448,6 +448,8 @@ class _Manager:
                     )
 
                 description = (spec.description or spec.name).strip()
+                annotations = getattr(spec, "annotations", None)
+                read_only = getattr(annotations, "read_only_hint", None) is True
                 entries.append(
                     (
                         AgentTool(
@@ -455,7 +457,7 @@ class _Manager:
                             f"[MCP {connection.name}] {description}",
                             schema,
                             execute,
-                            side_effect="write",
+                            side_effect="read" if read_only else "write",
                         ),
                         ("main", "subagent"),
                     )

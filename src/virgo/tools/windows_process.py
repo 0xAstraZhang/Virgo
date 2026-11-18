@@ -120,6 +120,8 @@ class WindowsProcess:
         self._sandbox = sandbox
         self._released = False
         self._drained = False
+        self._process = None
+        self._job = None
         self._finalizer = None
         try:
             self._check_cancelled()
@@ -254,7 +256,10 @@ class WindowsProcess:
         from virgo.execution import ExecutionFailed, ExecutionUnavailable
 
         error = (ExecutionFailed if self._released or uncertain else ExecutionUnavailable)(message)
-        error.process = self
+        # A failure before CreateProcess has no job or process handle to drain.
+        # Keep the partial object only when cleanup can actually inspect it.
+        if self._process is not None or self._finalizer is not None:
+            error.process = self
         return error
 
     def poll(self):
@@ -288,6 +293,8 @@ class WindowsProcess:
     terminate = kill
 
     def _active_processes(self):
+        if self._job is None:
+            return 0
         accounting = BasicAccounting()
         _check(QueryJob(self._job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
         return accounting.ActiveProcesses
@@ -295,6 +302,9 @@ class WindowsProcess:
     def kill_tree(self):
         with self._lock:
             if self._drained:
+                return
+            if self._job is None:
+                self._drained = True
                 return
             try:
                 deadline = time.monotonic() + _DRAIN_TIMEOUT
@@ -314,7 +324,8 @@ class WindowsProcess:
     def cleanup_tree(self):
         with self._lock:
             self.kill_tree()
-            self._finalizer()
+            if self._finalizer is not None:
+                self._finalizer()
 
     def communicate(self, input=None, timeout=None):
         if input is not None:

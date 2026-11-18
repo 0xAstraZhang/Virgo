@@ -16,4 +16,4 @@ Run the workload from the checkout being measured after `uv sync --locked --dev`
 uv run --no-sync python ci/measure_permission_modes.py --mode workspace-edit --samples 3 --repeat 5 --output timing.json
 ```
 
-When measuring the pinned main checkout, invoke the same script from the PR checkout with `--contract original`. Each Read-Only job also uses the PR's web tool to retrieve a pinned HTTPS file, checks its content digest and verifies that Shell networking stays disabled. The native acceptance workflows separately test the process boundary.
+When measuring the pinned main checkout, invoke the same script from the PR checkout with `--contract original`. Each Read-Only job also uses the PR's web tool to retrieve a pinned HTTPS file and checks its content digest while the Shell network policy is disabled. The native acceptance workflows separately exercise actual Shell socket denial. The native acceptance workflows separately test the process boundary.

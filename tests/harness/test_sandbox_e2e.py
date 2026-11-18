@@ -33,6 +33,13 @@ def native(make_session):
     return native_session(make_session, {"linux", "darwin"})
 
 
+@pytest.fixture
+def short_workspace():
+    """Keep AF_UNIX paths under Darwin's sun_path limit."""
+    with tempfile.TemporaryDirectory(prefix="vgf-", dir="/tmp") as directory:
+        yield Path(directory).resolve()
+
+
 def test_workspace_file_tools_obey_sandbox_even_with_accept_all(broker_session, project):
     session = broker_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}}, refresh_models=False
@@ -87,8 +94,13 @@ def test_sandbox_file_tools_reject_hardlinks(broker_session, project, tool, loca
     faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
     session.prompt("Update the ordinary project file")
     result = tool_results(session)[-1]
-    assert source.read_text() == alias.read_text() == "original\n", result.text()
-    assert result.is_error and result.details["status"] == "resource_denied", result.text()
+    if location == "workspace":
+        assert not result.is_error, result.text()
+        assert alias.read_text() == "changed\n"
+        assert source.read_text() == "original\n"
+    else:
+        assert source.read_text() == alias.read_text() == "original\n", result.text()
+        assert result.is_error and result.details["status"] == "resource_denied", result.text()
 
 
 def test_sandbox_file_mutation_roundtrip_and_failed_edit(broker_session, project):
@@ -297,6 +309,23 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(broker_
 
 def test_native_workspace_write_and_indirect_escape(native, project):
     native_cases.workspace_write_and_indirect_escape(native, project)
+    # The direct payload is not enough: a child process must not gain an
+    # outside write through a workspace symlink either.
+    with tempfile.TemporaryDirectory(prefix="virgo-boundary-", dir=sys.prefix) as directory:
+        outside = Path(directory) / "external.txt"
+        outside.write_text("original")
+        (project / "escape-link").symlink_to(outside)
+        source = (
+            "from pathlib import Path; import subprocess, sys; "
+            "Path('local.txt').write_text('yes'); "
+            "subprocess.run([sys.executable, '-c', "
+            "\"from pathlib import Path; Path('escape-link').write_text('bad')\"], check=True)"
+        )
+        result = run(native, python_command(native, source))
+        assert result.is_error, result.text()
+        assert (project / "local.txt").read_text() == "yes"
+        assert outside.read_text() == "original"
+        assert result.details["boundary"]["payload_started"] is True
 
 
 def test_native_live_workspace_reader_observes_edit(native, project):
@@ -402,7 +431,7 @@ def test_native_rejects_preexisting_writable_hardlinks(native, project, location
     Failure modes: ordinary shell redirection changes an outside file or Git
     metadata through a pre-existing alias; launch checks reject only direct
     protected paths; the rejection occurs only after payload side effects.
-    Conservatively reject workspace-only aliases too, without guessing origins.
+    An alias whose links are all inside the writable workspace is allowed.
     """
     source = {"outside": project.parent / "native-outside.txt",
               "metadata": project / ".git" / "config",
@@ -412,9 +441,14 @@ def test_native_rejects_preexisting_writable_hardlinks(native, project, location
     alias = project / "native-alias.txt"
     os.link(source, alias)
     result = run(native, "printf started > payload-started; printf changed > native-alias.txt")
-    assert source.read_text() == alias.read_text() == "original", result.text()
-    assert result.is_error and result.details["status"] == "execution_unavailable", result.text()
-    assert not (project / "payload-started").exists()
+    if location == "workspace":
+        assert not result.is_error, result.text()
+        assert source.read_text() == alias.read_text() == "changed"
+        assert (project / "payload-started").exists()
+    else:
+        assert source.read_text() == alias.read_text() == "original", result.text()
+        assert result.is_error and result.details["status"] == "execution_unavailable", result.text()
+        assert not (project / "payload-started").exists()
 
 
 @pytest.mark.parametrize("location", ["outside", "metadata"])
@@ -966,22 +1000,35 @@ def test_native_readonly_hardlinks_remain_usable(native, project, mode, relative
 
 
 def test_native_network_permission_supports_system_name_resolution(native):
+    import os
     import socket
 
-    assert socket.getaddrinfo('example.com', 443), 'Host DNS positive control must work'
-    result = run(native, python_command(native, "import socket; assert socket.getaddrinfo('example.com',443); print('resolved')"))
-    assert not result.is_error and 'resolved' in result.text(), result.text()
+    host = os.environ.get("VIRGO_SANDBOX_NETWORK_TEST_HOST", "www.microsoft.com")
+    with socket.create_connection((host, 443), timeout=10):
+        pass
+    source = (f"import socket; connection=socket.create_connection(({host!r},443),timeout=10); "
+              "connection.close(); print('connected')")
+    result = run(native, python_command(native, source))
+    assert not result.is_error and 'connected' in result.text(), result.text()
 
 
 @pytest.mark.parametrize('read_only', [False, True])
 @pytest.mark.parametrize('workspace_only', [False, True])
 @pytest.mark.parametrize('network_allowed', [False, True])
-def test_native_independent_permission_combinations(native, project, read_only, workspace_only, network_allowed):
+def test_native_independent_permission_combinations(native, project, short_workspace, read_only, workspace_only, network_allowed):
     import socket
 
     extra = project.parent / 'extra-resource'
     extra.mkdir()
     (extra / 'readable').write_text('extra')
+    inside = project / 'inside.txt'
+    outside = extra / 'outside.txt'
+    inside.write_text('original')
+    outside.write_text('original')
+    secret = native.paths.user / 'private-secret.txt'
+    secret.parent.mkdir(parents=True, exist_ok=True)
+    secret.write_text('secret')
+    before = {path: (path.stat().st_dev, path.stat().st_ino, path.read_text()) for path in (inside, outside)}
     # Exercise the effective-policy boundary below the fixed user mode selector.
     from dataclasses import replace
     from threading import Event
@@ -993,9 +1040,11 @@ def test_native_independent_permission_combinations(native, project, read_only, 
     context = native.main.execution_context
     context = replace(context, resources=replace(context.resources, read_paths=roots,
                       write_paths=() if read_only else roots, network=parse_network(network_allowed)))
-    with socket.socket() as listener:
+    with socket.socket() as listener, socket.socket(socket.AF_UNIX) as host_socket:
         listener.bind(('127.0.0.1', 0))
         listener.listen()
+        host_socket.bind(str(short_workspace / 'host.sock'))
+        host_socket.listen()
         source = f'''import socket
 from pathlib import Path
 def attempt(fn):
@@ -1004,12 +1053,22 @@ def attempt(fn):
 assert attempt(lambda: Path('created').write_text('yes')) is {not read_only!r}
 assert attempt(lambda: Path({str(extra / 'readable')!r}).read_text()) is {not workspace_only!r}
 assert attempt(lambda: Path({str(extra / 'created')!r}).write_text('yes')) is {not read_only and not workspace_only!r}
+assert attempt(lambda: Path({str(inside)!r}).write_text('changed')) is {not read_only!r}
+assert attempt(lambda: Path({str(outside)!r}).write_text('changed')) is {not read_only and not workspace_only!r}
+assert attempt(lambda: Path({str(secret)!r}).read_text()) is False
 assert attempt(lambda: socket.create_connection({listener.getsockname()!r}, 2).close()) is {network_allowed!r}
+assert attempt(lambda: socket.socket(socket.AF_UNIX).connect({str(short_workspace / 'host.sock')!r})) is False
 print('independent dimensions checked')
 '''
         output, code, status = run_command(python_command(native, source), project, 15, Event(),
                                            interpreter=selected(native), execution_context=context)
-        assert code == 0 and status == "ok" and "independent dimensions checked" in output.text, output.text
+    assert code == 0 and status == "ok" and "independent dimensions checked" in output.text, output.text
+    for path, allowed in ((inside, not read_only),
+                          (outside, not read_only and not workspace_only)):
+        current = path.stat()
+        original_device, original_inode, original_text = before[path]
+        assert (current.st_dev, current.st_ino) == (original_device, original_inode)
+        assert path.read_text() == ("changed" if allowed else original_text), path
 
 
 def test_native_workspace_local_virtualenv_runs_but_stays_readonly(native, project):

@@ -6,7 +6,7 @@
 | Workspace-Edit | Read and write the real workspace. Protected resources include Git metadata and Virgo state. | Allowed | Allowed | Native sandbox |
 | No-Limit | Host account rights | Allowed | Allowed | Host |
 
-With no user settings file, Virgo starts in No-Limit. An existing file that relied on the old implicit Workspace-Edit mode keeps it. Set `execution.mode` in user settings or use `--permission read-only`, `--permission workspace-edit` or `--permission no-limit`. The compatibility option `--execution host` selects No-Limit. Show the three choices with `/permissions list` or Shift+Tab in the TUI. Select the next mode with `/permissions <id>`. Use `/permissions show` to inspect the running task and the selection for its successor.
+With no user settings file, Virgo starts in Workspace-Edit. Existing user files keep the old implicit Workspace-Edit mode. Set `execution.mode` in user settings or use `--permission read-only`, `--permission workspace-edit` or `--permission no-limit`. The compatibility option `--execution host` selects No-Limit. Show the three choices with `/permissions list` or Shift+Tab in the TUI. Select the next mode with `/permissions <id>`. Use `/permissions show` to inspect the running task and the selection for its successor.
 
 Core binds each task to its workspace and an immutable execution context. A queued child inherits the submitting task’s context. Switching modes affects new tasks. A child's `approval_policy="never"` applies to it and its descendants. File tools and Shell use the same project files. No-Limit uses Host directly. Sandbox selection loads the platform backend on demand. A backend refusal stops the operation. See the [platform support and filesystem contract](../guides/sandbox.md).
 
@@ -15,5 +15,6 @@ Core checks the exact tool call and its extra resources. An out-of-scope file re
 - **Allow once** binds the grant to one task and its exact operation. Virgo consumes it on dispatch. An explicitly requested grant expires after five minutes or when that run ends.
 - **Always allow** stores the operation and approved resources in the user's `resource-grants.sqlite3`. Matches require the same project, mode, working directory, tool and complete arguments. Shell identity is part of the operation. Adding a write grant to an existing read grant prompts only for the additional write.
 - **Deny** leaves the requested resource inaccessible. Existing processes keep the permissions they started with.
+- Trusted extensions and MCP tools run outside the native file boundary. A tool that declares itself read-only is allowed directly; a tool that may modify host state requires a per-call approval in Read-Only and Workspace-Edit. No-Limit does not prompt for these tools.
 
 List saved rules for the active project with `/permissions grants`. Remove an entry with `/permissions revoke ID`. The TUI mode picker’s **Saved approvals** button opens the same listing. Project settings cannot install approvals. [Migrating permission settings](../guides/migrating-execution-policy.md)

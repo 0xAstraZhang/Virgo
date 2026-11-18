@@ -149,13 +149,31 @@ def test_child_created_before_mode_change_keeps_its_origin_permissions(broker_se
         session.release_runtime(child)
 
 
-def test_default_profile_is_host_without_resource_approval(project):
+def test_default_profile_is_workspace_edit_with_resource_approval(project):
     session = AgentSession(project, model="faux/test", session=None, extensions=False, refresh_models=False)
+    try:
+        assert session.services["execution"].name == "sandbox"
+        assert session.services["execution"].selected_mode_id == "workspace-edit"
+        assert "request_permissions" in {t.name for t in session.main.tools}
+    finally:
+        session.shutdown()
+
+
+def test_explicit_no_limit_profile_is_host_without_resource_approval(project):
+    session = AgentSession(project, model="faux/test", session=None, extensions=False, refresh_models=False,
+                           settings={"execution": {"mode": "no-limit"}})
     try:
         assert session.services["execution"].name == "host"
         assert "request_permissions" not in {t.name for t in session.main.tools}
     finally:
         session.shutdown()
+
+
+# Keep the historical test identity until the retirement comparison has a
+# baseline that contains the renamed test. It now exercises explicit No-Limit.
+test_default_profile_is_host_without_resource_approval = (
+    test_explicit_no_limit_profile_is_host_without_resource_approval
+)
 
 
 def test_no_limit_sandbox_switch_preserves_the_active_host_and_child(broker_session):

@@ -210,10 +210,20 @@ def approved_product_retirements(base, head):
             or not all(passed(report, identity) for report in (base, head) for identity in preserved)
             or not all(passed(head, identity) for identity in acceptance)):
         return {}
+    products = policy.get("products") or {}
+
+    def product_passes(product):
+        entry = products.get(product)
+        if entry is None:
+            return not products
+        gates = entry.get("replacement_acceptance") or ()
+        return bool(gates) and all(passed(head, identity) for identity in gates)
+
     return {
         identity["name"]: {"classname": identity["classname"], "product": identity["product"]}
         for identity in policy["retired_cases"]
         if identity["name"] not in head["tests"] and passed(base, identity)
+        and product_passes(identity["product"])
     }
 
 

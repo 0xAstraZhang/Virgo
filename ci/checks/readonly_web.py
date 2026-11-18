@@ -18,7 +18,11 @@ EXPECTED_SHA256 = "a994ec17c4cede6b3bc5264c40ad566bd8d8175a3dab57f5a87ca4db8f1ac
 
 
 class NoApprovalUI(UI):
+    def __init__(self):
+        self.questions = []
+
     def confirm(self, question, agent="main"):
+        self.questions.append(question)
         raise AssertionError(f"Unexpected approval in Read-Only mode: {question}")
 
     def select(self, question, options, *, timeout=None):
@@ -30,8 +34,9 @@ def main():
         root = Path(directory).resolve()
         workspace = root / "workspace"
         workspace.mkdir()
+        ui = NoApprovalUI()
         session = AgentSession(workspace, home=root / "home", model="faux/web-smoke", session=None,
-                               settings={"execution": {"mode": "read-only"}}, ui=NoApprovalUI(),
+                               settings={"execution": {"mode": "read-only"}}, ui=ui,
                                extensions=False, refresh_models=False)
         try:
             router = session.services["execution"]
@@ -49,7 +54,8 @@ def main():
             assert digest == EXPECTED_SHA256, digest
             assert router.selected_mode_id == "read-only" and router.mode_for(session.main).flags() == before
             print(json.dumps({"url": URL, "sha256": digest, "mode": router.selected_mode_id,
-                              "shell_network": before["network_allowed"], "approval_count": 0}))
+                              "shell_network": before["network_allowed"],
+                              "approval_count": len(ui.questions)}))
         finally:
             session.shutdown()
 

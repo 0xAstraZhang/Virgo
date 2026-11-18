@@ -53,7 +53,8 @@ def test_startup_refresh_and_cached_picker(tmp_path, mode):
         def create():
             ui = FullscreenUI()
             session = AgentSession(tmp_path, home=tmp_path / "home", model="local/grok-4.7", session=None,
-                                   ui=ui, settings={"providers": {"local": config, "other": other}}, extensions=False)
+                                   ui=ui, settings={"execution": {"mode": "no-limit"},
+                                    "providers": {"local": config, "other": other}}, extensions=False)
             return session, VirgoApp(session, ui)
 
         async def open_picker(app, pilot):

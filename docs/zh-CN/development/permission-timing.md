@@ -16,4 +16,4 @@
 uv run --no-sync python ci/measure_permission_modes.py --mode workspace-edit --samples 3 --repeat 5 --output timing.json
 ```
 
-测量固定主线时，使用同一份 PR 脚本并传入 `--contract original`。Read-Only 任务还会使用 PR 版本的网页工具读取固定的 HTTPS 文件，核对内容摘要并检查 Shell 网络仍关闭。原生命令边界由专门的验收工作流验证。
+测量固定主线时，使用同一份 PR 脚本并传入 `--contract original`。Read-Only 任务还会使用 PR 版本的网页工具读取固定的 HTTPS 文件，核对内容摘要，并确认 Shell 网络策略处于关闭状态。实际的 Shell socket 拒绝由专门的验收工作流验证。
