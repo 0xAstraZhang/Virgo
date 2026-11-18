@@ -1,10 +1,12 @@
 """Host command ownership through the public execution context."""
 import os
+import signal
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock, call, sentinel
 
-from virgo.execution import HostContext, cleanup_process
+from virgo.execution import HostContext, HostProcess, cleanup_process
 
 
 def test_host_cleanup_after_group_leader_exit_preserves_other_job(tmp_path):
@@ -40,6 +42,26 @@ def test_host_cleanup_after_group_leader_exit_preserves_other_job(tmp_path):
     finally:
         cleanup_process(other)
         other.stdout.close()
+
+
+def test_host_cleanup_waits_for_group_exit_after_darwin_permission_error(monkeypatch):
+    process = Mock(pid=42, returncode=None)
+
+    def reap():
+        process.returncode = 17
+        return process.returncode
+
+    process.wait.side_effect = reap
+    handle = HostProcess(process)
+    monkeypatch.setattr(handle, "_leader_exited", lambda: True)
+    monkeypatch.setattr(signal, "SIGKILL", sentinel.kill_signal, raising=False)
+    kill_group = Mock(side_effect=[PermissionError(), None, ProcessLookupError()])
+    monkeypatch.setattr(os, "killpg", kill_group, raising=False)
+
+    assert handle.poll() == 17
+    assert handle.poll() == 17
+    process.wait.assert_called_once_with()
+    assert kill_group.call_args_list == [call(42, sentinel.kill_signal), call(42, 0), call(42, 0)]
 
 
 def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
