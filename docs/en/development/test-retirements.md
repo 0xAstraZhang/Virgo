@@ -114,7 +114,7 @@ Other permission, security, cancellation, malformed-data, protocol, concurrency 
 
 ## Host default and MXC migration
 
-The [exact inventory](../../../ci/pipeline/host_mxc_retirements.json) covers 77 expanded case identities against dependency base `fce6ec617c964cc631049017d27740131d9d50a3`. That foundation adds only neutral interfaces; the original product/test baseline remains `4c8520fb3faa262e5f502ff808cd5fd4350bf9bd`. Every entry records its product-contract change and replacement acceptance identities. There is no directory or prefix exemption.
+The [exact inventory](../../../ci/pipeline/host_mxc_retirements.json) covers 77 expanded case identities against dependency base `6346255146f11b8024e11fd3f3faae19f41d5862`. The foundation also covers Host process-group cleanup; the original product/test baseline remains `4c8520fb3faa262e5f502ff808cd5fd4350bf9bd`. Every entry records its product-contract change and replacement acceptance identities. There is no directory or prefix exemption.
 
 Command allow/deny, ordinary/session-wide approvals, child `read_only`, mutable in-flight presets and legacy backend internals are retired. Source binding, parameter revalidation, expiration, file-tool races, native filesystem/network controls and lifecycle observations remain. The file broker's unlink race now uses a synchronized host attacker; native alias evidence is retained separately and fails. Windows LPAC/DACL lease introspection cannot serve as ProcessContainer evidence.
 

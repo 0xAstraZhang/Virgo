@@ -10,11 +10,11 @@
 
 **当前原生进程隔离未通过验收。** macOS ARM64 真实试验成功启动 MXC 并完成允许的写入，但宿主在启动后放入硬链接时，载荷可通过别名修改工作区外的受保护文件。启动前扫描不能解决该竞争，因此 Virgo 在载荷启动前拒绝共享宿主路径的原生策略。安装 MXC 也不会解除此拒绝。Windows 还存在此前 CI 主机缺少 PSEC、无法启动的独立阻塞。参见[验收记录](../development/execution-acceptance.md)。
 
-文件工具通过独立的句柄、路径身份检查和新 inode 暂存替换保留保护；它们通过测试不证明 Shell 隔离有效。发现后端或摘要匹配也不代表隔离已经建立。
+文件工具直接读写真实项目。允许的编辑一经提交，就能在编辑器中看到。运行 `/permissions show` 可查看当前及下次任务的预设、文件工具的可用情况，以及原生 Shell 无法启动的原因。
 
 ## 资源与继承
 
-预设字段为 `readPaths/writePaths/networkAllowed`；可写路径同时可读，相对路径按来源工作区解释。内置 `read-only` 为工作区只读、`workspace-edit` 为工作区可写，两者默认允许网络。`no-limit` 不再是预设。
+预设字段为 `readPaths/writePaths/networkAllowed`。按方向指定网络权限的写法见[配置参考](../reference/configuration.md)。可写路径同时可读，相对路径按来源工作区解释。内置 `read-only` 为工作区只读、`workspace-edit` 为工作区可写，两者默认允许网络。`no-limit` 不再是预设。
 
 Runtime 捕获 provider、来源工作区、资源策略及版本。子代理和排队的后台操作继承该上下文；切换会话、cwd 或后续预设不转移权限。子代理 `read_only` 参数已移除。运行依赖和 broker 私有存储与用户授权分别说明，不能通过一次授权解除保护。
 

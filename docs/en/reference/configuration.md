@@ -106,6 +106,8 @@ Sandbox is an explicitly selected required extension. Configure an installed MXC
 
 `permissions.preset/presets` belong to Sandbox. Each preset has `name`, `readPaths`, `writePaths` and `networkAllowed`; paths resolve against the source workspace and writable paths are also readable. Built-ins `read-only` and `workspace-edit` grant workspace read and workspace write respectively, both with network allowed. `no-limit` is removed. System runtime dependencies are separate from user grants.
 
+For networking, `networkAllowed: true` requests egress, ingress and host loopback. `false` requests none. An array requests exactly the listed directions. For example, `"networkAllowed": ["egress"]` requests outbound traffic only. Accepted values are `egress`, `ingress` and `hostLoopback`. Managed public Web tools require egress. Native policy support is reported separately. The shared-path native Shell remains unavailable.
+
 ```json
 {"execution":{"provider":"sandbox"},"sandbox":{"executable":"/absolute/path/to/mxc-exec-mac"},"permissions":{"preset":"offline","approval":"ask","presets":{"offline":{"name":"Offline","readPaths":["."],"writePaths":["."],"networkAllowed":false}}}}
 ```

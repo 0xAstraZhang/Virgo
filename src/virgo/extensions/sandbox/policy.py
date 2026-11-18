@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ...execution import ExecutionUnavailable, FileAccessDenied
-from ...harness.execution_modes import PermissionPreset
+from ...harness.execution_modes import PermissionPreset, PermissionSnapshot
 
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 
@@ -19,12 +19,16 @@ class SandboxPolicy:
     resources: PermissionPreset
     private_paths: tuple[Path, ...]
     executor: object
-    revision: int = 0
+    permission_snapshot: PermissionSnapshot | None = None
     provider: str = "sandbox"
 
     @property
+    def revision(self) -> int:
+        return self.permission_snapshot.revision if self.permission_snapshot is not None else 0
+
+    @property
     def network_allowed(self):
-        return self.resources.network_allowed
+        return "egress" in self.resources.network
 
     def private_path(self, path: Path) -> bool:
         return any(path.is_relative_to(root) for root in self.private_paths)

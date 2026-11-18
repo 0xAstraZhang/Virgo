@@ -115,10 +115,10 @@ class AgentSession:
         self.loaded_plugins: list[str] = []
         self._child_runtimes: dict[str, Runtime] = {}
         self._notification_depth = 0
+        self._lock = threading.RLock()
         self.approval_revision = 0
         self.approval_policy = approval_policy or self.settings.get("permissions.approval", "ask")
         self.effort = self.settings.get("effort", "medium")
-        self._lock = threading.RLock()
         self._shutdown_started = False
         self.busy = False
         self.command_exit_code = 0
@@ -285,9 +285,10 @@ class AgentSession:
 
     @approval_policy.setter
     def approval_policy(self, mode: str) -> None:
-        self.assert_state_change_allowed()
-        self._approval_policy = normalize_approval_policy(mode)
-        self.approval_revision += 1
+        with self._lock:
+            self.assert_state_change_allowed()
+            self._approval_policy = normalize_approval_policy(mode)
+            self.approval_revision += 1
 
     def resolve(self, spec: str) -> ai.Model:
         with self._lock:
@@ -963,11 +964,15 @@ class AgentSession:
                 if prepare is None:
                     self.wakeups.extend(prompts)
                 return
+            try:
+                rt.prepare_run()
+            except Exception as error:
+                rt.report_error(error, phase="session.run")
+                raise
             self.busy = True
         wake = False
         try:
             with self.ui.command_suspended():
-                rt.prepare_run()
                 self.bus.emit("before_agent_start", rt, prompts)
                 rt.agent.prompt(prompts)
         except Exception as error:

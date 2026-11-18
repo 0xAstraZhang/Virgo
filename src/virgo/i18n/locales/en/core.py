@@ -12,5 +12,6 @@ MESSAGES = {
     "common.cancelled": "Cancelled.",
     "ui.base.back": "Back",
     "ui.base.multiline_help": "Finish with a line containing .; /cancel cancels; . alone keeps existing content.",
+    "sandbox.resource_availability": "File tools are available. Native Shell is unavailable because MXC cannot isolate shared filesystem paths.",
     "sandbox.host_execution": "Host · OS permissions",
 }

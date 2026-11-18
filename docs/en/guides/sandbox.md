@@ -10,11 +10,11 @@ Select `--execution sandbox` or set `execution.provider` to `sandbox` in user se
 
 **Native process support is currently blocked.** A real macOS ARM64 test started MXC successfully and completed an allowed write, then modified a protected outside file through a hardlink inserted after launch. Scanning paths before startup does not close this race. Virgo therefore rejects shared-host-path native policies before starting payloads. Installing MXC does not enable supported Shell isolation. See [acceptance evidence](../development/execution-acceptance.md). Windows additionally lacks successful PSEC startup evidence on the evaluated CI hosts. There is no legacy native backend fallback.
 
-The optional extension retains checked file-tool access separately from the native process adapter. Successful file-tool tests do not prove Shell isolation. Neither a discovered executor nor a matching digest is an established sandbox.
+The file tools read and edit the live project. An allowed edit is visible in your editor as soon as the tool commits it. Run `/permissions show` to see the current and next presets, file-tool availability and the reason native Shell is unavailable.
 
 ## Resources and inheritance
 
-Named presets use `readPaths`, `writePaths` and `networkAllowed`. Writable paths are also readable. Relative paths resolve from the originating workspace. `read-only` grants workspace reads, `workspace-edit` grants workspace reads and writes; both allow networking. `no-limit` is not a Sandbox preset.
+Named presets use `readPaths`, `writePaths` and `networkAllowed`. See the [configuration reference](../reference/configuration.md) for directional network access. Writable paths are also readable. Relative paths resolve from the originating workspace. `read-only` grants workspace reads, `workspace-edit` grants workspace reads and writes; both allow networking. `no-limit` is not a Sandbox preset.
 
 Each task captures its execution provider, workspace, resource policy and revision. Children and queued background operations inherit that context. Switching visible conversations, changing cwd or choosing a preset for a later run cannot transfer another task's authority. The removed child `read_only` option cannot create a separate permission model.
 

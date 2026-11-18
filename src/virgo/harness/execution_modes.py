@@ -2,8 +2,26 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+NETWORK_DIRECTIONS = ("egress", "ingress", "hostLoopback")
+FULL_NETWORK = frozenset(NETWORK_DIRECTIONS)
+
+
+def parse_network(value: object) -> frozenset[str]:
+    if isinstance(value, bool):
+        return FULL_NETWORK if value else frozenset()
+    if (not isinstance(value, list) or any(direction not in NETWORK_DIRECTIONS for direction in value)
+            or len(set(value)) != len(value)):
+        raise ValueError("networkAllowed must be boolean or a list of distinct egress, ingress, hostLoopback directions")
+    return frozenset(value)
+
+
+def network_config(directions: frozenset[str]) -> bool | list[str]:
+    if not directions or directions == FULL_NETWORK:
+        return bool(directions)
+    return [direction for direction in NETWORK_DIRECTIONS if direction in directions]
 
 
 @dataclass(frozen=True)
@@ -12,27 +30,27 @@ class PermissionPreset:
     name: str
     read_paths: tuple[str, ...]
     write_paths: tuple[str, ...]
-    network_allowed: bool
+    network: frozenset[str]
 
     def flags(self) -> dict:
         return {"read_paths": list(self.read_paths), "write_paths": list(self.write_paths),
-                "network_allowed": self.network_allowed}
+                "network_allowed": network_config(self.network)}
 
     def config(self) -> dict:
         return {"name": self.name, "readPaths": list(self.read_paths), "writePaths": list(self.write_paths),
-                "networkAllowed": self.network_allowed}
+                "networkAllowed": network_config(self.network)}
 
     def resolve(self, workspace: Path) -> PermissionPreset:
         def paths(values):
             return tuple(dict.fromkeys(str((workspace / Path(value).expanduser()).resolve()) for value in values))
-        return PermissionPreset(self.id, self.name, paths(self.read_paths), paths(self.write_paths), self.network_allowed)
+        return replace(self, read_paths=paths(self.read_paths), write_paths=paths(self.write_paths))
 
 
-HOST_MODE = PermissionPreset("host", "Host", (), (), True)
+HOST_MODE = PermissionPreset("host", "Host", (), (), FULL_NETWORK)
 RESERVED_PRESET_IDS = frozenset({"host", "no-limit", "ask", "never", "revoke", "show", "status", "sandbox", "list", "save"})
 DEFAULT_MODES = {mode.id: mode for mode in (
-    PermissionPreset("read-only", "Read-Only", (".",), (), True),
-    PermissionPreset("workspace-edit", "Workspace-Edit", (".",), (".",), True),
+    PermissionPreset("read-only", "Read-Only", (".",), (), FULL_NETWORK),
+    PermissionPreset("workspace-edit", "Workspace-Edit", (".",), (".",), FULL_NETWORK),
 )}
 
 
@@ -50,10 +68,8 @@ def parse_mode(identifier: str, value: dict) -> PermissionPreset:
         paths = value.get(field)
         if not isinstance(paths, list) or any(not isinstance(p, str) or not p or "\0" in p for p in paths):
             raise ValueError(f"{field} must be a list of nonempty paths")
-    if type(value.get("networkAllowed")) is not bool:
-        raise ValueError("networkAllowed must be boolean")
     return PermissionPreset(identifier, name.strip(), tuple(value["readPaths"]), tuple(value["writePaths"]),
-                            value["networkAllowed"])
+                            parse_network(value.get("networkAllowed")))
 
 
 def configured_modes(value: object) -> dict[str, PermissionPreset]:

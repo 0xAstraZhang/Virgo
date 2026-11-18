@@ -13,7 +13,13 @@ from ...agent import AgentTool, Block, ToolCallEvent, ToolResult
 from ...ai.validate import validate
 from ...execution import ExecutionUnavailable, FileAccessDenied
 from ...harness.execution import HostExecutionProvider
-from ...harness.execution_modes import PermissionSnapshot, configured_modes, parse_mode
+from ...harness.execution_modes import (
+    NETWORK_DIRECTIONS,
+    PermissionSnapshot,
+    configured_modes,
+    parse_mode,
+    parse_network,
+)
 from ...harness.origin_context import origin_key, source_for
 from .mxc import MxcExecutor
 from .policy import SandboxPolicy
@@ -55,7 +61,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
         self.revision = 0
         self._pending: dict[str, Grant] = {}
         self._active: dict[tuple[int, str], tuple[Grant, ToolCallEvent]] = {}
-        self._denied: set[str] = set()
+        self._denied: dict[str, object] = {}
         session.bus.on("tool_result", self._result, owner="sandbox")
         session.bus.on("agent_event", self._event, owner="sandbox")
 
@@ -73,20 +79,33 @@ class SandboxExecutionProvider(HostExecutionProvider):
     def effective_mode(self, runtime):
         return "Sandbox / MXC / " + self.mode_for(runtime).name
 
-    def capture_runtime(self, runtime):
-        if runtime.parent is not None:
-            runtime.execution_context = getattr(runtime, "execution_context", None) or runtime.parent.execution_context
-            runtime.permission_snapshot = runtime.parent.permission_snapshot
-            return
-        mode = self.modes[getattr(runtime, "permission_mode_id", self._selected_mode_id)]
-        runtime.permission_mode_id = mode.id
+    def _candidate(self, runtime, mode, revision):
         workspace = Path(runtime.accounting_store.cwd).resolve()
-        runtime.execution_context = SandboxPolicy(workspace, mode.resolve(workspace),
-                                                  (self.session.paths.user.resolve(), self.executor.path.parent),
-                                                  self.executor, self.revision)
-        runtime.execution_context.validate(runtime.cwd)
-        runtime.permission_snapshot = PermissionSnapshot(mode, self.session.approval_policy, self.revision)
-        self._discard(runtime)
+        approval = "never" if runtime.approval_policy == "never" else self.session.approval_policy
+        policy = SandboxPolicy(workspace, mode.resolve(workspace),
+                               (self.session.paths.user.resolve(), self.executor.path.parent),
+                               self.executor, PermissionSnapshot(mode, approval, revision))
+        policy.validate(runtime.cwd)
+        return policy
+
+    def capture_runtime(self, runtime):
+        with self.session._lock:
+            if runtime.parent is not None:
+                # A queued child receives its submitting run's immutable context.
+                policy = getattr(runtime, "execution_context", None) or runtime.parent.execution_context
+                snapshot = getattr(policy, "permission_snapshot", None)
+                if snapshot is None:
+                    raise ExecutionUnavailable("Sandbox child requires its originating task snapshot")
+                if runtime.approval_policy == "never" and snapshot.approval != "never":
+                    policy = replace(policy, permission_snapshot=replace(snapshot, approval="never"))
+                runtime.execution_context = policy
+                return
+            mode = self.modes[getattr(runtime, "permission_mode_id", self._selected_mode_id)]
+            origin = getattr(runtime, "origin", None)
+            policy = self._candidate(runtime, mode, origin.root.preset_revision if origin else 0)
+            runtime.permission_mode_id = mode.id
+            runtime.execution_context = policy
+            self._discard(runtime)
 
     def for_context(self, context):
         base = super().for_context(context)
@@ -109,7 +128,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
         # Bind the exact effective environment without retaining credential values.
         environment = hashlib.sha256(json.dumps(dict(os.environ), sort_keys=True).encode()).hexdigest()
         return json.dumps([environment, origin_key(self.session, event), runtime.diagnostic_id, runtime.run_id,
-                           self.revision, id(event.tool), event.tool_name, event.args, str(event.cwd.resolve()), target,
+                           id(event.tool), event.tool_name, event.args, str(event.cwd.resolve()), target,
                            shell.environment() if shell else None, self.executor.identity], sort_keys=True, ensure_ascii=False)
 
     def _valid(self, grant, event):
@@ -178,16 +197,28 @@ class SandboxExecutionProvider(HostExecutionProvider):
         with self.session._lock:
             self._pending = {k: g for k, g in self._pending.items() if g.runtime is not runtime}
             self._active = {k: g for k, g in self._active.items() if k[0] != id(runtime)}
+            self._denied = {key: owner for key, owner in self._denied.items() if owner is not runtime}
 
     def _event(self, event, runtime):
         if event.type == "agent_end":
             self._discard(runtime)
 
     def revoke(self):
-        self.revision += 1
-        self._pending.clear()
-        self._active.clear()
-        self._denied.clear()
+        with self.session._lock:
+            self.revision += 1
+            self._pending.clear()
+            self._active.clear()
+            self._denied.clear()
+
+    def _publish_mode(self, runtime, policy):
+        # Only unconsumed decisions for this originating conversation change.
+        owner = runtime.origin.root
+        owner.preset_revision = policy.revision
+        self._pending = {key: grant for key, grant in self._pending.items() if grant.runtime.origin.root is not owner}
+        self._denied = {key: rt for key, rt in self._denied.items() if rt.origin.root is not owner}
+        if not runtime.execution_active and not self.session.runtime_is_busy(runtime):
+            runtime.execution_context = policy
+        self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
 
     def select_mode(self, identifier):
         with self.session._lock:
@@ -195,28 +226,35 @@ class SandboxExecutionProvider(HostExecutionProvider):
             if identifier not in self.modes:
                 raise ValueError("Unknown resource preset; use /permissions list")
             runtime = self.session.main
+            policy = self._candidate(runtime, self.modes[identifier], runtime.origin.root.preset_revision + 1)
             runtime.permission_mode_id = identifier
-            self.revoke()
-            if not runtime.execution_active and not self.session.runtime_is_busy(runtime):
-                self.capture_runtime(runtime)
-            self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
+            self._publish_mode(runtime, policy)
 
     def save_mode(self, identifier, name, read_paths, write_paths, network_allowed, *, persist=True):
         mode = parse_mode(identifier, {"name": name, "readPaths": list(read_paths), "writePaths": list(write_paths),
                                        "networkAllowed": network_allowed})
         with self.session._lock:
             self.session.assert_state_change_allowed()
+            runtime = self.session.main
+            candidate = self._candidate(runtime, mode, runtime.origin.root.preset_revision + 1)
             if persist:
                 self.session.settings.save_user({"permissions": {"presets": {identifier: mode.config()}}})
             self.modes[identifier] = mode
-            self.revoke()
-            if not self.session.main.execution_active and not self.session.runtime_is_busy(self.session.main):
-                self.capture_runtime(self.session.main)
-            self.session.notify_state_change("permission_mode_changed", self.session.main, self.selected_mode)
+            if identifier == self.selected_mode_id:
+                self._publish_mode(runtime, candidate)
+            else:
+                self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
         return mode
 
     def status(self, session, args):
-        session.ui.command_result("Sandbox / MXC\n" + json.dumps(session.main.execution_context.describe(), ensure_ascii=False))
+        with session._lock:
+            current = session.main.permission_snapshot.mode
+            selected = self.selected_mode
+            facts = {**session.main.execution_context.describe(),
+                     "availability": session.t("sandbox.resource_availability"),
+                     "current_preset": {"id": current.id, **current.config()},
+                     "next_preset": {"id": selected.id, **selected.config()}}
+        session.ui.command_result("Sandbox / MXC\n" + json.dumps(facts, ensure_ascii=False))
 
     def command(self, session, args):
         value = args.strip()
@@ -250,7 +288,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
             return ToolResult.error("Missing or cancelled originating runtime")
         snapshot = runtime.permission_snapshot
         # The captured approval ceiling is independent of later visible settings.
-        if snapshot is not None and snapshot.approval == "never" or self.session.approval_policy == "never":
+        if snapshot is None or snapshot.approval == "never" or self.session.approval_policy == "never":
             return ToolResult.error("New resource permission requests are disabled")
         tool = next((t for t in runtime.tools if t.name == args["tool"]), None)
         if tool is None or tool.execution_scope not in {"file", "process", "network"}:
@@ -275,7 +313,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
                 return ToolResult.error("Protected runtime/control resources cannot be granted")
         resources = replace(base.resources, read_paths=tuple(dict.fromkeys((*base.resources.read_paths, *reads))),
                             write_paths=tuple(dict.fromkeys((*base.resources.write_paths, *writes))),
-                            network_allowed=base.network_allowed or delta.get("network_allowed", False))
+                            network=base.resources.network | parse_network(delta.get("network_allowed", False)))
         if resources == base.resources:
             return ToolResult.error("This request does not add a resource; execute within the existing boundary directly")
         policy = replace(base, resources=resources)
@@ -287,9 +325,12 @@ class SandboxExecutionProvider(HostExecutionProvider):
         if block := self._check(event, policy):
             return ToolResult.error(block.reason, block.details)
         targets = _targets((*reads, *writes))
-        key = self._key(event)
-        if key in self._denied:
-            return ToolResult.error("This operation was denied; do not repeat or bypass it")
+        with self.session._lock:
+            if self.session.approval_policy == "never":
+                return ToolResult.error("New resource permission requests are disabled")
+            key = self._key(event)
+            if key in self._denied:
+                return ToolResult.error("This operation was denied; do not repeat or bypass it")
         question = (f"Additional resources for {context.agent}\nOperation: {tool.name}\nArguments: "
                     f"{json.dumps(arguments, ensure_ascii=False)}\nCurrent: {base.resources.flags()}\n"
                     f"Requested: {resources.flags()}\nReason: {args['reason']}\n"
@@ -303,7 +344,7 @@ class SandboxExecutionProvider(HostExecutionProvider):
                 "permissions": resources.flags(), "approved": answer == "y", "scope": "operation", "expires_after_seconds": 300,
             })
             if answer != "y":
-                self._denied.add(key)
+                self._denied[key] = runtime
                 return ToolResult.error("Additional resources were not granted")
             self._pending[key] = Grant(key, policy, time.monotonic() + 300, runtime, runtime.run_id, targets)
         return ToolResult.text("Approved once for 5 minutes in this run. Call the exact tool and arguments. "
@@ -321,7 +362,8 @@ def setup(api):
             "permissions": {"type": "object", "properties": {
                 "read_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "write_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                "network_allowed": {"type": "boolean"},
+                "network_allowed": {"type": ["boolean", "array"], "items": {"type": "string", "enum": list(NETWORK_DIRECTIONS)},
+                                    "description": "Additional allowed directions. true requests all three."},
             }, "additionalProperties": False},
         }, "required": ["tool", "arguments", "reason", "permissions"], "additionalProperties": False},
         execute=provider.request_permissions, side_effect="read", sequential=True,

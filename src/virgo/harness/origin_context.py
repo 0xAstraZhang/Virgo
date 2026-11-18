@@ -14,6 +14,7 @@ class BranchSource:
     def __init__(self, store):
         self.store = store
         self.anchor = store.leaf
+        self.preset_revision = 0
         self.lock = threading.RLock()
 
     def entries(self) -> list[dict]:
@@ -98,6 +99,7 @@ def origin_key(session, event) -> str:
         "origin": source.identity, "workspace": str(source.workspace), "agent": event.agent,
         "provider": provider.name, "context": runtime.execution_context.describe(),
         "approval": snapshot.approval if snapshot is not None else None,
-        "revision": provider.revision, "approval_revision": session.approval_revision,
+        "revision": provider.revision, "preset_revision": source.root.preset_revision,
+        "approval_revision": session.approval_revision,
     }
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

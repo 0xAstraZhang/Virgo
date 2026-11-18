@@ -2,6 +2,8 @@
 
 新配置默认 Host，但旧配置明确提出的隔离要求不会静默降级。仅在确实需要宿主权限时删除旧要求；否则显式选择 Sandbox，并阅读[当前阻塞](../development/execution-acceptance.md)。
 
+如果用户配置已选择 `read-only` 等受支持的预设，可在启动时传入 `--execution sandbox`。CLI 应用这个参数后再校验预设。
+
 | 旧接口／配置 | 迁移 |
 | --- | --- |
 | `sandbox.mode`、`--sandbox` | 明确选择 `execution.provider`／`--execution`；Sandbox 需用户安装并配置 MXC。 |

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...ai.types import UserMessage
+from ...harness.execution_modes import network_config
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
 from ...harness.ui import UI
@@ -187,7 +188,7 @@ class RunController:
             else:
                 manager.save_mode(
                     choice.mode_id, name=choice.name, read_paths=choice.read_paths,
-                    write_paths=choice.write_paths, network_allowed=choice.network_allowed, persist=True,
+                    write_paths=choice.write_paths, network_allowed=network_config(choice.network), persist=True,
                 )
                 self.ui.print(tr(self, "ui.modes.saved", name=choice.name), "dim")
 

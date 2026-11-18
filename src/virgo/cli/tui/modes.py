@@ -15,6 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static, Switch
 from textual.widgets.option_list import Option
 
+from ...harness.execution_modes import NETWORK_DIRECTIONS, network_config
 from ..i18n import tr
 from .choices import ChoiceList
 
@@ -22,7 +23,11 @@ from .choices import ChoiceList
 def permission_flags(owner, mode, *, compact: bool = False) -> str:
     if mode.id == "host":
         return tr(owner, "sandbox.host_execution")
-    network = tr(owner, "ui.modes.on" if mode.network_allowed else "ui.modes.off")
+    selection = network_config(mode.network)
+    if isinstance(selection, bool):
+        network = tr(owner, "ui.modes.on" if selection else "ui.modes.off")
+    else:
+        network = ", ".join(tr(owner, "ui.modes." + direction) for direction in selection)
     return tr(owner, "ui.modes.flags_short" if compact else "ui.modes.flags",
               read_paths=len(mode.read_paths), write_paths=len(mode.write_paths), network_allowed=network)
 
@@ -35,7 +40,7 @@ class PermissionModeChoice:
     name: str
     read_paths: tuple[str, ...]
     write_paths: tuple[str, ...]
-    network_allowed: bool
+    network: frozenset[str]
 
 
 class PermissionModePicker(ModalScreen[PermissionModeChoice | None]):
@@ -81,7 +86,7 @@ class PermissionModePicker(ModalScreen[PermissionModeChoice | None]):
                 for field in ("read_paths", "write_paths"):
                     yield Static(tr(self, "ui.modes." + field) + " (JSON)", markup=False)
                     yield Input(id="mode-" + field)
-                for flag in ("network_allowed",):
+                for flag in NETWORK_DIRECTIONS:
                     with Horizontal(classes="mode-flag"):
                         yield Static(tr(self, "ui.modes." + flag), markup=False)
                         yield Switch(id="mode-" + flag)
@@ -110,8 +115,8 @@ class PermissionModePicker(ModalScreen[PermissionModeChoice | None]):
         self.query_one("#mode-name", Input).value = mode.name
         for field in ("read_paths", "write_paths"):
             self.query_one("#mode-" + field, Input).value = json.dumps(getattr(mode, field), ensure_ascii=False)
-        for flag in ("network_allowed",):
-            self.query_one("#mode-" + flag, Switch).value = getattr(mode, flag)
+        for flag in NETWORK_DIRECTIONS:
+            self.query_one("#mode-" + flag, Switch).value = flag in mode.network
         self._loading = False
         self.refresh_actions()
 
@@ -145,7 +150,7 @@ class PermissionModePicker(ModalScreen[PermissionModeChoice | None]):
             self.query_one("#mode-name", Input).value.strip(),
             read_paths=paths("read_paths"),
             write_paths=paths("write_paths"),
-            network_allowed=self.query_one("#mode-network_allowed", Switch).value,
+            network=frozenset(flag for flag in NETWORK_DIRECTIONS if self.query_one("#mode-" + flag, Switch).value),
         )
 
     def refresh_actions(self) -> None:
@@ -162,7 +167,7 @@ class PermissionModePicker(ModalScreen[PermissionModeChoice | None]):
         original = self.modes.get(self.mode_id)
         changed = original is None or any(
             getattr(original, field) != getattr(choice, field)
-            for field in ("name", "read_paths", "write_paths", "network_allowed")
+            for field in ("name", "read_paths", "write_paths", "network")
         )
         self.query_one("#mode-save", Button).disabled = not choice.name or not changed
         self.query_one("#mode-use", Button).disabled = changed

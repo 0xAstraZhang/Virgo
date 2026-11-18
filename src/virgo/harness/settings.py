@@ -270,6 +270,15 @@ class Settings:
         self.migration_warnings: list[str] = []
         self.project_extensions_trusted = False
 
+    @staticmethod
+    def startup_language(paths: Paths) -> str:
+        """Read the CLI language before startup arguments can supply execution settings."""
+        for path in reversed(paths.both("settings.json")):
+            layer = _read_json(path)
+            if "language" in layer:
+                return DEFAULTS["language"] if layer["language"] is None else layer["language"]
+        return DEFAULTS["language"]
+
     @classmethod
     def load(cls, paths: Paths, overrides: dict | None = None) -> Settings:
         notices: list[str] = []
@@ -290,14 +299,15 @@ class Settings:
             extension_config = layer.get("extensions", {})
             if isinstance(extension_config, dict) and "trustedProjects" in extension_config:
                 notices.append("Project/runtime extensions.trustedProjects is ignored. Trust must come from user settings or --trust-project-extensions.")
-        data = deep_merge(DEFAULTS, _normalize_layer(user, notices))
+        user = _normalize_layer(user, notices)
+        data = deep_merge(DEFAULTS, user)
         project = _normalize_layer(project, notices)
         data = deep_merge(data, project)
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         normalized_overrides = _normalize_layer(overrides or {}, notices)
         data = deep_merge(data, normalized_overrides)
-        explicit = deep_merge(_normalize_layer(user, []), normalized_overrides)
+        explicit = deep_merge(user, normalized_overrides)
         if explicit.get("permissions", {}).get("preset") is not None and data["execution"]["provider"] != "sandbox":
             raise ValueError("An explicit permission preset requires execution.provider=sandbox; migrate it or remove it to select Host")
         _validate(data)
@@ -309,7 +319,7 @@ class Settings:
                 if isinstance(value, dict):
                     record_sources(value, source, dotted)
         record_sources(DEFAULTS, "default")
-        record_sources(_normalize_layer(user, []), "user")
+        record_sources(user, "user")
         record_sources(project, "project")
         record_sources(normalized_overrides, "startup")
         settings.overrides = normalized_overrides
