@@ -301,6 +301,7 @@ class ResourceApprovals:
                 "tool": event.tool_name, "arguments_sha256": hashlib.sha256(scope[-1].encode()).hexdigest(),
                 "permissions": missing, "approved": answer in {"y", "a"},
                 "scope": "persistent" if answer == "a" else "operation",
+                "expires_after_seconds": 300 if answer == "y" and not dispatch else None,
             })
             if answer not in {"y", "a"}:
                 self._denied[key] = runtime

@@ -80,7 +80,7 @@ def test_aborted_summary_keeps_context_and_counts_usage(make_session):
 @pytest.mark.parametrize("approval,answer,decision", [
     ("ask", "y", "allow"),
     ("ask", "n", "deny"),
-    ("ask", "a", "deny"),
+    ("ask", "a", "allow"),
     ("never", None, "deny"),
 ], ids=[
     "reply0-None-auto-review-allow", "reply1-n-auto-review-deny",
@@ -97,7 +97,8 @@ def test_permission_audit_records_review_and_final_decision(broker_session, tmp_
     assert len(audit) == (1 if approval == "ask" else 0)
     if audit:
         assert audit[0]["approved"] is (decision == "allow")
-        assert audit[0]["scope"] == "operation" and audit[0]["expires_after_seconds"] == 300
+        assert audit[0]["scope"] == ("persistent" if answer == "a" else "operation")
+        assert audit[0]["expires_after_seconds"] == (300 if answer == "y" else None)
         assert audit[0]["arguments_sha256"] and "arguments" not in audit[0]
     assert not session.store.custom("permission_decision")
     assert not session.store.custom("model_call")

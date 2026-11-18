@@ -1,6 +1,9 @@
 """Terminal and command-line presentation messages."""
 
 MESSAGES = {
+    'ui.modes.read_paths': '可读路径',
+    'ui.modes.write_paths': '可写路径',
+    'ui.modes.network_allowed': 'Shell 联网',
     'ui.modes.grants': '已保存的授权',
     'ui.modes.title': '权限模式',
     'ui.modes.use': '使用',

@@ -1,6 +1,9 @@
 """Terminal and command-line presentation messages."""
 
 MESSAGES = {
+    'ui.modes.read_paths': 'Read paths',
+    'ui.modes.write_paths': 'Write paths',
+    'ui.modes.network_allowed': 'Shell network',
     'ui.modes.grants': 'Saved approvals',
     'ui.modes.title': 'Permission modes',
     'ui.modes.use': 'Use',

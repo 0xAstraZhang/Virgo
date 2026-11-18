@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -20,19 +21,27 @@ class ResourceRules:
         self.path = user_directory / "resource-grants.sqlite3"
 
     @contextmanager
-    def database(self, *, create=False):
+    def database(self, *, create=False, write=False):
         if not create and not self.path.exists():
             yield None
             return
         if create:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as db, db:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # SQLite derives journal permissions from the database. Exact command
+            # arguments can contain private values even for a read-only grant.
+            os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600))
+        uri = self.path.resolve().as_uri() + ("?mode=rw" if create or write else "?mode=ro")
+        with closing(sqlite3.connect(uri, uri=True)) as db, db:
             if create:
                 db.execute("""CREATE TABLE IF NOT EXISTS grants (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT, mode TEXT, cwd TEXT,
                     operation TEXT, resource TEXT, target TEXT, directory INTEGER,
                     UNIQUE(project, mode, cwd, operation, resource, target)
                 )""")
+            elif db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='grants'").fetchone() is None:
+                # A concurrent first approval has opened the file but has not committed yet.
+                yield None
+                return
             yield db
 
     def match(self, scope):
@@ -63,7 +72,7 @@ class ResourceRules:
                 WHERE project=? ORDER BY id""", (project,)).fetchall()
 
     def revoke(self, project, identifier):
-        with self.database() as db:
+        with self.database(write=True) as db:
             return bool(db and db.execute("DELETE FROM grants WHERE project=? AND id=?",
                                           (project, identifier)).rowcount)
 
