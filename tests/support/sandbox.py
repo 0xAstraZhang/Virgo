@@ -1,4 +1,4 @@
-"""Real MXC acceptance helpers. Availability never counts as successful isolation."""
+"""Native process acceptance helpers. Availability never counts as successful isolation."""
 
 from __future__ import annotations
 
@@ -38,13 +38,15 @@ def native_session(make_session, platforms):
         if required:
             pytest.fail("Native acceptance requested on the wrong platform")
         pytest.skip("Other-platform native acceptance")
-    executable = os.environ.get("VIRGO_MXC_EXECUTABLE")
-    if not executable:
-        if required:
-            pytest.fail("VIRGO_MXC_EXECUTABLE must name an explicitly installed MXC 1.1.0 executor")
-        pytest.skip("MXC executor not configured; no native isolation claim")
+    settings = {"execution": {"mode": "workspace-edit"}}
+    if sys.platform == "win32":
+        import shutil
+
+        executable = shutil.which("pwsh")
+        assert executable, "PowerShell 7 is required by native Windows acceptance"
+        settings["shell"] = {"executable": executable}
     session = make_session(
-        settings={"execution": {"provider": "sandbox"}, "sandbox": {"executable": executable}},
+        settings=settings,
         refresh_models=False,
         extensions=False,
     )

@@ -39,11 +39,8 @@ Virgo 按以下顺序深合并内置默认值、用户配置和项目配置：
 | `effort` | `medium`；界面支持 `low`、`medium`、`high`、`xhigh`、`max` |
 | `maxTokens` | 未设置，使用适配器／模型默认值 |
 | `shell.executable` | `auto`；受支持的解释器名称或可执行文件路径 |
-| `permissions.preset` | Sandbox: `workspace-edit` |
-| `permissions.presets` | `name/readPaths/writePaths/networkAllowed` |
-| `execution.provider` | `host`; `host` or `sandbox` |
+| `execution.mode` | `no-limit`（默认）、`read-only`、`workspace-edit` |
 | `permissions.approval` | `ask`；`never` 拒绝需要新增批准的操作 |
-| `sandbox.executable` | Explicit installed MXC v1.1.0 executor path |
 | `compaction.enabled` | `true` |
 | `compaction.triggerRatio` | 模型上下文窗口的 `0.8` |
 | `compaction.triggerTokens` | 未设置；提供时优先于比例阈值 |
@@ -100,23 +97,15 @@ Provider 配置可以声明 `api`、`baseUrl`、`apiKeyEnv` 和模型元数据�
 
 ## 执行与资源权限
 
-全新配置默认 `execution.provider=host`。Host 直接使用宿主文件与进程 API，由宿主操作系统决定权限；不加载或探测 Sandbox，也不审查命令。通过 `--execution host|sandbox` 显式选择执行方式，`/permissions show` 区分请求范围与实际边界。
-
-Sandbox 是按需加载的必要扩展。用户显式安装 MXC v1.1.0 executor，并配置 `sandbox.executable`。扩展缺失、执行器无效或策略无法实施时拒绝执行，不回退 Host。**目前共享宿主路径的原生执行处于阻塞状态**：macOS 实测存在启动后硬链接别名绕过。发现后端不等于建立隔离，参见[验收状态](../development/execution-acceptance.md)。
-
-Sandbox 预设使用 `name/readPaths/writePaths/networkAllowed`。路径相对于来源工作区解释，可写路径同时可读。内置 `read-only` 为工作区只读，`workspace-edit` 为工作区可写，二者默认允许联网。`no-limit` 已移除。系统运行依赖与用户授权范围分别报告。
-
-网络配置 `networkAllowed: true` 请求出站、入站和宿主回环，`false` 关闭三者。数组仅请求列出的方向，可选 `egress`、`ingress`、`hostLoopback`。例如，`"networkAllowed": ["egress"]` 只请求出站。受管的公开 Web 工具需要出站权限。原生网络策略的支持情况单独报告，当前共享路径下的原生 Shell 仍不可用。
+使用 `--permission read-only`、`--permission workspace-edit` 或 `--permission no-limit`。新安装默认 No-Limit。兼容参数 `--execution host` 选择 No-Limit。CLI 与 TUI 提供相同的三种模式。
 
 ```json
-{"execution":{"provider":"sandbox"},"sandbox":{"executable":"/absolute/path/to/mxc-exec-mac"},"permissions":{"preset":"offline","approval":"ask","presets":{"offline":{"name":"离线","readPaths":["."],"writePaths":["."],"networkAllowed":false}}}}
+{"execution":{"mode":"workspace-edit"}}
 ```
 
-`--permission <id>`、`/permissions <id>` 和 Sandbox 的 TUI 选择器为后续 run 选择预设；`/permissions save <id> <JSON>` 保存用户预设。正在运行、排队及子代理任务保留已捕获的来源上下文。`ask|never` 只控制明确的资源增量请求；Host 不提供无效的权限审批操作。授权只用于一次精确操作，五分钟或当前 run 结束即失效，以先到者为准；到期不撤销已启动进程的权限。
+`/permissions show` 显示当前任务和下一任务的模式，`/permissions list` 列出模式。使用 `/permissions grants` 查看持久授权，`/permissions revoke ID` 撤销指定授权。项目没有授予执行权限的入口。运行中的子任务与后台操作保持已捕获的上下文。
 
-执行权限只能来自用户配置或显式启动覆盖。项目不能设置 execution、permissions 或扩展信任。旧配置明确要求隔离但未显式选择 Sandbox 时报告冲突。非空 allow/deny、旧布尔预设字段、子代理 read_only 参数均报告迁移错误。不使用命令白名单或意图分类器。参见[迁移](../guides/migrating-execution-policy.md)与[权限预设](../development/permission-profiles.md)。
-
-可信 Python 扩展、hooks、MCP 服务启动和模型通信不受此边界管理。Sandbox 拒绝无法实施文件范围的外部操作，授权不能切换到 Host。受管 Web 和原生搜索检查来源网络策略。
+详见[权限模式](../development/permission-profiles.md)及[原生后端](../guides/sandbox.md)。
 
 ## 上下文与重试
 

@@ -749,7 +749,8 @@ class AgentSession:
     def register_execution_provider(self, provider, *, owner: str) -> None:
         if "execution" in self.services or hasattr(self, "main"):
             raise ValueError("Execution provider already bound; it cannot be replaced during a session")
-        if provider.name != self.settings.get("execution.provider", "host"):
+        expected = "host" if self.settings.get("execution.mode") == "no-limit" else "sandbox"
+        if provider.name != expected:
             raise ValueError("Execution provider does not match the explicitly requested provider")
         self.services["execution"] = provider
         self._execution_owner = owner

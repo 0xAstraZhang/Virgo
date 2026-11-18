@@ -72,7 +72,7 @@ MESSAGES = {
     "features.jobs.stopping": "Stopping {id}.",
     "features.jobs.unit.bytes": "bytes",
     "features.jobs.unit.chars": "chars",
-    "features.permission.allow_suffix": "  Allow? [y]es / [n]o / [a]lways this session",
+    "features.permission.allow_suffix": "  Allow once [y] / Deny [n] / Always allow [a]",
     "features.search.key": "DeepSeek search requires an official API key. Use /login api deepseek with "
     "https://api.deepseek.com or set DEEPSEEK_API_KEY (search.apiKeyEnv can select a "
     "separate search key).",

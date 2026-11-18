@@ -4,9 +4,8 @@ on:
   pull_request:
     paths:
       - 'src/virgo/**'
+      - 'ci/measure_startup.py'
       - 'tests/support/**'
-      - 'ci/*mxc*.py'
-      - 'docs/evidence/execution/**'
       - 'tests/harness/test_windows_sandbox_e2e.py'
       - '.github/workflows/windows-sandbox.yml'
       - 'pyproject.toml'
@@ -39,11 +38,6 @@ jobs:
           version: '0.13.8'
           python-version: '3.13'
       - run: uv sync --locked --dev
-      - name: Install the pinned standalone MXC executor explicitly
-        run: uv run --no-sync python ci/install_mxc_executor.py --directory "${{ runner.temp }}/virgo-mxc"
-      - name: Record upstream ProcessContainer startup and alias evidence
-        run: uv run --no-sync python ci/probe_mxc.py --executor "${{ env.VIRGO_MXC_EXECUTABLE }}" --output mxc-probe.json
-        continue-on-error: true
       - name: Record exact revision and native environment
         shell: pwsh
         run: |
@@ -67,8 +61,6 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: windows-sandbox-${{ matrix.os }}
-          path: |
-            windows-sandbox.xml
-            mxc-probe.json
+          path: windows-sandbox.xml
           if-no-files-found: error
           retention-days: 14

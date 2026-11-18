@@ -22,7 +22,7 @@ Virgo 将模型传输、Agent 循环和应用策略分离。官方能力插件�
 
 安装后的命令和 `python -m virgo` 均进入 [`cli/main.py`](../../../src/virgo/cli/main.py)。运行时代码放在包内，保证源码和安装后的 wheel 使用同一实现。
 
-Core 通过 virgo.execution 访问文件和进程；harness/execution.py 绑定默认 Host，不导入 Sandbox。virgo.extensions.sandbox 管理资源授权、文件保护和固定的 MXC 适配器，origin_context.py 固定来源 Runtime 与工作区。原生支持仍受阻塞，参见[验收](execution-acceptance.md)。
+Core 将任务绑定到来源工作区、执行上下文和资源审批。No-Limit 直接使用 Host。选择受限模式时，Sandbox 扩展将有效资源转换为 Bubblewrap/seccomp、Seatbelt 或 Windows LPAC 的原生策略。见[执行验收](execution-acceptance.md)。
 
 ## Core 与插件装配
 

@@ -6,7 +6,7 @@
 
 Virgo is a lightweight, extensible coding agent for your terminal. Ask it to explore a codebase, make a change, investigate a failure, or review a diff. It can read and edit files, run commands, and work through a task while you stay in the conversation.
 
-Fresh configurations execute on **Host**, using the host account’s OS permissions, without command review or ordinary approval. Sandbox is explicit and fails closed; current MXC native acceptance remains blocked. See [execution boundaries](docs/en/guides/sandbox.md).
+Virgo starts in **No-Limit** using the current host account. **Read-Only** and **Workspace-Edit** use native isolation against the live project and support operation-specific approvals. See [execution boundaries](docs/en/guides/sandbox.md).
 
 ## Why Virgo?
 
@@ -59,7 +59,7 @@ uv run virgo --continue
 uv run virgo -p --format json "Summarize the README"
 ```
 
-The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/permissions` selects or edits permission presets and approval policy. The model can request a single-operation permission exception. See [Sandbox boundaries](docs/en/guides/sandbox.md) and [breaking migration](docs/en/guides/migrating-execution-policy.md).
+Use `/permissions show` to inspect the active task and next-task mode. Select one of the three modes with `/permissions`. See [permission modes and grants](docs/en/development/permission-profiles.md).
 
 ## Explore
 

@@ -22,8 +22,12 @@ uv run --no-sync python ci/measure_startup.py --mode workspace-edit --samples 3 
 
 The workflow runs this same script from the head checkout against each baseline's installed package. It checkpoints samples after each worker and retains failures. Unconfirmed cleanup stops further samples. The comparison issues timings only when every sample completed. Runner timing, native isolation acceptance and web or network reachability have separate evidence.
 
-## Evidence scope
+## Native support and recorded results
 
-Review POSIX live-workspace support against the documented host concurrency assumptions. Track Windows external TCP, inbound, loopback and ordinary desktop-account results individually. CI running on Windows Server establishes the cases exercised under that runner account.
+For the POSIX live workspace, verify normal host edits become visible to an already running reader and record the supported link contract. The startup scan only checks the state it observes. Changes to link relationships by an untrusted concurrent host writer are outside the supported boundary.
 
-The archived MXC reports, model evaluation and older timing samples describe the revisions recorded in each file. The model and provider-comparison experiments are outside the timing workflow. [Historical execution evidence](../../evidence/execution/README.md)
+For Windows, record external TCP egress, ingress and host-loopback results separately with OS, account and firewall policy. Ordinary desktop-account acceptance requires a desktop-account run. A discovered backend is reported as launch-unverified until a native process actually starts. Keep performance measurements tied to the same source revisions and retain failed samples.
+
+The prior MXC 1.1.0 experiment had a macOS shared-path failure, unsupported Linux networking and unavailable Windows PSEC. The [archived macOS result](../../evidence/execution/macos-mxc-shared-path-probe.json) belongs to that executor. Both the earlier native baseline and the MXC experiments have distinct policies and commit identities.
+
+A positive live-reader test on Windows 11 build 26200, native x64 Python 3.13.9 and a non-elevated desktop token stopped before the payload. Creating the protected KsecDD device coordination mutex returned Windows error 1307. The existing LPAC implementation requires that lease. Egress, ingress and loopback were unmeasured on this account.

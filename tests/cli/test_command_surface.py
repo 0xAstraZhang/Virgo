@@ -30,13 +30,12 @@ def test_permissions_owns_presets_and_approval(broker_session):
 
 
 def test_host_status_has_no_resource_approval_controls(make_session):
-    import pytest
     session = make_session()
     session.prompt("/permissions show")
-    assert "Host" in session.ui.text
-    for args in ("read-only", "workspace-edit", "ask", "never"):
-        with pytest.raises(ValueError, match="Host has no resource approval"):
-            session.services["execution"].command(session, args)
+    assert "No-Limit (Host)" in session.ui.text
+    session.prompt("/permissions list")
+    assert all(label in session.ui.text for label in ("Read-Only", "Workspace-Edit", "No-Limit"))
+    assert session.services["execution"].sandbox is None
 
 
 def test_removed_task_commands_are_not_registered(make_session):

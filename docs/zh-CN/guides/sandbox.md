@@ -1,31 +1,15 @@
-# 执行与 Sandbox
+# 原生命令沙箱
 
-全新配置默认 **Host**。文件工具和 Shell 直接使用宿主账户的操作系统权限；不加载 Sandbox、不探测后端、不启动隔离服务，也不执行普通命令审查或审批。`--execution host` 可显式选择此路径，`/permissions show` 显示实际 provider。
+No-Limit 直接使用当前账户的 Host 权限。Read-Only 和 Workspace-Edit 在选用时加载 Sandbox 扩展。两者均允许网页搜索与读取。Read-Only 默认关闭 Shell 网络，Workspace-Edit 允许 Shell 联网。详见[模式与审批](../development/permission-profiles.md)。
 
-提示词描述意图，不提供隔离。例如“不要推送”是任务约定；技术上防止推送需要限制凭据、远端授权或其他实际能力。
+## 实时工作区
 
-## 显式启用
+命令、文件工具和宿主编辑器访问同一目录。文件工具保留打开对象的身份，写入新文件并替换目标。编辑器和运行中的监听器可以立即重新打开该路径读取结果。每条命令拥有私有临时目录和 HOME。Core 持有来源工作区中的输出句柄。
 
-使用 `--execution sandbox` 或用户配置 `execution.provider=sandbox`。用户自行安装官方 MXC **1.1.0** 独立 executor，并通过 `sandbox.executable` 指定绝对路径。Virgo 验证平台二进制摘要，启动任务时不下载、更新或回退后端。缺少扩展、执行器无效或策略不能实施时拒绝执行，不转为 Host。
+Linux 使用 Bubblewrap 和 libseccomp，macOS 使用 Seatbelt 和 launchd coalition 进程监督，Windows 使用 LPAC、受限令牌、临时 ACL 和 Job Object。平台建立边界失败时向调用者返回原因。已启动的进程保留启动时获得的资源。
 
-**当前原生进程隔离未通过验收。** macOS ARM64 真实试验成功启动 MXC 并完成允许的写入，但宿主在启动后放入硬链接时，载荷可通过别名修改工作区外的受保护文件。启动前扫描不能解决该竞争，因此 Virgo 在载荷启动前拒绝共享宿主路径的原生策略。安装 MXC 也不会解除此拒绝。Windows 还存在此前 CI 主机缺少 PSEC、无法启动的独立阻塞。参见[验收记录](../development/execution-acceptance.md)。
+## 文件保护
 
-文件工具直接读写真实项目。允许的编辑一经提交，就能在编辑器中看到。运行 `/permissions show` 可查看当前及下次任务的预设、文件工具的可用情况，以及原生 Shell 无法启动的原因。
+工作区内已有的控制文件和嵌套解释器目录受写保护。POSIX 启动检查会拒绝含有多重硬链接的可写文件。实时工作区的支持前提是宿主写入者在命令运行期间维持路径的权限边界。宿主并发改变链接关系可以改变路径所指对象，启动检查无法持续验证这种变更。额外的 Shell 路径必须是确实存在的文件或目录，单个文件的授权仅覆盖该文件。
 
-## 资源与继承
-
-预设字段为 `readPaths/writePaths/networkAllowed`。按方向指定网络权限的写法见[配置参考](../reference/configuration.md)。可写路径同时可读，相对路径按来源工作区解释。内置 `read-only` 为工作区只读、`workspace-edit` 为工作区可写，两者默认允许网络。`no-limit` 不再是预设。
-
-Runtime 捕获 provider、来源工作区、资源策略及版本。子代理和排队的后台操作继承该上下文；切换会话、cwd 或后续预设不转移权限。子代理 `read_only` 参数已移除。运行依赖和 broker 私有存储与用户授权分别说明，不能通过一次授权解除保护。
-
-`request_permissions` 为一个明确操作请求新增路径或联网权限，绑定来源 run、工具实例、完整参数、cwd、环境、策略版本和资源身份。五分钟或当前 run 结束即失效，以先到者为准；最终校验后、调度前原子消费。拒绝、取消、过期或执行失败均不恢复授权，历史只用于审计。不能授权整个子代理或切换 Host，不能将文件级请求自动扩大到父目录。已启动进程保留本次边界直到生命周期结束。
-
-## 范围与结果
-
-项目上下文、skills、prompt templates 和输出尾部读取均通过来源任务的文件接口。用户级配置、指令和可信用户 skills 属于 broker 输入，位于项目资源边界之外。
-
-可信 Python 扩展、hooks、MCP 服务启动和模型通信仍在受管边界之外。受管 Web／原生搜索检查网络策略；无法实施请求范围的外部调用被拒绝，不能描述为“全部已隔离”。
-
-结果区分请求／实际权限、provider、建立状态、受限资源、载荷是否启动、副作用和清理结果。进入 Python 工具函数不等于载荷已经执行；缺少证据时报 unknown。结果 hooks 不能覆盖底层事实，部分执行、超时和清理失败不自动重放。
-
-macOS 使用 MXC 的**尽力清理**契约，包括正常完成；旧 coalition 监督器已移除。单个后代退出的观察不能升级为普遍保证。后端清理告警保留诊断并报告失败。Host POSIX 清理限于存活进程组，不能保证脱离进程组的所有后代退出。
+Broker 和可信扩展使用各自的操作系统权限。发布验收以最终提交的原生测试和完整跨平台比较为准。见[验收记录](../development/execution-acceptance.md)和 [Windows 平台范围](windows-sandbox.md)。

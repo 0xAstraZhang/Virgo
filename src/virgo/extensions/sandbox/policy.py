@@ -1,4 +1,4 @@
-"""Resource policy and checked broker file access, independent of MXC launch."""
+"""Resource policy and checked broker file access, for native execution."""
 from __future__ import annotations
 
 import os
@@ -78,20 +78,12 @@ class SandboxPolicy:
         if not cwd.is_dir():
             raise ExecutionUnavailable(f"Working directory is unavailable: {cwd}")
         if any(root.is_relative_to(self.workspace) for root in self.private_paths):
-            raise ExecutionUnavailable("Workspace must not contain broker storage or the MXC installation")
+            raise ExecutionUnavailable("Workspace must not contain private broker storage")
         return cwd
 
     def validate_native(self, cwd: Path):
         self.validate(cwd)
-        # Native pathname rules cannot pin shared host objects. A host can add
-        # a hardlink after launch and expose an out-of-scope inode through a
-        # granted directory. Reject this contract rather than treating a scan
-        # as race protection. See the retained native reproduction/report.
-        raise ExecutionUnavailable(
-            "MXC 1.1.0 cannot enforce Virgo's shared-path alias/race contract. "
-            "Native filesystem policies are unavailable; payload not started. "
-            "Broker file tools retain their checked file boundary.",
-            reason="unsupported_shared_path_policy", dimension="filesystem_aliases", target=str(cwd))
+        return self.executor.policy(self).validate(cwd)
 
     def open_output(self, cwd, prefix):
         self.validate(cwd)
@@ -126,8 +118,8 @@ class SandboxPolicy:
                 os.close(directory)
 
     def spawn(self, argv, cwd, env, stdout, output_path=None, cancellation=None):
-        self.validate_native(cwd)
-        return self.executor.spawn(self, argv, cwd, env, stdout, cancellation)
+        cwd = self.validate(cwd)
+        return self.executor.spawn(self, argv, cwd, env, stdout, output_path, cancellation)
 
     def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
         from .files import read_bytes
@@ -142,7 +134,9 @@ class SandboxPolicy:
     def describe(self):
         return {"provider": "sandbox", "backend": self.executor.backend, "workspace": str(self.workspace),
                 "requested": self.resources.flags(), "effective": {"file_tools": self.resources.flags(), "native_process": None},
-                "revision": self.revision, "state": "file_boundary_ready; native_policy_unsupported",
-                "native_support": False, "native_limitation": "shared host paths cannot enforce alias/race isolation",
+                "revision": self.revision, "state": "launch_unverified",
+                "native_support": "checked_at_launch",
+                "workspace_link_contract": "host writers preserve permissions across link and rename operations",
+                "windows_network": "AppContainer and host firewall policy apply" if os.name == "nt" else None,
                 "runtime_read_dependencies": [str(p) for p in self.runtime_paths()],
                 "unmanaged": ["broker", "trusted Python extensions", "hooks", "MCP services", "model transport"]}

@@ -138,7 +138,8 @@ def build_system(
             runtime = context.origin_parent.runtime
         elif context.store is not None or context.accounting_store is not None:
             runtime = session.runtime_for_store(context.store or context.accounting_store)
-    if provider is not None and provider.name != "host":
+    authority = getattr(runtime, "execution_context", None) or getattr(context, "execution_context", None)
+    if provider is not None and (authority.provider if authority else provider.name) != "host":
         # Runtime construction precedes ExecutionOrigin creation. Its captured
         # parent/store already identifies the owner, including detached children.
         if context is not None and context.origin_parent is not None:

@@ -10,7 +10,7 @@ import pytest
 from rich.cells import cell_len
 from textual import events
 from textual.color import Color
-from textual.widgets import Button, Input, OptionList, Static, Switch
+from textual.widgets import OptionList, Static
 
 from virgo.ai.providers import faux
 from virgo.ai.types import UserMessage
@@ -226,9 +226,9 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
 
 
 @pytest.mark.parametrize("keys,answer", [
-    (("y",), "y"), (("n",), "n"), (("escape",), "n"),
+    (("a",), "a"), (("y",), "y"), (("n",), "n"), (("escape",), "n"),
     (("1",), "y"), (("2",), "n"), (("enter",), "n"), (("up", "enter"), "y"),
-], ids=["once-y", "once-n", "once-escape", "once-1", "once-2", "once-enter", "once-up"])
+], ids=["always-a", "once-y", "once-n", "once-escape", "once-1", "once-2", "once-enter", "once-up"])
 def test_resource_approval_controls_one_file_write(broker_session, project, keys, answer):
     target = project.parent / "approved.txt"
     async def scenario():
@@ -242,13 +242,13 @@ def test_resource_approval_controls_one_file_write(broker_session, project, keys
         async with app.run_test(size=(80, 24)) as pilot:
             picker = app.query_one(ApprovalPicker)
             await wait_for(pilot, lambda: picker.display and app.focused is not None)
-            assert picker.query_one("#approval-options", OptionList).option_count == 2
+            assert picker.query_one("#approval-options", OptionList).option_count == 3
             assert "approved.txt" in picker.confirmation.question and not target.exists()
             await pilot.press(*keys)
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
-            assert target.exists() is (answer == "y")
+            assert target.exists() is (answer in {"y", "a"})
             assert not picker.display and app.focused is app.editor
-            assert not session.services["execution"]._pending
+            assert not session.services["execution"].sandbox._pending
     asyncio.run(scenario())
 
 
@@ -344,7 +344,7 @@ def test_single_operation_approval_keeps_permissions_visible_without_session_cho
                 assert not answers and picker.display
                 await pilot.press("y")
                 await wait_for(pilot, lambda: answers == ["y"])
-                assert session.services["execution"].selected_mode_id == "host"
+                assert session.services["execution"].selected_mode_id == "no-limit"
         finally:
             ui.close()
             if worker.ident is not None:
@@ -518,9 +518,6 @@ def test_status_preserves_fields_with_wide_path_and_long_model(broker_session, p
     async def scenario():
         ui = FullscreenUI()
         session = broker_session(ui=ui, cwd=directory, approval=approval)
-        session.services["execution"].save_mode(
-            "workspace-edit", "Custom permission name " * 4, ["."], ["."], True, persist=False,
-        )
         session.main.model.id = "a-very-long-模型-name-" * 6
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
@@ -538,10 +535,8 @@ def test_status_preserves_fields_with_wide_path_and_long_model(broker_session, p
                 if width - 2 >= cell_len(authority):
                     assert model_line.startswith(authority)
                 assert status.render_line(0).text == model_line
-                assert all(part in flags for part in (
-                    ("R:1", "W:1", "NET:on") if width < 52
-                    else ("Read paths 1", "Write paths 1", "Network on")
-                ))
+                assert ("R:1 W:1 Web:on Shell:on" in flags or
+                        "Read paths 1 · Write paths 1 · Web on · Shell net on" in flags)
                 assert cell_len(flags) <= width - 2
                 assert status.region.bottom <= app.size.height
                 assert "ready" not in model_line
@@ -595,7 +590,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
             assert metrics.render_line(0).text.startswith(" ")
             assert status.styles.text_align == "left"
             status_line = status.render_line(0).text
-            assert status_line.startswith("Host  ")
+            assert status_line.startswith("No-Limit  ")
             assert status_line.endswith(f"deepseek-flash · {session.effort}")
             assert "Host" in status.render_line(1).text
             assert cell_len(status_line) == app.editor.region.width
@@ -620,7 +615,7 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session
         async with app.run_test(size=(80, 24)) as pilot:
             app.editor.load_text("unfinished task")
             manager = session.services["execution"]
-            for mode in ("read-only", "workspace-edit"):
+            for mode in ("read-only", "no-limit", "workspace-edit"):
                 original = manager.selected_mode_id
                 await pilot.press("shift+tab")
                 await wait_for(pilot, lambda: isinstance(app.screen, PermissionModePicker))
@@ -636,37 +631,11 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session
                 assert app.editor.text == "unfinished task"
                 assert app.focused is app.editor
 
-            # Editing an existing preset changes its saved name/flags without
-            # selecting another preset or running a model request.
             await pilot.press("shift+tab")
             await wait_for(pilot, lambda: isinstance(app.screen, PermissionModePicker))
-            app.screen.query_one("#mode-name", Input).value = "Offline inspection"
-            app.screen.query_one("#mode-write_paths", Input).value = "[]"
-            for direction in ("egress", "ingress", "hostLoopback"):
-                app.screen.query_one("#mode-" + direction, Switch).value = False
-            await pilot.pause()
-            assert app.screen.query_one("#mode-use", Button).disabled
-            await pilot.resize_terminal(36, 14)
-            await pilot.click("#mode-save")
-            await wait_for(pilot, lambda: not app.has_modal and manager.selected_mode.name == "Offline inspection")
-            assert not manager.selected_mode.write_paths and not manager.selected_mode.network
-            assert manager.selected_mode_id == "workspace-edit"
-
-            # A new preset has a distinct stable identity; saving does not
-            # change the current preset. All controls remain reachable compactly.
-            await pilot.press("shift+tab")
-            await wait_for(pilot, lambda: isinstance(app.screen, PermissionModePicker))
-            await pilot.click("#mode-new")
-            app.screen.query_one("#mode-name", Input).value = "New profile"
-            app.screen.query_one("#mode-egress", Switch).value = True
-            await pilot.pause()
-            await pilot.click("#mode-save")
-            await wait_for(pilot, lambda: not app.has_modal and len(manager.modes) == 3)
-            assert manager.selected_mode_id == "workspace-edit"
-            saved = json.loads((session.paths.user / "settings.json").read_text())
-            assert saved["permissions"]["presets"]["workspace-edit"]["name"] == "Offline inspection"
-            assert next(item for item in saved["permissions"]["presets"].values()
-                        if item["name"] == "New profile")["networkAllowed"] == ["egress"]
+            assert app.screen.query_one("#modes-list", OptionList).option_count == 3
+            assert not app.screen.query("#mode-save") and not app.screen.query("#mode-new")
+            await pilot.press("escape")
             assert app.editor.text == "unfinished task"
             assert not faux.CALLS["test"]
 

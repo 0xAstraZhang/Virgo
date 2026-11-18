@@ -1,13 +1,19 @@
-# 执行接口与资源预设
+# 权限模式与执行
 
-Core 通过 `virgo.execution` 的中立接口访问文件和启动进程。Host 内置；显式 Sandbox 在 Runtime 构造前加载必要扩展并绑定单一所有者，加载失败终止执行。普通可信扩展的可选加载机制不能提供 Host 回退。
+| 模式 | 文件权限 | 公共网页工具 | Shell 联网 | 执行后端 |
+| --- | --- | --- | --- | --- |
+| Read-Only | 可读项目及所需运行时文件，命令有私有临时目录 | 允许 | 按操作申请 | 原生沙箱 |
+| Workspace-Edit | 可读写真实工作区，Git 元数据及 Virgo 私有状态等路径受保护 | 允许 | 允许 | 原生沙箱 |
+| No-Limit | 使用宿主账户权限 | 允许 | 允许 | Host |
 
-Runtime 捕获不可变执行上下文，包括来源工作区、provider、资源策略与版本。文件编辑匹配和输出业务逻辑保留在 Core，底层文件保护、MXC 适配及资源授权属于扩展。进程句柄统一支持等待、取消和清理。
+首次启动默认 No-Limit。可在用户设置中指定 `execution.mode`，或通过 `--permission read-only`、`--permission workspace-edit`、`--permission no-limit` 启动。旧参数 `--execution host` 对应 No-Limit。`/permissions list` 和 TUI 的 Shift+Tab 列出三个模式。`/permissions <id>` 切换下一任务的模式，`/permissions show` 显示当前任务及下一任务的选择。
 
-预设使用 name、readPaths、writePaths、networkAllowed；可写同时可读。`ask|never` 仅控制资源增量申请。来源、完整参数、环境、策略及资源身份共同绑定一次授权，最终校验后原子消费，五分钟或 run 结束失效，不能由历史恢复。
+Core 在接纳任务时固定来源工作区和执行上下文。排队的子任务继承提交时的上下文，运行中的任务在切换模式后继续使用原权限。子任务的 `approval_policy="never"` 对其后代同样生效。文件工具和 Shell 直接访问同一工作区。No-Limit 直接使用 Host。选用沙箱时才加载平台后端，无法实施请求的文件或网络边界时停止操作。[各平台支持范围及实时文件系统约定](../guides/sandbox.md)
 
-任务在接纳时同时固定资源和审批策略，排队子任务在提交时携带这份上下文。子任务显式选择 `approval_policy="never"` 会禁止它及其后代申请额外资源。会话切换为 `never` 也会阻止运行中任务发起新申请。
+Core 根据本次操作判断缺少的权限。文件读写超出范围时，Virgo 在执行前直接询问用户。Shell 可在执行前通过 `request_permissions` 同时申请额外的路径和联网权限。审批框列出具体操作、工作目录、新增资源和原因。
 
-选择预设时先针对当前对话的工作区验证候选配置。空闲对话立即采用新预设，忙碌对话在下次运行时采用。验证或保存失败会保留原预设和待处理授权。成功切换预设会使当前对话及其子任务的待处理授权失效。显式撤销和会话级审批变更对所有对话生效。`/permissions show` 显示当前预设、下次预设和原生 Shell 的可用状态。
+- **仅允许一次**绑定当前任务的确切操作，执行时消费。显式申请后尚未使用的一次批准在五分钟后或本轮任务结束时失效。
+- **始终允许**将操作及资源保存在用户目录的 `resource-grants.sqlite3`。匹配时检查项目、模式、工作目录、工具和完整参数，Shell 操作还检查解释器身份。已有目录读取权限的同一命令再次申请写入时，只询问写权限。
+- **拒绝**保留原权限。已经启动的进程继续使用启动时取得的权限。
 
-配置例子、迁移和信任范围见[配置参考](../reference/configuration.md)、[迁移](../guides/migrating-execution-policy.md)。原生共享路径策略当前拒绝执行，不能将文件工具保护当作 Shell 隔离，见[验收状态](execution-acceptance.md)。
+`/permissions grants` 查看当前项目的持久授权，`/permissions revoke ID` 撤销指定记录。TUI 模式选择器也提供「已保存的授权」入口。项目配置无权添加批准记录。[配置参考](../reference/configuration.md) · [旧配置迁移](../guides/migrating-execution-policy.md)

@@ -1,17 +1,11 @@
-# Windows execution status
+# Windows command sandbox
 
-Host is the default. Host commands retain the Windows Job Object lifecycle implementation; it is not an isolation backend.
+The native x64 Windows backend requires PowerShell 7, local NTFS and the rights needed to create its AppContainer profile and temporary ACLs. Virgo checks the suspended process's LPAC token and Job membership before release. The Job must drain before the broker revokes the temporary grants. Windows retains ambient LPAC-readable resources.
 
-The old LPAC token/DACL isolation implementation has been removed. Explicit Sandbox selection uses only the pinned MXC 1.1.0 `wxc-exec.exe` with `containment=processcontainer`, least privilege, no DACL fallback and no permissive audit mode. Virgo does not download it automatically or switch to Host on failure.
+Workspace-Edit grants the command the Internet and private-network capabilities without a Virgo approval prompt. Read-Only omits these capabilities until an exact operation is approved. The host firewall and AppContainer network policy control actual outbound, inbound and host-loopback connectivity. Virgo leaves firewall rules and loopback exemptions under the user's control.
 
-**MXC Windows replacement is not accepted.** The earlier evaluation on Windows Server 2022 and 2025 could not start ProcessContainer because PSEC was unavailable. Probe availability and mocked denial are not startup evidence. The shared-host-path alias contract also remains unsupported by Virgo's adapter, so native payload admission fails closed.
+Per-operation filesystem access uses the exact existing object for a file and the specified tree for a directory. An unavailable path or an ACL that cannot be installed refuses the operation. The broker does not request elevation.
 
-Windows file tools retain separate no-reparse handle traversal and fresh-file replacement with permission preservation. These broker protections do not prove native Shell containment. Required Windows acceptance must run on a real supported Windows host with successful startup, allowed operations, denied operations, and zero failures, errors or skips:
+The dedicated Windows workflow requires zero failures, errors and skips. Record the commit, OS and account class alongside outbound, inbound and loopback results. Administrative Server 2022/2025 runs do not establish ordinary desktop-account support. [Native acceptance](../development/execution-acceptance.md)
 
-```powershell
-$env:VIRGO_MXC_EXECUTABLE = 'C:\installed\wxc-exec.exe'
-$env:VIRGO_REQUIRE_SANDBOX_TESTS = '1'
-uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
-```
-
-The required gate remains blocking until those conditions are met. See [acceptance evidence](../development/execution-acceptance.md) and [migration](migrating-execution-policy.md).
+A positive live-reader test on Windows 11 build 26200, native x64 Python 3.13.9 and a non-elevated desktop token stopped before the payload. Creating the protected KsecDD device coordination mutex returned Windows error 1307. The existing LPAC implementation requires that lease. Egress, ingress and loopback were unmeasured on this account.

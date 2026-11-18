@@ -65,7 +65,7 @@ MESSAGES = {
     "features.jobs.stopping": "正在停止 {id}。",
     "features.jobs.unit.bytes": "字节",
     "features.jobs.unit.chars": "字符",
-    "features.permission.allow_suffix": "  允许？[y] 允许一次 / [n] 拒绝 / [a] 本会话始终允许",
+    "features.permission.allow_suffix": "  仅允许一次 [y] / 拒绝 [n] / 始终允许 [a]",
     "features.search.key": "DeepSeek 搜索需要官方 API 密钥。请通过 /login api deepseek 配置 https://api.deepseek.com，或设置 "
     "DEEPSEEK_API_KEY（可用 search.apiKeyEnv 指定独立的搜索密钥）。",
     "features.search.legacy": "Brave 搜索已移除；客户端服务已改为 DuckDuckGo。用 /search 选择服务。",

@@ -5,7 +5,6 @@ import pytest
 
 from virgo.ai.providers import faux
 from virgo.harness.session import AgentSession
-from virgo.harness.settings import Settings
 
 from tests.support.harness import RecordingUI, calls, tool_results
 
@@ -18,7 +17,6 @@ def request(tool="write", arguments=None, **flags):
 def test_explicit_permission_request_is_exact_once_and_does_not_change_mode(broker_session):
     args = {"path": "result.txt", "content": "ok"}
     session = broker_session(
-        faux.reply(tools=[("write", args)]),
         faux.reply(tools=[request(write_paths=["result.txt"])]),
         faux.reply(tools=[("write", args)]),
         faux.reply(tools=[("write", args)]), faux.reply("done"),
@@ -26,13 +24,27 @@ def test_explicit_permission_request_is_exact_once_and_does_not_change_mode(brok
     )
     session.prompt("Write the requested file after my permission")
     results = tool_results(session)
-    assert [result.is_error for result in results] == [True, False, False, True]
+    assert [result.is_error for result in results] == [False, False, True]
     assert (session.cwd / "result.txt").read_text() == "ok"
     assert not session.services["execution"].mode_for(session.main).write_paths
-    assert len(session.ui.questions) == 1
-    assert results[0].details["boundary"]["dimension"] == "write_paths"
+    assert len(session.ui.questions) == 2
+    assert results[-1].details["boundary"]["dimension"] == "write_paths"
     assert "request_permissions" in calls()[0]["tools"]
     assert "write" in calls()[0]["tools"]
+
+
+def test_direct_file_approval_dispatches_once_and_preserves_the_mode(broker_session, tmp_path):
+    target = tmp_path / "result.txt"
+    args = {"path": str(target), "content": "one"}
+    session = broker_session(faux.reply(tools=[("write", args)]), faux.reply(tools=[("write", args)]),
+                             faux.reply("done"), preset="read-only", ui=RecordingUI(["y", "n"]))
+    session.prompt("Write the requested result")
+    assert [result.is_error for result in tool_results(session)] == [False, True]
+    assert target.read_text() == "one"
+    assert len(session.ui.questions) == 2
+    assert all(str(session.cwd) in question and "write_paths" in question and "Reason:" in question
+               for question in session.ui.questions)
+    assert session.main.permission_snapshot.mode.id == "read-only"
 
 
 def test_changed_arguments_cannot_consume_another_operation_permission(broker_session):
@@ -59,7 +71,7 @@ def test_permission_request_cannot_grant_a_whole_child_runtime(broker_session):
     assert result.is_error
     assert "not a child task" in result.text()
     assert not session.ui.questions
-    assert not session.services["execution"]._pending
+    assert not session.services["execution"].sandbox._pending
 
 
 def test_deny_and_noninteractive_policy_prevent_escalation(broker_session):
@@ -79,35 +91,34 @@ def test_permission_change_during_confirmation_expires_request(broker_session, m
         manager.select_mode("workspace-edit")
         return "y"
 
-    monkeypatch.setattr(session.ui, "confirm_once", confirm)
+    monkeypatch.setattr(session.ui, "confirm", confirm)
     session.prompt("Request extra permission")
-    assert tool_results(session)[0].is_error
-    assert "expired" in tool_results(session)[0].text()
+    assert not tool_results(session)[0].is_error
     assert not manager.mode_for(session.main).write_paths
     assert manager.selected_mode.write_paths
 
 
 def test_offline_profile_blocks_web_and_mcp_before_dispatch(broker_session):
-    session = broker_session(faux.reply(tools=[("web_fetch", {"url": "https://example.test"})]), faux.reply("done"),
-                           network=False)
-    session.prompt("Read a public page")
-    result = tool_results(session)[0]
-    assert result.is_error and result.details["boundary"]["dimension"] == "network_allowed"
-    assert result.details["execution"]["started"] is False
+    from virgo.agent import ToolCallEvent
+    session = broker_session(preset="read-only")
+    tool = session.tool("web_fetch")
+    event = ToolCallEvent("web", tool.name, {"url": "https://example.test"}, tool, "main",
+                          session.cwd, origin=session.main.origin)
+    assert session._before_tool(event) is None
+    assert not session.main.permission_snapshot.mode.network and not session.ui.questions
 
 
 def test_custom_mode_names_and_permissions_persist_without_changing_active_run(broker_session):
     session = broker_session()
     manager = session.services["execution"]
-    manager.save_mode("offline", "Offline inspection", ["."], [], False)
-    manager.select_mode("offline")
-    assert manager.selected_mode.name == "Offline inspection"
-    assert manager.mode_for(session.main).flags() == {"read_paths": [str(session.cwd)], "write_paths": [], "network_allowed": False}
-    restored = Settings.load(session.paths)
-    assert restored.get("permissions.presets.offline.name") == "Offline inspection"
-    assert restored.get("permissions.preset") == "workspace-edit"
-    manager.save_mode("read-only", "My read-only", ["."], ["."], True)
-    assert manager.modes["read-only"].write_paths
+    assert list(manager.modes) == ["read-only", "workspace-edit", "no-limit"]
+    manager.select_mode("read-only")
+    assert manager.mode_for(session.main).flags() == {
+        "read_paths": [str(session.cwd)], "write_paths": [], "network_allowed": False, "web_allowed": True}
+    manager.select_mode("no-limit")
+    assert session.main.execution_context.provider == "host"
+    manager.select_mode("workspace-edit")
+    assert session.main.permission_snapshot.mode == manager.modes["workspace-edit"]
 
 
 def test_inactive_conversation_keeps_its_policy_when_another_selection_changes(broker_session):
@@ -147,6 +158,31 @@ def test_default_profile_is_host_without_resource_approval(project):
         session.shutdown()
 
 
+def test_no_limit_sandbox_switch_preserves_the_active_host_and_child(broker_session):
+    session = broker_session(preset="no-limit")
+    router = session.services["execution"]
+    assert router.sandbox is None
+    main = session.main
+    main.prepare_run()
+    child = session.create_runtime("host-worker", "subagent", parent=main)
+    try:
+        router.select_mode("read-only")
+        assert main.execution_context.provider == "host"
+        assert router.selected_mode_id == "read-only"
+        child.prepare_run()
+        assert child.execution_context.provider == "host"
+        main.prepare_run()
+        main.refresh_tools()
+        assert "request_permissions" in [t.name for t in main.request_context([]).tools]
+        assert main.permission_snapshot.mode.id == "read-only"
+        router.select_mode("no-limit")
+        main.prepare_run()
+        assert main.execution_context.provider == "host"
+        assert "request_permissions" not in [t.name for t in main.request_context([]).tools]
+    finally:
+        session.release_runtime(child)
+
+
 @pytest.mark.parametrize("legacy", ["workspace-write", "read-only", "disabled"])
 def test_legacy_native_policy_requires_explicit_migration(broker_session, legacy):
     with pytest.raises(ValueError, match="migrate"):
@@ -155,20 +191,14 @@ def test_legacy_native_policy_requires_explicit_migration(broker_session, legacy
 
 @pytest.mark.parametrize("operation", ["select", "save"])
 def test_failed_preset_change_preserves_effective_and_saved_state(broker_session, operation):
-    from virgo.execution import ExecutionUnavailable
-
-    restricted = {"name": "Subdirectory", "readPaths": ["subdir"], "writePaths": [], "networkAllowed": False}
-    session = broker_session(settings={"permissions": {"presets": {"subdir": restricted}}})
+    session = broker_session()
     provider = session.services["execution"]
     active = session.main.execution_context
     revision = session.main.origin.root.preset_revision
     settings_file = session.paths.user / "settings.json"
     previous = settings_file.read_bytes() if settings_file.exists() else None
-    with pytest.raises(ExecutionUnavailable):
-        if operation == "select":
-            provider.select_mode("subdir")
-        else:
-            provider.save_mode("workspace-edit", "Invalid here", ["subdir"], [], False)
+    with pytest.raises(ValueError, match="Choose"):
+        provider.command(session, "subdir" if operation == "select" else "save workspace-edit {}")
     assert provider.selected_mode_id == "workspace-edit" and session.main.origin.root.preset_revision == revision
     assert session.main.execution_context is active
     assert (settings_file.read_bytes() if settings_file.exists() else None) == previous
@@ -250,10 +280,9 @@ def test_next_preset_selected_after_admission_applies_to_next_task(broker_sessio
     monkeypatch.setattr(session.ui, "command_suspended", admitted)
     faux.push("test", faux.reply("done"))
     session.prompt("Inspect the workspace")
-    status = json.loads(session.ui.lines[0].split("Sandbox / MXC\n")[1])
-    assert "File tools are available" in status["availability"] and "unavailable" in status["availability"]
-    assert status["current_preset"]["id"] == "read-only"
-    assert status["next_preset"]["id"] == "workspace-edit"
+    status = json.loads(session.ui.lines[0].split("\n", 1)[1])
+    assert status["current_mode"] == "Read-Only" and status["shell_network"] is False
+    assert status["next_mode"] == "Workspace-Edit" and status["web_allowed"] is True
     assert session.main.permission_snapshot.mode.id == "read-only"
     faux.push("test", faux.reply("done"))
     session.prompt("Continue with the selected preset")
@@ -281,7 +310,7 @@ def test_child_grant_respects_scope_of_changes_in_other_conversation(broker_sess
         return faux.reply(tools=[("write", args)])
 
     if change_at == "confirmation":
-        monkeypatch.setattr(session.ui, "confirm_once", switch)
+        monkeypatch.setattr(session.ui, "confirm", switch)
     try:
         faux.push("test", faux.reply(tools=[request(write_paths=["result.txt"])]), dispatch, faux.reply("done"))
         child.agent.prompt("Create the approved file")

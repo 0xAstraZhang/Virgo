@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...ai.types import UserMessage
-from ...harness.execution_modes import network_config
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
 from ...harness.ui import UI
@@ -23,7 +22,6 @@ from .conversation import ConversationState
 
 if TYPE_CHECKING:
     from .editor import InputHistory
-    from .modes import PermissionModeChoice
 
 
 class RunController:
@@ -179,20 +177,9 @@ class RunController:
             *unsaved,
         ]
 
-    def change_permission_mode(self, choice: PermissionModeChoice) -> None:
+    def change_permission_mode(self, choice: str) -> None:
         manager = self.session.services["execution"]
-
-        def apply() -> None:
-            if choice.action == "select":
-                manager.select_mode(choice.mode_id)
-            else:
-                manager.save_mode(
-                    choice.mode_id, name=choice.name, read_paths=choice.read_paths,
-                    write_paths=choice.write_paths, network_allowed=network_config(choice.network), persist=True,
-                )
-                self.ui.print(tr(self, "ui.modes.saved", name=choice.name), "dim")
-
-        self._launch(apply, concurrent=True, command="mode")
+        self._launch(lambda: manager.command(self.session, choice), concurrent=True, command="permissions")
 
     def cancel_pending(self) -> int:
         """Cancel inputs not yet consumed; leave the running task and notifications alone."""

@@ -97,9 +97,9 @@ def origin_key(session, event) -> str:
     snapshot = runtime.permission_snapshot
     value = {
         "origin": source.identity, "workspace": str(source.workspace), "agent": event.agent,
-        "provider": provider.name, "context": runtime.execution_context.describe(),
+        "provider": runtime.execution_context.provider, "context": runtime.execution_context.describe(),
         "approval": snapshot.approval if snapshot is not None else None,
-        "revision": provider.revision, "preset_revision": source.root.preset_revision,
+        "revision": provider.revision, "preset_revision": snapshot.revision if snapshot is not None else 0,
         "approval_revision": session.approval_revision,
     }
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

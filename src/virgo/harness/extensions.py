@@ -298,9 +298,10 @@ class ExtensionAPI:
         return self._session._before_tool(event) or self._session._before_tool_execute(event)
 
     def has_tool_hooks(self):
-        provider = self._session.services.get("execution")
+        router = self._session.services.get("execution")
+        sandbox = getattr(router, "sandbox", None)
         return (self._session.bus.has_handlers("tool_call")
-                or self._session.bus.has_handlers("tool_result", exclude=getattr(provider, "_result", None)))
+                or self._session.bus.has_handlers("tool_result", exclude=getattr(sandbox, "_result", None)))
 
     def report_error(self, error, **kwargs):
         return self._session.report_error(error, **kwargs)

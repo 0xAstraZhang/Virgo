@@ -1,17 +1,11 @@
-# Windows 执行支持状态
+# Windows 命令沙箱
 
-默认 Host。Host 进程保留 Windows Job Object 生命周期管理，但它不是隔离后端。
+原生 Windows 后端要求 x64 Python、PowerShell 7、本地 NTFS，以及创建 AppContainer 配置和临时 ACL 的权限。Virgo 在释放挂起的进程前核验其 LPAC 令牌和 Job 成员资格。进程树结束后收回临时授权。Windows 已授予 LPAC 的环境读取权限仍然生效。
 
-旧 LPAC token/DACL 沙箱已移除。显式 Sandbox 只使用固定的 MXC 1.1.0 `wxc-exec.exe`，指定 processcontainer、leastPrivilege，禁用 DACL fallback 和宽松审计。不自动下载，也不回退 Host。
+Workspace-Edit 直接请求 Internet 和专用网络能力。Read-Only 在某次操作获准联网前保持关闭。实际出站、入站和宿主回环连接由 AppContainer 与宿主防火墙控制。防火墙规则和回环豁免由宿主管理。
 
-**Windows 替换未通过验收。** 此前 Windows Server 2022／2025 评估因 PSEC 不可用而无法启动。当前共享宿主路径别名策略也未获支持。能力探测、预先拒绝、模拟结果不能作为真实启动和隔离证据。
+额外授权按确切文件对象或指定目录树应用。目标不存在或无法设置精确 ACL 时返回错误。Virgo 使用当前账户执行。
 
-文件工具保留无重解析点的句柄遍历、新 inode 替换和权限保留；其结果与原生 Shell 隔离独立。真实平台验收必须包含成功启动、允许及禁止操作，零失败、错误和跳过：
+Windows 专项工作流要求零失败、零错误、零跳过。记录提交、系统、账户类别，以及出站、入站、宿主回环各自的观察结果。Windows Server 2022/2025 管理员运行结果仅覆盖各自环境，普通桌面账户需要单独实测。见[原生验收](../development/execution-acceptance.md)。
 
-```powershell
-$env:VIRGO_MXC_EXECUTABLE = 'C:\installed\wxc-exec.exe'
-$env:VIRGO_REQUIRE_SANDBOX_TESTS = '1'
-uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
-```
-
-当前该 gate 继续阻塞，参见[验收记录](../development/execution-acceptance.md)。
+Windows 11 build 26200、x64 Python 3.13.9、未提升权限的桌面账户实测中，实时读取正向用例在载荷启动前被拒绝。创建 KsecDD 设备受保护的协调互斥对象返回 Windows 错误 1307。现有 LPAC 实现依赖这一租约。该账户的出站、入站与回环均未测得。
