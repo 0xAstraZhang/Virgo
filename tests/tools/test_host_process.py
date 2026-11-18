@@ -40,3 +40,46 @@ def test_host_cleanup_after_group_leader_exit_preserves_other_job(tmp_path):
     finally:
         cleanup_process(other)
         other.stdout.close()
+
+
+def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
+    # Start with fresh imports so modules loaded by pytest cannot hide a probe.
+    from textwrap import dedent
+
+    check = dedent("""
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        imports = []
+        sandbox_modules = (
+            "virgo.harness.sandbox", "virgo.tools.sandbox", "virgo.tools.sandbox_files",
+            "virgo.tools.windows_sandbox", "virgo.tools.windows_sandbox_acl",
+            "virgo.tools.windows_sandbox_files", "virgo.extensions.sandbox",
+        )
+        class ObserveImports:
+            def find_spec(self, fullname, path, target=None):
+                if fullname in sandbox_modules:
+                    imports.append(fullname)
+        sys.meta_path.insert(0, ObserveImports())
+
+        from virgo.execution import HostContext, cleanup_process
+
+        project = Path(sys.argv[1])
+        host = HostContext(project)
+        source = project / "message.txt"
+        with host.open_mutation(source, create=True) as (stream, _, commit):
+            stream.write(b"from the editor")
+            commit()
+        command = "from pathlib import Path; print(Path('message.txt').read_text())"
+        process = host.spawn([sys.executable, "-c", command], project, os.environ, subprocess.PIPE)
+        try:
+            assert process.wait(timeout=5) == 0
+            assert process.stdout.read().strip() == b"from the editor"
+        finally:
+            cleanup_process(process)
+            process.stdout.close()
+        assert not imports, imports
+    """)
+    subprocess.run([sys.executable, "-c", check, str(tmp_path)], check=True, timeout=15)
