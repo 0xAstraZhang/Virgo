@@ -144,10 +144,13 @@ class HostProcess:
                 return
             try:
                 os.killpg(self.pid, sig)
-            except (ProcessLookupError, PermissionError):
-                # The leader may have exited between the observation and signal.
-                if self.poll() is None:
-                    raise
+            except (ProcessLookupError, PermissionError) as error:
+                # Darwin can stop accepting signals before a dying child is
+                # waitable, including when a concurrent caller already killed it.
+                try:
+                    self.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    raise error from None
 
     def kill_tree(self):
         self._signal_running(signal.SIGTERM)
