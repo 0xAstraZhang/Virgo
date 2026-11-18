@@ -118,17 +118,21 @@ class HostProcess:
             except ProcessLookupError:
                 pass
             except PermissionError as error:
-                # Darwin reports EPERM for a group containing only the zombie
-                # leader. After releasing it, only probe: never signal a reused ID.
+                # Darwin can report EPERM while an exiting group is still
+                # observable. After reaping the leader, only probe for exit.
                 self._process.wait()
-                try:
-                    os.killpg(self.pid, 0)
-                except ProcessLookupError:
-                    return self.returncode
-                except PermissionError:
-                    pass
-                self._cleanup_error = error
-                raise
+                deadline = time.monotonic() + 1
+                while True:
+                    try:
+                        os.killpg(self.pid, 0)
+                    except ProcessLookupError:
+                        return self.returncode
+                    except PermissionError:
+                        pass
+                    if time.monotonic() >= deadline:
+                        self._cleanup_error = error
+                        raise
+                    time.sleep(0.01)
             return self._process.wait()
 
     def wait(self, timeout=None):
