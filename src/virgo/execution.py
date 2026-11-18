@@ -5,10 +5,14 @@ captured for its originating task and passed unchanged to deferred operations.
 """
 from __future__ import annotations
 
+import errno
 import io
 import os
+import signal
 import subprocess
-from contextlib import contextmanager
+import threading
+import time
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -71,30 +75,91 @@ class ExecutionProvider(Protocol):
 
 
 class HostProcess:
-    """Uniform process handle; POSIX Host cleanup covers its live process group."""
+    """Own a POSIX process group until its leader is reaped."""
 
     def __init__(self, process):
-        self.process = process
+        self._process = process
         self.pid = process.pid
+        self.stdout = process.stdout
+        self._lock = threading.RLock()
+        self._cleanup_error = None
 
-    def __getattr__(self, name):
-        return getattr(self.process, name)
+    @property
+    def returncode(self):
+        return self._process.returncode
+
+    def _leader_exited(self):
+        # Leave the child waitable. Its PID pins the group ID until our sole
+        # reaper has signalled surviving members, including on normal exit.
+        if hasattr(os, "waitid"):
+            return os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None
+
+        # Python 3.11/3.12 on macOS do not expose waitid. kqueue observes
+        # exit without reaping and reports ESRCH if the child is already dead.
+        import select
+
+        event = select.kevent(self.pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD,
+                              fflags=select.KQ_NOTE_EXIT)
+        with closing(select.kqueue()) as queue:
+            ready = queue.control([event], 1, 0)
+        if ready and ready[0].flags & select.KQ_EV_ERROR and ready[0].data != errno.ESRCH:
+            raise OSError(ready[0].data, os.strerror(ready[0].data))
+        return bool(ready)
 
     def poll(self):
-        return self.process.poll()
+        with self._lock:
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
+            if self.returncode is not None or not self._leader_exited():
+                return self.returncode
+            try:
+                os.killpg(self.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                # Darwin reports EPERM for a group containing only the zombie
+                # leader. After releasing it, only probe: never signal a reused ID.
+                self._process.wait()
+                try:
+                    os.killpg(self.pid, 0)
+                except ProcessLookupError:
+                    return self.returncode
+                except PermissionError:
+                    pass
+                self._cleanup_error = error
+                raise
+            return self._process.wait()
 
     def wait(self, timeout=None):
-        return self.process.wait(timeout=timeout)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self._process.args, timeout)
+            time.sleep(0.01)
+        return self.returncode
+
+    def _signal_running(self, sig):
+        with self._lock:
+            if self.poll() is not None:
+                return
+            try:
+                os.killpg(self.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                # The leader may have exited between the observation and signal.
+                if self.poll() is None:
+                    raise
 
     def kill_tree(self):
-        from .tools.bash import kill_tree
-
-        kill_tree(self.process)
+        self._signal_running(signal.SIGTERM)
+        try:
+            self.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            self._signal_running(signal.SIGKILL)
 
     def cleanup_tree(self):
-        if self.process.poll() is None:
+        if self.poll() is None:
             self.kill_tree()
-            self.process.wait(timeout=5)
+            self.wait(timeout=5)
 
 
 @dataclass(frozen=True)
