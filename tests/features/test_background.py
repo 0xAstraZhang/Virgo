@@ -51,7 +51,7 @@ def test_job_that_cannot_start_is_not_left_pending(make_session, project, monkey
     assert not list((project / ".virgo" / "outputs").glob("*.log"))
 
 
-def test_finished_job_is_pending_until_its_notification_is_queued(make_session, project, monkeypatch):
+def test_finished_job_is_pending_until_its_notification_is_queued(make_session, project, monkeypatch, python_command):
     session = make_session()
     jobs = session.services["jobs"]
     entered, release = threading.Event(), threading.Event()
@@ -63,7 +63,8 @@ def test_finished_job_is_pending_until_its_notification_is_queued(make_session, 
         notify(*args, **kwargs)
 
     monkeypatch.setattr(session, "notify", slow_notify)
-    job = jobs.start_command("true", project)
+    command = python_command("pass", shell=selected(session))
+    job = jobs.start_command(command, project)
     assert entered.wait(5)
     assert job.status == "completed" and pending_work(session)  # print mode must keep waiting
     release.set()
