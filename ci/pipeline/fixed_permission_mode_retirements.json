@@ -1,7 +1,7 @@
 {
-  "baseline_sha": "6346255146f11b8024e11fd3f3faae19f41d5862",
+  "baseline_sha": "49c68eb51dfd9e88d671cc0a3257fe4ea1de49bb",
   "original_product_baseline": "4c8520fb3faa262e5f502ff808cd5fd4350bf9bd",
-  "reason": "Host default, resource grants and MXC-only implementation replace command rules, mutable ceilings and legacy native backend internals. This exact inventory never grants a native isolation pass. Generic native acceptance remains required and blocked.",
+  "reason": "Three fixed permission modes replace custom presets, shell-intent rules and session-wide approvals. All restored native tests remain subject to comparison. The listed retirements cover the changed product contracts only.",
   "preservation_gates": [
     {
       "classname": "tests.features.test_permission_context",
@@ -31,7 +31,7 @@
     },
     {
       "classname": "tests.harness.test_sandbox_e2e",
-      "name": "test_shared_native_policy_is_rejected_before_payload"
+      "name": "test_missing_backend_is_fail_closed_in_real_session"
     }
   ],
   "retired_cases": [
@@ -262,21 +262,6 @@
     },
     {
       "classname": "tests.harness.test_sandbox_e2e",
-      "name": "test_linux_resolver_configuration_accepts_only_trusted_service_metadata",
-      "product": "legacy-native-implementation"
-    },
-    {
-      "classname": "tests.harness.test_sandbox_e2e",
-      "name": "test_missing_exec_acknowledgement_does_not_claim_no_effects[False]",
-      "product": "mxc-receipt-protocol"
-    },
-    {
-      "classname": "tests.harness.test_sandbox_e2e",
-      "name": "test_missing_exec_acknowledgement_does_not_claim_no_effects[True]",
-      "product": "mxc-receipt-protocol"
-    },
-    {
-      "classname": "tests.harness.test_sandbox_e2e",
       "name": "test_native_core_file_mutation_survives_hardlink_unlink_race[edit]",
       "product": "broker-race-actor"
     },
@@ -284,16 +269,6 @@
       "classname": "tests.harness.test_sandbox_e2e",
       "name": "test_native_core_file_mutation_survives_hardlink_unlink_race[write]",
       "product": "broker-race-actor"
-    },
-    {
-      "classname": "tests.harness.test_sandbox_e2e",
-      "name": "test_wrapper_failure_after_probe_is_not_a_payload_exit[False]",
-      "product": "mxc-receipt-protocol"
-    },
-    {
-      "classname": "tests.harness.test_sandbox_e2e",
-      "name": "test_wrapper_failure_after_probe_is_not_a_payload_exit[True]",
-      "product": "mxc-receipt-protocol"
     },
     {
       "classname": "tests.harness.test_session",
@@ -367,41 +342,6 @@
     },
     {
       "classname": "tests.harness.test_windows_sandbox_e2e",
-      "name": "test_ambient_package_acls_do_not_widen_write_ceiling[read-only]",
-      "product": "legacy-native-implementation"
-    },
-    {
-      "classname": "tests.harness.test_windows_sandbox_e2e",
-      "name": "test_ambient_package_acls_do_not_widen_write_ceiling[workspace-write]",
-      "product": "legacy-native-implementation"
-    },
-    {
-      "classname": "tests.harness.test_windows_sandbox_e2e",
-      "name": "test_child_lpac_token_and_host_process_access",
-      "product": "legacy-native-implementation"
-    },
-    {
-      "classname": "tests.harness.test_windows_sandbox_e2e",
-      "name": "test_core_create_during_command_preflight_preserves_workspace_writes",
-      "product": "legacy-native-implementation"
-    },
-    {
-      "classname": "tests.harness.test_windows_sandbox_e2e",
-      "name": "test_core_mutation_preserves_live_background_workspace_writes[edit]",
-      "product": "legacy-native-implementation"
-    },
-    {
-      "classname": "tests.harness.test_windows_sandbox_e2e",
-      "name": "test_core_mutation_preserves_live_background_workspace_writes[write]",
-      "product": "legacy-native-implementation"
-    },
-    {
-      "classname": "tests.harness.test_windows_sandbox_e2e",
-      "name": "test_existing_metadata_and_runtime_acls_cannot_be_replaced",
-      "product": "legacy-native-implementation"
-    },
-    {
-      "classname": "tests.harness.test_windows_sandbox_e2e",
       "name": "test_readonly_child_policy_is_enforced_by_windows",
       "product": "inherited-task-context"
     },
@@ -423,7 +363,7 @@
   ],
   "products": {
     "host-default-and-config-migration": {
-      "reason": "Fresh configuration now selects Host; legacy boolean/offline/native-mode settings must migrate explicitly instead of selecting an old backend.",
+      "reason": "No-Limit selects Host on first launch. Existing configurations migrate only when their filesystem, web and Shell network meanings agree with a fixed mode.",
       "replacement_acceptance": [
         {
           "classname": "tests.harness.test_host_execution_e2e",
@@ -464,7 +404,7 @@
       ]
     },
     "one-operation-dialog": {
-      "reason": "Ordinary file approvals and session-wide allow-all answers are removed. The dialog grants one resource increment; y/n/cancel/expiry remain tested.",
+      "reason": "Approval applies to the requested resources and exact command or tool operation. Persistent decisions are scoped to the project, mode and working directory.",
       "replacement_acceptance": [
         {
           "classname": "tests.cli.tui.test_app",
@@ -501,7 +441,7 @@
       ]
     },
     "network-resource-policy": {
-      "reason": "Exact query/URL command rules and cached command review are retired. Managed network operations use captured network policy and dispatch checks.",
+      "reason": "Managed web operations have direct access in every fixed mode. Shell networking is a separate operation resource.",
       "replacement_acceptance": [
         {
           "classname": "tests.features.test_fetch",
@@ -595,58 +535,8 @@
         }
       ]
     },
-    "legacy-native-implementation": {
-      "reason": "The in-Core native backends and their LPAC token/DACL lease or Linux resolver-compilation internals are removed. These implementation-specific tests do not certify MXC. Shared native startup, filesystem/network and lifecycle gates remain independently blocking.",
-      "replacement_acceptance": [
-        {
-          "classname": "tests.harness.test_sandbox_e2e",
-          "name": "test_shared_native_policy_is_rejected_before_payload"
-        },
-        {
-          "classname": "tests.harness.test_sandbox_e2e",
-          "name": "test_missing_backend_is_fail_closed_in_real_session"
-        },
-        {
-          "classname": "tests.harness.test_sandbox_e2e",
-          "name": "test_required_provider_initialization_failure_aborts_session"
-        },
-        {
-          "classname": "tests.harness.test_windows_sandbox_e2e",
-          "name": "test_reparse_and_shared_file_grants_fail_before_payload[hardlink]"
-        },
-        {
-          "classname": "tests.harness.test_windows_sandbox_e2e",
-          "name": "test_reparse_and_shared_file_grants_fail_before_payload[junction]"
-        },
-        {
-          "classname": "tests.harness.test_windows_sandbox_e2e",
-          "name": "test_reparse_and_shared_file_grants_fail_before_payload[metadata-junction]"
-        }
-      ]
-    },
-    "mxc-receipt-protocol": {
-      "reason": "The old native wrapper capability-probe protocol is removed. Synthetic real processes now verify unknown launch receipts and possible effects, without claiming OS isolation.",
-      "replacement_acceptance": [
-        {
-          "classname": "tests.harness.test_sandbox_e2e",
-          "name": "test_unacknowledged_native_launch_keeps_unknown_facts[ack-lost-False]"
-        },
-        {
-          "classname": "tests.harness.test_sandbox_e2e",
-          "name": "test_unacknowledged_native_launch_keeps_unknown_facts[ack-lost-True]"
-        },
-        {
-          "classname": "tests.harness.test_sandbox_e2e",
-          "name": "test_unacknowledged_native_launch_keeps_unknown_facts[wrapper-failed-False]"
-        },
-        {
-          "classname": "tests.harness.test_sandbox_e2e",
-          "name": "test_unacknowledged_native_launch_keeps_unknown_facts[wrapper-failed-True]"
-        }
-      ]
-    },
     "broker-race-actor": {
-      "reason": "The file-tool unlink race now uses a synchronized host-side attacker thread and retained broker file handles. The separate raw MXC attack fails and native acceptance remains blocked.",
+      "reason": "File-tool coverage uses a synchronized host writer and retained broker file handles. The native live-workspace contract is documented separately.",
       "replacement_acceptance": [
         {
           "classname": "tests.harness.test_sandbox_e2e",

@@ -88,10 +88,13 @@ class ResourceApprovals:
     def for_context(self, context):
         base = super().for_context(context)
         runtime = self.session.runtime_for_context(context)
-        active = self._active.get((id(runtime), context.call_id))
+        dispatch = context if isinstance(context, ToolCallEvent) else getattr(context, "dispatch_event", None)
+        if dispatch is None:
+            return base
+        active = self._active.get((id(runtime), id(dispatch)))
         if active is not None:
             grant, event = active
-            if event.origin is not context.origin or grant.run_id != runtime.run_id:
+            if event is not dispatch or event.origin is not context.origin or grant.run_id != runtime.run_id:
                 raise ExecutionUnavailable("Operation grant no longer belongs to this caller")
             return grant.policy
         return base
@@ -173,7 +176,7 @@ class ResourceApprovals:
                     if process:
                         policy.validate_native(event.cwd)
                     runtime = self.session.runtime_for_context(event)
-                    self._active[(id(runtime), event.call_id)] = (
+                    self._active[(id(runtime), id(event))] = (
                         grant or Grant("", policy, 0, runtime, runtime.run_id, ()), event)
                 return None
             boundary = block.details["boundary"]
@@ -206,7 +209,7 @@ class ResourceApprovals:
     def _result(self, result, event, session):
         with self.session._lock:
             runtime = self.session.runtime_for_context(event)
-            self._active.pop((id(runtime), event.call_id), None)
+            self._active.pop((id(runtime), id(event)), None)
         return result
 
     def _discard(self, runtime):
@@ -306,7 +309,7 @@ class ResourceApprovals:
                 ResourceRules(self.session.paths.user).allow(scope, missing)
             grant = Grant(key, policy, time.monotonic() + 300, runtime, runtime.run_id, targets, saved)
             if dispatch:
-                self._active[(id(runtime), event.call_id)] = grant, event
+                self._active[(id(runtime), id(event))] = grant, event
                 return ToolResult.text("Authorized for dispatch")
             if answer == "a":
                 return ToolResult.text("Saved for this exact operation. No operation has executed.")

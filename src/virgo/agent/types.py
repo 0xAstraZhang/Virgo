@@ -41,6 +41,7 @@ class ToolContext:
     on_update: Callable[[str], None] | None = None
     origin: Any = None  # Bound task/runtime source, never the currently selected chat.
     translator: Translator | None = field(default=None, kw_only=True)
+    dispatch_event: ToolCallEvent | None = field(default=None, kw_only=True, repr=False, compare=False)
 
     def t(self, key: str, /, **values: object) -> str:
         return (self.translator or Translator())(key, **values)

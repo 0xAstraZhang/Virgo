@@ -153,7 +153,7 @@ PRODUCT_RETIREMENTS = tuple(read_json(Path(__file__).with_name(filename)) for fi
     "shell_scope_retirements.json",
     "plan_review_login_retirements.json",
     "mcp_extension_retirements.json",
-    "host_mxc_retirements.json",
+    "fixed_permission_mode_retirements.json",
 ))
 
 

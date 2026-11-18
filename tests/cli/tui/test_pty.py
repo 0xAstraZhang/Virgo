@@ -64,13 +64,14 @@ def test_fullscreen_pty_paste_resize_and_clean_exit(project, tmp_path):
         assert not termios.tcgetattr(terminal.slave)[3] & termios.ECHO
         assert re.search(rb"\x1b\[24;\d+H", terminal.output)
 
-        # Host has no resource preset picker. Shift+Tab must leave the editor
-        # usable and cannot trigger an approval dialog.
-        for _ in range(2):
-            before_switch = len(terminal.output)
-            terminal.send(b"\x1b[Z")
-            terminal.pump(0.2)
-            assert "Permission presets" not in plain(bytes(terminal.output[before_switch:]))
+        # No-Limit can open the three-mode picker without starting a sandbox.
+        before_switch = len(terminal.output)
+        terminal.send(b"\x1b[Z")
+        picker = terminal.wait_for(lambda data: "Permission modes" in plain(data), start=before_switch)
+        for label in ("Read-Only", "Workspace-Edit", "No-Limit"):
+            assert label in plain(picker)
+        terminal.send(b"\x1b")
+        terminal.pump(0.3)
 
         # A single bracketed paste contains a newline but must remain in the editor.
         before_paste = len(terminal.output)

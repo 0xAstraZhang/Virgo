@@ -12,6 +12,5 @@ MESSAGES = {
     "common.cancelled": "已取消。",
     "ui.base.back": "返回",
     "ui.base.multiline_help": "单独输入 . 结束；/cancel 取消；直接输入 . 保留现有内容。",
-    "sandbox.resource_availability": "文件工具可用。MXC 无法提供共享文件路径所需的隔离，原生 Shell 不可用。",
     "sandbox.host_execution": "Host · 宿主操作系统权限",
 }

@@ -64,7 +64,7 @@ def test_windows_readonly_resource_boundary(native, project):
     native_cases.readonly_including_child_shell(native, project)
 
 
-def test_native_live_workspace_reader_observes_edit(native, project):
+def test_windows_live_workspace_reader_observes_edit(native, project):
     native_cases.live_workspace_reader_observes_edit(native, project)
 
 
@@ -741,3 +741,75 @@ if {tool == "write"}:
         if not job.done.is_set():
             jobs.kill(job)
             assert job.done.wait(15), "fixture must drain its background command"
+
+
+def test_core_create_during_command_preflight_preserves_workspace_writes(native, project, monkeypatch):
+    from contextlib import contextmanager
+
+    from virgo.extensions.sandbox import windows_acl, windows_files
+    from virgo.tools.bash import run_command
+
+    target = project / "created-during-preflight.txt"
+    entered, release = threading.Event(), threading.Event()
+    attempted_commit, committed = threading.Event(), threading.Event()
+    ready = project / "reader-ready"
+    observations = {}
+    grant_tree, replace_staged = windows_acl.AclGrants.grant_tree, windows_files.replace_staged
+
+    def observed_preflight(owner, root, *args, **kwargs):
+        if root == project:
+            entered.set()
+            assert release.wait(20)
+        return grant_tree(owner, root, *args, **kwargs)
+
+    @contextmanager
+    def observed_commit(source, destination, **kwargs):
+        if destination == target:
+            attempted_commit.set()
+        with replace_staged(source, destination, **kwargs):
+            yield
+        if destination == target:
+            committed.set()
+
+    monkeypatch.setattr(windows_acl.AclGrants, "grant_tree", observed_preflight)
+    monkeypatch.setattr(windows_files, "replace_staged", observed_commit)
+    source = """from pathlib import Path
+import time
+Path('reader-ready').touch()
+deadline = time.monotonic() + 20
+p = Path('created-during-preflight.txt')
+while not p.exists():
+    assert time.monotonic() < deadline
+    time.sleep(.05)
+assert p.read_text() == 'created'
+with p.open('a') as stream:
+    stream.write(' and updated')
+"""
+
+    def launch():
+        observations["launch"] = run_command(command(source), project, 40, threading.Event(),
+                                             interpreter=selected(native), execution_context=native.main.execution_context)
+
+    def write():
+        faux.script("test", faux.reply(tools=[("write", {"path": target.name, "content": "created"})]),
+                    faux.reply("done"))
+        native.prompt("Save the new workspace file")
+        observations["write"] = tool_results(native)[-1]
+
+    shell = threading.Thread(target=launch)
+    writer = threading.Thread(target=write)
+    shell.start()
+    try:
+        assert entered.wait(20)
+        writer.start()
+        assert attempted_commit.wait(15), "Core must reach commit while native preflight owns the mutex"
+        assert not committed.wait(0.25), "A Core commit must wait for workspace grant classification"
+    finally:
+        release.set()
+        if writer.ident is not None:
+            writer.join(30)
+        shell.join(45)
+    out, code, status = observations["launch"]
+    assert code == 0 and status == "ok" and ready.exists(), out.text
+    assert committed.is_set() and not observations["write"].is_error
+    assert target.read_text() == "created and updated"

@@ -20,7 +20,7 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
         self.executor = NativeExecutor()
         self.revision = 0
         self._pending: dict[str, Grant] = {}
-        self._active: dict[tuple[int, str], tuple[Grant, ToolCallEvent]] = {}
+        self._active: dict[tuple[int, int], tuple[Grant, ToolCallEvent]] = {}
         self._denied: dict[str, object] = {}
 
     def context_for_mode(self, runtime, mode, revision):

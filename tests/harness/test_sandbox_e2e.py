@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import sys
 import stat
+import sys
 import tempfile
 import threading
 import time
