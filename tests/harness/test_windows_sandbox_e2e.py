@@ -25,6 +25,9 @@ from tests.support.harness import tool_results, wait_until
 from tests.support.sandbox import native_session, python_command, run
 from tests.support.shell import selected
 
+# Teardown drains the process tree and takes the ACL broker lock in sequence.
+_BACKGROUND_CLEANUP_TIMEOUT = 30
+
 
 @pytest.fixture
 def native(make_session):
@@ -221,7 +224,9 @@ while not Path('child-ready').exists():
 def test_background_cancel_preserves_other_job_and_origin_after_switch(native, project):
     from tests.support.harness import wait_until
 
-    command = python_command(native, "import time; from pathlib import Path; Path('ready').touch(); time.sleep(15)")
+    command = python_command(
+        native, f"import time; from pathlib import Path; Path('ready').touch(); time.sleep({2 * _BACKGROUND_CLEANUP_TIMEOUT})"
+    )
     result = run(native, command, background=True)
     assert not result.is_error, result.text()
     jobs = native.services['jobs']
@@ -235,13 +240,15 @@ def test_background_cancel_preserves_other_job_and_origin_after_switch(native, p
         wait_until((project/'ready').exists)
         native.new_session()
         jobs.kill(first)
-        assert first.done.wait(10)
+        assert first.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), first.result
+        assert first.status == "killed", first.result
         assert second.proc.poll() is None and not second.done.is_set()
         assert first.accounting_store is second.accounting_store
         assert first.accounting_store is not native.main.origin.root
     finally:
         jobs.kill(second)
-        assert second.done.wait(10)
+        assert second.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), second.result
+        assert second.status == "killed", second.result
 
 
 def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native, record_property):
@@ -324,7 +331,8 @@ with socket.socket() as listener:
             details["host_connection_error"] = str(error)
         else:
             details["host_received"] = "accepted"
-    assert job.done.wait(10) and job.status == "completed", job.result
+    assert job.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), job.result
+    assert job.status == "completed", job.result
     record_property("host_interface_ingress", json.dumps(details))
     assert not native.ui.questions
 
