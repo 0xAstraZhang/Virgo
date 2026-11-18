@@ -11,7 +11,7 @@ Virgo is a lightweight, extensible coding agent for your terminal. Ask it to exp
 - **Keep working in your terminal.** A full-screen conversation, streaming tool activity, resumable sessions, and a plain terminal mode fit different workflows.
 - **Choose your model.** Connect an account, bring an API key, or use a compatible local endpoint. Change models and reasoning effort during a session.
 - **Give larger tasks room to run.** Delegate focused work to subagents and track background jobs without losing the main conversation.
-- **Make it your own.** Add project instructions, skills, prompt templates and Python extensions, including an optional MCP client.
+- **Make it your own.** Add project instructions, skills, prompt templates and Python extensions, including optional MCP and Todos extensions.
 - **Use Chinese or English.** Switch interface messages, command help, and built-in tool descriptions with `/language 中文` or `/language English`.
 
 Virgo is inspired by [Pi](https://github.com/earendil-works/pi). Its model adapters, agent loop, and session harness are separate, so you can extend the parts you need.
@@ -57,19 +57,22 @@ uv run virgo --continue
 uv run virgo -p --format json "Summarize the README"
 ```
 
-The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/permissions` selects or edits permission presets and approval policy. The model can request a single-operation permission exception. See [Sandbox boundaries](docs/en/guides/sandbox.md) and [breaking migration](docs/en/guides/migrating-execution-policy.md).
+The default permission preset is Workspace-Edit: writable workspace and enabled task networking. `/permissions` selects or edits permission presets and approval policy. The model can request a single-operation permission exception.
+
+## Inspect errors
+
+Run `/diagnostics` to list the latest ten errors and show the database path.
+Use `/diagnostics --before <cursor>` for earlier pages or
+`/diagnostics <error-id>` to view details for an exact ID or a unique prefix.
+
+Errors remain available across restarts in `~/.virgo/logs/diagnostics.sqlite3`
+(or `$VIRGO_HOME/logs/diagnostics.sqlite3`). The command incrementally imports
+older JSONL logs and leaves the source files in place. Review diagnostic details
+before sharing them.
 
 ## Explore
 
-| I want to… | Start here |
-| --- | --- |
-| Install Virgo and connect a model | [Getting started](docs/en/guides/getting-started.md) |
-| Learn commands, shortcuts, and sessions | [Using Virgo](docs/en/guides/interaction.md) |
-| Configure models and permissions | [Configuration](docs/en/reference/configuration.md) |
-| Add skills, tools, or plugins | [Extending Virgo](docs/en/development/extensions.md) |
-| Understand or contribute to the code | [Architecture](docs/en/development/architecture.md) · [Development](docs/en/development/testing-and-ci.md) |
-
-[All documentation](docs/en/README.md) · [中文文档](docs/zh-CN/README.md) · [Examples](examples/README.md) · [Report an issue](https://github.com/0xAstraZhang/Virgo/issues)
+[Install optional extensions](extensions/README.md) · [Examples](examples/README.md) · [Report an issue](https://github.com/0xAstraZhang/Virgo/issues)
 
 ## License
 
