@@ -46,7 +46,7 @@ def test_auto_review_executes_internal_changes_without_asking(broker_session, pr
 
 
 def test_risky_review_respects_allow_once_and_exact_session_approval(broker_session, tmp_path):
-    ui = RecordingUI(answers=["y", "y", "n"])
+    ui = RecordingUI(answers=["y", "n", "a"])
     session = broker_session(ui=ui)
     args = {"path": str(tmp_path / "outside.txt"), "content": "one"}
     changed = args | {"content": "two"}
@@ -56,13 +56,13 @@ def test_risky_review_respects_allow_once_and_exact_session_approval(broker_sess
             "reason": "Write the explicitly selected external file once",
         })
     operations = [ask(args), ("write", args), ("write", args), ask(args),
-                  ("write", changed), ("write", args), ask(changed), ("write", changed)]
+                  ("write", changed), ("write", changed), ask(changed), ("write", args)]
     faux.script("test", *(faux.reply(tools=[operation]) for operation in operations), faux.reply("done"))
     session.prompt("Exercise exact single-operation permissions")
     results = tool_results(session)
-    assert [result.is_error for result in results] == [False, False, True, False, True, False, True, True]
+    assert [result.is_error for result in results] == [False, False, True, True, False, False, False, True]
     assert len(ui.questions) == 3
-    assert (tmp_path / "outside.txt").read_text() == "one"
+    assert (tmp_path / "outside.txt").read_text() == "two"
     assert session.services["execution"].mode_for(session.main).write_paths == (str(session.cwd),)
 
 

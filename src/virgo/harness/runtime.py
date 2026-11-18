@@ -385,7 +385,10 @@ class Runtime:
         s = self.session
         system = self.system + "\n\n<language>\n" + s.t("harness.response_language") + "\n</language>"
         tools = []
+        approval_tool = s.services["execution"].resource_tool if self.execution_context.provider == "host" else None
         for tool in self.tools:
+            if tool is approval_tool:
+                continue
             try:
                 tools.append(tool.spec(s.translator))
             except Exception as error:

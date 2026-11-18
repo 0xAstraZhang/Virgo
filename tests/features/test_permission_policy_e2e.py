@@ -82,7 +82,7 @@ def test_hard_sandbox_denial_does_not_request_approval(broker_session, tmp_path)
     ui = RecordingUI(answers=["y"])
     session = broker_session(
         faux.reply(tools=[("write", {"path": str(outside), "content": "blocked"})]), faux.reply("done"),
-        allow=False, ui=ui, preset="read-only",
+        allow=False, ui=ui, preset="read-only", approval="never",
     )
     session.prompt("Try this write")
     assert not outside.exists()
@@ -96,7 +96,7 @@ def test_requested_config_cannot_pretend_host_shell_is_isolated(make_session, pr
     command = python_command("from pathlib import Path; Path('host-only.txt').touch()", shell=shell)
     faux.script("test", faux.reply(tools=[(shell.tool_name, {"command": command})]), faux.reply("done"))
     assert session.services["execution"].name == "host"
-    session.settings.set("execution.provider", "sandbox")
+    session.settings.set("execution.mode", "read-only")
     session.prompt("Try the operation")
     assert (project / "host-only.txt").exists()
     assert not tool_results(session)[-1].is_error

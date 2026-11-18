@@ -1,34 +1,11 @@
-# Execution acceptance and remaining blockers
+# Execution acceptance
 
-The product contract is [Host by default with explicit resource boundaries](../guides/sandbox.md). This record separates implementation, component checks and native evidence. It is not a claim that every acceptance condition has passed.
+Run the native workflows against the final head. The Linux and macOS workflow exercises Bubblewrap and Seatbelt. The Windows workflow exercises LPAC on Server 2022 and Server 2025. Each workflow includes the commit's complete native test module and rejects empty reports, failures, errors and skips. Check the full cross-platform comparison separately.
 
-## Current conclusions
+For the POSIX live workspace, verify normal host edits become visible to an already running reader and record the supported link contract. The startup scan only checks the state it observes. Changes to link relationships by an untrusted concurrent host writer are outside the supported boundary.
 
-| Area | Evidence / status |
-| --- | --- |
-| Host/Core | Fresh-process tests perform real file reads/writes, complex Shell syntax and an ordinary child while rejecting any Sandbox import. No permission request tool, review record or approval is created. Source-context, grant, UI and failure-fact checks are separate from native isolation. |
-| Broker files | Existing POSIX file mutation tests retain encoding, permission preservation, failed edits, pinned path replacement, hardlink rejection and concurrent unlink coverage. Windows uses its own handle implementation and still needs real Windows execution evidence. |
-| macOS native MXC | **Not passed.** The verified ARM64 1.1.0 executor starts and performs an allowed write, but a host-created hardlink after launch allows the payload to change a protected outside file. The [raw report](../../evidence/execution/macos-mxc-shared-path-probe.json) records `launch_succeeded=true`, `allowed_write_succeeded=true`, `alias_isolated=false`. |
-| Linux native MXC | **Not accepted.** Shared-host-path policies are refused by the product until their alias/race contract can be enforced. No local Linux isolation result is claimed. |
-| Windows native MXC | **Not accepted.** Prior Windows 2022/2025 evaluation could not start ProcessContainer without PSEC. That remains independent of the unsupported shared-path contract. The removed LPAC backend is not a fallback. |
-| Strict macOS product gate | Required local run: 36 passed, 32 setup errors, zero skips. The errors are unsupported native policy admission, not successful negative isolation tests. |
+For Windows, record external TCP egress, ingress and host-loopback results separately with OS, account and firewall policy. Ordinary desktop-account acceptance requires a desktop-account run. A discovered backend is reported as launch-unverified until a native process actually starts. Keep performance measurements tied to the same source revisions and retain failed samples.
 
-Local reproduction artifacts are not a substitute for latest-PR-head lint, distribution build, full-suite and cross-platform results. Consult each PR's checks for revision-bound evidence. Required native gates remain failures until real launch, positive controls and forbidden operations all pass with zero skips.
+The prior MXC 1.1.0 experiment had a macOS shared-path failure, unsupported Linux networking and unavailable Windows PSEC. The [archived macOS result](../../evidence/execution/macos-mxc-shared-path-probe.json) belongs to that executor. Both the earlier native baseline and the MXC experiments have distinct policies and commit identities.
 
-## Reproducing the native blocker
-
-Use the official standalone [MXC v1.1.0 release](https://github.com/microsoft/mxc/releases/tag/v1.1.0). The retained probe creates only disposable resources; it invokes the adapter directly to investigate upstream behavior, bypassing the product's explicit unsupported-policy guard. This is a diagnostic path, not a user execution fallback.
-
-```bash
-uv run --no-sync python ci/probe_mxc.py --executor /absolute/path/to/mxc-exec-mac --output mxc-probe.json
-```
-
-The archive SHA-256 is `31a44963e288e3af23bc2e7e350608ed28f7c76b922ee7a7f1758a486dda37b3`; platform executor digests are pinned in `virgo.extensions.sandbox.mxc`. The CI-only installer downloads and verifies this release explicitly. Application startup never installs or updates an executor. [MXC's filesystem policy](https://github.com/microsoft/mxc/blob/v1.1.0/docs/backends/bwrap/bubblewrap-backend.md#filesystem-policy) is not a proof against arbitrary aliases or host-side races.
-
-Virgo refuses native shared-path policies before releasing the payload. A startup scan, model compliance, wholesale network failure or an unverified launch cannot close this acceptance gap. File-level grants must not expand to directories. No private-workspace copy/writeback scheme or Host fallback has been introduced.
-
-## Lifecycle and result interpretation
-
-macOS follows [MXC's best-effort cleanup contract](https://github.com/microsoft/mxc/blob/v1.1.0/docs/backends/seatbelt/seatbelt-backend.md#process-cleanup). Old coalition-specific guarantees are retired. Existing detached-child, double-fork and independent-task observations remain native tests; observing one exit does not establish a universal guarantee. Missing receipts keep payload/effects unknown, and cleanup failures retain diagnostics and cannot be turned into success by result hooks. Synthetic receipt tests are protocol evidence only.
-
-`details.execution.started` means entry into the Python tool. `details.boundary.payload_started` reports payload evidence. Neither a selected preset nor a discovered/pinned backend proves an established native boundary. File access, managed network dispatch and external trusted activity are reported separately.
+A positive live-reader test on Windows 11 build 26200, native x64 Python 3.13.9 and a non-elevated desktop token stopped before the payload. Creating the protected KsecDD device coordination mutex returned Windows error 1307. The existing LPAC implementation requires that lease. Egress, ingress and loopback were unmeasured on this account.

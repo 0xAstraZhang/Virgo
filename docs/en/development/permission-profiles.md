@@ -1,33 +1,19 @@
-# Execution providers and resource presets
+# Permission modes and execution
 
-Core calls the neutral interfaces in `virgo.execution`. It has an in-process Host provider; the required Sandbox provider loads only after explicit selection. Providers have one owner and bind before Runtime construction. Optional trusted extension failure handling cannot turn required Sandbox failure into Host execution.
+| Mode | File access | Public web tools | Shell network | Provider |
+| --- | --- | --- | --- | --- |
+| Read-Only | Read the project and required runtime files. Commands have private scratch storage. | Allowed | Requires an operation grant | Native sandbox |
+| Workspace-Edit | Read and write the real workspace. Protected resources include Git metadata and Virgo state. | Allowed | Allowed | Native sandbox |
+| No-Limit | Host account rights | Allowed | Allowed | Host |
 
-A Runtime captures an immutable context containing its source workspace, provider and resource policy. Source binding, argument validation, cancellation and output limits remain Core responsibilities. File editing/search logic remains in Core; file access and process launch belong to the provider. A process handle supports wait, cancellation and cleanup.
+Fresh settings select No-Limit. Set `execution.mode` in user settings or use `--permission read-only`, `--permission workspace-edit` or `--permission no-limit`. The compatibility option `--execution host` selects No-Limit. Show the three choices with `/permissions list` or Shift+Tab in the TUI. Select the next mode with `/permissions <id>`. Use `/permissions show` to inspect the running task and the selection for its successor.
 
-`execution.provider` defaults to `host`. Host has no resource approval controls. `permissions.approval=ask|never` only controls requests for additional Sandbox resources; it does not classify commands.
+Core binds each task to its workspace and an immutable execution context. A queued child inherits the submitting task’s context. Switching modes affects new tasks. A child's `approval_policy="never"` applies to it and its descendants. File tools and Shell use the same project files. No-Limit uses Host directly. Sandbox selection loads the platform backend on demand. A backend refusal stops the operation. See the [platform support and filesystem contract](../guides/sandbox.md).
 
-Sandbox presets have this shape:
+Core checks the exact tool call and its extra resources. An out-of-scope file read or write opens a confirmation for that operation before dispatch. A Shell command can request missing paths and networking together with `request_permissions` before execution. The confirmation shows the operation, working directory, additional resources and reason.
 
-```json
-{
-  "execution": {"provider": "sandbox"},
-  "sandbox": {"executable": "/absolute/path/to/mxc-exec-mac"},
-  "permissions": {
-    "preset": "offline",
-    "approval": "ask",
-    "presets": {
-      "offline": {"name": "Offline", "readPaths": ["."], "writePaths": ["."], "networkAllowed": false}
-    }
-  }
-}
-```
+- **Allow once** binds the grant to one task and its exact operation. Virgo consumes it on dispatch. An explicitly requested grant expires after five minutes or when that run ends.
+- **Always allow** stores the operation and approved resources in the user's `resource-grants.sqlite3`. Matches require the same project, mode, working directory, tool and complete arguments. Shell identity is part of the operation. Adding a write grant to an existing read grant prompts only for the additional write.
+- **Deny** leaves the requested resource inaccessible. Existing processes keep the permissions they started with.
 
-This config does **not** certify native support. Current shared-path native policies fail closed; see [acceptance](execution-acceptance.md). Broker file protection and process isolation require separate evidence. Runtime dependencies and unmanaged activities are reported separately from user resource grants.
-
-User settings and startup overrides supply authority. Project settings cannot select Host, change resource grants or alter extension trust. The loader preserves source information and rejects explicit legacy isolation requirements without an explicit Sandbox selection. See [migration](../guides/migrating-execution-policy.md) for retired keys and APIs.
-
-A task captures its resource and approval policy together at admission. A queued child takes that context at submission. Its own `approval_policy="never"` disables requests for it and its descendants. A session-wide change to `never` also blocks new requests from already running tasks.
-
-Preset selection validates the candidate against the conversation's workspace before publishing it. An idle conversation adopts it immediately. A busy conversation uses it for its next run. A failed validation or save preserves the earlier selection and outstanding approvals. A successful change invalidates pending decisions for that conversation and its children. Explicit revocation and session-wide approval changes apply across conversations. `/permissions show` reports the current preset, the next preset and native Shell availability.
-
-A resource grant is not a reusable session approval. It is consumed once, after final argument validation and before dispatch. Its identity includes caller/run, tool instance, arguments, cwd, environment hash, policy revision, canonical resource names and existing resource identities. The TTL limits new dispatch, not the lifetime of an already launched process. Audit entries never reconstruct live grants.
+List saved rules for the active project with `/permissions grants`. Remove an entry with `/permissions revoke ID`. The TUI mode picker’s **Saved approvals** button opens the same listing. Project settings cannot install approvals. See the [configuration reference](../reference/configuration.md) and [migration guide](../guides/migrating-execution-policy.md).

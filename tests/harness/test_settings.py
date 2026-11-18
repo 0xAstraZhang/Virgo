@@ -62,12 +62,12 @@ def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp
     user.mkdir()
     (user / "settings.json").write_text(json.dumps({
         "workMode": "plan", "execution": {"provider": "sandbox"},
-        "permissions": {"mode": "read-only", "modes": {"offline": {
+        "permissions": {"mode": "workspace-edit", "modes": {"offline": {
             "name": "Offline", "readPaths": ["."], "writePaths": [], "networkAllowed": False}}}}))
     monkeypatch.setenv("VIRGO_HOME", str(user))
     settings = Settings.load(Paths(project))
-    assert settings.get("permissions.mode") == "read-only"
-    assert settings.get("permissions.modes.offline.name") == "Offline"
+    assert settings.get("execution.mode") == "workspace-edit"
+    assert settings.get("permissions.modes") is None
     assert settings.get("workMode") is None
     assert any("workMode" in notice for notice in settings.migration_warnings)
 
@@ -81,15 +81,15 @@ def test_home_directory_is_not_reread_as_project_settings(tmp_path, monkeypatch)
     state.mkdir()
     (state / "settings.json").write_text(json.dumps({
         "model": "faux/user", "execution": {"provider": "sandbox"},
-        "permissions": {"mode": "read-only", "modes": {"offline": {
+        "permissions": {"mode": "workspace-edit", "modes": {"offline": {
             "name": "Offline", "readPaths": ["."], "writePaths": [], "networkAllowed": False}}},
     }))
     paths = Paths(home)
     assert paths.user == paths.project
     settings = Settings.load(paths)
     assert settings.get("model") == "faux/user"
-    assert settings.get("permissions.preset") == "read-only"
-    assert settings.get("permissions.presets.offline.name") == "Offline"
+    assert settings.get("execution.mode") == "workspace-edit"
+    assert settings.get("permissions.presets") is None
     assert any("state directory" in notice for notice in settings.migration_warnings)
 
 
@@ -108,8 +108,8 @@ def test_invalid_legacy_modes_value_is_a_configuration_error(project):
 
 
 def test_reserved_permission_preset_ids_are_rejected(project):
-    with pytest.raises(ValueError, match="reserved"):
-        Settings.load(Paths(project), {"permissions": {"presets": {"ask": {
+    with pytest.raises(ValueError, match="Cannot migrate"):
+        Settings.load(Paths(project), {"permissions": {"preset": "ask", "presets": {"ask": {
             "name": "Ask", "readPaths": ["."], "writePaths": [], "networkAllowed": False}}}})
 
 
@@ -148,20 +148,28 @@ def test_retired_task_configuration_is_ignored_with_a_notice(project, tmp_path, 
     (["ingress", "hostLoopback"], ("deny", "allow", "allow")),
 ])
 def test_network_directions_survive_preset_resolution_and_native_mapping(tmp_path, selection, expected):
-    from virgo.extensions.sandbox.mxc import _network_request
-    from virgo.harness.execution_modes import configured_modes
+    from virgo.harness.execution_modes import migrate_preset, network_config, parse_network
 
-    preset = configured_modes({"workspace-edit": {"networkAllowed": selection}})["workspace-edit"]
-    resolved = preset.resolve(tmp_path)
-    assert resolved.config()["networkAllowed"] == selection
-    request = _network_request(resolved.network)
-    assert (request["egress"]["default"], request["ingress"]["default"],
-            request["ingress"]["hostLoopback"]) == expected
+    directions = parse_network(selection)
+    assert network_config(directions) == selection
+    assert tuple("allow" if d in directions else "deny" for d in ("egress", "ingress", "hostLoopback")) == expected
+    entries = {"old": {"readPaths": ["."], "writePaths": ["."], "networkAllowed": selection}}
+    if selection is True:
+        assert migrate_preset("old", entries, tmp_path) == "workspace-edit"
+    else:
+        with pytest.raises(ValueError, match="Cannot migrate"):
+            migrate_preset("old", entries, tmp_path)
 
 
 @pytest.mark.parametrize("invalid", [["public"], ["egress", "egress"], ["ingress", True], 1, "egress"])
 def test_invalid_network_directions_rejected(invalid):
-    from virgo.harness.execution_modes import configured_modes
+    from virgo.harness.execution_modes import parse_network
 
     with pytest.raises(ValueError, match="networkAllowed"):
-        configured_modes({"workspace-edit": {"networkAllowed": invalid}})
+        parse_network(invalid)
+
+
+def test_unselected_legacy_presets_cannot_widen_to_no_limit(project):
+    config = {"permissions": {"presets": {"workspace-edit": {"networkAllowed": False}}}}
+    with pytest.raises(ValueError, match="choose execution.mode"):
+        Settings.load(Paths(project), config)

@@ -6,7 +6,7 @@
 
 Virgo is a lightweight, extensible coding agent for your terminal. Ask it to explore a codebase, make a change, investigate a failure, or review a diff. It can read and edit files, run commands, and work through a task while you stay in the conversation.
 
-Fresh configurations execute on **Host**, using the host account’s OS permissions, without command review or ordinary approval. Sandbox is explicit and fails closed; current MXC native acceptance remains blocked. See [execution boundaries](docs/en/guides/sandbox.md).
+Virgo starts in **No-Limit** using the current host account. **Read-Only** and **Workspace-Edit** use native isolation against the live project and support operation-specific approvals. See [execution boundaries](docs/en/guides/sandbox.md).
 
 ## Why Virgo?
 

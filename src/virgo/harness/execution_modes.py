@@ -1,7 +1,6 @@
-"""Named resource policies. No backend imports, discovery or process startup."""
+"""Fixed permission modes and legacy resource decoding. No backend imports, discovery or process startup."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -32,9 +31,13 @@ class PermissionPreset:
     write_paths: tuple[str, ...]
     network: frozenset[str]
 
+    @property
+    def web_allowed(self) -> bool:
+        return True
+
     def flags(self) -> dict:
         return {"read_paths": list(self.read_paths), "write_paths": list(self.write_paths),
-                "network_allowed": network_config(self.network)}
+                "network_allowed": network_config(self.network), "web_allowed": self.web_allowed}
 
     def config(self) -> dict:
         return {"name": self.name, "readPaths": list(self.read_paths), "writePaths": list(self.write_paths),
@@ -46,41 +49,49 @@ class PermissionPreset:
         return replace(self, read_paths=paths(self.read_paths), write_paths=paths(self.write_paths))
 
 
-HOST_MODE = PermissionPreset("host", "Host", (), (), FULL_NETWORK)
-RESERVED_PRESET_IDS = frozenset({"host", "no-limit", "ask", "never", "revoke", "show", "status", "sandbox", "list", "save"})
+HOST_MODE = PermissionPreset("no-limit", "No-Limit", (), (), FULL_NETWORK)
 DEFAULT_MODES = {mode.id: mode for mode in (
-    PermissionPreset("read-only", "Read-Only", (".",), (), FULL_NETWORK),
+    PermissionPreset("read-only", "Read-Only", (".",), (), frozenset()),
     PermissionPreset("workspace-edit", "Workspace-Edit", (".",), (".",), FULL_NETWORK),
+    HOST_MODE,
 )}
 
 
-def parse_mode(identifier: str, value: dict) -> PermissionPreset:
-    if not isinstance(identifier, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", identifier):
-        raise ValueError("Permission preset IDs must be 1–64 letters, digits, underscores or hyphens")
-    if identifier in RESERVED_PRESET_IDS:
-        raise ValueError(f"Permission preset {identifier!r} is reserved; Host uses execution.provider=host")
-    if not isinstance(value, dict) or set(value) - {"name", "readPaths", "writePaths", "networkAllowed"}:
-        raise ValueError(f"Invalid permission preset {identifier!r}; migrate to readPaths/writePaths/networkAllowed")
-    name = value.get("name")
-    if not isinstance(name, str) or not name.strip() or len(name) > 100 or any(ord(c) < 32 for c in name):
-        raise ValueError("Permission preset names must be 1–100 printable characters")
-    for field in ("readPaths", "writePaths"):
-        paths = value.get(field)
-        if not isinstance(paths, list) or any(not isinstance(p, str) or not p or "\0" in p for p in paths):
-            raise ValueError(f"{field} must be a list of nonempty paths")
-    return PermissionPreset(identifier, name.strip(), tuple(value["readPaths"]), tuple(value["writePaths"]),
-                            parse_network(value.get("networkAllowed")))
-
-
-def configured_modes(value: object) -> dict[str, PermissionPreset]:
-    if not isinstance(value, dict):
-        raise ValueError("permissions.presets must be an object keyed by stable preset ID")
-    modes = dict(DEFAULT_MODES)
-    for identifier, entry in value.items():
-        if not isinstance(entry, dict):
-            raise ValueError(f"Invalid permission preset {identifier!r}")
-        modes[identifier] = parse_mode(identifier, {**(modes[identifier].config() if identifier in modes else {}), **entry})
-    return modes
+def migrate_preset(identifier: str, presets: dict, workspace: Path) -> str:
+    """Legacy networkAllowed covered web and Shell together. Preserve both."""
+    entry = presets.get(identifier, {})
+    if not isinstance(entry, dict):
+        raise ValueError(f"Invalid legacy permission preset {identifier!r}")
+    builtin = DEFAULT_MODES.get(identifier)
+    if builtin is None and identifier not in presets:
+        raise ValueError(f"Unknown retired permission preset {identifier!r}; choose execution.mode")
+    if identifier == "no-limit" or "readOnly" in entry or "workspaceOnly" in entry:
+        if set(entry) - {"name", "readOnly", "workspaceOnly", "networkAllowed"}:
+            raise ValueError(f"Invalid legacy permission flags for {identifier!r}")
+        defaults = {"readOnly": identifier == "read-only", "workspaceOnly": identifier != "no-limit",
+                    "networkAllowed": True} if builtin else {}
+        flags = {**defaults, **entry}
+        if any(type(flags.get(k)) is not bool for k in ("readOnly", "workspaceOnly", "networkAllowed")):
+            raise ValueError(f"Invalid legacy permission flags for {identifier!r}")
+        if flags["networkAllowed"] and not flags["readOnly"]:
+            return "workspace-edit" if flags["workspaceOnly"] else "no-limit"
+    else:
+        defaults = {**builtin.config(), "networkAllowed": True} if builtin else {}
+        flags = {**defaults, **entry}
+        if set(flags) - {"name", "readPaths", "writePaths", "networkAllowed"}:
+            raise ValueError(f"Invalid legacy permission paths for {identifier!r}")
+        roots = []
+        for field in ("readPaths", "writePaths"):
+            paths = flags.get(field)
+            if not isinstance(paths, list) or any(not isinstance(p, str) or not p or "\0" in p for p in paths):
+                raise ValueError(f"{field} must be a list of nonempty paths")
+            roots.append({(workspace / Path(p).expanduser()).resolve() for p in paths})
+        reads, writes = roots
+        if (parse_network(flags.get("networkAllowed")) == FULL_NETWORK
+                and workspace in writes and all(path.is_relative_to(workspace) for path in reads | writes)):
+            return "workspace-edit"
+    raise ValueError(f"Cannot migrate legacy preset {identifier!r}: no fixed mode has the same "
+                     "filesystem, web and Shell network permissions. Select execution.mode explicitly.")
 
 
 @dataclass(frozen=True)

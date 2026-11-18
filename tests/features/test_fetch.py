@@ -92,29 +92,24 @@ def test_private_dns_answer_never_connects(make_session, monkeypatch, http):
 
 
 def test_network_permission_blocks_before_network(broker_session, monkeypatch, http):
-    s = broker_session(network=False)
+    s = broker_session(preset="read-only")
     result, _ = fetch(s, monkeypatch)
-    assert result.is_error and not http["requests"]
+    assert not result.is_error and len(http["requests"]) == 1
+    assert not s.ui.questions and not s.main.permission_snapshot.mode.network
 
 
 def test_directional_web_grant_adds_only_egress_for_the_approved_fetch(broker_session, http):
+    """An ordinary web read now needs zero grants and leaves Shell network disabled."""
     from virgo.ai.providers import faux
 
-    from tests.support.harness import RecordingUI
-
     args = {"url": "https://example.com/article"}
-    grant = {"tool": "web_fetch", "arguments": args,
-             "permissions": {"network_allowed": ["egress"]}, "reason": "Read the selected article"}
-    session = broker_session(
-        faux.reply(tools=[("web_fetch", args)]), faux.reply(tools=[("request_permissions", grant)]),
-        faux.reply(tools=[("web_fetch", args)]), faux.reply(tools=[("web_fetch", args)]), faux.reply("done"),
-        network=["ingress"], ui=RecordingUI(["y"]),
-    )
-    session.prompt("Read the selected article with a single grant")
-    assert [r.is_error for r in tool_results(session)] == [True, False, False, True]
-    assert len(http["requests"]) == 1
-    assert session.store.custom("permission_request")[0]["permissions"]["network_allowed"] == ["egress", "ingress"]
-    assert session.main.execution_context.resources.network == {"ingress"}
+    session = broker_session(faux.reply(tools=[("web_fetch", args)]), faux.reply(tools=[("web_fetch", args)]),
+                             faux.reply("done"), preset="read-only")
+    session.prompt("Read the selected article twice")
+    assert all(not result.is_error for result in tool_results(session))
+    assert len(http["requests"]) == 2
+    assert not session.store.custom("permission_request") and not session.ui.questions
+    assert not session.main.execution_context.resources.network
 
 
 def test_redirect_rechecks_permission(make_session, monkeypatch, http):

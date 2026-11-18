@@ -1,13 +1,16 @@
-"""Required MXC ProcessContainer acceptance on a real Windows host.
-
-The former LPAC token/DACL backend is retired. PSEC absence and an unsupported
-resource policy are failures in required runs, never successful isolation.
-"""
+"""Native LPAC, file boundary and process-lifetime acceptance on Windows."""
 
 from __future__ import annotations
 
+import base64
+import ctypes
+import json
 import os
 import subprocess
+import sys
+import tempfile
+import threading
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -18,7 +21,7 @@ from virgo.harness.extensions import ExtensionAPI
 from virgo.harness.store import SessionStore
 
 from tests.support import native_cases
-from tests.support.harness import tool_results
+from tests.support.harness import tool_results, wait_until
 from tests.support.sandbox import native_session, python_command, run
 from tests.support.shell import selected
 
@@ -61,12 +64,31 @@ def test_windows_readonly_resource_boundary(native, project):
     native_cases.readonly_including_child_shell(native, project)
 
 
+def test_native_live_workspace_reader_observes_edit(native, project):
+    native_cases.live_workspace_reader_observes_edit(native, project)
+
+
 def test_windows_partial_execution_preserves_denied_file(native, project):
     native_cases.partial_execution_preserves_denied_file(native, project)
 
 
 def test_network_permission_grants_real_egress_without_host_fallback(native, project, monkeypatch):
-    native_cases.network_and_environment_isolation(native, project, monkeypatch)
+    import socket
+
+    host = os.environ.get("VIRGO_SANDBOX_NETWORK_TEST_HOST", "www.microsoft.com")
+    with socket.create_connection((host, 443), timeout=10) as control:
+        endpoint = control.getpeername()[:2]
+    monkeypatch.setenv("ISOLATION_TEST_SECRET", "private")
+    source = f"""import os, socket
+assert 'ISOLATION_TEST_SECRET' not in os.environ
+with socket.create_connection({endpoint!r}, timeout=10):
+    print('egress connected')
+"""
+    allowed = run(native, python_command(native, source))
+    assert not allowed.is_error and "egress connected" in allowed.text(), allowed.text()
+    native.services["execution"].select_mode("read-only")
+    denied = run(native, python_command(native, source))
+    assert denied.is_error and "egress connected" not in denied.text(), denied.text()
 
 
 def test_actual_start_failure_is_fail_closed_and_nonzero_payload_is_not_replayed(native):
@@ -213,7 +235,7 @@ def test_background_cancel_preserves_other_job_and_origin_after_switch(native, p
         assert second.done.wait(10)
 
 
-def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native):
+def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native, record_property):
     import socket
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
@@ -221,7 +243,6 @@ def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native):
         address = route.getsockname()[0]
     targets = [(socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1'), (socket.AF_INET, address)]
     provider = native.services['execution']
-    provider.save_mode('offline', 'Offline', ['.'], ['.'], False, persist=False)
     for family, address in targets:
         with socket.socket(family) as listener:
             listener.bind((address, 0))
@@ -230,14 +251,68 @@ def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native):
             source = f'import socket; s=socket.socket({int(family)}); s.settimeout(2); s.connect({destination!r}); s.close(); print("connected")'
             provider.select_mode('workspace-edit')
             allowed = run(native, python_command(native, source))
-            assert not allowed.is_error and 'connected' in allowed.text(), allowed.text()
-            provider.select_mode('offline')
+            assert allowed.details["boundary"]["payload_started"] is True, allowed.text()
+            record_property(f"workspace_edit_connect_{address}", allowed.text())
+            provider.select_mode('read-only')
             denied = run(native, python_command(native, source))
             assert denied.is_error and 'connected' not in denied.text(), denied.text()
 
 
+def test_workspace_edit_inbound_from_host_interface(native, project, record_property):
+    """Observe host-to-container TCP independently of external egress and loopback."""
+    import json
+    import socket
+
+    from tests.support.harness import wait_until
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+        route.connect(("192.0.2.1", 9))
+        address = route.getsockname()[0]
+    command = f"""import json, socket
+from pathlib import Path
+marker = Path('listener.json')
+def publish(data):
+    stage = marker.with_suffix('.tmp')
+    stage.write_text(json.dumps(data))
+    stage.replace(marker)
+with socket.socket() as listener:
+    try:
+        listener.bind(({address!r}, 0))
+        listener.listen()
+    except OSError as error:
+        publish({{'bind_error': error.winerror}})
+    else:
+        listener.settimeout(5)
+        publish({{'port': listener.getsockname()[1]}})
+        try:
+            peer, _ = listener.accept()
+        except OSError as error:
+            print('accept:', error)
+        else:
+            with peer:
+                peer.sendall(b'accepted')
+"""
+    result = run(native, python_command(native, command), background=True)
+    assert not result.is_error, result.text()
+    job = list(native.services["jobs"].jobs.values())[-1]
+    marker = project / "listener.json"
+    wait_until(marker.exists, timeout=10)
+    details = json.loads(marker.read_text())
+    if "port" in details:
+        try:
+            with socket.create_connection((address, details["port"]), timeout=3) as peer:
+                assert peer.recv(32) == b"accepted"
+        except OSError as error:
+            details["host_connection_error"] = str(error)
+        else:
+            details["host_received"] = "accepted"
+    assert job.done.wait(10) and job.status == "completed", job.result
+    record_property("host_interface_ingress", json.dumps(details))
+    assert not native.ui.questions
+
+
 def test_repeated_commands_release_owned_acls_scratch_and_handles(native, project):
-    """MXC no longer borrows LPAC/DACL leases; retain scratch and handle checks."""
+    """Each command owns its scratch and kernel handles."""
     import ctypes
     import json
     from ctypes import wintypes
@@ -258,8 +333,411 @@ print(json.dumps({{'scratch':os.environ['TEMP']}}))
 '''
         result = run(native, python_command(native, source))
         assert not result.is_error, result.text()
-        scratch = json.loads(result.text())['scratch']
+        scratch = json.loads(result.text().rstrip().rsplit('\n', 1)[-1])['scratch']
         assert scratch not in scratches and not Path(scratch).exists()
         scratches.add(scratch)
         assert (project/f'new-{index}.txt').read_text() == 'ordinary'
     assert count()-before < 12, 'Repeated executor launches leaked broker handles'
+
+
+def command(source: str) -> str:
+    encoded = base64.b64encode(source.encode()).decode()
+    bootstrap = f"import base64;exec(base64.b64decode('{encoded}'))"
+    return "& " + " ".join("'" + value.replace("'", "''") + "'" for value in
+                            [sys.executable, "-I", "-S", "-c", bootstrap])
+
+def data(result):
+    assert not result.is_error, result.text()
+    return payload_json(result.text())
+
+def payload_json(output: str):
+    # These fixed payloads emit one final JSON record. Shell retains combined
+    # stdout/stderr, including CPython's measured LPAC DOS-path warning; that
+    # diagnostic is not the payload record and must not be filtered by Shell.
+    return json.loads(output.rstrip().rsplit("\n", 1)[-1])
+
+def grant(path: Path, sid: str) -> None:
+    """Host fixture setup, using a controlled argv and a well-known SID."""
+    result = subprocess.run([str(Path(os.environ["SystemRoot"]) / "System32" / "icacls.exe"),
+                             str(path), "/grant", f"*{sid}:F"], capture_output=True, check=False)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+def dacl(path: Path) -> str:
+    from ctypes import wintypes as w
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi.GetNamedSecurityInfoW.argtypes = [w.LPWSTR, w.DWORD, w.DWORD, ctypes.c_void_p,
+                                            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                            ctypes.POINTER(ctypes.c_void_p)]
+    advapi.GetNamedSecurityInfoW.restype = w.DWORD
+    advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(w.LPWSTR), ctypes.c_void_p,
+    ]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    descriptor = ctypes.c_void_p()
+    status = advapi.GetNamedSecurityInfoW(str(path), 1, 4, None, None, None, None,
+                                        ctypes.byref(descriptor))
+    assert status == 0, status
+    text = w.LPWSTR()
+    try:
+        assert advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor, 1, 4, ctypes.byref(text), None,
+        ), ctypes.get_last_error()
+        return text.value
+    finally:
+        if text:
+            kernel.LocalFree(text)
+        kernel.LocalFree(descriptor)
+
+def process_sids(pid, information):
+    """Read the actual host or sandbox process token, without broker internals."""
+    from ctypes import wintypes as w
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [w.DWORD, w.BOOL, w.DWORD], w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+    advapi.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
+                                          ctypes.POINTER(w.DWORD)]
+    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.LPWSTR)]
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("sid", ctypes.c_void_p), ("attributes", w.DWORD)]
+
+    class Groups(ctypes.Structure):
+        _fields_ = [("count", w.DWORD), ("entries", Entry * 1)]
+
+    with ExitStack() as resources:
+        process = kernel.OpenProcess(0x1000, False, pid)
+        assert process, ctypes.get_last_error()
+        resources.callback(kernel.CloseHandle, process)
+        token = w.HANDLE()
+        assert advapi.OpenProcessToken(process, 8, ctypes.byref(token)), ctypes.get_last_error()
+        resources.callback(kernel.CloseHandle, token)
+        size = w.DWORD()
+        advapi.GetTokenInformation(token, information, None, 0, ctypes.byref(size))
+        assert size.value, ctypes.get_last_error()
+        buffer = ctypes.create_string_buffer(size.value)
+        assert advapi.GetTokenInformation(token, information, buffer, len(buffer), ctypes.byref(size)), ctypes.get_last_error()
+        if information == 31:  # TOKEN_APPCONTAINER_INFORMATION contains one PSID.
+            sids = [ctypes.c_void_p.from_buffer(buffer).value]
+        else:
+            count = 1 if information == 1 else w.DWORD.from_buffer(buffer).value
+            entries = (Entry * count).from_buffer(buffer, 0 if information == 1 else Groups.entries.offset)
+            sids = [entry.sid for entry in entries]
+        result = []
+        for sid in sids:
+            text = w.LPWSTR()
+            assert advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)), ctypes.get_last_error()
+            result.append(text.value)
+            kernel.LocalFree(text)
+        return result
+
+DEVICE_ACCESS = {"KsecDD": 0x100003, "Null": 0x12019F}
+
+TOKEN_SOURCE = r'''
+import ctypes, json, os
+from ctypes import wintypes as w
+k = ctypes.WinDLL('kernel32', use_last_error=True)
+a = ctypes.WinDLL('advapi32', use_last_error=True)
+k.GetCurrentProcess.restype = w.HANDLE
+k.CloseHandle.argtypes = [w.HANDLE]
+k.LocalFree.argtypes = [ctypes.c_void_p]
+a.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+a.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD)]
+a.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.LPWSTR)]
+class GenericMapping(ctypes.Structure):
+    _fields_ = [(name, w.DWORD) for name in ('read', 'write', 'execute', 'all')]
+a.DuplicateToken.argtypes = [w.HANDLE, ctypes.c_int, ctypes.POINTER(w.HANDLE)]
+a.AccessCheck.argtypes = [ctypes.c_void_p, w.HANDLE, w.DWORD, ctypes.POINTER(GenericMapping),
+                         ctypes.c_void_p, ctypes.POINTER(w.DWORD), ctypes.POINTER(w.DWORD),
+                         ctypes.POINTER(w.BOOL)]
+a.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+    w.LPCWSTR, w.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+token = w.HANDLE()
+assert a.OpenProcessToken(k.GetCurrentProcess(), 10, ctypes.byref(token)), ctypes.get_last_error()
+def info(kind):
+    size = w.DWORD()
+    a.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
+    assert size.value, (kind, ctypes.get_last_error())
+    value = ctypes.create_string_buffer(size.value)
+    assert a.GetTokenInformation(token, kind, value, len(value), ctypes.byref(size)), ctypes.get_last_error()
+    return value
+def lpac_info():
+    # Class 46 is unavailable through GetTokenInformation on these runners.
+    # Independently check the real token's AAP denial and ARAP positive control.
+    duplicate = w.HANDLE()
+    assert a.DuplicateToken(token, 2, ctypes.byref(duplicate)), ctypes.get_last_error()
+    try:
+        outcomes = []
+        mapping = GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
+        for package in ('S-1-15-2-1', 'S-1-15-2-2'):
+            descriptor = ctypes.c_void_p()
+            assert a.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                'O:SYG:SYD:(A;;0x1;;;WD)(A;;0x1;;;' + package + ')',
+                1, ctypes.byref(descriptor), None), ctypes.get_last_error()
+            try:
+                privileges = ctypes.create_string_buffer(256)
+                size, granted, allowed = w.DWORD(len(privileges)), w.DWORD(), w.BOOL()
+                assert a.AccessCheck(descriptor, duplicate, 1, ctypes.byref(mapping), privileges,
+                                     ctypes.byref(size), ctypes.byref(granted), ctypes.byref(allowed)), ctypes.get_last_error()
+                outcomes.append((bool(allowed.value), granted.value))
+            finally:
+                k.LocalFree(descriptor)
+        return int(outcomes == [(False, 0), (True, 1)])
+    finally:
+        k.CloseHandle(duplicate)
+try:
+    ac = ctypes.cast(info(29), ctypes.POINTER(w.DWORD)).contents.value
+    lpac = lpac_info()
+    sid_info = info(31)
+    sid = ctypes.cast(sid_info, ctypes.POINTER(ctypes.c_void_p)).contents.value
+    text = w.LPWSTR()
+    assert sid and a.ConvertSidToStringSidW(sid, ctypes.byref(text)), ctypes.get_last_error()
+    try:
+        token_result = {'appcontainer': ac, 'lpac': lpac, 'sid': text.value, 'pid': os.getpid()}
+    finally:
+        k.LocalFree(text)
+finally:
+    k.CloseHandle(token)
+'''
+
+DEVICE_SOURCE = r'''
+import ctypes, json
+from ctypes import wintypes as w
+k = ctypes.WinDLL('kernel32', use_last_error=True)
+n = ctypes.WinDLL('ntdll')
+class Name(ctypes.Structure):
+    _fields_ = [('length', w.USHORT), ('maximum', w.USHORT), ('buffer', w.LPWSTR)]
+class Attributes(ctypes.Structure):
+    _fields_ = [('length', w.ULONG), ('root', w.HANDLE), ('name', ctypes.POINTER(Name)),
+                ('flags', w.ULONG), ('descriptor', ctypes.c_void_p), ('qos', ctypes.c_void_p)]
+class IoStatus(ctypes.Structure):
+    _fields_ = [('status', ctypes.c_void_p), ('information', ctypes.c_size_t)]
+n.NtOpenFile.argtypes = [ctypes.POINTER(w.HANDLE), w.DWORD, ctypes.POINTER(Attributes),
+                         ctypes.POINTER(IoStatus), w.DWORD, w.DWORD]
+n.NtOpenFile.restype = ctypes.c_int32
+k.CloseHandle.argtypes = [w.HANDLE]
+device_result = {}
+for device, required in (('KsecDD', 0x100003), ('Null', 0x12019f)):
+    path = '\\Device\\' + device
+    name = Name(len(path.encode('utf-16-le')), len(path.encode('utf-16-le')) + 2, path)
+    attributes = Attributes(ctypes.sizeof(Attributes), None, ctypes.pointer(name), 0x40, None, None)
+    results = []
+    for access in (required, 0x40000, 0x80000, 0x10000, 0x10000000):
+        handle, io = w.HANDLE(), IoStatus()
+        status = n.NtOpenFile(ctypes.byref(handle), access, ctypes.byref(attributes), ctypes.byref(io), 7, 0)
+        results.append(status & 0xffffffff)
+        if status == 0:
+            assert k.CloseHandle(handle), ctypes.get_last_error()
+    device_result[device] = results
+'''
+
+
+
+@pytest.mark.parametrize("mode", ["workspace-write", "read-only"])
+def test_ambient_package_acls_do_not_widen_write_ceiling(native, project, mode):
+    aap, arap = (project.parent / name for name in ("aap-secret.txt", "arap-readable.txt"))
+    aap.write_text("aap-canary")
+    arap.write_text("arap-canary")
+    grant(aap, "S-1-15-2-1")
+    grant(arap, "S-1-15-2-2")
+    source = f"""import ctypes, json
+from ctypes import wintypes as w
+from pathlib import Path
+a = ctypes.WinDLL('advapi32', use_last_error=True)
+a.SetNamedSecurityInfoW.argtypes = [w.LPWSTR, w.DWORD, w.DWORD, ctypes.c_void_p,
+                                  ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+a.SetNamedSecurityInfoW.restype = w.DWORD
+outcome = {{'arap_read': Path({str(arap)!r}).read_text(), 'denied': []}}
+for action in [lambda: Path({str(aap)!r}).read_text(),
+               lambda: Path({str(arap)!r}).write_text('bad'),
+               lambda: Path({str(arap)!r}).unlink()]:
+    try:
+        action()
+    except PermissionError:
+        outcome['denied'].append(True)
+    else:
+        outcome['denied'].append(False)
+outcome['acl_denied'] = a.SetNamedSecurityInfoW({str(arap)!r}, 1, 4, None, None, None, None) == 5
+print(json.dumps(outcome))
+"""
+    native.services["execution"].select_mode("read-only" if mode == "read-only" else "workspace-edit")
+    assert data(run(native, command(source))) == {"arap_read": "arap-canary", "denied": [True] * 3, "acl_denied": True}
+    assert aap.read_text() == "aap-canary" and arap.read_text() == "arap-canary"
+
+
+def test_existing_metadata_and_runtime_acls_cannot_be_replaced(native, project):
+    paths = [project / name for name in (".git/config", ".virgo/protected.txt", "AGENTS.md", "CLAUDE.md")]
+    with tempfile.TemporaryDirectory(prefix="virgo-native-readonly-", dir=sys.prefix) as directory:
+        paths.append(Path(directory) / "runtime-canary.txt")
+        for path in paths:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("protected")
+        source = f"""import ctypes, json
+from ctypes import wintypes as w
+from pathlib import Path
+a = ctypes.WinDLL('advapi32', use_last_error=True)
+a.SetNamedSecurityInfoW.argtypes = [w.LPWSTR, w.DWORD, w.DWORD, ctypes.c_void_p,
+                                  ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+a.SetNamedSecurityInfoW.restype = w.DWORD
+results = []
+Path('ordinary-control.txt').write_text('allowed')
+Path('ordinary-directory').mkdir()
+Path('ordinary-directory').rmdir()
+for name in {[str(path) for path in paths]!r}:
+    p = Path(name)
+    assert p.read_text() == 'protected'
+    denied = []
+    for action in [lambda: p.write_text('bad'), lambda: p.unlink(), lambda: p.rename(str(p) + '.moved')]:
+        try:
+            action()
+        except PermissionError:
+            denied.append(True)
+        else:
+            denied.append(False)
+    denied.append(a.SetNamedSecurityInfoW(name, 1, 4, None, None, None, None) == 5)
+    results.append(denied)
+k = ctypes.WinDLL('kernel32', use_last_error=True)
+k.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, ctypes.c_void_p, w.DWORD, w.DWORD, w.HANDLE]
+k.CreateFileW.restype = w.HANDLE
+k.CloseHandle.argtypes = [w.HANDLE]
+directories = []
+for name in ['.git', '.virgo']:
+    # Request DELETE on the directory itself; this checks authority without
+    # conflating a nonempty directory with an access-denied result.
+    handle = k.CreateFileW(name, 0x10000, 7, None, 3, 0x02000000, None)
+    denied = [handle == ctypes.c_void_p(-1).value and ctypes.get_last_error() == 5]
+    if handle != ctypes.c_void_p(-1).value:
+        k.CloseHandle(handle)
+    try:
+        Path(name).rename(name + '-moved')
+    except PermissionError:
+        denied.append(True)
+    else:
+        denied.append(False)
+    denied.append(a.SetNamedSecurityInfoW(name, 1, 4, None, None, None, None) == 5)
+    directories.append(denied)
+print(json.dumps({{'files': results, 'directories': directories}}))
+"""
+        assert data(run(native, command(source))) == {"files": [[True] * 4 for _ in paths],
+                                             "directories": [[True] * 3, [True] * 3]}
+        assert all(path.read_text() == "protected" for path in paths)
+        assert (project / "ordinary-control.txt").read_text() == "allowed"
+
+
+def test_child_lpac_token_and_host_process_access(native):
+    child_code = TOKEN_SOURCE + "\nprint(json.dumps(token_result))\n"
+    source = TOKEN_SOURCE + f"""
+import subprocess, sys
+parent = token_result
+child = json.loads(subprocess.check_output([sys.executable, '-I', '-S', '-c', {child_code!r}]))
+k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+k.OpenProcess.restype = w.HANDLE
+denied = []
+for access in (0x2, 0x8, 0x10, 0x20, 0x40):
+    handle = k.OpenProcess(access, False, {os.getpid()})
+    denied.append(not handle and ctypes.get_last_error() == 5)
+    if handle:
+        k.CloseHandle(handle)
+print(json.dumps({{'parent': parent, 'child': child, 'host_process_denied': denied}}))
+"""
+    outcome = data(run(native, command(source)))
+    for token in (outcome["parent"], outcome["child"]):
+        assert token["appcontainer"] == token["lpac"] == 1
+        assert token["sid"].startswith("S-1-15-2-")
+    assert outcome["parent"]["sid"] == outcome["child"]["sid"]
+    assert outcome["host_process_denied"] == [True] * 5
+    # Separate payload keeps the encoded PowerShell command below the native
+    # command-line limit. The root and its child must inherit the same narrow
+    # device authority, never permission to rewrite/delete the kernel object.
+    child_code = DEVICE_SOURCE + "\nprint(json.dumps(device_result))\n"
+    source = DEVICE_SOURCE + f"""
+import subprocess, sys
+child = json.loads(subprocess.check_output([sys.executable, '-I', '-S', '-c', {child_code!r}]))
+print(json.dumps([device_result, child]))
+"""
+    expected = {name: [0, *([0xC0000022] * 4)] for name in DEVICE_ACCESS}  # STATUS_ACCESS_DENIED.
+    assert data(run(native, command(source))) == [expected, expected]
+
+
+@pytest.mark.parametrize("tool", ["write", "edit"])
+def test_core_mutation_preserves_live_background_workspace_writes(native, project, tool):
+    target = project / "ordinary.txt"
+    target.write_text("original\n")
+    baseline_dacl = dacl(target)
+    created = project / "created-by-core.txt"
+    jobs = native.services["jobs"]
+    result = run(native, command(f"""import time
+from pathlib import Path
+with Path('ordinary.txt').open('a') as stream:
+    stream.write('before\\n')
+Path('mutation-ready').touch()
+deadline = time.monotonic() + 45
+while not Path('release-mutation').exists():
+    assert time.monotonic() < deadline
+    time.sleep(.02)
+print('opening committed file for read', flush=True)
+assert Path('ordinary.txt').read_text() == 'changed\\n'
+print('opening committed file for append', flush=True)
+with Path('ordinary.txt').open('a') as stream:
+    stream.write('after\\n')
+print('committed file append complete', flush=True)
+if {tool == "write"}:
+    assert Path('created-by-core.txt').read_text() == 'created\\n'
+    with Path('created-by-core.txt').open('a') as stream:
+        stream.write('after\\n')
+"""), background=True)
+    assert not result.is_error, result.text()
+    job = list(jobs.jobs.values())[-1]
+    try:
+        wait_until(lambda: (project / "mutation-ready").exists() or job.done.is_set(), timeout=25)
+        assert (project / "mutation-ready").exists(), jobs.output(job)
+        assert target.read_text() == "original\nbefore\n"
+        restricting, = process_sids(job.proc.pid, 11)
+        package, = process_sids(job.proc.pid, 31)
+        original_dacl = dacl(target)
+        metadata_dacl = dacl(project / ".virgo")
+        arguments = ({"path": target.name, "content": "changed\n"} if tool == "write" else
+                     {"path": target.name, "edits": [{"old_text": "original\nbefore\n",
+                                                       "new_text": "changed\n"}]})
+        faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+        native.prompt("Update the ordinary file while its background command is waiting")
+        mutation = tool_results(native)[-1]
+        assert not mutation.is_error, mutation.text()
+        assert target.read_text() == "changed\n"
+        committed_dacl = dacl(target)
+        created_dacl = None
+        if tool == "write":
+            faux.script("test", faux.reply(tools=[("write", {"path": created.name,
+                                                             "content": "created\n"})]), faux.reply("done"))
+            native.prompt("Create another ordinary file while the background command is waiting")
+            mutation = tool_results(native)[-1]
+            assert not mutation.is_error, mutation.text()
+            assert created.read_text() == "created\n"
+            created_dacl = dacl(created)
+        assert dacl(project / ".virgo") == metadata_dacl
+        assert not list((project / ".virgo").glob("mutation-*.tmp"))
+        (project / "release-mutation").touch()
+        assert job.done.wait(15), "background command did not drain after Core mutation"
+        assert job.status == "completed", (
+            f"Background status: {job.status}\nRestricting SID: {restricting}\nPackage SID: {package}\n"
+            f"DACL before Core mutation:\n{original_dacl}\nDACL after Core mutation:\n{committed_dacl}\n"
+            f"DACL of Core-created file:\n{created_dacl}\n"
+            f"Background output:\n{jobs.output(job)}"
+        )
+        assert target.read_text() == "changed\nafter\n"
+        assert committed_dacl == original_dacl
+        assert dacl(target) == baseline_dacl
+        if tool == "write":
+            assert created.read_text() == "created\nafter\n"
+        for path in (project, project / ".virgo", target, *([created] if tool == "write" else [])):
+            cleaned = dacl(path)
+            assert restricting not in cleaned and package not in cleaned, cleaned
+    finally:
+        if not job.done.is_set():
+            jobs.kill(job)
+            assert job.done.wait(15), "fixture must drain its background command"

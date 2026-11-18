@@ -14,7 +14,7 @@ class ShellSelection:
         self.session = session
         # Startup authority is a ceiling; later probes also check the current
         # policy so neither direction of a mode change broadens authority.
-        self._probe_versions = session.settings.get("execution.provider", "host") == "host"
+        self._probe_versions = session.settings.get("execution.mode") == "no-limit"
         # Share only the startup snapshot; each session owns its selection and additions.
         self.catalog = tuple(discover_shells(execute=self._probe_versions)) if catalog is None else catalog
         self.available = list(self.catalog)
@@ -30,7 +30,7 @@ class ShellSelection:
             session.ui.print(session.t("harness.shell.unavailable", error=error), "warn")
 
     def probe(self, value: str) -> Shell:
-        execute = self._probe_versions
+        execute = self._probe_versions and self.session.services["execution"].name == "host"
         return probe_shell(value, t=self.session.t, execute=execute)
 
     def remember(self, shell: Shell) -> None:

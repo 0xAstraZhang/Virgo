@@ -32,7 +32,7 @@ def test_grant_cannot_be_reused_after_context_changes(broker_session, tmp_path, 
     elif change == "environment":
         monkeypatch.setenv("GRANT_ENV_CHANGED", "1")
     elif change == "expiry":
-        provider._pending = {k: replace(g, expires=0) for k, g in provider._pending.items()}
+        provider.sandbox._pending = {k: replace(g, expires=0) for k, g in provider.sandbox._pending.items()}
     elif change == "run":
         session.main.prepare_run()
     elif change == "origin":

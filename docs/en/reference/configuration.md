@@ -39,11 +39,8 @@ See [examples](../../../examples/README.md) for optional provider and extension 
 | `effort` | `medium`; supported UI levels are `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxTokens` | Unset; adapter/model defaults apply |
 | `shell.executable` | `auto`; adapted shell name or executable path |
-| `permissions.preset` | Sandbox: `workspace-edit` |
-| `permissions.presets` | `name/readPaths/writePaths/networkAllowed` |
-| `execution.provider` | `host`; `host` or `sandbox` |
+| `execution.mode` | `no-limit` (default), `read-only`, `workspace-edit` |
 | `permissions.approval` | `ask`; use `never` to reject operations needing a new approval |
-| `sandbox.executable` | Explicit installed MXC v1.1.0 executor path |
 | `compaction.enabled` | `true` |
 | `compaction.triggerRatio` | `0.8` of the model's context window |
 | `compaction.triggerTokens` | Unset; when supplied, takes precedence over the ratio |
@@ -100,23 +97,15 @@ Auxiliary requests automatically choose a small model on the same connection: `c
 
 ## Execution and resources
 
-Fresh settings use `execution.provider=host`. Host performs direct file and process operations with the host account's OS rights; it does not load or probe Sandbox and does not review commands. `--execution host|sandbox` explicitly selects the provider. `/permissions show` distinguishes requested and effective scope.
-
-Sandbox is an explicitly selected required extension. Configure an installed MXC v1.1.0 executor with `sandbox.executable`. A missing extension, invalid executable or unsupported policy refuses execution without Host fallback. **Native shared-path execution is currently blocked** by an observed macOS hardlink alias bypass; backend discovery is not isolation evidence. See [acceptance](../development/execution-acceptance.md).
-
-`permissions.preset/presets` belong to Sandbox. Each preset has `name`, `readPaths`, `writePaths` and `networkAllowed`; paths resolve against the source workspace and writable paths are also readable. Built-ins `read-only` and `workspace-edit` grant workspace read and workspace write respectively, both with network allowed. `no-limit` is removed. System runtime dependencies are separate from user grants.
-
-For networking, `networkAllowed: true` requests egress, ingress and host loopback. `false` requests none. An array requests exactly the listed directions. For example, `"networkAllowed": ["egress"]` requests outbound traffic only. Accepted values are `egress`, `ingress` and `hostLoopback`. Managed public Web tools require egress. Native policy support is reported separately. The shared-path native Shell remains unavailable.
+Use `--permission read-only`, `--permission workspace-edit` or `--permission no-limit`. Fresh installations use No-Limit. The compatibility flag `--execution host` selects No-Limit. The CLI and TUI use the same three choices.
 
 ```json
-{"execution":{"provider":"sandbox"},"sandbox":{"executable":"/absolute/path/to/mxc-exec-mac"},"permissions":{"preset":"offline","approval":"ask","presets":{"offline":{"name":"Offline","readPaths":["."],"writePaths":["."],"networkAllowed":false}}}}
+{"execution":{"mode":"workspace-edit"}}
 ```
 
-`--permission <id>`, `/permissions <id>` and the Sandbox TUI picker select a preset for subsequent runs. `/permissions save <id> <JSON>` saves a user preset. Running, queued and child tasks retain their captured context. `ask|never` controls only explicit resource-increment requests; Host has no resource approval controls. Grants are consumed once for the exact operation and expire after five minutes or run end, whichever comes first. Expiration does not revoke an already running process.
+`/permissions show` reports the current task and next-task mode. `/permissions list` lists the modes. Use `/permissions grants` and `/permissions revoke ID` to manage saved resource approvals. Projects cannot grant execution authority. A running child or background operation keeps its captured context.
 
-User settings and explicit startup overrides supply authority. Project settings cannot set execution, permissions or extension trust. Explicit legacy isolation settings without an explicit Sandbox selection are a configuration conflict. Nonempty `allow/deny`, old boolean preset fields and child `read_only` arguments produce migration errors. There is no command whitelist or intent classifier. See [migration](../guides/migrating-execution-policy.md) and [resource presets](../development/permission-profiles.md).
-
-Trusted Python extensions, hooks, MCP server startup and model transport remain outside the managed boundary. Sandbox refuses external operations whose requested file scope cannot be enforced; a grant cannot switch to Host. Managed Web and native search check the captured network policy.
+See [permission modes](../development/permission-profiles.md) and [native backends](../guides/sandbox.md).
 
 ## Context and retries
 

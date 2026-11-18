@@ -5,8 +5,6 @@ on:
     paths:
       - 'src/virgo/**'
       - 'tests/support/**'
-      - 'ci/*mxc*.py'
-      - 'docs/evidence/execution/**'
       - 'tests/harness/test_sandbox_e2e.py'
       - '.github/workflows/native-sandbox.yml'
       - 'pyproject.toml'
@@ -46,11 +44,6 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - run: uv sync --locked --dev
-      - name: Install the pinned standalone MXC executor explicitly
-        run: uv run --no-sync python ci/install_mxc_executor.py --directory "${{ runner.temp }}/virgo-mxc"
-      - name: Record upstream native startup and alias evidence
-        run: uv run --no-sync python ci/probe_mxc.py --executor "${{ env.VIRGO_MXC_EXECUTABLE }}" --output mxc-probe.json
-        continue-on-error: true
       - name: Exercise real native boundaries without capability skips
         run: uv run --no-sync pytest -q tests/harness/test_sandbox_e2e.py --junitxml=native-sandbox.xml
       - name: Reject empty, failed or skipped native reports
@@ -60,8 +53,6 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: native-sandbox-${{ matrix.os }}
-          path: |
-            native-sandbox.xml
-            mxc-probe.json
+          path: native-sandbox.xml
           if-no-files-found: error
           retention-days: 7

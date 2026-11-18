@@ -1,33 +1,15 @@
-# Execution and Sandbox
+# Native command sandbox
 
-Fresh configurations use **Host** execution. File tools and commands use the host account's OS permissions. Virgo does not import the Sandbox Extension, discover an isolation backend, start its services, review commands, or ask for ordinary command approval on this path. `--execution host` makes the choice explicit. `/permissions show` reports the active provider.
+No-Limit runs on Host with the current account's permissions. Read-Only and Workspace-Edit load the Sandbox extension on selection. Both allow managed web search and reading. Shell networking starts disabled in Read-Only and enabled in Workspace-Edit. See [permission modes and approvals](../development/permission-profiles.md).
 
-Task instructions describe intent. For example, “do not push” is a task convention; preventing pushes technically requires restricting credentials, remote authorization or other capabilities.
+## Live workspace
 
-## Selecting Sandbox
+The command's working tree is the same directory edited by file tools and host editors. File tools open retained objects, stage changed content and replace the destination. A watcher can reopen the path immediately after the edit. Commands have private writable scratch and a private home. Core owns the output handles in the originating workspace.
 
-Select `--execution sandbox` or set `execution.provider` to `sandbox` in user settings. Install the official MXC **1.1.0** standalone executor yourself and configure its absolute path as `sandbox.executable`. Virgo checks the platform artifact digest. It never downloads, updates or falls back from MXC at task startup. Missing extensions, executors and unsupported resource policies fail closed.
+Linux uses Bubblewrap and a libseccomp filter. macOS uses Seatbelt and a launchd coalition supervisor. Windows uses LPAC, a write-restricted token, per-process ACL grants and a Job Object. A failed preflight or native launch reports the error to the caller. Each running process retains the resources it was granted at launch.
 
-**Native process support is currently blocked.** A real macOS ARM64 test started MXC successfully and completed an allowed write, then modified a protected outside file through a hardlink inserted after launch. Scanning paths before startup does not close this race. Virgo therefore rejects shared-host-path native policies before starting payloads. Installing MXC does not enable supported Shell isolation. See [acceptance evidence](../development/execution-acceptance.md). Windows additionally lacks successful PSEC startup evidence on the evaluated CI hosts. There is no legacy native backend fallback.
+## File protection
 
-The file tools read and edit the live project. An allowed edit is visible in your editor as soon as the tool commits it. Run `/permissions show` to see the current and next presets, file-tool availability and the reason native Shell is unavailable.
+Existing workspace control metadata and nested interpreter roots remain protected. The POSIX launch check rejects multiply linked writable files. The supported live-workspace contract requires trusted host writers to preserve the filesystem boundary during a command. A hostile concurrent host writer can change what a pathname denotes between checks or after launch. The startup scan does not continuously protect against that behavior. An external Shell grant requires an existing, exact file or directory. File-level approval never substitutes its parent directory.
 
-## Resources and inheritance
-
-Named presets use `readPaths`, `writePaths` and `networkAllowed`. See the [configuration reference](../reference/configuration.md) for directional network access. Writable paths are also readable. Relative paths resolve from the originating workspace. `read-only` grants workspace reads, `workspace-edit` grants workspace reads and writes; both allow networking. `no-limit` is not a Sandbox preset.
-
-Each task captures its execution provider, workspace, resource policy and revision. Children and queued background operations inherit that context. Switching visible conversations, changing cwd or choosing a preset for a later run cannot transfer another task's authority. The removed child `read_only` option cannot create a separate permission model.
-
-File tools retain pinned directories and file identity checks, reject shared-file aliases, and stage writes into new inodes before replacement. Failed edits do not commit content; existing encoding and permission semantics are preserved. Broker storage and runtime protection cannot be waived by an operation grant.
-
-`request_permissions` requests additional paths or networking for one exact file, process or network operation. It binds the source run, tool instance, normalized arguments, cwd, environment, policy revision and resource identities. A grant expires after five minutes or at run end, whichever happens first. Dispatch consumes it atomically; rejection, cancellation, expiry and failure do not restore it. History is audit data, not executable permission. Unsupported native/file-level grants are rejected without widening to a parent directory. An already started process keeps its launch boundary until it ends.
-
-## Scope and results
-
-Project context, skills, prompt templates and output tails use the originating file interface. User-owned configuration, instructions and trusted user skills are broker inputs outside that project resource boundary.
-
-Trusted Python extensions, hooks, MCP service startup and model transport run outside Sandbox. Managed Web dispatch checks the network resource policy. External tools that cannot enforce the requested policy are refused. Do not describe the whole application as isolated.
-
-Results distinguish the requested policy, effective file boundary, native establishment state, provider, restricted resource, payload start evidence, possible side effects and cleanup. Entering a Python tool function does not prove that a payload started. Unknown evidence remains unknown. Result hooks cannot replace recorded execution facts. Partial failures, timeouts and cleanup errors are not automatically replayed.
-
-MXC's macOS cleanup contract is **best effort**, including normal completion. The old coalition supervisor is removed. Observing a descendant exit is useful evidence for that case, not a universal guarantee. MXC warnings or uncertain cleanup are reported as failures with diagnostics retained. Host POSIX cleanup concerns the live process group; detached descendants are not universally contained.
+The broker and trusted extensions retain their own OS authority. Use the final revision's native results and full-suite comparison for release decisions. [Acceptance evidence](../development/execution-acceptance.md) · [Windows platform scope](windows-sandbox.md)

@@ -31,6 +31,45 @@ def readonly_including_child_shell(native, project):
     assert not (project / "blocked.txt").exists()
 
 
+def live_workspace_reader_observes_edit(native, project):
+    from virgo.ai.providers import faux
+
+    from tests.support.harness import tool_results, wait_until
+
+    source = project / "watched.txt"
+    source.write_text("before")
+    command = """import time
+from pathlib import Path
+source = Path('watched.txt')
+assert source.read_text() == 'before'
+Path('reader-ready').touch()
+deadline = time.monotonic() + 15
+while source.read_text() != 'after':
+    assert time.monotonic() < deadline
+    time.sleep(.05)
+Path('reader-observed').write_text(source.read_text())
+"""
+    result = run(native, python_command(native, command), background=True)
+    assert not result.is_error, result.text()
+    jobs = native.services["jobs"]
+    job = list(jobs.jobs.values())[-1]
+    try:
+        wait_until((project / "reader-ready").exists, timeout=15)
+        arguments = {"path": "watched.txt", "edits": [{"old_text": "before", "new_text": "after"}]}
+        faux.script("test", faux.reply(tools=[("edit", arguments)]), faux.reply("done"))
+        native.prompt("Save the edit while the reader is running")
+        edited = tool_results(native)[-1]
+        assert not edited.is_error, edited.text()
+        assert source.read_text() == "after"
+        assert job.done.wait(20) and job.status == "completed", job.result
+        assert (project / "reader-observed").read_text() == "after"
+        assert not native.ui.questions
+    finally:
+        if not job.done.is_set():
+            jobs.kill(job)
+            assert job.done.wait(10)
+
+
 def partial_execution_preserves_denied_file(native, project):
     outside = project.parent / "protected.txt"
     outside.write_text("unchanged")
@@ -57,8 +96,7 @@ def network_and_environment_isolation(native, project, monkeypatch):
         server.settimeout(5)
         source = f"import os,socket; assert 'ISOLATION_TEST_SECRET' not in os.environ; socket.create_connection({server.getsockname()!r},2).close(); print('connected')"
         provider = native.services["execution"]
-        provider.save_mode("offline", "Offline", ["."], ["."], False, persist=False)
-        provider.select_mode("offline")
+        provider.select_mode("read-only")
         denied = run(native, python_command(native, source))
         assert denied.is_error
         provider.select_mode("workspace-edit")

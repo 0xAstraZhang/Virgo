@@ -1,4 +1,4 @@
-"""Broker file boundaries and required native MXC acceptance.
+"""Broker file boundaries and required native platform acceptance.
 
 Native cases must launch a payload before counting as isolation evidence. The
 current shared-path policy refusal is a blocking failure in required runs.
@@ -10,9 +10,12 @@ import json
 import os
 import shlex
 import sys
+import stat
 import tempfile
 import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,7 +35,7 @@ def native(make_session):
 
 def test_workspace_file_tools_obey_sandbox_even_with_accept_all(broker_session, project):
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}}, refresh_models=False
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}}, refresh_models=False
     )
     outside = project.parent / "outside.txt"
     faux.script(
@@ -72,7 +75,7 @@ def test_sandbox_file_tools_reject_hardlinks(broker_session, project, tool, loca
     alias = project / "ordinary.txt"
     os.link(source, alias)
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}},
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -96,7 +99,7 @@ def test_sandbox_file_mutation_roundtrip_and_failed_edit(broker_session, project
     changes its bytes; successful or failed operations leave staging files.
     """
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}},
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -163,7 +166,7 @@ def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(broke
     target.write_text("original\n")
     outside.write_text("original\n")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}},
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -224,7 +227,7 @@ def test_sandbox_project_context_symlink_never_reaches_provider(broker_session, 
     secret = project.parent / "private-context-secret.txt"
     secret.write_text("credential-never-automatic-project-context")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}},
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -272,7 +275,7 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(broker_
     other.mkdir()
     (other / "AGENTS.md").write_text("replacement-cwd-private-context")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}},
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -294,6 +297,10 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(broker_
 
 def test_native_workspace_write_and_indirect_escape(native, project):
     native_cases.workspace_write_and_indirect_escape(native, project)
+
+
+def test_native_live_workspace_reader_observes_edit(native, project):
+    native_cases.live_workspace_reader_observes_edit(native, project)
 
 
 def test_native_readonly_including_child_shell(native, project):
@@ -318,7 +325,7 @@ def test_shared_native_policy_is_rejected_before_payload(broker_session, project
     assert result.is_error and result.details["status"] == "execution_unavailable"
     assert result.details["boundary"]["payload_started"] is False
     assert result.details["boundary"]["side_effects"] == "none"
-    assert result.details["boundary"]["dimension"] == "filesystem_aliases"
+    assert result.details["boundary"]["reason"] == "backend_unavailable"
     assert not session.ui.questions
 
 
@@ -706,7 +713,7 @@ def test_sandbox_file_mutation_rejects_metadata_symlink(broker_session, project,
     target = project / "ordinary.txt"
     target.write_text("original")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}},
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
     arguments = ({"path": target.name, "content": "changed"} if tool == "write" else
@@ -810,12 +817,16 @@ def test_native_existing_metadata_symlink_cannot_be_replaced(native, project):
     assert link.read_text() == target.read_text() == "original instructions"
 
 
-def test_missing_backend_is_fail_closed_in_real_session(make_session, project):
-    with pytest.raises((OSError, RuntimeError)):
-        make_session(settings={'execution': {'provider': 'sandbox'},
-                               'sandbox': {'executable': str(project.parent / 'missing-executor')}},
-                     refresh_models=False, extensions=False)
-    assert not (project / 'payload-ran').exists()
+def test_missing_backend_is_fail_closed_in_real_session(make_session, project, monkeypatch):
+    from virgo.execution import ExecutionUnavailable
+
+    def unavailable():
+        raise ExecutionUnavailable("Missing native backend")
+
+    monkeypatch.setattr("virgo.extensions.sandbox.native.platform_backend", unavailable)
+    with pytest.raises(ExecutionUnavailable, match="Missing native backend"):
+        make_session(settings={"execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
+    assert not (project / "payload-ran").exists()
 
 
 def test_required_provider_initialization_failure_aborts_session(make_session, project, monkeypatch):
@@ -824,9 +835,9 @@ def test_required_provider_initialization_failure_aborts_session(make_session, p
     def broken(api):
         raise RuntimeError('required provider setup failed')
 
-    monkeypatch.setattr(extension, 'setup', broken)
+    monkeypatch.setattr(extension, 'SandboxExecutionProvider', broken)
     with pytest.raises(RuntimeError, match='required provider setup failed'):
-        make_session(settings={'execution': {'provider': 'sandbox'}}, extensions=False, refresh_models=False)
+        make_session(settings={'execution': {'mode': 'workspace-edit'}}, extensions=False, refresh_models=False)
     assert not (project / 'payload-ran').exists()
 
 
@@ -843,56 +854,29 @@ def test_project_cannot_disable_user_sandbox(make_session, project):
 @pytest.mark.parametrize('background', [False, True])
 @pytest.mark.parametrize('payload', [False, True], ids=['wrapper-failed', 'ack-lost'])
 def test_unacknowledged_native_launch_keeps_unknown_facts(broker_session, project, monkeypatch, background, payload):
-    """Real synthetic processes test acknowledgement handling, never isolation.
+    """A lost startup acknowledgement cannot authorize replay."""
+    from virgo.execution import ExecutionFailed
+    from virgo.extensions.sandbox.native import NativeExecutor
 
-    No launch receipt means unknown even when stderr claims rejection. A receipt
-    overwritten by the payload must not erase possible effects or trigger replay.
-    """
-    import subprocess
-    import tempfile
+    attempts = []
 
-    from virgo.extensions.sandbox.mxc import MxcProcess
-    from virgo.extensions.sandbox.policy import SandboxPolicy
+    def uncertain(self, policy, argv, cwd, env, stdout, output_path, cancellation):
+        attempts.append(argv)
+        if payload:
+            (project / "payload-ran").write_text("once")
+        raise ExecutionFailed("The native launcher could not confirm execution")
 
     session = broker_session()
-    provider = session.services['execution']
-    attempts = []
-    controls = []
-
-    def spawn(policy, argv, cwd, env, stdout, cancellation):
-        attempts.append(argv)
-        control = Path(tempfile.mkdtemp(dir=project.parent))
-        controls.append(control)
-        scratch, channel = control / 'scratch', control / 'channel'
-        scratch.mkdir()
-        channel.mkdir()
-        marker = scratch / 'missing-receipt'
-        source = ("from pathlib import Path; Path('payload-ran').write_text('once'); "
-                  f"Path({str(marker)!r}).write_text(" + repr('{"nonce":"expected-nonce","started":false}') + ")" if payload else
-                  "import sys; sys.stderr.write('sandbox denied everything'); raise SystemExit(42)")
-        process = subprocess.Popen([sys.executable, '-I', '-S', '-c', source], cwd=cwd,
-                                   stdout=stdout, stderr=subprocess.STDOUT)
-        return MxcProcess(process, policy, control, scratch, marker,
-                          'expected-nonce', control / 'diagnostics.log', channel)
-
-    monkeypatch.setattr(provider.executor, 'spawn', spawn, raising=False)
-    # Exercise just the adapter acknowledgement contract with a synthetic
-    # launcher; this deliberately bypasses the separate unsupported-policy gate.
-    monkeypatch.setattr(SandboxPolicy, 'validate_native', SandboxPolicy.validate)
-    result = run(session, 'synthetic workload', background=background)
+    monkeypatch.setattr(NativeExecutor, "spawn", uncertain)
+    result = run(session, "synthetic workload", background=background)
+    assert result.is_error and result.details["status"] == "execution_failed"
     if background:
-        job = next(iter(session.services['jobs'].jobs.values()))
-        assert job.done.wait(5)
-        assert job.status == 'failed'
-        boundary = job.boundary
-    else:
-        assert result.is_error and result.details['status'] == 'execution_failed'
-        boundary = result.details['boundary']
+        assert not session.services["jobs"].jobs
+    boundary = result.details["boundary"]
     assert len(attempts) == 1
-    assert boundary['payload_started'] == 'unknown'
-    assert boundary['side_effects'] == 'possible'
-    assert (project / 'payload-ran').exists() is payload
-    assert controls and controls[0].exists(), 'Failed cleanup retains diagnostics'
+    assert boundary["payload_started"] == "unknown"
+    assert boundary["side_effects"] == "possible"
+    assert (project / "payload-ran").exists() is payload
 
 
 @pytest.mark.parametrize("route", ["child", "main-rebuild", "new-main"])
@@ -912,15 +896,14 @@ def test_automatic_context_cannot_borrow_another_conversations_no_limit_mode(bro
     other.mkdir()
     (other / "CLAUDE.md").write_text("replacement-cwd-private-context")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}},
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
     origin = session.main
     session.services["execution"].select_mode("workspace-edit")
     session.new_session()
-    session.services["execution"].save_mode("expanded", "Expanded", [".", str(project.parent)], [], True, persist=False)
-    session.services["execution"].select_mode("expanded")
-    assert str(project.parent) in session.main.execution_context.resources.read_paths
+    session.services["execution"].select_mode("no-limit")
+    assert session.main.execution_context.provider == "host"
     api = ExtensionAPI(session, "context-origin-profile")
     child = None
     try:
@@ -995,10 +978,17 @@ def test_native_independent_permission_combinations(native, project, read_only, 
     extra = project.parent / 'extra-resource'
     extra.mkdir()
     (extra / 'readable').write_text('extra')
-    roots = ['.'] if workspace_only else ['.', str(extra)]
-    provider = native.services['execution']
-    provider.save_mode('combination', 'Combination', roots, [] if read_only else roots, network_allowed, persist=False)
-    provider.select_mode('combination')
+    # Exercise the effective-policy boundary below the fixed user mode selector.
+    from dataclasses import replace
+    from threading import Event
+
+    from virgo.harness.execution_modes import parse_network
+    from virgo.tools.bash import run_command
+
+    roots = (str(project),) if workspace_only else (str(project), str(extra))
+    context = native.main.execution_context
+    context = replace(context, resources=replace(context.resources, read_paths=roots,
+                      write_paths=() if read_only else roots, network=parse_network(network_allowed)))
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0))
         listener.listen()
@@ -1013,8 +1003,9 @@ assert attempt(lambda: Path({str(extra / 'created')!r}).write_text('yes')) is {n
 assert attempt(lambda: socket.create_connection({listener.getsockname()!r}, 2).close()) is {network_allowed!r}
 print('independent dimensions checked')
 '''
-        result = run(native, python_command(native, source))
-        assert not result.is_error and 'independent dimensions checked' in result.text(), result.text()
+        output, code, status = run_command(python_command(native, source), project, 15, Event(),
+                                           interpreter=selected(native), execution_context=context)
+        assert code == 0 and status == "ok" and "independent dimensions checked" in output.text, output.text
 
 
 def test_native_workspace_local_virtualenv_runs_but_stays_readonly(native, project):
@@ -1047,7 +1038,7 @@ from tests.support.shell import selected
 
 session = AgentSession(
     Path.cwd(), model="faux/test", session=None, approval_policy="never",
-    settings={"execution": {"provider": "sandbox"}, "sandbox": {"executable": os.environ["VIRGO_MXC_EXECUTABLE"]}},
+    settings={"execution": {"mode": "workspace-edit"}},
     ui=RecordingUI(), refresh_models=False, extensions=False,
 )
 try:
@@ -1110,7 +1101,7 @@ def test_sandbox_shell_discovery_does_not_execute_candidate_on_host(broker_sessi
     elif route == "path":
         monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ.get("PATH", ""))
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"provider": "sandbox"}},
+        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False, trust_project_extensions=False,
     )
     assert session.services["execution"].name == "sandbox"
@@ -1123,10 +1114,180 @@ def test_sandbox_shell_discovery_does_not_execute_candidate_on_host(broker_sessi
 def test_sandbox_status_reports_effective_read_only(broker_session):
     session = broker_session(preset='read-only')
     session.prompt('/permissions show')
-    state = json.loads(session.ui.text.split('Sandbox / MXC\n')[-1])
+    state = json.JSONDecoder().raw_decode(session.ui.text[session.ui.text.index('{'):])[0]
     assert state['provider'] == 'sandbox'
     assert state['requested']['write_paths'] == []
     assert state['effective']['file_tools']['write_paths'] == []
     assert state['effective']['native_process'] is None
-    assert state['native_support'] is False
+    assert state['native_support'] == 'checked_at_launch'
     assert state['state'] != 'established'
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux resolver metadata and POSIX account lookup")
+def test_linux_resolver_configuration_accepts_only_trusted_service_metadata(project, monkeypatch):
+    """Systemd-owned DNS data is not an executable runtime.
+
+    Ubuntu CI reproduced rejection of its actual service-owned stub-resolv.conf.
+    This focused envelope check substitutes only fixed system-path metadata; the
+    separate native test still has to establish actual name resolution and TCP.
+    """
+    import pwd
+
+    from virgo.extensions.sandbox import platform as sandbox
+
+    entry = Path("/etc/resolv.conf")
+    target = Path("/run/systemd/resolve/stub-resolv.conf")
+    service_uid = 42424
+    metadata = {"entry_uid": 0, "target_uid": service_uid, "target_mode": stat.S_IFREG | 0o644,
+                "directory_uid": service_uid}
+    root_paths = {*entry.parents, *target.parents}
+    root_files = {Path("/etc/hosts"), Path("/etc/nsswitch.conf")}
+    original_stat, original_resolve, original_account = Path.stat, Path.resolve, pwd.getpwnam
+
+    def info(mode, uid):
+        return os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+
+    def system_stat(path, *, follow_symlinks=True):
+        if path == entry and not follow_symlinks:
+            return info(stat.S_IFLNK | 0o777, metadata["entry_uid"])
+        if path in {entry, target}:
+            return info(metadata["target_mode"], metadata["target_uid"])
+        if path == target.parent:
+            return info(stat.S_IFDIR | 0o755, metadata["directory_uid"])
+        if path in root_paths:
+            return info(stat.S_IFDIR | 0o755, 0)
+        if path in root_files:
+            return info(stat.S_IFREG | 0o644, 0)
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    def system_resolve(path, *args, **kwargs):
+        if path == entry:
+            return target
+        if path in root_files:
+            return path
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", system_stat)
+    monkeypatch.setattr(Path, "resolve", system_resolve)
+    monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=service_uid)
+                        if name == "systemd-resolve" else original_account(name))
+    policy = sandbox.NativePolicy(project, True, True, (), ())
+
+    def envelope():
+        return policy._linux(Path("/usr/bin/bwrap"), project.parent / "scratch", project, 99, ())
+
+    args = envelope()
+    mounts = [args[index:index + 3] for index, value in enumerate(args) if value == "--ro-bind"]
+    assert ["--ro-bind", str(target), str(target)] in mounts
+    assert ["--ro-bind", str(target.parent), str(target.parent)] not in mounts
+    with pytest.raises(sandbox.SandboxUnavailable, match="not system-owned"):
+        sandbox._system_file(entry)  # Executable/library trust must stay strict.
+    for key, value in (("entry_uid", service_uid), ("target_uid", service_uid + 1),
+                       ("directory_uid", service_uid + 1), ("target_mode", stat.S_IFREG | 0o666),
+                       ("target_mode", stat.S_IFLNK | 0o444)):
+        previous, metadata[key] = metadata[key], value
+        with pytest.raises(sandbox.SandboxUnavailable):
+            envelope()
+        metadata[key] = previous
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native launch protocol")
+@pytest.mark.parametrize("background", [False, True])
+def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project, monkeypatch, background):
+    """A successful capability probe does not prove the actual envelope started.
+
+    Failure modes: the real wrapper fails after a successful probe but is reported
+    as an ordinary command exit; a background job reports successful startup;
+    the payload is replayed on the host; failed startup leaves a pending job.
+    This launches a real synthetic wrapper that never executes the payload. It
+    validates the launch protocol, not OS isolation (covered by native tests).
+    """
+    from virgo.extensions.sandbox import native as dispatcher
+    from virgo.extensions.sandbox import platform as sandbox
+
+    launcher = project.parent / "reject_after_probe.py"
+    attempts = project.parent / "launch-attempts.txt"
+    launcher.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"attempts = Path({str(attempts)!r})\n"
+        "probe = len(sys.argv) == 2 and Path(sys.argv[1]).name == 'true'\n"
+        "with attempts.open('a') as log:\n"
+        "    log.write('probe\\n' if probe else 'launch\\n')\n"
+        "if probe:\n"
+        "    raise SystemExit(0)\n"
+        "sys.stderr.write('synthetic sandbox: isolation setup rejected before exec\\n')\n"
+        "raise SystemExit(42)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("seatbelt", Path(sys.executable)))
+    # The synthetic wrapper never executes this probe path. Keep this protocol
+    # check independent of host file ownership; native cases check real trust.
+    monkeypatch.setattr(dispatcher, "platform_backend", sandbox.platform_backend)
+    system_file = sandbox._system_file
+    monkeypatch.setattr(
+        sandbox, "_system_file",
+        lambda path: path if path == Path("/usr/bin/true") else system_file(path),
+    )
+    monkeypatch.setattr(
+        sandbox.NativePolicy, "_macos",
+        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)],
+    )
+    session = make_session(
+        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                  "execution": {"mode": "workspace-edit"}},
+        refresh_models=False, extensions=False,
+    )
+    result = run(session, "echo bad > payload-ran.txt", background=background)
+    assert result.is_error and result.details["status"] == "execution_unavailable", result.text()
+    assert not (project / "payload-ran.txt").exists()
+    assert attempts.read_text().splitlines() == ["probe", "launch"], "Never retry a rejected payload"
+    if background:
+        assert not session.services["jobs"].jobs
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native launch protocol")
+@pytest.mark.parametrize("background", [False, True])
+def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, project, monkeypatch, background):
+    """A delayed broker can miss an acknowledgement after the payload ran.
+
+    The synthetic wrapper exercises real exec/pipe/lifecycle behavior, not OS
+    isolation. Only acknowledgement observation and the broker deadline clock
+    are controlled; the payload writes a disposable marker exactly once.
+    """
+    from virgo.extensions.sandbox import native as dispatcher
+    from virgo.extensions.sandbox import platform as sandbox
+
+    launcher = project.parent / "forward_payload.py"
+    marker = project / "payload-ran.txt"
+    launcher.write_text(
+        "import os, sys\nfrom pathlib import Path\n"
+        "if len(sys.argv) == 2 and Path(sys.argv[1]).name == 'true':\n"
+        "    raise SystemExit(0)\n"
+        "os.execv(sys.argv[1], sys.argv[1:])\n"
+    )
+    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("protocol-test", Path(sys.executable)))
+    monkeypatch.setattr(dispatcher, "platform_backend", sandbox.platform_backend)
+    system_file = sandbox._system_file
+    monkeypatch.setattr(sandbox, "_system_file",
+                        lambda path: path if path == Path("/usr/bin/true") else system_file(path))
+    monkeypatch.setattr(sandbox.NativePolicy, "_macos",
+                        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)])
+    delayed = False
+
+    def lose_ack(*_args):
+        nonlocal delayed
+        wait_until(marker.exists, timeout=3)
+        delayed = True
+        return [], [], []
+
+    monkeypatch.setattr(sandbox, "select", SimpleNamespace(select=lose_ack))
+    monkeypatch.setattr(sandbox, "time", SimpleNamespace(
+        monotonic=lambda: time.monotonic() + (10 if delayed else 0), sleep=time.sleep))
+    session = make_session(settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                                     "execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
+    source = "from pathlib import Path\nwith Path('payload-ran.txt').open('a') as stream: stream.write('once')"
+    result = run(session, python_command(session, source), background=background)
+    assert marker.read_text() == "once"
+    assert result.is_error and result.details["status"] == "execution_failed", result.text()
+    assert result.details["boundary"]["side_effects"] == "possible"

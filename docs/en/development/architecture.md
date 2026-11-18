@@ -22,7 +22,7 @@ Virgo separates model transport, the agent loop and application policy. Official
 
 The installed entry point and `python -m virgo` both enter [`cli/main.py`](../../../src/virgo/cli/main.py). Keep runtime code inside the package so source and installed-wheel execution use the same implementation.
 
-Core uses `virgo.execution` for file and process access. `harness/execution.py` binds the default Host provider without Sandbox imports. `virgo.extensions.sandbox` owns resource grants, protected file access and the pinned MXC adapter. `origin_context.py` binds the source Runtime and workspace. Native support remains blocked as documented in [acceptance](execution-acceptance.md).
+Core binds each task to its originating workspace, execution context and resource approvals. No-Limit uses Host directly. The Sandbox extension maps effective resources onto Bubblewrap/seccomp, Seatbelt or Windows LPAC when a restricted mode is selected. [Execution acceptance](execution-acceptance.md)
 
 ## Core and plugin assembly
 

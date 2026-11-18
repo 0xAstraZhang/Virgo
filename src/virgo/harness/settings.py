@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .execution_modes import configured_modes
+from .execution_modes import DEFAULT_MODES, migrate_preset
 from .permissions import normalize_approval_policy
 
 PLUGIN_IDS = (
@@ -24,13 +24,13 @@ _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
-    "execution": {"provider": "host"},
+    "execution": {"mode": "no-limit"},
     "sandbox": {},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
     "providers": {},
-    "permissions": {"preset": "workspace-edit", "presets": {}, "approval": "ask"},
+    "permissions": {"approval": "ask"},
     "hooks": {},
     "shell": {"executable": "auto"},
     "plugins": {},
@@ -177,7 +177,8 @@ def _validate_permissions(value: object) -> None:
         raise ValueError(f"Unknown permissions setting(s): {', '.join(sorted(unknown))}")
     if "approval" in value:
         normalize_approval_policy(value["approval"])
-    configured_modes(value.get("presets", {}))
+    if not isinstance(value.get("presets", {}), dict):
+        raise ValueError("permissions.presets must be an object")
     selected = value.get("preset")
     if selected is not None and (not isinstance(selected, str) or not selected.strip()):
         raise ValueError("permissions.preset must be a permission preset ID")
@@ -190,19 +191,14 @@ def _validate_permissions(value: object) -> None:
 
 def _validate(data: dict) -> None:
     _validate_permissions(data.get("permissions", {}))
-    modes = configured_modes(data.get("permissions", {}).get("presets", {}))
-    if data.get("permissions", {}).get("preset", "workspace-edit") not in modes:
-        raise ValueError("permissions.preset is unknown; the legacy key permissions.mode is retired. Choose a configured permission preset ID")
-    if data.get("permissions", {}).get("mode") is not None or data.get("permissions", {}).get("modes") is not None:
-        raise ValueError("permissions.mode and permissions.modes are retired; use permissions.preset and permissions.presets")
-    execution = data.get("execution", {})
-    if not isinstance(execution, dict) or set(execution) - {"provider"} or execution.get("provider", "host") not in {"host", "sandbox"}:
-        raise ValueError("execution.provider must be host or sandbox")
-    sandbox = data.get("sandbox", {})
-    if not isinstance(sandbox, dict) or set(sandbox) - {"executable"}:
-        raise ValueError("Legacy sandbox configuration is retired; migrate to execution.provider=sandbox and sandbox.executable")
-    if "executable" in sandbox and (not isinstance(sandbox["executable"], str) or not Path(sandbox["executable"]).is_absolute()):
-        raise ValueError("sandbox.executable must be an absolute path to the installed MXC executor")
+    execution = data.get("execution")
+    if (not isinstance(execution, dict) or set(execution) != {"mode"}
+            or not isinstance(execution["mode"], str) or execution["mode"] not in DEFAULT_MODES):
+        raise ValueError("execution.mode must be read-only, workspace-edit or no-limit")
+    if data.get("sandbox"):
+        raise ValueError("Legacy sandbox settings are retired; migrate to execution.mode")
+    if set(data.get("permissions", {})) - {"approval", "allow", "deny"}:
+        raise ValueError("Custom permission presets are retired; choose execution.mode")
     plugins = data.get("plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("plugins must be an object keyed by plugin ID")
@@ -250,15 +246,39 @@ def _trusted_projects(user: dict) -> set[Path]:
     return resolved
 
 
-def _canonical_key(dotted: str) -> str:
-    """Read the 0.2 permission keys through the canonical spelling."""
-    if dotted == "permissions.mode":
-        return "permissions.preset"
-    if dotted == "permissions.modes":
-        return "permissions.presets"
-    if dotted.startswith("permissions.modes."):
-        return "permissions.presets." + dotted[len("permissions.modes."):]
-    return dotted
+def _migrate_execution(data: dict, explicit: dict, workspace: Path, notices: list[str]) -> None:
+    permissions = data["permissions"]
+    selected = permissions.pop("preset", None)
+    presets = permissions.pop("presets", {})
+    execution = data["execution"]
+    if not isinstance(execution, dict):
+        raise ValueError("execution must be an object")
+    provider = execution.pop("provider", None)
+    if provider not in (None, "host", "sandbox"):
+        raise ValueError("execution.provider must be host or sandbox")
+    sandbox = data.get("sandbox", {})
+    if not isinstance(sandbox, dict) or set(sandbox) - {"executable"}:
+        raise ValueError("Legacy sandbox configuration is retired; migrate to execution.mode")
+    if sandbox:
+        if not isinstance(sandbox["executable"], str) or not Path(sandbox["executable"]).is_absolute():
+            raise ValueError("Legacy sandbox.executable must be an absolute path")
+        data["sandbox"] = {}
+        notices.append("sandbox.executable is retired; Virgo selects the platform backend.")
+    if presets and selected is None and provider is None and "mode" not in explicit.get("execution", {}):
+        raise ValueError("Legacy permission presets have no explicit execution provider or selection; "
+                         "choose execution.mode to migrate")
+    if "mode" in explicit.get("execution", {}):
+        if selected is not None or presets or provider is not None:
+            notices.append("Explicit execution.mode overrides the legacy permission selection.")
+    elif selected is not None or provider == "sandbox":
+        if provider == "host":
+            raise ValueError("Legacy host and sandbox settings disagree; select execution.mode explicitly")
+        execution["mode"] = migrate_preset(selected or "workspace-edit", presets, workspace)
+        notices.append(f"Legacy permission selection migrated to execution.mode={execution['mode']}.")
+    elif provider == "host":
+        execution["mode"] = "no-limit"
+    if presets:
+        notices.append("Legacy custom presets are no longer selectable. Their user settings are preserved on disk.")
 
 
 class Settings:
@@ -308,8 +328,7 @@ class Settings:
         normalized_overrides = _normalize_layer(overrides or {}, notices)
         data = deep_merge(data, normalized_overrides)
         explicit = deep_merge(user, normalized_overrides)
-        if explicit.get("permissions", {}).get("preset") is not None and data["execution"]["provider"] != "sandbox":
-            raise ValueError("An explicit permission preset requires execution.provider=sandbox; migrate it or remove it to select Host")
+        _migrate_execution(data, explicit, paths.cwd, notices)
         _validate(data)
         settings = cls(data, paths)
         def record_sources(layer, source, prefix=""):
@@ -328,7 +347,6 @@ class Settings:
         return settings
 
     def get(self, dotted: str, default: Any = None) -> Any:
-        dotted = _canonical_key(dotted)
         cur: Any = self.data
         for part in dotted.split("."):
             if not isinstance(cur, dict) or part not in cur:
@@ -337,7 +355,6 @@ class Settings:
         return cur if cur is not None else default
 
     def set(self, dotted: str, value: Any) -> None:
-        dotted = _canonical_key(dotted)
         parts = dotted.split(".")
         checked = parts[0] in {"permissions", "execution", "sandbox"}
         data = copy.deepcopy(self.data) if checked else self.data

@@ -193,13 +193,14 @@ def test_cache_is_invalidated_by_endpoint_model_and_credential_changes(make_sess
 
 
 def test_network_policy_blocks_native_and_builtin_execution(broker_session):
-    session = broker_session(network=False, settings={"fetch": {"mode": "off"}})
+    session = broker_session(preset="read-only", settings={"fetch": {"mode": "off"}})
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
-    assert context.web_search is None
+    assert context.web_search and not runtime.permission_snapshot.mode.network
     event = ToolCallEvent(call_id="s", tool_name="web_search", args={"query": "Python"},
                           tool=session.tool("web_search"), cwd=session.cwd, agent="main")
-    assert session._before_tool(event) is not None
+    assert session._before_tool(event) is None
+    assert not session.ui.questions
 
 
 @pytest.mark.parametrize("kind", ["allow", "deny"])
@@ -221,9 +222,8 @@ def test_native_network_admission_is_rechecked_each_request(broker_session, monk
     assert runtime.request_context(runtime.messages).web_search
     assert runtime.request_context(runtime.messages).web_search
     assert len(decisions) == 2 and decisions[0].args["native"] is True
-    provider.save_mode("offline", "Offline", ["."], ["."], False, persist=False)
-    provider.select_mode("offline")
-    assert runtime.request_context(runtime.messages).web_search is None
+    provider.select_mode("read-only")
+    assert runtime.request_context(runtime.messages).web_search
     assert len(decisions) == 3
     provider.select_mode("workspace-edit")
     runtime.messages.append(UserMessage("Another request"))
@@ -232,11 +232,11 @@ def test_native_network_admission_is_rechecked_each_request(broker_session, monk
 
 
 def test_unapproved_native_scope_falls_back_without_asking_user(broker_session):
-    session = broker_session(network=False)
+    session = broker_session(preset="read-only")
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
-    assert context.web_search is None and not context.web_tools
-    assert "web_search" in [t.name for t in context.tools]
+    assert context.web_search and context.web_tools
+    assert "web_search" not in [t.name for t in context.tools]
     assert session.ui.questions == []
 
 

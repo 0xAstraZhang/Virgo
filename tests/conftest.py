@@ -108,18 +108,21 @@ def trash(tmp_path, monkeypatch):
 
 @pytest.fixture
 def broker_session(make_session, monkeypatch, tmp_path):
-    """Exercise real provider/file/grant behavior without claiming an MXC launch."""
-    from types import SimpleNamespace
+    """Exercise broker decisions without launching an OS sandbox."""
+    from virgo.execution import ExecutionUnavailable
+    from virgo.extensions.sandbox.native import NativeExecutor
 
     from tests.support.execution import sandbox_config
 
-    installation = tmp_path / 'executor'
-    installation.mkdir()
-    executor = SimpleNamespace(path=installation / 'test-executor', backend='not-launched', identity=('broker-test',))
-    monkeypatch.setattr('virgo.extensions.sandbox.MxcExecutor', lambda _: executor)
+    monkeypatch.setattr("virgo.extensions.sandbox.native.platform_backend", lambda: ("not-launched", tmp_path))
 
-    def factory(*responses, preset='workspace-edit', network=True, settings=None, **kw):
+    def unavailable(*args, **kwargs):
+        raise ExecutionUnavailable("Native backend deliberately unavailable in broker test", reason="backend_unavailable")
+
+    monkeypatch.setattr(NativeExecutor, "spawn", unavailable)
+
+    def factory(*responses, preset="workspace-edit", settings=None, **kw):
         from virgo.harness.settings import deep_merge
 
-        return make_session(*responses, settings=deep_merge(sandbox_config(preset, network=network), settings or {}), **kw)
+        return make_session(*responses, settings=deep_merge(sandbox_config(preset), settings or {}), **kw)
     return factory

@@ -62,17 +62,17 @@ def test_removed_task_flags_are_rejected_and_permission_output_stays_independent
         cwd=project, input="", capture_output=True, text=True, timeout=10,
     )
     assert legacy.returncode == 2
-    assert "requires execution.provider=sandbox" in legacy.stderr and not legacy.stdout
+    assert "invalid choice" in legacy.stderr and not legacy.stdout
 
 
 @pytest.mark.parametrize("language_args", [[], ["--language", "en"]])
 def test_cli_applies_execution_override_before_validating_user_preset(project, monkeypatch, capsys, language_args):
     cli = import_module("virgo.cli.main")
     home = Path(os.environ["VIRGO_HOME"])
-    executor = SimpleNamespace(path=home / "mxc", backend="not-launched")
-    monkeypatch.setattr("virgo.extensions.sandbox.MxcExecutor", lambda _: executor)
+    executor = SimpleNamespace(backend="not-launched")
+    monkeypatch.setattr("virgo.extensions.sandbox.NativeExecutor", lambda: executor)
     monkeypatch.setattr(sys, "stdin", io.StringIO())
-    (home / "settings.json").write_text(json.dumps({"language": "zh-CN", "permissions": {"preset": "read-only"}}))
+    (home / "settings.json").write_text(json.dumps({"language": "zh-CN", "permissions": {"preset": "workspace-edit"}}))
 
     result = cli.main(["-C", str(project), "--execution", "sandbox", "--no-session", "-m", "faux/demo",
                        *language_args, "-p", "/permissions show"])
