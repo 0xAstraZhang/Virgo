@@ -5,6 +5,7 @@ on:
     paths:
       - 'src/virgo/**'
       - 'tests/support/**'
+      - 'ci/measure_permission_modes.py'
       - 'tests/harness/test_sandbox_e2e.py'
       - '.github/workflows/native-sandbox.yml'
       - 'pyproject.toml'
