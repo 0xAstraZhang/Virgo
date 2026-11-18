@@ -28,6 +28,7 @@ class Fetch(WebAccess):
             resolve_api_key=lambda ctx: self.deepseek_key(self._model_for(ctx)),
             before_fetch=self.consume,
             review_redirect=self._redirect,
+            execution_context=api.services["execution"].for_context,
         )
 
     @property

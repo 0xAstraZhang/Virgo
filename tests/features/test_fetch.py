@@ -147,6 +147,22 @@ def test_large_text_is_saved_with_explicit_truncation(make_session, monkeypatch,
     assert Path(data["output_path"]).read_text() == http["body"]
 
 
+
+def test_read_only_web_spill_uses_private_workspace_output(broker_session, monkeypatch, http):
+    from pathlib import Path
+
+    http.update(body="Evidence " * 10000, headers={"content-type": "text/plain"})
+    session = broker_session(preset="read-only")
+    before = list(session.cwd.iterdir())
+    result, _ = fetch(session, monkeypatch)
+    assert not result.is_error, result.text()
+    path = Path(json.loads(result.text())["output_path"])
+    assert path.is_relative_to(session.paths.user)
+    assert session.main.execution_context.read_bytes(path).decode() == http["body"]
+    assert list(session.cwd.iterdir()) == before
+    assert not session.ui.questions
+
+
 def test_quota_applies_across_tool_rounds_and_resets_on_user_request(make_session, monkeypatch, http):
     s = make_session(settings={"fetch": {"maxUses": 1}, "compaction": {"enabled": False}})
     install_responses(monkeypatch,
