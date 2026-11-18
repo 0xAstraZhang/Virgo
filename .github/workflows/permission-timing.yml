@@ -6,6 +6,7 @@ on:
       - 'src/virgo/**'
       - 'ci/measure_startup.py'
       - 'ci/compare_permission_timing.py'
+      - 'ci/checks/readonly_web.py'
       - '.github/workflows/permission-timing.yml'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -75,6 +76,10 @@ jobs:
         working-directory: head
         shell: bash
         run: uv run --no-sync python ci/compare_permission_timing.py --mode "$MODE" --head-sha "$HEAD_SHA" --head ../head.json --baseline ../baseline.json --output ../comparison.json
+      - name: Fetch the pinned public license in Read-Only mode
+        if: ${{ !cancelled() && matrix.mode == 'read-only' }}
+        working-directory: head
+        run: uv run --no-sync python ci/checks/readonly_web.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
