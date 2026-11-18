@@ -1,5 +1,5 @@
 {
-  "baseline_sha": "fce6ec617c964cc631049017d27740131d9d50a3",
+  "baseline_sha": "6346255146f11b8024e11fd3f3faae19f41d5862",
   "original_product_baseline": "4c8520fb3faa262e5f502ff808cd5fd4350bf9bd",
   "reason": "Host default, resource grants and MXC-only implementation replace command rules, mutable ceilings and legacy native backend internals. This exact inventory never grants a native isolation pass. Generic native acceptance remains required and blocked.",
   "preservation_gates": [
