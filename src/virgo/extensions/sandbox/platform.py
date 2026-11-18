@@ -14,7 +14,6 @@ import os
 import platform
 import select
 import shutil
-import signal
 import socket
 import stat
 import subprocess
@@ -27,6 +26,7 @@ from pathlib import Path
 from ...execution import ExecutionCancelled as SandboxCancelled
 from ...execution import ExecutionFailed as SandboxProcessError
 from ...execution import ExecutionUnavailable as SandboxUnavailable
+from ...execution import HostProcess
 
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 _ENV_KEYS = frozenset({"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"})
@@ -490,6 +490,7 @@ class NativePolicy:
         pinned = []
         status_read = status_write = None
         proc = None
+        acknowledged = False
         try:
             (scratch_path / "home").mkdir()
             clean_env = {key: value for key, value in env.items() if key in _ENV_KEYS}
@@ -582,6 +583,7 @@ class NativePolicy:
             if startup != b"\0":
                 reason = bytes(startup).lstrip(b"\0").decode("utf-8", errors="replace")
                 raise SandboxUnavailable(f"{backend} failed before command exec: {reason or 'no startup acknowledgement'}")
+            acknowledged = True
             return proc
         except (OSError, subprocess.TimeoutExpired) as error:
             if isinstance(error, SandboxCancelled):
@@ -591,7 +593,7 @@ class NativePolicy:
                                           "Command execution is unknown; do not replay it.") from error
             raise SandboxUnavailable(f"Could not launch native sandbox: {error}") from error
         finally:
-            failed = sys.exc_info()[0] is not None
+            startup_error = sys.exception()
             for descriptor in (status_read, status_write):
                 if descriptor is not None:
                     os.close(descriptor)
@@ -599,9 +601,17 @@ class NativePolicy:
                 os.close(descriptor)
             if filter_file is not None:
                 filter_file.close()
-            if failed:
+            if not acknowledged:
                 if proc is not None:
-                    cleanup_process(proc)
+                    try:
+                        cleanup_process(proc)
+                    except Exception as cleanup_error:
+                        failure = SandboxProcessError(
+                            f"Native startup failed ({startup_error}); cleanup also failed ({cleanup_error}). "
+                            "The command may have run. Do not replay it."
+                        )
+                        failure.boundary = {"cleanup": "failed", "payload_started": "unknown", "side_effects": "possible"}
+                        raise failure from cleanup_error
                 else:
                     scratch.cleanup()
 
@@ -625,24 +635,8 @@ def cleanup_process(proc) -> None:
             scratch.cleanup()
             proc._virgo_sandbox_tmp = None
             return
-        # The existing executor owns waiting/cancellation; reap remaining members
-        # of its process group before releasing private scratch storage.
-        # Darwin can report EPERM for a group containing only an unreaped zombie.
-        # Reap our exited launcher before signalling, and close that exit race
-        # without ignoring a permission failure against a live process group.
-        proc.poll()
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            if proc.poll() is None:
-                raise
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        if proc.poll() is None:
-            proc.wait(timeout=5)
+        # The neutral process handle pins the group identity through leader
+        # exit and reaps it only after the remaining members are signalled.
+        HostProcess(proc).cleanup_tree()
         scratch.cleanup()
         proc._virgo_sandbox_tmp = None

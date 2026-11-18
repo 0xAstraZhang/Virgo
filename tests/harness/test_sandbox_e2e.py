@@ -1293,5 +1293,5 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     source = "from pathlib import Path\nwith Path('payload-ran.txt').open('a') as stream: stream.write('once')"
     result = run(session, python_command(session, source), background=background)
     assert marker.read_text() == "once"
-    assert result.is_error and result.details["status"] == "execution_failed", result.text()
+    assert result.is_error and result.details.get("status") == "execution_failed", result.text()
     assert result.details["boundary"]["side_effects"] == "possible"
