@@ -432,6 +432,7 @@ class WindowsSandbox:
             for root in runtime_roots:
                 self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)
             self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
+            self._grants.validate_hardlinks()
             self._prepare_desktop()
             self.environment = self._environment(env)
             self._check_cancelled()
@@ -719,12 +720,20 @@ def spawn(policy, argv, cwd, env, stdout, cancellation):
         if envelope is not None:
             if proc is not None:
                 proc._virgo_sandbox_tmp = envelope
-            try:
-                if proc is not None:
+            cleanup_errors = []
+            if proc is not None:
+                try:
                     proc.cleanup_tree()
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(str(cleanup_error))
+            try:
                 envelope.cleanup()
             except BaseException as cleanup_error:
-                failure = SandboxProcessError(f"Windows sandbox launch failed ({error}); cleanup failed: {cleanup_error}")
+                cleanup_errors.append(str(cleanup_error))
+            if cleanup_errors:
+                failure = SandboxProcessError(
+                    f"Windows sandbox launch failed ({error}); cleanup failed ({'; '.join(cleanup_errors)})"
+                )
                 failure.process, failure.envelope = proc, envelope
                 raise failure from error
         if proc is not None and getattr(proc, "_released", False):

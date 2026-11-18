@@ -52,7 +52,8 @@ def test_permission_defaults_and_saved_mode_migration(project, configured):
     session = AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False)
     try:
         assert session.approval_policy == "ask"
-        assert session.services["execution"].name == "host"
+        assert session.services["execution"].name == "sandbox"
+        assert session.services["execution"].selected_mode_id == "workspace-edit"
     finally:
         session.shutdown()
 
@@ -205,11 +206,11 @@ def test_first_user_save_preserves_fresh_default_across_projects_and_cli_overrid
     paths = Paths(project)
     paths.project.mkdir()
     (paths.project / "settings.json").write_text(json.dumps({"effort": "low"}))
-    assert Settings.load(paths).get("execution.mode") == "no-limit"
+    assert Settings.load(paths).get("execution.mode") == "workspace-edit"
     path = paths.user / "settings.json"
     assert not path.exists()
     settings = Settings.load(paths, {"execution": {"mode": "read-only"}})
     settings.save_user({"language": "zh-CN"})
     assert settings.get("execution.mode") == "read-only"
-    assert json.loads(path.read_text())["execution"]["mode"] == "no-limit"
-    assert Settings.load(Paths(tmp_path / "other-project")).get("execution.mode") == "no-limit"
+    assert json.loads(path.read_text())["execution"]["mode"] == "workspace-edit"
+    assert Settings.load(Paths(tmp_path / "other-project")).get("execution.mode") == "workspace-edit"

@@ -64,6 +64,8 @@ class PtyClient:
                 "--no-session",
                 "--model",
                 "faux/demo",
+                "--permission",
+                "no-limit",
             ],
             cwd=project,
             env=env,

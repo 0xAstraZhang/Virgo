@@ -43,6 +43,9 @@ class SandboxPolicy:
 
     def protected_paths(self) -> tuple[Path, ...]:
         return (*(self.workspace / name for name in PROTECTED_NAMES), *self.runtime_paths())
+    def writable_roots(self) -> tuple[Path, ...]:
+        """Roots whose inode links are already inside the writable task scope."""
+        return tuple(dict.fromkeys(Path(value) for value in self.resources.write_paths))
 
     def check_write(self, path: Path):
         if self.private_path(path) or any(path.is_relative_to(root) for root in self.protected_paths()):

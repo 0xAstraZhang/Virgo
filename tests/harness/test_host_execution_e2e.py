@@ -29,7 +29,8 @@ from tests.support.harness import RecordingUI, tool_results
 workspace, home = map(pathlib.Path, sys.argv[1:])
 ui = RecordingUI()
 session = AgentSession(workspace, home=home, model="faux/host", session=None,
-                       ui=ui, refresh_models=False)
+                       ui=ui, settings={"execution": {"mode": "no-limit"}},
+                       refresh_models=False)
 shell = session.services["shell"].current
 command = "Write-Output ('host-' + 'ok')" if shell.tool_name == "powershell" else "for x in host-ok; do printf '%s' \"$x\"; done"
 faux.script("host", faux.reply(tools=[("write", {"path": "../outside.txt", "content": "host"})]),

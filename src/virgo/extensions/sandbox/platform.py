@@ -27,6 +27,7 @@ from ...execution import ExecutionCancelled as SandboxCancelled
 from ...execution import ExecutionFailed as SandboxProcessError
 from ...execution import ExecutionUnavailable as SandboxUnavailable
 from ...execution import HostProcess
+from .links import external_writable_links
 
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 _ENV_KEYS = frozenset({"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"})
@@ -269,14 +270,9 @@ class NativePolicy:
     def validate(self, cwd: Path) -> Path:
         """Check the envelope before the broker creates output directories/files."""
         try:
-            for path, writable in self.grants:
+            for path, _writable in self.grants:
                 if path.resolve(strict=True) != path:
                     raise SandboxUnavailable(f"Native grant path changed: {path}")
-                if os.name == "posix" and writable:
-                    if path.is_dir():
-                        self._reject_writable_hardlinks((), root=path)
-                    elif path.stat().st_nlink != 1:
-                        raise SandboxUnavailable(f"Writable sandbox files must not be hard-linked: {path}")
             if os.name == "nt":
                 from .windows_sandbox import validate_policy
 
@@ -300,8 +296,17 @@ class NativePolicy:
                         # a writable alias of the installation directory does not.
                         raise SandboxUnavailable(f"Interpreter directory alias is writable in the workspace: {alias}")
             protected = self.protected_paths()
-            if not self.read_only and self.workspace_only and os.name == "posix":
-                self._reject_writable_hardlinks(protected)
+            if os.name == "posix" and self.workspace_only:
+                roots = tuple(path for path, writable in self.grants if writable)
+                if not self.read_only:
+                    roots = (self.workspace, *roots)
+                external = external_writable_links(roots, protected)
+                if external:
+                    path = next(iter(external.values()))
+                    raise SandboxUnavailable(
+                        f"Writable sandbox files must not link outside the writable scope: {path}",
+                        reason="protected_path", target=path,
+                    )
             for path in (self.workspace / ".virgo", self.workspace / ".virgo" / "outputs"):
                 if path.is_symlink() or not path.resolve().is_relative_to(self.workspace):
                     raise SandboxUnavailable(f"Sandbox output directory must stay inside its workspace: {path}")
@@ -310,32 +315,6 @@ class NativePolicy:
             raise
         except (OSError, RuntimeError) as error:
             raise SandboxUnavailable(f"Could not validate sandbox paths: {error}") from error
-
-    def _reject_writable_hardlinks(self, protected: tuple[Path, ...], *, root=None) -> None:
-        """Path-based mounts/profiles cannot confine pre-existing shared inodes.
-
-        Do not follow symlinks or inspect trees that are mounted/profiled read-only.
-        This is a launch check, not an atomic snapshot against trusted host writers.
-        Isolated commands cannot link read-only sources into the writable tree.
-        """
-        def readonly(path):
-            return any(path.is_relative_to(root) for root in protected)
-
-        def failed(error):
-            raise error
-
-        for parent, directories, files, descriptor in os.fwalk(root or self.workspace, onerror=failed):
-            parent = Path(parent)
-            directories[:] = [name for name in directories if not readonly(parent / name)]
-            for name in files:
-                if readonly(parent / name):
-                    continue
-                try:
-                    info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-                except FileNotFoundError:
-                    continue  # An ordinary concurrent workspace deletion is harmless.
-                if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-                    raise SandboxUnavailable(f"Writable sandbox files must not be hard-linked: {parent / name}")
 
     def _read_roots(self) -> list[Path]:
         roots = sorted({*self._system_roots(), *(path.resolve() for path in self.runtime_paths())},

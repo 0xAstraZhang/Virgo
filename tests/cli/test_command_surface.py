@@ -30,7 +30,7 @@ def test_permissions_owns_presets_and_approval(broker_session):
 
 
 def test_host_status_has_no_resource_approval_controls(make_session):
-    session = make_session()
+    session = make_session(settings={"execution": {"mode": "no-limit"}})
     session.prompt("/permissions show")
     assert "No-Limit (Host)" in session.ui.text
     session.prompt("/permissions list")

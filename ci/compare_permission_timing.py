@@ -58,6 +58,8 @@ def main():
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.head_sha == BASELINE:
+        raise SystemExit("Head and baseline are the same revision; the comparison would be vacuous")
     report = comparison(json.loads(args.head.read_bytes()), json.loads(args.baseline.read_bytes()),
                         args.head_sha, args.mode)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

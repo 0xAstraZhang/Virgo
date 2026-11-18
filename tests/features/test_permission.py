@@ -176,3 +176,60 @@ def test_search_review_selects_the_same_files_as_the_glob_tools(broker_session, 
     assert {Path(line) for line in results[2].text().splitlines()} == {Path("src/pkg/inside.py")}
     assert not results[3].is_error and "value = 1" in results[3].text()
     assert "OUTSIDE_SECRET" not in repr(results)
+
+
+def _external_tool(session, name, *, read_only):
+    from virgo.agent.types import AgentTool, ToolResult
+
+    tool = AgentTool(
+        name,
+        "External extension operation",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _args, _ctx: ToolResult.text("done"),
+        side_effect="read" if read_only else "write",
+    )
+    session.register_tool(tool, roles=("main",), owner="test")
+    return tool
+
+
+def test_read_only_external_tools_need_no_approval_in_sandbox_modes(broker_session):
+    ui = RecordingUI()
+    session = broker_session(ui=ui)
+    _external_tool(session, "external_read", read_only=True)
+    event = tool_call_event(session, "external_read", {})
+    assert session._before_tool(event) is None
+    assert session._before_tool_execute(event) is None
+    assert not ui.questions
+
+
+def test_mutating_external_tools_require_one_operation_approval(broker_session):
+    ui = RecordingUI(answers=["y"])
+    session = broker_session(ui=ui)
+    _external_tool(session, "external_write", read_only=False)
+    event = tool_call_event(session, "external_write", {"path": "result.txt"})
+    event.signal = session.main.agent.signal
+    assert session._before_tool(event) is None
+    assert session._before_tool_execute(event) is None
+    assert len(ui.questions) == 1 and "External tool" in ui.questions[0]
+    assert session.services["execution"].sandbox._pending == {}
+
+
+def test_denied_external_tool_is_blocked_before_dispatch(broker_session):
+    ui = RecordingUI(answers=["n"])
+    session = broker_session(ui=ui)
+    _external_tool(session, "external_write_denied", read_only=False)
+    event = tool_call_event(session, "external_write_denied", {})
+    event.signal = session.main.agent.signal
+    assert session._before_tool(event) is None
+    blocked = session._before_tool_execute(event)
+    assert isinstance(blocked, Block) and "not approved" in blocked.reason
+
+
+def test_no_limit_external_tools_skip_approval(make_session):
+    ui = RecordingUI()
+    session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
+    _external_tool(session, "external_write_host", read_only=False)
+    event = tool_call_event(session, "external_write_host", {})
+    assert session._before_tool(event) is None
+    assert session._before_tool_execute(event) is None
+    assert not ui.questions

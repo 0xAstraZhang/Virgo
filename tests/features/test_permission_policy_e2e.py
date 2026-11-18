@@ -55,7 +55,8 @@ def test_project_deny_rules_cannot_erase_user_restrictions(project, project_deni
 
 def test_never_rejects_unknown_operations_without_blocking_workspace_writes(make_session, project, python_command):
     ui = RecordingUI(answers=["y"])
-    session = make_session(approval="never", allow=False, ui=ui)
+    session = make_session(approval="never", allow=False, ui=ui,
+                           settings={"execution": {"mode": "no-limit"}})
     shell = session.services["shell"].current
     command = python_command("from pathlib import Path; Path('forbidden.txt').touch()", shell=shell)
     faux.script("test", faux.reply(tools=[

@@ -271,7 +271,7 @@ def test_saved_model_choice_preserves_other_settings_and_applies_to_future_sessi
         "custom": {"keep": True},
         "model": "deepseek/deepseek-flash",
         "effort": "max",
-        "execution": {"mode": "no-limit"},
+        "execution": {"mode": "workspace-edit"},
     }
     loaded = Settings.load(session.paths)
     assert loaded.get("model") == session.model.spec == "deepseek/deepseek-flash"
@@ -291,7 +291,7 @@ def test_effort_choice_only_changes_effort(make_session, persist):
     assert session.model is original_model
     path = session.paths.user / "settings.json"
     if persist:
-        assert json.loads(path.read_text()) == {"effort": "xhigh", "execution": {"mode": "no-limit"}}
+        assert json.loads(path.read_text()) == {"effort": "xhigh", "execution": {"mode": "workspace-edit"}}
     else:
         assert not path.exists()
         assert session.settings.get("effort") == "medium"

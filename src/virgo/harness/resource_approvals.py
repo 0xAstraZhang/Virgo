@@ -129,8 +129,10 @@ class ResourceApprovals:
             return self._denial(policy, "Task networking is disabled; request permission for this exact operation.",
                                 "network_allowed", event.args.get("url", event.tool_name))
         if scope == "external":
-            return self._denial(policy, "This trusted external tool cannot enforce the task resource boundary. "
-                                "Use a managed operation or an explicitly selected Host task.", "unmanaged_tool", event.tool_name)
+            if event.tool is not None and event.tool.read_only:
+                return None
+            return self._denial(policy, "This external operation can modify host state; approve this exact call.",
+                                "unmanaged_tool", event.tool_name)
         if scope == "file":
             path = event.args.get("path", ".")
             if not isinstance(path, str):
@@ -154,8 +156,49 @@ class ResourceApprovals:
             return ()
         return tuple(rules.match(self._scope(event, base)))
 
+    def _external_write(self, event) -> bool:
+        return bool(event.tool is not None and event.tool.execution_scope == "external"
+                    and not event.tool.read_only)
+
+    def _confirm_callable(self):
+        ui = self.session.ui
+        once = getattr(ui, "confirm_once", None)
+        if callable(once) and getattr(once, "__func__", None) is not UI.confirm_once:
+            return once
+        confirm = getattr(ui, "confirm", None)
+        if callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm:
+            return confirm
+        return None
+
+    def _external_admitted(self, event, base) -> bool:
+        snapshot = base.permission_snapshot
+        return (snapshot is not None and snapshot.approval != "never"
+                and self.session.approval_policy != "never"
+                and event.signal is not None and not event.signal.is_set()
+                and self._confirm_callable() is not None)
+
+    def _confirm_external(self, event, base, block):
+        if not self._external_admitted(event, base):
+            return block
+        question = (f"External tool: {event.tool_name}\n"
+                    f"Arguments: {json.dumps(event.args, ensure_ascii=False)}\n"
+                    "This trusted extension runs outside the native sandbox and may modify host state."
+                    + self.session.t("features.permission.external_suffix"))
+        answer = self._confirm_callable()(question, event.agent)
+        if answer != "y":
+            return self._denial(base, "External tool operation was not approved",
+                                "unmanaged_tool", event.tool_name)
+        return None
+
     def _admit(self, event, *, consume):
         base = super().for_context(event)
+        if self._external_write(event):
+            block = self._check(event, base)
+            if block is None:
+                return None
+            if not consume:
+                return None if self._external_admitted(event, base) else block
+            return self._confirm_external(event, base, block)
         with self.session._lock:
             grant = None
             if self._pending:
@@ -291,7 +334,7 @@ class ResourceApprovals:
         question = (f"Operation: {event.tool_name} {json.dumps(event.args, ensure_ascii=False)}\n"
                     f"Working directory: {event.cwd.resolve()}\n"
                     f"Additional resources: {json.dumps(missing, ensure_ascii=False)}\n"
-                    f"Reason: {reason}" + self.session.t("features.permission.allow_suffix"))
+                    f"Reason: {reason}" + self.session.t("features.permission.external_suffix"))
         answer = self.session.ui.confirm(question, event.agent)
         with self.session._lock:
             if (event.signal.is_set() or base is not runtime.execution_context or key != self._key(event) or self.session.approval_policy == "never"

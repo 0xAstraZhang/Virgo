@@ -150,13 +150,17 @@ def test_credentials_and_unlisted_handles_are_not_inherited(native, project, mon
 
     secret = project.parent / 'handle-secret.txt'
     secret.write_bytes(b'private-handle-canary')
-    monkeypatch.setenv('VIRGO_PRIVATE_CREDENTIAL_CANARY', 'must-not-reach-payload')
+    keys = ["OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
+            "HTTP_PROXY", "HTTPS_PROXY", "SSH_AUTH_SOCK", "VIRGO_HOME", "PYTHONPATH", "BASH_ENV", "ENV"]
+    for key in keys:
+        monkeypatch.setenv(key, 'must-not-reach-payload')
     with secret.open('rb') as stream:
         handle = msvcrt.get_osfhandle(stream.fileno())
         os.set_handle_inheritable(handle, True)
-        source = f'''import ctypes,os
+        source = f'''import ctypes,json,os
 from ctypes import wintypes
-assert 'VIRGO_PRIVATE_CREDENTIAL_CANARY' not in os.environ
+assert [os.environ.get(key) for key in {keys!r}] == [None] * {len(keys)}
+assert os.environ.get('USERPROFILE')
 kernel=ctypes.WinDLL('kernel32',use_last_error=True)
 kernel.ReadFile.argtypes=[wintypes.HANDLE,wintypes.LPVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID]
 content=ctypes.create_string_buffer(128); count=wintypes.DWORD()
@@ -277,6 +281,8 @@ else:
             provider.select_mode('workspace-edit')
             allowed = run(native, python_command(native, source))
             assert not allowed.is_error and allowed.details["boundary"]["payload_started"] is True, allowed.text()
+            # Workspace-Edit allows public egress, not host loopback or the host interface.
+            assert "error" in data(allowed), allowed.text()
             record_property(f"workspace_edit_connect_{address}", json.dumps(data(allowed)))
             provider.select_mode('read-only')
             denied = run(native, python_command(native, source))
@@ -333,6 +339,9 @@ with socket.socket() as listener:
             details["host_received"] = "accepted"
     assert job.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), job.result
     assert job.status == "completed", job.result
+    assert "bind_error" not in details, details
+    assert "port" in details, details
+    assert "host_connection_error" in details and "host_received" not in details, details
     record_property("host_interface_ingress", json.dumps(details))
     assert not native.ui.questions
 
