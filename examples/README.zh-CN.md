@@ -9,7 +9,7 @@
 | 示例 | 在项目中的目标位置 | 用途 |
 | --- | --- | --- |
 | [项目指令](project/AGENTS.example.md) | 项目根目录的 `AGENTS.md` | 随项目上下文读取的共享指令 |
-| [配置](project/.virgo/settings.json) | `.virgo/settings.json` | 语言、推理强度、Shell、权限及可选本地 API |
+| [配置](project/.virgo/settings.json) | `.virgo/settings.json` | 语言、推理强度、Shell及可选本地 API |
 | [MCP 配置](project/.virgo/mcp.json) | `.virgo/mcp.json` | [MCP 扩展](../extensions/README.zh-CN.md)的默认禁用占位示例 |
 | [敏感文件保护](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | 工具钩子与 `/stats` 命令 |
 | [审查模板](project/.virgo/prompts/inspect.md) | `.virgo/prompts/inspect.md` | 支持参数的 `/inspect` |

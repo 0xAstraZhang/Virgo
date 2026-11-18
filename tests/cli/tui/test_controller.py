@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import replace
 
 from virgo.agent.types import AgentEvent
 from virgo.ai.providers import faux
@@ -12,7 +11,6 @@ from virgo.ai.stream import StreamEvent
 from virgo.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.controller import RunController
-from virgo.tools.fs import WRITE
 
 from tests.support.harness import wait_until
 from tests.support.tui import pump
@@ -291,21 +289,19 @@ def test_background_notification_wakes_idle_session(make_session):
     assert any(u.kind == "event" and u.payload.type == "message_end" for u in updates)
 
 
-def test_abort_during_permission_does_not_ask_for_remaining_tools(make_session, project):
+def test_abort_during_permission_does_not_ask_for_remaining_tools(broker_session, project):
     first, second = project / "one.txt", project / "two.txt"
     ui = FullscreenUI()
-    session = make_session(
+    session = broker_session(
         faux.reply(
             tools=[
-                ("extension_write", {"path": str(first), "content": "one"}),
-                ("extension_write", {"path": str(second), "content": "two"}),
+                ("request_permissions", {"tool": "write", "arguments": {"path": str(first), "content": "one"}, "permissions": {"write_paths": [str(first)]}, "reason": "one"}),
+                ("request_permissions", {"tool": "write", "arguments": {"path": str(second), "content": "two"}, "permissions": {"write_paths": [str(second)]}, "reason": "two"}),
             ]
         ),
         ui=ui,
-        allow=False,
+        preset="read-only",
     )
-    session.services["sandbox"].select_mode("workspace-edit")
-    session.register_tool(replace(WRITE, name="extension_write", i18n_key=""))
     controller = RunController(session, ui)
     controller.start("write two files")
     before = pump(controller, lambda c: bool(ui._waiting))

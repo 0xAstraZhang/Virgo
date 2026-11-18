@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 
 from ..tools.shell import Shell, default_shell, discover_shells, make_shell_tool, probe_shell
-from .execution_modes import configured_modes, legacy_mode
 from .extensions import ROLES_ALL
 
 USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)'
@@ -15,13 +14,7 @@ class ShellSelection:
         self.session = session
         # Startup authority is a ceiling; later probes also check the current
         # policy so neither direction of a mode change broadens authority.
-        modes = configured_modes(session.settings.get("permissions.presets", {}))
-        selected = session.settings.get("permissions.preset", "workspace-edit")
-        if (legacy := session.settings.get("sandbox.mode")) is not None:
-            mode = legacy_mode(legacy)
-            modes[mode.id] = mode
-            selected = mode.id
-        self._probe_versions = modes[selected].unrestricted
+        self._probe_versions = session.settings.get("execution.mode") == "no-limit"
         # Share only the startup snapshot; each session owns its selection and additions.
         self.catalog = tuple(discover_shells(execute=self._probe_versions)) if catalog is None else catalog
         self.available = list(self.catalog)
@@ -37,10 +30,7 @@ class ShellSelection:
             session.ui.print(session.t("harness.shell.unavailable", error=error), "warn")
 
     def probe(self, value: str) -> Shell:
-        sandbox = self.session.services.get("sandbox")
-        execute = self._probe_versions and (
-            sandbox is None or sandbox.selected_mode.unrestricted
-        )
+        execute = self._probe_versions and self.session.services["execution"].name == "host"
         return probe_shell(value, t=self.session.t, execute=execute)
 
     def remember(self, shell: Shell) -> None:
@@ -58,15 +48,15 @@ class ShellSelection:
             return
         jobs = s.services["jobs"]
 
-        def sandbox(ctx):
-            return s.services["sandbox"].for_context(ctx)
+        def execution(ctx):
+            return s.services["execution"].for_context(ctx)
 
         if jobs.background_enabled:
             # Children keep a foreground-only shell; the main runtime may background a command.
-            tools.append((make_shell_tool(self.current, sandbox=sandbox), ("subagent",)))
-            tools.append((make_shell_tool(self.current, jobs, sandbox=sandbox), ("main",)))
+            tools.append((make_shell_tool(self.current, execution=execution), ("subagent",)))
+            tools.append((make_shell_tool(self.current, jobs, execution=execution), ("main",)))
         else:
-            tools.append((make_shell_tool(self.current, sandbox=sandbox), ROLES_ALL))
+            tools.append((make_shell_tool(self.current, execution=execution), ROLES_ALL))
         s.replace_tools("shell", tools, owner="core.shell")
 
     def select(self, shell: Shell, *, automatic=False) -> None:

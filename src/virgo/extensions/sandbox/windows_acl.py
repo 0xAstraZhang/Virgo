@@ -18,8 +18,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .sandbox import SandboxCancelled, SandboxProcessError, SandboxUnavailable
-from .windows_sandbox_files import (
+from .platform import SandboxCancelled, SandboxProcessError, SandboxUnavailable
+from .windows_files import (
     BOOL,
     DWORD,
     FILE_ATTRIBUTE_DIRECTORY,

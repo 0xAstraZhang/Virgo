@@ -27,8 +27,8 @@ from ..diagnostics import capture_error, safe_text
 from ..tools.shell import ShellTool
 from . import compaction
 from .diagnostic_view import project_tool_result
-from .execution_modes import PermissionMode
 from .origin_context import ExecutionOrigin
+from .permissions import normalize_approval_policy
 from .prompt import RuntimeContext, build_system
 from .recovery import RuntimeDiagnostics, message_diagnostics
 from .retry import retry_after_seconds
@@ -67,9 +67,8 @@ class Runtime:
         origin_parent: ExecutionOrigin | None = None,
         accounting_store=None,
         request_budget: RequestBudget | None = None,
-        read_only: bool = False,
         approval_policy: str | None = None,
-        execution_mode: PermissionMode | None = None,
+        execution_context=None,
     ):
         self.session = session
         self.request_budget = request_budget or RequestBudget(session.settings.get("budget.maxModelCalls"))
@@ -81,8 +80,7 @@ class Runtime:
         if role != "main" and origin_parent is None:
             origin_parent = getattr(getattr(session, "main", None), "origin", None)
         self.parent = origin_parent.runtime if origin_parent is not None else None
-        self.read_only = bool(read_only)
-        self.approval_policy = approval_policy
+        self.approval_policy = normalize_approval_policy(approval_policy) if approval_policy is not None else None
         if origin_parent is not None:
             origin_parent.root.entries()  # Capture the task branch before a child can be queued or switched away.
             self.accounting_store = origin_parent.root
@@ -103,18 +101,18 @@ class Runtime:
         self._call_started: float | None = None  # set per model call; None for loop-made messages
         self.run_id: str | None = None
         self._prepared_run = False
+        self.execution_active = False
         self._model_call_id: str | None = None
         self._attempt_number = 0
         self.wakeups: deque = deque()
-        self.permission_snapshot = None
         self.diagnostic_id = uuid.uuid4().hex
         self.recovery = RuntimeDiagnostics(self, messages or ())
         self.diagnostic_access = self.recovery.access
         self.native_binding = (store.last_compaction() or {}).get("context_binding") if store else None
         self.system = ""
-        if execution_mode is not None:
-            self.execution_mode = execution_mode
-        session.services["sandbox"].capture_runtime(self)
+        if execution_context is not None:
+            self.execution_context = execution_context
+        session.services["execution"].capture_runtime(self)
         self.rebuild_system()
         cfg = AgentConfig(
             tools=self.tools,
@@ -149,6 +147,9 @@ class Runtime:
         return self.agent.messages
 
     def rebuild_system(self) -> None:
+        from dataclasses import replace
+
+        self.construction_context = replace(self.construction_context, execution_context=self.execution_context)
         self.system = build_system(self.session, self.role, self.system_extra, self.cwd,
                                    tools=self.tools, context=self.construction_context, runtime=self)
 
@@ -167,13 +168,13 @@ class Runtime:
         return project_tool_result(call, result,
                                    query_available=any(tool.name == "diagnostic_get" for tool in self.tools))
 
+    @property
+    def permission_snapshot(self):
+        return getattr(self.execution_context, "permission_snapshot", None)
+
     def refresh_permission_snapshot(self) -> None:
         """Capture the current selection for a new task, not an older run."""
-        sandbox = self.session.services["sandbox"]
-        # Drop the previous task's decision before reading live selection.
-        self.permission_snapshot = None
-        sandbox.capture_runtime(self)
-        self.permission_snapshot = sandbox.snapshot(self)
+        self.session.services["execution"].capture_runtime(self)
 
     def prepare_run(self) -> None:
         """Bind startup hooks to this run before its first model request exists."""
@@ -182,8 +183,11 @@ class Runtime:
         self._model_call_id = None
         self._attempt_number = 0
         self._prepared_run = True
+        self.execution_active = True
 
     def _on_event(self, ev: AgentEvent) -> None:
+        if ev.type == "agent_end":
+            self.execution_active = False
         if ev.type == "agent_start":
             if not self._prepared_run:
                 self.prepare_run()  # Children can call agent.prompt() without AgentSession.run().
@@ -381,7 +385,10 @@ class Runtime:
         s = self.session
         system = self.system + "\n\n<language>\n" + s.t("harness.response_language") + "\n</language>"
         tools = []
+        approval_tool = s.services["execution"].resource_tool if self.execution_context.provider == "host" else None
         for tool in self.tools:
+            if tool is approval_tool:
+                continue
             try:
                 tools.append(tool.spec(s.translator))
             except Exception as error:
@@ -390,7 +397,7 @@ class Runtime:
                 if report_errors:
                     self.report_error(error, phase="i18n.tool", context={"tool_name": tool.name})
                 tools.append(tool.spec())
-        if instructions := s.services["sandbox"].instructions(self):
+        if instructions := s.services["execution"].instructions(self):
             system += "\n\n" + instructions
         for _order, _name, section in sorted(s.request_sections, key=lambda item: item[0]):
             if instructions := section(self):

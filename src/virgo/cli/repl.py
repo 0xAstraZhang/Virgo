@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 from .. import __version__
-from ..harness.permissions import approval_policy_label
 from ..harness.session import AgentSession
 from .console import ConsoleBroker, TerminalUI
 from .i18n import tr
@@ -54,10 +53,7 @@ def run_repl(
             version=__version__,
             model=session.model.spec,
             effort=session.effort,
-            permissions=approval_policy_label(
-                session.approval_policy, session.t
-            ),
-            sandbox=session.services["sandbox"].effective_mode(session.main),
+            sandbox=session.services["execution"].effective_mode(session.main),
             cwd=session.cwd,
         ),
         "dim",

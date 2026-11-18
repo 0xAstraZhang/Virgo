@@ -28,14 +28,15 @@ from virgo.harness.store import SessionStore
 from tests.support.harness import RecordingUI, calls, tool_results
 
 
-def test_permission_rechecks_hook_rewritten_arguments(make_session, project):
-    session = make_session(faux.reply(tools=[("write", {"path": "allowed.txt", "content": "x"})]),
-                           faux.reply("done"), allow=False,
-                           settings={"permissions": {"deny": ["write(secret.txt)"]}})
-    ExtensionAPI(session, "rewrite").on("tool_call", lambda event, _: event.args.update(path="secret.txt"))
+def test_permission_rechecks_hook_rewritten_arguments(broker_session, project):
+    target = project.parent / "secret.txt"
+    session = broker_session(faux.reply(tools=[("write", {"path": "allowed.txt", "content": "x"})]),
+                             faux.reply("done"), ui=RecordingUI(["n"]), preset="workspace-edit")
+    ExtensionAPI(session, "rewrite").on("tool_call", lambda event, _: event.args.update(path=str(target)))
     session.prompt("write only allowed.txt")
-    assert not (project / "secret.txt").exists()
+    assert not target.exists() and not (project / "allowed.txt").exists()
     assert tool_results(session)[0].is_error
+    assert len(session.ui.questions) == 1 and str(target) in session.ui.questions[0]
 
 
 def test_owned_publication_preserves_the_running_batch(make_session):
@@ -114,15 +115,15 @@ def test_project_extensions_require_trust_outside_the_project(make_session, proj
     assert trusted.main is not None
 
 
-def test_children_share_budget_permission_ceiling_and_cancellation(make_session, project):
-    session = make_session(settings={"budget": {"maxModelCalls": 2}})
+def test_children_share_budget_permission_ceiling_and_cancellation(broker_session, project):
+    session = broker_session(preset="read-only", settings={"budget": {"maxModelCalls": 2}})
     api = ExtensionAPI(session, "delegate")
-    child = api.create_runtime("child", "subagent", parent=session.main, read_only=True)
+    child = api.create_runtime("child", "subagent", parent=session.main)
     faux.script("test", faux.reply(tools=[("write", {"path": "forbidden.txt", "content": "x"})]),
                 faux.reply("child done"), faux.reply("must not be called"))
     child.agent.prompt("write")
     assert not (project / "forbidden.txt").exists()
-    assert child.read_only and session.services["permissions"].is_read_only(child)
+    assert not child.execution_context.resources.write_paths
     session.prompt("a third request would exceed the shared budget")
     assert len(calls()) == 2
     assert session.main.messages[-1].stop_reason == "error"

@@ -57,8 +57,9 @@ class ExecutionContext(Protocol):
     def check_read(self, path: Path) -> None: ...
     def read_bytes(self, path: Path, *, max_bytes: int | None = None) -> bytes | None: ...
     def open_mutation(self, path: Path, *, create: bool): ...
-    def walk_files(self, path: Path, ignore: set[str]): ...
+    def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None): ...
     def open_output(self, cwd: Path, prefix: str): ...
+    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]: ...
     def spawn(self, argv, cwd, env, stdout, output_path=None, cancellation=None): ...
     def describe(self) -> dict: ...
 
@@ -117,17 +118,21 @@ class HostProcess:
             except ProcessLookupError:
                 pass
             except PermissionError as error:
-                # Darwin reports EPERM for a group containing only the zombie
-                # leader. After releasing it, only probe: never signal a reused ID.
+                # Darwin can report EPERM while an exiting group is still
+                # observable. After reaping the leader, only probe for exit.
                 self._process.wait()
-                try:
-                    os.killpg(self.pid, 0)
-                except ProcessLookupError:
-                    return self.returncode
-                except PermissionError:
-                    pass
-                self._cleanup_error = error
-                raise
+                deadline = time.monotonic() + 1
+                while True:
+                    try:
+                        os.killpg(self.pid, 0)
+                    except ProcessLookupError:
+                        return self.returncode
+                    except PermissionError:
+                        pass
+                    if time.monotonic() >= deadline:
+                        self._cleanup_error = error
+                        raise
+                    time.sleep(0.01)
             return self._process.wait()
 
     def wait(self, timeout=None):
@@ -189,9 +194,11 @@ class HostContext:
                 path.write_bytes(stream.getvalue())
             yield stream, existed, commit
 
-    def walk_files(self, path: Path, ignore: set[str]):
+    def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None):
         for root, dirs, files in os.walk(path):
             dirs[:] = [name for name in dirs if name not in ignore]
+            if max_depth is not None and len(Path(root).relative_to(path).parts) >= max_depth - 1:
+                dirs.clear()
             for name in files:
                 file = Path(root) / name
                 yield file, file.stat() if file.exists() else None
@@ -203,6 +210,12 @@ class HostContext:
         from .tools.output import open_output
 
         return open_output(self.workspace, prefix)
+
+    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
+        with path.open("rb") as stream:
+            total = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, total - max_bytes))
+            return stream.read(max_bytes), total
 
     def spawn(self, argv, cwd, env, stdout, output_path=None, cancellation=None):
         if cancellation is not None and cancellation.is_set():

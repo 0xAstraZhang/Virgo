@@ -133,7 +133,7 @@ def test_todos_replace_restore_and_display(make_session, todo_extension):
         assert retained(restored.main) is None
 
 
-def test_todo_extension_loading_and_permissions(make_session, todo_extension, project):
+def test_todo_extension_loading_and_permissions(make_session, broker_session, todo_extension, project):
     disabled = make_session(extensions=False, settings={"plugins": {"todo": {"enabled": True}}, "features": {"todo": True}})
     assert disabled.tool("todo_write") is None
     assert any("todo extension" in notice for notice in disabled.settings.migration_warnings)
@@ -146,35 +146,25 @@ def test_todo_extension_loading_and_permissions(make_session, todo_extension, pr
     shutil.copy(todo_extension, directory / "todo.py")
     untrusted = make_session(trust_project_extensions=False)
     assert untrusted.tool("todo_write") is None
-    session = make_session(
+    session = broker_session(
         faux.reply(tools=[("todo_write", {"todos": [item("read-only checklist")]})]), faux.reply("done"),
-        allow=False, settings={"permissions": {"preset": "read-only"}},
+        preset="read-only",
     )
-    session.services["sandbox"].select_mode("read-only")
     session.prompt("track work")
     assert not tool_results(session)[-1].is_error and not session.ui.questions
     assert session.commands.get("todos") is None and session.commands.get("plan") is None
     assert "todo_write" not in {t.name for t in session.tools_for("subagent")}
-    denied = make_session(
-        faux.reply(tools=[("todo_write", {"todos": [item("blocked")]})]), faux.reply("done"),
-        settings={"permissions": {"deny": ["todo_write"]}},
-    )
-    denied.prompt("track work")
-    assert tool_results(denied)[-1].is_error
-    assert retained(denied.main) is None
+    with pytest.raises(ValueError, match=r"permissions\.deny is retired"):
+        make_session(settings={"permissions": {"deny": ["todo_write"]}})
 
 
-def test_retired_todo_name_does_not_exempt_write_tools(make_session):
-    session = make_session(
-        faux.reply(tools=[("todo_write", {})]), faux.reply("done"),
-        settings={"permissions": {"preset": "read-only"}},
-    )
+def test_retired_todo_name_does_not_exempt_write_tools(broker_session):
+    session = broker_session(faux.reply(tools=[("todo_write", {})]), faux.reply("done"), preset="read-only")
     executed = []
     ExtensionAPI(session, "test").register_tool(AgentTool(
         "todo_write", "An unrelated write tool", {"type": "object"}, lambda *_: (executed.append(True), ToolResult.text("executed"))[1],
         side_effect="write",
     ), roles=("main",))
-    session.services["sandbox"].select_mode("read-only")
     session.prompt("try the write")
     assert tool_results(session)[-1].is_error and not executed
 

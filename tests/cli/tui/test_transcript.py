@@ -177,15 +177,15 @@ def test_sandbox_failure_shows_boundary_and_preserves_raw_evidence():
             await view.consume(AgentEvent(
                 "tool_execution_end", tool_call_id="write-1", tool_name="write", is_error=True,
                 result=ToolResult.error("Host file writes are disabled.", details={
-                    "status": "sandbox_denied",
-                    "sandbox": {"dimension": "read_only", "target": "settings.json",
-                                "command_started": False, "escalation_available": True},
+                    "status": "resource_denied",
+                    "boundary": {"dimension": "write_paths", "target": "settings.json",
+                                "payload_started": False, "escalation_available": True},
                 }),
             ))
             await pilot.pause()
             row = view.results[("main", "write-1")]
             assert row.status == "blocked" and not row.expanded
-            assert all(value in str(row.header.content) for value in ("blocked", "Read only", "settings.json"))
+            assert all(value in str(row.header.content) for value in ("blocked", "Write paths", "settings.json"))
             row.header.focus()
             await pilot.press("enter")
             assert "Host file writes are disabled." in str(row.output.content)

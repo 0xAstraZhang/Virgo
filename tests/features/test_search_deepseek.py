@@ -54,11 +54,9 @@ def execute_search(session, runtime=None):
 
 
 @pytest.mark.parametrize("denied", [False, True], ids=["allowed", "denied"])
-def test_startup_catalog_refresh_does_not_count_as_search(make_session, search_http, monkeypatch, denied):
+def test_startup_catalog_refresh_does_not_count_as_search(broker_session, search_http, monkeypatch, denied):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
-    session = make_session(allow=not denied, settings={
-        "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
-    })
+    session = broker_session(preset="read-only" if denied else "workspace-edit", settings={"compaction": {"enabled": False}})
     session.set_model("deepseek/deepseek-flash")
     # Force the background request to finish before any search assertion. This
     # must exercise startup discovery, rather than win a race against its thread.
@@ -74,11 +72,10 @@ def test_startup_catalog_refresh_does_not_count_as_search(make_session, search_h
     assert [str(request.url) for request in search_http["catalog_requests"]] == [
         "https://api.deepseek.com/models",
     ]
-    assert [str(request.url) for request in search_http["requests"]] == (
-        [] if denied else ["https://api.deepseek.com/v1/tools/search"]
-    )
+    assert [str(request.url) for request in search_http["requests"]] == ["https://api.deepseek.com/v1/tools/search"]
+    assert bool(session.main.permission_snapshot.mode.network) is (not denied)
     result = next(m for m in session.main.messages if isinstance(m, ToolResultMessage))
-    assert result.is_error is denied
+    assert not result.is_error
 
 
 @pytest.mark.parametrize("mode", ["auto", "native"])
@@ -270,20 +267,18 @@ def test_deepseek_tool_loop_keeps_results_or_error_without_other_backend(make_se
         assert "https://docs.python.org/" in result.text()
 
 
-def test_deepseek_native_honors_exact_query_denial(make_session, search_http, monkeypatch):
+def test_deepseek_native_honors_network_denial(broker_session, search_http, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
-    session = make_session(allow=False, settings={
-        "permissions": {"deny": ["web_search(*private*)"]}, "compaction": {"enabled": False},
-    })
+    session = broker_session(preset="read-only", settings={"compaction": {"enabled": False}})
     session.set_model("deepseek/deepseek-flash")
     install_responses(monkeypatch,
         AssistantMessage(content=[ToolCall("s", "web_search", {"query": "private information"})], stop_reason="tool_use"),
         AssistantMessage(content=[TextContent("Denied")]),
     )
     session.prompt("Search private information")
-    assert not search_http["requests"]
-    assert not session.ui.questions  # Explicit denials cannot request human approval.
-    assert next(m for m in session.main.messages if isinstance(m, ToolResultMessage)).is_error
+    assert len(search_http["requests"]) == 1
+    assert not session.ui.questions and not session.main.permission_snapshot.mode.network
+    assert not next(m for m in session.main.messages if isinstance(m, ToolResultMessage)).is_error
 
 
 def test_restricted_subagent_and_custom_tool_keep_their_scope(make_session, monkeypatch):

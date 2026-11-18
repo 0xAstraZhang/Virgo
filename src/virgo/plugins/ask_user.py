@@ -137,7 +137,7 @@ def setup(api: ExtensionAPI) -> None:
         )
 
     api.register_tool(
-        AgentTool(
+        AgentTool(execution_scope="broker",
             name="ask_user",
             label="Ask user",
             description=DESCRIPTION,

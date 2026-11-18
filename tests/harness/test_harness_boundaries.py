@@ -103,7 +103,7 @@ def test_result_save_failure_delivers_result_and_blocks_restart(make_session, mo
     assert "disk full" in s.ui.text
 
 
-def test_explicit_policy_preserves_order_and_fails_closed(make_session, project):
+def test_explicit_policy_preserves_order_and_fails_closed(make_session, project, monkeypatch):
     s = make_session(faux.reply(tools=[("write", {"path": "blocked.txt", "content": "x"})]), faux.reply("done"))
     seen = []
 
@@ -116,7 +116,9 @@ def test_explicit_policy_preserves_order_and_fails_closed(make_session, project)
             raise RuntimeError("policy failed")
 
     s.bus.on("tool_call", lambda *args: seen.append("high"), priority=200)
-    s.register_permission_policy(Policy())
+    policy = Policy()
+    monkeypatch.setattr(s.services["execution"], "preflight", policy.preflight)
+    monkeypatch.setattr(s.services["execution"], "before_execute", policy.before_execute)
     s.bus.on("tool_call", lambda *args: seen.append("equal"), priority=100)
     s.bus.on("tool_call", lambda *args: seen.append("low"))
     s.prompt("write")

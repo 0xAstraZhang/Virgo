@@ -51,7 +51,7 @@ def test_job_that_cannot_start_is_not_left_pending(make_session, project, monkey
     assert not list((project / ".virgo" / "outputs").glob("*.log"))
 
 
-def test_finished_job_is_pending_until_its_notification_is_queued(make_session, project, monkeypatch):
+def test_finished_job_is_pending_until_its_notification_is_queued(make_session, project, monkeypatch, python_command):
     session = make_session()
     jobs = session.services["jobs"]
     entered, release = threading.Event(), threading.Event()
@@ -63,7 +63,8 @@ def test_finished_job_is_pending_until_its_notification_is_queued(make_session, 
         notify(*args, **kwargs)
 
     monkeypatch.setattr(session, "notify", slow_notify)
-    job = jobs.start_command("true", project)
+    command = python_command("pass", shell=selected(session))
+    job = jobs.start_command(command, project)
     assert entered.wait(5)
     assert job.status == "completed" and pending_work(session)  # print mode must keep waiting
     release.set()
@@ -120,3 +121,44 @@ def test_failed_background_setup_keeps_the_shell_foreground_only(make_session, m
     shell_tool = session.tool(selected(session).tool_name)
     assert "background" not in shell_tool.parameters["properties"]
     assert session.tool("job_output") is None
+
+
+def test_job_tools_cannot_borrow_another_conversations_resources(make_session, project):
+    session = make_session()
+    owner = session.main
+    jobs = session.services['jobs']
+    release = threading.Event()
+    job = jobs.start_callable('private work', lambda _signal: release.wait(5) and 'private-job-result',
+                              store=owner.origin.root, cwd=project)
+    try:
+        session.new_session()
+        context = ToolContext('foreign-job', project, threading.Event(), origin=session.main.origin)
+        output = session.tool('job_output').execute({'id': job.id}, context)
+        assert output.is_error and 'private work' not in output.as_text()
+        stopped = session.tool('job_kill').execute({'id': job.id}, context)
+        assert stopped.is_error and not job.signal.is_set()
+        release.set()
+        assert job.done.wait(5)
+        context = ToolContext('owned-job', project, threading.Event(), origin=owner.origin)
+        output = session.tool('job_output').execute({'id': job.id}, context)
+        assert not output.is_error and 'private-job-result' in output.as_text()
+    finally:
+        release.set()
+        job.done.wait(5)
+
+
+def test_background_output_alias_cannot_read_outside_resource_boundary(broker_session, project):
+    session = broker_session()
+    jobs = session.services['jobs']
+    job = jobs.start_callable('owned output', lambda _signal: 'done', store=session.main.origin.root, cwd=project)
+    assert job.done.wait(5)
+    protected = project.parent/'output-secret.txt'
+    protected.write_text('output-resource-canary')
+    job.log, stream = session.main.execution_context.open_output(project, 'owned-output')
+    stream.close()
+    job.log.unlink()
+    job.log.symlink_to(protected)
+    faux.script('test', faux.reply(tools=[('job_output', {'id': job.id})]), faux.reply('done'))
+    session.prompt('Read the owned background output')
+    result = tool_results(session)[-1]
+    assert result.is_error and 'output-resource-canary' not in result.text()

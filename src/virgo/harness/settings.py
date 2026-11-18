@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import copy
-import fnmatch
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from ..tools.sandbox import validate_config as validate_sandbox_config
-from .execution_modes import configured_modes
+from .execution_modes import DEFAULT_MODES, migrate_preset
 from .permissions import normalize_approval_policy
 
 PLUGIN_IDS = (
@@ -27,12 +24,13 @@ _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
+    "execution": {"mode": "no-limit"},
     "sandbox": {},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
     "providers": {},
-    "permissions": {"preset": "workspace-edit", "presets": {}, "approval": "ask", "allow": [], "deny": []},
+    "permissions": {"approval": "ask"},
     "hooks": {},
     "shell": {"executable": "auto"},
     "plugins": {},
@@ -74,11 +72,11 @@ class Paths:
         return self.user / "sessions" / slug
 
 
-def _read_json(path: Path) -> dict:
+def _read_json(path: Path) -> dict | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {}
+        return None
     except json.JSONDecodeError as e:
         raise ValueError(f"invalid JSON in {path}: {e}") from e
     if not isinstance(data, dict):
@@ -155,7 +153,7 @@ def _canonicalize_permissions(value: dict, notices: list[str]) -> None:
         if "preset" in value and value["preset"] != legacy_mode:
             raise ValueError("permissions.mode and permissions.preset disagree; remove the retired key")
         value["preset"] = legacy_mode
-        notices.append("permissions.mode is deprecated; use permissions.preset.")
+        notices.append("permissions.mode is retired; select a fixed execution.mode.")
     if "modes" in value:
         legacy_modes = value.pop("modes")
         if not isinstance(legacy_modes, dict):
@@ -166,7 +164,7 @@ def _canonicalize_permissions(value: dict, notices: list[str]) -> None:
             value["presets"] = deep_merge(legacy_modes, value["presets"])
         else:
             value["presets"] = legacy_modes
-        notices.append("permissions.modes is deprecated; use permissions.presets.")
+        notices.append("permissions.modes is retired; select a fixed execution.mode.")
 
 
 def _validate_permissions(value: object) -> None:
@@ -179,32 +177,28 @@ def _validate_permissions(value: object) -> None:
         raise ValueError(f"Unknown permissions setting(s): {', '.join(sorted(unknown))}")
     if "approval" in value:
         normalize_approval_policy(value["approval"])
-    configured_modes(value.get("presets", {}))
+    if not isinstance(value.get("presets", {}), dict):
+        raise ValueError("permissions.presets must be an object")
     selected = value.get("preset")
     if selected is not None and (not isinstance(selected, str) or not selected.strip()):
         raise ValueError("permissions.preset must be a permission preset ID")
     for name in ("allow", "deny"):
-        rules = value.get(name, [])
-        if not isinstance(rules, list) or any(not isinstance(rule, str) or not rule.strip() for rule in rules):
-            raise ValueError(f"permissions.{name} must be a list of nonempty tool rules")
-        for rule in rules:
-            parsed = re.fullmatch(r"\s*([^()\s]+)\s*(?:\((.*)\))?\s*", rule)
-            if parsed is None:
-                raise ValueError(f"Invalid permissions.{name} rule: {rule!r}")
-            tool, pattern = parsed.groups()
-            if (name == "allow" and pattern is not None and any(char in pattern for char in "*?[")
-                    and any(fnmatch.fnmatchcase(shell, tool) for shell in ("bash", "powershell"))):
-                raise ValueError("Shell allow rules require an exact full command or a tool-only grant; wildcard command patterns are retired")
+        if value.get(name):
+            raise ValueError(f"permissions.{name} is retired; migrate task intent to instructions and authority to resource paths")
+        if name in value and value[name] != []:
+            raise ValueError(f"permissions.{name} is retired; remove the key")
 
 
 def _validate(data: dict) -> None:
     _validate_permissions(data.get("permissions", {}))
-    modes = configured_modes(data.get("permissions", {}).get("presets", {}))
-    if data.get("permissions", {}).get("preset", "workspace-edit") not in modes:
-        raise ValueError("permissions.preset is unknown; the legacy key permissions.mode is retired. Choose a configured permission preset ID")
-    if data.get("permissions", {}).get("mode") is not None or data.get("permissions", {}).get("modes") is not None:
-        raise ValueError("permissions.mode and permissions.modes are retired; use permissions.preset and permissions.presets")
-    validate_sandbox_config(data.get("sandbox", {}))
+    execution = data.get("execution")
+    if (not isinstance(execution, dict) or set(execution) != {"mode"}
+            or not isinstance(execution["mode"], str) or execution["mode"] not in DEFAULT_MODES):
+        raise ValueError("execution.mode must be read-only, workspace-edit or no-limit")
+    if data.get("sandbox"):
+        raise ValueError("Legacy sandbox settings are retired; migrate to execution.mode")
+    if set(data.get("permissions", {})) - {"approval", "allow", "deny"}:
+        raise ValueError("Custom permission presets are retired; choose execution.mode")
     plugins = data.get("plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("plugins must be an object keyed by plugin ID")
@@ -252,15 +246,44 @@ def _trusted_projects(user: dict) -> set[Path]:
     return resolved
 
 
-def _canonical_key(dotted: str) -> str:
-    """Read the 0.2 permission keys through the canonical spelling."""
-    if dotted == "permissions.mode":
-        return "permissions.preset"
-    if dotted == "permissions.modes":
-        return "permissions.presets"
-    if dotted.startswith("permissions.modes."):
-        return "permissions.presets." + dotted[len("permissions.modes."):]
-    return dotted
+def _migrate_execution(data: dict, explicit: dict, notices: list[str], *, existing_user: bool) -> None:
+    permissions = data["permissions"]
+    selected = permissions.pop("preset", None)
+    presets = permissions.pop("presets", {})
+    execution = data["execution"]
+    if not isinstance(execution, dict):
+        raise ValueError("execution must be an object")
+    provider = execution.pop("provider", None)
+    if provider not in (None, "host", "sandbox"):
+        raise ValueError("execution.provider must be host or sandbox")
+    sandbox = data.pop("sandbox", {})
+    if not isinstance(sandbox, dict) or set(sandbox) - {"mode"}:
+        raise ValueError("Legacy sandbox configuration is retired; migrate to execution.mode")
+    legacy_mode = sandbox.get("mode")
+    if sandbox and legacy_mode not in ("read-only", "workspace-write", "disabled"):
+        raise ValueError("Unknown retired sandbox.mode; choose execution.mode")
+    if "mode" in explicit.get("execution", {}):
+        if selected is not None or presets or legacy_mode or provider:
+            notices.append("Explicit execution.mode overrides the legacy permission selection.")
+    elif legacy_mode == "disabled" and provider != "sandbox":
+        execution["mode"] = "no-limit"
+        notices.append("Legacy sandbox.mode=disabled migrated to execution.mode=no-limit.")
+    elif legacy_mode:
+        raise ValueError("Cannot migrate the legacy sandbox mode with its original permissions; "
+                         "choose execution.mode explicitly.")
+    elif selected is not None or "presets" in explicit.get("permissions", {}) or provider == "sandbox":
+        if provider == "host":
+            raise ValueError("Legacy host and sandbox settings disagree; select execution.mode explicitly")
+        # A saved preset collection without a selector used main's workspace-edit default.
+        execution["mode"] = migrate_preset(selected or "workspace-edit", presets)
+        notices.append(f"Legacy permission selection migrated to execution.mode={execution['mode']}.")
+    elif provider == "host":
+        execution["mode"] = "no-limit"
+    elif existing_user:
+        execution["mode"] = "workspace-edit"
+        notices.append("Existing user settings retain the previous workspace-edit default. Use execution.mode to select a different mode.")
+    if presets:
+        notices.append("Legacy custom presets are no longer selectable. Their user settings are preserved on disk.")
 
 
 class Settings:
@@ -268,54 +291,80 @@ class Settings:
         self.data = data
         self.paths = paths
         self.overrides: dict = {}
+        self.sources: dict[str, str] = {}
         self.migration_warnings: list[str] = []
         self.project_extensions_trusted = False
+
+    @staticmethod
+    def startup_language(paths: Paths) -> str:
+        """Read the CLI language before startup arguments can supply execution settings."""
+        for path in reversed(paths.both("settings.json")):
+            layer = _read_json(path) or {}
+            if "language" in layer:
+                return DEFAULTS["language"] if layer["language"] is None else layer["language"]
+        return DEFAULTS["language"]
 
     @classmethod
     def load(cls, paths: Paths, overrides: dict | None = None) -> Settings:
         notices: list[str] = []
-        user = _read_json(paths.user / "settings.json")
+        saved_user = _read_json(paths.user / "settings.json")
+        user = saved_user or {}
         # When <cwd>/.virgo is the user settings directory, reading it again as an
         # untrusted project layer would reject the user's own grants. The user layer
         # already carries those settings.
         shared_settings = _same_directory(paths.project, paths.user)
-        project = {} if shared_settings else _read_json(paths.project / "settings.json")
-        if shared_settings and (paths.user / "settings.json").exists():
+        project = {} if shared_settings else (_read_json(paths.project / "settings.json") or {})
+        if shared_settings and saved_user is not None:
             notices.append("The working directory resolves to the Virgo state directory; user settings are not re-read as project settings.")
         trusted = _trusted_projects(user)
-        if "sandbox" in project:
-            project = {key: value for key, value in project.items() if key != "sandbox"}
-            notices.append("Project sandbox settings are ignored; use user settings or an explicit startup override.")
+        for key in ("sandbox", "execution", "permissions"):
+            if project.get(key):
+                raise ValueError(f"Project {key} configuration is retired; execution authority belongs in user settings or startup overrides")
+            project.pop(key, None)
         for layer in (project, overrides or {}):
             extension_config = layer.get("extensions", {})
             if isinstance(extension_config, dict) and "trustedProjects" in extension_config:
                 notices.append("Project/runtime extensions.trustedProjects is ignored. Trust must come from user settings or --trust-project-extensions.")
-        data = deep_merge(DEFAULTS, _normalize_layer(user, notices))
+        user = _normalize_layer(user, notices)
+        data = deep_merge(DEFAULTS, user)
         project = _normalize_layer(project, notices)
-        project_permissions = project.pop("permissions", {})
-        if set(project_permissions) - {"deny"}:
-            raise ValueError("Project permissions may only add deny rules; grants and approval policy belong in user settings or explicit startup overrides")
-        # A project cannot erase user restrictions through ordinary deep merging.
-        denied = list(dict.fromkeys([*data["permissions"]["deny"], *project_permissions.get("deny", [])]))
-        # Workflow instructions do not confer or restrict execution authority.
         data = deep_merge(data, project)
-        data["permissions"]["deny"] = denied
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         normalized_overrides = _normalize_layer(overrides or {}, notices)
+        # A legacy provider override still has startup precedence over a saved
+        # modern mode. Preserve a saved sandbox mode when it already matches.
+        startup_execution = normalized_overrides.get("execution", {})
+        saved_execution = user.get("execution", {})
+        if (isinstance(startup_execution, dict) and "mode" not in startup_execution
+                and isinstance(saved_execution, dict) and isinstance(saved_execution.get("mode"), str)
+                and saved_execution["mode"] in DEFAULT_MODES):
+            if startup_execution.get("provider") == "sandbox":
+                saved_mode = saved_execution["mode"]
+                startup_execution["mode"] = "workspace-edit" if saved_mode == "no-limit" else saved_mode
+            elif startup_execution.get("provider") == "host":
+                startup_execution["mode"] = "no-limit"
         data = deep_merge(data, normalized_overrides)
-        if "preset" in normalized_overrides.get("permissions", {}) and "sandbox" not in normalized_overrides:
-            # An explicit new preset override wins over an older user's sandbox setting.
-            data["sandbox"] = {}
+        explicit = deep_merge(user, normalized_overrides)
+        _migrate_execution(data, explicit, notices, existing_user=saved_user is not None)
         _validate(data)
         settings = cls(data, paths)
+        def record_sources(layer, source, prefix=""):
+            for key, value in layer.items():
+                dotted = f"{prefix}.{key}" if prefix else key
+                settings.sources[dotted] = source
+                if isinstance(value, dict):
+                    record_sources(value, source, dotted)
+        record_sources(DEFAULTS, "default")
+        record_sources(user, "user")
+        record_sources(project, "project")
+        record_sources(normalized_overrides, "startup")
         settings.overrides = normalized_overrides
         settings.migration_warnings = list(dict.fromkeys(notices))
         settings.project_extensions_trusted = paths.cwd in trusted
         return settings
 
     def get(self, dotted: str, default: Any = None) -> Any:
-        dotted = _canonical_key(dotted)
         cur: Any = self.data
         for part in dotted.split("."):
             if not isinstance(cur, dict) or part not in cur:
@@ -324,12 +373,16 @@ class Settings:
         return cur if cur is not None else default
 
     def set(self, dotted: str, value: Any) -> None:
-        dotted = _canonical_key(dotted)
-        cur = self.data
         parts = dotted.split(".")
+        checked = parts[0] in {"permissions", "execution", "sandbox"}
+        data = copy.deepcopy(self.data) if checked else self.data
+        cur = data
         for part in parts[:-1]:
             cur = cur.setdefault(part, {})
         cur[parts[-1]] = value
+        if checked:
+            _validate(data)
+        self.data = data
 
     def plugin_enabled(self, name: str) -> bool:
         if name not in PLUGIN_IDS:
@@ -345,7 +398,7 @@ class Settings:
         if name in EXTENSION_ONLY:
             return False
         if name in {"permission", "auto_review"}:
-            raise ValueError("The legacy permission feature is retired; Core authorization is always enabled")
+            raise ValueError("The legacy permission feature is retired; use execution.mode")
         if name in REMOVED_FEATURES:
             return False
         if name in {"search", "fetch"}:
@@ -360,7 +413,11 @@ class Settings:
         _validate(candidate)
         path = self.paths.user / "settings.json"
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        data = deep_merge(_read_json(path), patch)
+        saved = _read_json(path)
+        if saved is None:
+            # Mark a fresh configuration without persisting the current CLI override.
+            saved = {"execution": {"mode": DEFAULTS["execution"]["mode"]}}
+        data = deep_merge(saved, patch)
         fd, name = tempfile.mkstemp(prefix=".settings-", suffix=".tmp", dir=path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -374,7 +431,7 @@ class Settings:
 
     def check_provider_update(self, provider: str, config: dict) -> None:
         """Reject a login that would use a different endpoint on the next startup."""
-        project = _read_json(self.paths.project / "settings.json")
+        project = _read_json(self.paths.project / "settings.json") or {}
         effective = deep_merge(config, project.get("providers", {}).get(provider, {}))
         effective = deep_merge(effective, self.overrides.get("providers", {}).get(provider, {}))
         for key in ("api", "baseUrl", "apiKeyEnv"):

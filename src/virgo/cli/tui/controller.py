@@ -22,7 +22,6 @@ from .conversation import ConversationState
 
 if TYPE_CHECKING:
     from .editor import InputHistory
-    from .modes import PermissionModeChoice
 
 
 class RunController:
@@ -178,20 +177,9 @@ class RunController:
             *unsaved,
         ]
 
-    def change_permission_mode(self, choice: PermissionModeChoice) -> None:
-        manager = self.session.services["sandbox"]
-
-        def apply() -> None:
-            if choice.action == "select":
-                manager.select_mode(choice.mode_id)
-            else:
-                manager.save_mode(
-                    choice.mode_id, name=choice.name, read_only=choice.read_only,
-                    workspace_only=choice.workspace_only, network_allowed=choice.network_allowed, persist=True,
-                )
-                self.ui.print(tr(self, "ui.modes.saved", name=choice.name), "dim")
-
-        self._launch(apply, concurrent=True, command="mode")
+    def change_permission_mode(self, choice: str) -> None:
+        manager = self.session.services["execution"]
+        self._launch(lambda: manager.command(self.session, choice), concurrent=True, command="permissions")
 
     def cancel_pending(self) -> int:
         """Cancel inputs not yet consumed; leave the running task and notifications alone."""

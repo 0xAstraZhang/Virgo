@@ -21,7 +21,7 @@ def test_subagent_fresh_context_and_no_recursion(make_session):
     s = make_session()
     faux.push(
         "test",
-        faux.reply(tools=[("agent", {"description": "look", "prompt": "find files", "read_only": True})]),
+        faux.reply(tools=[("agent", {"description": "look", "prompt": "find files"})]),
     )
     faux.handler("test", lambda ctx: respond(ctx) or faux.reply("main done"))
     s.prompt("delegate")
@@ -41,7 +41,7 @@ def test_subagent_request_exposes_only_its_own_tools(make_session):
         return faux.reply("main done")
 
     session = make_session(settings={"shell": {"executable": "bash"}})
-    faux.push("test", faux.reply(tools=[("agent", {"description": "look", "prompt": "find", "read_only": True})]))
+    faux.push("test", faux.reply(tools=[("agent", {"description": "look", "prompt": "find"})]))
     faux.handler("test", respond)
     session.prompt("delegate")
     assert "<tools>" not in seen["system"]
@@ -52,13 +52,13 @@ def test_subagent_request_exposes_only_its_own_tools(make_session):
 def test_subagent_schema_exposes_capabilities_not_types(make_session):
     session = make_session()
     properties = session.tool("agent").parameters["properties"]
-    assert "read_only" in properties
+    assert "read_only" not in properties
     assert "type" not in properties
     assert session.tool("agent").parameters["additionalProperties"] is False
     assert "<agent_types>" not in session.main.system
 
 
-def test_read_only_subagent_blocks_shell_writes_even_if_parent_is_unrestricted(make_session, project):
+def test_subagent_inherits_parent_readonly_file_boundary(broker_session, project):
     target = project / "forbidden.txt"
     child_tools = []
 
@@ -66,15 +66,15 @@ def test_read_only_subagent_blocks_shell_writes_even_if_parent_is_unrestricted(m
         if "You are a Virgo sub-agent" in ctx.system:
             child_tools[:] = [tool.name for tool in ctx.tools]
             if len(ctx.messages) == 1:
-                return faux.reply(tools=[("bash", {"command": "printf unsafe > forbidden.txt"})])
+                return faux.reply(tools=[("write", {"path": "forbidden.txt", "content": "unsafe"})])
             result = next(m for m in ctx.messages if isinstance(m, ToolResultMessage))
             assert result.is_error
             return faux.reply("Read-only inspection complete.")
         return faux.reply("Main complete.")
 
-    session = make_session(approval="never", settings={"shell": {"executable": "bash"}})
+    session = broker_session(approval="never", preset="read-only", settings={"shell": {"executable": "bash"}})
     faux.push("test", faux.reply(tools=[("agent", {
-        "description": "inspect", "prompt": "Inspect the workspace.", "read_only": True,
+        "description": "inspect", "prompt": "Inspect the workspace.",
     })]))
     faux.handler("test", respond)
     session.prompt("Inspect without changing files.")

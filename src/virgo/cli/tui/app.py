@@ -882,9 +882,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
         metrics.truncate(width, overflow="ellipsis")
         update_static(root.query_one("#metrics", Static), metrics)
-        manager = self.session.services["sandbox"]
+        manager = self.session.services["execution"]
         selected = manager.selected_mode
-        active = manager.mode_for(self.session.main) if self.controller.busy else selected
+        snapshot = self.session.main.permission_snapshot
+        active = snapshot.mode if snapshot is not None else manager.mode_for(self.session.main)
         footer = Text(no_wrap=True, overflow="ellipsis")
         if self.session.store.save_error is not None:
             footer.append(tr(self, "ui.state.unsaved_footer"), style="bold red")
@@ -905,8 +906,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         flags = permission_flags(self, active)
         if cell_len(flags) > width:
             flags = permission_flags(self, active, compact=True)
-        # Policy values remain their own line: a long user-defined preset name
-        # or model cannot truncate a permission bit, including while approving.
+        # Policy values remain on their own line so the model details
+        # and the model name do not truncate a permission bit.
         status = Text(no_wrap=False)
         status.append(footer)
         status.append("\n")
@@ -1066,7 +1067,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if self.controller.closing or self.has_modal:
             return
         controller = self.controller
-        manager = self.session.services["sandbox"]
+        manager = self.session.services["execution"]
         self.hide_completions()
 
         def selected(choice) -> None:

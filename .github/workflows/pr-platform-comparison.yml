@@ -134,7 +134,12 @@ jobs:
             uv.lock
       - name: Install Linux shell dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh curl bubblewrap libseccomp2
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Install locked project dependencies
         working-directory: candidate
         run: uv sync --locked --dev

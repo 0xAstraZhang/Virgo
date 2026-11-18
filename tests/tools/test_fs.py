@@ -11,7 +11,8 @@ from virgo.agent.types import ToolContext
 from virgo.tools import EDIT, GLOB, GREP, READ, WRITE
 from virgo.tools.fs import _prepare_edit, make_file_tool
 from virgo.tools.output import MAX_LINES
-from virgo.tools.sandbox import SandboxPolicy
+
+from tests.support.execution import file_policy
 
 
 def ctx(cwd: Path) -> ToolContext:
@@ -43,12 +44,12 @@ def test_file_tools_enforce_read_scope(project, tool, arguments):
     outside.mkdir()
     (outside / "secret.txt").write_text("private-value")
     arguments = {**arguments, "path": str(outside / arguments["path"])}
-    policy = SandboxPolicy("read-only", project)
+    policy = file_policy(project)
     wrapped = make_file_tool(tool, lambda _ctx: policy)
     denied = wrapped.execute(arguments, ctx(project))
-    assert denied.is_error and denied.details["denied_dimension"] == "workspace_only"
+    assert denied.is_error and denied.details["boundary"]["dimension"] == "read_paths"
     assert "private-value" not in denied.as_text()
-    full_read = SandboxPolicy(workspace=project, read_only=True, workspace_only=False)
+    full_read = file_policy(project, read_paths=(project.parent,))
     allowed = make_file_tool(tool, lambda _ctx: full_read).execute(arguments, ctx(project))
     assert not allowed.is_error, allowed.as_text()
 
@@ -62,7 +63,7 @@ def test_scoped_read_cannot_follow_external_symlink(project, tool):
         link.symlink_to(outside)
     except OSError:
         pytest.skip("Creating file symlinks is unavailable")
-    policy = SandboxPolicy("read-only", project)
+    policy = file_policy(project)
     arguments = {"path": "link.txt", **({"pattern": "private"} if tool is GREP else {})}
     result = make_file_tool(tool, lambda _ctx: policy).execute(arguments, ctx(project))
     assert result.is_error and "private-value" not in result.as_text()
@@ -72,16 +73,15 @@ def test_file_tools_keep_private_storage_hidden_and_full_scope_writes_explicit(p
     private = project.parent / "home"
     secret = private / "secret.txt"
     secret.write_text("private-value")
-    policy = SandboxPolicy(workspace=project, read_only=False, workspace_only=False,
-                           private_paths=(private,))
+    policy = file_policy(project, read_paths=(project.parent,), write_paths=(project.parent,), private_paths=(private,))
     read = make_file_tool(READ, lambda _ctx: policy)
     denied = read.execute({"path": str(secret)}, ctx(project))
-    assert denied.is_error and denied.details["denied_dimension"] == "protected_path"
+    assert denied.is_error and denied.details["boundary"]["dimension"] == "protected_path"
     target = project.parent / "outside.txt"
     write = make_file_tool(WRITE, lambda _ctx: policy)
     result = write.execute({"path": str(target), "content": "allowed"}, ctx(project))
     assert not result.is_error and target.read_text() == "allowed", result.as_text()
-    readonly = SandboxPolicy(workspace=project, read_only=True, workspace_only=False)
+    readonly = file_policy(project, read_paths=(project.parent,))
     denied = make_file_tool(WRITE, lambda _ctx: readonly).execute(
         {"path": str(target), "content": "denied"}, ctx(project))
     assert denied.is_error and target.read_text() == "allowed"

@@ -260,5 +260,6 @@ def make_web_search(
         execute,
         label="Web search",
         side_effect="read",
+        execution_scope="web",
         i18n_key="tools.web_search",
     )

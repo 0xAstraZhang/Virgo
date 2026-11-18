@@ -198,7 +198,7 @@ def test_tool_failure_and_recovered_result_hook_keep_original_evidence(make_sess
     assert "inner failure" in failure["traceback"]
 
 
-def test_policy_exception_stays_fail_closed_and_preserves_diagnostic_id(make_session, project):
+def test_policy_exception_stays_fail_closed_and_preserves_diagnostic_id(make_session, project, monkeypatch):
     session = make_session(faux.reply(tools=[("write", {"path": "blocked.txt", "content": "private"})]),
                            faux.reply("done"), persist=True)
 
@@ -209,7 +209,7 @@ def test_policy_exception_stays_fail_closed_and_preserves_diagnostic_id(make_ses
         def before_execute(self, ev):
             raise chained_error()
 
-    session.register_permission_policy(BrokenPolicy())
+    monkeypatch.setattr(session.services["execution"], "before_execute", BrokenPolicy().before_execute)
     session.prompt("write")
     assert not (project / "blocked.txt").exists()
     result = next(message for message in session.main.messages if isinstance(message, ToolResultMessage))

@@ -14,7 +14,6 @@ import os
 import platform
 import select
 import shutil
-import signal
 import socket
 import stat
 import subprocess
@@ -24,7 +23,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-MODES = ("disabled", "read-only", "workspace-write")
+from ...execution import ExecutionCancelled as SandboxCancelled
+from ...execution import ExecutionFailed as SandboxProcessError
+from ...execution import ExecutionUnavailable as SandboxUnavailable
+from ...execution import HostProcess
+
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 _ENV_KEYS = frozenset({"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"})
 
@@ -41,23 +44,6 @@ except BaseException as error:
     os.write(fd, str(error).encode('utf-8', errors='replace')[:1500])
     os._exit(127)
 """
-
-
-class SandboxCancelled(InterruptedError):
-    """Cancellation arrived before the payload was launched."""
-
-
-class SandboxUnavailable(RuntimeError):
-    """The requested isolation could not be established; do not run natively."""
-
-    def __init__(self, message, *, reason=None, dimension=None):
-        super().__init__(message)
-        self.reason = reason
-        self.dimension = dimension
-
-
-class SandboxProcessError(RuntimeError):
-    """Native process control failed after the command may have started."""
 
 
 class _CommandScratch:
@@ -77,25 +63,13 @@ class _CommandScratch:
             pass
 
 
-def validate_config(value: object) -> None:
-    if not isinstance(value, dict):
-        raise ValueError("sandbox must be an object")
-    if "network" in value:
-        raise ValueError("sandbox.network is not supported; use permissions.presets.<id>.networkAllowed. "
-                         "Explicit legacy sandbox modes retain their offline behavior.")
-    if set(value) - {"mode"}:
-        raise ValueError("sandbox supports only mode")
-    if value.get("mode", "workspace-write") not in MODES:
-        raise ValueError(f"sandbox.mode must be one of {', '.join(MODES)}")
-
-
 def _system_file(path: Path) -> Path:
     """Never discover a security launcher or library through workspace PATH."""
     path = path.resolve(strict=True)
-    for candidate in (path, *path.parents):
-        info = candidate.stat()
+    for entry in (path, *path.parents):
+        info = entry.stat()
         if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-            raise SandboxUnavailable(f"Sandbox runtime is not system-owned: {candidate}")
+            raise SandboxUnavailable(f"Sandbox runtime is not system-owned: {entry}")
     if not path.is_file():
         raise SandboxUnavailable(f"Sandbox runtime is not a file: {path}")
     return path
@@ -125,13 +99,13 @@ def _network_config_file(path: Path) -> Path:
         info = parent.stat()
         if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise SandboxUnavailable(f"Resolver configuration entry has an unsafe parent: {parent}")
-    for candidate in (source, *source.parents):
-        info = candidate.lstat()
-        owners = {0, service_uid} if candidate in {source, source.parent} else {0}
-        expected_type = stat.S_ISREG if candidate == source else stat.S_ISDIR
+    for entry in (source, *source.parents):
+        info = entry.lstat()
+        owners = {0, service_uid} if entry in {source, source.parent} else {0}
+        expected_type = stat.S_ISREG if entry == source else stat.S_ISDIR
         if (info.st_uid not in owners or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
                 or not expected_type(info.st_mode)):
-            raise SandboxUnavailable(f"Resolver configuration has unsafe ownership, permissions or type: {candidate}")
+            raise SandboxUnavailable(f"Resolver configuration has unsafe ownership, permissions or type: {entry}")
     return source
 
 
@@ -143,10 +117,10 @@ def platform_backend() -> tuple[str, Path]:
             return backend()
         except (OSError, AttributeError) as error:
             raise SandboxUnavailable(f"Required Windows sandbox APIs are unavailable: {error}") from error
-    candidates = ("/usr/bin/bwrap", "/bin/bwrap") if sys.platform == "linux" else (
+    entrys = ("/usr/bin/bwrap", "/bin/bwrap") if sys.platform == "linux" else (
         ("/usr/bin/sandbox-exec",) if sys.platform == "darwin" else ()
     )
-    for value in candidates:
+    for value in entrys:
         try:
             path = _system_file(Path(value))
             if os.access(path, os.X_OK):
@@ -234,47 +208,20 @@ def _seccomp_file(network_allowed: bool = False):
         lib.seccomp_release(context)
 
 
-@dataclass(frozen=True, init=False)
-class SandboxPolicy:
+@dataclass(frozen=True)
+class NativePolicy:
     workspace: Path
     read_only: bool
-    workspace_only: bool
     network_allowed: bool
     private_paths: tuple[Path, ...]
-
-    def __init__(self, mode: str | None = None, workspace: Path | None = None, *,
-                 read_only: bool | None = None, workspace_only: bool = True,
-                 network_allowed: bool = False, private_paths=None):
-        if mode is not None and mode not in {"read-only", "workspace-write"}:
-            raise ValueError("An active SandboxPolicy requires read-only or workspace-write")
-        if workspace is None:
-            raise ValueError("An active SandboxPolicy requires its originating workspace")
-        read_only = mode == "read-only" if read_only is None else read_only
-        if any(type(value) is not bool for value in (read_only, workspace_only, network_allowed)):
-            raise ValueError("Sandbox permission flags must be booleans")
-        object.__setattr__(self, "workspace", Path(workspace))
-        object.__setattr__(self, "read_only", read_only)
-        object.__setattr__(self, "workspace_only", workspace_only)
-        object.__setattr__(self, "network_allowed", network_allowed)
-        if private_paths is None:
-            private_paths = (Path(os.environ.get("VIRGO_HOME", Path.home() / ".virgo")),)
-        if sys.platform == "darwin":
-            from .macos_process import control_root
-
-            private_paths = (*private_paths, control_root())
-        object.__setattr__(self, "private_paths", tuple(Path(path).resolve() for path in private_paths))
-        self.__post_init__()
-
-    @property
-    def mode(self) -> str:
-        """Legacy label; consumers must use the three flags for enforcement."""
-        return "read-only" if self.read_only else "workspace-write"
+    grants: tuple[tuple[Path, bool], ...]
+    workspace_only = True
 
     def __post_init__(self):
         if os.name == "nt":
             # The runtime captured this root before execution. Do not follow a
             # junction installed later and turn its target into a fresh grant.
-            from .windows_sandbox_files import normalize_path
+            from .windows_files import normalize_path
 
             workspace = Path(normalize_path(self.workspace))
         else:
@@ -282,7 +229,7 @@ class SandboxPolicy:
         object.__setattr__(self, "workspace", workspace)
 
     def describe(self) -> dict:
-        return {"mode": self.mode, "network": "allowed" if self.network_allowed else "restricted",
+        return {"network": "allowed" if self.network_allowed else "restricted",
                 "workspace": str(self.workspace), "read_only": self.read_only,
                 "workspace_only": self.workspace_only, "network_allowed": self.network_allowed}
 
@@ -313,15 +260,23 @@ class SandboxPolicy:
 
     @staticmethod
     def _system_roots() -> list[Path]:
-        values = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"]
+        values = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]
         if sys.platform == "darwin":
-            values += ["/System/Library", "/System/Cryptexes",
+            values += ["/opt/homebrew", "/System/Library", "/System/Cryptexes",
                        "/System/Volumes/Preboot/Cryptexes/OS", "/Library", "/dev", "/private/etc"]
         return list(dict.fromkeys(Path(value).resolve() for value in values if Path(value).is_dir()))
 
     def validate(self, cwd: Path) -> Path:
         """Check the envelope before the broker creates output directories/files."""
         try:
+            for path, writable in self.grants:
+                if path.resolve(strict=True) != path:
+                    raise SandboxUnavailable(f"Native grant path changed: {path}")
+                if os.name == "posix" and writable:
+                    if path.is_dir():
+                        self._reject_writable_hardlinks((), root=path)
+                    elif path.stat().st_nlink != 1:
+                        raise SandboxUnavailable(f"Writable sandbox files must not be hard-linked: {path}")
             if os.name == "nt":
                 from .windows_sandbox import validate_policy
 
@@ -356,7 +311,7 @@ class SandboxPolicy:
         except (OSError, RuntimeError) as error:
             raise SandboxUnavailable(f"Could not validate sandbox paths: {error}") from error
 
-    def _reject_writable_hardlinks(self, protected: tuple[Path, ...]) -> None:
+    def _reject_writable_hardlinks(self, protected: tuple[Path, ...], *, root=None) -> None:
         """Path-based mounts/profiles cannot confine pre-existing shared inodes.
 
         Do not follow symlinks or inspect trees that are mounted/profiled read-only.
@@ -369,7 +324,7 @@ class SandboxPolicy:
         def failed(error):
             raise error
 
-        for parent, directories, files, descriptor in os.fwalk(self.workspace, onerror=failed):
+        for parent, directories, files, descriptor in os.fwalk(root or self.workspace, onerror=failed):
             parent = Path(parent)
             directories[:] = [name for name in directories if not readonly(parent / name)]
             for name in files:
@@ -446,6 +401,8 @@ class SandboxPolicy:
                         args += ["--ro-bind", str(source), str(source)]
         args += ["--ro-bind" if self.read_only else "--bind",
                  str(self.workspace), str(self.workspace)]
+        for path, writable in self.grants:
+            args += ["--bind" if writable else "--ro-bind", str(path), str(path)]
         # Apply nested interpreter protection after the workspace bind so it
         # cannot be hidden by that broader writable mount. Callers can pin the
         # sources by descriptor to prevent replacement between check and mount.
@@ -462,7 +419,12 @@ class SandboxPolicy:
                 if not path.is_dir() or path.is_symlink():
                     raise SandboxUnavailable(f"Private Virgo storage must be a directory: {path}")
                 args += ["--tmpfs", str(path), "--remount-ro", str(path)]
-        args += ["--bind", str(scratch), str(scratch), "--chdir", str(cwd),
+        # Bubblewrap creates mount-point parents in its empty root and /tmp.
+        # Keep those synthetic directories read-only, even when the project
+        # lives below /tmp. Only the explicit writable mounts and private
+        # command scratch should accept new files.
+        args += ["--bind", str(scratch), str(scratch), "--remount-ro", "/tmp", "--remount-ro", "/",
+                 "--chdir", str(cwd),
                  "--seccomp", str(seccomp_fd), "--"]
         return args
 
@@ -481,6 +443,10 @@ class SandboxPolicy:
                  '(allow file-write-data (literal "/dev/null"))']
         lines += [f"(allow file-read* file-map-executable (subpath {quoted(root)}))" for root in readable]
         lines.append(f"(allow file-write* (subpath {quoted(scratch)}))")
+        for path, writable in self.grants:
+            scope = "subpath" if path.is_dir() else "literal"
+            operations = "file-read* file-map-executable" + (" file-write*" if writable else "")
+            lines.append(f"(allow {operations} ({scope} {quoted(path)}))")
         if not self.read_only:
             exclusions = " ".join(f"(require-not (subpath {quoted(self.workspace / name)}))"
                                   for name in PROTECTED_NAMES)
@@ -524,6 +490,7 @@ class SandboxPolicy:
         pinned = []
         status_read = status_write = None
         proc = None
+        acknowledged = False
         try:
             (scratch_path / "home").mkdir()
             clean_env = {key: value for key, value in env.items() if key in _ENV_KEYS}
@@ -616,6 +583,7 @@ class SandboxPolicy:
             if startup != b"\0":
                 reason = bytes(startup).lstrip(b"\0").decode("utf-8", errors="replace")
                 raise SandboxUnavailable(f"{backend} failed before command exec: {reason or 'no startup acknowledgement'}")
+            acknowledged = True
             return proc
         except (OSError, subprocess.TimeoutExpired) as error:
             if isinstance(error, SandboxCancelled):
@@ -625,7 +593,7 @@ class SandboxPolicy:
                                           "Command execution is unknown; do not replay it.") from error
             raise SandboxUnavailable(f"Could not launch native sandbox: {error}") from error
         finally:
-            failed = sys.exc_info()[0] is not None
+            startup_error = sys.exception()
             for descriptor in (status_read, status_write):
                 if descriptor is not None:
                     os.close(descriptor)
@@ -633,9 +601,17 @@ class SandboxPolicy:
                 os.close(descriptor)
             if filter_file is not None:
                 filter_file.close()
-            if failed:
+            if not acknowledged:
                 if proc is not None:
-                    cleanup_process(proc)
+                    try:
+                        cleanup_process(proc)
+                    except Exception as cleanup_error:
+                        failure = SandboxProcessError(
+                            f"Native startup failed ({startup_error}); cleanup also failed ({cleanup_error}). "
+                            "The command may have run. Do not replay it."
+                        )
+                        failure.boundary = {"cleanup": "failed", "payload_started": "unknown", "side_effects": "possible"}
+                        raise failure from cleanup_error
                 else:
                     scratch.cleanup()
 
@@ -659,24 +635,8 @@ def cleanup_process(proc) -> None:
             scratch.cleanup()
             proc._virgo_sandbox_tmp = None
             return
-        # The existing executor owns waiting/cancellation; reap remaining members
-        # of its process group before releasing private scratch storage.
-        # Darwin can report EPERM for a group containing only an unreaped zombie.
-        # Reap our exited launcher before signalling, and close that exit race
-        # without ignoring a permission failure against a live process group.
-        proc.poll()
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            if proc.poll() is None:
-                raise
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        if proc.poll() is None:
-            proc.wait(timeout=5)
+        # The neutral process handle pins the group identity through leader
+        # exit and reaps it only after the remaining members are signalled.
+        HostProcess(proc).cleanup_tree()
         scratch.cleanup()
         proc._virgo_sandbox_tmp = None

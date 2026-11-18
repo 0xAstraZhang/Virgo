@@ -12,10 +12,10 @@ from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 
 
-def test_idle_frames_neither_relayout_nor_walk_the_transcript(make_session, monkeypatch):
+def test_idle_frames_neither_relayout_nor_walk_the_transcript(broker_session, monkeypatch):
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui)
+        session = broker_session(ui=ui)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause(0.2)
@@ -30,7 +30,7 @@ def test_idle_frames_neither_relayout_nor_walk_the_transcript(make_session, monk
             # Each Static.update relayouts every widget, and query truthiness matches every
             # widget: both made an idle long conversation use a full CPU core.
             assert updates == [] and walks == []
-            session.services["sandbox"].select_mode("read-only")
+            session.services["execution"].select_mode("read-only")
             app.update_status()
             assert "Read-Only" in str(app.screen_stack[0].query_one("#status", Static).content)
 

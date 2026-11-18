@@ -262,7 +262,7 @@ def open_child(parent: FileHandle, name: str, access, *, share_delete=True, shar
 @contextmanager
 def replace_staged(source: Path, target: Path, *, expected_identity: tuple[int, int] | None):
     """Replace a name, yield its commit point, then finish the destination DACL."""
-    from .windows_sandbox_acl import _prepare_dacl, _read, acl_lock, inherited_file_dacl
+    from .windows_acl import _prepare_dacl, _read, acl_lock, inherited_file_dacl
 
     source, target = Path(normalize_path(source)), Path(normalize_path(target))
     _component(target.name)
@@ -332,15 +332,15 @@ class _PinnedOutput(io.FileIO):
                 self._pins = None
 
 
-def open_output(policy, prefix):
+def open_output(root, parts, prefix):
     """Create the exact output inode and retain its directory pins until close."""
     if not re.fullmatch(r"[A-Za-z0-9_-]+", prefix):
         raise ValueError("Invalid command output prefix")
-    workspace = Path(normalize_path(policy.workspace))
+    root = Path(normalize_path(root))
     with ExitStack() as pins:
-        directory = pins.enter_context(open_path(workspace, 0x1, directory=True,
+        directory = pins.enter_context(open_path(root, 0x1, directory=True,
                                                   share_delete=False))
-        for part in (".virgo", "outputs"):
+        for part in parts:
             # Pin the directory name without blocking child renames, whose
             # destination-directory opens need write sharing. Share flags alone
             # do not block FILE_WRITE_ATTRIBUTES reparse conversion; every child
@@ -363,4 +363,4 @@ def open_output(policy, prefix):
                 except OSError:
                     pass  # FileIO may already have closed a failed constructor's fd.
                 raise
-        return workspace / ".virgo" / "outputs" / name, stream
+        return root.joinpath(*parts, name), stream

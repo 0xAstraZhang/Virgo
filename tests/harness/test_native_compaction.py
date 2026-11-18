@@ -249,7 +249,7 @@ def test_restored_native_thinking_checks_system_and_tools(make_session, monkeypa
     monkeypatch.setattr(compaction, "native_compact", lambda model, *a, **kw: native_result(model))
     session.compact()
     restored = AgentSession(project, model=session.model.spec, session=session.store.path,
-                            approval_policy=session.approval_policy, settings=session.settings.data)
+                            approval_policy=session.approval_policy, settings=session.settings.overrides)
     try:
         context = restored.main.request_context(restored.main.messages)
         assert any(isinstance(block, ThinkingContent) for block in context.messages[-1].content)

@@ -284,7 +284,8 @@ def _http(url, maximum, timeout, ctx, deadline, review):
     raise FetchError(ctx.t("tools.fetch.redirects"))
 
 
-def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=None, review_redirect=None):
+def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=None, review_redirect=None,
+                   execution_context=None):
     def execute(args, ctx):
         started = time.monotonic()
         try:
@@ -349,7 +350,8 @@ def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=N
                 "truncated": cut,
             }
             if cut:
-                result["output_path"] = str(save_output(content, ctx.cwd, "web-fetch"))
+                access = execution_context(ctx) if execution_context else None
+                result["output_path"] = str(save_output(content, ctx.cwd, "web-fetch", execution_context=access))
             return ToolResult.text(
                 json.dumps(result, ensure_ascii=False),
                 details={
@@ -377,5 +379,6 @@ def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=N
         execute,
         label="Read web page",
         side_effect="read",
+        execution_scope="web",
         i18n_key="tools.web_fetch",
     )

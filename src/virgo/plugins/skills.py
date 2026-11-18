@@ -1,10 +1,8 @@
-"""Skills: folders with a SKILL.md, disclosed progressively.
+"""Skills disclosed through the originating task's file access interface.
 
-Only name, description and location appear in the system prompt; the model reads the file with
-`read` when a task matches. Users can force a skill with ``/skill:name [args]``.
-Locations: ``~/.virgo/skills``, ``.virgo/skills``, ``.agents/skills`` (each ``<dir>/<skill>/SKILL.md``).
+User skills are trusted instruction configuration. Project skills and forced
+skill reads use the captured resource context, including during child setup.
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +10,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from ..harness.commands import parse_frontmatter
-from ..harness.extensions import ExtensionAPI
+from ..harness.extensions import ExtensionAPI, Handled
 
 
 @dataclass
@@ -20,85 +18,90 @@ class Skill:
     name: str
     description: str
     path: Path
+    access: object = None
 
     def body(self) -> str:
-        return parse_frontmatter(self.path.read_text(encoding="utf-8"))[1].strip()
+        data = self.access.read_bytes(self.path) if self.access else self.path.read_bytes()
+        if data is None:
+            raise OSError('Skill resource is unavailable')
+        return parse_frontmatter(data.decode('utf-8'))[1].strip()
 
 
-def discover(roots: list[Path]) -> dict[str, Skill]:
+def discover(roots: list[Path], *, access=None) -> dict[str, Skill]:
     skills: dict[str, Skill] = {}
     for root in roots:
-        if not root.is_dir():
+        try:
+            files = (p for p, _ in access.walk_files(root, set(), max_depth=2)
+                     if p.name == 'SKILL.md' and len(p.relative_to(root).parts) == 2) if access else root.glob('*/SKILL.md')
+            files = sorted(files)
+        except OSError:
             continue
         real_root = root.resolve()
-        for f in sorted(root.glob("*/SKILL.md")):
+        for file in files:
             try:
-                rf = f.resolve()
-                rf.relative_to(real_root)  # ignore symlinks that escape the skills dir
-            except ValueError:
+                file.resolve().relative_to(real_root)
+                data = access.read_bytes(file) if access else file.read_bytes()
+                if data is None:
+                    continue
+                meta, body = parse_frontmatter(data.decode('utf-8'))
+            except (OSError, ValueError):
                 continue
-            meta, body = parse_frontmatter(f.read_text(encoding="utf-8"))
-            name = str(meta.get("name") or f.parent.name).strip()
-            desc = " ".join(str(meta.get("description") or "").split())
-            if not desc:
-                first = next((ln.strip("# ").strip() for ln in body.splitlines() if ln.strip()), "")
-                desc = first
-            skills[name] = Skill(name, desc, rf)  # later roots (project) override earlier (user)
+            name = str(meta.get('name') or file.parent.name).strip()
+            description = ' '.join(str(meta.get('description') or '').split())
+            if not description:
+                description = next((line.strip('# ').strip() for line in body.splitlines() if line.strip()), '')
+            skills[name] = Skill(name, description, file, access)
     return skills
 
 
 def setup(api: ExtensionAPI) -> None:
-    roots = [*api.paths.both("skills"), api.cwd / ".agents" / "skills"]
-    skills = discover(roots)
-    api.services["skills"] = skills
+    trusted = discover([api.paths.user / 'skills'])
+    api.services['skills'] = trusted
 
-    def section(role: str):
-        if not skills:
+    def catalog(access):
+        workspace = access.workspace
+        available = {**trusted, **discover([workspace / '.virgo' / 'skills', workspace / '.agents' / 'skills'], access=access)}
+        api.services['skills'] = available  # Derived display state; never an authority source.
+        return available
+
+    def section(context):
+        available = catalog(context.execution_context)
+        if not available:
             return None
-        items = "\n".join(
-            f"<skill><name>{escape(s.name)}</name><description>{escape(s.description)}</description>"
-            f"<location>{escape(str(s.path))}</location></skill>"
-            for s in skills.values()
+        items = '\n'.join(
+            f'<skill><name>{escape(skill.name)}</name><description>{escape(skill.description)}</description>'
+            f'<location>{escape(str(skill.path))}</location></skill>' for skill in available.values()
         )
-        return (
-            "<skills>\nSkills provide optional specialized instructions. Read a skill's SKILL.md before using it. "
-            "Paths mentioned inside a skill are "
-            "relative to the skill's directory.\n"
-            f"<available_skills>\n{items}\n</available_skills>\n</skills>"
-        )
+        return ('<skills>\nSkills provide optional specialized instructions. Read a skill\'s SKILL.md before using it. '
+                'Paths mentioned inside a skill are relative to the skill\'s directory.\n'
+                f'<available_skills>\n{items}\n</available_skills>\n</skills>')
 
-    api.add_system_section("skills", section, order=40)
+    api.add_runtime_system_section('skills', section, order=40)
 
-    def on_input(text: str, session):
-        if not text.startswith("/skill:"):
+    def on_input(text, session):
+        if not text.startswith('/skill:'):
             return None
-        head, _, args = text[len("/skill:") :].partition(" ")
-        sk = skills.get(head.strip())
-        if sk is None:
-            from ..harness.extensions import Handled
+        head, _, args = text[len('/skill:'):].partition(' ')
+        available = catalog(session.main.execution_context)
+        skill = available.get(head.strip())
+        if skill is None:
+            return Handled(api.t('features.skills.unknown', name=head,
+                                 available=', '.join(available) or api.t('features.skills.none')))
+        try:
+            body = skill.body()
+        except OSError as error:
+            return Handled(f'Skill resource denied: {error}')
+        block = f'<skill name="{skill.name}" location="{skill.path}">\nPaths are relative to {skill.path.parent}.\n\n{body}\n</skill>'
+        return f'{block}\n\n{args.strip()}' if args.strip() else block
 
-            return Handled(
-                api.t(
-                    "features.skills.unknown",
-                    name=head,
-                    available=", ".join(skills) or api.t("features.skills.none"),
-                )
-            )
-        block = f'<skill name="{sk.name}" location="{sk.path}">\nPaths are relative to {sk.path.parent}.\n\n{sk.body()}\n</skill>'
-        return f"{block}\n\n{args.strip()}" if args.strip() else block
+    api.on('input', on_input, priority=10)
 
-    api.on("input", on_input, priority=10)
-
-    def cmd(session, args):
-        if not skills:
-            api.ui.print(api.t("features.skills.empty"))
+    def command(session, args):
+        available = catalog(session.main.execution_context)
+        if not available:
+            api.ui.print(api.t('features.skills.empty'))
             return
-        api.ui.print("\n".join(f"  {s.name:<20} {s.description}" for s in skills.values()))
+        api.ui.print('\n'.join(f'  {skill.name:<20} {skill.description}' for skill in available.values()))
 
-    api.register_command(
-        "skills",
-        cmd,
-        "list available skills (/skill:name to use one)",
-        concurrent=True,
-        description_key="features.commands.skills",
-    )
+    api.register_command('skills', command, 'list available skills (/skill:name to use one)', concurrent=True,
+                         description_key='features.commands.skills')

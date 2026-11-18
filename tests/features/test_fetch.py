@@ -91,14 +91,31 @@ def test_private_dns_answer_never_connects(make_session, monkeypatch, http):
     assert result.is_error and not http["requests"]
 
 
-def test_exact_url_permission_blocks_before_network(make_session, monkeypatch, http):
-    s = make_session(settings={"permissions": {"deny": ["web_fetch(https://example.com/*)"]}})
+def test_network_permission_blocks_before_network(broker_session, monkeypatch, http):
+    s = broker_session(preset="read-only")
     result, _ = fetch(s, monkeypatch)
-    assert result.is_error and not http["requests"]
+    assert not result.is_error and len(http["requests"]) == 1
+    assert not s.ui.questions and not s.main.permission_snapshot.mode.network
+
+
+def test_directional_web_grant_adds_only_egress_for_the_approved_fetch(broker_session, http):
+    """An ordinary web read now needs zero grants and leaves Shell network disabled."""
+    from virgo.ai.providers import faux
+
+    args = {"url": "https://example.com/article"}
+    session = broker_session(faux.reply(tools=[("web_fetch", args)]), faux.reply(tools=[("web_fetch", args)]),
+                             faux.reply("done"), preset="read-only")
+    session.prompt("Read the selected article twice")
+    assert all(not result.is_error for result in tool_results(session))
+    assert len(http["requests"]) == 2
+    assert not session.store.custom("permission_request") and not session.ui.questions
+    assert not session.main.execution_context.resources.network
 
 
 def test_redirect_rechecks_permission(make_session, monkeypatch, http):
-    s = make_session(settings={"permissions": {"deny": ["web_fetch(https://blocked.example/*)"]}})
+    s = make_session()
+    from virgo.agent.types import Block
+    s.bus.on("tool_call", lambda event, _: Block("blocked redirect") if event.args.get("url", "").startswith("https://blocked.example/") else None)
     http.update(status=302, headers={"location": "https://blocked.example/private"})
     result, _ = fetch(s, monkeypatch)
     assert result.is_error and len(http["requests"]) == 1
@@ -128,6 +145,22 @@ def test_large_text_is_saved_with_explicit_truncation(make_session, monkeypatch,
     assert data["truncated"]
     from pathlib import Path
     assert Path(data["output_path"]).read_text() == http["body"]
+
+
+
+def test_read_only_web_spill_uses_private_workspace_output(broker_session, monkeypatch, http):
+    from pathlib import Path
+
+    http.update(body="Evidence " * 10000, headers={"content-type": "text/plain"})
+    session = broker_session(preset="read-only")
+    before = list(session.cwd.iterdir())
+    result, _ = fetch(session, monkeypatch)
+    assert not result.is_error, result.text()
+    path = Path(json.loads(result.text())["output_path"])
+    assert path.is_relative_to(session.paths.user)
+    assert session.main.execution_context.read_bytes(path).decode() == http["body"]
+    assert list(session.cwd.iterdir()) == before
+    assert not session.ui.questions
 
 
 def test_quota_applies_across_tool_rounds_and_resets_on_user_request(make_session, monkeypatch, http):

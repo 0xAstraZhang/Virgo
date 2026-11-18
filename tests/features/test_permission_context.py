@@ -35,12 +35,12 @@ def test_context_key_changes_for_new_constraints_not_automatic_review_logs(make_
     session.store.append("custom", kind="permission_decision", data={"source": "workspace", "decision": "allow"})
     add(session.main, UserMessage("Continue this task."))
     assert origin_key(session, ev) == first
-    session.settings.set("permissions.deny", ["write"])
+    session.approval_policy = "never"
     assert origin_key(session, ev) != first
 
 
 def test_direct_main_event_binds_once_across_chat_switch(make_session):
-    session = make_session(settings={"sandbox": {"mode": "workspace-write"}})
+    session = make_session()
     add(session.main, UserMessage("Original task."))
     ev = tool_call_event(session, "write", {"path": "README.md", "content": "Original task."})
     api = ExtensionAPI(session, "direct-integration")
@@ -61,7 +61,7 @@ def test_unbound_nonmain_event_cannot_borrow_main_authorization(make_session):
     session = make_session()
     ev = tool_call_event(session, "read", {"path": "README.md"}, agent="orphan")
     assert source_for(session, ev) is None
-    assert isinstance(session.services["permissions"].on_tool_call(ev, session), Block)
+    assert isinstance(session._before_tool(ev), Block)
     assert not session.ui.questions
 
 
@@ -72,14 +72,14 @@ def test_subagent_keeps_parent_task_and_marks_delegation(make_session):
     add(old_main, UserMessage("Original task."))
     source = old_main.origin
     session.new_session()
-    child = session.create_runtime("worker", "subagent", parent=old_main, read_only=True)
+    child = session.create_runtime("worker", "subagent", parent=old_main)
     try:
         ev = event(session, child)
         assert origin_store(session, ev) is source.root
         assert origin_workspace(session, ev) == old_main.cwd
         assert child.origin.identity == source.identity
         assert child.origin.identity != session.main.origin.identity
-        assert session.services["permissions"].is_read_only(child)
+        assert child.execution_context is old_main.execution_context
     finally:
         session.release_runtime(child)
 
