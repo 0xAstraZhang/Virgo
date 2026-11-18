@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import statistics
 from pathlib import Path
 
@@ -60,6 +61,17 @@ def main():
     report = comparison(json.loads(args.head.read_bytes()), json.loads(args.baseline.read_bytes()),
                         args.head_sha, args.mode)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with Path(summary).open("a", encoding="utf-8") as stream:
+            stream.write(f"### {args.mode} on {report['platform']}\n\n")
+            stream.write(f"Baseline `{report['baseline_revision']}`, head `{report['head_revision']}`.\n\n")
+            stream.write("| Metric | Baseline median (ms) | Head median (ms) | Head / baseline |\n")
+            stream.write("| --- | ---: | ---: | ---: |\n")
+            for key, metric in report["metrics"].items():
+                stream.write(f"| {key} | {metric['baseline_median_ms']:.1f} | "
+                             f"{metric['head_median_ms']:.1f} | {metric['head_over_baseline']:.3f} |\n")
 
 
 if __name__ == "__main__":
