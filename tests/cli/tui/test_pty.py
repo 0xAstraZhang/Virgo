@@ -119,7 +119,7 @@ def mount(self):
     self.set_timer(0.15, fail)
 
 VirgoApp.on_mount = mount
-raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', '--model', 'faux/demo']))
+raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', '--permission', 'no-limit', '--model', 'faux/demo']))
 """
     with PtyClient(project, tmp_path / "pty-error-home", [sys.executable, "-c", script]) as terminal:
         terminal.wait_for(lambda data: ENTER_SCREEN in data)
@@ -134,7 +134,7 @@ from virgo.ai.providers import faux
 from virgo.cli.main import main
 
 faux.script('activity', faux.reply('Finished waiting.', delay=1.6))
-raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session',
+raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', '--permission', 'no-limit',
                       '--model', 'faux/activity', '--effort', 'high', 'hello']))
 """
     with PtyClient(project, tmp_path / "pty-activity-home", [sys.executable, "-c", script]) as terminal:
@@ -217,7 +217,7 @@ async def observe_switch(self, *args, **kwargs):
 
 VirgoApp.change_conversation = observe_switch
 faux.script('concurrent', faux.reply('old-terminal-answer', delay=30), faux.reply('new-terminal-answer'))
-raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--model', 'faux/concurrent', 'old-terminal-question']))
+raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--permission', 'no-limit', '--model', 'faux/concurrent', 'old-terminal-question']))
 """
     with PtyClient(project, home, [sys.executable, "-c", script]) as terminal:
         terminal.wait_for(lambda data: ENTER_SCREEN in data and "Thinking" in plain(data))

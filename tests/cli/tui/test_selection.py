@@ -267,7 +267,7 @@ def answer(context):
     return faux.reply('Received input ' + str(len(faux.CALLS['keys'])))
 
 faux.handler('keys', answer)
-raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', '--model', 'faux/keys']))
+raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', '--permission', 'no-limit', '--model', 'faux/keys']))
 """.replace("CAPTURE", f"Path({str(captured)!r})")
     with PtyClient(project, tmp_path / "shift-enter-home", [sys.executable, "-c", script]) as terminal:
         terminal.wait_for(lambda data: b"Host" in data)
