@@ -7,8 +7,10 @@ import os
 from .io import read_json, write_json
 from .reports import (
     BAD,
+    WINDOWS_PARTITIONS,
     approved_product_retirements,
     approved_retirements,
+    merge_windows_partitions,
     product_retirement_policy,
     validate_report,
 )
@@ -16,6 +18,10 @@ from .reports import (
 
 def compare(args):
     reports, problems, target = {}, [], None
+    partitions = {}
+    windows_shards = getattr(args, "windows_shards", False)
+    for label in ("base", "head"):
+        args.output.with_name(f"{args.output.stem}-windows-latest-{label}.json").unlink(missing_ok=True)
     report_problems = {operating_system: [] for operating_system in args.platforms}
     mode, skipped = args.mode or "comparison", False
     if args.target:
@@ -47,12 +53,15 @@ def compare(args):
         try:
             data = read_json(path)
             validate_report(data)
-            key = data["platform"], data["label"]
+            key = data["platform"], data["label"], data.get("partition", "all")
             if skipped or key[0] not in args.platforms or key[1] not in labels:
                 raise ValueError(f"Unexpected run report: {key}")
-            if key in reports:
+            expected = WINDOWS_PARTITIONS if windows_shards and key[0] == "windows-latest" else ("all",)
+            if key[2] not in expected:
+                raise ValueError(f"Unexpected run partition: {key}")
+            if key in partitions:
                 raise ValueError(f"Duplicate run report: {key}")
-            reports[key] = data
+            partitions[key] = data
         except (OSError, ValueError, TypeError) as error:
             problems.append(f"{path.relative_to(args.reports)}: {error}")
             # Preserve useful producer diagnostics even when validation rejects
@@ -62,6 +71,17 @@ def compare(args):
                 details.append(str(error))
                 if isinstance(data.get("problems"), list):
                     details.extend(message for message in data["problems"] if isinstance(message, str))
+    for operating_system in ([] if skipped else args.platforms):
+        for label in labels:
+            if windows_shards and operating_system == "windows-latest":
+                parts = {name: partitions[(operating_system, label, name)] for name in WINDOWS_PARTITIONS
+                         if (operating_system, label, name) in partitions}
+                try:
+                    reports[operating_system, label] = merge_windows_partitions(parts)
+                except (ValueError, TypeError) as error:
+                    report_problems[operating_system].append(f"{label}: {error}")
+            elif report := partitions.get((operating_system, label, "all")):
+                reports[operating_system, label] = report
     combined = {"target": target, "mode": mode, "skipped": skipped, "problems": problems, "platforms": {}}
     markdown = ["# Cross-platform CI", ""]
     if target:
@@ -82,6 +102,8 @@ def compare(args):
                                 + f" | {report['duration']} |")
             else:
                 markdown.append(f"| {operating_system} | {label} | missing | — | — | — | — |")
+    if windows_shards and not skipped:
+        markdown += ["", "Windows seconds sum both independent runner partitions; raw reports retain each duration."]
     failed = bool(problems)
     for operating_system in ([] if skipped else args.platforms):
         base, head = (reports.get((operating_system, label)) for label in ("base", "head"))
@@ -168,6 +190,9 @@ def compare(args):
                          f"- Base: {', '.join(base['collection_skips']) or 'none'}",
                          f"- Head: {', '.join(head['collection_skips']) or 'none'}", ""]
     combined["needs_attention"] = failed
+    for (operating_system, label), report in reports.items():
+        if "partitions" in report:
+            write_json(args.output.with_name(f"{args.output.stem}-{operating_system}-{label}.json"), report)
     if problems:
         markdown += ["## Workflow / report problems", "", *(f"- {problem}" for problem in problems), ""]
     success = ("Lightweight checks passed; full tests were intentionally skipped." if skipped else

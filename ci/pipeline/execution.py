@@ -26,6 +26,7 @@ def run(args):
         with subprocess.Popen([
             sys.executable, "-u", str(Path(__file__).resolve().parents[1] / "run_suite.py"),
             "--execution", args.execution, "--output", str(output),
+            "--partition", args.partition,
         ], cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
             env={**os.environ, "PYTHONUNBUFFERED": "1"}) as result:
@@ -36,6 +37,7 @@ def run(args):
             result.wait()
     report = {
         "platform": args.platform, "label": args.label, "sha": args.sha,
+        "partition": args.partition,
         "python": sys.version, "system": platform.platform(),
         "exit_code": result.returncode, "duration": round(time.monotonic() - started, 2),
         "complete": result.returncode in {0, 1}, "counts": {}, "tests": {},
