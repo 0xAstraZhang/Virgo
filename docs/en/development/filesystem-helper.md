@@ -4,6 +4,8 @@ The built-in Read, Write, Edit, Glob and Grep tools run in a dedicated Python pr
 
 Snapshots live below a stable `virgo-runtime` directory in the operating system's per-user cache, separate from Broker-private storage and command temporary directories. Initialization rejects links, unexpected owners and non-private permissions on the managed directory; it preserves active Windows execution ACEs. Every restricted process is prevented from modifying this entire runtime namespace, including snapshots created by later executors. Native read grants cover the runtime dependencies needed by the current process. Closing an executor removes only its own snapshot and retains the parent namespace so older processes keep their protection over future instances. No-Limit keeps its explicitly authorized host access.
 
+The Broker captures helper source bytes once when its helper adapter module loads, before the first executor can release model work. Later executors reuse those captured bytes rather than reopening a potentially modified editable installation. Changes to the helper implementation take effect after a trusted Broker restart.
+
 ## Transport and bounds
 
 The executor launches the snapshot with isolated Python startup (`-I -S`). Request and result JSON use private stdin/stdout pipes with a four-byte length prefix. Each frame is limited to 16 MiB. Diagnostics use a separate bounded stderr stream. The payload never reads a request from a model-writable project file.

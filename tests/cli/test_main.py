@@ -17,6 +17,8 @@ import pytest
 
 COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" else "virgo")
 ENTRY_POINTS = [[str(COMMAND)], [sys.executable, "-m", "virgo"]]
+# Default sessions launch native helpers; Windows LPAC cold starts exceed 10 s.
+SESSION_STARTUP_TIMEOUT = 180 if os.name == "nt" else 10
 
 
 @pytest.mark.parametrize(
@@ -128,7 +130,7 @@ def test_cli_loads_features_and_streams_json(entry, project):
         capture_output=True,
         text=True,
         check=True,
-        timeout=10,
+        timeout=SESSION_STARTUP_TIMEOUT,
     )
     events = [json.loads(line) for line in result.stdout.splitlines()]
     assert events and "sample.py" in result.stdout
@@ -160,7 +162,7 @@ def test_non_terminal_uses_plain_repl(entry, ui, project):
         capture_output=True,
         text=True,
         check=True,
-        timeout=10,
+        timeout=SESSION_STARTUP_TIMEOUT,
     )
     assert "Virgo" in result.stdout and "bye" in result.stdout
     assert "\x1b[?1049h" not in result.stdout
@@ -175,7 +177,7 @@ def test_print_text_ignores_fullscreen_option(entry, project):
         capture_output=True,
         text=True,
         check=True,
-        timeout=10,
+        timeout=SESSION_STARTUP_TIMEOUT,
     )
     assert result.stdout.strip() == "(faux) You said: hello"
 
