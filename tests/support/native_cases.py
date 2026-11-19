@@ -39,7 +39,13 @@ else: raise AssertionError('outside write succeeded')
         assert process.wait(timeout=15) == 0
         stdout, stderr = process.stdout.read(), process.stderr.read()
         assert stdout == b"protocol:hello stdio", {"stdout": stdout, "stderr": stderr}
-        assert stderr == b"diagnostic:hello stdio", {"stdout": stdout, "stderr": stderr}
+        expected_stderr = {b"diagnostic:hello stdio"}
+        if sys.platform == "win32":
+            # CPython can continue after failing to canonicalize its executable
+            # under LPAC. Keep that exact diagnostic on stderr, never stdout.
+            warning = f"Failed to find real location of {sys._base_executable}\n".encode()
+            expected_stderr.add(warning + b"diagnostic:hello stdio")
+        assert stderr in expected_stderr, {"stdout": stdout, "stderr": stderr}
         assert outside.read_text() == "unchanged"
     finally:
         cleanup_process(process)
