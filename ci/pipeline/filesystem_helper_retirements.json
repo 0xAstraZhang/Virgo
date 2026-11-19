@@ -1,0 +1,17 @@
+{
+  "baseline_sha": "a03b305ae55a6d220ada2f1b53affef237ba59ef",
+  "reason": "Filesystem mutations moved out of the Broker into isolated helper processes. The retired cases used Python frame tracing to race a Broker implementation that no longer runs. Real helper acceptance replaces those implementation-specific checks; native hardlink and replacement cases remain required separately.",
+  "preservation_gates": [
+    {"classname": "tests.tools.test_fs", "name": "test_edit_unique_multi_and_errors"},
+    {"classname": "tests.tools.test_fs", "name": "test_write_creates_parents"}
+  ],
+  "acceptance_gates": [
+    {"classname": "tests.tools.test_fs", "name": "test_worker_snapshot_survives_edits_to_its_installation"},
+    {"classname": "tests.harness.test_sandbox_e2e", "name": "test_core_file_mutation_replaces_hardlink_without_touching_source[write]"},
+    {"classname": "tests.harness.test_sandbox_e2e", "name": "test_core_file_mutation_replaces_hardlink_without_touching_source[edit]"}
+  ],
+  "retired_cases": [
+    {"classname": "tests.harness.test_sandbox_e2e", "name": "test_core_file_mutation_survives_hardlink_unlink_race[write]", "product": "broker-file-mutation"},
+    {"classname": "tests.harness.test_sandbox_e2e", "name": "test_core_file_mutation_survives_hardlink_unlink_race[edit]", "product": "broker-file-mutation"}
+  ]
+}

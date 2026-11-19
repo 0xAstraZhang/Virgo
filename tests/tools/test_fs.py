@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from virgo.agent.types import ToolContext
+from virgo.execution import SandboxExecutor
 from virgo.tools import EDIT, GLOB, GREP, READ, WRITE
 from virgo.tools.fs import _prepare_edit, make_file_tool
 from virgo.tools.output import MAX_LINES
@@ -17,6 +18,13 @@ from tests.support.execution import file_policy
 
 def ctx(cwd: Path) -> ToolContext:
     return ToolContext("c1", cwd, threading.Event())
+
+
+@pytest.fixture
+def file_executor():
+    executor = SandboxExecutor()
+    yield executor
+    executor.close()
 
 
 def edit(cwd, path, *pairs):
@@ -34,54 +42,87 @@ def test_read_pages_large_files(project):
     assert READ.execute({"path": "missing.txt"}, ctx(project)).is_error
 
 
+def test_worker_snapshot_survives_edits_to_its_installation(project, monkeypatch):
+    import shutil
+
+    from virgo import file_operations
+    from virgo.execution import HostContext
+
+    installation = project / "editable-install"
+    installation.mkdir()
+    source = Path(file_operations.__file__).parent
+    for name in ("fs_worker.py", "fs_windows.py"):
+        shutil.copyfile(source / name, installation / name)
+    monkeypatch.setattr(file_operations, "__file__", str(installation / "file_operations.py"))
+    executor = SandboxExecutor()
+    try:
+        host = HostContext(project, executor=executor)
+        # Represent editing Virgo itself after session initialization. The next
+        # actual worker must execute its captured snapshot, never these bytes.
+        (installation / "fs_worker.py").write_text("raise SystemExit(73)\n")
+        response = host.run_file_operation("write", {"path": "captured.txt", "content": "trusted snapshot"})
+        assert response["ok"] and response["boundary"]["payload_started"] is True, response
+        assert (project / "captured.txt").read_text() == "trusted snapshot"
+    finally:
+        executor.close()
+
+
 @pytest.mark.parametrize("tool,arguments", [
     (READ, {"path": "secret.txt"}),
     (GREP, {"path": ".", "pattern": "private"}),
     (GLOB, {"path": ".", "pattern": "*"}),
 ])
-def test_file_tools_enforce_read_scope(project, tool, arguments):
+def test_file_tools_enforce_read_scope(project, tool, arguments, file_executor):
     outside = project.parent / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("private-value")
     arguments = {**arguments, "path": str(outside / arguments["path"])}
-    policy = file_policy(project)
+    policy = file_policy(project, executor=file_executor)
     wrapped = make_file_tool(tool, lambda _ctx: policy)
     denied = wrapped.execute(arguments, ctx(project))
-    assert denied.is_error and denied.details["boundary"]["dimension"] == "read_paths"
+    assert denied.is_error, denied.as_text()
+    assert denied.details["boundary"]["state"] == "established", denied.as_text()
     assert "private-value" not in denied.as_text()
-    full_read = file_policy(project, read_paths=(project.parent,))
+    full_read = file_policy(project, read_paths=(project, outside), executor=file_executor)
     allowed = make_file_tool(tool, lambda _ctx: full_read).execute(arguments, ctx(project))
     assert not allowed.is_error, allowed.as_text()
 
 
 @pytest.mark.parametrize("tool", [READ, GREP])
-def test_scoped_read_cannot_follow_external_symlink(project, tool):
+def test_scoped_read_cannot_follow_external_symlink(project, tool, file_executor):
     outside = project.parent / "secret.txt"
     outside.write_text("private-value")
+    policy = file_policy(project, executor=file_executor)
+    (project / "ordinary.txt").write_text("visible-value")
+    positive = make_file_tool(tool, lambda _ctx: policy).execute(
+        {"path": "ordinary.txt", **({"pattern": "visible"} if tool is GREP else {})}, ctx(project))
+    assert not positive.is_error and positive.details["boundary"]["state"] == "established", positive.as_text()
     link = project / "link.txt"
     try:
         link.symlink_to(outside)
     except OSError:
         pytest.skip("Creating file symlinks is unavailable")
-    policy = file_policy(project)
     arguments = {"path": "link.txt", **({"pattern": "private"} if tool is GREP else {})}
     result = make_file_tool(tool, lambda _ctx: policy).execute(arguments, ctx(project))
     assert result.is_error and "private-value" not in result.as_text()
 
 
-def test_file_tools_keep_private_storage_hidden_and_full_scope_writes_explicit(project):
+def test_file_tools_keep_private_storage_hidden_and_full_scope_writes_explicit(project, file_executor):
     private = project.parent / "home"
     secret = private / "secret.txt"
     secret.write_text("private-value")
-    policy = file_policy(project, read_paths=(project.parent,), write_paths=(project.parent,), private_paths=(private,))
+    outside = project.parent / "extra"
+    outside.mkdir()
+    policy = file_policy(project, read_paths=(project, outside), write_paths=(project, outside),
+                         private_paths=(private,), executor=file_executor)
     read = make_file_tool(READ, lambda _ctx: policy)
     denied = read.execute({"path": str(secret)}, ctx(project))
-    assert denied.is_error and denied.details["boundary"]["dimension"] == "protected_path"
-    target = project.parent / "outside.txt"
+    assert denied.is_error and "private-value" not in denied.as_text()
+    target = outside / "outside.txt"
     write = make_file_tool(WRITE, lambda _ctx: policy)
     result = write.execute({"path": str(target), "content": "allowed"}, ctx(project))
     assert not result.is_error and target.read_text() == "allowed", result.as_text()
-    readonly = file_policy(project, read_paths=(project.parent,))
+    readonly = file_policy(project, read_paths=(project, outside), executor=file_executor)
     denied = make_file_tool(WRITE, lambda _ctx: readonly).execute(
         {"path": str(target), "content": "denied"}, ctx(project))
     assert denied.is_error and target.read_text() == "allowed"

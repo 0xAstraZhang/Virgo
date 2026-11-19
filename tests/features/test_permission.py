@@ -30,10 +30,10 @@ def test_public_modes_and_legacy_config_aliases():
             normalize_approval_policy(retired)
 
 
-def test_auto_review_executes_internal_changes_without_asking(broker_session, project):
+def test_auto_review_executes_internal_changes_without_asking(sandbox_session, project):
     # Retain workspace mutation coverage while retiring the model reviewer.
     ui = RecordingUI()
-    session = broker_session(
+    session = sandbox_session(
         faux.reply(tools=[("write", {"path": "a.txt", "content": "1"}), ("write", {"path": "b.txt", "content": "2"})]),
         faux.reply("done"), ui=ui,
     )
@@ -45,14 +45,17 @@ def test_auto_review_executes_internal_changes_without_asking(broker_session, pr
     assert not session.store.custom("model_call") or all(row["purpose"] != "permission" for row in session.store.custom("model_call"))
 
 
-def test_risky_review_respects_allow_once_and_exact_session_approval(broker_session, tmp_path):
+def test_risky_review_respects_allow_once_and_exact_session_approval(sandbox_session, tmp_path):
     ui = RecordingUI(answers=["y", "n", "a"])
-    session = broker_session(ui=ui)
-    args = {"path": str(tmp_path / "outside.txt"), "content": "one"}
+    session = sandbox_session(ui=ui)
+    directory = tmp_path / "approved-output"
+    directory.mkdir()
+    target = directory / "outside.txt"
+    args = {"path": str(target), "content": "one"}
     changed = args | {"content": "two"}
     def ask(arguments):
         return ("request_permissions", {
-            "tool": "write", "arguments": arguments, "permissions": {"write_paths": [arguments["path"]]},
+            "tool": "write", "arguments": arguments, "permissions": {"write_paths": [str(directory)]},
             "reason": "Write the explicitly selected external file once",
         })
     operations = [ask(args), ("write", args), ("write", args), ask(args),
@@ -62,7 +65,7 @@ def test_risky_review_respects_allow_once_and_exact_session_approval(broker_sess
     results = tool_results(session)
     assert [result.is_error for result in results] == [False, False, True, True, False, False, False, True]
     assert len(ui.questions) == 3
-    assert (tmp_path / "outside.txt").read_text() == "two"
+    assert target.read_text() == "two"
     assert session.services["execution"].mode_for(session.main).write_paths == (str(session.cwd),)
 
 
@@ -128,8 +131,8 @@ def test_execution_rechecks_mode_arguments_and_symlink_boundary(broker_session, 
     assert isinstance(session._before_tool_execute(event), Block)
 
 
-def test_search_review_matches_actual_ignored_and_filtered_files(broker_session, tmp_path):
-    session = broker_session(allow=False)
+def test_search_review_matches_actual_ignored_and_filtered_files(sandbox_session, tmp_path):
+    session = sandbox_session(allow=False)
     hidden = session.cwd / ".venv"
     hidden.mkdir()
     (tmp_path / "outside").write_text("value OUTSIDE_SECRET")
@@ -153,8 +156,8 @@ def test_search_review_matches_actual_ignored_and_filtered_files(broker_session,
     assert not session.ui.questions
 
 
-def test_search_review_selects_the_same_files_as_the_glob_tools(broker_session, tmp_path):
-    session = broker_session(allow=False)
+def test_search_review_selects_the_same_files_as_the_glob_tools(sandbox_session, tmp_path):
+    session = sandbox_session(allow=False)
     (session.cwd / "src" / "pkg").mkdir(parents=True)
     (tmp_path / "outside").write_text("value OUTSIDE_SECRET")
     (session.cwd / "src" / "link.py").symlink_to(tmp_path / "outside")

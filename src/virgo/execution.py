@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from contextlib import closing, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
 from typing import Protocol
@@ -68,6 +68,8 @@ class ProcessRequest:
     stderr: object = subprocess.STDOUT
     output_path: Path | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
+    runtime_paths: tuple[Path, ...] = ()
+    scratch_directory: Path | None = None
 
 
 def environment_overrides(values: dict[str, str]) -> dict[str, str]:
@@ -92,6 +94,17 @@ def environment_overrides(values: dict[str, str]) -> dict[str, str]:
 class SandboxExecutor:
     """Establish the selected boundary before releasing any local payload."""
 
+    def __init__(self):
+        from .file_operations import FileOperations
+
+        self.files = FileOperations()
+
+    def close(self):
+        self.files.close()
+
+    def run_file_operation(self, operation, arguments, *, cwd, policy=None, cancellation=None):
+        return self.files.run(self, operation, arguments, cwd, policy, cancellation)
+
     @cached_property
     def native(self):
         from .sandbox.native import NativeExecutor
@@ -115,6 +128,7 @@ class SandboxExecutor:
         if cancellation is not None and cancellation.is_set():
             raise ExecutionCancelled("Execution cancelled before process start")
         if policy is not None:
+            request = replace(request, runtime_paths=tuple(dict.fromkeys((*request.runtime_paths, self.files.directory))))
             return self.native.run_process(request, policy, cancellation)
         env = {**request.env, **environment_overrides(request.env_overrides)}
         if os.name == "nt":
@@ -139,6 +153,7 @@ class ExecutionContext(Protocol):
     def open_output(self, cwd: Path, prefix: str): ...
     def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]: ...
     def run_process(self, request: ProcessRequest, cancellation=None) -> ProcessHandle: ...
+    def run_file_operation(self, operation, arguments, *, cwd=None, cancellation=None) -> dict: ...
     def describe(self) -> dict: ...
 
 
@@ -255,15 +270,23 @@ class HostContext:
     workspace: Path
     provider: str = "host"
     executor: SandboxExecutor = field(default_factory=SandboxExecutor, compare=False, repr=False)
+    outputs: object = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self):
+        if self.outputs is None:
+            from .output_store import private_output_store
+
+            object.__setattr__(self, "outputs", private_output_store())
+
+    def run_file_operation(self, operation, arguments, *, cwd=None, cancellation=None):
+        return self.executor.run_file_operation(operation, arguments, cwd=cwd or self.workspace,
+                                                cancellation=cancellation)
 
     def check_read(self, path: Path) -> None:
         pass
 
     def read_bytes(self, path: Path, *, max_bytes: int | None = None) -> bytes | None:
-        if max_bytes is not None and path.stat().st_size > max_bytes:
-            return None
-        with path.open("rb") as stream:
-            return stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+        return read_file_bytes(self, path, max_bytes=max_bytes)
 
     @contextmanager
     def open_mutation(self, path: Path, *, create: bool):
@@ -276,27 +299,17 @@ class HostContext:
             yield stream, existed, commit
 
     def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None):
-        for root, dirs, files in os.walk(path):
-            dirs[:] = [name for name in dirs if name not in ignore]
-            if max_depth is not None and len(Path(root).relative_to(path).parts) >= max_depth - 1:
-                dirs.clear()
-            for name in files:
-                file = Path(root) / name
-                yield file, file.stat() if file.exists() else None
+        return walk_file_entries(self, path, ignore, max_depth=max_depth)
 
     def validate(self, cwd: Path) -> Path:
         return cwd
 
     def open_output(self, cwd: Path, prefix: str):
-        from .tools.output import open_output
-
-        return open_output(self.workspace, prefix)
+        return self.outputs.create(prefix)
 
     def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
-        with path.open("rb") as stream:
-            total = stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, total - max_bytes))
-            return stream.read(max_bytes), total
+        data, total, _ = self.outputs.read(path, limit=max_bytes, tail=True)
+        return data, total
 
     def run_process(self, request: ProcessRequest, cancellation=None):
         return self.executor.run_process(request, cancellation=cancellation)
@@ -304,6 +317,37 @@ class HostContext:
     def describe(self) -> dict:
         return {"provider": "host", "state": "host", "workspace": str(self.workspace),
                 "requested": "host", "effective": "host operating-system authority"}
+
+
+def file_result(result):
+    if not result["ok"]:
+        error = result.get("error", {})
+        message = error.get("message", "Filesystem operation failed")
+        if error.get("kind") == "permission_denied":
+            raise FileAccessDenied(message, target=error.get("target"))
+        raise OSError(error.get("errno") or 5, message)
+    return result.get("details", {})
+
+
+def read_file_bytes(context, path, *, max_bytes=None, follow_symlinks=False):
+    import base64
+
+    arguments = {"path": os.fspath(path), "follow_symlinks": follow_symlinks}
+    if max_bytes is not None:
+        arguments["max_bytes"] = max_bytes
+    result = file_result(context.run_file_operation("read_bytes", arguments))
+    data = result.get("data")
+    return base64.b64decode(data, validate=True) if data is not None else None
+
+
+def walk_file_entries(context, path, ignore, *, max_depth=None):
+    from types import SimpleNamespace
+
+    result = file_result(context.run_file_operation("walk_files", {
+        "path": os.fspath(path), "ignore": sorted(ignore), "max_depth": max_depth,
+    }))
+    return ((Path(item["path"]), SimpleNamespace(st_mtime=item["mtime"], st_size=item["size"],
+                                                st_mode=item["mode"])) for item in result["files"])
 
 
 def cleanup_process(proc) -> None:

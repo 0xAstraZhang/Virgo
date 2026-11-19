@@ -32,6 +32,8 @@ class ModeExecutionProvider(HostExecutionProvider):
         super().__init__(session)
         self.startup_mode = session.settings.get("execution.mode")
         self.executor = SandboxExecutor()
+        self._outputs = {}
+        session.register_cleanup("core.execution", self.executor.close)
         self.sandbox = None
         self.resource_tool = None
 
@@ -75,9 +77,17 @@ class ModeExecutionProvider(HostExecutionProvider):
         return self.mode_for(runtime).name
 
     def _context(self, runtime, mode, revision):
+        from ..output_store import OutputStore
+
+        key = id(runtime.accounting_store)
+        if key not in self._outputs:
+            import secrets
+
+            self._outputs[key] = OutputStore(self.session.paths.user / "outputs" / secrets.token_hex(16))
+        outputs = self._outputs[key]
         if mode == HOST_MODE:
-            return HostContext(Path(runtime.accounting_store.cwd).resolve(), executor=self.executor)
-        return self.load_sandbox().context_for_mode(runtime, mode, revision)
+            return HostContext(Path(runtime.accounting_store.cwd).resolve(), executor=self.executor, outputs=outputs)
+        return replace(self.load_sandbox().context_for_mode(runtime, mode, revision), outputs=outputs)
 
     def capture_runtime(self, runtime):
         with self.session._lock:
@@ -171,5 +181,9 @@ def install_execution(session):
     for tool in (READ, GLOB, GREP, WRITE, EDIT):
         session.replace_tools(f"tool:{tool.name}", [(make_file_tool(tool, provider.for_context), ("main", "subagent"))],
                               owner="core")
+    from ..tools.output import make_read_output_tool
+
+    tool = make_read_output_tool(provider.for_context)
+    session.replace_tools(f"tool:{tool.name}", [(tool, ("main", "subagent"))], owner="core")
     session.commands.register("permissions", provider.command, "show execution boundary and resource permissions",
                               source="core", concurrent=True, argument_hint="[show|list|read-only|workspace-edit|no-limit|grants|revoke ID]")

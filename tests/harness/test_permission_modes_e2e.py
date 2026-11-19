@@ -14,10 +14,10 @@ def request(tool="write", arguments=None, **flags):
                                     "permissions": flags, "reason": "Finish the requested operation"})
 
 
-def test_explicit_permission_request_is_exact_once_and_does_not_change_mode(broker_session):
+def test_explicit_permission_request_is_exact_once_and_does_not_change_mode(sandbox_session):
     args = {"path": "result.txt", "content": "ok"}
-    session = broker_session(
-        faux.reply(tools=[request(write_paths=["result.txt"])]),
+    session = sandbox_session(
+        faux.reply(tools=[request(write_paths=["."])]),
         faux.reply(tools=[("write", args)]),
         faux.reply(tools=[("write", args)]), faux.reply("done"),
         ui=RecordingUI(["y"]), preset="read-only",
@@ -33,10 +33,12 @@ def test_explicit_permission_request_is_exact_once_and_does_not_change_mode(brok
     assert "write" in calls()[0]["tools"]
 
 
-def test_direct_file_approval_dispatches_once_and_preserves_the_mode(broker_session, tmp_path):
-    target = tmp_path / "result.txt"
+def test_direct_file_approval_dispatches_once_and_preserves_the_mode(sandbox_session, tmp_path):
+    directory = tmp_path / "approved-output"
+    directory.mkdir()
+    target = directory / "result.txt"
     args = {"path": str(target), "content": "one"}
-    session = broker_session(faux.reply(tools=[("write", args)]), faux.reply(tools=[("write", args)]),
+    session = sandbox_session(faux.reply(tools=[("write", args)]), faux.reply(tools=[("write", args)]),
                              faux.reply("done"), preset="read-only", ui=RecordingUI(["y", "n"]))
     session.prompt("Write the requested result")
     assert [result.is_error for result in tool_results(session)] == [False, True]
@@ -44,12 +46,13 @@ def test_direct_file_approval_dispatches_once_and_preserves_the_mode(broker_sess
     assert len(session.ui.questions) == 2
     assert all(str(session.cwd) in question and "write_paths" in question and "Reason:" in question
                for question in session.ui.questions)
+    assert all(str(directory) in question for question in session.ui.questions)
     assert session.main.permission_snapshot.mode.id == "read-only"
 
 
-def test_changed_arguments_cannot_consume_another_operation_permission(broker_session):
-    session = broker_session(
-        faux.reply(tools=[request(write_paths=["result.txt"])]),
+def test_changed_arguments_cannot_consume_another_operation_permission(sandbox_session):
+    session = sandbox_session(
+        faux.reply(tools=[request(write_paths=["."])]),
         faux.reply(tools=[("write", {"path": "other.txt", "content": "ok"})]),
         faux.reply(tools=[("write", {"path": "result.txt", "content": "ok"})]), faux.reply("done"),
         ui=RecordingUI(["y"]), preset="read-only",
@@ -214,8 +217,8 @@ def test_legacy_native_policy_requires_explicit_migration(make_session, legacy):
 
 
 @pytest.mark.parametrize("operation", ["select", "save"])
-def test_failed_preset_change_preserves_effective_and_saved_state(broker_session, operation):
-    session = broker_session()
+def test_failed_preset_change_preserves_effective_and_saved_state(sandbox_session, operation):
+    session = sandbox_session()
     provider = session.services["execution"]
     active = session.main.execution_context
     revision = session.main.origin.root.preset_revision
@@ -317,8 +320,8 @@ def test_next_preset_selected_after_admission_applies_to_next_task(broker_sessio
     ("workspace-edit", "confirmation", True), ("workspace-edit", "dispatch", True),
     ("revoke", "confirmation", False), ("never", "dispatch", False),
 ])
-def test_child_grant_respects_scope_of_changes_in_other_conversation(broker_session, monkeypatch, action, change_at, allowed):
-    session = broker_session(ui=RecordingUI(["y"]), preset="read-only")
+def test_child_grant_respects_scope_of_changes_in_other_conversation(sandbox_session, monkeypatch, action, change_at, allowed):
+    session = sandbox_session(ui=RecordingUI(["y"]), preset="read-only")
     child = session.create_runtime("worker", "subagent", parent=session.main)
     args = {"path": "result.txt", "content": "ok"}
     session.new_session()
@@ -336,7 +339,7 @@ def test_child_grant_respects_scope_of_changes_in_other_conversation(broker_sess
     if change_at == "confirmation":
         monkeypatch.setattr(session.ui, "confirm", switch)
     try:
-        faux.push("test", faux.reply(tools=[request(write_paths=["result.txt"])]), dispatch, faux.reply("done"))
+        faux.push("test", faux.reply(tools=[request(write_paths=["."])]), dispatch, faux.reply("done"))
         child.agent.prompt("Create the approved file")
         assert child.permission_snapshot.mode.id == "read-only"
         target = session.cwd / "result.txt"

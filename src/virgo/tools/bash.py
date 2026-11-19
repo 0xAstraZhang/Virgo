@@ -39,7 +39,7 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, 
             raise ValueError("Managed execution requires an explicit interpreter argv")
         from ..execution import ProcessRequest
 
-        request = ProcessRequest(tuple(argv), cwd, env, stdout=stdout, output_path=output_path)
+        request = ProcessRequest(tuple(argv), cwd, env, stdout=stdout)
         return execution_context.run_process(request, cancellation)
     if os.name == "nt":
         from .windows_process import WindowsProcess
@@ -154,7 +154,7 @@ def format_output(
         "truncated": output.truncated
         or len((output.text.rstrip() or t("tools.output.empty")).encode("utf-8")) > MAX_BYTES - 256,
         "output_bytes": output.total_bytes,
-        "output_path": str(output.path) if output.path else None,
+        "output_id": str(output.path) if output.path else None,
     }
     if status == "timeout":
         return ToolResult.error(t("tools.output.timeout", text=text, timeout=timeout), details)

@@ -14,7 +14,7 @@ class NativeExecutor:
         self.backend, self.path = platform_backend()
         self.identity = (self.backend, str(self.path))
 
-    def policy(self, context):
+    def policy(self, context, request=None):
         resources = context.resources
         if resources.network and resources.network != FULL_NETWORK:
             raise ExecutionUnavailable("The native backend requires a complete Shell network grant",
@@ -44,11 +44,14 @@ class NativeExecutor:
                 raise ExecutionUnavailable(f"Native grant requires the exact existing file or directory: {path}",
                                            reason="unsupported_path", target=path)
             grants[path] = writable
+        if request is not None and request.scratch_directory is not None:
+            grants[request.scratch_directory] = True
         return NativePolicy(workspace, workspace not in writes, bool(resources.network), private,
-                            tuple(sorted(grants.items(), key=lambda item: len(item[0].parts))))
+                            tuple(sorted(grants.items(), key=lambda item: len(item[0].parts))),
+                            extra_runtime_paths=request.runtime_paths if request is not None else ())
 
     def run_process(self, request, policy, cancellation=None):
-        envelope = self.policy(policy)
+        envelope = self.policy(policy, request)
         proc = envelope.spawn(request.argv, request.cwd, request.env, request.stdout,
                               request.output_path, cancellation, stdin=request.stdin,
                               stderr=request.stderr, env_overrides=request.env_overrides)

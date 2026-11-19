@@ -143,22 +143,23 @@ def test_large_text_is_saved_with_explicit_truncation(make_session, monkeypatch,
     assert not result.is_error
     data = json.loads(result.text())
     assert data["truncated"]
-    from pathlib import Path
-    assert Path(data["output_path"]).read_text() == http["body"]
+    store = s.main.execution_context.outputs
+    record = store.lookup(data["output_id"])
+    assert store.read(record, limit=len(http["body"].encode()))[0].decode() == http["body"]
+    assert "output_path" not in data
 
 
 
 def test_read_only_web_spill_uses_private_workspace_output(broker_session, monkeypatch, http):
-    from pathlib import Path
-
     http.update(body="Evidence " * 10000, headers={"content-type": "text/plain"})
     session = broker_session(preset="read-only")
     before = list(session.cwd.iterdir())
     result, _ = fetch(session, monkeypatch)
     assert not result.is_error, result.text()
-    path = Path(json.loads(result.text())["output_path"])
-    assert path.is_relative_to(session.paths.user)
-    assert session.main.execution_context.read_bytes(path).decode() == http["body"]
+    store = session.main.execution_context.outputs
+    record = store.lookup(json.loads(result.text())["output_id"])
+    assert record._path.is_relative_to(session.paths.user)
+    assert store.read(record, limit=len(http["body"].encode()))[0].decode() == http["body"]
     assert list(session.cwd.iterdir()) == before
     assert not session.ui.questions
 

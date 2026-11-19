@@ -229,21 +229,23 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
     (("a",), "a"), (("y",), "y"), (("n",), "n"), (("escape",), "n"),
     (("1",), "y"), (("2",), "n"), (("enter",), "n"), (("up", "enter"), "y"),
 ], ids=["always-a", "once-y", "once-n", "once-escape", "once-1", "once-2", "once-enter", "once-up"])
-def test_resource_approval_controls_one_file_write(broker_session, project, keys, answer):
-    target = project.parent / "approved.txt"
+def test_resource_approval_controls_one_file_write(sandbox_session, project, keys, answer):
+    directory = project.parent / "approved-output"
+    directory.mkdir()
+    target = directory / "approved.txt"
     async def scenario():
         ui = FullscreenUI()
         args = {"path": str(target), "content": "first"}
         request = ("request_permissions", {"tool": "write", "arguments": args,
-                   "permissions": {"write_paths": [str(target)]}, "reason": "Write requested result"})
-        session = broker_session(faux.reply(tools=[request]), faux.reply(tools=[("write", args)]),
+                   "permissions": {"write_paths": [str(directory)]}, "reason": "Write requested result"})
+        session = sandbox_session(faux.reply(tools=[request]), faux.reply(tools=[("write", args)]),
                                  faux.reply("finished"), ui=ui)
         app = VirgoApp(session, ui, initial="write file")
         async with app.run_test(size=(80, 24)) as pilot:
             picker = app.query_one(ApprovalPicker)
             await wait_for(pilot, lambda: picker.display and app.focused is not None)
             assert picker.query_one("#approval-options", OptionList).option_count == 3
-            assert "approved.txt" in picker.confirmation.question and not target.exists()
+            assert str(directory) in picker.confirmation.question and not target.exists()
             await pilot.press(*keys)
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
             assert target.exists() is (answer in {"y", "a"})
@@ -629,7 +631,8 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session
                 picker.highlighted = list(manager.modes).index(mode)
                 await pilot.pause()
                 await pilot.press("enter")
-                await wait_for(pilot, lambda mode=mode: manager.selected_mode_id == mode and not app.has_modal)
+                await wait_for(pilot, lambda mode=mode: manager.selected_mode_id == mode and not app.has_modal
+                               and app.query_one("#status", Static).content.plain.startswith(manager.selected_mode.name))
                 assert session.approval_policy == "ask"
                 text = app.query_one("#status", Static).content
                 assert text.plain.startswith(manager.selected_mode.name)

@@ -9,7 +9,7 @@ from virgo.harness.session import Runtime
 
 MAIN_TOOLS = {
     "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "ask_user", "agent",
-    "bash", "job_output", "job_kill", "diagnostic_get",
+    "bash", "job_output", "job_kill", "diagnostic_get", "read_output",
 }
 
 

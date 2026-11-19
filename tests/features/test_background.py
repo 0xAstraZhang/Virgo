@@ -48,7 +48,7 @@ def test_job_that_cannot_start_is_not_left_pending(make_session, project, monkey
     with pytest.raises(OSError):
         jobs.start_command("echo hi", project)
     assert not jobs.jobs and not pending_work(session)
-    assert not list((project / ".virgo" / "outputs").glob("*.log"))
+    assert not list(session.main.execution_context.outputs.directory.glob("*.log"))
 
 
 def test_finished_job_is_pending_until_its_notification_is_queued(make_session, project, monkeypatch, python_command):
@@ -148,6 +148,8 @@ def test_job_tools_cannot_borrow_another_conversations_resources(make_session, p
 
 
 def test_background_output_alias_cannot_read_outside_resource_boundary(broker_session, project):
+    from dataclasses import replace
+
     session = broker_session()
     jobs = session.services['jobs']
     job = jobs.start_callable('owned output', lambda _signal: 'done', store=session.main.origin.root, cwd=project)
@@ -156,8 +158,9 @@ def test_background_output_alias_cannot_read_outside_resource_boundary(broker_se
     protected.write_text('output-resource-canary')
     job.log, stream = session.main.execution_context.open_output(project, 'owned-output')
     stream.close()
-    job.log.unlink()
-    job.log.symlink_to(protected)
+    # Output IDs resolve to exact Broker records; a forged record cannot swap
+    # the underlying path even when it copies a known identifier.
+    job.log = replace(job.log, _path=protected)
     faux.script('test', faux.reply(tools=[('job_output', {'id': job.id})]), faux.reply('done'))
     session.prompt('Read the owned background output')
     result = tool_results(session)[-1]

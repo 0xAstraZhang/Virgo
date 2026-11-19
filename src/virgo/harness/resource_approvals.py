@@ -236,7 +236,11 @@ class ResourceApprovals:
             _, errors = validate(copy.deepcopy(event.args), event.tool.parameters)
             if errors:
                 return self._denial(base, "; ".join(errors), dimension, boundary["target"])
-            missing = ((dimension, boundary["target"]),)
+            # The helper commits a fresh inode in the destination directory.
+            # Show that directory capability in the approval itself instead of
+            # silently turning a file-only approval into directory write access.
+            target = str(Path(boundary["target"]).parent) if dimension == "write_paths" else boundary["target"]
+            missing = ((dimension, target),)
             policy = _extend(policy, missing)
         # Waiting for a user must not hold the session lock.
         result = self._confirm(event, base, saved, policy, missing, block.reason, dispatch=True)

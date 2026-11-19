@@ -216,6 +216,7 @@ class NativePolicy:
     network_allowed: bool
     private_paths: tuple[Path, ...]
     grants: tuple[tuple[Path, bool], ...]
+    extra_runtime_paths: tuple[Path, ...] = ()
     workspace_only = True
 
     def __post_init__(self):
@@ -242,8 +243,8 @@ class NativePolicy:
 
     def runtime_paths(self) -> tuple[Path, ...]:
         """Keep interpreter roots explicit even when a broader read mount covers them."""
-        return tuple(dict.fromkeys(path for value in (sys.base_prefix, sys.prefix)
-                                   for path in (Path(value).absolute(), Path(value).resolve())))
+        return tuple(dict.fromkeys((*self.extra_runtime_paths, *(path for value in (sys.base_prefix, sys.prefix)
+                                   for path in (Path(value).absolute(), Path(value).resolve())))))
 
     def protected_paths(self) -> tuple[Path, ...]:
         paths = []
@@ -334,7 +335,15 @@ class NativePolicy:
             args += ["--share-net"]
         if not self.workspace_only:
             args += ["--ro-bind" if self.read_only else "--bind", "/", "/"]
+        # Build private temporary roots before exposing trusted dependencies.
+        # A runtime snapshot (or interpreter) under /tmp must not be hidden by
+        # a later tmpfs mount after it has already been bound read-only.
+        args += ["--proc", "/proc", "--dev", "/dev"]
+        if self.workspace_only:
+            args += ["--tmpfs", "/tmp", "--dir", "/run"]
         else:
+            args += ["--tmpfs", "/run"]
+        if self.workspace_only:
             for root in self._read_roots():
                 if not root.is_relative_to(self.workspace):
                     args += ["--ro-bind", str(root), str(root)]
@@ -363,11 +372,6 @@ class NativePolicy:
                 if not any(resolved.is_relative_to(root) for root in (*roots, self.workspace)):
                     raise SandboxUnavailable(f"Interpreter alias leaves permitted roots: {alias}")
                 args += ["--symlink", str(resolved), str(alias)]
-        args += ["--proc", "/proc", "--dev", "/dev"]
-        if self.workspace_only:
-            args += ["--tmpfs", "/tmp", "--dir", "/run"]
-        else:
-            args += ["--tmpfs", "/run"]
         if self.network_allowed:
             # Resolvers commonly link /etc/resolv.conf into /run, which remains
             # private. Expose only the verified system configuration targets,

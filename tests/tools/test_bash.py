@@ -150,11 +150,17 @@ def test_bash_exit_codes_timeout_and_truncation(project, python_command):
     assert run(project, python_command("import os; print(os.getcwd())")).as_text().strip() == str(project)
     t = BASH.execute({"command": python_command("import time; time.sleep(5)"), "timeout": 0.3}, ctx(project))
     assert t.is_error and "timed out" in t.as_text()
-    big = run(project, python_command(f"for i in range(1, {MAX_LINES + 101}): print(i)")).as_text()
+    output, code, status = bash_module.run_command(
+        python_command(f"for i in range(1, {MAX_LINES + 101}): print(i)"),
+        project, 10, threading.Event(),
+    )
+    rendered = bash_module.format_output(output, code, status, project, 10)
+    big = rendered.as_text()
     assert "Output truncated" in big and big.rstrip().endswith(str(MAX_LINES + 100))
-    saved = Path(big.split("Full output: ")[1].split("]")[0])
-    assert saved.parent == project / ".virgo" / "outputs"
-    assert saved.read_text().startswith("1\n")
+    saved = output.path
+    assert rendered.details["output_id"] == saved.id and saved.id in big
+    assert not (project / ".virgo" / "outputs").exists()
+    assert saved.store.read(saved)[0].startswith(b"1\n")
 
 
 def test_bash_marks_child_processes(project, python_command):

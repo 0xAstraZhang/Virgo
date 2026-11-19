@@ -230,8 +230,8 @@ def test_requests_are_append_only(make_session):
         assert b["messages"][: len(a["messages"])] == a["messages"]
 
 
-def test_mode_change_applies_to_next_run_not_dispatched_batch(broker_session, project):
-    s = broker_session(faux.reply(tools=[
+def test_mode_change_applies_to_next_run_not_dispatched_batch(sandbox_session, project):
+    s = sandbox_session(faux.reply(tools=[
         ("write", {"path": "first.txt", "content": "one"}),
         ("write", {"path": "second.txt", "content": "two"}),
     ]), faux.reply("Done"), approval="never")

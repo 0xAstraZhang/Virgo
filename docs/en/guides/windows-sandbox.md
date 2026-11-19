@@ -6,6 +6,8 @@ Workspace-Edit grants the command the Internet and private-network capabilities 
 
 Per-operation filesystem access uses the exact existing object for a file and the specified tree for a directory. An unavailable path or an ACL that cannot be installed refuses the operation. The broker does not request elevation.
 
+Built-in file tools execute in the same native boundary through a captured Filesystem Helper. Atomic Write/Edit stage within the destination directory, so they require an explicit directory write grant. Replacement files inherit that directory's ACL; the old file's custom explicit DACL is not copied. The helper uses retained no-reparse handles and atomic native rename without obtaining Broker ACL privileges. [Helper protocol and output ownership](../development/filesystem-helper.md)
+
 At `37d4427`, Windows Server 2022 and 2025 administrator runners established external TCP connections. Host loopback and host-interface connections were unsuccessful. The inbound socket bound and listened, but the host connection timed out. [Windows native reports](https://github.com/JunhangYU1017/Virgo/actions/runs/44270022381) · [Acceptance procedure](../development/execution-acceptance.md)
 
 A positive live-reader test on Windows 11 build 26200, native x64 Python 3.13.9 and a non-elevated desktop token stopped before the payload. Creating the protected KsecDD device coordination mutex returned Windows error 1307. The existing LPAC implementation requires that lease. Egress, ingress and loopback were unmeasured on this account.

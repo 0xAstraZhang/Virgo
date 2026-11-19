@@ -20,26 +20,28 @@ def ask(session, tool, arguments, permissions, runtime=None):
     }, context)
 
 
-def test_always_allow_survives_restart_and_can_be_revoked_from_no_limit(broker_session, project, tmp_path):
-    target = tmp_path / "external.txt"
+def test_always_allow_survives_restart_and_can_be_revoked_from_no_limit(sandbox_session, project, tmp_path):
+    directory = tmp_path / "approved-output"
+    directory.mkdir()
+    target = directory / "external.txt"
     args = {"path": str(target), "content": "result"}
-    first = broker_session(preset="read-only", ui=RecordingUI(["a"]))
-    assert not ask(first, "write", args, {"write_paths": [str(target)]}).is_error
+    first = sandbox_session(preset="read-only", ui=RecordingUI(["a"]))
+    assert not ask(first, "write", args, {"write_paths": [str(directory)]}).is_error
     assert not target.exists()
     assert str(project) in first.ui.questions[0]
 
-    restored = broker_session(faux.reply(tools=[("write", args)]), faux.reply("done"), preset="read-only")
+    restored = sandbox_session(faux.reply(tools=[("write", args)]), faux.reply("done"), preset="read-only")
     restored.prompt("Write the exact result")
     assert not tool_results(restored)[-1].is_error and target.read_text() == "result"
     assert not restored.ui.questions
     restored.prompt("/permissions no-limit")
     restored.prompt("/permissions grants")
-    assert str(target) in restored.ui.lines[-1] and "read-only" in restored.ui.lines[-1]
+    assert str(directory) in restored.ui.lines[-1] and "read-only" in restored.ui.lines[-1]
     identifier = restored.ui.lines[-1].split()[0]
     restored.prompt(f"/permissions revoke {identifier}")
     assert not ResourceRules(first.paths.user).list(str(project))
-    later = broker_session(preset="read-only", ui=RecordingUI(["n"]))
-    assert ask(later, "write", args, {"write_paths": [str(target)]}).is_error
+    later = sandbox_session(preset="read-only", ui=RecordingUI(["n"]))
+    assert ask(later, "write", args, {"write_paths": [str(directory)]}).is_error
     assert len(later.ui.questions) == 1
 
 
@@ -92,11 +94,11 @@ def test_read_only_broker_output_leaves_the_project_untouched(broker_session, pr
     session = broker_session(preset="read-only")
     context = session.main.execution_context
     original = list(project.iterdir())
-    path, stream = context.open_output(project, "shell")
+    record, stream = context.open_output(project, "shell")
     with stream:
         stream.write(b"result")
     assert list(project.iterdir()) == original
-    assert path.is_relative_to(session.paths.user)
-    context.check_read(path)
-    assert context.read_bytes(path) == b"result"
-    assert context.read_output_tail(path, 3) == (b"ult", 6)
+    assert record._path.is_relative_to(session.paths.user)
+    assert context.outputs.lookup(record.id) is record
+    assert context.outputs.read(record)[0] == b"result"
+    assert context.outputs.read(record, limit=3, tail=True)[:2] == (b"ult", 6)

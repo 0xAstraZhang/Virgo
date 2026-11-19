@@ -118,7 +118,7 @@ def load_templates(dirs: list[Path], *, reserved: frozenset[str] = frozenset(), 
                 out[f.stem] = (str(meta.get("description", "")), body.strip())
                 if source_paths is not None:
                     source_paths[f.stem] = f
-        except OSError:
+        except (OSError, RuntimeError):
             continue
     return out
 
