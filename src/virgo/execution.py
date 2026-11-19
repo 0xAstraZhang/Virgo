@@ -340,6 +340,21 @@ def read_file_bytes(context, path, *, max_bytes=None, follow_symlinks=False):
     return base64.b64decode(data, validate=True) if data is not None else None
 
 
+def read_context(context, *, files=(), directories=()):
+    """Read a component's bounded inputs once, retaining its captured authority."""
+    import base64
+
+    result = file_result(context.run_file_operation("read_context", {
+        "files": [os.fspath(path) for path in files],
+        "directories": [{**item, "path": os.fspath(item["path"])} for item in directories],
+    }))
+    for entries in (result["files"], *(group["files"] for group in result["directories"])):
+        for entry in entries:
+            data = entry["data"]
+            entry["data"] = base64.b64decode(data, validate=True) if data is not None else None
+    return result
+
+
 def walk_file_entries(context, path, ignore, *, max_depth=None):
     from types import SimpleNamespace
 

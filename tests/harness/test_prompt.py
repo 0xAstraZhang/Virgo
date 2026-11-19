@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from virgo.ai.providers import faux
+from virgo.file_operations import FileOperations
 from virgo.harness.session import Runtime
 
 MAIN_TOOLS = {
@@ -13,14 +14,23 @@ MAIN_TOOLS = {
 }
 
 
-def test_default_request_keeps_tool_definitions_without_duplicate_or_empty_sections(make_session):
+def test_default_request_keeps_tool_definitions_without_duplicate_or_empty_sections(make_session, monkeypatch):
     seen = []
+    launches = []
+    run = FileOperations._run
+
+    def observed(self, executor, operation, *args):
+        launches.append(operation)
+        return run(self, executor, operation, *args)
+
+    monkeypatch.setattr(FileOperations, "_run", observed)
 
     def respond(context):
         seen.append(context)
         return faux.reply("done")
 
     session = make_session(respond, respond)
+    assert launches == ["read_context"] * 3, launches
     session.prompt("first")
     session.prompt("second")
     first, second = seen

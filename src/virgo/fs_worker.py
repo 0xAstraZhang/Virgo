@@ -30,6 +30,9 @@ MAX_LINES = 2000
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_READ_BYTES = 8 * 1024 * 1024
 MAX_WALK_FILES = 10000
+MAX_CONTEXT_FILES = 256
+MAX_CONTEXT_DIRECTORIES = 16
+MAX_CONTEXT_WIRE_BYTES = 12 * 1024 * 1024
 IGNORE_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", ".tox", ".idea", "dist", "build",
@@ -564,6 +567,92 @@ def _grep(args, path, cwd):
     return result(*segments, details={"matches": min(matches, limit)})
 
 
+def _read_context(args, cwd, home):
+    """Collect one component's optional project inputs under this process's policy."""
+    paths, directories = args.get("files", []), args.get("directories", [])
+    if (not isinstance(paths, list) or len(paths) > MAX_CONTEXT_FILES
+            or any(not isinstance(path, str) for path in paths)
+            or not isinstance(directories, list) or len(directories) > MAX_CONTEXT_DIRECTORIES):
+        raise ValueError("Automatic context accepts at most 256 files and 16 directories")
+    for directory in directories:
+        if (not isinstance(directory, dict) or not isinstance(directory.get("path"), str)
+                or directory.get("depth") not in {1, 2}
+                or directory.get("match") not in {"*.md", "*/SKILL.md"}):
+            raise ValueError("Unsupported automatic-context directory selection")
+
+    details = {"files": [], "directories": [], "truncated": False}
+    total_bytes = total_files = wire_bytes = visited = 0
+
+    def error_record(error):
+        return {"type": type(error).__name__, "errno": getattr(error, "errno", None),
+                "message": str(error)[:1024]}
+
+    def append(entry, destination):
+        nonlocal total_files, wire_bytes
+        size = len(json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        if total_files >= MAX_CONTEXT_FILES or wire_bytes + size > MAX_CONTEXT_WIRE_BYTES:
+            details["truncated"] = True
+            return False
+        wire_bytes += size
+        total_files += 1
+        destination.append(entry)
+        return True
+
+    def read(path, destination):
+        nonlocal total_bytes
+        if total_files >= MAX_CONTEXT_FILES:
+            details["truncated"] = True
+            return False
+        entry = {"path": str(path), "data": None, "error": None}
+        try:
+            data, size = _read_bytes(path, MAX_READ_BYTES - total_bytes)
+            if data is None:
+                entry["error"] = {"type": "TooLarge", "size": size}
+                details["truncated"] = True
+            else:
+                entry["data"] = base64.b64encode(data).decode("ascii")
+                total_bytes += len(data)
+        except (OSError, ValueError) as error:
+            # Missing, denied and unsafe inputs are optional individually.
+            entry["error"] = error_record(error)
+        return append(entry, destination)
+
+    for raw in paths:
+        try:
+            path = resolve(raw, cwd, home, follow_symlinks=False)
+        except (OSError, ValueError) as error:
+            # Reject malformed paths without affecting the remaining inputs.
+            if not append({"path": raw[:1024], "data": None, "error": error_record(error)}, details["files"]):
+                break
+            continue
+        if not read(path, details["files"]):
+            break
+
+    for selection in directories:
+        group = {"files": [], "error": None}
+        details["directories"].append(group)
+        if total_files >= MAX_CONTEXT_FILES or wire_bytes >= MAX_CONTEXT_WIRE_BYTES:
+            details["truncated"] = True
+            continue
+        try:
+            root = resolve(selection["path"], cwd, home, follow_symlinks=False)
+            matches = []
+            for path, _info in _walk(root, set(), max_depth=selection["depth"]):
+                visited += 1
+                if visited > MAX_WALK_FILES:
+                    details["truncated"] = True
+                    break
+                relative = path.relative_to(root).as_posix()
+                if _match_segments(relative.split("/"), selection["match"].split("/")):
+                    matches.append(path)
+            for path in sorted(matches):
+                if not read(path, group["files"]):
+                    break
+        except (OSError, ValueError) as error:
+            group["error"] = error_record(error)
+    return result(details=details)
+
+
 def execute(request):
     if not isinstance(request, dict) or request.get("version") != 1:
         raise ValueError("Unsupported filesystem request version")
@@ -574,6 +663,8 @@ def execute(request):
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or not isinstance(home, str):
         raise ValueError("Filesystem request requires an absolute cwd and a home path")
     cwd = Path(_windows().normalize_path(cwd)) if os.name == "nt" else Path(cwd).resolve(strict=True)
+    if operation == "read_context":
+        return _read_context(args, cwd, home)
     path = resolve(args.get("path") or ".", cwd, home,
                    follow_symlinks=args.get("follow_symlinks", True) if operation == "read_bytes" else True)
     request["_resolved_path"] = str(path)
