@@ -22,13 +22,18 @@ def filesystem_helper_operations(native, project, monkeypatch):
         assert response["boundary"]["payload_started"] is True, response
         return response
 
-    assert operation("write", {"path": "worker/file.txt", "content": "before\n"})["ok"]
-    assert operation("edit", {"path": "worker/file.txt", "edits": [
+    written = operation("write", {"path": "worker/file.txt", "content": "before\n"})
+    assert written["ok"], written
+    edited = operation("edit", {"path": "worker/file.txt", "edits": [
         {"old_text": "before", "new_text": "after"},
-    ]})["ok"]
-    assert operation("read", {"path": "worker/file.txt"})["segments"] == ["after\n"]
-    assert operation("glob", {"path": "worker", "pattern": "*.txt"})["details"]["count"] == 1
-    assert operation("grep", {"path": "worker", "pattern": "after"})["details"]["matches"] == 1
+    ]})
+    assert edited["ok"], edited
+    read = operation("read", {"path": "worker/file.txt"})
+    assert read["segments"] == ["after\n"], read
+    globbed = operation("glob", {"path": "worker", "pattern": "*.txt"})
+    assert globbed["ok"] and globbed["details"]["count"] == 1, globbed
+    grepped = operation("grep", {"path": "worker", "pattern": "after"})
+    assert grepped["ok"] and grepped["details"]["matches"] == 1, grepped
     assert not list(project.rglob(".virgo-write-*.tmp"))
 
     metadata = project / ".git"

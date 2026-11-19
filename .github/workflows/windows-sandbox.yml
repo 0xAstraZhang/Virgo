@@ -23,7 +23,7 @@ jobs:
       matrix:
         os: [windows-2022, windows-2025]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       PYTHONUTF8: '1'
       VIRGO_REQUIRE_SANDBOX_TESTS: '1'

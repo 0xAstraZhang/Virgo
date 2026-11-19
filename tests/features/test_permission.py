@@ -1,6 +1,7 @@
 """Explicit authorization checks retain workspace, origin and execution boundaries."""
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -133,6 +134,9 @@ def test_execution_rechecks_mode_arguments_and_symlink_boundary(broker_session, 
 
 def test_search_review_matches_actual_ignored_and_filtered_files(sandbox_session, tmp_path):
     session = sandbox_session(allow=False)
+    (session.cwd / "inside.py").write_text("value INSIDE")
+    control = session.main.execution_context.run_file_operation("read", {"path": "inside.py"})
+    assert control["ok"] and control["boundary"]["state"] == "established", control
     hidden = session.cwd / ".venv"
     hidden.mkdir()
     (tmp_path / "outside").write_text("value OUTSIDE_SECRET")
@@ -149,9 +153,12 @@ def test_search_review_matches_actual_ignored_and_filtered_files(sandbox_session
     ]), faux.reply("done"))
     session.prompt("Search without following outside aliases")
     results = tool_results(session)
-    assert not results[0].is_error and not results[1].is_error
-    assert "linked-directory" not in results[1].text()
-    assert results[2].is_error and results[2].details["boundary"]["dimension"] == "read_paths"
+    if os.name == "nt":
+        assert all(result.is_error for result in results), "Windows rejects reparse-point grants before launch"
+    else:
+        assert all(not result.is_error for result in results)
+        assert "linked-directory" not in results[1].text()
+        assert "inside.py" in results[1].text() and "INSIDE" in results[2].text()
     assert "OUTSIDE_SECRET" not in repr(results)
     assert not session.ui.questions
 
@@ -160,8 +167,10 @@ def test_search_review_selects_the_same_files_as_the_glob_tools(sandbox_session,
     session = sandbox_session(allow=False)
     (session.cwd / "src" / "pkg").mkdir(parents=True)
     (tmp_path / "outside").write_text("value OUTSIDE_SECRET")
-    (session.cwd / "src" / "link.py").symlink_to(tmp_path / "outside")
     (session.cwd / "src" / "pkg" / "inside.py").write_text("value = 1")
+    control = session.main.execution_context.run_file_operation("read", {"path": "src/pkg/inside.py"})
+    assert control["ok"] and control["boundary"]["state"] == "established", control
+    (session.cwd / "src" / "link.py").symlink_to(tmp_path / "outside")
     faux.script("test", faux.reply(tools=[
         ("glob", {"pattern": "src/**/*.py"}),
         ("grep", {"pattern": "value", "glob": "src/**/*.py"}),
@@ -170,14 +179,13 @@ def test_search_review_selects_the_same_files_as_the_glob_tools(sandbox_session,
     ]), faux.reply("done"))
     session.prompt("Keep glob selection and content reads distinct")
     results = tool_results(session)
-    assert not results[0].is_error
-    assert {Path(line) for line in results[0].text().splitlines()} == {
-        Path("src/link.py"), Path("src/pkg/inside.py"),
-    }
-    assert results[1].is_error
-    assert not results[2].is_error
-    assert {Path(line) for line in results[2].text().splitlines()} == {Path("src/pkg/inside.py")}
-    assert not results[3].is_error and "value = 1" in results[3].text()
+    if os.name == "nt":
+        assert all(result.is_error for result in results), "Windows rejects reparse-point grants before launch"
+    else:
+        assert all(not result.is_error for result in results)
+        for result in (results[0], results[2]):
+            assert {Path(line) for line in result.text().splitlines()} == {Path("src/pkg/inside.py")}
+        assert all("value = 1" in result.text() for result in (results[1], results[3]))
     assert "OUTSIDE_SECRET" not in repr(results)
 
 

@@ -14,11 +14,13 @@ The executor waits for completion and owns the same process cleanup as Shell. A 
 
 Write and Edit open regular files through retained, no-follow directory handles. After all edit matching succeeds, they stage a new file in the destination directory and atomically replace the destination entry. The helper never switches to truncating the existing inode when replacement is denied. POSIX preserves the existing file mode and the established BOM/CRLF editing behavior.
 
+POSIX path traversal retains every ancestor with search-only descriptors (`O_PATH` on Linux, `O_SEARCH` on macOS), keeping the all-component no-follow check without requesting ancestor directory listings. Enumeration separately opens the requested directory for reading. Parent creation first opens existing components and attempts `mkdir` only for missing components, so writing a workspace file does not request mutations to its existing ancestors.
+
 Staging in the destination directory keeps replacement on the same filesystem and avoids making project `.virgo` metadata writable. An atomic file mutation requires permission to create and rename an entry in its parent directory. A grant for only one existing file is sufficient for a Shell command that writes that inode, but is insufficient for this helper's atomic replacement. Request the parent directory explicitly; authorization must not silently expand to it.
 
 Replacing a hardlink entry leaves other names of its old inode unchanged. This does not establish that arbitrary Shell writes through pre-existing hardlinks are safe. During this migration, native launch-time hardlink checks and the existing Windows recursive ACL checks remain in force.
 
-On Windows, the helper uses retained native handles and `FileRenameInformationEx`. Staging files inherit the destination parent's ACL, including currently active execution grants. They do not copy the old file's explicit per-file DACL or request Broker `WRITE_DAC` privileges. Applications that require preservation of custom per-file ACLs must account for this replacement behavior. Protected runtime and control paths remain subject to the native backend's restrictions.
+On Windows, the helper normalizes DOS paths lexically, retains a metadata-only drive-root handle, and opens filesystem components relative to that handle with `OBJ_DONT_REPARSE`. File operations reject filesystem reparses without requiring host DOS-device namespace queries or strict final-path canonicalization inside LPAC. Atomic replacement uses `FileRenameInformationEx`. Staging files inherit the destination parent's ACL, including currently active execution grants. They do not copy the old file's explicit per-file DACL or request Broker `WRITE_DAC` privileges. Applications that require preservation of custom per-file ACLs must account for this replacement behavior. Protected runtime and control paths remain subject to the native backend's restrictions.
 
 ## Private outputs
 

@@ -65,7 +65,9 @@ def _api(library, name, args, result=BOOL):
 
 
 CloseHandle = _api(kernel, "CloseHandle", [HANDLE])
-QueryDosDevice = _api(kernel, "QueryDosDeviceW", [ctypes.c_wchar_p, ctypes.c_wchar_p, DWORD], DWORD)
+CreateFile = _api(kernel, "CreateFileW", [
+    ctypes.c_wchar_p, DWORD, DWORD, ctypes.c_void_p, DWORD, DWORD, HANDLE,
+], HANDLE)
 GetFileInformation = _api(kernel, "GetFileInformationByHandle", [HANDLE, ctypes.POINTER(_ByHandleInfo)])
 GetVolumeInformation = _api(kernel, "GetVolumeInformationByHandleW", [
     HANDLE, ctypes.c_wchar_p, DWORD, ctypes.POINTER(DWORD), ctypes.POINTER(DWORD),
@@ -171,6 +173,14 @@ class FileHandle:
         self.close()
 
 
+def _check_filesystem(handle, name):
+    filesystem, flags = ctypes.create_unicode_buffer(32), DWORD()
+    _check(GetVolumeInformation(handle, None, 0, None, None, ctypes.byref(flags),
+                                 filesystem, len(filesystem)))
+    if filesystem.value.upper() != "NTFS" or not flags.value & 0x8:  # PERSISTENT_ACLS
+        raise _invalid(name, "a local NTFS volume with persistent ACLs is required")
+
+
 def _open(name, access, *, parent=None, share_delete=True, share_write=True,
           directory=None, disposition=FILE_OPEN, allow_reparse=False):
     if disposition not in {FILE_OPEN, FILE_CREATE, FILE_OPEN_IF}:
@@ -202,11 +212,7 @@ def _open(name, access, *, parent=None, share_delete=True, share_write=True,
         error.filename = name
         raise error
     try:
-        filesystem, flags = ctypes.create_unicode_buffer(32), DWORD()
-        _check(GetVolumeInformation(handle, None, 0, None, None, ctypes.byref(flags),
-                                     filesystem, len(filesystem)))
-        if filesystem.value.upper() != "NTFS" or not flags.value & 0x8:  # PERSISTENT_ACLS
-            raise _invalid(name, "a local NTFS volume with persistent ACLs is required")
+        _check_filesystem(handle, name)
         return FileHandle(handle.value, allow_reparse=allow_reparse)
     except BaseException as error:
         CloseHandle(handle)
@@ -217,7 +223,7 @@ def _open(name, access, *, parent=None, share_delete=True, share_write=True,
 
 def open_path(path, access, *, share_delete=True, share_write=True, directory=None,
               disposition=FILE_OPEN, allow_reparse=False) -> FileHandle:
-    """Open the entire native path atomically, refusing drive aliases and reparses."""
+    """Open below a retained drive root, refusing filesystem reparses throughout."""
     normalized = normalize_path(path)
     if allow_reparse and len(normalized) > 3:
         # Cleanup may remove our ACE from a junction created by a payload. Open
@@ -229,16 +235,29 @@ def open_path(path, access, *, share_delete=True, share_write=True, directory=No
             return open_child(parent, name, access, share_delete=share_delete,
                               share_write=share_write, directory=directory,
                               disposition=disposition, allow_reparse=True)
-    device = ctypes.create_unicode_buffer(32768)
-    _check(QueryDosDevice(normalized[:2], device, len(device)))
-    if not re.fullmatch(r"\\Device\\HarddiskVolume[0-9]+", device.value, re.IGNORECASE):
-        raise _invalid(path, "mapped, substituted and non-disk drives are not supported")
-    if disposition != FILE_OPEN:
-        # Verify the volume before a create operation can change its contents.
-        with _open(device.value + "\\", FILE_READ_ATTRIBUTES, directory=True):
-            pass
-    return _open(device.value + normalized[2:], access, share_delete=share_delete,
-                 share_write=share_write, directory=directory, disposition=disposition)
+    # Resolving a DOS-device symbolic link with QueryDosDevice is a host-only
+    # namespace query under LPAC. A zero-access directory handle needs metadata
+    # only; it neither grants directory listings nor bypasses child ACL checks.
+    value = CreateFile(normalized[:3], 0, 0x7, None, 3, 0x02000000 | 0x00200000, None)
+    if value == ctypes.c_void_p(-1).value:
+        error = ctypes.WinError(ctypes.get_last_error())
+        error.filename = normalized[:3]
+        raise error
+    try:
+        root = FileHandle(value)
+    except BaseException:
+        CloseHandle(value)
+        raise
+    if len(normalized) == 3:
+        if directory is False or disposition != FILE_OPEN:
+            root.close()
+            raise _invalid(path, "the drive root requires an existing directory open")
+        return root
+    with root:
+        if disposition != FILE_OPEN:
+            _check_filesystem(root.value, normalized[:3])
+        return _open(normalized[3:], access, parent=root.value, share_delete=share_delete,
+                     share_write=share_write, directory=directory, disposition=disposition)
 
 
 def open_child(parent: FileHandle, name: str, access, *, share_delete=True, share_write=True,
@@ -250,6 +269,8 @@ def open_child(parent: FileHandle, name: str, access, *, share_delete=True, shar
     attributes = parent.refresh_info().attributes
     if not attributes & FILE_ATTRIBUTE_DIRECTORY or attributes & FILE_ATTRIBUTE_REPARSE_POINT:
         raise ValueError("An open non-reparse directory handle is required")
+    if disposition != FILE_OPEN:
+        _check_filesystem(parent.value, name)
     return _open(name, access, parent=parent.value, share_delete=share_delete,
                  share_write=share_write, directory=directory, disposition=disposition,
                  allow_reparse=allow_reparse)

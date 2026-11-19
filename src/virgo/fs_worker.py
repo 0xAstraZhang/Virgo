@@ -90,12 +90,14 @@ def resolve(path, cwd, home, *, follow_symlinks=True):
         path = os.path.expanduser(path)
     target = Path(path)
     target = target if target.is_absolute() else Path(cwd) / target
+    if os.name == "nt":
+        # LPAC does not grant the DOS-device queries used by strict realpath.
+        # Retained native opens below reject filesystem reparses themselves.
+        return Path(_windows().normalize_path(target))
     if follow_symlinks:
         target = target.resolve()
     else:
         target = Path(os.path.abspath(target))
-    if os.name == "nt":
-        target = Path(_windows().normalize_path(target))
     return target
 
 
@@ -132,16 +134,23 @@ def _directory(path, *, create=False):
         finally:
             parent.close()
         return
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    # Ancestors need traversal, not directory enumeration. Darwin's O_SEARCH
+    # value is stable even when Python was built against an older SDK.
+    access = getattr(os, "O_SEARCH", 0x40000000) if sys.platform == "darwin" else getattr(os, "O_PATH", os.O_RDONLY)
+    flags = access | os.O_DIRECTORY | os.O_NOFOLLOW
     parent = os.open(path.anchor, flags)
     try:
         for part in path.parts[1:]:
-            if create:
+            try:
+                child = os.open(part, flags, dir_fd=parent)
+            except FileNotFoundError:
+                if not create:
+                    raise
                 try:
                     os.mkdir(part, dir_fd=parent)
                 except FileExistsError:
                     pass
-            child = os.open(part, flags, dir_fd=parent)
+                child = os.open(part, flags, dir_fd=parent)
             os.close(parent)
             parent = child
         yield parent
@@ -564,7 +573,7 @@ def execute(request):
     cwd, home = request.get("cwd"), request.get("home")
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or not isinstance(home, str):
         raise ValueError("Filesystem request requires an absolute cwd and a home path")
-    cwd = Path(cwd).resolve(strict=True)
+    cwd = Path(_windows().normalize_path(cwd)) if os.name == "nt" else Path(cwd).resolve(strict=True)
     path = resolve(args.get("path") or ".", cwd, home,
                    follow_symlinks=args.get("follow_symlinks", True) if operation == "read_bytes" else True)
     request["_resolved_path"] = str(path)

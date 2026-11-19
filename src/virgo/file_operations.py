@@ -41,7 +41,7 @@ class FileOperations:
         self.interpreter = str(Path(sys.executable).resolve(strict=True))
         # Capture installation code before the first model-controlled operation,
         # including editable installs running from their own project.
-        self.directory = Path(tempfile.mkdtemp(prefix="virgo-runtime-"))
+        self.directory = Path(tempfile.mkdtemp(prefix="virgo-runtime-")).resolve(strict=True)
         try:
             for name in ("fs_worker.py", "fs_windows.py"):
                 content = Path(__file__).with_name(name).read_bytes()
