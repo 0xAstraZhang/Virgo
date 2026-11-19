@@ -1,4 +1,4 @@
-"""Default Host execution and explicit isolation migration, through real sessions."""
+"""Explicit No-Limit execution and isolation migration, through real sessions."""
 from __future__ import annotations
 
 import json
@@ -20,8 +20,11 @@ def test_fresh_host_executes_without_importing_isolation(project, tmp_path):
 import importlib.abc, json, pathlib, sys
 class NoIsolation(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith("virgo.") and any(word in fullname for word in ("sandbox", "mxc", "macos_process")):
-            raise AssertionError("Host imported isolation: " + fullname)
+        # Windows shares ACL primitives to protect the trusted helper snapshot.
+        # Host execution must still work without loading an isolation backend.
+        if fullname.startswith(("virgo.sandbox.native", "virgo.sandbox.windows_sandbox",
+                                "virgo.sandbox.macos_process")):
+            raise AssertionError("Host imported isolation backend: " + fullname)
 sys.meta_path.insert(0, NoIsolation())
 from virgo.harness.session import AgentSession
 from virgo.ai.providers import faux
