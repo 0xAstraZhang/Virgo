@@ -57,8 +57,9 @@ class SandboxPolicy:
         return replace(self, private_paths=(), resources=replace(self.resources, read_paths=(str(path),), write_paths=()))
 
     def _owns_private_output(self, path):
-        if self.spool_home is None:
-            return False
+        # The spool can sit inside private storage when the workspace contains
+        # the state directory. Ownership is the exact spool directory, so the
+        # read grant covers only the output files the broker created there.
         root, parts = self.spool_location()
         return path.parent == root.joinpath(*parts)
 
@@ -92,8 +93,6 @@ class SandboxPolicy:
                                        target=error.target) from error
         if not cwd.is_dir():
             raise ExecutionUnavailable(f"Working directory is unavailable: {cwd}")
-        if any(root.is_relative_to(self.workspace) for root in self.private_paths):
-            raise ExecutionUnavailable("Workspace must not contain private broker storage")
         return cwd
 
     def validate_native(self, cwd: Path):

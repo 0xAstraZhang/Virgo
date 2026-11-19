@@ -1,9 +1,13 @@
 """Execution profiles and one-operation exceptions through the existing Agent Loop."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from virgo.ai.providers import faux
+from virgo.execution import FileAccessDenied
 from virgo.harness.session import AgentSession
 
 from tests.support.harness import RecordingUI, calls, tool_results
@@ -343,3 +347,16 @@ def test_child_grant_respects_scope_of_changes_in_other_conversation(broker_sess
         assert (target.read_text() if target.exists() else None) == ("ok" if allowed else None)
     finally:
         session.release_runtime(child)
+
+
+@pytest.mark.parametrize("preset", ["workspace-edit", "read-only"])
+def test_workspace_may_contain_the_private_state_directory(broker_session, tmp_path, preset):
+    home = Path(os.environ["VIRGO_HOME"])
+    (home / "secret.txt").write_text("token")
+    (tmp_path / "notes.txt").write_text("visible")
+    session = broker_session(cwd=tmp_path, preset=preset)
+    contract = session.main.execution_context
+    assert contract.validate(tmp_path) == tmp_path.resolve()
+    assert contract.read_bytes(tmp_path / "notes.txt") == b"visible"
+    with pytest.raises(FileAccessDenied):
+        contract.read_bytes(home / "secret.txt")

@@ -87,6 +87,20 @@ def test_file_tools_keep_private_storage_hidden_and_full_scope_writes_explicit(p
     assert denied.is_error and target.read_text() == "allowed"
 
 
+def test_workspace_spool_stays_readable_inside_private_storage(project):
+    private = project / ".virgo"
+    spool = private / "outputs"
+    spool.mkdir(parents=True)
+    log = spool / "bash-1.log"
+    log.write_text("full-output")
+    (private / "auth.json").write_text("token")
+    policy = file_policy(project, write_paths=(project,), private_paths=(private,))
+    read = make_file_tool(READ, lambda _ctx: policy)
+    assert "full-output" in read.execute({"path": str(log)}, ctx(project)).as_text()
+    denied = read.execute({"path": str(private / "auth.json")}, ctx(project))
+    assert denied.is_error and denied.details["boundary"]["dimension"] == "protected_path"
+
+
 def test_write_creates_parents(project):
     r = WRITE.execute({"path": "a/b/c.txt", "content": "hi"}, ctx(project))
     assert not r.is_error and (project / "a/b/c.txt").read_text() == "hi"
