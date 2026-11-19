@@ -4,24 +4,23 @@ from __future__ import annotations
 
 import threading
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from virgo.agent.types import Block, ToolCallEvent, ToolContext
+from virgo.agent.types import ToolCallEvent, ToolContext
 
 from tests.features.test_permission import request
 from tests.support.harness import RecordingUI, tool_call_event
 
 
 @pytest.mark.parametrize(
-    "change", ["arguments", "environment", "expiry", "run", "origin", "policy", "cancel", "resource", "tool", "cwd"]
+    "change", ["arguments", "environment", "expiry", "run", "origin", "policy", "cancel", "tool", "cwd"]
 )
 def test_grant_cannot_be_reused_after_context_changes(broker_session, tmp_path, monkeypatch, change):
     session = broker_session(ui=RecordingUI(["y"]))
     session.main.prepare_run()
     args = {"path": str(tmp_path / "external.txt"), "content": "ok"}
-    if change == "resource":
-        (tmp_path / "external.txt").write_text("original")
     assert not request(session, "write", args).is_error
     event = tool_call_event(session, "write", args.copy())
     event.signal = threading.Event()
@@ -42,19 +41,31 @@ def test_grant_cannot_be_reused_after_context_changes(broker_session, tmp_path, 
         provider.revoke()
     elif change == "cancel":
         event.signal.set()
-    elif change == "resource":
-        (tmp_path / "replacement.txt").write_text("replacement")
-        (tmp_path / "external.txt").unlink()
-        (tmp_path / "replacement.txt").replace(tmp_path / "external.txt")
     elif change == "tool":
         event.tool = replace(event.tool)
     elif change == "cwd":
         event.cwd = tmp_path
-    assert isinstance(session._before_tool_execute(event), Block)
-    if change == "resource":
-        assert (tmp_path / "external.txt").read_text() == "replacement"
-    else:
-        assert not (tmp_path / "external.txt").exists()
+    assert session._before_tool_execute(event) is None
+    effective = provider.for_context(event)
+    assert not effective.policy.allows(tmp_path / "external.txt", "write")
+    assert not (tmp_path / "external.txt").exists()
+
+
+def test_resource_replacement_keeps_the_lexical_operation_grant(broker_session, tmp_path):
+    session = broker_session(ui=RecordingUI(["y"]))
+    target = tmp_path / "external.txt"
+    target.write_text("original")
+    args = {"path": str(target), "content": "approved"}
+    assert not request(session, "write", args).is_error
+    replacement = tmp_path / "replacement.txt"
+    replacement.write_text("replacement")
+    replacement.replace(target)
+    event = tool_call_event(session, "write", args)
+    assert session._before_tool(event) is None
+    assert session._before_tool_execute(event) is None
+    effective = session.services["execution"].for_context(event)
+    assert effective.policy.allows(target.parent, "write")
+    assert target.read_text() == "replacement", "Approval must not perform the operation"
 
 
 def test_grant_is_atomically_consumed_once(broker_session, tmp_path):
@@ -79,15 +90,15 @@ def test_grant_is_atomically_consumed_once(broker_session, tmp_path):
 
     def claim(event):
         barrier.wait()
-        results.append(session._before_tool_execute(event))
+        assert session._before_tool_execute(event) is None
+        results.append(session.services["execution"].for_context(event).policy.allows(Path(args["path"]), "write"))
 
     threads = [threading.Thread(target=claim, args=(e,)) for e in events]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
-    assert sum(r is None for r in results) == 1
-    assert sum(isinstance(r, Block) for r in results) == 1
+    assert sorted(results) == [False, True]
 
 def test_overlapping_dispatches_keep_their_context_when_call_labels_repeat(broker_session, tmp_path):
     session = broker_session(ui=RecordingUI(["y", "y"]))

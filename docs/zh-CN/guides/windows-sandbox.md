@@ -1,12 +1,21 @@
 # Windows 命令沙箱
 
-原生 Windows 后端要求 x64 Python、PowerShell 7、本地 NTFS，以及创建 AppContainer 配置和临时 ACL 的权限。Virgo 在释放挂起的进程前核验其 LPAC 令牌和 Job 成员资格。进程树结束后收回临时授权。Windows 已授予 LPAC 的环境读取权限仍然生效。
+原生 Windows 后端要求 x64 Python、本地 NTFS，以及创建 AppContainer 配置和临时 ACL 的权限。Shell 工具使用 PowerShell 7，通用执行器也支持明确指定的原生可执行文件。Virgo 在释放挂起的进程前核验其 LPAC 令牌和 Job 成员资格。进程树结束后收回临时授权。Windows 已授予 LPAC 的环境读取权限仍然生效；与这些权限冲突的读取拒绝策略不受支持，必须在释放载荷前停止执行。
 
 Workspace-Edit 直接请求 Internet 和专用网络能力。Read-Only 在某次操作获准联网前保持关闭。实际出站、入站和宿主回环连接由 AppContainer 与宿主防火墙控制。防火墙规则和回环豁免由宿主管理。
 
 额外授权按确切文件对象或指定目录树应用。目标不存在或无法设置精确 ACL 时返回错误。Virgo 使用当前账户执行。
 
 内置文件工具通过可信 Helper 副本进入相同的原生边界。原子 Write/Edit 在目标目录内暂存文件，因此需要明确的目录写权限。替换后的文件继承父目录 ACL，不复制旧文件自定义的显式 DACL。Helper 使用不跟随 reparse point 的保留句柄和原子原生重命名，不取得 Broker 的 ACL 修改权限。详见[Helper 协议与输出权限](../development/filesystem-helper.md)。
+
+
+拒绝读取的目录树不获得读取授权，普通写入限制 SID 阻止对它们的修改。Package 与 Capability SID 不能撤销环境已有的 LPAC 读取许可。释放挂起的进程前，Virgo 使用其实际令牌检查每个保留句柄对应的拒绝对象及全部后代的安全描述符，并检查拒绝目录对普通文件和目录的继承结果。若 `FILE_READ_DATA` 或目录枚举仍被允许，启动返回 `unsupported_read_deny` 和对应路径，不回退到宿主，也不重放载荷。这表示该策略无法建立，不代表成功实施了读取拒绝。
+
+原生验收刻意为私有文件授予 `ALL RESTRICTED APPLICATION PACKAGES` 环境读取权限，要求出现上述准确的释放前拒绝、载荷标记文件未创建，且 ACL 得到恢复。其他原生用例仍须在支持的策略下真实启动 Helper 与命令，并验证私有存储拒绝；不能靠拒绝全部启动通过验收。拒绝写入的运行时和元数据保持只读。ACL 清理仅移除本次执行的身份，并恢复由它修改的继承状态。
+
+宽泛的 HOME 授权排除共享的 AppContainer `Packages` 目录树，不向其他配置目录授予读取权限。执行器在释放载荷前检查拒绝对象及其继承结果，并为自己的私有配置目录设置具有受保护继承的授权。这个内部授权不会覆盖用户策略中的拒绝规则。无法识别的配置目录结构、不支持的环境读取权限，或拒绝本次进程私有临时目录的策略，都会在载荷启动前失败。
+
+普通授权遍历跳过后代重解析点，不跟随它们，也不授权其目标。显式 workspace、cwd、授权根和拒绝根仍然拒绝重解析点。递归硬链接校验保留：可写 inode 的每个链接都必须位于本次执行的可写范围。无法安全设置 ACL 或验证文件的 HOME 仍可能被拒绝。Windows 隔离需要真实原生执行验收，仅生成策略不能证明隔离成立。
 
 在提交 `37d4427` 上，Windows Server 2022/2025 管理员运行器成功建立外部 TCP 连接。宿主回环和宿主接口连接均未成功。入站套接字成功绑定并监听，但宿主端连接超时。[Windows 原生报告](https://github.com/JunhangYU1017/Virgo/actions/runs/44270022381) · [验收方法](../development/execution-acceptance.md)
 

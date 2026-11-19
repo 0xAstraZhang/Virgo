@@ -33,12 +33,16 @@ class ResourceRules:
         uri = self.path.resolve().as_uri() + ("?mode=rw" if create or write else "?mode=ro")
         with closing(sqlite3.connect(uri, uri=True)) as db, db:
             if create:
-                db.execute("""CREATE TABLE IF NOT EXISTS grants (
+                # Old rows inferred file/directory authority by probing host
+                # paths. They cannot be reinterpreted as explicit subtree
+                # grants; a user must approve them under the new contract.
+                db.execute("""CREATE TABLE IF NOT EXISTS operation_grants (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT, mode TEXT, cwd TEXT,
-                    operation TEXT, resource TEXT, target TEXT, directory INTEGER,
+                    operation TEXT, resource TEXT, target TEXT,
                     UNIQUE(project, mode, cwd, operation, resource, target)
                 )""")
-            elif db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='grants'").fetchone() is None:
+                db.execute("DROP TABLE IF EXISTS grants")
+            elif db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operation_grants'").fetchone() is None:
                 # A concurrent first approval has opened the file but has not committed yet.
                 yield None
                 return
@@ -48,30 +52,27 @@ class ResourceRules:
         with self.database() as db:
             if db is None:
                 return []
-            rows = db.execute("""SELECT resource, target, directory FROM grants
+            rows = db.execute("""SELECT resource, target FROM operation_grants
                 WHERE project=? AND mode=? AND cwd=? AND operation=?""", scope).fetchall()
-        # A file grant cannot acquire directory semantics on a later invocation.
-        return [(kind, target) for kind, target, directory in rows if kind == "network_allowed"
-                or (Path(target).resolve() == Path(target) and Path(target).is_dir() == bool(directory))]
+        return [(kind, target) for kind, target in rows
+                if kind == "network_allowed" and target == "true"
+                or kind in {"read_paths", "write_paths"} and Path(target).is_absolute() and "\0" not in target]
 
     def allow(self, scope, resources):
         with self.database(create=True) as db:
-            db.executemany("""INSERT INTO grants
-                (project, mode, cwd, operation, resource, target, directory) VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(project, mode, cwd, operation, resource, target)
-                DO UPDATE SET directory=excluded.directory""", (
-                (*scope, kind, target, kind != "network_allowed" and Path(target).is_dir())
-                for kind, target in resources
-            ))
+            db.executemany("""INSERT INTO operation_grants
+                (project, mode, cwd, operation, resource, target) VALUES (?,?,?,?,?,?)
+                ON CONFLICT(project, mode, cwd, operation, resource, target) DO NOTHING""",
+                           ((*scope, kind, target) for kind, target in resources))
 
     def list(self, project):
         with self.database() as db:
             if db is None:
                 return []
-            return db.execute("""SELECT id, mode, cwd, operation, resource, target FROM grants
+            return db.execute("""SELECT id, mode, cwd, operation, resource, target FROM operation_grants
                 WHERE project=? ORDER BY id""", (project,)).fetchall()
 
     def revoke(self, project, identifier):
         with self.database(write=True) as db:
-            return bool(db and db.execute("DELETE FROM grants WHERE project=? AND id=?",
+            return bool(db and db.execute("DELETE FROM operation_grants WHERE project=? AND id=?",
                                           (project, identifier)).rowcount)

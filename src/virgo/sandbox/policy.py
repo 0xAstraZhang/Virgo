@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..execution import ExecutionUnavailable, FileAccessDenied, read_file_bytes, walk_file_entries
+from ..execution_policy import PathRule, PermissionPolicy, lexical_path
 from ..harness.execution_modes import PermissionPreset, PermissionSnapshot
 
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
@@ -35,12 +36,16 @@ class SandboxPolicy:
                                                 policy=self, cancellation=cancellation)
 
     @property
+    def policy(self) -> PermissionPolicy:
+        return self.resources.policy
+
+    @property
     def revision(self) -> int:
         return self.permission_snapshot.revision if self.permission_snapshot is not None else 0
 
     @property
     def network_allowed(self):
-        return "egress" in self.resources.network
+        return self.policy.network_allowed
 
     def private_path(self, path: Path) -> bool:
         return any(path.is_relative_to(root) for root in self.private_paths)
@@ -49,22 +54,24 @@ class SandboxPolicy:
         return tuple(dict.fromkeys(Path(value).resolve() for value in (sys.prefix, sys.base_prefix)))
 
     def read_roots(self) -> tuple[Path, ...]:
-        return tuple(Path(p) for p in (*self.resources.read_paths, *self.resources.write_paths))
+        return self.policy.allow_roots("read")
 
     def protected_paths(self) -> tuple[Path, ...]:
         return (*(self.workspace / name for name in PROTECTED_NAMES), *self.runtime_paths())
     def writable_roots(self) -> tuple[Path, ...]:
         """Roots whose inode links are already inside the writable task scope."""
-        return tuple(dict.fromkeys(Path(value) for value in self.resources.write_paths))
+        return self.policy.allow_roots("write")
 
     def check_write(self, path: Path):
-        if self.private_path(path) or any(path.is_relative_to(root) for root in self.protected_paths()):
+        if (self.policy.denied(path, "write") or self.private_path(path)
+                or any(path.is_relative_to(root) for root in self.protected_paths())):
             raise FileAccessDenied(f"Protected resource is not writable: {path}", dimension="protected_path", target=path)
-        if not any(path.is_relative_to(Path(root)) for root in self.resources.write_paths):
+        if not self.policy.allows(path, "write"):
             raise FileAccessDenied(f"No write grant for {path}", dimension="write_paths", target=path)
 
     def _output_reader(self, path):
-        return replace(self, private_paths=(), resources=replace(self.resources, read_paths=(str(path),), write_paths=()))
+        policy = PermissionPolicy((PathRule(path, "read"),), False)
+        return replace(self, private_paths=(), resources=replace(self.resources, policy=policy))
 
     def _owns_private_output(self, path):
         if self.spool_home is None:
@@ -89,14 +96,12 @@ class SandboxPolicy:
         return walk_file_entries(self, path, ignore, max_depth=max_depth)
 
     def validate(self, cwd: Path) -> Path:
-        cwd = Path(cwd).resolve()
+        cwd = lexical_path(cwd, self.workspace)
         try:
             self.check_read(cwd)
         except FileAccessDenied as error:
             raise ExecutionUnavailable(str(error), reason="invalid_cwd", dimension=error.dimension,
                                        target=error.target) from error
-        if not cwd.is_dir():
-            raise ExecutionUnavailable(f"Working directory is unavailable: {cwd}")
         if any(root.is_relative_to(self.workspace) for root in self.private_paths):
             raise ExecutionUnavailable("Workspace must not contain private broker storage")
         return cwd
@@ -115,7 +120,6 @@ class SandboxPolicy:
         return self.outputs.create(prefix)
 
     def run_process(self, request, cancellation=None):
-        self.validate(request.cwd)
         return self.executor.run_process(request, self, cancellation)
 
     def read_output_tail(self, record, max_bytes):
@@ -124,7 +128,7 @@ class SandboxPolicy:
 
     def describe(self):
         return {"provider": "sandbox", "backend": self.executor.backend, "workspace": str(self.workspace),
-                "requested": self.resources.flags(), "effective": {"file_tools": self.resources.flags(), "native_process": None},
+                "requested": self.resources.flags(), "effective": None,
                 "revision": self.revision, "state": "launch_unverified",
                 "native_support": "checked_at_launch",
                 "workspace_link_contract": "host writers preserve permissions across link and rename operations",

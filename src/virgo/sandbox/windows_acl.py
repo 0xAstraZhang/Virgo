@@ -145,13 +145,13 @@ class _Dacl:
     aces: list[bytes]
 
 
-def _descriptor(handle, getter=GetSecurity):
+def _descriptor(handle, getter=GetSecurity, *, information=4):
     size = DWORD()
-    getter(handle, 4, None, 0, ctypes.byref(size))
+    getter(handle, information, None, 0, ctypes.byref(size))
     if not size.value:
         raise ctypes.WinError(ctypes.get_last_error())
     data = ctypes.create_string_buffer(size.value)
-    _check(getter(handle, 4, data, len(data), ctypes.byref(size)))
+    _check(getter(handle, information, data, len(data), ctypes.byref(size)))
     return data
 
 
@@ -269,6 +269,8 @@ class _Grant:
     handle: FileHandle
     writable: bool
     delete_allowed: bool
+    readable: bool = True
+    protect_inheritance: bool = False
     original_control: int | None = None
     written_control: int | None = None
 
@@ -326,8 +328,9 @@ class AclGrants:
             directory = bool(handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY)
             reparse = bool(handle.info.attributes & FILE_ATTRIBUTE_REPARSE_POINT)
             if reparse and skip_reparse:
-                # Read-only runtimes can contain aliases such as python3.exe.
-                # Do not mutate the alias, follow it or grant its target.
+                # Runtime installations and HOME can contain aliases. Never
+                # mutate the alias, follow it or grant its target. An explicit
+                # root still cannot be a reparse point.
                 handle.close()
                 continue
             yield path, handle
@@ -352,27 +355,38 @@ class AclGrants:
             if grant.original_control is None:
                 grant.original_control = previous.control
             flags = 3 if grant.handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY else 0
-            deny = [_ace(1, flags, _ADMIN if grant.writable else _MUTATE, self.sids[1])]
-            if grant.writable and not grant.delete_allowed:
-                deny.append(_ace(1, 0, _DELETE, self.sids[1]))
-            mask = _WRITE if grant.writable else _READ
-            if grant.delete_allowed:
-                mask |= _DELETE
-            allow = [_ace(0, flags, mask, sid) for sid in self.sids]
-            if flags and grant.writable and not grant.delete_allowed:
-                allow.extend(_ace(0, flags | 8, _DELETE, sid) for sid in self.sids)
-            _write(grant.handle.value, previous, deny + retained + allow, previous.control)
+            if not grant.readable:
+                # The ordinary restricting SID enforces writes. Package and
+                # capability SIDs do not implement per-process read denies;
+                # verify_read_denials must reject residual ambient reads before
+                # the suspended process can execute any payload.
+                deny = [_ace(1, flags, 0x1F01FF, self.sids[1])]
+                allow = []
+            else:
+                deny = [_ace(1, flags, _ADMIN if grant.writable else _MUTATE, self.sids[1])]
+                if grant.writable and not grant.delete_allowed:
+                    deny.append(_ace(1, 0, _DELETE, self.sids[1]))
+                mask = _WRITE if grant.writable else _READ
+                if grant.delete_allowed:
+                    mask |= _DELETE
+                allow = [_ace(0, flags, mask, sid) for sid in self.sids]
+                if flags and grant.writable and not grant.delete_allowed:
+                    allow.extend(_ace(0, flags | 8, _DELETE, sid) for sid in self.sids)
+            control = previous.control | 0x1000 if grant.protect_inheritance else previous.control
+            _write(grant.handle.value, previous, deny + retained + allow, control)
             grant.written_control = _read(grant.handle.value).control
+            if grant.protect_inheritance and not grant.written_control & 0x1000:
+                raise SandboxUnavailable("The process profile did not retain protected ACL inheritance")
 
     def grant_tree(self, root: Path, writable: bool, protected: tuple[Path, ...] = (),
                    reject_hardlinks: bool = True, excluded: tuple[Path, ...] = (),
-                   skip_reparse: bool = False):
+                   skip_reparse: bool = False, deny_read: bool = False, protect_root: bool = False):
         pending = []
         try:
             if not self._mutex:
                 raise SandboxUnavailable("Windows file grants have already been released")
-            if writable and skip_reparse:
-                raise SandboxUnavailable("Writable sandbox grants must reject every reparse point")
+            if deny_read and (writable or skip_reparse):
+                raise SandboxUnavailable("Denied trees cannot receive writable or skipped-reparse grants")
             root = Path(normalize_path(root))
             root_key = _key(root)
             protected_keys, excluded_keys = tuple(map(_key, protected)), tuple(map(_key, excluded))
@@ -383,25 +397,28 @@ class AclGrants:
                 if handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY or handle.info.nlinks == 1:
                     continue
                 key = _key(path)
-                can_write = writable and not any(_inside(key, item) for item in protected_keys)
+                can_write = writable and not deny_read and not any(_inside(key, item) for item in protected_keys)
                 if can_write:
                     self._link_counts[handle.identity] = self._link_counts.get(handle.identity, 0) + 1
             self._roots.append((root, excluded_keys))
             for path, handle in pending:
                 self._cancel()
                 key = _key(path)
-                can_write = writable and not any(_inside(key, item) for item in protected_keys)
+                can_write = writable and not deny_read and not any(_inside(key, item) for item in protected_keys)
                 can_delete = can_write and key != root_key and not any(
                     _inside(item, key) for item in protected_keys
                 )
                 grant = self._grants.get(handle.identity)
                 if grant is None:
-                    grant = _Grant(path, handle, can_write, can_delete)
+                    grant = _Grant(path, handle, can_write, can_delete, readable=not deny_read,
+                                   protect_inheritance=protect_root and key == root_key)
                     self._grants[handle.identity] = grant
                     self._owned.add(handle)
                 else:
                     grant.writable = grant.writable and can_write
                     grant.delete_allowed = grant.delete_allowed and can_delete
+                    grant.readable = grant.readable and not deny_read
+                    grant.protect_inheritance |= protect_root and key == root_key
                 self._update(grant)
         except (SandboxCancelled, SandboxUnavailable):
             raise
@@ -428,6 +445,36 @@ class AclGrants:
                 raise SandboxUnavailable(
                     f"Writable sandbox files must not link outside the writable scope: {grant.path}"
                 )
+
+    def verify_read_denials(self, verify):
+        """Check retained denied objects and their ordinary child inheritance."""
+        token = HANDLE()
+        _check(OpenProcessToken(GetCurrentProcess(), 8, ctypes.byref(token)))  # Broker TOKEN_QUERY
+        try:
+            mapping = _GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
+            with self._locked():
+                for grant in self._grants.values():
+                    self._cancel()
+                    if grant.readable:
+                        continue
+                    # AccessCheck requires owner and group as well as DACL.
+                    # LABEL is readable with READ_CONTROL and retains MIC data.
+                    security = _descriptor(grant.handle.value, information=0x17)
+                    verify(security, grant.path, "object")
+                    if not grant.handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY:
+                        continue
+                    for directory in (False, True):
+                        inherited = ctypes.c_void_p()
+                        _check(CreatePrivateObjectSecurityEx(
+                            security, None, ctypes.byref(inherited), None, directory, 1,
+                            token, ctypes.byref(mapping),
+                        ))  # SEF_DACL_AUTO_INHERIT, matching normal broker-created children.
+                        try:
+                            verify(inherited, grant.path, "inherited directory" if directory else "inherited file")
+                        finally:
+                            _check(DestroyPrivateObjectSecurity(ctypes.byref(inherited)))
+        finally:
+            _check(CloseHandle(token))
 
     def cleanup(self):
         """Remove only this launch's SIDs, preserving all other current ACEs."""

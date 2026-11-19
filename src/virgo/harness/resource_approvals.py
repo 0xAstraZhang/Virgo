@@ -11,7 +11,8 @@ from pathlib import Path
 
 from ..agent import Block, ToolCallEvent, ToolResult
 from ..ai.validate import validate
-from ..execution import ExecutionContext, ExecutionUnavailable, FileAccessDenied
+from ..execution import ExecutionContext, ExecutionUnavailable
+from ..execution_policy import PathRule, lexical_path
 from .execution_modes import parse_network
 from .origin_context import origin_key, source_for
 from .resource_rules import ResourceRules, operation_id
@@ -25,23 +26,7 @@ class Grant:
     expires: float
     runtime: object
     run_id: str | None
-    targets: tuple
     saved: tuple = ()
-
-
-def _target_identity(path):
-    """Bind the canonical resource and its nearest existing object, not display text."""
-    path = Path(path)
-    canonical = path.resolve()
-    existing = canonical
-    while not existing.exists() and existing.parent != existing:
-        existing = existing.parent
-    info = existing.stat()
-    return (str(path), str(canonical), str(existing), info.st_dev, info.st_ino)
-
-
-def _targets(paths):
-    return tuple(_target_identity(p) for p in paths)
 
 
 def manage_grants(session, command):
@@ -63,25 +48,23 @@ def manage_grants(session, command):
 
 
 def _extend(base, grants):
-    reads = list(base.resources.read_paths)
-    writes = list(base.resources.write_paths)
-    network = set(base.resources.network)
+    rules = []
+    network = base.policy.network_allowed
     for kind, target in grants:
         if kind == "network_allowed":
-            network.add(target)
+            network = True
         elif kind == "read_paths":
-            reads.append(target)
+            rules.append(PathRule(Path(target), "read"))
         elif kind == "write_paths":
-            writes.append(target)
-    return replace(base, resources=replace(base.resources, read_paths=tuple(dict.fromkeys(reads)),
-                   write_paths=tuple(dict.fromkeys(writes)), network=frozenset(network)))
+            rules.append(PathRule(Path(target), "write"))
+    policy = replace(base.policy.with_rules(*rules), network_allowed=network)
+    return replace(base, resources=replace(base.resources, policy=policy))
 
 
 def _covered(policy, kind, target):
     if kind == "network_allowed":
-        return target in policy.resources.network
-    roots = policy.read_roots() if kind == "read_paths" else policy.resources.write_paths
-    return any(Path(target).is_relative_to(root) for root in roots)
+        return policy.policy.network_allowed
+    return policy.policy.allows(Path(target), "read" if kind == "read_paths" else "write")
 
 
 class ResourceApprovals:
@@ -104,17 +87,14 @@ class ResourceApprovals:
         if runtime is None:
             raise ValueError("Permission requests require the originating runtime")
         shell = getattr(event.tool, "shell", None)
-        path = event.args.get("path")
-        target = str((event.cwd / Path(path).expanduser()).resolve()) if isinstance(path, str) else None
         # Bind the exact effective environment without retaining credential values.
         environment = hashlib.sha256(json.dumps(dict(os.environ), sort_keys=True).encode()).hexdigest()
         return json.dumps([environment, origin_key(self.session, event), runtime.diagnostic_id, runtime.run_id,
-                           id(event.tool), event.tool_name, event.args, str(event.cwd.resolve()), target,
+                           id(event.tool), event.tool_name, event.args, str(event.cwd),
                            shell.environment() if shell else None, self.executor.identity], sort_keys=True, ensure_ascii=False)
 
     def _valid(self, grant, event):
         return (grant.expires > time.monotonic() and grant.key == self._key(event)
-                and _targets(t[0] for t in grant.targets) == grant.targets
                 and (event.signal is None or not event.signal.is_set()))
 
     def _denial(self, policy, reason, dimension=None, target=None):
@@ -123,7 +103,7 @@ class ResourceApprovals:
             "payload_started": False, "side_effects": "none", "escalation_available": True,
         }})
 
-    def _check(self, event, policy):
+    def _check(self, event, policy, *, request=False):
         scope = event.tool.execution_scope if event.tool else "external"
         if scope == "network" and not policy.network_allowed:
             return self._denial(policy, "Task networking is disabled; request permission for this exact operation.",
@@ -133,19 +113,29 @@ class ResourceApprovals:
                 return None
             return self._denial(policy, "This external operation can modify host state; approve this exact call.",
                                 "unmanaged_tool", event.tool_name)
-        if scope == "file":
+        # File dispatch always reaches the native executor. This lexical check
+        # only explains an explicit permission request; it is not a host file
+        # boundary and never resolves or opens the target.
+        if scope == "file" and request:
             path = event.args.get("path", ".")
             if not isinstance(path, str):
                 return self._denial(policy, "File operations require a path", "filesystem")
-            target = (event.cwd / Path(path).expanduser()).resolve()
-            try:
-                (policy.check_read if event.tool.read_only else policy.check_write)(target)
-            except FileAccessDenied as error:
-                return self._denial(policy, error, error.dimension, error.target)
+            target = lexical_path(path, event.cwd)
+            access = "read" if event.tool.read_only else "write"
+            if policy.policy.denied(target, access):
+                return self._denial(policy, f"Protected resource cannot be granted: {target}",
+                                    "protected_path", target)
+            if not policy.policy.allows(target, access):
+                return self._denial(policy, f"No {access} grant for {target}", access + "_paths", target)
+            if access == "write" and not policy.policy.allows(target.parent, "write"):
+                return self._denial(policy,
+                                    "Atomic file creation/replacement requires explicit write permission for "
+                                    f"the destination directory: {target.parent}. Request that directory in write_paths.",
+                                    "write_paths", target.parent)
         return None
 
     def _scope(self, event, base):
-        return (str(base.workspace), base.permission_snapshot.mode.id, str(event.cwd.resolve()), operation_id(event))
+        return (str(base.workspace), base.permission_snapshot.mode.id, str(event.cwd), operation_id(event))
 
     def _saved(self, event, base):
         if (base.permission_snapshot.approval == "never" or self.session.approval_policy == "never"
@@ -204,10 +194,6 @@ class ResourceApprovals:
             if self._pending:
                 key = self._key(event)
                 grant = self._pending.pop(key, None) if consume else self._pending.get(key)
-            block = self._check(event, base)
-            process = event.tool and event.tool.execution_scope == "process"
-            if grant is None and not block and not process:
-                return None
             saved = self._saved(event, base)
             if grant and (not self._valid(grant, event) or not set(grant.saved).issubset(saved)):
                 self._pending.pop(key, None)
@@ -216,35 +202,11 @@ class ResourceApprovals:
             block = self._check(event, policy)
             if not block:
                 if consume and policy is not base:
-                    if process:
-                        policy.validate_native(event.cwd)
                     runtime = self.session.runtime_for_context(event)
                     self._active[(id(runtime), id(event))] = (
-                        grant or Grant("", policy, 0, runtime, runtime.run_id, ()), event)
+                        grant or Grant("", policy, 0, runtime, runtime.run_id), event)
                 return None
-            boundary = block.details["boundary"]
-            dimension = boundary["dimension"]
-            confirm = getattr(self.session.ui, "confirm", None)
-            if (not event.tool or event.tool.execution_scope != "file" or dimension not in {"read_paths", "write_paths"}
-                    or event.signal is None or event.signal.is_set()
-                    or base.permission_snapshot.approval == "never" or self.session.approval_policy == "never"
-                    or not callable(confirm) or getattr(confirm, "__func__", None) is UI.confirm):
-                return block
-            if not consume:
-                # Hooks may still change arguments. Ask after their final form is known.
-                return None
-            _, errors = validate(copy.deepcopy(event.args), event.tool.parameters)
-            if errors:
-                return self._denial(base, "; ".join(errors), dimension, boundary["target"])
-            # The helper commits a fresh inode in the destination directory.
-            # Show that directory capability in the approval itself instead of
-            # silently turning a file-only approval into directory write access.
-            target = str(Path(boundary["target"]).parent) if dimension == "write_paths" else boundary["target"]
-            missing = ((dimension, target),)
-            policy = _extend(policy, missing)
-        # Waiting for a user must not hold the session lock.
-        result = self._confirm(event, base, saved, policy, missing, block.reason, dispatch=True)
-        return self._denial(base, result.as_text(), dimension, boundary["target"]) if result.is_error else None
+            return block
 
     def preflight(self, event):
         return self._admit(event, consume=False)
@@ -301,64 +263,54 @@ class ResourceApprovals:
         requested = []
         for kind in ("read_paths", "write_paths"):
             for value in delta.get(kind, []):
-                path = (event.cwd / Path(value).expanduser()).resolve()
-                if base.private_path(path):
-                    return ToolResult.error("Private broker resources cannot be granted")
-                if kind == "write_paths" and any(path.is_relative_to(root) for root in base.protected_paths()):
-                    return ToolResult.error("Protected runtime/control resources cannot be granted")
+                path = lexical_path(value, event.cwd)
+                access = "read" if kind == "read_paths" else "write"
+                if base.policy.denied(path, access):
+                    return ToolResult.error(f"Protected resources cannot be granted: {path}")
                 requested.append((kind, str(path)))
-        requested.extend(("network_allowed", direction)
-                         for direction in sorted(parse_network(delta.get("network_allowed", False))))
+        if parse_network(delta.get("network_allowed", False)):
+            requested.append(("network_allowed", "true"))
         saved = self._saved(event, base)
         current = _extend(base, saved)
         missing = tuple(dict.fromkeys(item for item in requested if not _covered(current, *item)))
         policy = _extend(current, missing)
-        if tool.execution_scope == "process":
-            try:
-                policy.validate_native(context.cwd)
-            except (ExecutionUnavailable, FileAccessDenied) as error:
-                return ToolResult.error(str(error))
-        if block := self._check(event, policy):
+        if block := self._check(event, policy, request=True):
             return ToolResult.error(block.reason, block.details)
         if not missing:
             return ToolResult.text("The current mode and saved grants already cover the requested resources.")
-        return self._confirm(event, base, saved, policy, missing, args["reason"], dispatch=False)
+        return self._confirm(event, base, saved, policy, missing, args["reason"])
 
-    def _confirm(self, event, base, saved, policy, missing, reason, *, dispatch):
+    def _confirm(self, event, base, saved, policy, missing, reason):
         runtime = self.session.runtime_for_context(event)
         scope = self._scope(event, base)
         if (event.signal is None or event.signal.is_set() or base is not runtime.execution_context
                 or self.session.approval_policy == "never"):
             return ToolResult.error("The operation's permission context is no longer active")
-        targets = _targets(path for kind, path in missing if kind != "network_allowed")
         with self.session._lock:
             key = self._key(event)
             if key in self._denied:
                 return ToolResult.error("This operation was denied; do not repeat or bypass it")
         question = (f"Operation: {event.tool_name} {json.dumps(event.args, ensure_ascii=False)}\n"
-                    f"Working directory: {event.cwd.resolve()}\n"
+                    f"Working directory: {event.cwd}\n"
                     f"Additional resources: {json.dumps(missing, ensure_ascii=False)}\n"
                     f"Reason: {reason}" + self.session.t("features.permission.external_suffix"))
         answer = self.session.ui.confirm(question, event.agent)
         with self.session._lock:
             if (event.signal.is_set() or base is not runtime.execution_context or key != self._key(event) or self.session.approval_policy == "never"
-                    or _targets(t[0] for t in targets) != targets or saved != self._saved(event, base)):
+                    or saved != self._saved(event, base)):
                 return ToolResult.error("Permission request cancelled or expired because its context changed")
             runtime.origin.root.append("custom", kind="permission_request", data={
                 "tool": event.tool_name, "arguments_sha256": hashlib.sha256(scope[-1].encode()).hexdigest(),
                 "permissions": missing, "approved": answer in {"y", "a"},
                 "scope": "persistent" if answer == "a" else "operation",
-                "expires_after_seconds": 300 if answer == "y" and not dispatch else None,
+                "expires_after_seconds": 300 if answer == "y" else None,
             })
             if answer not in {"y", "a"}:
                 self._denied[key] = runtime
                 return ToolResult.error("Additional resources were not granted")
             if answer == "a":
                 ResourceRules(self.session.paths.user).allow(scope, missing)
-            grant = Grant(key, policy, time.monotonic() + 300, runtime, runtime.run_id, targets, saved)
-            if dispatch:
-                self._active[(id(runtime), id(event))] = grant, event
-                return ToolResult.text("Authorized for dispatch")
+            grant = Grant(key, policy, time.monotonic() + 300, runtime, runtime.run_id, saved)
             if answer == "a":
                 return ToolResult.text("Saved for this exact operation. No operation has executed.")
             self._pending[key] = grant

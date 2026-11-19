@@ -20,6 +20,8 @@ from functools import cached_property
 from pathlib import Path
 from typing import Protocol
 
+from .execution_policy import PermissionPolicy
+
 
 class ExecutionUnavailable(RuntimeError):
     """The requested boundary could not be established before payload release."""
@@ -102,7 +104,7 @@ class SandboxExecutor:
     def close(self):
         self.files.close()
 
-    def run_file_operation(self, operation, arguments, *, cwd, policy=None, cancellation=None):
+    def run_file_operation(self, operation, arguments, *, cwd, policy, cancellation=None):
         return self.files.run(self, operation, arguments, cwd, policy, cancellation)
 
     @cached_property
@@ -124,10 +126,12 @@ class SandboxExecutor:
     def policy(self, context):
         return self.native.policy(context)
 
-    def run_process(self, request: ProcessRequest, policy=None, cancellation=None) -> ProcessHandle:
+    def run_process(self, request: ProcessRequest, policy, cancellation=None) -> ProcessHandle:
         if cancellation is not None and cancellation.is_set():
             raise ExecutionCancelled("Execution cancelled before process start")
-        if policy is not None:
+        if not isinstance(getattr(policy, "policy", None), PermissionPolicy):
+            raise ExecutionUnavailable("Execution requires an explicit effective permission policy")
+        if not policy.policy.unrestricted:
             request = replace(request, runtime_paths=tuple(dict.fromkeys((*request.runtime_paths, self.files.root))))
             return self.native.run_process(request, policy, cancellation)
         env = {**request.env, **environment_overrides(request.env_overrides)}
@@ -272,6 +276,10 @@ class HostContext:
     executor: SandboxExecutor = field(default_factory=SandboxExecutor, compare=False, repr=False)
     outputs: object = field(default=None, compare=False, repr=False)
 
+    @property
+    def policy(self):
+        return PermissionPolicy((), network_allowed=True, unrestricted=True)
+
     def __post_init__(self):
         if self.outputs is None:
             from .output_store import private_output_store
@@ -280,7 +288,7 @@ class HostContext:
 
     def run_file_operation(self, operation, arguments, *, cwd=None, cancellation=None):
         return self.executor.run_file_operation(operation, arguments, cwd=cwd or self.workspace,
-                                                cancellation=cancellation)
+                                                policy=self, cancellation=cancellation)
 
     def check_read(self, path: Path) -> None:
         pass
@@ -312,7 +320,7 @@ class HostContext:
         return data, total
 
     def run_process(self, request: ProcessRequest, cancellation=None):
-        return self.executor.run_process(request, cancellation=cancellation)
+        return self.executor.run_process(request, self, cancellation)
 
     def describe(self) -> dict:
         return {"provider": "host", "state": "host", "workspace": str(self.workspace),

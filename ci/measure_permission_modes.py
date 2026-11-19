@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 WORKER_TIMEOUT_SECONDS = 600
+PROJECT_INSTRUCTION = "virgo-permission-timing-project-instructions"
 
 
 def session_settings(contract, mode):
@@ -65,6 +66,7 @@ def sample(args):
         root = Path(directory).resolve()
         workspace = root / "workspace"
         workspace.mkdir()
+        (workspace / "AGENTS.md").write_text(PROJECT_INSTRUCTION + "\n", encoding="utf-8")
         source = workspace / "answer.py"
         source.write_text("def answer():\n    return 41\n", encoding="utf-8")
         (workspace / "check_answer.py").write_text(
@@ -98,6 +100,9 @@ def sample(args):
             ready = time.perf_counter()
             result.update(import_ms=(imported - start) * 1000, construct_ms=(ready - imported) * 1000,
                           cold_start_ms=interpreter_ms + (ready - start) * 1000)
+            result["project_context_loaded"] = PROJECT_INSTRUCTION in session.main.system
+            if not result["project_context_loaded"]:
+                raise MeasurementFailure("Session did not load the project instructions", before_launch=True)
             owner = session.services["sandbox" if args.contract == "original" else "execution"]
             if owner.selected_mode_id != args.mode:
                 raise ValueError(f"Wrong mode selected: {owner.selected_mode_id}")
@@ -278,7 +283,7 @@ def main():
               'script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'lock_sha256': hashlib.sha256(Path('uv.lock').read_bytes()).hexdigest(),
               'platform': platform.platform(), 'python': sys.version, 'mode': args.mode, 'contract': args.contract,
-              'workload': 'cold session, repeated shell echo, edit answer.py and run check_answer.py',
+              'workload': 'cold session with project instructions, repeated shell echo, edit answer.py and run check_answer.py',
               'repeats': args.repeat, 'planned_samples': args.samples,
               'status': 'running', 'samples': []}
     if args.output:

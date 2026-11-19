@@ -78,7 +78,7 @@ def test_paired_comparison_requires_clean_complete_same_workload():
 
     mode = 'workspace-edit'
     sample = {'success': True, 'shell_network_allowed': True, 'edit_actor': 'virgo_file_tool', 'approval_questions': [],
-              'operations': [{'success': True}, {'success': True}], 'cold_start_ms': 4.0,
+              'project_context_loaded': True, 'operations': [{'success': True}, {'success': True}], 'cold_start_ms': 4.0,
               'first_command_ms': 1.0, 'short_sequence_ms': 3.0, 'edit_to_test_ms': 2.0}
     base = {'platform': 'test', 'python': 'test', 'script_sha256': 'script', 'workload': 'test',
             'planned_samples': 1, 'samples': [sample], 'repeats': 1, 'status': 'finished',
@@ -88,6 +88,7 @@ def test_paired_comparison_requires_clean_complete_same_workload():
     compare = comparison(head, base, 'head', mode)
     assert compare['metrics']['cold_start_ms']['head_over_baseline'] == 0.5
     for change in ({'revision': 'old'}, {'script_sha256': 'other'}, {'samples': []},
-                   {'tracked_diff_sha256': 'dirty'}, {'samples': [{**sample, 'approval_questions': ['allow?']}]}):
+                   {'tracked_diff_sha256': 'dirty'}, {'samples': [{**sample, 'approval_questions': ['allow?']}]},
+                   {'samples': [{**sample, 'project_context_loaded': False}]}):
         with pytest.raises(ValueError):
             comparison({**head, **change}, base, 'head', mode)

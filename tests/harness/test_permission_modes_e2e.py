@@ -1,6 +1,8 @@
 """Execution profiles and one-operation exceptions through the existing Agent Loop."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from virgo.ai.providers import faux
@@ -27,26 +29,30 @@ def test_explicit_permission_request_is_exact_once_and_does_not_change_mode(sand
     assert [result.is_error for result in results] == [False, False, True]
     assert (session.cwd / "result.txt").read_text() == "ok"
     assert not session.services["execution"].mode_for(session.main).write_paths
-    assert len(session.ui.questions) == 2
+    assert len(session.ui.questions) == 1
     assert results[-1].details["boundary"]["dimension"] == "write_paths"
     assert "request_permissions" in calls()[0]["tools"]
     assert "write" in calls()[0]["tools"]
 
 
-def test_direct_file_approval_dispatches_once_and_preserves_the_mode(sandbox_session, tmp_path):
+def test_file_approval_requires_explicit_request_and_preserves_the_mode(sandbox_session, tmp_path):
     directory = tmp_path / "approved-output"
     directory.mkdir()
     target = directory / "result.txt"
     args = {"path": str(target), "content": "one"}
-    session = sandbox_session(faux.reply(tools=[("write", args)]), faux.reply(tools=[("write", args)]),
-                             faux.reply("done"), preset="read-only", ui=RecordingUI(["y", "n"]))
+    session = sandbox_session(
+        faux.reply(tools=[("write", args)]),
+        faux.reply(tools=[request(arguments=args, write_paths=[str(directory)])]),
+        faux.reply(tools=[("write", args)]), faux.reply(tools=[("write", args)]),
+        faux.reply("done"), preset="read-only", ui=RecordingUI(["y"]),
+    )
     session.prompt("Write the requested result")
-    assert [result.is_error for result in tool_results(session)] == [False, True]
+    assert [result.is_error for result in tool_results(session)] == [True, False, False, True]
     assert target.read_text() == "one"
-    assert len(session.ui.questions) == 2
+    assert len(session.ui.questions) == 1
     assert all(str(session.cwd) in question and "write_paths" in question and "Reason:" in question
                for question in session.ui.questions)
-    assert all(str(directory) in question for question in session.ui.questions)
+    assert all(json.dumps(str(directory), ensure_ascii=False) in question for question in session.ui.questions)
     assert session.main.permission_snapshot.mode.id == "read-only"
 
 
@@ -66,7 +72,7 @@ def test_changed_arguments_cannot_consume_another_operation_permission(sandbox_s
 def test_permission_request_cannot_grant_a_whole_child_runtime(broker_session):
     session = broker_session(
         faux.reply(tools=[request("agent", {"description": "Implement", "prompt": "Write a file"},
-                                  write_paths=["result.txt"])]), faux.reply("done"),
+                                  write_paths=["."])]), faux.reply("done"),
         ui=RecordingUI(["y"]), preset="read-only",
     )
     session.prompt("Request an operation exception")
@@ -78,7 +84,7 @@ def test_permission_request_cannot_grant_a_whole_child_runtime(broker_session):
 
 
 def test_deny_and_noninteractive_policy_prevent_escalation(broker_session):
-    session = broker_session(faux.reply(tools=[request(write_paths=["result.txt"])]), faux.reply("done"),
+    session = broker_session(faux.reply(tools=[request(write_paths=["."])]), faux.reply("done"),
                              approval="never", ui=RecordingUI(["y"]), preset="read-only")
     session.prompt("Request extra permission")
     assert tool_results(session)[0].is_error
@@ -86,7 +92,7 @@ def test_deny_and_noninteractive_policy_prevent_escalation(broker_session):
 
 
 def test_permission_change_during_confirmation_expires_request(broker_session, monkeypatch):
-    session = broker_session(faux.reply(tools=[request(write_paths=["result.txt"])]), faux.reply("done"),
+    session = broker_session(faux.reply(tools=[request(write_paths=["."])]), faux.reply("done"),
                            preset="read-only")
     manager = session.services["execution"]
 
@@ -116,8 +122,12 @@ def test_custom_mode_names_and_permissions_persist_without_changing_active_run(b
     manager = session.services["execution"]
     assert list(manager.modes) == ["read-only", "workspace-edit", "no-limit"]
     manager.select_mode("read-only")
-    assert manager.mode_for(session.main).flags() == {
-        "read_paths": [str(session.cwd)], "write_paths": [], "network_allowed": False, "web_allowed": True}
+    effective = manager.mode_for(session.main)
+    flags = effective.flags()
+    assert flags["network_allowed"] is False and flags["web_allowed"] is True and flags["unrestricted"] is False
+    assert {"path": str(session.cwd), "access": "read", "effect": "allow"} in flags["filesystem"]
+    assert not effective.policy.allows(session.cwd / "result.txt", "write")
+    assert effective.policy.denied(session.paths.user, "read")
     manager.select_mode("no-limit")
     assert session.main.execution_context.provider == "host"
     manager.select_mode("workspace-edit")
@@ -241,7 +251,7 @@ def test_child_approval_ceiling_survives_nested_creation_and_new_runs(broker_ses
     grandchild = session.create_runtime("grandchild", "subagent", parent=child, approval_policy="ask")
     try:
         for runtime in (child, grandchild):
-            faux.push("test", faux.reply(tools=[request(write_paths=["result.txt"])]), faux.reply("done"))
+            faux.push("test", faux.reply(tools=[request(write_paths=["."])]), faux.reply("done"))
             runtime.agent.prompt("Request permission for the next operation")
             assert runtime.permission_snapshot.approval == "never"
             assert not session.ui.questions
@@ -278,7 +288,7 @@ def test_queued_child_uses_submitting_runs_approval_and_resources(broker_session
         session.services["execution"].select_mode("workspace-edit")
         owner.refresh_permission_snapshot()
         session.new_session()
-        faux.push("test", faux.reply(tools=[request(write_paths=["result.txt"])]), faux.reply("done"))
+        faux.push("test", faux.reply(tools=[request(write_paths=["."])]), faux.reply("done"))
         release.set()
         assert job.done.wait(10)
         child, = captured

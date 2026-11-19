@@ -10,7 +10,7 @@ On Windows Server 2022 or 2025 run in PowerShell:
 
 ```powershell
 $env:VIRGO_REQUIRE_SANDBOX_TESTS = "1"
-uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
+uv run --no-sync pytest -q tests/harness/test_permission_modes_e2e.py::test_file_approval_requires_explicit_request_and_preserves_the_mode tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
 ```
 
 Each platform must execute its native suite with zero failures, errors or skips. Check the JUnit reports and full cross-platform comparison for the same candidate commit. Verify that running commands see saved project edits, that mode changes preserve active task permissions, and that exact grants stop applying after revocation. Record the OS and account class with the results. On Windows record outbound, inbound and host-loopback observations separately. [POSIX live-workspace contract](../guides/sandbox.md) · [Windows setup and known limits](../guides/windows-sandbox.md)

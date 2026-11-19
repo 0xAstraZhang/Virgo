@@ -68,6 +68,8 @@ def test_user_system_and_project_context_survive_for_their_roles(make_session, p
 
 
 def test_permission_switch_updates_requests_and_restores_the_original_prefix(broker_session):
+    import json
+
     session = broker_session()
     sandbox = session.services["execution"]
     original_mode = sandbox.mode_for(session.main)
@@ -75,8 +77,11 @@ def test_permission_switch_updates_requests_and_restores_the_original_prefix(bro
     sandbox.select_mode("read-only")
     restricted = session.main.request_context([])
     assert restricted.tools == original.tools
-    assert '"write_paths": []' in restricted.system
+    restricted_policy = json.JSONDecoder().raw_decode(restricted.system.split("<execution_boundary>", 1)[1])[0]
+    assert not any(rule["effect"] == "allow" and rule["access"] == "write"
+                   for rule in restricted_policy["requested"]["filesystem"])
     sandbox.select_mode(original_mode.id)
     restored = session.main.request_context([])
-    assert '"write_paths": [' in restored.system
+    restored_policy = json.JSONDecoder().raw_decode(restored.system.split("<execution_boundary>", 1)[1])[0]
+    assert {"path": str(session.cwd), "access": "write", "effect": "allow"} in restored_policy["requested"]["filesystem"]
     assert restored.tools == original.tools

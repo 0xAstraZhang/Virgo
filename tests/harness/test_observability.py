@@ -110,6 +110,7 @@ def test_revalidation_reports_argument_change_without_review(broker_session, tmp
     event = tool_call_event(session, "write", {"path": "inside", "content": "one"})
     assert session._before_tool(event) is None
     event.args["path"] = str(tmp_path / "outside")
-    denied = session._before_tool_execute(event)
-    assert denied is not None and denied.details["boundary"]["target"] == str(tmp_path / "outside")
+    assert session._before_tool_execute(event) is None
+    effective = session.services["execution"].for_context(event)
+    assert not effective.policy.allows(tmp_path / "outside", "write")
     assert not session.store.custom("permission_decision") and not session.ui.questions

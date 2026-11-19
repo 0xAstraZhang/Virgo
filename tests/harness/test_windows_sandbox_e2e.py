@@ -114,6 +114,7 @@ if {tool == "write"}:
             jobs.kill(job)
             assert job.done.wait(15), "fixture must drain its background command"
 
+
 def test_background_cancel_preserves_other_job_and_origin_after_switch(native, project):
     from tests.support.harness import wait_until
 
@@ -146,12 +147,157 @@ def test_background_cancel_preserves_other_job_and_origin_after_switch(native, p
         assert second.status == "killed", second.result
 
 
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_windows_explicit_read_deny_overrides_ambient_and_nested_grants(native, project, kind):
+    """An unsupported ambient-read deny must stop the real suspended process."""
+    from dataclasses import replace
+
+    from virgo.execution import ExecutionUnavailable, ProcessRequest, cleanup_process
+    from virgo.execution_policy import PathRule
+
+    root = project / "ambient-denied"
+    if kind == "directory":
+        root.mkdir()
+        secret = root / "secret.txt"
+    else:
+        secret = root
+    secret.write_text("ambient-private-canary")
+    grant(secret, "S-1-15-2-2")
+    previous = dacl(secret)
+    base = native.main.execution_context
+    permissions = base.policy.with_rules(PathRule(root, "read", "deny"), PathRule(secret, "write"))
+    context = replace(base, resources=replace(base.resources, policy=permissions))
+    marker = project / "unsupported-policy-payload-started.txt"
+    source = f"from pathlib import Path; Path({str(marker)!r}).touch(); print(Path({str(secret)!r}).read_text())"
+    process = None
+    try:
+        with pytest.raises(ExecutionUnavailable, match="LPAC cannot revoke ambient read access") as failure:
+            process = context.run_process(ProcessRequest((sys.executable, "-I", "-S", "-c", source),
+                                                         project, dict(os.environ)))
+        assert failure.value.reason == "unsupported_read_deny"
+        assert failure.value.dimension == "filesystem_read_deny"
+        # For a denied tree, this is the ambient-readable descendant, proving
+        # that checking only the inaccessible root directory is insufficient.
+        assert failure.value.target == secret
+        assert not marker.exists()
+        assert secret.read_text() == "ambient-private-canary"
+        assert dacl(secret) == previous
+    finally:
+        if process is not None:
+            cleanup_process(process)
+            process.stdout.close()
+
+
+def test_windows_home_scope_keeps_private_storage_and_other_profiles_private(native):
+    """Exercise the real HOME/profile ACL partition, including a later profile."""
+    import uuid
+    from contextlib import contextmanager
+    from dataclasses import replace
+
+    from virgo.execution import ProcessRequest, cleanup_process
+    from virgo.execution_policy import PathRule, PermissionPolicy
+    from virgo.sandbox import windows_sandbox as backend
+
+    @contextmanager
+    def other_profile():
+        name = "VirgoAcceptance." + uuid.uuid4().hex
+        sid = backend.PSID()
+        backend._hresult(backend.CreateProfile(name, name, "Native isolation acceptance", None, 0,
+                                               ctypes.byref(sid)), "CreateAppContainerProfile")
+        try:
+            folder = backend.w.LPWSTR()
+            backend._hresult(backend.GetProfilePath(backend._sid_string(sid), ctypes.byref(folder)),
+                             "GetAppContainerFolderPath")
+            try:
+                root = Path(backend.normalize_path(folder.value))
+            finally:
+                backend.CoTaskMemFree(folder)
+            secret = root / "profile-canary.txt"
+            secret.write_text("other-profile")
+            yield secret
+        finally:
+            result = backend.DeleteProfile(name)
+            backend.FreeSid(sid)
+            backend._hresult(result, "DeleteAppContainerProfile")
+
+    home = Path.home().resolve()
+    with ExitStack() as owned:
+        previous = owned.enter_context(other_profile())
+        shared = next(path for path in previous.parents if path.name.casefold() == "packages")
+        previous_acl = dacl(shared)
+        directory = Path(owned.enter_context(tempfile.TemporaryDirectory(prefix="virgo-home-", dir=home)))
+        private, public = directory / "private", directory / "public"
+        private.mkdir()
+        public.mkdir()
+        secret = private / "auth.json"
+        secret.write_text("broker-canary")
+        base = native.main.execution_context
+        policy = PermissionPolicy((PathRule(home, "write"),
+                                   PathRule(private, "read", "deny"),
+                                   *(rule for rule in base.policy.filesystem if rule.effect == "deny")), False)
+        context = replace(base, workspace=home, resources=replace(base.resources, policy=policy))
+        source = """import json, os, sys
+from pathlib import Path
+request = json.loads(sys.stdin.read())
+denied = []
+for value in request['private']:
+    path = Path(value)
+    for operation in (path.read_text, lambda p=path: p.write_text('bad')):
+        try: operation()
+        except OSError: denied.append(True)
+        else: denied.append(False)
+scratch = Path(os.environ['HOME']) / 'own-scratch.txt'
+scratch.write_text('own-profile')
+public = Path(request['public'])
+public.write_text('allowed')
+print(json.dumps({'denied': denied, 'scratch': scratch.read_text(), 'public': public.read_text()}))
+"""
+        process = context.run_process(ProcessRequest((sys.executable, "-I", "-S", "-c", source),
+                                                       home, dict(os.environ), stdin=subprocess.PIPE))
+        owned.callback(process.stdout.close)
+        owned.callback(process.stdin.close)
+        owned.callback(cleanup_process, process)
+        later = owned.enter_context(other_profile())
+        process.stdin.write(json.dumps({"private": [str(previous), str(later), str(secret)],
+                                        "public": str(public / "allowed.txt")}).encode())
+        process.stdin.close()
+        assert process.wait(timeout=30) == 0
+        output = process.stdout.read().decode("utf-8", errors="replace")
+        assert payload_json(output) == {"denied": [True] * 6, "scratch": "own-profile", "public": "allowed"}
+        cleanup_process(process)
+        assert dacl(shared) == previous_acl
+        assert secret.read_text() == "broker-canary"
+        assert previous.read_text() == later.read_text() == "other-profile"
+
+
 def test_windows_filesystem_helper_operations(native, project, monkeypatch):
     native_cases.filesystem_helper_operations(native, project, monkeypatch)
 
 
 def test_windows_generic_process_stdio(native, project):
     native_cases.generic_process_stdio(native, project)
+
+
+def test_windows_descendant_junction_never_grants_its_target(native, project):
+    outside = project.parent / "junction-target"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("private-canary")
+    link = project / "home-compatible-alias"
+    executable = str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe")
+    subprocess.run([executable, "/d", "/c", "mklink", "/J", str(link), str(outside)],
+                   check=True, capture_output=True)
+    source = """from pathlib import Path
+Path('junction-public.txt').write_text('allowed')
+try: Path('home-compatible-alias/secret.txt').write_text('bad')
+except PermissionError: print('outside-denied')
+else: raise AssertionError('junction target acquired a write grant')
+"""
+    result = run(native, python_command(native, source))
+    assert not result.is_error and "outside-denied" in result.text(), result.text()
+    assert secret.read_text() == "private-canary"
+    assert (project / "junction-public.txt").read_text() == "allowed"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="NTFS reparse-point broker test")
@@ -343,6 +489,8 @@ while not Path('child-ready').exists():
     while not (project/'late-write').exists() and time.monotonic()<deadline:
         time.sleep(.05)
     assert not (project/'late-write').exists(), 'Descendant retained workspace access after cleanup'
+
+
 
 
 def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native, record_property):
@@ -787,6 +935,8 @@ print(json.dumps([device_result, child]))
 """
     expected = {name: [0, *([0xC0000022] * 4)] for name in DEVICE_ACCESS}  # STATUS_ACCESS_DENIED.
     assert data(run(native, command(source))) == [expected, expected]
+
+
 
 
 def test_core_create_during_command_preflight_preserves_workspace_writes(native, project, monkeypatch):
