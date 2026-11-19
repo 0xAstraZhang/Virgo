@@ -2,6 +2,8 @@
 
 内置 Read、Write、Edit、Glob、Grep 通过 `SandboxExecutor` 启动独立 Python 进程。工具适配器验证参数、转换结果，将目标路径原样交给 Helper。文件内容、元数据和目录遍历均由 Helper 操作。执行器在模型开始操作前保存仅依赖标准库的可信运行时副本；从 Virgo 自身的开发目录启动时也使用这个副本。审批仅规范化资源路径的文本表达，并将有效 `PermissionPolicy` 交给执行器，不在 Broker 中解析或探测模型指定的目标。
 
+所有模式使用同一种不可变 `ExecutionContext`，其中保存权限资源、执行器、来源权限快照和输出存储。No-Limit 明确构造无限制上下文。自动项目读取调用 `read_context(context, ...)`、`read_file_bytes(context, ...)` 或 `walk_file_entries(context, ...)`，由它们启动 Helper 操作。上下文不提供直接文件访问方法。可信用户指令和 Virgo 配置仍由 Broker 读取。
+
 副本位于操作系统用户缓存中的稳定 `virgo-runtime` 父目录，与 Broker 私有存储和命令临时目录分开。初始化拒绝受管理目录中的链接、错误所有者和非私有权限，并保留当前 Windows 执行的 ACE。所有受限进程均不得修改整棵运行时目录，包括其他执行器随后创建的副本；原生读取授权覆盖当前进程所需的运行时依赖。关闭执行器仅删除自身副本，保留父目录，使已经运行的进程继续受到针对未来实例的保护。No-Limit 保持明确授权的宿主访问权限。
 
 Broker 首次加载 Helper 适配模块时，在首个执行器可以启动模型操作之前，一次性捕获 Helper 源码字节。后续执行器复用已捕获的内容，不再读取可能已被修改的开发安装目录。Helper 实现的修改在受信任的 Broker 重启后生效。
@@ -34,7 +36,7 @@ Windows 执行器初始化时捕获直连 DOS 盘符到物理卷的映射，保�
 
 ## 私有输出
 
-所有模式均将命令和超长工具输出保存到 Virgo 用户目录。子进程只获得管道，只有 Broker 打开输出记录。输出不再写入项目 `.virgo/outputs`，文件工具也没有读取私有输出文件的特殊豁免。
+所有模式均将命令和超长工具输出保存到 Virgo 用户目录。`context.outputs.create(prefix)` 返回已注册的 `OutputRecord` 及对应输出流。子进程只获得管道，只有 Broker 打开输出记录。内部 `CommandOutput.record` 保留该输出权限引用。输出不再写入项目 `.virgo/outputs`，文件工具也没有读取私有输出文件的特殊豁免。
 
 结果返回随机 `output_id`。`read_output` 接收该 ID，以及按字节计算的 `offset`、`limit`。ID 必须对应来源会话注册的确切记录；任意路径、伪造记录、另一会话的 ID 均被拒绝。切换选中会话不会改变子任务所属的输出权限。
 

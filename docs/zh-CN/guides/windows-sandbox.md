@@ -6,7 +6,7 @@ Workspace-Edit 直接请求 Internet 和专用网络能力。Read-Only 在某次
 
 额外授权按确切文件对象或指定目录树应用。目标不存在或无法设置精确 ACL 时返回错误。Virgo 使用当前账户执行。
 
-内置文件工具通过可信 Helper 副本进入相同的原生边界。原子 Write/Edit 在目标目录内暂存文件，因此需要明确的目录写权限。替换后的文件继承父目录 ACL，不复制旧文件自定义的显式 DACL。Helper 使用不跟随 reparse point 的保留句柄和原子原生重命名，不取得 Broker 的 ACL 修改权限。详见[Helper 协议与输出权限](../development/filesystem-helper.md)。
+内置文件工具通过可信 Helper 副本进入相同的原生边界。原子 Write/Edit 在目标目录内暂存文件，因此需要明确的目录写权限。替换后的文件继承父目录 ACL，不复制旧文件自定义的显式 DACL。Helper 使用不跟随 reparse point 的保留句柄和原子原生重命名，不取得 Broker 的 ACL 修改权限。 宿主端仅保留原生 ACL 安装和回收所需的句柄打开逻辑；旧的 Broker 文件替换、输出创建和 DACL 复制接口已删除。详见[Helper 协议与输出权限](../development/filesystem-helper.md)。
 
 
 拒绝读取的目录树不获得读取授权，普通写入限制 SID 阻止对它们的修改。Package 与 Capability SID 不能撤销环境已有的 LPAC 读取许可。释放挂起的进程前，Virgo 使用其实际令牌检查每个保留句柄对应的拒绝对象及全部后代的安全描述符，并检查拒绝目录对普通文件和目录的继承结果。若 `FILE_READ_DATA` 或目录枚举仍被允许，启动返回 `unsupported_read_deny` 和对应路径，不回退到宿主，也不重放载荷。这表示该策略无法建立，不代表成功实施了读取拒绝。

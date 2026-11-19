@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from ..execution import read_context
+from ..execution import read_context, read_file_bytes
 from ..harness.commands import parse_frontmatter
 from ..harness.extensions import ExtensionAPI, Handled
 
@@ -22,7 +22,7 @@ class Skill:
     access: object = None
 
     def body(self) -> str:
-        data = self.access.read_bytes(self.path) if self.access else self.path.read_bytes()
+        data = read_file_bytes(self.access, self.path) if self.access else self.path.read_bytes()
         if data is None:
             raise OSError('Skill resource is unavailable')
         return parse_frontmatter(data.decode('utf-8'))[1].strip()

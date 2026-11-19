@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult
+from ..execution import ExecutionContext, ProcessHandle, ProcessRequest
 from ..i18n import Translator
 from .output import MAX_BYTES, MAX_LINES, CommandOutput, bound, display_output, open_output, read_output
 
@@ -19,51 +20,38 @@ MAX_TIMEOUT = 3600
 SHELL = os.environ.get("VIRGO_SHELL") or ("bash" if os.name != "nt" else None)
 
 
-def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, execution_context=None, output_path=None, cancellation=None) -> subprocess.Popen:
+def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, execution_context=None, cancellation=None) -> ProcessHandle:
+    if execution_context is None:
+        access = ExecutionContext.unrestricted(cwd)
+        try:
+            return spawn(command, cwd, stdout, interpreter=interpreter,
+                         execution_context=access, cancellation=cancellation)
+        finally:
+            # An unrestricted process owns its process group or Job Object and
+            # does not use the executor's captured filesystem runtime.
+            access.executor.close()
     from .shell import shell_environment
 
     env = shell_environment()
     if interpreter is not None:
-        argv, shell = interpreter.argv(command), False
+        argv = interpreter.argv(command)
     elif SHELL:
         # Do not let a later ls/head/cat hide a failed download or pipeline.
         # Only add flags for known shells; VIRGO_SHELL may be another interpreter.
         kind = Path(SHELL).name.lower().removesuffix(".exe")
         options = ["-e", "-o", "pipefail"] if kind in {"bash", "zsh"} else []
-        argv: list[str] | str = [SHELL, *options, "-c", command]
-        shell = False
+        argv = [SHELL, *options, "-c", command]
+    elif os.name == "nt":
+        comspec = os.environ.get("ComSpec") or str(
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
+        )
+        argv = [comspec, "/d", "/s", "/c", command]
     else:
-        argv, shell = command, True
-    if execution_context is not None:
-        if shell or isinstance(argv, str):
-            raise ValueError("Managed execution requires an explicit interpreter argv")
-        from ..execution import ProcessRequest
-
-        request = ProcessRequest(tuple(argv), cwd, env, stdout=stdout)
-        return execution_context.run_process(request, cancellation)
-    if os.name == "nt":
-        from .windows_process import WindowsProcess
-
-        if shell:
-            comspec = os.environ.get("ComSpec") or str(
-                Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
-            )
-            argv = f'"{comspec}" /d /s /c "{command}"'
-        return WindowsProcess(argv, cwd=cwd, env=env, stdout=stdout)
-    return subprocess.Popen(
-        argv,
-        shell=shell,
-        cwd=str(cwd),
-        stdin=subprocess.DEVNULL,
-        stdout=stdout,
-        stderr=subprocess.STDOUT,
-        env=env,
-        start_new_session=os.name != "nt",
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+        argv = ["/bin/sh", "-c", command]
+    return execution_context.run_process(ProcessRequest(tuple(argv), cwd, env, stdout=stdout), cancellation)
 
 
-def kill_tree(proc: subprocess.Popen) -> None:
+def kill_tree(proc: ProcessHandle) -> None:
     terminate_tree = getattr(proc, "kill_tree", None)
     if terminate_tree is not None:
         terminate_tree()
@@ -88,21 +76,25 @@ def kill_tree(proc: subprocess.Popen) -> None:
 def run_command(
     command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter=None, execution_context=None
 ) -> tuple[CommandOutput, int | None, str]:
-    """Spool stdout/stderr directly to disk, returning only a bounded tail and metadata."""
+    """Capture command pipes in private output records and return a bounded tail."""
     if signal.is_set():
         return CommandOutput(""), None, "aborted"
+    if execution_context is None:
+        access = ExecutionContext.unrestricted(cwd)
+        try:
+            return run_command(command, cwd, timeout, signal, interpreter=interpreter,
+                               execution_context=access)
+        finally:
+            access.executor.close()
     prefix = interpreter.tool_name if interpreter is not None else "bash"
-    path, output_file = open_output(cwd, prefix, **({"execution_context": execution_context} if execution_context else {}))
+    path, output_file = open_output(cwd, prefix, execution_context=execution_context)
     with output_file:
         try:
             proc = spawn(command, cwd, stdout=output_file, interpreter=interpreter,
-                         **({"execution_context": execution_context, "output_path": path, "cancellation": signal} if execution_context else {}))
+                         execution_context=execution_context, cancellation=signal)
         except BaseException:
-            if execution_context is not None:
-                # Windows intentionally denies delete sharing for the exact
-                # spool handle. Close it before removing a failed launch's log.
-                output_file.close()
-                path.unlink(missing_ok=True)
+            output_file.close()
+            path.unlink(missing_ok=True)
             raise
         deadline = time.monotonic() + timeout
         status = "ok"
@@ -128,7 +120,7 @@ def run_command(
             finally:
                 cleanup_process(proc)
     boundary = getattr(proc, "_virgo_boundary", None)
-    if boundary is None and execution_context is not None:
+    if boundary is None:
         boundary = {**execution_context.describe(), "payload_started": True, "side_effects": "possible", "cleanup": "process_group_best_effort" if os.name != "nt" else "job_object"}
     return replace(read_output(path, execution_context=execution_context), boundary=boundary), proc.returncode, status
 
@@ -154,8 +146,10 @@ def format_output(
         "truncated": output.truncated
         or len((output.text.rstrip() or t("tools.output.empty")).encode("utf-8")) > MAX_BYTES - 256,
         "output_bytes": output.total_bytes,
-        "output_id": str(output.path) if output.path else None,
+        "output_id": str(output.record) if output.record else None,
     }
+    if output.boundary is not None:
+        details["boundary"] = output.boundary
     if status == "timeout":
         return ToolResult.error(t("tools.output.timeout", text=text, timeout=timeout), details)
     if status == "aborted":

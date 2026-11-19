@@ -187,6 +187,11 @@ class WindowsProcess:
                 startup.StartupInfo.hStdError = error_handle
                 startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
                 command = subprocess.list2cmdline(argv) if isinstance(argv, (list, tuple)) else argv
+                if (isinstance(argv, (list, tuple)) and len(argv) == 5
+                        and os.path.basename(argv[0]).lower() == "cmd.exe"
+                        and tuple(arg.lower() for arg in argv[1:4]) == ("/d", "/s", "/c")):
+                    # CMD consumes code after /c, not C-runtime-escaped argv.
+                    command = subprocess.list2cmdline(argv[:4]) + ' "' + argv[4] + '"'
                 command_buffer = ctypes.create_unicode_buffer(command)
                 deduped = {}
                 for key, value in env.items():

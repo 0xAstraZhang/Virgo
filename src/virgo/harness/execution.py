@@ -6,7 +6,7 @@ import weakref
 from dataclasses import replace
 from pathlib import Path
 
-from ..execution import HostContext, SandboxExecutor
+from ..execution import ExecutionContext, SandboxExecutor
 from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
 from .execution_modes import DEFAULT_MODES, HOST_MODE
 
@@ -88,7 +88,8 @@ class ModeExecutionProvider(HostExecutionProvider):
             outputs = OutputStore(self.session.paths.user / "outputs" / secrets.token_hex(16))
             self._outputs[store] = outputs
         if mode == HOST_MODE:
-            return HostContext(Path(runtime.accounting_store.cwd).resolve(), executor=self.executor, outputs=outputs)
+            return ExecutionContext.unrestricted(Path(runtime.accounting_store.cwd).resolve(),
+                                                 executor=self.executor, outputs=outputs)
         return replace(self.load_sandbox().context_for_mode(runtime, mode, revision), outputs=outputs)
 
     def capture_runtime(self, runtime):

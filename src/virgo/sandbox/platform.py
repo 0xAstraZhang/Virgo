@@ -461,7 +461,7 @@ class NativePolicy:
         return [str(launcher), "-p", "\n".join(lines)]
 
     def spawn(self, argv: list[str], cwd: Path, env: dict[str, str], stdout,
-              output_path: Path | None = None, cancellation=None, *, stdin=subprocess.DEVNULL,
+              cancellation=None, *, stdin=subprocess.DEVNULL,
               stderr=subprocess.STDOUT, env_overrides=None) -> subprocess.Popen:
         if cancellation is not None and cancellation.is_set():
             raise SandboxCancelled("Sandbox launch cancelled")

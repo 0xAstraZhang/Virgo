@@ -31,6 +31,7 @@ from ..ai.types import (
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
+from ..execution import read_file_bytes
 from ..i18n import Translator, normalize_language
 from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
@@ -847,7 +848,7 @@ class AgentSession:
                 body = self.templates[name][1]
                 if path := self._template_paths.get(name):
                     try:
-                        data = self.main.execution_context.read_bytes(path)
+                        data = read_file_bytes(self.main.execution_context, path)
                         if data is None:
                             raise OSError("Template resource is unavailable")
                         _, body = parse_frontmatter(data.decode("utf-8"))

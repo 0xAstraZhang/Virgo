@@ -68,18 +68,17 @@ def run(project, command):
 def test_compatibility_spawn_preserves_failure_flags(project, monkeypatch, executable):
     seen = {}
 
-    def capture(argv, **kwargs):
-        seen["argv"] = argv
+    def capture(executor, request, access, cancellation=None):
+        assert access.executor is executor
+        assert access.policy.unrestricted
+        seen["argv"] = request.argv
         return object()
 
     monkeypatch.setattr(bash_module, "SHELL", str(project / "shell directory" / executable))
-    if os.name == "nt":
-        monkeypatch.setattr("virgo.tools.windows_process.WindowsProcess", capture)
-    else:
-        monkeypatch.setattr(subprocess, "Popen", capture)
+    monkeypatch.setattr("virgo.execution.SandboxExecutor.run_process", capture)
     bash_module.spawn("false | cat; echo must-not-run", project)
     options = [] if executable == "python.exe" else ["-e", "-o", "pipefail"]
-    assert seen["argv"] == [bash_module.SHELL, *options, "-c", "false | cat; echo must-not-run"]
+    assert seen["argv"] == (bash_module.SHELL, *options, "-c", "false | cat; echo must-not-run")
 
 
 @pytest.mark.parametrize(("endpoint", "code"), [("timeout", 28), ("error", 22)])
@@ -147,6 +146,7 @@ def test_background_download_failure_does_not_read_old_file(make_session, projec
 def test_bash_exit_codes_timeout_and_truncation(project, python_command):
     r = run(project, python_command("import sys; print('hi'); sys.exit(3)"))
     assert r.is_error and "hi" in r.as_text() and "Exit code 3" in r.as_text()
+    assert r.details["boundary"]["state"] == "host"
     assert run(project, python_command("import os; print(os.getcwd())")).as_text().strip() == str(project)
     t = BASH.execute({"command": python_command("import time; time.sleep(5)"), "timeout": 0.3}, ctx(project))
     assert t.is_error and "timed out" in t.as_text()
@@ -154,10 +154,11 @@ def test_bash_exit_codes_timeout_and_truncation(project, python_command):
         python_command(f"for i in range(1, {MAX_LINES + 101}): print(i)"),
         project, 10, threading.Event(),
     )
+    assert output.boundary["requested"]["unrestricted"]
     rendered = bash_module.format_output(output, code, status, project, 10)
     big = rendered.as_text()
     assert "Output truncated" in big and big.rstrip().endswith(str(MAX_LINES + 100))
-    saved = output.path
+    saved = output.record
     assert rendered.details["output_id"] == saved.id and saved.id in big
     assert not (project / ".virgo" / "outputs").exists()
     assert saved.store.read(saved)[0].startswith(b"1\r\n" if os.name == "nt" else b"1\n")
@@ -172,7 +173,7 @@ def test_shell_environment_override(project):
     code = (
         "from pathlib import Path; from virgo.tools.bash import spawn; "
         "proc = spawn(\"import os; print(os.environ['VIRGO'])\", Path.cwd()); "
-        "out, _ = proc.communicate(timeout=5); print(out.decode(), end=''); "
+        "proc.wait(timeout=5); print(proc.stdout.read().decode(), end=''); proc.stdout.close(); "
         "raise SystemExit(proc.returncode)"
     )
     result = subprocess.run(

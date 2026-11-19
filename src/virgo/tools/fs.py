@@ -10,10 +10,10 @@ from dataclasses import replace
 from ..agent.types import AgentTool, ToolContext, ToolResult, image_result
 from ..execution import (
     ExecutionCancelled,
+    ExecutionContext,
     ExecutionFailed,
     ExecutionUnavailable,
     FileAccessDenied,
-    HostContext,
 )
 from .output import MAX_BYTES, MAX_LINES
 
@@ -27,7 +27,7 @@ def _render(value, ctx):
 
 def _execute(operation, args, ctx, *, access=None):
     if access is None:
-        access = HostContext(ctx.cwd)
+        access = ExecutionContext.unrestricted(ctx.cwd)
         try:
             return _execute(operation, args, ctx, access=access)
         finally:

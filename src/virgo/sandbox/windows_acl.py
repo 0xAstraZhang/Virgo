@@ -185,24 +185,6 @@ def _read(handle, *, cleanup=False, getter=GetSecurity) -> _Dacl | None:
     return _parse_descriptor(_descriptor(handle, getter), cleanup=cleanup)
 
 
-def inherited_file_dacl(parent):
-    """Ask Windows for a new file's normal destination-parent inheritance."""
-    token, descriptor = HANDLE(), ctypes.c_void_p()
-    _check(OpenProcessToken(GetCurrentProcess(), 8, ctypes.byref(token)))  # TOKEN_QUERY
-    try:
-        # FILE_GENERIC_READ/WRITE/EXECUTE and FILE_ALL_ACCESS. Native inheritance
-        # maps generic masks and Creator Owner/Group; do not hand-roll ACE rules.
-        mapping = _GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
-        _check(CreatePrivateObjectSecurityEx(_descriptor(parent), None, ctypes.byref(descriptor),
-                                             None, False, 1, token, ctypes.byref(mapping)))
-        try:
-            return _parse_descriptor(descriptor)
-        finally:
-            _check(DestroyPrivateObjectSecurity(ctypes.byref(descriptor)))
-    finally:
-        _check(CloseHandle(token))
-
-
 @dataclass
 class _PreparedDacl:
     acl: object  # Keep the buffer referenced by the absolute descriptor alive.

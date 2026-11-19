@@ -94,7 +94,7 @@ def test_read_only_broker_output_leaves_the_project_untouched(broker_session, pr
     session = broker_session(preset="read-only")
     context = session.main.execution_context
     original = list(project.iterdir())
-    record, stream = context.open_output(project, "shell")
+    record, stream = context.outputs.create("shell")
     with stream:
         stream.write(b"result")
     assert list(project.iterdir()) == original

@@ -8,11 +8,11 @@ from unittest.mock import Mock, call, sentinel
 
 import pytest
 
-from virgo.execution import HostContext, HostProcess, ProcessRequest, cleanup_process
+from virgo.execution import ExecutionContext, HostProcess, ProcessRequest, cleanup_process
 
 
 def test_host_cleanup_after_group_leader_exit_preserves_other_job(tmp_path):
-    host = HostContext(tmp_path)
+    host = ExecutionContext.unrestricted(tmp_path)
     waiting = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
                "print('ready', flush=True); time.sleep(30)")
     other = host.run_process(ProcessRequest((sys.executable, "-c", waiting), tmp_path, dict(os.environ)))
@@ -89,10 +89,10 @@ def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
                     imports.append(fullname)
         sys.meta_path.insert(0, ObserveImports())
 
-        from virgo.execution import HostContext, ProcessRequest, cleanup_process
+        from virgo.execution import ExecutionContext, ProcessRequest, cleanup_process
 
         project = Path(sys.argv[1])
-        host = HostContext(project)
+        host = ExecutionContext.unrestricted(project)
         source = project / "message.txt"
         changed = host.run_file_operation("write", {"path": str(source), "content": "from the editor"})
         assert changed["ok"], changed
@@ -117,7 +117,7 @@ def test_native_policy_rejects_empty_argv_and_host_overrides_case_colliding_env(
     with pytest.raises(ExecutionUnavailable, match="nonempty command argv"):
         policy.spawn([], tmp_path, {}, subprocess.DEVNULL)
 
-    host = HostContext(tmp_path)
+    host = ExecutionContext.unrestricted(tmp_path)
     code = "import os; print(os.environ.get('CUSTOM_OVERRIDE', os.environ.get('custom_override', '')))"
     env = {**os.environ, "CUSTOM_OVERRIDE": "base"}
     process = host.run_process(ProcessRequest(

@@ -65,7 +65,7 @@ class NativeExecutor:
     def run_process(self, request, policy, cancellation=None):
         envelope = self.policy(policy, request)
         proc = envelope.spawn(request.argv, request.cwd, request.env, request.stdout,
-                              request.output_path, cancellation, stdin=request.stdin,
+                              cancellation=cancellation, stdin=request.stdin,
                               stderr=request.stderr, env_overrides=request.env_overrides)
         return NativeProcess(proc, policy)
 

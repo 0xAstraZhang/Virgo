@@ -18,7 +18,7 @@ MAX_BYTES = 50 * 1024
 @dataclass(frozen=True)
 class CommandOutput:
     text: str
-    path: OutputRecord | None = None
+    record: OutputRecord | None = None
     truncated: bool = False
     total_bytes: int = 0
     boundary: dict | None = None
@@ -82,20 +82,20 @@ def budget(text: str, cwd: Path, prefix: str, keep: str = "head", *, t=None, exe
         where=where,
         count=len(bounded.text.splitlines()),
         total=len(text.splitlines()),
-        path=bounded.path,
+        path=bounded.record,
     )
 
 
 def open_output(cwd: Path, prefix: str, *, execution_context=None):
     if execution_context is not None:
-        return execution_context.open_output(cwd, prefix)
+        return execution_context.outputs.create(prefix)
     return private_output_store().create(prefix)
 
 
-def read_output(path: Path, *, max_bytes: int = MAX_BYTES, max_lines: int = MAX_LINES,
+def read_output(record: OutputRecord, *, max_bytes: int = MAX_BYTES, max_lines: int = MAX_LINES,
                 execution_context=None) -> CommandOutput:
-    store = execution_context.outputs if execution_context is not None else path.store
-    data, total, _ = store.read(path, limit=max_bytes, tail=True)
+    store = execution_context.outputs if execution_context is not None else record.store
+    data, total, _ = store.read(record, limit=max_bytes, tail=True)
     start = max(0, total - max_bytes)
     # Don't render the continuation bytes of a UTF-8 character cut by the seek.
     if start:
@@ -104,7 +104,7 @@ def read_output(path: Path, *, max_bytes: int = MAX_BYTES, max_lines: int = MAX_
     text, cut = truncate_tail(
         data.decode("utf-8", errors="replace"), max_bytes=max_bytes, max_lines=max_lines
     )
-    return CommandOutput(text, path, start > 0 or cut, total)
+    return CommandOutput(text, record, start > 0 or cut, total)
 
 
 def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, t=None) -> str:
@@ -117,7 +117,7 @@ def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, t=None)
         max_lines=MAX_LINES,
         max_kb=MAX_BYTES // 1024,
         total=output.total_bytes,
-        path=output.path,
+        path=output.record,
     )
     # Include the pointer in the budget so the harness won't truncate the tail again.
     available = max_bytes - len(header.encode("utf-8"))

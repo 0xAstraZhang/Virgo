@@ -156,7 +156,7 @@ def test_background_output_alias_cannot_read_outside_resource_boundary(broker_se
     assert job.done.wait(5)
     protected = project.parent/'output-secret.txt'
     protected.write_text('output-resource-canary')
-    job.log, stream = session.main.execution_context.open_output(project, 'owned-output')
+    job.log, stream = session.main.execution_context.outputs.create('owned-output')
     stream.close()
     # Output IDs resolve to exact Broker records; a forged record cannot swap
     # the underlying path even when it copies a known identifier.

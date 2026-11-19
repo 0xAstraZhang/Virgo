@@ -7,12 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..agent import AgentTool, ToolCallEvent
-from ..execution import SandboxExecutor
+from ..execution import ExecutionContext, SandboxExecutor
 from ..execution_policy import PathRule
 from ..harness.execution import HostExecutionProvider
 from ..harness.execution_modes import PermissionSnapshot
 from ..harness.resource_approvals import Grant, ResourceApprovals
-from .policy import PROTECTED_NAMES, SandboxPolicy
+
+PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 
 
 class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
@@ -42,7 +43,7 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
             PathRule(private, "read", "deny"),
             *(PathRule(path, "write", "deny") for path in (*control, *runtime_roots)),
         ))
-        return SandboxPolicy(workspace, resources, (private,), self.executor,
+        return ExecutionContext(workspace, resources, self.executor,
                              PermissionSnapshot(mode, approval, revision))
 
     def instructions(self, runtime):

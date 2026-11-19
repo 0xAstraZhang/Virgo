@@ -7,14 +7,13 @@ not depend on an isolation backend being installed.
 from __future__ import annotations
 
 import errno
-import io
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
-from contextlib import closing, contextmanager
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
@@ -68,10 +67,8 @@ class ProcessRequest:
     stdout: object = subprocess.PIPE
     stdin: object = subprocess.DEVNULL
     stderr: object = subprocess.STDOUT
-    output_path: Path | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     runtime_paths: tuple[Path, ...] = ()
-    scratch_directory: Path | None = None
 
 
 def environment_overrides(values: dict[str, str]) -> dict[str, str]:
@@ -123,9 +120,6 @@ class SandboxExecutor:
     def identity(self):
         return (id(self), self.backend)
 
-    def policy(self, context):
-        return self.native.policy(context)
-
     def run_process(self, request: ProcessRequest, policy, cancellation=None) -> ProcessHandle:
         if cancellation is not None and cancellation.is_set():
             raise ExecutionCancelled("Execution cancelled before process start")
@@ -144,21 +138,6 @@ class SandboxExecutor:
             request.argv, cwd=str(request.cwd), env=env,
             stdin=request.stdin, stdout=request.stdout, stderr=request.stderr, start_new_session=True,
         ))
-
-
-class ExecutionContext(Protocol):
-    provider: str
-    workspace: Path
-
-    def check_read(self, path: Path) -> None: ...
-    def read_bytes(self, path: Path, *, max_bytes: int | None = None) -> bytes | None: ...
-    def open_mutation(self, path: Path, *, create: bool): ...
-    def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None): ...
-    def open_output(self, cwd: Path, prefix: str): ...
-    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]: ...
-    def run_process(self, request: ProcessRequest, cancellation=None) -> ProcessHandle: ...
-    def run_file_operation(self, operation, arguments, *, cwd=None, cancellation=None) -> dict: ...
-    def describe(self) -> dict: ...
 
 
 class ExecutionProvider(Protocol):
@@ -270,15 +249,14 @@ class HostProcess:
 
 
 @dataclass(frozen=True)
-class HostContext:
-    workspace: Path
-    provider: str = "host"
-    executor: SandboxExecutor = field(default_factory=SandboxExecutor, compare=False, repr=False)
-    outputs: object = field(default=None, compare=False, repr=False)
+class ExecutionContext:
+    """Origin-bound execution data; file access belongs to the worker process."""
 
-    @property
-    def policy(self):
-        return PermissionPolicy((), network_allowed=True, unrestricted=True)
+    workspace: Path
+    resources: object
+    executor: SandboxExecutor = field(compare=False, repr=False)
+    permission_snapshot: object = None
+    outputs: object = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         if self.outputs is None:
@@ -286,45 +264,45 @@ class HostContext:
 
             object.__setattr__(self, "outputs", private_output_store())
 
+    @classmethod
+    def unrestricted(cls, workspace, *, executor=None, outputs=None):
+        from .harness.execution_modes import HOST_MODE
+
+        return cls(Path(workspace), HOST_MODE, executor or SandboxExecutor(), outputs=outputs)
+
+    @property
+    def policy(self):
+        return self.resources.policy
+
+    @property
+    def provider(self):
+        return "host" if self.policy.unrestricted else "sandbox"
+
+    @property
+    def revision(self):
+        return self.permission_snapshot.revision if self.permission_snapshot is not None else 0
+
+    @property
+    def network_allowed(self):
+        return self.policy.network_allowed
+
     def run_file_operation(self, operation, arguments, *, cwd=None, cancellation=None):
         return self.executor.run_file_operation(operation, arguments, cwd=cwd or self.workspace,
-                                                policy=self, cancellation=cancellation)
-
-    def check_read(self, path: Path) -> None:
-        pass
-
-    def read_bytes(self, path: Path, *, max_bytes: int | None = None) -> bytes | None:
-        return read_file_bytes(self, path, max_bytes=max_bytes)
-
-    @contextmanager
-    def open_mutation(self, path: Path, *, create: bool):
-        existed = path.exists()
-        with io.BytesIO(b"" if create else path.read_bytes()) as stream:
-            def commit():
-                if create:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(stream.getvalue())
-            yield stream, existed, commit
-
-    def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None):
-        return walk_file_entries(self, path, ignore, max_depth=max_depth)
-
-    def validate(self, cwd: Path) -> Path:
-        return cwd
-
-    def open_output(self, cwd: Path, prefix: str):
-        return self.outputs.create(prefix)
-
-    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
-        data, total, _ = self.outputs.read(path, limit=max_bytes, tail=True)
-        return data, total
+                                               policy=self, cancellation=cancellation)
 
     def run_process(self, request: ProcessRequest, cancellation=None):
         return self.executor.run_process(request, self, cancellation)
 
-    def describe(self) -> dict:
-        return {"provider": "host", "state": "host", "workspace": str(self.workspace),
-                "requested": "host", "effective": "host operating-system authority"}
+    def describe(self):
+        if self.policy.unrestricted:
+            return {"provider": "host", "state": "host", "workspace": str(self.workspace),
+                    "requested": self.policy.as_dict(), "effective": "host operating-system authority"}
+        return {"provider": "sandbox", "backend": self.executor.backend, "workspace": str(self.workspace),
+                "requested": self.policy.as_dict(), "effective": None,
+                "revision": self.revision, "state": "launch_unverified",
+                "native_support": "checked_at_launch",
+                "windows_network": "AppContainer and host firewall policy apply" if os.name == "nt" else None,
+                "unmanaged": ["broker", "trusted Python extensions", "hooks", "MCP services", "model transport"]}
 
 
 def file_result(result):

@@ -46,7 +46,7 @@ def test_worker_snapshot_survives_edits_to_its_installation(project, monkeypatch
     import shutil
 
     from virgo import file_operations
-    from virgo.execution import HostContext
+    from virgo.execution import ExecutionContext
 
     installation = project / "editable-install"
     installation.mkdir()
@@ -56,7 +56,7 @@ def test_worker_snapshot_survives_edits_to_its_installation(project, monkeypatch
     monkeypatch.setattr(file_operations, "__file__", str(installation / "file_operations.py"))
     executor = SandboxExecutor()
     try:
-        host = HostContext(project, executor=executor)
+        host = ExecutionContext.unrestricted(project, executor=executor)
         # Represent editing Virgo itself after session initialization. The next
         # actual worker must execute its captured snapshot, never these bytes.
         (installation / "fs_worker.py").write_text("raise SystemExit(73)\n")
@@ -67,7 +67,8 @@ def test_worker_snapshot_survives_edits_to_its_installation(project, monkeypatch
         # that an earlier model operation has already changed.
         later = SandboxExecutor()
         try:
-            response = HostContext(project, executor=later).run_file_operation("read", {"path": "captured.txt"})
+            context = ExecutionContext.unrestricted(project, executor=later)
+            response = context.run_file_operation("read", {"path": "captured.txt"})
             assert response["ok"] and response["boundary"]["payload_started"] is True, response
         finally:
             later.close()

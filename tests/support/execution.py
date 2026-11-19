@@ -3,10 +3,10 @@
 import sys
 from pathlib import Path
 
-from virgo.execution import SandboxExecutor
+from virgo.execution import ExecutionContext, SandboxExecutor
 from virgo.execution_policy import PathRule, PermissionPolicy
 from virgo.harness.execution_modes import PermissionPreset
-from virgo.sandbox.policy import PROTECTED_NAMES, SandboxPolicy
+from virgo.sandbox import PROTECTED_NAMES
 
 
 def file_policy(workspace, *, read_paths=None, write_paths=(), network_allowed=False, private_paths=(), executor=None):
@@ -22,7 +22,7 @@ def file_policy(workspace, *, read_paths=None, write_paths=(), network_allowed=F
         *(PathRule(Path(path), "read", "deny") for path in private_paths),
         *(PathRule(path, "write", "deny") for path in (*control, *runtime)),
     ), network_allowed)
-    return SandboxPolicy(workspace, PermissionPreset("test", "Test", policy), tuple(private_paths), executor)
+    return ExecutionContext(workspace, PermissionPreset("test", "Test", policy), executor)
 
 
 def sandbox_config(preset="workspace-edit"):

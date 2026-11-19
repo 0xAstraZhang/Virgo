@@ -81,17 +81,19 @@ class FakeProcess:
 
 
 def fake_command_io(monkeypatch, project, *, failure=None, close_failure=False):
-    path = project / "background-output.log"
-    path.write_text("command output\n")
-
     class OutputFile:
         def close(self):
             if close_failure:
                 raise OSError("close unavailable")
 
-    monkeypatch.setattr(supervision, "open_output", lambda *args, **kwargs: (path, OutputFile()))
+    def create_record(cwd, prefix, *, execution_context):
+        record, stream = execution_context.outputs.create(prefix)
+        with stream:
+            stream.write(b"command output\n")
+        return record, OutputFile()
+
+    monkeypatch.setattr(supervision, "open_output", create_record)
     monkeypatch.setattr(supervision, "spawn", lambda *args, **kwargs: FakeProcess(failure))
-    return path
 
 
 @pytest.mark.parametrize(("failure", "phase"), [

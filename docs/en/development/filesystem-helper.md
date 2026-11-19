@@ -2,6 +2,8 @@
 
 The built-in Read, Write, Edit, Glob and Grep tools run in a dedicated Python process through `SandboxExecutor`. Their adapters validate arguments and render results, passing target paths unchanged to the helper. File-content and directory operations happen in that process. The helper is a standard-library-only runtime snapshot captured before model execution, including when Virgo is running from an editable checkout. Approval normalizes resource spelling lexically and carries the effective `PermissionPolicy` to the executor; it does not resolve or inspect the model's target in the Broker.
 
+All modes use the same immutable `ExecutionContext`, containing resources, executor, origin permission snapshot and output store. No-Limit constructs an explicitly unrestricted context. Automatic project reads call `read_context(context, ...)`, `read_file_bytes(context, ...)` or `walk_file_entries(context, ...)`, which start helper operations. The context has no direct file-access methods. Trusted user instructions and Virgo configuration remain Broker inputs.
+
 Snapshots live below a stable `virgo-runtime` directory in the operating system's per-user cache, separate from Broker-private storage and command temporary directories. Initialization rejects links, unexpected owners and non-private permissions on the managed directory; it preserves active Windows execution ACEs. Every restricted process is prevented from modifying this entire runtime namespace, including snapshots created by later executors. Native read grants cover the runtime dependencies needed by the current process. Closing an executor removes only its own snapshot and retains the parent namespace so older processes keep their protection over future instances. No-Limit keeps its explicitly authorized host access.
 
 The Broker captures helper source bytes once when its helper adapter module loads, before the first executor can release model work. Later executors reuse those captured bytes rather than reopening a potentially modified editable installation. Changes to the helper implementation take effect after a trusted Broker restart.
@@ -34,7 +36,7 @@ On Windows, executor initialization captures direct DOS-to-physical-volume mappi
 
 ## Private outputs
 
-Every mode stores command and large tool output in the Virgo user directory. The child writes to a pipe; only the Broker opens the output record. Outputs no longer use project `.virgo/outputs`, and there is no filesystem-tool exception for reading private output files.
+Every mode stores command and large tool output in the Virgo user directory. `context.outputs.create(prefix)` returns a registered `OutputRecord` and its output stream. The child writes to a pipe; only the Broker opens the output record. `CommandOutput.record` retains the capability internally. Outputs no longer use project `.virgo/outputs`, and there is no filesystem-tool exception for reading private output files.
 
 Results expose a random `output_id`. `read_output` accepts that ID and byte `offset`/`limit` arguments. The ID must resolve to an exact record owned by the originating conversation; an arbitrary path, a fabricated record or another conversation's ID is rejected. Child tasks keep their originating conversation's output ownership when the selected session changes.
 

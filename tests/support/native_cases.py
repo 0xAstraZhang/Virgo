@@ -133,7 +133,7 @@ Path('future-runtime-control.txt').write_text('allowed')
         nested_executor.close()
     assert runtime_root.is_dir(), "Closing snapshots must retain the namespace protected by older processes"
 
-    record, stream = access.open_output(project, "acceptance")
+    record, stream = access.outputs.create("acceptance")
     with stream:
         stream.write(b"private-output-canary")
     owned = ToolContext("owned-output", project, threading.Event(), origin=native.main.origin)
