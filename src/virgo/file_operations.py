@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -16,6 +17,8 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+
+from platformdirs import user_cache_dir
 
 MAX_MESSAGE = 16 * 1024 * 1024
 OPERATIONS = frozenset({"read", "write", "edit", "glob", "grep", "read_bytes", "walk_files"})
@@ -46,6 +49,111 @@ def _windows_devices():
     return devices
 
 
+def _windows_private_directory(path):
+    """Create or verify a user-owned root without resetting active native ACEs."""
+    import ctypes
+
+    from .sandbox import windows_acl as win
+
+    convert_sid = win._api(win.advapi, "ConvertSidToStringSidW", [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p),
+    ])
+    local_free = win._api(win.kernel, "LocalFree", [ctypes.c_void_p], ctypes.c_void_p)
+
+    def sid_text(sid):
+        win._check(win.IsValidSid(sid))
+        text = ctypes.c_wchar_p()
+        win._check(convert_sid(sid, ctypes.byref(text)))
+        try:
+            return text.value
+        finally:
+            local_free(text)
+
+    token = win.HANDLE()
+    win._check(win.OpenProcessToken(win.GetCurrentProcess(), 8, ctypes.byref(token)))
+    try:
+        size = win.DWORD()
+        win.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        if not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        user = ctypes.create_string_buffer(size.value)
+        win._check(win.GetTokenInformation(token, 1, user, len(user), ctypes.byref(size)))
+        owner = sid_text(ctypes.c_void_p.from_buffer(user).value)
+    finally:
+        win.CloseHandle(token)
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("length", win.DWORD), ("descriptor", ctypes.c_void_p), ("inherit", win.BOOL)]
+
+    convert = win._api(win.advapi, "ConvertStringSecurityDescriptorToSecurityDescriptorW", [
+        ctypes.c_wchar_p, win.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(win.DWORD),
+    ])
+    create = win._api(win.kernel, "CreateDirectoryW", [ctypes.c_wchar_p, ctypes.POINTER(SecurityAttributes)])
+    descriptor = ctypes.c_void_p()
+    win._check(convert(f"O:{owner}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{owner})",
+                       1, ctypes.byref(descriptor), None))
+    try:
+        attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+        if not create(str(path), ctypes.byref(attributes)):
+            error = ctypes.get_last_error()
+            if error != 183:  # ERROR_ALREADY_EXISTS: validate, never replace it.
+                raise ctypes.WinError(error)
+    finally:
+        local_free(descriptor)
+
+    get_owner = win._api(win.advapi, "GetSecurityDescriptorOwner", [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(win.BOOL),
+    ])
+    # A single native open rejects reparse points in every component. The
+    # descriptor is inspected on that retained object, not by reopening its path.
+    with win.open_path(path, 0x20000, directory=True) as handle:  # READ_CONTROL
+        size = win.DWORD()
+        win.GetSecurity(handle.value, 1 | 4, None, 0, ctypes.byref(size))
+        if not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        security = ctypes.create_string_buffer(size.value)
+        win._check(win.GetSecurity(handle.value, 1 | 4, security, len(security), ctypes.byref(size)))
+        actual, defaulted = ctypes.c_void_p(), win.BOOL()
+        win._check(get_owner(security, ctypes.byref(actual), ctypes.byref(defaulted)))
+        policy = win._parse_descriptor(security)
+        if sid_text(actual) != owner or not policy.control & 0x1000:
+            raise PermissionError(f"Untrusted owner or inherited security on Virgo runtime directory: {path}")
+        for ace in policy.aces:
+            # Native commands may add temporary read grants and deny ACEs.
+            # Preserve them, but reject mutation grants to unrelated identities.
+            if ace[0] in {1, 6, 10, 12} or not struct.unpack_from("<I", ace, 4)[0] & 0x500D0156:
+                continue
+            sid = win._sid_in_ace(ace)
+            if not sid or sid_text(ctypes.create_string_buffer(sid)) not in {owner, "S-1-5-18", "S-1-5-32-544"}:
+                raise PermissionError(f"Non-private Virgo runtime directory: {path}")
+
+
+def _private_directory(path):
+    if os.name == "nt":
+        _windows_private_directory(path)
+        return
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(descriptor)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise PermissionError(f"Virgo runtime directory must be owned and private to this user: {path}")
+    finally:
+        os.close(descriptor)
+
+
+def _runtime_root():
+    """One durable, per-user namespace for current and future helper snapshots."""
+    cache = Path(user_cache_dir())
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root = cache.resolve(strict=True) / "virgo-runtime"
+    _private_directory(root)
+    return root
+
+
 def _receive(stream, size):
     data = bytearray()
     while len(data) < size:
@@ -67,7 +175,8 @@ class FileOperations:
         self.interpreter = str(Path(sys.executable).resolve(strict=True))
         # Capture installation code before the first model-controlled operation,
         # including editable installs running from their own project.
-        self.directory = Path(tempfile.mkdtemp(prefix="virgo-runtime-")).resolve(strict=True)
+        self.root = _runtime_root()
+        self.directory = Path(tempfile.mkdtemp(prefix="snapshot-", dir=self.root)).resolve(strict=True)
         try:
             for name in ("fs_worker.py", "fs_windows.py"):
                 content = Path(__file__).with_name(name).read_bytes()

@@ -2,6 +2,8 @@
 
 内置 Read、Write、Edit、Glob、Grep 通过 `SandboxExecutor` 启动独立 Python 进程。工具适配器验证参数、转换结果，将目标路径原样交给 Helper。文件内容、元数据和目录遍历均由 Helper 操作。执行器在模型开始操作前保存仅依赖标准库的可信运行时副本；从 Virgo 自身的开发目录启动时也使用这个副本。后续权限策略迁移负责清理 Broker 准入阶段剩余的路径规范化和旧文件防护接口。
 
+副本位于操作系统用户缓存中的稳定 `virgo-runtime` 父目录，与 Broker 私有存储和命令临时目录分开。初始化拒绝受管理目录中的链接、错误所有者和非私有权限，并保留当前 Windows 执行的 ACE。所有受限进程均不得修改整棵运行时目录，包括其他执行器随后创建的副本；原生读取授权覆盖当前进程所需的运行时依赖。关闭执行器仅删除自身副本，保留父目录，使已经运行的进程继续受到针对未来实例的保护。No-Limit 保持明确授权的宿主访问权限。
+
 ## 传输与大小限制
 
 执行器以 `-I -S` 启动 Helper。请求和响应使用私有 stdin/stdout 管道，每帧由四字节长度和 JSON 正文组成，最大 16 MiB。stderr 单独传递有大小上限的诊断信息。载荷不从模型可写的项目文件中获取执行请求。
@@ -34,6 +36,6 @@ Windows 执行器初始化时捕获直连 DOS 盘符到物理卷的映射，保�
 
 `tests/tools/test_fs.py` 保留已有编辑和搜索用例，改为启动真实 Helper 进程。路径权限用例使用真实 `SandboxExecutor`；后端不可用是失败，不以模拟执行算作隔离通过。
 
-POSIX 与 Windows 原生测试复用同一个文件验收场景：执行全部五种文件工具，直接调用执行器检查 Read-Only 的操作系统拒绝，验证控制文件和运行时副本，以及私有输出 ID 的来源限制。发布前必须在实际平台执行；仅有本地 Host 进程测试不足以证明原生隔离。
+POSIX 与 Windows 原生测试复用同一个文件验收场景：执行全部五种文件工具，直接调用执行器检查 Read-Only 的操作系统拒绝，验证控制文件和运行时副本，以及私有输出 ID 的来源限制。已经获得工作区写权限并开始运行的进程，还会尝试修改后续执行器的副本和共享运行时父目录下新建的普通测试文件；普通工作区写入则必须成功。发布前必须在实际平台执行；仅有本地 Host 进程测试不足以证明原生隔离。
 
 旧 `test_core_file_mutation_survives_hardlink_unlink_race[write/edit]` 通过跟踪已移除的 Broker 修改函数暂停执行，因此退役。替代用例 `test_core_file_mutation_replaces_hardlink_without_touching_source[write/edit]` 启动真实 No-Limit Helper，要求提交新 inode 且不改变外部源文件。原生 hardlink 和路径替换测试继续保留。没有退役输出或文件算法测试。

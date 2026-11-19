@@ -128,7 +128,7 @@ class SandboxExecutor:
         if cancellation is not None and cancellation.is_set():
             raise ExecutionCancelled("Execution cancelled before process start")
         if policy is not None:
-            request = replace(request, runtime_paths=tuple(dict.fromkeys((*request.runtime_paths, self.files.directory))))
+            request = replace(request, runtime_paths=tuple(dict.fromkeys((*request.runtime_paths, self.files.root))))
             return self.native.run_process(request, policy, cancellation)
         env = {**request.env, **environment_overrides(request.env_overrides)}
         if os.name == "nt":

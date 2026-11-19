@@ -8,12 +8,12 @@ def filesystem_helper_operations(native, project, monkeypatch):
     import os
     import subprocess
     import sys
-    import tempfile
     import threading
     from dataclasses import replace
 
     from virgo.agent.types import ToolContext
     from virgo.execution import ProcessRequest, SandboxExecutor, cleanup_process
+    from virgo.file_operations import _private_directory
 
     access = native.main.execution_context
 
@@ -49,10 +49,12 @@ def filesystem_helper_operations(native, project, monkeypatch):
     denied = operation("write", {"path": str(snapshot), "content": "raise SystemExit(73)"})
     assert not denied["ok"] and snapshot.read_bytes() == before, denied
 
-    # A user-selected TMPDIR may put the snapshot beneath the writable project.
+    # Place the actual trusted namespace inside a writable tree, as with HOME.
     # Both a normal command and the helper must retain its read-only carve-out.
+    runtime_root = project / "trusted-runtime"
+    _private_directory(runtime_root)
     with monkeypatch.context() as patch:
-        patch.setattr(tempfile, "tempdir", str(project))
+        patch.setattr("virgo.file_operations._runtime_root", lambda: runtime_root)
         nested_executor = SandboxExecutor()
     try:
         nested = replace(access, executor=nested_executor)
@@ -70,6 +72,7 @@ else:
     raise AssertionError('command modified its trusted filesystem worker')
 print('runtime-ready', flush=True)
 future = Path(sys.stdin.readline().strip())
+worker = Path(sys.stdin.readline().strip())
 assert future.read_text() == 'future-canary'
 try:
     future.write_text('modified-by-earlier-executor')
@@ -77,6 +80,13 @@ except OSError:
     print('future-runtime-denied')
 else:
     raise AssertionError('command modified a later executor runtime')
+try:
+    worker.chmod(0o600)
+    worker.write_text('modified-by-earlier-executor')
+except OSError:
+    print('future-worker-denied')
+else:
+    raise AssertionError('command modified a later executor worker')
 Path('future-runtime-control.txt').write_text('allowed')
 """
         command = nested.run_process(ProcessRequest((sys.executable, "-I", "-S", "-c", code),
@@ -89,20 +99,24 @@ Path('future-runtime-control.txt').write_text('allowed')
             # This snapshot did not exist when the older process received its
             # workspace grants. Its protection must include future instances.
             with monkeypatch.context() as patch:
-                patch.setattr(tempfile, "tempdir", str(project))
+                patch.setattr("virgo.file_operations._runtime_root", lambda: runtime_root)
                 future_executor = SandboxExecutor()
-            future_executor.files.directory.chmod(0o700)
-            canary = future_executor.files.directory / "future-canary.txt"
+            # A normal host-created canary inherits the parent's active ACEs;
+            # Python's private Windows mkdtemp directory may suppress them.
+            canary = runtime_root / "future-canary.txt"
             canary.write_text("future-canary")
             canary.chmod(0o600)
-            future_executor.files.directory.chmod(0o500)
-            command.stdin.write((str(canary) + "\n").encode())
+            future_worker = future_executor.files.directory / "fs_worker.py"
+            future_contents = future_worker.read_bytes()
+            command.stdin.write((str(canary) + "\n" + str(future_worker) + "\n").encode())
             command.stdin.close()
             code = command.wait(timeout=20)
             stdout, stderr = command.stdout.read(), command.stderr.read()
             assert code == 0, {"stdout": stdout, "stderr": stderr}
             assert b"future-runtime-denied" in stdout
+            assert b"future-worker-denied" in stdout
             assert canary.read_text() == "future-canary"
+            assert future_worker.read_bytes() == future_contents
             assert (project / "future-runtime-control.txt").read_text() == "allowed"
         finally:
             cleanup_process(command)
@@ -115,6 +129,7 @@ Path('future-runtime-control.txt').write_text('allowed')
         assert operation("read", {"path": "worker/file.txt"}, context=nested)["ok"]
     finally:
         nested_executor.close()
+    assert runtime_root.is_dir(), "Closing snapshots must retain the namespace protected by older processes"
 
     record, stream = access.open_output(project, "acceptance")
     with stream:
