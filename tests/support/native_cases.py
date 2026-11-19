@@ -37,8 +37,9 @@ else: raise AssertionError('outside write succeeded')
         process.stdin.write(b"hello stdio")
         process.stdin.close()
         assert process.wait(timeout=15) == 0
-        assert process.stdout.read() == b"protocol:hello stdio"
-        assert process.stderr.read() == b"diagnostic:hello stdio"
+        stdout, stderr = process.stdout.read(), process.stderr.read()
+        assert stdout == b"protocol:hello stdio", {"stdout": stdout, "stderr": stderr}
+        assert stderr == b"diagnostic:hello stdio", {"stdout": stdout, "stderr": stderr}
         assert outside.read_text() == "unchanged"
     finally:
         cleanup_process(process)
