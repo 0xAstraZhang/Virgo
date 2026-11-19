@@ -77,14 +77,15 @@ def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
         from pathlib import Path
 
         imports = []
+        # Windows shares ACL primitives to protect the trusted helper snapshot.
+        # Host execution must still work without loading an isolation backend.
         sandbox_modules = (
-            "virgo.harness.sandbox", "virgo.tools.sandbox", "virgo.tools.sandbox_files",
-            "virgo.tools.windows_sandbox", "virgo.tools.windows_sandbox_acl",
-            "virgo.tools.windows_sandbox_files", "virgo.sandbox",
+            "virgo.sandbox.native", "virgo.sandbox.windows_sandbox",
+            "virgo.sandbox.macos_process",
         )
         class ObserveImports:
             def find_spec(self, fullname, path, target=None):
-                if fullname in sandbox_modules:
+                if fullname.startswith(sandbox_modules):
                     imports.append(fullname)
         sys.meta_path.insert(0, ObserveImports())
 

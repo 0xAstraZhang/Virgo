@@ -160,7 +160,7 @@ def test_bash_exit_codes_timeout_and_truncation(project, python_command):
     saved = output.path
     assert rendered.details["output_id"] == saved.id and saved.id in big
     assert not (project / ".virgo" / "outputs").exists()
-    assert saved.store.read(saved)[0].startswith(b"1\n")
+    assert saved.store.read(saved)[0].startswith(b"1\r\n" if os.name == "nt" else b"1\n")
 
 
 def test_bash_marks_child_processes(project, python_command):

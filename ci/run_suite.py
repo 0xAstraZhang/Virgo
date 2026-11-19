@@ -1,4 +1,4 @@
-"""Run reviewed files in two processes; isolate the Windows native module by runner."""
+"""Run reviewed files in two processes; isolate slow Windows modules by runner."""
 from __future__ import annotations
 
 import argparse
@@ -10,13 +10,19 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 WINDOWS_NATIVE = 'tests/harness/test_windows_sandbox_e2e.py'
+WINDOWS_PERMISSIONS = (
+    'tests/harness/test_auth_commands.py',
+    'tests/harness/test_permission_modes_e2e.py',
+    'tests/harness/test_sandbox_e2e.py',
+)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--execution', choices=['serial', 'parallel'], required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--partition', choices=('all', 'windows-core', 'windows-native'), default='all')
+    parser.add_argument('--partition', choices=('all', 'windows-core', 'windows-permissions', 'windows-native'),
+                        default='all')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     target = args.output / 'junit.xml'
@@ -27,7 +33,12 @@ def main():
         if not Path(WINDOWS_NATIVE).is_file():
             print(f'Missing required native test module: {WINDOWS_NATIVE}', flush=True)
             return 2
-        groups = [[p for p in group if p != WINDOWS_NATIVE] for group in groups]
+        if args.partition != 'windows-native':
+            for path in WINDOWS_PERMISSIONS:
+                if not Path(path).is_file():
+                    print(f'Missing required permissions test module: {path}', flush=True)
+                    return 2
+        groups = [[p for p in group if p not in (WINDOWS_NATIVE, *WINDOWS_PERMISSIONS)] for group in groups]
     selected = [p for group in groups for p in group]
     if len(selected) != len(set(selected)):
         raise ValueError('Duplicate files in parallel manifest')
@@ -48,11 +59,14 @@ def main():
                 code = process.wait()
         return code, xml
 
-    ignored = [f'--ignore={WINDOWS_NATIVE}'] if args.partition == 'windows-core' else []
+    ignored = [f'--ignore={path}' for path in (WINDOWS_NATIVE, *WINDOWS_PERMISSIONS)] if args.partition == 'windows-core' else []
     if args.partition == 'windows-native':
         # This partition runs on its own CI host. Never parallelize ACL tests
         # with other pytest processes on the same Windows machine.
         results = [run('native', [WINDOWS_NATIVE])]
+    elif args.partition == 'windows-permissions':
+        # Keep the original module order and all tests in one serial process.
+        results = [run('permissions', list(WINDOWS_PERMISSIONS))]
     elif args.execution == 'parallel' and selected:
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(run, f'parallel-{i}', group) for i, group in enumerate(groups) if group]

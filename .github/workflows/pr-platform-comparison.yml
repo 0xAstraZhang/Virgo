@@ -110,10 +110,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         revision: ${{ fromJSON(needs.resolve.outputs.revisions) }}
-        partition: [core, native]
+        partition: [core, permissions, native]
         exclude:
           - os: ubuntu-latest
+            partition: permissions
+          - os: ubuntu-latest
             partition: native
+          - os: macos-latest
+            partition: permissions
           - os: macos-latest
             partition: native
     steps:

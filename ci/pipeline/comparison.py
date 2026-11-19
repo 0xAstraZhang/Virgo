@@ -103,7 +103,7 @@ def compare(args):
             else:
                 markdown.append(f"| {operating_system} | {label} | missing | — | — | — | — |")
     if windows_shards and not skipped:
-        markdown += ["", "Windows seconds sum both independent runner partitions; raw reports retain each duration."]
+        markdown += ["", "Windows seconds sum all three independent runner partitions; raw reports retain each duration."]
     failed = bool(problems)
     for operating_system in ([] if skipped else args.platforms):
         base, head = (reports.get((operating_system, label)) for label in ("base", "head"))
