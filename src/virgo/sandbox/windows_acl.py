@@ -223,6 +223,11 @@ def _prepare_dacl(previous: _Dacl, aces: list[bytes], control: int):
     descriptor = ctypes.create_string_buffer(64)
     _check(InitializeDescriptor(descriptor, 1))
     _check(SetDacl(descriptor, True, acl, previous.defaulted))
+    # The low-level setter preserves AUTO_INHERITED only together with the
+    # write-only AUTO_INHERIT_REQ bit. It does not propagate edits to children;
+    # every retained object is still updated and revoked individually.
+    if control & 0x400:
+        control |= 0x100
     _check(SetControl(descriptor, 0x1500, control & 0x1500))
     protection = 0x80000000 if control & 0x1000 else 0x20000000
     return _PreparedDacl(acl, descriptor, 4 | protection)
