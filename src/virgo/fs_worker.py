@@ -626,7 +626,10 @@ def main():
         request = json.loads(data)
         response = execute(request)
     except (OSError, ValueError, TypeError, KeyError, UnicodeError) as error:
-        kind = "permission_denied" if isinstance(error, PermissionError) else (
+        # A read-only native mount denies writes with EROFS rather than the
+        # EACCES/EPERM values represented by Python's PermissionError.
+        denied = isinstance(error, PermissionError) or isinstance(error, OSError) and error.errno == errno.EROFS
+        kind = "permission_denied" if denied else (
             "os_error" if isinstance(error, OSError) else "invalid_request")
         target = getattr(error, "filename", None)
         if target is None or not os.path.isabs(target):

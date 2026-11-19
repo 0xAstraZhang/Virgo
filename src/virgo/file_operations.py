@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -18,6 +19,31 @@ from pathlib import Path
 
 MAX_MESSAGE = 16 * 1024 * 1024
 OPERATIONS = frozenset({"read", "write", "edit", "glob", "grep", "read_bytes", "walk_files"})
+
+
+def _windows_devices():
+    """Capture launch facts independently of any model-provided filesystem path."""
+    import ctypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    drives = kernel.GetLogicalDrives
+    drives.argtypes, drives.restype = [], ctypes.c_uint32
+    query = kernel.QueryDosDeviceW
+    query.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    query.restype = ctypes.c_uint32
+    mask = drives()
+    if not mask:
+        raise ctypes.WinError(ctypes.get_last_error())
+    devices = {}
+    for index, letter in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+        if not mask & (1 << index):
+            continue
+        name, target = letter + ":", ctypes.create_unicode_buffer(32768)
+        if not query(name, target, len(target)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if re.fullmatch(r"\\Device\\HarddiskVolume[0-9]+", target.value, re.IGNORECASE):
+            devices[name] = target.value
+    return devices
 
 
 def _receive(stream, size):
@@ -47,6 +73,10 @@ class FileOperations:
                 content = Path(__file__).with_name(name).read_bytes()
                 target = self.directory / name
                 target.write_bytes(content)
+                target.chmod(0o400)
+            if os.name == "nt":
+                target = self.directory / "windows_devices.json"
+                target.write_text(json.dumps(_windows_devices()), encoding="utf-8")
                 target.chmod(0o400)
             self.directory.chmod(0o500)
         except BaseException:
