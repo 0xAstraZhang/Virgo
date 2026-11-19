@@ -186,7 +186,9 @@ def test_switch_refreshes_main_but_preserves_other_runtime_and_background(make_s
     assert selected(session).executable in calls()[-1]["system"]
     assert old.system != session.main.system
     assert selected(other).kind == "bash"
-    assert session.ui.woken.wait(5)
+    from tests.support.harness import wait_until
+
+    wait_until(lambda: job.reported)
     assert job.status == "completed" and session.services["jobs"].output(job).strip()
     faux.script("test", faux.reply(tools=[("bash", {"command": 'printf "%s" "$BASH_VERSION"'})]), faux.reply("done"))
     from virgo.ai.types import UserMessage
@@ -246,7 +248,9 @@ def test_error_timeout_and_truncation_through_agent_loop(make_session, name):
     command = "1..2100 | ForEach-Object { 'line' }" if shell.tool_name == "powershell" else "i=0; while [ $i -lt 2100 ]; do echo line; i=$((i+1)); done"
     truncated = invoke(session, command)
     assert "truncated" in truncated.text().lower()
-    assert Path(truncated.details["output_path"]).is_file()
+    record = session.main.execution_context.outputs.lookup(truncated.details["output_id"])
+    assert record.store.read(record, limit=0)[1] > 0
+    assert "output_path" not in truncated.details
 
 
 @pytest.mark.parametrize("name", [n for n in SHELLS if n in ("pwsh", "powershell")])

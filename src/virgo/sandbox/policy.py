@@ -4,11 +4,10 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
-import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from ..execution import ExecutionUnavailable, FileAccessDenied
+from ..execution import ExecutionUnavailable, FileAccessDenied, read_file_bytes, walk_file_entries
 from ..harness.execution_modes import PermissionPreset, PermissionSnapshot
 
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
@@ -23,6 +22,17 @@ class SandboxPolicy:
     permission_snapshot: PermissionSnapshot | None = None
     provider: str = "sandbox"
     spool_home: Path | None = None
+    outputs: object = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self):
+        if self.outputs is None:
+            from ..output_store import private_output_store
+
+            object.__setattr__(self, "outputs", private_output_store())
+
+    def run_file_operation(self, operation, arguments, *, cwd=None, cancellation=None):
+        return self.executor.run_file_operation(operation, arguments, cwd=cwd or self.workspace,
+                                                policy=self, cancellation=cancellation)
 
     @property
     def revision(self) -> int:
@@ -68,10 +78,7 @@ class SandboxPolicy:
         check_read(path, self._output_reader(path) if self._owns_private_output(path) else self)
 
     def read_bytes(self, path: Path, *, max_bytes=None):
-        from .files import read_bytes
-
-        reader = self._output_reader(path) if self._owns_private_output(path) else self
-        return read_bytes(path, reader, max_bytes=max_bytes)
+        return read_file_bytes(self, path, max_bytes=max_bytes)
 
     def open_mutation(self, path: Path, *, create: bool):
         from .files import open_mutation
@@ -79,9 +86,7 @@ class SandboxPolicy:
         return open_mutation(path, self, create=create)
 
     def walk_files(self, path, ignore, *, max_depth=None):
-        from .files import walk_files
-
-        return walk_files(path, self, ignore, max_depth=max_depth)
+        return walk_file_entries(self, path, ignore, max_depth=max_depth)
 
     def validate(self, cwd: Path) -> Path:
         cwd = Path(cwd).resolve()
@@ -107,53 +112,15 @@ class SandboxPolicy:
         return self.spool_home, ("outputs", workspace_id)
 
     def open_output(self, cwd, prefix):
-        self.validate(cwd)
-        root, parts = self.spool_location()
-        if self.spool_home is not None:
-            root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if os.name == "nt":
-            from .windows_files import open_output
-
-            try:
-                return open_output(root, parts, prefix)
-            except OSError as error:
-                raise ExecutionUnavailable("Protected output location is unavailable", reason="invalid_output",
-                                           dimension="output_path", target=str(root.joinpath(*parts))) from error
-        directory = None
-        try:
-            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            directory = os.open(root, flags)
-            for part in parts:
-                try:
-                    os.mkdir(part, mode=0o700, dir_fd=directory)
-                except FileExistsError:
-                    pass
-                child = os.open(part, flags, dir_fd=directory)
-                os.close(directory)
-                directory = child
-            name = f"{prefix}-{uuid.uuid4().hex}.log"
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-            return root.joinpath(*parts, name), os.fdopen(fd, "wb", buffering=0)
-        except OSError as error:
-            raise ExecutionUnavailable("Protected output location is unavailable", reason="invalid_output",
-                                       dimension="output_path", target=str(root.joinpath(*parts))) from error
-        finally:
-            if directory is not None:
-                os.close(directory)
+        return self.outputs.create(prefix)
 
     def run_process(self, request, cancellation=None):
         self.validate(request.cwd)
         return self.executor.run_process(request, self, cancellation)
 
-    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
-        from .files import read_bytes
-
-        # Only Core's owned spool references reach this method. The exception is
-        # for one file, never its directory; retained handles reject aliases.
-        root, parts = self.spool_location()
-        if path.parent != root.joinpath(*parts):
-            raise FileAccessDenied("Output is outside the originating workspace", target=path)
-        return read_bytes(path, self._output_reader(path), max_bytes=max_bytes, tail=True)
+    def read_output_tail(self, record, max_bytes):
+        data, total, _ = self.outputs.read(record, limit=max_bytes, tail=True)
+        return data, total
 
     def describe(self):
         return {"provider": "sandbox", "backend": self.executor.backend, "workspace": str(self.workspace),

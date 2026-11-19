@@ -55,8 +55,6 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
         return None
     if access is not None:
         try:
-            if any(workspace.joinpath(*parts[:i]).is_symlink() for i in range(1, len(parts) + 1)):
-                return None
             data = access.read_bytes(path)
             return data.decode("utf-8", errors=errors) if data is not None else None
         except (OSError, RuntimeError):
@@ -139,7 +137,7 @@ def build_system(
         elif context.store is not None or context.accounting_store is not None:
             runtime = session.runtime_for_store(context.store or context.accounting_store)
     authority = getattr(runtime, "execution_context", None) or getattr(context, "execution_context", None)
-    if provider is not None and (authority.provider if authority else provider.name) != "host":
+    if provider is not None:
         # Runtime construction precedes ExecutionOrigin creation. Its captured
         # parent/store already identifies the owner, including detached children.
         if context is not None and context.origin_parent is not None:
@@ -149,7 +147,7 @@ def build_system(
         else:
             workspace = cwd.resolve()
 
-    access = getattr(runtime, "execution_context", None) if workspace is not None else None
+    access = authority if workspace is not None else None
 
     def instruction_paths(name: str) -> list[Path]:
         if workspace is None:

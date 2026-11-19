@@ -34,6 +34,10 @@ def native(make_session):
     return native_session(make_session, {"win32"})
 
 
+def test_windows_filesystem_helper_operations(native, project, monkeypatch):
+    native_cases.filesystem_helper_operations(native, project, monkeypatch)
+
+
 def test_windows_generic_process_stdio(native, project):
     native_cases.generic_process_stdio(native, project)
 

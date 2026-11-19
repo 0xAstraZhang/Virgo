@@ -34,12 +34,12 @@ def discover(roots: list[Path], *, access=None) -> dict[str, Skill]:
             files = (p for p, _ in access.walk_files(root, set(), max_depth=2)
                      if p.name == 'SKILL.md' and len(p.relative_to(root).parts) == 2) if access else root.glob('*/SKILL.md')
             files = sorted(files)
-        except OSError:
+        except (OSError, RuntimeError):
             continue
-        real_root = root.resolve()
+        real_root = root if access else root.resolve()
         for file in files:
             try:
-                file.resolve().relative_to(real_root)
+                (file if access else file.resolve()).relative_to(real_root)
                 data = access.read_bytes(file) if access else file.read_bytes()
                 if data is None:
                     continue

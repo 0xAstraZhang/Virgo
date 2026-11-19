@@ -1,31 +1,24 @@
-"""One implementation for bounded tool output and spilled full output.
+"""Bounded tool output backed by private Broker records and opaque output IDs.
 
-Every tool result is bounded before it enters the conversation. When text is
-cut, the full text is written under `.virgo/outputs/` and the model is told
-where to find it. Long commands spool to the same directory while they run, so
-only a bounded tail is ever decoded and the context stays small.
+Children receive a pipe, never the private spool descriptor or filesystem path.
 """
 
 from __future__ import annotations
 
-import itertools
-import os
-import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..i18n import Translator
+from ..output_store import OutputRecord, private_output_store
 
 MAX_LINES = 2000
 MAX_BYTES = 50 * 1024
-_counter = itertools.count(1)
 
 
 @dataclass(frozen=True)
 class CommandOutput:
     text: str
-    path: Path | None = None
+    path: OutputRecord | None = None
     truncated: bool = False
     total_bytes: int = 0
     boundary: dict | None = None
@@ -62,29 +55,11 @@ def truncate_tail(text: str, max_lines: int = MAX_LINES, max_bytes: int = MAX_BY
     return out, cut
 
 
-def outputs_dir(cwd: Path) -> Path:
-    d = Path(cwd) / ".virgo" / "outputs"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _output_name(prefix: str, suffix: str) -> str:
-    return f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{next(_counter)}{suffix}"
-
-
-def _spill_path(cwd: Path, prefix: str, suffix: str) -> Path:
-    return outputs_dir(cwd) / _output_name(prefix, suffix)
-
-
-def save_output(text: str, cwd: Path, prefix: str, *, execution_context=None) -> Path:
-    if execution_context is not None:
-        path, stream = execution_context.open_output(cwd, prefix)
-        with stream:
-            stream.write(text.encode("utf-8"))
-        return path
-    path = _spill_path(cwd, prefix, ".txt")
-    path.write_text(text, encoding="utf-8")
-    return path
+def save_output(text: str, cwd: Path, prefix: str, *, execution_context=None) -> OutputRecord:
+    record, stream = open_output(cwd, prefix, execution_context=execution_context)
+    with stream:
+        stream.write(text.encode("utf-8"))
+    return record
 
 
 def bound(text: str, cwd: Path, prefix: str, keep: str = "head", *, execution_context=None) -> CommandOutput:
@@ -112,19 +87,15 @@ def budget(text: str, cwd: Path, prefix: str, keep: str = "head", *, t=None, exe
 
 
 def open_output(cwd: Path, prefix: str, *, execution_context=None):
-    """Create output through the captured provider; Host needs no isolation imports."""
     if execution_context is not None:
         return execution_context.open_output(cwd, prefix)
-    fd, name = tempfile.mkstemp(prefix=f"{prefix}-", suffix=".log", dir=outputs_dir(cwd))
-    return Path(name), os.fdopen(fd, "wb", buffering=0)
+    return private_output_store().create(prefix)
 
 
 def read_output(path: Path, *, max_bytes: int = MAX_BYTES, max_lines: int = MAX_LINES,
                 execution_context=None) -> CommandOutput:
-    from ..execution import HostContext
-
-    access = execution_context or HostContext(path.parent)
-    data, total = access.read_output_tail(path, max_bytes)
+    store = execution_context.outputs if execution_context is not None else path.store
+    data, total, _ = store.read(path, limit=max_bytes, tail=True)
     start = max(0, total - max_bytes)
     # Don't render the continuation bytes of a UTF-8 character cut by the seek.
     if start:
@@ -154,3 +125,31 @@ def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, t=None)
         return header.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
     text, _ = truncate_tail(text, max_bytes=available)
     return header + text
+
+
+def make_read_output_tool(resolve_context):
+    from ..agent import AgentTool, ToolResult
+    from ..execution import FileAccessDenied
+
+    def execute(arguments, context):
+        access = resolve_context(context)
+        try:
+            record = access.outputs.lookup(arguments["output_id"])
+            limit = min(MAX_BYTES, max(1, int(arguments.get("limit", MAX_BYTES))))
+            data, total, start = access.outputs.read(record, offset=arguments.get("offset", 0), limit=limit)
+        except (FileAccessDenied, OSError, ValueError) as error:
+            return ToolResult.error(str(error))
+        end = start + len(data)
+        return ToolResult.text(data.decode("utf-8", errors="replace"), details={
+            "output_id": record.id, "offset": start, "next_offset": end if end < total else None,
+            "total_bytes": total,
+        })
+
+    return AgentTool(
+        name="read_output", label="Read output", execution_scope="broker", side_effect="read",
+        description="Read a private command/tool output using its output_id. offset and limit are byte counts.",
+        parameters={"type": "object", "properties": {
+            "output_id": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": MAX_BYTES},
+        }, "required": ["output_id"], "additionalProperties": False}, execute=execute,
+    )

@@ -114,12 +114,22 @@ def trash(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def broker_session(make_session, monkeypatch, tmp_path):
+def sandbox_session(make_session):
+    """Use the real native executor whenever an operation is dispatched."""
+    from virgo.harness.settings import deep_merge
+
+    from tests.support.execution import sandbox_config
+
+    def factory(*responses, preset="workspace-edit", settings=None, **kw):
+        return make_session(*responses, settings=deep_merge(sandbox_config(preset), settings or {}), **kw)
+    return factory
+
+
+@pytest.fixture
+def broker_session(sandbox_session, monkeypatch, tmp_path):
     """Exercise broker decisions without launching an OS sandbox."""
     from virgo.execution import ExecutionUnavailable
     from virgo.sandbox.native import NativeExecutor
-
-    from tests.support.execution import sandbox_config
 
     monkeypatch.setattr("virgo.sandbox.native.platform_backend", lambda: ("not-launched", tmp_path))
 
@@ -127,9 +137,4 @@ def broker_session(make_session, monkeypatch, tmp_path):
         raise ExecutionUnavailable("Native backend deliberately unavailable in broker test", reason="backend_unavailable")
 
     monkeypatch.setattr(NativeExecutor, "run_process", unavailable)
-
-    def factory(*responses, preset="workspace-edit", settings=None, **kw):
-        from virgo.harness.settings import deep_merge
-
-        return make_session(*responses, settings=deep_merge(sandbox_config(preset), settings or {}), **kw)
-    return factory
+    return sandbox_session

@@ -2,6 +2,106 @@
 from tests.support.sandbox import python_command, run
 
 
+def filesystem_helper_operations(native, project, monkeypatch):
+    """File tools, direct OS denials, snapshots and opaque outputs share a boundary."""
+    import errno
+    import os
+    import sys
+    import tempfile
+    import threading
+    from dataclasses import replace
+
+    from virgo.agent.types import ToolContext
+    from virgo.execution import ProcessRequest, SandboxExecutor, cleanup_process
+
+    access = native.main.execution_context
+
+    def operation(name, arguments, *, context=None):
+        response = (context or access).run_file_operation(name, arguments, cwd=project)
+        assert response["boundary"]["state"] == "established", response
+        assert response["boundary"]["payload_started"] is True, response
+        return response
+
+    assert operation("write", {"path": "worker/file.txt", "content": "before\n"})["ok"]
+    assert operation("edit", {"path": "worker/file.txt", "edits": [
+        {"old_text": "before", "new_text": "after"},
+    ]})["ok"]
+    assert operation("read", {"path": "worker/file.txt"})["segments"] == ["after\n"]
+    assert operation("glob", {"path": "worker", "pattern": "*.txt"})["details"]["count"] == 1
+    assert operation("grep", {"path": "worker", "pattern": "after"})["details"]["matches"] == 1
+    assert not list(project.rglob(".virgo-write-*.tmp"))
+
+    metadata = project / ".git"
+    metadata.mkdir(exist_ok=True)
+    protected = metadata / "config"
+    protected.write_text("protected")
+    denied = operation("write", {"path": str(protected), "content": "changed"})
+    assert not denied["ok"] and protected.read_text() == "protected", denied
+
+    snapshot = access.executor.files.directory / "fs_worker.py"
+    before = snapshot.read_bytes()
+    denied = operation("write", {"path": str(snapshot), "content": "raise SystemExit(73)"})
+    assert not denied["ok"] and snapshot.read_bytes() == before, denied
+
+    # A user-selected TMPDIR may put the snapshot beneath the writable project.
+    # Both a normal command and the helper must retain its read-only carve-out.
+    with monkeypatch.context() as patch:
+        patch.setattr(tempfile, "tempdir", str(project))
+        nested_executor = SandboxExecutor()
+    try:
+        nested = replace(access, executor=nested_executor)
+        worker = nested_executor.files.directory / "fs_worker.py"
+        contents = worker.read_bytes()
+        code = f"""from pathlib import Path
+path = Path({str(worker)!r})
+try:
+    path.chmod(0o600)
+    path.write_text('raise SystemExit(73)')
+except OSError:
+    print('snapshot-denied')
+else:
+    raise AssertionError('command modified its trusted filesystem worker')
+"""
+        command = nested.run_process(ProcessRequest((sys.executable, "-I", "-S", "-c", code),
+                                                    project, dict(os.environ)))
+        try:
+            assert command.wait(timeout=20) == 0
+            assert b"snapshot-denied" in command.stdout.read()
+        finally:
+            cleanup_process(command)
+            command.stdout.close()
+        denied = operation("write", {"path": str(worker), "content": "raise SystemExit(73)"}, context=nested)
+        assert not denied["ok"] and worker.read_bytes() == contents, denied
+        assert operation("read", {"path": "worker/file.txt"}, context=nested)["ok"]
+    finally:
+        nested_executor.close()
+
+    record, stream = access.open_output(project, "acceptance")
+    with stream:
+        stream.write(b"private-output-canary")
+    owned = ToolContext("owned-output", project, threading.Event(), origin=native.main.origin)
+    read_output = native.tool("read_output")
+    visible = read_output.execute({"output_id": record.id}, owned)
+    assert not visible.is_error and visible.as_text() == "private-output-canary"
+    assert read_output.execute({"output_id": str(record._path)}, owned).is_error
+    denied = operation("read", {"path": str(record._path)})
+    assert not denied["ok"] and "private-output-canary" not in str(denied), denied
+
+    native.services["execution"].select_mode("read-only")
+    readonly = native.main.execution_context
+    # Call the executor directly: success here must not depend on the Broker's
+    # preflight refusing write/edit before the native payload starts.
+    denied = operation("write", {"path": "worker/file.txt", "content": "forbidden"}, context=readonly)
+    assert not denied["ok"] and denied["error"]["errno"] in {errno.EACCES, errno.EPERM, errno.EROFS}, denied
+    assert (project / "worker/file.txt").read_text() == "after\n"
+    assert operation("read", {"path": "worker/file.txt"}, context=readonly)["ok"]
+
+    native.new_session()
+    foreign = ToolContext("foreign-output", project, threading.Event(), origin=native.main.origin)
+    assert read_output.execute({"output_id": record.id}, foreign).is_error
+    assert not read_output.execute({"output_id": record.id}, owned).is_error
+
+
 def generic_process_stdio(native, project):
     """A non-Shell process exchanges separate protocol and diagnostic streams."""
     import os

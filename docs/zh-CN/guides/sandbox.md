@@ -1,10 +1,12 @@
-# 原生命令沙箱
+# 原生本地执行
 
 执行器是 Core 基础设施。No-Limit 经过同一个执行器使用当前账户的 Host 权限；Read-Only 和 Workspace-Edit 使用原生沙箱后端。两者均允许网页搜索与读取。Read-Only 默认关闭 Shell 网络，Workspace-Edit 允许 Shell 联网。详见[模式与审批](../development/permission-profiles.md)。
 
 ## 实时工作区
 
-命令、文件工具和宿主编辑器访问同一目录。文件工具保留打开对象的身份，写入新文件并替换目标。编辑器和运行中的监听器可以立即重新打开该路径读取结果。每条命令拥有私有临时目录和 HOME。Read-Only 的命令输出由 Core 按工作区保存在 Virgo 用户目录，Workspace-Edit 的输出保存在项目中受保护的 .virgo/outputs 目录。
+命令、文件工具和宿主编辑器访问同一目录。Read、Write、Edit、Glob、Grep 使用事先保存的可信 Helper 副本，通过与 Shell 相同的执行器运行。Helper 解析目标路径、保留打开对象的身份、暂存新内容并原子替换目标。编辑器和运行中的监听器可以立即重新打开该路径读取结果。每条命令拥有私有临时目录和 HOME。
+
+所有模式都将命令输出保存到 Virgo 用户目录中的 Broker 私有记录。Shell 只获得管道，结果返回不透明的 `output_id`。使用 `read_output` 分页读取来源会话拥有的记录；文件工具不因此获得私有输出目录的访问权。详见[文件 Helper 与输出记录](../development/filesystem-helper.md)。
 
 Linux 需要系统提供 Bubblewrap、libseccomp 和创建命名空间的权限。macOS 使用系统 `sandbox-exec` 和 launchd 监督命令及其后代。Windows 使用 LPAC、受限令牌、临时 ACL 和 Job Object。如果平台无法建立请求的边界，本次操作返回错误。
 
@@ -14,4 +16,6 @@ Read-Only 下的 Shell 命令如需联网，可为本次调用申请联网权限
 
 工作区内已有的控制文件和嵌套解释器目录受写保护。POSIX 启动检查只拒绝“链接指向可写范围之外”的可写文件；所有链接都在工作区内的文件仍可使用。从工作区之外的存储硬链接的包管理器（例如 pnpm 的全局 store）仍会触发该检查，请使用 No-Limit 或把 store 放在工作区内。实时工作区的支持前提是宿主写入者在命令运行期间维持路径的权限边界。宿主并发改变链接关系可以改变路径所指对象，启动检查无法持续验证这种变更。额外的 Shell 路径必须是确实存在的文件或目录，单个文件的授权仅覆盖该文件。
 
-Broker 和可信扩展使用各自的操作系统权限。发布验收以最终提交的原生测试和完整跨平台比较为准。见[验收记录](../development/execution-acceptance.md)和 [Windows 平台范围](windows-sandbox.md)。
+原子 Write/Edit 需要目标父目录可写；单文件 Shell 授权不隐含父目录授权。Windows 上替换后的文件继承父目录 ACL，不保留旧文件自定义的显式文件级 ACL。
+
+Broker 和可信扩展使用各自的操作系统权限。内置文件工具在 No-Limit 下也通过 Helper 执行。发布验收以最终提交的原生测试和完整跨平台比较为准。见[验收记录](../development/execution-acceptance.md)和 [Windows 平台范围](windows-sandbox.md)。

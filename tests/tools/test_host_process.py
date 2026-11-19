@@ -91,9 +91,8 @@ def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
         project = Path(sys.argv[1])
         host = HostContext(project)
         source = project / "message.txt"
-        with host.open_mutation(source, create=True) as (stream, _, commit):
-            stream.write(b"from the editor")
-            commit()
+        changed = host.run_file_operation("write", {"path": str(source), "content": "from the editor"})
+        assert changed["ok"], changed
         command = "from pathlib import Path; print(Path('message.txt').read_text())"
         process = host.run_process(ProcessRequest((sys.executable, "-c", command), project, dict(os.environ)))
         try:

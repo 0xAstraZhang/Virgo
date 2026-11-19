@@ -1,244 +1,96 @@
-"""File tools: read, write, edit, glob, grep (pure Python, no external binaries)."""
+"""Filesystem tool declarations and adapters to the common sandbox executor.
 
+Model paths remain opaque strings in this module. Resolution, metadata probes,
+reads, walks and atomic mutations happen in the trusted filesystem worker.
+"""
 from __future__ import annotations
 
-import base64
-import difflib
-import fnmatch
-import os
-import re
-import threading
-from contextlib import ExitStack
 from dataclasses import replace
-from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult, image_result
-from ..execution import FileAccessDenied, HostContext
+from ..execution import (
+    ExecutionCancelled,
+    ExecutionFailed,
+    ExecutionUnavailable,
+    FileAccessDenied,
+    HostContext,
+)
 from .output import MAX_BYTES, MAX_LINES
 
-IGNORE_DIRS = {
-    ".git",
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".idea",
-    "dist",
-    "build",
-}
-BOM = "\ufeff"
-IMAGE_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-}
 
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
+def _render(value, ctx):
+    if isinstance(value, str):
+        return value
+    return ctx.t(value["key"], **{key: _render(item, ctx) if isinstance(item, dict) else item
+                                for key, item in value.get("values", {}).items()})
 
 
-def resolve(path: str, cwd: Path) -> Path:
-    p = Path(os.path.expanduser(path))
-    return (p if p.is_absolute() else Path(cwd) / p).resolve()
-
-
-def file_lock(path: Path) -> threading.Lock:
-    """Serialize mutations of the same file when tools run in parallel."""
-    with _locks_guard:
-        return _locks.setdefault(str(path), threading.Lock())
-
-
-def _display(p: Path, cwd: Path) -> str:
+def _execute(operation, args, ctx, *, access=None):
+    if access is None:
+        access = HostContext(ctx.cwd)
+        try:
+            return _execute(operation, args, ctx, access=access)
+        finally:
+            access.executor.close()
+    mutation = operation in {"write", "edit"}
     try:
-        return str(p.relative_to(Path(cwd).resolve()))
-    except ValueError:
-        return str(p)
-
-
-# ---------------------------------------------------------------------------
-# read
-# ---------------------------------------------------------------------------
+        response = access.run_file_operation(operation, args, cwd=ctx.cwd, cancellation=ctx.signal)
+    except ExecutionCancelled as error:
+        return ToolResult.error(str(error), details={"status": "aborted", "cancelled": True, "boundary": {
+            **access.describe(), "kind": "aborted", "payload_started": False, "side_effects": "none",
+            **getattr(error, "boundary", {}),
+        }})
+    except ExecutionUnavailable as error:
+        return ToolResult.error(str(error), details={"status": "execution_unavailable", "boundary": {
+            **access.describe(), "kind": "execution_unavailable", "reason": error.reason,
+            "dimension": error.dimension, "target": error.target,
+            "payload_started": False, "side_effects": "none", "escalation_available": False,
+        }})
+    except ExecutionFailed as error:
+        return ToolResult.error(str(error), details={"status": "execution_failed", "boundary": {
+            **access.describe(), "kind": "execution_failed", "payload_started": "unknown",
+            "side_effects": "possible" if mutation else "none", "escalation_available": False,
+            **getattr(error, "boundary", {}),
+        }})
+    except FileAccessDenied as error:
+        return ToolResult.error(str(error), details={"status": "resource_denied", "boundary": {
+            **access.describe(), "kind": "resource_denied", "dimension": error.dimension,
+            "target": error.target, "payload_started": False, "side_effects": "none",
+        }})
+    text = "".join(_render(segment, ctx) for segment in response.get("segments", []))
+    result = (image_result(response["image"]["data"], response["image"]["mime"], text)
+              if response.get("image") else ToolResult.text(text, is_error=not response["ok"]))
+    facts = {**access.describe(), "payload_started": True,
+             "side_effects": "possible" if mutation else "none", **response.get("boundary", {})}
+    details = dict(response.get("details") or {})
+    if (error := response.get("error")) and error.get("kind") == "permission_denied":
+        details["status"] = "resource_denied"
+        facts.update(kind="resource_denied", dimension="write_paths" if mutation else "read_paths",
+                     target=error.get("target"))
+    elif error:
+        details["status"] = "file_operation_failed"
+    result.details = {**details, "boundary": facts}
+    return result
 
 
 def _read(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
-    access = access or HostContext(ctx.cwd)
-    p = resolve(args["path"], ctx.cwd)
-    if access is not None:
-        access.check_read(p)
-    if not p.exists():
-        return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
-    if p.is_dir():
-        return ToolResult.error(ctx.t("tools.fs.is_directory", path=args["path"]))
-    if p.suffix.lower() in IMAGE_TYPES:
-        data = access.read_bytes(p) if access is not None else p.read_bytes()
-        if len(data) > 5 * 1024 * 1024:
-            return ToolResult.error(ctx.t("tools.fs.large_image"))
-        return image_result(
-            base64.b64encode(data).decode(),
-            IMAGE_TYPES[p.suffix.lower()],
-            ctx.t("tools.fs.image", name=p.name),
-        )
-    raw = access.read_bytes(p) if access is not None else p.read_bytes()
-    if b"\x00" in raw[:8192]:
-        return ToolResult.error(ctx.t("tools.fs.binary", path=args["path"]))
-    lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
-    total = len(lines)
-    offset = max(1, int(args.get("offset") or 1))
-    limit = int(args.get("limit") or MAX_LINES)
-    if offset > max(total, 1):
-        return ToolResult.error(ctx.t("tools.fs.offset", offset=offset, total=total))
-    chunk, size = [], 0
-    for line in lines[offset - 1 : offset - 1 + min(limit, MAX_LINES)]:
-        size += len(line.encode("utf-8"))
-        if size > MAX_BYTES and chunk:
-            break
-        chunk.append(line)
-    if not chunk and lines:
-        n = offset
-        return ToolResult.error(
-            ctx.t("tools.fs.long_line", line=n, max_kb=MAX_BYTES // 1024, path=args["path"])
-        )
-    text = "".join(chunk)
-    end = offset + len(chunk) - 1
-    if end < total:
-        text += ctx.t("tools.fs.page", offset=offset, end=end, total=total, next_offset=end + 1)
-    return ToolResult.text(
-        text or ctx.t("tools.fs.empty"), details={"path": str(p), "lines": [offset, end], "total": total}
-    )
-
-
-READ = AgentTool(
-    name="read",
-    label="Read",
-    description=(
-        f"Read a text file (or an image). Returns at most {MAX_LINES} lines / {MAX_BYTES // 1024}KB per call; "
-        "use offset (1-based line number) and limit to page through larger files."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "File path, relative to the working directory or absolute",
-            },
-            "offset": {"type": "integer", "minimum": 1, "description": "1-based line to start from"},
-            "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of lines"},
-        },
-        "required": ["path"],
-    },
-    execute=_read,
-    side_effect="read",
-    i18n_key="tools.read",
-)
-
-# ---------------------------------------------------------------------------
-# write
-# ---------------------------------------------------------------------------
+    return _execute("read", args, ctx, access=access)
 
 
 def _write(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
-    access = access or HostContext(ctx.cwd)
-    p = resolve(args["path"], ctx.cwd)
-    with file_lock(p):
-        if access is not None:
-            data = args["content"].encode("utf-8")
-            with access.open_mutation(p, create=True) as (stream, existed, commit):
-                stream.write(data)
-                stream.truncate()
-                commit()
-        else:
-            existed = p.exists()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(args["content"], encoding="utf-8")
-    n = len(args["content"].encode("utf-8"))
-    verb = ctx.t("tools.fs.overwrite") if existed else ctx.t("tools.fs.create")
-    return ToolResult.text(
-        ctx.t("tools.fs.written", verb=verb, path=_display(p, ctx.cwd), size=n),
-        details={"path": str(p), "created": not existed},
-    )
+    return _execute("write", args, ctx, access=access)
 
 
-WRITE = AgentTool(
-    name="write",
-    label="Write",
-    description="Create or overwrite a file with the given content. Parent directories are created.",
-    parameters={
-        "type": "object",
-        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-        "required": ["path", "content"],
-    },
-    execute=_write,
-    i18n_key="tools.write",
-)
-
-# ---------------------------------------------------------------------------
-# edit
-# ---------------------------------------------------------------------------
-
-_CHAR_MAP = str.maketrans(
-    {
-        "\u2018": "'",
-        "\u2019": "'",
-        "\u201a": "'",
-        "\u201b": "'",
-        "\u201c": '"',
-        "\u201d": '"',
-        "\u201e": '"',
-        "\u2013": "-",
-        "\u2014": "-",
-        "\u2212": "-",
-        "\u00a0": " ",
-        "\u2009": " ",
-        "\u202f": " ",
-        "\u3000": " ",
-    }
-)
+def _edit(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
+    return _execute("edit", args, ctx, access=access)
 
 
-def _find_all(hay: str, needle: str) -> list[int]:
-    out, i = [], hay.find(needle)
-    while i != -1:
-        out.append(i)
-        i = hay.find(needle, i + 1)
-    return out
+def _glob(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
+    return _execute("glob", args, ctx, access=access)
 
 
-def _locate(content: str, old: str) -> tuple[list[tuple[int, int]], str]:
-    """Find spans of `old` in `content`. Exact first, then tolerant matching."""
-    spans = [(i, i + len(old)) for i in _find_all(content, old)]
-    if spans:
-        return spans, "exact"
-    # 1:1 character normalization keeps offsets aligned
-    nc, no = content.translate(_CHAR_MAP), old.translate(_CHAR_MAP)
-    spans = [(i, i + len(no)) for i in _find_all(nc, no)]
-    if spans:
-        return spans, "normalized"
-    # line-based match ignoring trailing whitespace
-    c_lines = content.split("\n")
-    o_lines = old.translate(_CHAR_MAP).split("\n")
-    ends_with_newline = bool(o_lines) and o_lines[-1] == ""
-    if ends_with_newline:
-        o_lines = o_lines[:-1]
-    key = [line.rstrip() for line in o_lines]
-    if not key:
-        return [], ""
-    starts = [0]
-    for line in c_lines:
-        starts.append(starts[-1] + len(line) + 1)
-    norm = [line.translate(_CHAR_MAP).rstrip() for line in c_lines]
-    for i in range(len(c_lines) - len(key) + 1):
-        if norm[i : i + len(key)] == key:
-            end = starts[i + len(key)] - 1  # the newline ending the last matched line, or end of file
-            if ends_with_newline and end < len(content):
-                end += 1  # old_text covered that newline too; new_text supplies its own
-            spans.append((starts[i], end))
-    return spans, "whitespace" if spans else ""
+def _grep(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
+    return _execute("grep", args, ctx, access=access)
 
 
 def _prepare_edit(args: dict) -> dict:
@@ -267,72 +119,43 @@ def _prepare_edit(args: dict) -> dict:
     return a
 
 
-def _edit(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
-    access = access or HostContext(ctx.cwd)
-    p = resolve(args["path"], ctx.cwd)
-    if not p.is_file():
-        return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
-    with file_lock(p), ExitStack() as stack:
-        stream = None
-        if access is not None:
-            stream, _, commit = stack.enter_context(access.open_mutation(p, create=False))
-        raw = (stream.read() if stream is not None else p.read_bytes()).decode("utf-8")
-        # No newline translation: CRLF is preserved explicitly.
-        bom = raw.startswith(BOM)
-        if bom:
-            raw = raw[1:]
-        crlf = "\r\n" in raw
-        content = raw.replace("\r\n", "\n")
-        spans: list[tuple[int, int, str]] = []
-        for n, e in enumerate(args["edits"], 1):
-            old = (e.get("old_text") or "").replace("\r\n", "\n")
-            new = (e.get("new_text") or "").replace("\r\n", "\n")
-            if not old:
-                return ToolResult.error(ctx.t("tools.fs.edit_empty", index=n))
-            found, _how = _locate(content, old)
-            if not found:
-                return ToolResult.error(ctx.t("tools.fs.edit_missing", index=n, path=args["path"]))
-            if len(found) > 1:
-                return ToolResult.error(
-                    ctx.t("tools.fs.edit_ambiguous", index=n, count=len(found), path=args["path"])
-                )
-            spans.append((found[0][0], found[0][1], new))
-        spans.sort()
-        for (_, e1, _), (s2, _, _) in zip(spans, spans[1:], strict=False):
-            if s2 < e1:
-                return ToolResult.error(ctx.t("tools.fs.edit_overlap"))
-        updated = content
-        for s, e, new in reversed(spans):
-            updated = updated[:s] + new + updated[e:]
-        if updated == content:
-            return ToolResult.error(ctx.t("tools.fs.edit_unchanged"))
-        final = updated.replace("\n", "\r\n") if crlf else updated
-        final = (BOM if bom else "") + final
-        if stream is not None:
-            stream.seek(0)
-            stream.write(final.encode("utf-8"))
-            stream.truncate()
-            commit()
-        else:
-            p.write_text(final, encoding="utf-8", newline="")
-    diff = "".join(
-        difflib.unified_diff(
-            content.splitlines(keepends=True),
-            updated.splitlines(keepends=True),
-            "a/" + p.name,
-            "b/" + p.name,
-            n=2,
-        )
-    )
-    return ToolResult.text(
-        ctx.t(
-            "tools.fs.edited",
-            path=_display(p, ctx.cwd),
-            count=len(spans),
-            replacements=ctx.t("tools.fs.replacements" if len(spans) > 1 else "tools.fs.replacement"),
-        ),
-        details={"path": str(p), "diff": diff[:20000]},
-    )
+READ = AgentTool(
+    name="read",
+    label="Read",
+    description=(
+        f"Read a text file (or an image). Returns at most {MAX_LINES} lines / {MAX_BYTES // 1024}KB per call; "
+        "use offset (1-based line number) and limit to page through larger files."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "File path, relative to the working directory or absolute",
+            },
+            "offset": {"type": "integer", "minimum": 1, "description": "1-based line to start from"},
+            "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of lines"},
+        },
+        "required": ["path"],
+    },
+    execute=_read,
+    side_effect="read",
+    i18n_key="tools.read",
+)
+
+
+WRITE = AgentTool(
+    name="write",
+    label="Write",
+    description="Create or overwrite a file with the given content. Parent directories are created.",
+    parameters={
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["path", "content"],
+    },
+    execute=_write,
+    i18n_key="tools.write",
+)
 
 
 EDIT = AgentTool(
@@ -365,86 +188,6 @@ EDIT = AgentTool(
 )
 
 
-def make_file_tool(tool: AgentTool, execution) -> AgentTool:
-    """Bind file operations to an immutable caller-owned execution context."""
-    def execute(args, ctx):
-        access = execution(ctx)
-        try:
-            result = tool.execute(args, ctx, access=access)
-        except FileAccessDenied as error:
-            facts = {**access.describe(), "kind": "resource_denied", "dimension": error.dimension,
-                     "target": error.target, "payload_started": False,
-                     "side_effects": "unknown" if tool.name in {"write", "edit"} else "none"}
-            return ToolResult.error(str(error), details={"status": "resource_denied", "boundary": facts})
-        result.details = {**(result.details or {}), "boundary": {
-            **access.describe(), "payload_started": True,
-            "side_effects": "possible" if tool.name in {"write", "edit"} else "none",
-        }}
-        return result
-
-    return replace(tool, execute=execute, execution_scope="file")
-
-# ---------------------------------------------------------------------------
-# glob / grep
-# ---------------------------------------------------------------------------
-
-
-def _walk(root: Path):
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
-        for f in filenames:
-            yield Path(dirpath) / f
-
-
-def glob_match(path: str, pattern: str) -> bool:
-    """Match a ``/``-separated path against a glob.
-
-    ``*``, ``?`` and ``[...]`` stay within one path segment; a ``**`` segment spans any number of
-    directories, including none. A pattern without ``/`` matches the file name at any depth.
-    """
-    segments = pattern.split("/")
-    if len(segments) == 1:
-        segments = ["**", pattern]
-    return _match_segments(path.split("/"), segments)
-
-
-def _match_segments(parts: list[str], segments: list[str]) -> bool:
-    if not segments:
-        return not parts
-    head, rest = segments[0], segments[1:]
-    if head == "**":
-        if not rest:
-            return bool(parts)
-        return any(_match_segments(parts[i:], rest) for i in range(len(parts) + 1))
-    return bool(parts) and fnmatch.fnmatchcase(parts[0], head) and _match_segments(parts[1:], rest)
-
-
-def _glob(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
-    access = access or HostContext(ctx.cwd)
-    base = resolve(args.get("path") or ".", ctx.cwd)
-    if access is not None:
-        access.check_read(base)
-    if not base.is_dir():
-        return ToolResult.error(ctx.t("tools.fs.not_directory", path=args.get("path")))
-    pattern = args["pattern"]
-    hits = []
-    entries = (access.walk_files(base, IGNORE_DIRS) if access is not None else
-               ((path, path.stat() if path.exists() else None) for path in _walk(base)))
-    modified = {}
-    for f, info in entries:
-        if glob_match(f.relative_to(base).as_posix(), pattern):
-            hits.append(f)
-            modified[f] = info.st_mtime if info is not None else 0
-    hits.sort(key=lambda f: modified[f], reverse=True)
-    limit = 200
-    lines = [_display(f, ctx.cwd) for f in hits[:limit]]
-    if not lines:
-        return ToolResult.text(ctx.t("tools.fs.no_matches"))
-    if len(hits) > limit:
-        lines.append(ctx.t("tools.fs.more_matches", count=len(hits) - limit))
-    return ToolResult.text("\n".join(lines), details={"count": len(hits)})
-
-
 GLOB = AgentTool(
     name="glob",
     label="Glob",
@@ -462,67 +205,6 @@ GLOB = AgentTool(
     side_effect="read",
     i18n_key="tools.glob",
 )
-
-
-def _grep(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
-    access = access or HostContext(ctx.cwd)
-    flags = re.IGNORECASE if args.get("ignore_case") else 0
-    try:
-        rx = re.compile(args["pattern"], flags)
-    except re.error as e:
-        return ToolResult.error(ctx.t("tools.fs.regex", error=e))
-    base = resolve(args.get("path") or ".", ctx.cwd)
-    if access is not None:
-        access.check_read(base)
-    files = [base] if base.is_file() else (
-        (path for path, _info in access.walk_files(base, IGNORE_DIRS))
-        if access is not None else _walk(base)
-    )
-    gl = args.get("glob")
-    ctxn = int(args.get("context") or 0)
-    limit = int(args.get("limit") or 100)
-    out: list[str] = []
-    matches = 0
-    for f in files:
-        if gl and not glob_match(Path(_display(f, ctx.cwd)).as_posix(), gl):
-            continue
-        try:
-            if access is not None:
-                raw = access.read_bytes(f.resolve(), max_bytes=5 * 1024 * 1024)
-                if raw is None or len(raw) > 5 * 1024 * 1024:
-                    continue
-            else:
-                if f.stat().st_size > 5 * 1024 * 1024:
-                    continue
-                raw = f.read_bytes()
-        except FileAccessDenied:
-            raise
-        except OSError:
-            continue
-        if b"\x00" in raw[:8192]:
-            continue
-        lines = raw.decode("utf-8", errors="replace").splitlines()
-        shown: set[int] = set()
-        for i, line in enumerate(lines):
-            if not rx.search(line):
-                continue
-            matches += 1
-            if matches > limit:
-                break
-            for j in range(max(0, i - ctxn), min(len(lines), i + ctxn + 1)):
-                if j in shown:
-                    continue
-                shown.add(j)
-                sep = ":" if j == i else "-"
-                text = lines[j] if len(lines[j]) <= 500 else lines[j][:500] + "…"
-                out.append(f"{_display(f, ctx.cwd)}{sep}{j + 1}{sep}{text}")
-        if matches > limit:
-            break
-    if not out:
-        return ToolResult.text(ctx.t("tools.fs.no_matches"))
-    if matches > limit:
-        out.append(ctx.t("tools.fs.match_limit", limit=limit))
-    return ToolResult.text("\n".join(out), details={"matches": min(matches, limit)})
 
 
 GREP = AgentTool(
@@ -545,3 +227,10 @@ GREP = AgentTool(
     side_effect="read",
     i18n_key="tools.grep",
 )
+
+def make_file_tool(tool: AgentTool, execution) -> AgentTool:
+    """Bind the operation to its immutable originating task context."""
+    def execute(args, ctx):
+        return tool.execute(args, ctx, access=execution(ctx))
+
+    return replace(tool, execute=execute, execution_scope="file")

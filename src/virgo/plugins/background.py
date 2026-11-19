@@ -69,7 +69,7 @@ def setup(api: ExtensionAPI) -> None:
                 head + "\n" + displayed,
                 {
                     **details,
-                    "output_path": str(job.log),
+                    "output_id": str(job.log),
                     "output_bytes": captured.total_bytes,
                     "truncated": captured.truncated
                     or len((captured.text.rstrip() or ctx.t("tools.output.empty")).encode("utf-8"))

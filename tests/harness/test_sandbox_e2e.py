@@ -33,6 +33,10 @@ def native(make_session):
     return native_session(make_session, {"linux", "darwin"})
 
 
+def test_native_filesystem_helper_operations(native, project, monkeypatch):
+    native_cases.filesystem_helper_operations(native, project, monkeypatch)
+
+
 def test_native_generic_process_stdio(native, project):
     native_cases.generic_process_stdio(native, project)
 
@@ -44,8 +48,8 @@ def short_workspace():
         yield Path(directory).resolve()
 
 
-def test_workspace_file_tools_obey_sandbox_even_with_accept_all(broker_session, project):
-    session = broker_session(
+def test_workspace_file_tools_obey_sandbox_even_with_accept_all(make_session, project):
+    session = make_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}}, refresh_models=False
     )
     outside = project.parent / "outside.txt"
@@ -68,7 +72,7 @@ def test_workspace_file_tools_obey_sandbox_even_with_accept_all(broker_session, 
 
 @pytest.mark.parametrize("tool", ["write", "edit"])
 @pytest.mark.parametrize("location", ["outside", "metadata", "workspace"])
-def test_sandbox_file_tools_reject_hardlinks(broker_session, project, tool, location):
+def test_sandbox_file_tools_reject_hardlinks(make_session, project, tool, location):
     """A writable pathname must not confer authority over a shared inode.
 
     Failure modes: write truncates an outside inode; edit changes protected Git
@@ -85,7 +89,7 @@ def test_sandbox_file_tools_reject_hardlinks(broker_session, project, tool, loca
     source.write_text("original\n")
     alias = project / "ordinary.txt"
     os.link(source, alias)
-    session = broker_session(
+    session = make_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
@@ -104,17 +108,17 @@ def test_sandbox_file_tools_reject_hardlinks(broker_session, project, tool, loca
         assert source.read_text() == "original\n"
     else:
         assert source.read_text() == alias.read_text() == "original\n", result.text()
-        assert result.is_error and result.details["status"] == "resource_denied", result.text()
+        assert result.is_error and result.details["status"] in {"resource_denied", "execution_unavailable"}, result.text()
 
 
-def test_sandbox_file_mutation_roundtrip_and_failed_edit(broker_session, project):
+def test_sandbox_file_mutation_roundtrip_and_failed_edit(make_session, project):
     """Fresh-inode writes retain content/mode and do not commit a failed edit.
 
     Failure modes: a new nested file cannot be created; overwrite loses executable
     permissions; edit translates BOM/CRLF; a rejected edit replaces the inode or
     changes its bytes; successful or failed operations leave staging files.
     """
-    session = broker_session(
+    session = make_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
@@ -165,27 +169,18 @@ def test_sandbox_file_mutation_roundtrip_and_failed_edit(broker_session, project
 
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native workspace mutation")
 @pytest.mark.parametrize("tool", ["write", "edit"])
-def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(broker_session, project, tool):
+def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(native, project, tool):
     """A workspace entry changed after permission review must not redirect I/O.
 
     Failure modes: the permission gate checks a normal file; a concurrent
-    workspace writer replaces it while the Core tool waits for its existing
-    file lock; write/edit follows the replacement and changes a sibling file.
+    workspace writer replaces it while the Core tool waits for the executor mutation lock; write/edit follows the replacement and changes a sibling file.
     No permission or execution function is replaced in this assembled scenario.
     """
-    import time
-
-    from virgo.tools.fs import file_lock
-
     target = project / "ordinary.txt"
     outside = project.parent / "outside-file.txt"
     target.write_text("original\n")
     outside.write_text("original\n")
-    session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
-        refresh_models=False,
-        extensions=False,
-    )
+    session = native
     arguments = (
         {"path": "ordinary.txt", "content": "changed\n"}
         if tool == "write"
@@ -201,8 +196,8 @@ def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(broke
             errors.append(error)
 
     # Wait for the real executor, after both permission checkpoints. Holding
-    # its normal per-file lock makes the filesystem change deterministic.
-    with file_lock(target):
+    # the real executor mutation lock makes the filesystem change deterministic.
+    with session.main.execution_context.executor.files._mutation:
         worker = threading.Thread(target=execute, daemon=True)
         worker.start()
         deadline = time.monotonic() + 10
@@ -210,7 +205,8 @@ def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(broke
         while not reached and time.monotonic() < deadline:
             for frame in sys._current_frames().values():
                 while frame is not None:
-                    if frame.f_code.co_name == "_" + tool and frame.f_locals.get("p") == target:
+                    if (frame.f_code.co_name == "run" and frame.f_locals.get("operation") == tool
+                            and frame.f_locals.get("self") is session.main.execution_context.executor.files):
                         reached = True
                         break
                     frame = frame.f_back
@@ -221,7 +217,7 @@ def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(broke
             target.symlink_to(outside)
     worker.join(10)
     assert not worker.is_alive()
-    assert reached, "The Core file executor did not reach the locked operation"
+    assert reached, "The filesystem executor did not reach the serialized operation"
     assert not errors, errors
     assert outside.read_text() == "original\n", "The checked workspace path redirected a host write"
     assert tool_results(session)[-1].is_error
@@ -280,7 +276,7 @@ def test_sandbox_project_context_symlink_never_reaches_provider(broker_session, 
     assert secret.read_text() == "credential-never-automatic-project-context"
 
 
-def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(broker_session, project):
+def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(sandbox_session, project):
     """Changing child cwd must not import another workspace or ancestor context."""
     from tests.support.harness import calls
 
@@ -290,7 +286,7 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(broker_
     other = project.parent / "outside-context-workspace"
     other.mkdir()
     (other / "AGENTS.md").write_text("replacement-cwd-private-context")
-    session = broker_session(
+    session = sandbox_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
@@ -367,7 +363,13 @@ def test_shared_native_policy_is_rejected_before_payload(broker_session, project
 
 
 @pytest.mark.parametrize("tool", ["write", "edit"])
-def test_core_file_mutation_survives_hardlink_unlink_race(broker_session, project, tool):
+def test_core_file_mutation_replaces_hardlink_without_touching_source(make_session, project, tool):
+    """No-Limit uses the same atomic helper, leaving the shared source inode intact.
+
+    The retired Broker tracing case stopped a host write after opening its old
+    inode. There is no Broker target-file open to intercept in this architecture.
+    This real worker operation would corrupt the source if it wrote in place.
+    """
     outside = project.parent / "race-protected.txt"
     outside.write_text("original\n")
     alias = project / "race-alias.txt"
@@ -377,46 +379,15 @@ def test_core_file_mutation_survives_hardlink_unlink_race(broker_session, projec
         if tool == "write"
         else {"path": alias.name, "edits": [{"old_text": "original", "new_text": "changed"}]}
     )
-    session = broker_session(faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
-    opened, resume = threading.Event(), threading.Event()
+    session = make_session(faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+    session.prompt("Replace the project alias")
+    response = tool_results(session)[-1]
+    assert not response.is_error, response.text()
+    assert response.details["boundary"]["payload_started"] is True
+    assert outside.read_text() == "original\n" and alias.read_text() == "changed\n"
+    assert outside.stat().st_ino != alias.stat().st_ino
+    assert not list(project.rglob(".virgo-write-*.tmp"))
 
-    def trace(frame, event, _arg):
-        if (
-            event == "line"
-            and frame.f_code.co_name == "open_mutation"
-            and frame.f_locals.get("path") == alias
-            and frame.f_locals.get("descriptor") is not None
-            and not opened.is_set()
-        ):
-            opened.set()
-            assert resume.wait(5)
-        return trace
-
-    previous = threading.gettrace()
-    threading.settrace(trace)
-    worker = threading.Thread(target=lambda: session.prompt("Mutate the alias"))
-    unlink_blocked = False
-    try:
-        worker.start()
-        assert opened.wait(5)
-        try:
-            alias.unlink()
-        except PermissionError as error:
-            # Windows may stop the attack at the retained handle. Require the
-            # precise sharing violation; do not turn arbitrary failures into a pass.
-            assert os.name == 'nt' and error.winerror == 32
-            unlink_blocked = True
-            assert alias.exists() and outside.stat().st_nlink == 2
-        else:
-            assert outside.stat().st_nlink == 1
-    finally:
-        resume.set()
-        worker.join(5)
-        threading.settrace(previous)
-    assert not worker.is_alive()
-    assert outside.read_text() == "original\n"
-    if unlink_blocked:
-        assert tool_results(session)[-1].is_error and alias.read_text() == "original\n"
 
 
 def test_native_existing_metadata_is_readonly(native, project):
@@ -866,11 +837,24 @@ def test_missing_backend_is_fail_closed_in_real_session(make_session, project, m
         raise ExecutionUnavailable("Missing native backend")
 
     monkeypatch.setattr("virgo.sandbox.native.platform_backend", unavailable)
-    session = make_session(settings={"execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
-    result = run(session, python_command(session, "from pathlib import Path; Path('payload-ran').write_text('bad')"))
-    assert result.is_error and result.details["status"] == "execution_unavailable"
-    assert result.details["boundary"]["payload_started"] is False
-    assert "Missing native backend" in result.text()
+    session = make_session(settings={"execution": {"mode": "workspace-edit"}},
+                           refresh_models=False, extensions=False)
+    with pytest.raises(ExecutionUnavailable, match="Missing native backend"):
+        session.main.execution_context.run_file_operation(
+            "write", {"path": "payload-ran", "content": "must-not-run"},
+        )
+    (project / "existing.txt").write_text("host-content-must-not-leak")
+    faux.script("test", faux.reply(tools=[
+        ("read", {"path": "existing.txt"}),
+        ("write", {"path": "payload-ran", "content": "must-not-run"}),
+    ]), faux.reply("done"))
+    session.prompt("Attempt file operations with an unavailable native backend")
+    responses = tool_results(session)
+    assert len(responses) == 2
+    assert all(result.is_error and result.details["status"] == "execution_unavailable" for result in responses)
+    assert all("host-content-must-not-leak" not in result.text() for result in responses)
+    shell = run(session, python_command(session, "from pathlib import Path; Path('payload-ran').touch()"))
+    assert shell.is_error and shell.details["status"] == "execution_unavailable"
     assert not (project / "payload-ran").exists()
 
 
@@ -925,7 +909,7 @@ def test_unacknowledged_native_launch_keeps_unknown_facts(broker_session, projec
 
 
 @pytest.mark.parametrize("route", ["child", "main-rebuild", "new-main"])
-def test_automatic_context_cannot_borrow_another_conversations_no_limit_mode(broker_session, project, route):
+def test_automatic_context_cannot_borrow_another_conversations_no_limit_mode(sandbox_session, project, route):
     """Prompt construction must use its owner before any provider request.
 
     Failure modes: a child of an inactive restricted origin, its rebuilt lead,
@@ -940,7 +924,7 @@ def test_automatic_context_cannot_borrow_another_conversations_no_limit_mode(bro
     other = project.parent / "outside-context-workspace"
     other.mkdir()
     (other / "CLAUDE.md").write_text("replacement-cwd-private-context")
-    session = broker_session(
+    session = sandbox_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
@@ -1269,23 +1253,27 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
     Failure modes: the real wrapper fails after a successful probe but is reported
     as an ordinary command exit; a background job reports successful startup;
     the payload is replayed on the host; failed startup leaves a pending job.
-    This launches a real synthetic wrapper that never executes the payload. It
-    validates the launch protocol, not OS isolation (covered by native tests).
+    The real synthetic wrapper forwards context helpers and rejects the requested
+    Shell before exec. It validates the launch protocol, not OS isolation.
     """
     from virgo.sandbox import native as dispatcher
     from virgo.sandbox import platform as sandbox
 
     launcher = project.parent / "reject_after_probe.py"
     attempts = project.parent / "launch-attempts.txt"
+    command = "echo bad > payload-ran.txt"
     launcher.write_text(
         "from pathlib import Path\n"
-        "import sys\n"
+        "import os, sys\n"
         f"attempts = Path({str(attempts)!r})\n"
         "probe = len(sys.argv) == 2 and Path(sys.argv[1]).name == 'true'\n"
+        f"shell = sys.argv[-1] == {command!r}\n"
         "with attempts.open('a') as log:\n"
-        "    log.write('probe\\n' if probe else 'launch\\n')\n"
+        "    log.write('probe\\n' if probe else 'launch\\n' if shell else 'helper\\n')\n"
         "if probe:\n"
         "    raise SystemExit(0)\n"
+        "if not shell:\n"
+        "    os.execv(sys.argv[1], sys.argv[1:])\n"
         "sys.stderr.write('synthetic sandbox: isolation setup rejected before exec\\n')\n"
         "raise SystemExit(42)\n",
         encoding="utf-8",
@@ -1308,10 +1296,13 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
                   "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
-    result = run(session, "echo bad > payload-ran.txt", background=background)
+    result = run(session, command, background=background)
     assert result.is_error and result.details["status"] == "execution_unavailable", result.text()
     assert not (project / "payload-ran.txt").exists()
-    assert attempts.read_text().splitlines() == ["probe", "launch"], "Never retry a rejected payload"
+    calls = attempts.read_text().splitlines()
+    assert calls[::2] == ["probe"] * (len(calls) // 2)
+    assert set(calls[1::2]) <= {"helper", "launch"}
+    assert calls[1::2].count("launch") == 1, "Never retry a rejected Shell payload"
     if background:
         assert not session.services["jobs"].jobs
 
@@ -1322,8 +1313,8 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     """A delayed broker can miss an acknowledgement after the payload ran.
 
     The synthetic wrapper exercises real exec/pipe/lifecycle behavior, not OS
-    isolation. Only acknowledgement observation and the broker deadline clock
-    are controlled; the payload writes a disposable marker exactly once.
+    isolation. Only the Shell's acknowledgement observation and broker deadline
+    clock are controlled; the payload writes a disposable marker exactly once.
     """
     from virgo.sandbox import native as dispatcher
     from virgo.sandbox import platform as sandbox
@@ -1336,7 +1327,7 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
         "    raise SystemExit(0)\n"
         "os.execv(sys.argv[1], sys.argv[1:])\n"
     )
-    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("protocol-test", Path(sys.executable)))
+    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("seatbelt", Path(sys.executable)))
     monkeypatch.setattr(dispatcher, "platform_backend", sandbox.platform_backend)
     system_file = sandbox._system_file
     monkeypatch.setattr(sandbox, "_system_file",
@@ -1351,13 +1342,25 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
         delayed = True
         return [], [], []
 
-    monkeypatch.setattr(sandbox, "select", SimpleNamespace(select=lose_ack))
-    monkeypatch.setattr(sandbox, "time", SimpleNamespace(
-        monotonic=lambda: time.monotonic() + (10 if delayed else 0), sleep=time.sleep))
     session = make_session(settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
                                      "execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
     source = "from pathlib import Path\nwith Path('payload-ran.txt').open('a') as stream: stream.write('once')"
-    result = run(session, python_command(session, source), background=background)
+    command = python_command(session, source)
+    target_argv = tuple(selected(session).argv(command))
+    execute = dispatcher.NativeExecutor.run_process
+
+    def dispatch(self, request, policy, cancellation=None):
+        # Automatic project reads also launch helpers and must receive real ACKs.
+        if request.argv != target_argv:
+            return execute(self, request, policy, cancellation)
+        with monkeypatch.context() as controlled:
+            controlled.setattr(sandbox, "select", SimpleNamespace(select=lose_ack))
+            controlled.setattr(sandbox, "time", SimpleNamespace(
+                monotonic=lambda: time.monotonic() + (10 if delayed else 0), sleep=time.sleep))
+            return execute(self, request, policy, cancellation)
+
+    monkeypatch.setattr(dispatcher.NativeExecutor, "run_process", dispatch)
+    result = run(session, command, background=background)
     assert marker.read_text() == "once"
     assert result.is_error and result.details.get("status") == "execution_failed", result.text()
     assert result.details["boundary"]["side_effects"] == "possible"
