@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import json
+import sys
+from dataclasses import replace
 from pathlib import Path
 
 from ..agent import AgentTool, ToolCallEvent
 from ..execution import SandboxExecutor
+from ..execution_policy import PathRule
 from ..harness.execution import HostExecutionProvider
-from ..harness.execution_modes import NETWORK_DIRECTIONS, PermissionSnapshot
+from ..harness.execution_modes import PermissionSnapshot
 from ..harness.resource_approvals import Grant, ResourceApprovals
-from .policy import SandboxPolicy
+from .policy import PROTECTED_NAMES, SandboxPolicy
 
 
 class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
@@ -26,12 +29,21 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
     def context_for_mode(self, runtime, mode, revision):
         workspace = Path(runtime.accounting_store.cwd).resolve()
         approval = "never" if runtime.approval_policy == "never" else self.session.approval_policy
-        policy = SandboxPolicy(workspace, mode.resolve(workspace),
-                               (self.session.paths.user.resolve(),),
-                               self.executor, PermissionSnapshot(mode, approval, revision),
-                               spool_home=self.session.paths.user.resolve() if mode.id == "read-only" else None)
-        policy.validate(runtime.cwd)
-        return policy
+        private = self.session.paths.user.resolve()
+        # These are trusted control locations captured for the originating task,
+        # never file-tool targets supplied by the model. Explicit deny rules are
+        # carried to every native launch, including one-shot approved operations.
+        control = tuple(path for name in PROTECTED_NAMES
+                        if (path := workspace / name).exists() or path.is_symlink())
+        runtime_roots = tuple(dict.fromkeys((Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(),
+                                            self.executor.files.root)))
+        resources = mode.resolve(workspace)
+        resources = replace(resources, policy=resources.policy.with_rules(
+            PathRule(private, "read", "deny"),
+            *(PathRule(path, "write", "deny") for path in (*control, *runtime_roots)),
+        ))
+        return SandboxPolicy(workspace, resources, (private,), self.executor,
+                             PermissionSnapshot(mode, approval, revision))
 
     def instructions(self, runtime):
         return ("<execution_boundary>" + json.dumps(runtime.execution_context.describe(), ensure_ascii=False) +
@@ -51,8 +63,7 @@ def install_resource_tool(api, provider):
             "permissions": {"type": "object", "properties": {
                 "read_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "write_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                "network_allowed": {"type": ["boolean", "array"], "items": {"type": "string", "enum": list(NETWORK_DIRECTIONS)},
-                                    "description": "Additional allowed directions. true requests all three."},
+                "network_allowed": {"type": "boolean", "description": "Allow networking for this exact operation."},
             }, "additionalProperties": False},
         }, "required": ["tool", "arguments", "reason", "permissions"], "additionalProperties": False},
         execute=provider.request_permissions, side_effect="read", sequential=True,

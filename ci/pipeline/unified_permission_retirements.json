@@ -1,0 +1,20 @@
+{
+  "baseline_sha": "c31fcd4f962a88c502d49eac27b33cced848bef6",
+  "reason": "Effective policies replace Broker inode binding and inferred file approvals. POSIX startup no longer scans entire writable trees for pre-existing hardlink aliases. Exact caller binding, explicit approvals, and real helper atomic replacement remain covered; arbitrary Shell writes through pre-existing aliases are a documented limitation.",
+  "preservation_gates": [
+    {"classname": "tests.features.test_permission_scope", "name": "test_grant_cannot_be_reused_after_context_changes[arguments]"},
+    {"classname": "tests.features.test_permission_scope", "name": "test_grant_is_atomically_consumed_once"}
+  ],
+  "acceptance_gates": [
+    {"classname": "tests.features.test_permission_scope", "name": "test_resource_replacement_keeps_the_lexical_operation_grant"},
+    {"classname": "tests.harness.test_permission_modes_e2e", "name": "test_file_approval_requires_explicit_request_and_preserves_the_mode"},
+    {"classname": "tests.harness.test_sandbox_e2e", "name": "test_sandbox_file_tools_reject_hardlinks[outside-write]"},
+    {"classname": "tests.harness.test_sandbox_e2e", "name": "test_sandbox_file_tools_reject_hardlinks[metadata-edit]"}
+  ],
+  "retired_cases": [
+    {"classname": "tests.features.test_permission_scope", "name": "test_grant_cannot_be_reused_after_context_changes[resource]", "product": "broker-inode-bound-grants"},
+    {"classname": "tests.harness.test_permission_modes_e2e", "name": "test_direct_file_approval_dispatches_once_and_preserves_the_mode", "product": "inferred-file-approval"},
+    {"classname": "tests.harness.test_sandbox_e2e", "name": "test_native_rejects_preexisting_writable_hardlinks[outside]", "product": "posix-whole-tree-link-scan"},
+    {"classname": "tests.harness.test_sandbox_e2e", "name": "test_native_rejects_preexisting_writable_hardlinks[metadata]", "product": "posix-whole-tree-link-scan"}
+  ]
+}

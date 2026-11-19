@@ -1,7 +1,6 @@
 """Explicit authorization checks retain workspace, origin and execution boundaries."""
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 
@@ -18,7 +17,7 @@ def request(session, tool, arguments, *, permissions=None, call_id="request"):
     context = ToolContext(call_id, session.cwd, threading.Event(), origin=session.main.origin)
     return session.tool("request_permissions").execute({
         "tool": tool, "arguments": arguments,
-        "permissions": permissions or {"write_paths": [arguments["path"]]},
+        "permissions": permissions or {"write_paths": [str(Path(arguments["path"]).parent)]},
         "reason": "Run this exact operation outside the default boundary",
     }, context)
 
@@ -60,7 +59,7 @@ def test_risky_review_respects_allow_once_and_exact_session_approval(sandbox_ses
             "reason": "Write the explicitly selected external file once",
         })
     operations = [ask(args), ("write", args), ("write", args), ask(args),
-                  ("write", changed), ("write", changed), ask(changed), ("write", args)]
+                  ask(changed), ("write", changed), ("write", changed), ("write", args)]
     faux.script("test", *(faux.reply(tools=[operation]) for operation in operations), faux.reply("done"))
     session.prompt("Exercise exact single-operation permissions")
     results = tool_results(session)
@@ -80,7 +79,8 @@ def test_children_inherit_permission_ceilings_without_task_instructions(broker_s
             assert runtime.execution_context is session.main.execution_context
             event = tool_call_event(session, "write", {"path": "a.txt", "content": "x"}, agent=runtime.name)
             event.origin = runtime.origin
-            assert isinstance(session._before_tool(event), Block)
+            assert session._before_tool(event) is None
+            assert not session.services["execution"].for_context(event).policy.allows(session.cwd / "a.txt", "write")
     finally:
         session.release_runtime(grandchild)
         session.release_runtime(child)
@@ -95,7 +95,10 @@ def test_unattended_review_fallback_is_denied(broker_session, tmp_path):
     args = {"path": str(tmp_path / "x"), "content": ""}
     result = request(session, "write", args)
     assert result.is_error and "not granted" in result.content[0].text
-    assert isinstance(session._before_tool(tool_call_event(session, "write", args)), Block)
+    event = tool_call_event(session, "write", args)
+    assert session._before_tool(event) is None
+    assert session._before_tool_execute(event) is None
+    assert not session.services["execution"].for_context(event).policy.allows(tmp_path / "x", "write")
     assert not (tmp_path / "x").exists()
 
 
@@ -111,25 +114,36 @@ def test_review_and_human_approval_recheck_changed_mode(broker_session, tmp_path
     result = request(session, "write", args)
     assert result.is_error and "expired" in result.content[0].text
     assert not session.main.execution_context.resources.write_paths
-    assert isinstance(session._before_tool(tool_call_event(session, "write", args)), Block)
-
-
-def test_execution_rechecks_mode_arguments_and_symlink_boundary(broker_session, tmp_path):
-    session = broker_session(allow=False)
-    manager = session.services["execution"]
-    event = tool_call_event(session, "write", {"path": "new/file", "content": "x"})
+    event = tool_call_event(session, "write", args)
     assert session._before_tool(event) is None
     assert session._before_tool_execute(event) is None
+    assert not session.services["execution"].for_context(event).policy.allows(tmp_path / "outside", "write")
+
+
+def test_execution_rechecks_mode_arguments_and_symlink_boundary(sandbox_session, tmp_path):
+    session = sandbox_session(allow=False)
+    manager = session.services["execution"]
+
+    def write(path):
+        faux.script("test", faux.reply(tools=[("write", {"path": path, "content": "x"})]), faux.reply("done"))
+        session.prompt("Write within this task's execution policy")
+        result = tool_results(session)[-1]
+        return result
+
+    initial = write("inside")
+    assert not initial.is_error and initial.details["boundary"]["state"] == "established", initial.text()
     manager.select_mode("read-only")
-    assert isinstance(session._before_tool_execute(event), Block)
+    assert write("new/file").is_error
+    assert not (session.cwd / "new").exists()
     manager.select_mode("workspace-edit")
-    assert session._before_tool(event) is None
     (session.cwd / "new").symlink_to(tmp_path, target_is_directory=True)
-    assert isinstance(session._before_tool_execute(event), Block)
+    assert write("new/file").is_error
+    assert not (tmp_path / "file").exists()
     (session.cwd / "new").unlink()
-    assert session._before_tool(event) is None
-    event.args["path"] = str(tmp_path / "external")
-    assert isinstance(session._before_tool_execute(event), Block)
+    assert not write("new/file").is_error
+    assert write(str(tmp_path / "external")).is_error
+    assert not (tmp_path / "external").exists()
+    assert not session.ui.questions
 
 
 def test_search_review_matches_actual_ignored_and_filtered_files(sandbox_session, tmp_path):
@@ -153,12 +167,9 @@ def test_search_review_matches_actual_ignored_and_filtered_files(sandbox_session
     ]), faux.reply("done"))
     session.prompt("Search without following outside aliases")
     results = tool_results(session)
-    if os.name == "nt":
-        assert all(result.is_error for result in results), "Windows rejects reparse-point grants before launch"
-    else:
-        assert all(not result.is_error for result in results)
-        assert "linked-directory" not in results[1].text()
-        assert "inside.py" in results[1].text() and "INSIDE" in results[2].text()
+    assert all(not result.is_error for result in results)
+    assert "linked-directory" not in results[1].text()
+    assert "inside.py" in results[1].text() and "INSIDE" in results[2].text()
     assert "OUTSIDE_SECRET" not in repr(results)
     assert not session.ui.questions
 
@@ -179,13 +190,10 @@ def test_search_review_selects_the_same_files_as_the_glob_tools(sandbox_session,
     ]), faux.reply("done"))
     session.prompt("Keep glob selection and content reads distinct")
     results = tool_results(session)
-    if os.name == "nt":
-        assert all(result.is_error for result in results), "Windows rejects reparse-point grants before launch"
-    else:
-        assert all(not result.is_error for result in results)
-        for result in (results[0], results[2]):
-            assert {Path(line) for line in result.text().splitlines()} == {Path("src/pkg/inside.py")}
-        assert all("value = 1" in result.text() for result in (results[1], results[3]))
+    assert all(not result.is_error for result in results)
+    for result in (results[0], results[2]):
+        assert {Path(line) for line in result.text().splitlines()} == {Path("src/pkg/inside.py")}
+    assert all("value = 1" in result.text() for result in (results[1], results[3]))
     assert "OUTSIDE_SECRET" not in repr(results)
 
 

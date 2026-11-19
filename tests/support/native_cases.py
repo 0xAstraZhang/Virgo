@@ -15,6 +15,12 @@ def filesystem_helper_operations(native, project, monkeypatch):
     from virgo.execution import ProcessRequest, SandboxExecutor, cleanup_process
     from virgo.file_operations import _private_directory
 
+    metadata = project / ".git"
+    metadata.mkdir(exist_ok=True)
+    protected = metadata / "config"
+    protected.write_text("protected")
+    # Bind an existing control path into this task's fixed deny rules.
+    native.main.refresh_permission_snapshot()
     access = native.main.execution_context
 
     def operation(name, arguments, *, context=None):
@@ -37,10 +43,6 @@ def filesystem_helper_operations(native, project, monkeypatch):
     assert grepped["ok"] and grepped["details"]["matches"] == 1, grepped
     assert not list(project.rglob(".virgo-write-*.tmp"))
 
-    metadata = project / ".git"
-    metadata.mkdir(exist_ok=True)
-    protected = metadata / "config"
-    protected.write_text("protected")
     denied = operation("write", {"path": str(protected), "content": "changed"})
     assert not denied["ok"] and protected.read_text() == "protected", denied
 
@@ -157,6 +159,54 @@ Path('future-runtime-control.txt').write_text('allowed')
     assert not read_output.execute({"output_id": record.id}, owned).is_error
 
 
+def explicit_read_deny(native, project, kind, prepare=None):
+    """A real payload cannot reopen an explicit deny through a narrower allow."""
+    import json
+    import os
+    import sys
+    from dataclasses import replace
+
+    from virgo.execution import ProcessRequest, cleanup_process
+    from virgo.execution_policy import PathRule
+
+    parent = project / "policy-parent"
+    parent.mkdir()
+    root = parent / "denied-resource"
+    if kind == "directory":
+        root.mkdir()
+        secret = root / "secret.txt"
+    else:
+        secret = root
+    secret.write_text("private-canary")
+    if prepare is not None:
+        prepare(secret)
+    base = native.main.execution_context
+    permissions = base.policy.with_rules(PathRule(root, "read", "deny"), PathRule(secret, "write"))
+    context = replace(base, resources=replace(base.resources, policy=permissions))
+    source = f"""import json
+from pathlib import Path
+secret = Path({str(secret)!r})
+parent = Path({str(parent)!r})
+denied = []
+for operation in (secret.read_text, lambda: secret.write_text('bad'), secret.unlink,
+                  lambda: parent.rename(parent.with_name('moved-parent'))):
+    try: operation()
+    except OSError: denied.append(True)
+    else: denied.append(False)
+(parent / 'public.txt').write_text('allowed')
+print(json.dumps({{'denied': denied, 'public': (parent / 'public.txt').read_text()}}))
+"""
+    process = context.run_process(ProcessRequest((sys.executable, "-I", "-S", "-c", source), project, dict(os.environ)))
+    try:
+        assert process.wait(timeout=20) == 0
+        output = process.stdout.read().decode("utf-8", errors="replace")
+        assert json.loads(output.rstrip().rsplit("\n", 1)[-1]) == {"denied": [True] * 4, "public": "allowed"}, output
+    finally:
+        cleanup_process(process)
+        process.stdout.close()
+    assert secret.read_text() == "private-canary"
+
+
 def generic_process_stdio(native, project):
     """A non-Shell process exchanges separate protocol and diagnostic streams."""
     import os
@@ -266,7 +316,8 @@ assert path.read_text() == 'after'
     assert not result.is_error, result.text()
     boundary = result.details["boundary"]
     assert boundary["state"] == "established" and boundary["payload_started"] is True
-    assert boundary["effective"]["native_process"]["write_paths"] == [str(target)]
+    assert [rule["path"] for rule in boundary["effective"]["native_process"]["filesystem"]
+            if rule["effect"] == "allow" and rule["access"] == "write"] == [str(target)]
     assert target.read_text() == "after" and len(native.ui.questions) == 1
     assert native.main.permission_snapshot.mode.id == "read-only"
     assert not native.main.execution_context.resources.write_paths

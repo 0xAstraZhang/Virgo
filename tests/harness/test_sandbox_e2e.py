@@ -41,6 +41,78 @@ def test_native_generic_process_stdio(native, project):
     native_cases.generic_process_stdio(native, project)
 
 
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_native_explicit_read_deny_overrides_nested_write_grant(native, project, kind):
+    native_cases.explicit_read_deny(native, project, kind)
+
+
+def test_native_home_workspace_preserves_private_and_runtime_subtrees(native):
+    """An actual HOME workspace runs while its private/runtime canaries stay protected."""
+    from dataclasses import replace
+
+    from virgo.execution import ProcessRequest, cleanup_process
+    from virgo.execution_policy import PathRule, PermissionPolicy
+
+    home = Path.home().resolve()
+    with tempfile.TemporaryDirectory(prefix="virgo-home-", dir=home) as directory:
+        root = Path(directory)
+        private, runtime = root / "private", root / "runtime"
+        private.mkdir()
+        runtime.mkdir()
+        secret, trusted = private / "auth.json", runtime / "runtime-canary.txt"
+        secret.write_text("broker-canary")
+        trusted.write_text("runtime-canary")
+        base = native.main.execution_context
+        policy = PermissionPolicy((PathRule(home, "write"), PathRule(private, "read", "deny"),
+                                   PathRule(runtime, "write", "deny"),
+                                   *(rule for rule in base.policy.filesystem if rule.effect == "deny")), False)
+        context = replace(base, workspace=home, resources=replace(base.resources, policy=policy))
+        protected = [trusted]
+        files = getattr(base.executor, "files", None)
+        if files is not None:
+            # Only add a disposable canary to this session's trusted snapshot;
+            # no installed interpreter or helper source is a mutation target.
+            mode = stat.S_IMODE(files.directory.stat().st_mode)
+            files.directory.chmod(mode | stat.S_IWUSR)
+            try:
+                canary = files.directory / "home-policy-canary.txt"
+                canary.write_text("runtime-canary")
+            finally:
+                files.directory.chmod(mode)
+            protected.append(canary)
+        source = f"""import json, os
+from pathlib import Path
+assert Path.cwd() == Path({str(home)!r})
+secret = Path({str(secret)!r})
+denied = []
+for operation in (secret.read_text, lambda: secret.write_text('bad')):
+    try: operation()
+    except OSError: denied.append(True)
+    else: denied.append(False)
+for value in {[str(path) for path in protected]!r}:
+    path = Path(value)
+    assert path.read_text() == 'runtime-canary'
+    try: path.write_text('bad')
+    except OSError: denied.append(True)
+    else: denied.append(False)
+public = Path({str(root / 'public.txt')!r})
+public.write_text('allowed')
+scratch = Path(os.environ['HOME']) / 'own-scratch.txt'
+scratch.write_text('scratch')
+print(json.dumps({{'denied': denied, 'public': public.read_text(), 'scratch': scratch.read_text()}}))
+"""
+        process = context.run_process(ProcessRequest((sys.executable, "-I", "-S", "-c", source), home, dict(os.environ)))
+        try:
+            assert process.wait(timeout=20) == 0
+            assert json.loads(process.stdout.read()) == {
+                "denied": [True] * (2 + len(protected)), "public": "allowed", "scratch": "scratch"}
+        finally:
+            cleanup_process(process)
+            process.stdout.close()
+        assert secret.read_text() == "broker-canary"
+        assert all(path.read_text() == "runtime-canary" for path in protected)
+
+
 @pytest.fixture
 def short_workspace():
     """Keep AF_UNIX paths under Darwin's sun_path limit."""
@@ -49,6 +121,7 @@ def short_workspace():
 
 
 def test_workspace_file_tools_obey_sandbox_even_with_accept_all(make_session, project):
+    (project / ".virgo").mkdir()
     session = make_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}}, refresh_models=False
     )
@@ -73,12 +146,10 @@ def test_workspace_file_tools_obey_sandbox_even_with_accept_all(make_session, pr
 @pytest.mark.parametrize("tool", ["write", "edit"])
 @pytest.mark.parametrize("location", ["outside", "metadata", "workspace"])
 def test_sandbox_file_tools_reject_hardlinks(make_session, project, tool, location):
-    """A writable pathname must not confer authority over a shared inode.
+    """Helper replacement must preserve the source inode behind any alias.
 
-    Failure modes: write truncates an outside inode; edit changes protected Git
-    metadata; an unrecognized alias is accepted because its pathname is ordinary;
-    Windows retains the same bypass through its application-level fallback.
-    All aliases are disposable files on the fixture's filesystem.
+    POSIX replaces the writable directory entry with a fresh inode. Windows
+    retains preflight rejection of external/protected shared-identity grants.
     """
     source = {
         "outside": project.parent / "outside.txt",
@@ -102,7 +173,7 @@ def test_sandbox_file_tools_reject_hardlinks(make_session, project, tool, locati
     faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
     session.prompt("Update the ordinary project file")
     result = tool_results(session)[-1]
-    if location == "workspace":
+    if os.name == "posix" or location == "workspace":
         assert not result.is_error, result.text()
         assert alias.read_text() == "changed\n"
         assert source.read_text() == "original\n"
@@ -277,10 +348,11 @@ def test_sandbox_project_context_symlink_never_reaches_provider(broker_session, 
 
 
 def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(sandbox_session, project):
-    """Changing child cwd must not import another workspace or ancestor context."""
+    """Fresh private storage permits origin context without importing a replacement cwd."""
     from tests.support.harness import calls
 
-    (project.parent / "home" / "AGENTS.md").write_text("trusted-user-context-marker")
+    private_home = project.parent / "fresh-private-home"
+    assert not private_home.exists()
     (project / "AGENTS.md").write_text("origin-workspace-instructions")
     (project.parent / "AGENTS.md").write_text("outside-ancestor-private-context")
     other = project.parent / "outside-context-workspace"
@@ -288,9 +360,13 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(sandbox
     (other / "AGENTS.md").write_text("replacement-cwd-private-context")
     session = sandbox_session(
         settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        home=private_home,
         refresh_models=False,
         extensions=False,
     )
+    assert private_home.is_dir()
+    assert "origin-workspace-instructions" in session.main.system
+    (private_home / "AGENTS.md").write_text("trusted-user-context-marker")
     api = ExtensionAPI(session, "sandbox-context-origin")
     child = api.create_runtime("outside-context-child", "subagent", parent=session.main, cwd=other)
     try:
@@ -399,31 +475,23 @@ def test_native_existing_metadata_is_readonly(native, project):
         assert result.is_error and (project / name).read_text() == "original"
 
 
-@pytest.mark.parametrize("location", ["outside", "metadata", "workspace"])
+@pytest.mark.parametrize("location", ["workspace"])
 def test_native_rejects_preexisting_writable_hardlinks(native, project, location):
-    """Path-based native grants must not expose a shared inode as writable.
+    """Keep the existing positive control for workspace-local Shell hardlinks.
 
-    Failure modes: ordinary shell redirection changes an outside file or Git
-    metadata through a pre-existing alias; launch checks reject only direct
-    protected paths; the rejection occurs only after payload side effects.
-    An alias whose links are all inside the writable workspace is allowed.
+    The former outside/metadata cases required the removed POSIX full-tree
+    scan. Arbitrary Shell writes through pre-existing aliases are not contained
+    by the current pathname rules; the helper covers safe file replacement.
     """
-    source = {"outside": project.parent / "native-outside.txt",
-              "metadata": project / ".git" / "config",
-              "workspace": project / "native-source.txt"}[location]
+    source = project / "native-source.txt"
     source.parent.mkdir(exist_ok=True)
     source.write_text("original")
     alias = project / "native-alias.txt"
     os.link(source, alias)
     result = run(native, "printf started > payload-started; printf changed > native-alias.txt")
-    if location == "workspace":
-        assert not result.is_error, result.text()
-        assert source.read_text() == alias.read_text() == "changed"
-        assert (project / "payload-started").exists()
-    else:
-        assert source.read_text() == alias.read_text() == "original", result.text()
-        assert result.is_error and result.details["status"] == "execution_unavailable", result.text()
-        assert not (project / "payload-started").exists()
+    assert not result.is_error, result.text()
+    assert source.read_text() == alias.read_text() == "changed"
+    assert (project / "payload-started").exists()
 
 
 @pytest.mark.parametrize("location", ["outside", "metadata"])
@@ -1024,13 +1092,16 @@ def test_native_independent_permission_combinations(native, project, short_works
     from dataclasses import replace
     from threading import Event
 
-    from virgo.harness.execution_modes import parse_network
+    from virgo.execution_policy import PathRule, PermissionPolicy
     from virgo.tools.bash import run_command
 
-    roots = (str(project),) if workspace_only else (str(project), str(extra))
+    roots = (project,) if workspace_only else (project, extra)
     context = native.main.execution_context
-    context = replace(context, resources=replace(context.resources, read_paths=roots,
-                      write_paths=() if read_only else roots, network=parse_network(network_allowed)))
+    policy = PermissionPolicy((
+        *(rule for rule in context.policy.filesystem if rule.effect == "deny"),
+        *(PathRule(path, "read" if read_only else "write") for path in roots),
+    ), network_allowed)
+    context = replace(context, resources=replace(context.resources, policy=policy))
     with socket.socket() as listener, socket.socket(socket.AF_UNIX) as host_socket:
         listener.bind(('127.0.0.1', 0))
         listener.listen()
@@ -1170,9 +1241,10 @@ def test_sandbox_status_reports_effective_read_only(broker_session):
     session.prompt('/permissions show')
     state = json.JSONDecoder().raw_decode(session.ui.text[session.ui.text.index('{'):])[0]
     assert state['provider'] == 'sandbox'
-    assert state['requested']['write_paths'] == []
-    assert state['effective']['file_tools']['write_paths'] == []
-    assert state['effective']['native_process'] is None
+    policy = state['requested']
+    assert policy['unrestricted'] is False and policy['network_allowed'] is False
+    assert not any(rule['effect'] == 'allow' and rule['access'] == 'write' for rule in policy['filesystem'])
+    assert state['effective'] is None
     assert state['native_support'] == 'checked_at_launch'
     assert state['state'] != 'established'
 
@@ -1289,7 +1361,7 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
     )
     monkeypatch.setattr(
         sandbox.NativePolicy, "_macos",
-        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)],
+        lambda _self, executable, _scratch: [str(executable), str(launcher)],
     )
     session = make_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
@@ -1333,7 +1405,7 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     monkeypatch.setattr(sandbox, "_system_file",
                         lambda path: path if path == Path("/usr/bin/true") else system_file(path))
     monkeypatch.setattr(sandbox.NativePolicy, "_macos",
-                        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)])
+                        lambda _self, executable, _scratch: [str(executable), str(launcher)])
     delayed = False
 
     def lose_ack(*_args):

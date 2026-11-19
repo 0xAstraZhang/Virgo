@@ -26,7 +26,8 @@ def validated(report, revision, contract, mode):
         raise ValueError(f"Check the {contract} raw samples for failures or approvals")
     actor = "external_editor" if mode == "read-only" else "virgo_file_tool"
     for sample in samples:
-        if (sample.get("edit_actor") != actor or len(sample["operations"]) != report["repeats"] + 1
+        if (sample.get("project_context_loaded") is not True
+                or sample.get("edit_actor") != actor or len(sample["operations"]) != report["repeats"] + 1
                 or any(op.get("success") is not True for op in sample["operations"])
                 or sample.get("shell_network_allowed") is not (mode != "read-only")):
             raise ValueError("The measured work disagrees with the requested comparison")

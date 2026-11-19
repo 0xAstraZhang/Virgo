@@ -10,11 +10,17 @@ All modes store command output in private Broker records under the Virgo user di
 
 Linux requires system Bubblewrap, libseccomp and permission to create namespaces. macOS uses the system `sandbox-exec` and a launchd supervisor to track the command and its descendants. Windows uses LPAC, a restricted token, temporary ACLs and a Job Object. If the platform cannot establish the requested boundary, the operation reports an error.
 
-For a Read-Only command that needs networking, request network access for that invocation. The native backends support on/off networking. A request limited to a single direction is refused. Each running process retains the permissions it received at launch.
+For a Read-Only command that needs networking, request network access for that invocation. Network policy is a Boolean; directional lists are rejected. Each running process retains the permissions it received at launch.
 
 ## File protection
 
-Existing workspace control metadata and nested interpreter roots remain protected. The POSIX launch check rejects a writable file when any of its links is outside the writable scope; files whose links are all inside the workspace remain usable. Package managers that hardlink from a store outside the workspace (for example pnpm's global store) still hit this check, so use No-Limit or keep the store inside the workspace. The supported live-workspace contract requires trusted host writers to preserve the filesystem boundary during a command. A hostile concurrent host writer can change what a pathname denotes between checks or after launch. The startup scan does not continuously protect against that behavior. An external Shell grant requires an existing, exact file or directory. File-level approval never substitutes its parent directory.
+An explicit read deny blocks reads and writes; a write deny leaves reads available. Denies take precedence over every overlapping allow. The native compiler requires explicit deny roots to be exact existing files or directories, and refuses unsupported roots before launching the payload. Existing control metadata and the trusted execution runtime receive write-deny rules. This does not promise protection for arbitrary reserved names that do not yet exist.
+
+The native backend permits a workspace containing an interpreter or private Virgo storage, including the user's home, when it can install the required carve-outs. Runtime files remain read-only and private storage is inaccessible. Ancestors of these roots cannot be renamed or removed to move a protected subtree into a writable path. Ordinary siblings remain usable. A workspace enclosing operating-system mount roots remains unsupported.
+
+POSIX no longer scans the entire writable tree for hardlinks at startup. Native pathname and mount restrictions do not guarantee that a preexisting writable hardlink cannot modify an inode also named outside the granted tree. Filesystem Helper mutations use retained opens and atomic replacement; that behavior is separate from unrestricted commands operating on preexisting aliases. Windows retains its recursive ACL and hardlink validation. The live-workspace contract requires trusted host writers to preserve the filesystem boundary while a command runs; a hostile host writer can change path identities outside the sandbox.
+
+An external Shell grant requires an existing, exact file or directory. File-level approval never substitutes its parent directory. Atomic filesystem write/edit operations require an approved existing parent directory.
 
 Atomic Write/Edit require a writable destination parent directory; an exact-file Shell grant does not imply this directory grant. On Windows, replaced files inherit their parent directory's ACL instead of retaining custom explicit per-file ACLs.
 

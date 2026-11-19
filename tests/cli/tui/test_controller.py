@@ -295,8 +295,8 @@ def test_abort_during_permission_does_not_ask_for_remaining_tools(broker_session
     session = broker_session(
         faux.reply(
             tools=[
-                ("request_permissions", {"tool": "write", "arguments": {"path": str(first), "content": "one"}, "permissions": {"write_paths": [str(first)]}, "reason": "one"}),
-                ("request_permissions", {"tool": "write", "arguments": {"path": str(second), "content": "two"}, "permissions": {"write_paths": [str(second)]}, "reason": "two"}),
+                ("request_permissions", {"tool": "write", "arguments": {"path": str(first), "content": "one"}, "permissions": {"write_paths": [str(first.parent)]}, "reason": "one"}),
+                ("request_permissions", {"tool": "write", "arguments": {"path": str(second), "content": "two"}, "permissions": {"write_paths": [str(second.parent)]}, "reason": "two"}),
             ]
         ),
         ui=ui,

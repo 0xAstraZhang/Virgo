@@ -151,16 +151,21 @@ def test_retired_task_configuration_is_ignored_with_a_notice(project, tmp_path, 
 def test_network_directions_preserve_resource_approval_scope(selection, expected):
     from virgo.harness.execution_modes import network_config, parse_network
 
-    directions = parse_network(selection)
-    assert network_config(directions) == selection
-    assert tuple("allow" if d in directions else "deny" for d in ("egress", "ingress", "hostLoopback")) == expected
+    if type(selection) is bool:
+        allowed = parse_network(selection)
+        assert allowed is selection and network_config(allowed) is selection
+        assert ("allow" if allowed else "deny",) * 3 == expected
+    else:
+        # A partial network selection must never be silently widened to True.
+        with pytest.raises(ValueError, match="directional network grants are unsupported"):
+            parse_network(selection)
 
 
 @pytest.mark.parametrize("invalid", [["public"], ["egress", "egress"], ["ingress", True], 1, "egress"])
 def test_invalid_network_directions_rejected(invalid):
     from virgo.harness.execution_modes import parse_network
 
-    with pytest.raises(ValueError, match="networkAllowed"):
+    with pytest.raises(ValueError, match="network_allowed"):
         parse_network(invalid)
 
 

@@ -28,15 +28,23 @@ from virgo.harness.store import SessionStore
 from tests.support.harness import RecordingUI, calls, tool_results
 
 
-def test_permission_rechecks_hook_rewritten_arguments(broker_session, project):
+def test_permission_rechecks_hook_rewritten_arguments(sandbox_session, project):
     target = project.parent / "secret.txt"
-    session = broker_session(faux.reply(tools=[("write", {"path": "allowed.txt", "content": "x"})]),
-                             faux.reply("done"), ui=RecordingUI(["n"]), preset="workspace-edit")
-    ExtensionAPI(session, "rewrite").on("tool_call", lambda event, _: event.args.update(path=str(target)))
+    session = sandbox_session(faux.reply(tools=[("write", {"path": "control.txt", "content": "control"})]),
+                              faux.reply(tools=[("write", {"path": "allowed.txt", "content": "x"})]),
+                              faux.reply("done"), ui=RecordingUI(["n"]), preset="workspace-edit")
+
+    def rewrite(event, _):
+        if event.args.get("path") == "allowed.txt":
+            event.args["path"] = str(target)
+
+    ExtensionAPI(session, "rewrite").on("tool_call", rewrite)
     session.prompt("write only allowed.txt")
     assert not target.exists() and not (project / "allowed.txt").exists()
-    assert tool_results(session)[0].is_error
-    assert len(session.ui.questions) == 1 and str(target) in session.ui.questions[0]
+    initial, changed = tool_results(session)
+    assert not initial.is_error and initial.details["boundary"]["state"] == "established", initial.text()
+    assert changed.is_error and (project / "control.txt").read_text() == "control"
+    assert not session.ui.questions
 
 
 def test_owned_publication_preserves_the_running_batch(make_session):

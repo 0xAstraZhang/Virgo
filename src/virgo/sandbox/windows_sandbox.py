@@ -322,14 +322,13 @@ def validate_policy(policy, cwd):
     cwd = Path(normalize_path(cwd))
     if not cwd.is_relative_to(workspace):
         raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
+    if policy.private_path(cwd):
+        raise SandboxUnavailable("Command cwd is inside a denied filesystem subtree", reason="protected_path")
     for path in (workspace, cwd):
         with open_path(path, 0x1, directory=True):
             pass
-    roots = (SYSTEM_DIRECTORY.parent, Path(sys.base_prefix).absolute())
-    if any(path.is_relative_to(workspace) for path in roots):
-        raise SandboxUnavailable("Workspace must not contain Windows or the base interpreter installation")
-    if Path(sys.prefix).absolute() == workspace:
-        raise SandboxUnavailable("Workspace must not be the active interpreter installation")
+    if SYSTEM_DIRECTORY.parent.is_relative_to(workspace):
+        raise SandboxUnavailable("A workspace cannot enclose the Windows installation")
     return cwd
 
 
@@ -405,6 +404,21 @@ class WindowsSandbox:
                 CoTaskMemFree(folder)
             self.home = self.profile_path / "home"
             self.scratch = self.profile_path / "tmp"
+            # GetAppContainerFolderPath normally returns Packages/<name>/AC,
+            # not the package root. Find and verify the shared profile tree;
+            # an unknown layout cannot safely receive a broad HOME ACL grant.
+            profile_parent = next((path for path in self.profile_path.parents
+                                   if path.name.casefold() == "packages"), None)
+            if profile_parent is None:
+                raise SandboxUnavailable("Windows returned an unsupported AppContainer profile layout")
+            profile_root = profile_parent / self.profile_path.relative_to(profile_parent).parts[0]
+            if policy.private_path(self.profile_path) or any(self.profile_path.is_relative_to(root)
+                                                            for root in policy.read_only_paths):
+                raise SandboxUnavailable("The Windows process profile conflicts with a filesystem deny rule")
+            user_roots = (policy.workspace, *(path for path, _ in policy.grants))
+            if any(root.is_relative_to(profile_parent) for root in user_roots):
+                raise SandboxUnavailable("User workspace/grants cannot be inside Windows process-profile storage")
+            shared_profile_scope = any(profile_parent.is_relative_to(root) for root in user_roots)
             for path in (self.home, self.home / "AppData", self.home / "AppData" / "Roaming",
                          self.home / "AppData" / "Local", self.scratch):
                 path.mkdir(exist_ok=True)
@@ -425,19 +439,35 @@ class WindowsSandbox:
                 *((executable.parent,) if executable.name.lower() == "pwsh.exe"
                   and not executable.is_relative_to(policy.workspace) else ()),
             )))
-            protected = tuple(dict.fromkeys((*policy.protected_paths(), *runtime_roots)))
-            # Core commits use this same mutex. Keep workspace path
-            # classification and retained-object grants together, so a staged
-            # inode cannot move out of .virgo between preflight and its update.
-            # Runtime/profile grants retain their per-object locking below.
+            private = tuple(sorted(set(policy.private_paths), key=lambda path: len(path.parts)))
+            protected = tuple(dict.fromkeys((*policy.protected_paths(), *runtime_roots, *private, profile_parent)))
+            # Keep path classification and retained-object ACL updates under
+            # the existing per-user mutex. No payload starts until the full
+            # combination of allows and explicit denies has been installed.
             with self._grants._locked():
                 roots = ((policy.workspace, not policy.read_only), *policy.grants)
                 for root, writable in roots:
-                    excluded = (*runtime_roots, *(p for p, _ in roots if p != root and p.is_relative_to(root)))
-                    self._grants.grant_tree(root, writable, protected, reject_hardlinks=True, excluded=excluded)
+                    excluded = (*runtime_roots, *private, profile_parent,
+                                *(p for p, _ in roots if p != root and p.is_relative_to(root)))
+                    self._grants.grant_tree(root, writable, protected, reject_hardlinks=True,
+                                            excluded=excluded, skip_reparse=True)
             for root in runtime_roots:
-                self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)
-            self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
+                self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True,
+                                        excluded=(*private, profile_parent))
+            covered = []
+            for root in private:
+                if any(root.is_relative_to(parent) for parent in covered):
+                    continue
+                self._grants.grant_tree(root, False, deny_read=True)
+                covered.append(root)
+            if shared_profile_scope:
+                # A HOME grant must not authorize other executions' private
+                # homes/temp, including profiles created after this launch.
+                # Install parent/foreign denies first so cleanup revokes them
+                # before restoring our own profile's original inheritance.
+                self._grants.grant_tree(profile_parent, False, deny_read=True, excluded=(profile_root,))
+            self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True,
+                                    protect_root=shared_profile_scope)
             self._grants.validate_hardlinks()
             self._prepare_desktop()
             self.environment = self._environment(env, env_overrides or {})
@@ -662,8 +692,33 @@ class WindowsSandbox:
             expected = {_sid_bytes(value) for value in self._capability_buffers}
             if _token_sids(token, 30) != expected:  # TokenCapabilities
                 raise SandboxUnavailable("Windows returned unexpected sandbox capabilities")
+            self._verify_read_denials(token)
         finally:
             CloseHandle(token)
+
+    def _verify_read_denials(self, token):
+        duplicate = HANDLE()
+        _check(DuplicateToken(token, 2, ctypes.byref(duplicate)))  # SecurityImpersonation
+        try:
+            mapping = GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
+
+            def verify(descriptor, path, kind):
+                privileges = ctypes.create_string_buffer(256)
+                size, granted, permitted = DWORD(len(privileges)), DWORD(), BOOL()
+                # FILE_READ_DATA/LIST_DIRECTORY is the minimal content access.
+                # A failed GENERIC_READ check could still allow this one bit.
+                _check(AccessCheck(descriptor, duplicate, 1, ctypes.byref(mapping),
+                                   privileges, ctypes.byref(size), ctypes.byref(granted),
+                                   ctypes.byref(permitted)))
+                if permitted.value or granted.value:
+                    raise SandboxUnavailable(
+                        f"Windows LPAC cannot revoke ambient read access to this {kind}: {path}",
+                        reason="unsupported_read_deny", target=path, dimension="filesystem_read_deny",
+                    )
+
+            self._grants.verify_read_denials(verify)
+        finally:
+            _check(CloseHandle(duplicate))
 
     def _environment(self, source, explicit):
         allowed = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"}
