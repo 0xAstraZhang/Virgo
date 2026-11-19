@@ -34,6 +34,120 @@ def native(make_session):
     return native_session(make_session, {"win32"})
 
 
+@pytest.mark.parametrize("tool", ["write", "edit"])
+def test_core_mutation_preserves_live_background_workspace_writes(make_session, project, tool):
+    (project / ".virgo").mkdir()
+    native = native_session(make_session, {"win32"})
+    target = project / "ordinary.txt"
+    target.write_text("original\n")
+    baseline_dacl = dacl(target)
+    created = project / "created-by-core.txt"
+    jobs = native.services["jobs"]
+    result = run(native, command(f"""import time
+from pathlib import Path
+with Path('ordinary.txt').open('a') as stream:
+    stream.write('before\\n')
+Path('mutation-ready').touch()
+deadline = time.monotonic() + 45
+while not Path('release-mutation').exists():
+    assert time.monotonic() < deadline
+    time.sleep(.02)
+print('opening committed file for read', flush=True)
+assert Path('ordinary.txt').read_text() == 'changed\\n'
+print('opening committed file for append', flush=True)
+with Path('ordinary.txt').open('a') as stream:
+    stream.write('after\\n')
+print('committed file append complete', flush=True)
+if {tool == "write"}:
+    assert Path('created-by-core.txt').read_text() == 'created\\n'
+    with Path('created-by-core.txt').open('a') as stream:
+        stream.write('after\\n')
+"""), background=True)
+    assert not result.is_error, result.text()
+    job = list(jobs.jobs.values())[-1]
+    try:
+        wait_until(lambda: (project / "mutation-ready").exists() or job.done.is_set(), timeout=25)
+        assert (project / "mutation-ready").exists(), jobs.output(job)
+        assert target.read_text() == "original\nbefore\n"
+        restricting, = process_sids(job.proc.pid, 11)
+        package, = process_sids(job.proc.pid, 31)
+        original_dacl = dacl(target)
+        metadata_dacl = dacl(project / ".virgo")
+        arguments = ({"path": target.name, "content": "changed\n"} if tool == "write" else
+                     {"path": target.name, "edits": [{"old_text": "original\nbefore\n",
+                                                       "new_text": "changed\n"}]})
+        faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
+        native.prompt("Update the ordinary file while its background command is waiting")
+        mutation = tool_results(native)[-1]
+        assert not mutation.is_error, mutation.text()
+        assert target.read_text() == "changed\n"
+        committed_dacl = dacl(target)
+        created_dacl = None
+        if tool == "write":
+            faux.script("test", faux.reply(tools=[("write", {"path": created.name,
+                                                             "content": "created\n"})]), faux.reply("done"))
+            native.prompt("Create another ordinary file while the background command is waiting")
+            mutation = tool_results(native)[-1]
+            assert not mutation.is_error, mutation.text()
+            assert created.read_text() == "created\n"
+            created_dacl = dacl(created)
+        assert dacl(project / ".virgo") == metadata_dacl
+        assert not list((project / ".virgo").glob("mutation-*.tmp"))
+        (project / "release-mutation").touch()
+        assert job.done.wait(15), "background command did not drain after Core mutation"
+        assert job.status == "completed", (
+            f"Background status: {job.status}\nRestricting SID: {restricting}\nPackage SID: {package}\n"
+            f"DACL before Core mutation:\n{original_dacl}\nDACL after Core mutation:\n{committed_dacl}\n"
+            f"DACL of Core-created file:\n{created_dacl}\n"
+            f"Background output:\n{jobs.output(job)}"
+        )
+        assert target.read_text() == "changed\nafter\n"
+        # Atomic helper replacement inherits the parent's temporary grants;
+        # their inherited ACE flags need not match the old inode's explicit ACEs.
+        assert restricting in committed_dacl and package in committed_dacl, committed_dacl
+        assert dacl(target) == baseline_dacl
+        if tool == "write":
+            assert created.read_text() == "created\nafter\n"
+        for path in (project, project / ".virgo", target, *([created] if tool == "write" else [])):
+            cleaned = dacl(path)
+            assert restricting not in cleaned and package not in cleaned, cleaned
+    finally:
+        if not job.done.is_set():
+            jobs.kill(job)
+            assert job.done.wait(15), "fixture must drain its background command"
+
+def test_background_cancel_preserves_other_job_and_origin_after_switch(native, project):
+    from tests.support.harness import wait_until
+
+    # Native setup and session rebuilding can outlast a fixed sleep. Keep
+    # both payloads alive until the test cancels them, with bounded waits below.
+    command = python_command(
+        native, "from pathlib import Path; from threading import Event; Path('ready').touch(); Event().wait()"
+    )
+    result = run(native, command, background=True)
+    assert not result.is_error, result.text()
+    jobs = native.services['jobs']
+    first = list(jobs.jobs.values())[-1]
+    wait_until((project/'ready').exists)
+    (project/'ready').unlink()
+    result = run(native, command, background=True)
+    assert not result.is_error, result.text()
+    second = list(jobs.jobs.values())[-1]
+    try:
+        wait_until((project/'ready').exists)
+        native.new_session()
+        jobs.kill(first)
+        assert first.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), first.result
+        assert first.status == "killed", first.result
+        assert second.proc.poll() is None and not second.done.is_set()
+        assert first.accounting_store is second.accounting_store
+        assert first.accounting_store is not native.main.origin.root
+    finally:
+        jobs.kill(second)
+        assert second.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), second.result
+        assert second.status == "killed", second.result
+
+
 def test_windows_filesystem_helper_operations(native, project, monkeypatch):
     native_cases.filesystem_helper_operations(native, project, monkeypatch)
 
@@ -231,36 +345,6 @@ while not Path('child-ready').exists():
     while not (project/'late-write').exists() and time.monotonic()<deadline:
         time.sleep(.05)
     assert not (project/'late-write').exists(), 'Descendant retained workspace access after cleanup'
-
-
-def test_background_cancel_preserves_other_job_and_origin_after_switch(native, project):
-    from tests.support.harness import wait_until
-
-    command = python_command(
-        native, f"import time; from pathlib import Path; Path('ready').touch(); time.sleep({2 * _BACKGROUND_CLEANUP_TIMEOUT})"
-    )
-    result = run(native, command, background=True)
-    assert not result.is_error, result.text()
-    jobs = native.services['jobs']
-    first = list(jobs.jobs.values())[-1]
-    wait_until((project/'ready').exists)
-    (project/'ready').unlink()
-    result = run(native, command, background=True)
-    assert not result.is_error, result.text()
-    second = list(jobs.jobs.values())[-1]
-    try:
-        wait_until((project/'ready').exists)
-        native.new_session()
-        jobs.kill(first)
-        assert first.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), first.result
-        assert first.status == "killed", first.result
-        assert second.proc.poll() is None and not second.done.is_set()
-        assert first.accounting_store is second.accounting_store
-        assert first.accounting_store is not native.main.origin.root
-    finally:
-        jobs.kill(second)
-        assert second.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), second.result
-        assert second.status == "killed", second.result
 
 
 def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native, record_property):
@@ -705,87 +789,6 @@ print(json.dumps([device_result, child]))
 """
     expected = {name: [0, *([0xC0000022] * 4)] for name in DEVICE_ACCESS}  # STATUS_ACCESS_DENIED.
     assert data(run(native, command(source))) == [expected, expected]
-
-
-@pytest.mark.parametrize("tool", ["write", "edit"])
-def test_core_mutation_preserves_live_background_workspace_writes(native, project, tool):
-    target = project / "ordinary.txt"
-    target.write_text("original\n")
-    baseline_dacl = dacl(target)
-    created = project / "created-by-core.txt"
-    jobs = native.services["jobs"]
-    result = run(native, command(f"""import time
-from pathlib import Path
-with Path('ordinary.txt').open('a') as stream:
-    stream.write('before\\n')
-Path('mutation-ready').touch()
-deadline = time.monotonic() + 45
-while not Path('release-mutation').exists():
-    assert time.monotonic() < deadline
-    time.sleep(.02)
-print('opening committed file for read', flush=True)
-assert Path('ordinary.txt').read_text() == 'changed\\n'
-print('opening committed file for append', flush=True)
-with Path('ordinary.txt').open('a') as stream:
-    stream.write('after\\n')
-print('committed file append complete', flush=True)
-if {tool == "write"}:
-    assert Path('created-by-core.txt').read_text() == 'created\\n'
-    with Path('created-by-core.txt').open('a') as stream:
-        stream.write('after\\n')
-"""), background=True)
-    assert not result.is_error, result.text()
-    job = list(jobs.jobs.values())[-1]
-    try:
-        wait_until(lambda: (project / "mutation-ready").exists() or job.done.is_set(), timeout=25)
-        assert (project / "mutation-ready").exists(), jobs.output(job)
-        assert target.read_text() == "original\nbefore\n"
-        restricting, = process_sids(job.proc.pid, 11)
-        package, = process_sids(job.proc.pid, 31)
-        original_dacl = dacl(target)
-        metadata_dacl = dacl(project / ".virgo")
-        arguments = ({"path": target.name, "content": "changed\n"} if tool == "write" else
-                     {"path": target.name, "edits": [{"old_text": "original\nbefore\n",
-                                                       "new_text": "changed\n"}]})
-        faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
-        native.prompt("Update the ordinary file while its background command is waiting")
-        mutation = tool_results(native)[-1]
-        assert not mutation.is_error, mutation.text()
-        assert target.read_text() == "changed\n"
-        committed_dacl = dacl(target)
-        created_dacl = None
-        if tool == "write":
-            faux.script("test", faux.reply(tools=[("write", {"path": created.name,
-                                                             "content": "created\n"})]), faux.reply("done"))
-            native.prompt("Create another ordinary file while the background command is waiting")
-            mutation = tool_results(native)[-1]
-            assert not mutation.is_error, mutation.text()
-            assert created.read_text() == "created\n"
-            created_dacl = dacl(created)
-        assert dacl(project / ".virgo") == metadata_dacl
-        assert not list((project / ".virgo").glob("mutation-*.tmp"))
-        (project / "release-mutation").touch()
-        assert job.done.wait(15), "background command did not drain after Core mutation"
-        assert job.status == "completed", (
-            f"Background status: {job.status}\nRestricting SID: {restricting}\nPackage SID: {package}\n"
-            f"DACL before Core mutation:\n{original_dacl}\nDACL after Core mutation:\n{committed_dacl}\n"
-            f"DACL of Core-created file:\n{created_dacl}\n"
-            f"Background output:\n{jobs.output(job)}"
-        )
-        assert target.read_text() == "changed\nafter\n"
-        # Atomic helper replacement inherits the parent's temporary grants;
-        # their inherited ACE flags need not match the old inode's explicit ACEs.
-        assert restricting in committed_dacl and package in committed_dacl, committed_dacl
-        assert dacl(target) == baseline_dacl
-        if tool == "write":
-            assert created.read_text() == "created\nafter\n"
-        for path in (project, project / ".virgo", target, *([created] if tool == "write" else [])):
-            cleaned = dacl(path)
-            assert restricting not in cleaned and package not in cleaned, cleaned
-    finally:
-        if not job.done.is_set():
-            jobs.kill(job)
-            assert job.done.wait(15), "fixture must drain its background command"
 
 
 def test_core_create_during_command_preflight_preserves_workspace_writes(native, project, monkeypatch):
