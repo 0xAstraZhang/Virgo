@@ -46,7 +46,7 @@ jobs:
           $PSVersionTable | Format-List
           uv run --no-sync python -c "import platform,struct,sys; print(platform.platform()); print(sys.version); print(sys.executable); assert struct.calcsize('P') == 8"
       - name: Exercise actual Windows security boundaries
-        run: uv run --no-sync pytest -vv --tb=short -rA tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
+        run: uv run --no-sync pytest -vv --tb=short -rA --maxfail=1 tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
       - name: Reject empty or skipped security reports
         if: ${{ !cancelled() }}
         shell: pwsh
