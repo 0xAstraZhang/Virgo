@@ -241,6 +241,41 @@ def test_resource_approval_controls_one_file_write(sandbox_session, project, key
                    "permissions": {"write_paths": [str(directory)]}, "reason": "Write requested result"})
         session = sandbox_session(faux.reply(tools=[request]), faux.reply(tools=[("write", args)]),
                                  faux.reply("finished"), ui=ui)
+
+        def failure_diagnostics():
+            # Inspect only this fixture's records, and only after the assertion fails.
+            try:
+                from virgo.harness.resource_rules import ResourceRules
+
+                from tests.support.harness import tool_results
+
+                readers = {
+                    "tool_results": lambda: [{
+                        "tool": result.tool_name, "call_id": result.tool_call_id,
+                        "is_error": result.is_error, "text": result.text(), "details": result.details,
+                    } for result in tool_results(session)],
+                    "permission_requests": lambda: [entry for entry in session.store.entries
+                                                    if entry.get("kind") == "permission_request"],
+                    "saved_grants": lambda: ResourceRules(session.paths.user).list(str(session.cwd)),
+                    "execution": lambda: {
+                        "context": session.main.execution_context.describe(),
+                        "approval": session.approval_policy,
+                        "origin": session.main.origin.identity,
+                        "workspace": str(session.main.origin.workspace),
+                        "cwd": str(session.main.cwd), "run_id": session.main.run_id,
+                    },
+                }
+                diagnostics = {}
+                for name, read in readers.items():
+                    try:
+                        diagnostics[name] = read()
+                    except Exception as error:
+                        diagnostics[name] = {"diagnostic_error": type(error).__name__}
+                return json.dumps(diagnostics, ensure_ascii=False, indent=2,
+                                  default=lambda value: f"<{type(value).__name__}>")
+            except Exception as error:
+                return f"Approval diagnostic unavailable: {type(error).__name__}"
+
         app = VirgoApp(session, ui, initial="write file")
         async with app.run_test(size=(80, 24)) as pilot:
             picker = app.query_one(ApprovalPicker)
@@ -251,7 +286,7 @@ def test_resource_approval_controls_one_file_write(sandbox_session, project, key
             # This final scripted reply waits for the native file mutation.
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy,
                            timeout=120 if os.name == "nt" else 4)
-            assert target.exists() is (answer in {"y", "a"})
+            assert target.exists() is (answer in {"y", "a"}), failure_diagnostics()
             if answer == "a":
                 from virgo.harness.resource_rules import ResourceRules
 
