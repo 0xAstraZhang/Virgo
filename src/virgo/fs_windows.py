@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import json
 import msvcrt
 import ntpath
 import os
 import re
 import weakref
 from dataclasses import dataclass
+from pathlib import Path
 
 DWORD, WORD, HANDLE = ctypes.c_uint32, ctypes.c_uint16, ctypes.c_void_p
 NTSTATUS, BOOL = ctypes.c_int32, ctypes.c_int32
@@ -22,6 +24,7 @@ FILE_READ_ATTRIBUTES, SYNCHRONIZE = 0x80, 0x100000
 FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT = 0x10, 0x400
 kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 ntdll = ctypes.WinDLL("ntdll")
+_DEVICES = json.loads(Path(__file__).with_name("windows_devices.json").read_bytes())
 
 
 class _UnicodeString(ctypes.Structure):
@@ -65,9 +68,6 @@ def _api(library, name, args, result=BOOL):
 
 
 CloseHandle = _api(kernel, "CloseHandle", [HANDLE])
-CreateFile = _api(kernel, "CreateFileW", [
-    ctypes.c_wchar_p, DWORD, DWORD, ctypes.c_void_p, DWORD, DWORD, HANDLE,
-], HANDLE)
 GetFileInformation = _api(kernel, "GetFileInformationByHandle", [HANDLE, ctypes.POINTER(_ByHandleInfo)])
 GetVolumeInformation = _api(kernel, "GetVolumeInformationByHandleW", [
     HANDLE, ctypes.c_wchar_p, DWORD, ctypes.POINTER(DWORD), ctypes.POINTER(DWORD),
@@ -83,9 +83,12 @@ NtSetInformationFile = _api(ntdll, "NtSetInformationFile", [
 RtlNtStatusToDosError = _api(ntdll, "RtlNtStatusToDosError", [NTSTATUS], DWORD)
 
 
-def _check(value):
+def _check(value, operation=None):
     if not value:
-        raise ctypes.WinError(ctypes.get_last_error())
+        error = ctypes.WinError(ctypes.get_last_error())
+        if operation:
+            error.strerror = f"{operation}: {error.strerror}"
+        raise error
     return value
 
 
@@ -126,7 +129,7 @@ class FileInfo:
 def descriptor_identity(descriptor: int) -> tuple[int, int]:
     """Read the same native identity from an already checked CRT descriptor."""
     info = _ByHandleInfo()
-    _check(GetFileInformation(msvcrt.get_osfhandle(descriptor), ctypes.byref(info)))
+    _check(GetFileInformation(msvcrt.get_osfhandle(descriptor), ctypes.byref(info)), "GetFileInformationByHandle")
     return info.VolumeSerial, (info.IndexHigh << 32) | info.IndexLow
 
 
@@ -141,7 +144,7 @@ class FileHandle:
 
     def refresh_info(self) -> FileInfo:
         native = _ByHandleInfo()
-        _check(GetFileInformation(self.value, ctypes.byref(native)))
+        _check(GetFileInformation(self.value, ctypes.byref(native)), "GetFileInformationByHandle")
         if native.Attributes & FILE_ATTRIBUTE_REPARSE_POINT and not self._allow_reparse:
             raise OSError(errno.ELOOP, "Windows sandbox paths must not contain reparse points")
         self.info = FileInfo(native.Attributes, native.Links, native.VolumeSerial,
@@ -176,7 +179,7 @@ class FileHandle:
 def _check_filesystem(handle, name):
     filesystem, flags = ctypes.create_unicode_buffer(32), DWORD()
     _check(GetVolumeInformation(handle, None, 0, None, None, ctypes.byref(flags),
-                                 filesystem, len(filesystem)))
+                               filesystem, len(filesystem)), "GetVolumeInformationByHandleW")
     if filesystem.value.upper() != "NTFS" or not flags.value & 0x8:  # PERSISTENT_ACLS
         raise _invalid(name, "a local NTFS volume with persistent ACLs is required")
 
@@ -209,6 +212,7 @@ def _open(name, access, *, parent=None, share_delete=True, share_write=True,
                           sharing, disposition, options, None, 0)
     if result < 0:
         error = ctypes.WinError(RtlNtStatusToDosError(result))
+        error.strerror = f"NtCreateFile: {error.strerror}"
         error.filename = name
         raise error
     try:
@@ -223,41 +227,27 @@ def _open(name, access, *, parent=None, share_delete=True, share_write=True,
 
 def open_path(path, access, *, share_delete=True, share_write=True, directory=None,
               disposition=FILE_OPEN, allow_reparse=False) -> FileHandle:
-    """Open below a retained drive root, refusing filesystem reparses throughout."""
+    """Open the complete native path without requiring access to its drive root."""
     normalized = normalize_path(path)
-    if allow_reparse and len(normalized) > 3:
-        # Cleanup may remove our ACE from a junction created by a payload. Open
-        # only its final object relative to a pinned, non-reparse parent. This
-        # never turns a link target into an ACL mutation target.
+    if allow_reparse or disposition != FILE_OPEN:
+        if len(normalized) == 3:
+            raise _invalid(path, "the drive root requires an existing directory open")
+        # Verify the filesystem before creating anything, then retain the parent
+        # for the operation. Reparse-object opens can address only the leaf.
         parent_path, name = ntpath.split(normalized)
         with open_path(parent_path, FILE_READ_ATTRIBUTES, directory=True,
                        share_delete=False, share_write=False) as parent:
             return open_child(parent, name, access, share_delete=share_delete,
                               share_write=share_write, directory=directory,
-                              disposition=disposition, allow_reparse=True)
-    # Resolving a DOS-device symbolic link with QueryDosDevice is a host-only
-    # namespace query under LPAC. A zero-access directory handle needs metadata
-    # only; it neither grants directory listings nor bypasses child ACL checks.
-    value = CreateFile(normalized[:3], 0, 0x7, None, 3, 0x02000000 | 0x00200000, None)
-    if value == ctypes.c_void_p(-1).value:
-        error = ctypes.WinError(ctypes.get_last_error())
-        error.filename = normalized[:3]
-        raise error
-    try:
-        root = FileHandle(value)
-    except BaseException:
-        CloseHandle(value)
-        raise
-    if len(normalized) == 3:
-        if directory is False or disposition != FILE_OPEN:
-            root.close()
-            raise _invalid(path, "the drive root requires an existing directory open")
-        return root
-    with root:
-        if disposition != FILE_OPEN:
-            _check_filesystem(root.value, normalized[:3])
-        return _open(normalized[3:], access, parent=root.value, share_delete=share_delete,
-                     share_write=share_write, directory=directory, disposition=disposition)
+                              disposition=disposition, allow_reparse=allow_reparse)
+    # DOS-device namespace queries and even metadata-only drive-root opens can
+    # fail in LPAC. The executor captured physical volume names before launch,
+    # independently of model arguments, in this same protected runtime snapshot.
+    device = _DEVICES.get(normalized[:2])
+    if not isinstance(device, str) or not re.fullmatch(r"\\Device\\HarddiskVolume[0-9]+", device, re.IGNORECASE):
+        raise _invalid(path, "a captured direct local disk drive is required")
+    return _open(device + normalized[2:], access, share_delete=share_delete,
+                 share_write=share_write, directory=directory)
 
 
 def open_child(parent: FileHandle, name: str, access, *, share_delete=True, share_write=True,

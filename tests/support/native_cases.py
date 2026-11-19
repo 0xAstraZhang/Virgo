@@ -6,6 +6,7 @@ def filesystem_helper_operations(native, project, monkeypatch):
     """File tools, direct OS denials, snapshots and opaque outputs share a boundary."""
     import errno
     import os
+    import subprocess
     import sys
     import tempfile
     import threading
@@ -57,7 +58,8 @@ def filesystem_helper_operations(native, project, monkeypatch):
         nested = replace(access, executor=nested_executor)
         worker = nested_executor.files.directory / "fs_worker.py"
         contents = worker.read_bytes()
-        code = f"""from pathlib import Path
+        code = f"""import sys
+from pathlib import Path
 path = Path({str(worker)!r})
 try:
     path.chmod(0o600)
@@ -66,15 +68,48 @@ except OSError:
     print('snapshot-denied')
 else:
     raise AssertionError('command modified its trusted filesystem worker')
+print('runtime-ready', flush=True)
+future = Path(sys.stdin.readline().strip())
+assert future.read_text() == 'future-canary'
+try:
+    future.write_text('modified-by-earlier-executor')
+except OSError:
+    print('future-runtime-denied')
+else:
+    raise AssertionError('command modified a later executor runtime')
+Path('future-runtime-control.txt').write_text('allowed')
 """
         command = nested.run_process(ProcessRequest((sys.executable, "-I", "-S", "-c", code),
-                                                    project, dict(os.environ)))
+                                                    project, dict(os.environ), stdin=subprocess.PIPE,
+                                                    stderr=subprocess.PIPE))
+        future_executor = None
         try:
-            assert command.wait(timeout=20) == 0
-            assert b"snapshot-denied" in command.stdout.read()
+            assert command.stdout.readline().rstrip(b"\r\n") == b"snapshot-denied"
+            assert command.stdout.readline().rstrip(b"\r\n") == b"runtime-ready"
+            # This snapshot did not exist when the older process received its
+            # workspace grants. Its protection must include future instances.
+            with monkeypatch.context() as patch:
+                patch.setattr(tempfile, "tempdir", str(project))
+                future_executor = SandboxExecutor()
+            future_executor.files.directory.chmod(0o700)
+            canary = future_executor.files.directory / "future-canary.txt"
+            canary.write_text("future-canary")
+            canary.chmod(0o600)
+            future_executor.files.directory.chmod(0o500)
+            command.stdin.write((str(canary) + "\n").encode())
+            command.stdin.close()
+            code = command.wait(timeout=20)
+            stdout, stderr = command.stdout.read(), command.stderr.read()
+            assert code == 0, {"stdout": stdout, "stderr": stderr}
+            assert b"future-runtime-denied" in stdout
+            assert canary.read_text() == "future-canary"
+            assert (project / "future-runtime-control.txt").read_text() == "allowed"
         finally:
             cleanup_process(command)
-            command.stdout.close()
+            for stream in (command.stdin, command.stdout, command.stderr):
+                stream.close()
+            if future_executor is not None:
+                future_executor.close()
         denied = operation("write", {"path": str(worker), "content": "raise SystemExit(73)"}, context=nested)
         assert not denied["ok"] and worker.read_bytes() == contents, denied
         assert operation("read", {"path": "worker/file.txt"}, context=nested)["ok"]
