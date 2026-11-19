@@ -16,7 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
-WORKER_TIMEOUT_SECONDS = 180
+WORKER_TIMEOUT_SECONDS = 600
 
 
 def session_settings(contract, mode):
