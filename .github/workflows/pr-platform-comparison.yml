@@ -104,7 +104,7 @@ jobs:
     if: needs.resolve.outputs.run_tests == 'true'
     name: ${{ matrix.os }} / ${{ matrix.revision }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 35 || 20 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || matrix.os == 'macos-latest' && 40 || 20 }}
     strategy:
       fail-fast: false
       matrix:

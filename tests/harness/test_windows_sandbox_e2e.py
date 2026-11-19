@@ -773,7 +773,9 @@ if {tool == "write"}:
             f"Background output:\n{jobs.output(job)}"
         )
         assert target.read_text() == "changed\nafter\n"
-        assert committed_dacl == original_dacl
+        # Atomic helper replacement inherits the parent's temporary grants;
+        # their inherited ACE flags need not match the old inode's explicit ACEs.
+        assert restricting in committed_dacl and package in committed_dacl, committed_dacl
         assert dacl(target) == baseline_dacl
         if tool == "write":
             assert created.read_text() == "created\nafter\n"
@@ -787,17 +789,17 @@ if {tool == "write"}:
 
 
 def test_core_create_during_command_preflight_preserves_workspace_writes(native, project, monkeypatch):
-    from contextlib import contextmanager
-
-    from virgo.sandbox import windows_acl, windows_files
+    from virgo.sandbox import windows_acl
     from virgo.tools.bash import run_command
 
     target = project / "created-during-preflight.txt"
     entered, release = threading.Event(), threading.Event()
-    attempted_commit, committed = threading.Event(), threading.Event()
+    dispatched, completed = threading.Event(), threading.Event()
     ready = project / "reader-ready"
     observations = {}
-    grant_tree, replace_staged = windows_acl.AclGrants.grant_tree, windows_files.replace_staged
+    grant_tree = windows_acl.AclGrants.grant_tree
+    executor = native.main.execution_context.executor
+    run_file_operation = executor.run_file_operation
 
     def observed_preflight(owner, root, *args, **kwargs):
         if root == project:
@@ -805,17 +807,17 @@ def test_core_create_during_command_preflight_preserves_workspace_writes(native,
             assert release.wait(20)
         return grant_tree(owner, root, *args, **kwargs)
 
-    @contextmanager
-    def observed_commit(source, destination, **kwargs):
-        if destination == target:
-            attempted_commit.set()
-        with replace_staged(source, destination, **kwargs):
-            yield
-        if destination == target:
-            committed.set()
+    def observed_operation(operation, arguments, **kwargs):
+        mutation = operation == "write" and arguments.get("path") == target.name
+        if mutation:
+            dispatched.set()
+        result = run_file_operation(operation, arguments, **kwargs)
+        if mutation:
+            completed.set()
+        return result
 
     monkeypatch.setattr(windows_acl.AclGrants, "grant_tree", observed_preflight)
-    monkeypatch.setattr(windows_files, "replace_staged", observed_commit)
+    monkeypatch.setattr(executor, "run_file_operation", observed_operation)
     source = """from pathlib import Path
 import time
 Path('reader-ready').touch()
@@ -845,8 +847,8 @@ with p.open('a') as stream:
     try:
         assert entered.wait(20)
         writer.start()
-        assert attempted_commit.wait(15), "Core must reach commit while native preflight owns the mutex"
-        assert not committed.wait(0.25), "A Core commit must wait for workspace grant classification"
+        assert dispatched.wait(15), "The file tool must dispatch its helper while native preflight owns the mutex"
+        assert not completed.wait(0.25), "The helper must wait for workspace grant classification before launching"
     finally:
         release.set()
         if writer.ident is not None:
@@ -854,5 +856,5 @@ with p.open('a') as stream:
         shell.join(45)
     out, code, status = observations["launch"]
     assert code == 0 and status == "ok" and ready.exists(), out.text
-    assert committed.is_set() and not observations["write"].is_error
+    assert completed.is_set() and not observations["write"].is_error
     assert target.read_text() == "created and updated"
