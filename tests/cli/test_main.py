@@ -70,7 +70,7 @@ def test_cli_applies_execution_override_before_validating_user_preset(project, m
     cli = import_module("virgo.cli.main")
     home = Path(os.environ["VIRGO_HOME"])
     executor = SimpleNamespace(backend="not-launched")
-    monkeypatch.setattr("virgo.extensions.sandbox.NativeExecutor", lambda: executor)
+    monkeypatch.setattr("virgo.sandbox.SandboxExecutor", lambda: executor)
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     (home / "settings.json").write_text(json.dumps({"language": "zh-CN", "permissions": {"preset": "workspace-edit"}}))
 

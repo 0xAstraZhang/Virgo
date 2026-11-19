@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import struct
+import subprocess
 import sys
 import uuid
 from contextlib import ExitStack
@@ -344,7 +345,7 @@ class _DeviceLease:
 class WindowsSandbox:
     """One token/profile/ACL lease, released only after verified Job drain."""
 
-    def __init__(self, policy, argv, cwd, env, cancellation):
+    def __init__(self, policy, argv, cwd, env, cancellation, *, env_overrides=None):
         self.policy, self.cancellation = policy, cancellation
         self.process = None
         self.token = None
@@ -363,8 +364,8 @@ class WindowsSandbox:
             _require_network_isolation()
             self.cwd = validate_policy(policy, cwd)
             executable = Path(normalize_path(argv[0]))
-            if executable.name.lower() != "pwsh.exe":
-                raise SandboxUnavailable("Windows sandbox execution requires PowerShell 7 (select /shell pwsh)")
+            if executable.suffix.lower() != ".exe":
+                raise SandboxUnavailable("Windows sandbox execution requires an explicit native .exe path")
             with open_path(executable, 0x1, directory=False):
                 pass
             # Deny deletion of the root/cwd themselves, but permit write sharing:
@@ -383,8 +384,8 @@ class WindowsSandbox:
             self._capabilities = (SidAndAttributes * len(self._capability_buffers))(
                 *(SidAndAttributes(ctypes.cast(value, PSID), 0x4) for value in self._capability_buffers)
             )
-            profile = "VirgoShell." + uuid.uuid4().hex
-            _hresult(CreateProfile(profile, profile, "Temporary Virgo shell sandbox",
+            profile = "VirgoProcess." + uuid.uuid4().hex
+            _hresult(CreateProfile(profile, profile, "Temporary Virgo process sandbox",
                                    self._capabilities, len(self._capabilities),
                                    ctypes.byref(self._package_sid)), "CreateAppContainerProfile")
             self._profile = profile
@@ -417,7 +418,12 @@ class WindowsSandbox:
             self._prepare_device("KsecDD", 0x100003, (self.write_sid,))
             self._prepare_device("Null", 0x12019F, (self.package_sid, self.write_sid))
             runtime_roots = tuple(dict.fromkeys((
-                *policy.runtime_paths(), executable.parent,
+                *policy.runtime_paths(),
+                # Retain the selected Shell's established installation grant.
+                # Other payloads must use existing runtime/workspace resources
+                # or explicit read grants, not expose arbitrary sibling files.
+                *((executable.parent,) if executable.name.lower() == "pwsh.exe"
+                  and not executable.is_relative_to(policy.workspace) else ()),
             )))
             protected = tuple(dict.fromkeys((*policy.protected_paths(), *runtime_roots)))
             # Core commits use this same mutex. Keep workspace path
@@ -434,7 +440,7 @@ class WindowsSandbox:
             self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
             self._grants.validate_hardlinks()
             self._prepare_desktop()
-            self.environment = self._environment(env)
+            self.environment = self._environment(env, env_overrides or {})
             self._check_cancelled()
         except BaseException as setup_error:
             try:
@@ -659,9 +665,10 @@ class WindowsSandbox:
         finally:
             CloseHandle(token)
 
-    def _environment(self, source):
+    def _environment(self, source, explicit):
         allowed = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"}
         result = {key.upper(): value for key, value in source.items() if key.upper() in allowed}
+        result.update({key.upper(): value for key, value in explicit.items()})
         windows = _directory(GetWindowsDirectory)
         result.update(
             SYSTEMROOT=str(windows), WINDIR=str(windows), COMSPEC=str(SYSTEM_DIRECTORY / "cmd.exe"),
@@ -703,14 +710,15 @@ class WindowsSandbox:
         self.process = None
 
 
-def spawn(policy, argv, cwd, env, stdout, cancellation):
-    from ...tools.windows_process import WindowsProcess
+def spawn(policy, argv, cwd, env, stdout, cancellation, *, stdin=subprocess.DEVNULL,
+          stderr=subprocess.STDOUT, env_overrides=None):
+    from ..tools.windows_process import WindowsProcess
 
     envelope, proc = None, None
     try:
-        envelope = WindowsSandbox(policy, argv, cwd, env, cancellation)
+        envelope = WindowsSandbox(policy, argv, cwd, env, cancellation, env_overrides=env_overrides)
         proc = WindowsProcess(argv, cwd=envelope.cwd, env=envelope.environment,
-                              stdout=stdout, sandbox=envelope)
+                              stdin=stdin, stdout=stdout, stderr=stderr, sandbox=envelope)
         proc._virgo_sandbox_tmp = envelope
         proc._virgo_sandbox = {**policy.describe(), "backend": "windows-lpac",
                                "filesystem": "lpac-acl-with-write-restriction"}

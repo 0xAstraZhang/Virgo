@@ -8,8 +8,8 @@ import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ...execution import ExecutionUnavailable, FileAccessDenied
-from ...harness.execution_modes import PermissionPreset, PermissionSnapshot
+from ..execution import ExecutionUnavailable, FileAccessDenied
+from ..harness.execution_modes import PermissionPreset, PermissionSnapshot
 
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 
@@ -141,9 +141,9 @@ class SandboxPolicy:
             if directory is not None:
                 os.close(directory)
 
-    def spawn(self, argv, cwd, env, stdout, output_path=None, cancellation=None):
-        cwd = self.validate(cwd)
-        return self.executor.spawn(self, argv, cwd, env, stdout, output_path, cancellation)
+    def run_process(self, request, cancellation=None):
+        self.validate(request.cwd)
+        return self.executor.run_process(request, self, cancellation)
 
     def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
         from .files import read_bytes

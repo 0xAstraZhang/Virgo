@@ -23,10 +23,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...execution import ExecutionCancelled as SandboxCancelled
-from ...execution import ExecutionFailed as SandboxProcessError
-from ...execution import ExecutionUnavailable as SandboxUnavailable
-from ...execution import HostProcess
+from ..execution import ExecutionCancelled as SandboxCancelled
+from ..execution import ExecutionFailed as SandboxProcessError
+from ..execution import ExecutionUnavailable as SandboxUnavailable
+from ..execution import HostProcess, environment_overrides
 from .links import external_writable_links
 
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
@@ -452,15 +452,18 @@ class NativePolicy:
         return [str(launcher), "-p", "\n".join(lines)]
 
     def spawn(self, argv: list[str], cwd: Path, env: dict[str, str], stdout,
-              output_path: Path | None = None, cancellation=None) -> subprocess.Popen:
+              output_path: Path | None = None, cancellation=None, *, stdin=subprocess.DEVNULL,
+              stderr=subprocess.STDOUT, env_overrides=None) -> subprocess.Popen:
         if cancellation is not None and cancellation.is_set():
             raise SandboxCancelled("Sandbox launch cancelled")
         cwd = self.validate(cwd)
+        explicit_env = environment_overrides(env_overrides or {})
         backend, launcher = platform_backend()
         if backend == "windows-lpac":
             from .windows_sandbox import spawn
 
-            return spawn(self, argv, cwd, env, stdout, cancellation)
+            return spawn(self, argv, cwd, env, stdout, cancellation, stdin=stdin, stderr=stderr,
+                         env_overrides=explicit_env)
         if launcher.is_relative_to(self.workspace):
             raise SandboxUnavailable("Workspace must not contain the sandbox launcher")
         scratch = _CommandScratch()
@@ -473,6 +476,7 @@ class NativePolicy:
         try:
             (scratch_path / "home").mkdir()
             clean_env = {key: value for key, value in env.items() if key in _ENV_KEYS}
+            clean_env.update(explicit_env)
             clean_env.update(HOME=str(scratch_path / "home"), TMPDIR=str(scratch_path),
                              TMP=str(scratch_path), TEMP=str(scratch_path), VIRGO="1")
             if backend == "bubblewrap":
@@ -530,10 +534,11 @@ class NativePolicy:
                 # through the same verified process-tree cleanup path.
                 proc._virgo_sandbox_tmp = scratch
                 proc._virgo_sandbox = {**self.describe(), "backend": backend}
-                proc.start(command, stdout, status_write, len(prefix) + 5, cancellation)
+                proc.start(command, stdout, status_write, len(prefix) + 5, cancellation,
+                           stdin=stdin, stderr=stderr)
             else:
                 proc = subprocess.Popen(command, cwd=cwd, env=clean_env,
-                                        stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.STDOUT,
+                                        stdin=stdin, stdout=stdout, stderr=stderr,
                                         start_new_session=True, pass_fds=(*inherited, status_write))
             proc._virgo_sandbox_tmp = scratch
             proc._virgo_sandbox = {**self.describe(), "backend": backend}
@@ -591,6 +596,11 @@ class NativePolicy:
                         )
                         failure.boundary = {"cleanup": "failed", "payload_started": "unknown", "side_effects": "possible"}
                         raise failure from cleanup_error
+                    finally:
+                        for name in ("stdin", "stdout", "stderr"):
+                            stream = getattr(proc, name, None)
+                            if stream is not None:
+                                stream.close()
                 else:
                     scratch.cleanup()
 

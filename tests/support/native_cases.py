@@ -2,6 +2,51 @@
 from tests.support.sandbox import python_command, run
 
 
+def generic_process_stdio(native, project):
+    """A non-Shell process exchanges separate protocol and diagnostic streams."""
+    import os
+    import subprocess
+    import sys
+
+    from virgo.execution import ProcessRequest, cleanup_process
+
+    outside = project.parent / "stdio-outside.txt"
+    outside.write_text("unchanged")
+    source = f"""import os, sys
+from pathlib import Path
+assert 'UNGRANTED_TEST_SECRET' not in os.environ
+assert os.environ['MCP_TEST_CREDENTIAL'] == 'explicit-grant'
+value = sys.stdin.buffer.read()
+sys.stdout.buffer.write(b'protocol:' + value)
+sys.stdout.buffer.flush()
+sys.stderr.buffer.write(b'diagnostic:' + value)
+sys.stderr.buffer.flush()
+try: Path({str(outside)!r}).write_text('bad')
+except OSError: pass
+else: raise AssertionError('outside write succeeded')
+"""
+    request = ProcessRequest((sys.executable, "-I", "-S", "-c", source), project,
+                             {**os.environ, "UNGRANTED_TEST_SECRET": "must-not-inherit"},
+                             stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+                             env_overrides={"MCP_TEST_CREDENTIAL": "explicit-grant"})
+    process = native.main.execution_context.run_process(request)
+    try:
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        process.stdin.write(b"hello stdio")
+        process.stdin.close()
+        assert process.wait(timeout=15) == 0
+        assert process.stdout.read() == b"protocol:hello stdio"
+        assert process.stderr.read() == b"diagnostic:hello stdio"
+        assert outside.read_text() == "unchanged"
+    finally:
+        cleanup_process(process)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
 def workspace_write_and_indirect_escape(native, project):
     outside = project.parent / "outside.txt"
     outside.write_text("unchanged")

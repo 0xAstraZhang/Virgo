@@ -117,16 +117,16 @@ def trash(tmp_path, monkeypatch):
 def broker_session(make_session, monkeypatch, tmp_path):
     """Exercise broker decisions without launching an OS sandbox."""
     from virgo.execution import ExecutionUnavailable
-    from virgo.extensions.sandbox.native import NativeExecutor
+    from virgo.sandbox.native import NativeExecutor
 
     from tests.support.execution import sandbox_config
 
-    monkeypatch.setattr("virgo.extensions.sandbox.native.platform_backend", lambda: ("not-launched", tmp_path))
+    monkeypatch.setattr("virgo.sandbox.native.platform_backend", lambda: ("not-launched", tmp_path))
 
     def unavailable(*args, **kwargs):
         raise ExecutionUnavailable("Native backend deliberately unavailable in broker test", reason="backend_unavailable")
 
-    monkeypatch.setattr(NativeExecutor, "spawn", unavailable)
+    monkeypatch.setattr(NativeExecutor, "run_process", unavailable)
 
     def factory(*responses, preset="workspace-edit", settings=None, **kw):
         from virgo.harness.settings import deep_merge

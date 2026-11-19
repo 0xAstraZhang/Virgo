@@ -33,6 +33,10 @@ def native(make_session):
     return native_session(make_session, {"linux", "darwin"})
 
 
+def test_native_generic_process_stdio(native, project):
+    native_cases.generic_process_stdio(native, project)
+
+
 @pytest.fixture
 def short_workspace():
     """Keep AF_UNIX paths under Darwin's sun_path limit."""
@@ -861,14 +865,14 @@ def test_missing_backend_is_fail_closed_in_real_session(make_session, project, m
     def unavailable():
         raise ExecutionUnavailable("Missing native backend")
 
-    monkeypatch.setattr("virgo.extensions.sandbox.native.platform_backend", unavailable)
+    monkeypatch.setattr("virgo.sandbox.native.platform_backend", unavailable)
     with pytest.raises(ExecutionUnavailable, match="Missing native backend"):
         make_session(settings={"execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
     assert not (project / "payload-ran").exists()
 
 
 def test_required_provider_initialization_failure_aborts_session(make_session, project, monkeypatch):
-    import virgo.extensions.sandbox as extension
+    import virgo.sandbox as extension
 
     def broken(api):
         raise RuntimeError('required provider setup failed')
@@ -894,7 +898,7 @@ def test_project_cannot_disable_user_sandbox(make_session, project):
 def test_unacknowledged_native_launch_keeps_unknown_facts(broker_session, project, monkeypatch, background, payload):
     """A lost startup acknowledgement cannot authorize replay."""
     from virgo.execution import ExecutionFailed
-    from virgo.extensions.sandbox.native import NativeExecutor
+    from virgo.sandbox.native import NativeExecutor
 
     attempts = []
 
@@ -905,7 +909,7 @@ def test_unacknowledged_native_launch_keeps_unknown_facts(broker_session, projec
         raise ExecutionFailed("The native launcher could not confirm execution")
 
     session = broker_session()
-    monkeypatch.setattr(NativeExecutor, "spawn", uncertain)
+    monkeypatch.setattr(NativeExecutor, "run_process", uncertain)
     result = run(session, "synthetic workload", background=background)
     assert result.is_error and result.details["status"] == "execution_failed"
     if background:
@@ -1196,7 +1200,7 @@ def test_linux_resolver_configuration_accepts_only_trusted_service_metadata(proj
     """
     import pwd
 
-    from virgo.extensions.sandbox import platform as sandbox
+    from virgo.sandbox import platform as sandbox
 
     entry = Path("/etc/resolv.conf")
     target = Path("/run/systemd/resolve/stub-resolv.conf")
@@ -1265,8 +1269,8 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
     This launches a real synthetic wrapper that never executes the payload. It
     validates the launch protocol, not OS isolation (covered by native tests).
     """
-    from virgo.extensions.sandbox import native as dispatcher
-    from virgo.extensions.sandbox import platform as sandbox
+    from virgo.sandbox import native as dispatcher
+    from virgo.sandbox import platform as sandbox
 
     launcher = project.parent / "reject_after_probe.py"
     attempts = project.parent / "launch-attempts.txt"
@@ -1318,8 +1322,8 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     isolation. Only acknowledgement observation and the broker deadline clock
     are controlled; the payload writes a disposable marker exactly once.
     """
-    from virgo.extensions.sandbox import native as dispatcher
-    from virgo.extensions.sandbox import platform as sandbox
+    from virgo.sandbox import native as dispatcher
+    from virgo.sandbox import platform as sandbox
 
     launcher = project.parent / "forward_payload.py"
     marker = project / "payload-ran.txt"

@@ -6,20 +6,20 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, call, sentinel
 
-from virgo.execution import HostContext, HostProcess, cleanup_process
+from virgo.execution import HostContext, HostProcess, ProcessRequest, cleanup_process
 
 
 def test_host_cleanup_after_group_leader_exit_preserves_other_job(tmp_path):
     host = HostContext(tmp_path)
     waiting = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
                "print('ready', flush=True); time.sleep(30)")
-    other = host.spawn([sys.executable, "-c", waiting], tmp_path, os.environ, subprocess.PIPE)
+    other = host.run_process(ProcessRequest((sys.executable, "-c", waiting), tmp_path, dict(os.environ)))
     code = ("import subprocess, sys; "
             "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4)'], stdout=sys.stdout); "
             "sys.exit(17)")
     try:
         assert other.stdout.readline().strip() == b"ready"
-        command = host.spawn([sys.executable, "-c", code], tmp_path, os.environ, subprocess.PIPE)
+        command = host.run_process(ProcessRequest((sys.executable, "-c", code), tmp_path, dict(os.environ)))
         try:
             assert command.wait(timeout=5) == 17
             cleanup_process(command)
@@ -78,7 +78,7 @@ def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
         sandbox_modules = (
             "virgo.harness.sandbox", "virgo.tools.sandbox", "virgo.tools.sandbox_files",
             "virgo.tools.windows_sandbox", "virgo.tools.windows_sandbox_acl",
-            "virgo.tools.windows_sandbox_files", "virgo.extensions.sandbox",
+            "virgo.tools.windows_sandbox_files", "virgo.sandbox",
         )
         class ObserveImports:
             def find_spec(self, fullname, path, target=None):
@@ -86,7 +86,7 @@ def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
                     imports.append(fullname)
         sys.meta_path.insert(0, ObserveImports())
 
-        from virgo.execution import HostContext, cleanup_process
+        from virgo.execution import HostContext, ProcessRequest, cleanup_process
 
         project = Path(sys.argv[1])
         host = HostContext(project)
@@ -95,7 +95,7 @@ def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
             stream.write(b"from the editor")
             commit()
         command = "from pathlib import Path; print(Path('message.txt').read_text())"
-        process = host.spawn([sys.executable, "-c", command], project, os.environ, subprocess.PIPE)
+        process = host.run_process(ProcessRequest((sys.executable, "-c", command), project, dict(os.environ)))
         try:
             assert process.wait(timeout=5) == 0
             assert process.stdout.read().strip() == b"from the editor"

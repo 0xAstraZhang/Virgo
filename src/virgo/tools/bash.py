@@ -37,7 +37,10 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, 
     if execution_context is not None:
         if shell or isinstance(argv, str):
             raise ValueError("Managed execution requires an explicit interpreter argv")
-        return execution_context.spawn(argv, cwd, env, stdout, output_path, cancellation)
+        from ..execution import ProcessRequest
+
+        request = ProcessRequest(tuple(argv), cwd, env, stdout=stdout, output_path=output_path)
+        return execution_context.run_process(request, cancellation)
     if os.name == "nt":
         from .windows_process import WindowsProcess
 

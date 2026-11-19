@@ -4,8 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from ...execution import ExecutionFailed, ExecutionUnavailable, HostProcess
-from ...harness.execution_modes import FULL_NETWORK
+from ..execution import ExecutionFailed, ExecutionUnavailable, HostProcess
+from ..harness.execution_modes import FULL_NETWORK
 from .platform import NativePolicy, platform_backend
 
 
@@ -47,9 +47,11 @@ class NativeExecutor:
         return NativePolicy(workspace, workspace not in writes, bool(resources.network), private,
                             tuple(sorted(grants.items(), key=lambda item: len(item[0].parts))))
 
-    def spawn(self, policy, argv, cwd, env, stdout, output_path, cancellation):
+    def run_process(self, request, policy, cancellation=None):
         envelope = self.policy(policy)
-        proc = envelope.spawn(argv, cwd, env, stdout, output_path, cancellation)
+        proc = envelope.spawn(request.argv, request.cwd, request.env, request.stdout,
+                              request.output_path, cancellation, stdin=request.stdin,
+                              stderr=request.stderr, env_overrides=request.env_overrides)
         return NativeProcess(proc, policy)
 
 
@@ -58,6 +60,9 @@ class NativeProcess:
         self._scratch = process._virgo_sandbox_tmp
         self._process = HostProcess(process) if sys.platform == "linux" else process
         self.pid = process.pid
+        self.stdin = getattr(process, "stdin", None)
+        self.stdout = getattr(process, "stdout", None)
+        self.stderr = getattr(process, "stderr", None)
         self._virgo_boundary = {
             **policy.describe(), "effective": {"file_tools": policy.resources.flags(),
                                                "native_process": policy.resources.flags()},

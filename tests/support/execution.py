@@ -3,7 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from virgo.extensions.sandbox.policy import SandboxPolicy
+from virgo.sandbox.policy import SandboxPolicy
 from virgo.harness.execution_modes import PermissionPreset, parse_network
 
 

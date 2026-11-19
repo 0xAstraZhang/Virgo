@@ -10,7 +10,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from ...execution import FileAccessDenied
+from ..execution import FileAccessDenied
 from .links import has_external_writable_link
 from .policy import SandboxPolicy
 
