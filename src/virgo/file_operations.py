@@ -22,6 +22,10 @@ from platformdirs import user_cache_dir
 
 MAX_MESSAGE = 16 * 1024 * 1024
 OPERATIONS = frozenset({"read", "write", "edit", "glob", "grep", "read_bytes", "walk_files"})
+# Capture before the first executor can release model work. Later executors
+# must not reload source files that an editable-checkout task has changed.
+_WORKER_SOURCES = tuple((name, Path(__file__).with_name(name).read_bytes())
+                        for name in ("fs_worker.py", "fs_windows.py"))
 
 
 def _windows_devices():
@@ -173,13 +177,12 @@ class FileOperations:
         self._mutation = threading.Lock()
         self.home = str(Path.home())
         self.interpreter = str(Path(sys.executable).resolve(strict=True))
-        # Capture installation code before the first model-controlled operation,
-        # including editable installs running from their own project.
+        # Reuse the Broker's original source bytes, including when a previous
+        # executor has since allowed edits to the installation checkout.
         self.root = _runtime_root()
         self.directory = Path(tempfile.mkdtemp(prefix="snapshot-", dir=self.root)).resolve(strict=True)
         try:
-            for name in ("fs_worker.py", "fs_windows.py"):
-                content = Path(__file__).with_name(name).read_bytes()
+            for name, content in _WORKER_SOURCES:
                 target = self.directory / name
                 target.write_bytes(content)
                 target.chmod(0o400)

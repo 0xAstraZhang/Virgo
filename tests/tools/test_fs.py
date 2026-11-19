@@ -63,6 +63,14 @@ def test_worker_snapshot_survives_edits_to_its_installation(project, monkeypatch
         response = host.run_file_operation("write", {"path": "captured.txt", "content": "trusted snapshot"})
         assert response["ok"] and response["boundary"]["payload_started"] is True, response
         assert (project / "captured.txt").read_text() == "trusted snapshot"
+        # A later executor in the same Broker must not recapture a checkout
+        # that an earlier model operation has already changed.
+        later = SandboxExecutor()
+        try:
+            response = HostContext(project, executor=later).run_file_operation("read", {"path": "captured.txt"})
+            assert response["ok"] and response["boundary"]["payload_started"] is True, response
+        finally:
+            later.close()
     finally:
         executor.close()
 

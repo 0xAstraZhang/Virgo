@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 
 import pytest
@@ -245,9 +246,11 @@ def test_resource_approval_controls_one_file_write(sandbox_session, project, key
             picker = app.query_one(ApprovalPicker)
             await wait_for(pilot, lambda: picker.display and app.focused is not None)
             assert picker.query_one("#approval-options", OptionList).option_count == 3
-            assert str(directory) in picker.confirmation.question and not target.exists()
+            assert json.dumps(str(directory), ensure_ascii=False) in picker.confirmation.question and not target.exists()
             await pilot.press(*keys)
-            await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
+            # This final scripted reply waits for the native file mutation.
+            await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy,
+                           timeout=120 if os.name == "nt" else 4)
             assert target.exists() is (answer in {"y", "a"})
             if answer == "a":
                 from virgo.harness.resource_rules import ResourceRules
