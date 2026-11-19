@@ -10,6 +10,7 @@ from .io import read_json
 
 BAD = {"failed", "error"}
 STATUSES = BAD | {"passed", "skipped"}
+WINDOWS_PARTITIONS = ("windows-core", "windows-native")
 PARAMETER_ALIASES = {
     # Diagnostics now retain history; budgets apply to query pages, not retention.
     "test_diagnostic_log_rotation_is_bounded_and_only_touches_its_own_files":
@@ -256,3 +257,37 @@ def validate_report(data):
         raise ValueError("Test counts do not match individual outcomes")
     if bool(data["exit_code"]) != bool(counts["failed"] + counts["error"]):
         raise ValueError("pytest exit code does not match test outcomes")
+
+
+def merge_windows_partitions(parts):
+    """Combine two complete runner reports without losing baseline failures."""
+    missing = set(WINDOWS_PARTITIONS) - parts.keys()
+    if missing or parts.keys() - set(WINDOWS_PARTITIONS):
+        raise ValueError("Missing or unexpected Windows partition reports: " + ", ".join(sorted(missing)))
+    core, native = (parts[name] for name in WINDOWS_PARTITIONS)
+    for report in (core, native):
+        validate_report(report)
+    for key in ("platform", "label", "sha", "python", "system"):
+        if not core.get(key) or core[key] != native.get(key):
+            raise ValueError(f"Windows partitions disagree on {key}")
+    overlap = core["tests"].keys() & native["tests"].keys()
+    if overlap:
+        raise ValueError("Overlapping Windows test identities: " + ", ".join(sorted(overlap)))
+    counts = Counter(core["counts"]) + Counter(native["counts"])
+    merged = {
+        **core, "partition": "all", "complete": True,
+        "exit_code": int(bool(counts["failed"] + counts["error"])),
+        "duration": round(core["duration"] + native["duration"], 2),
+        "counts": dict(counts), "tests": {**core["tests"], **native["tests"]},
+        "collection_skips": core["collection_skips"] + native["collection_skips"],
+        "problems": [f"{name}: {problem}" for name, report in parts.items() for problem in report["problems"]],
+        "partitions": {name: {key: report[key] for key in
+                              ("sha", "python", "system", "duration", "complete", "exit_code", "counts")}
+                       for name, report in parts.items()},
+    }
+    # A baseline can contain existing failures and still be a complete run.
+    # The current head's native boundary must independently execute every case.
+    if native["label"] == "head" and any(native["counts"].get(status, 0) for status in (*BAD, "skipped")):
+        merged["problems"].append("Windows native head partition requires zero failures, errors and skips")
+    validate_report(merged)
+    return merged
