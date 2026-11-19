@@ -21,7 +21,7 @@ from pathlib import Path
 from platformdirs import user_cache_dir
 
 MAX_MESSAGE = 16 * 1024 * 1024
-OPERATIONS = frozenset({"read", "write", "edit", "glob", "grep", "read_bytes", "walk_files"})
+OPERATIONS = frozenset({"read", "write", "edit", "glob", "grep", "read_bytes", "walk_files", "read_context"})
 # Capture before the first executor can release model work. Later executors
 # must not reload source files that an editable-checkout task has changed.
 _WORKER_SOURCES = tuple((name, Path(__file__).with_name(name).read_bytes())

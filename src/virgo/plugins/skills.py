@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from ..execution import read_context
 from ..harness.commands import parse_frontmatter
 from ..harness.extensions import ExtensionAPI, Handled
 
@@ -29,18 +30,31 @@ class Skill:
 
 def discover(roots: list[Path], *, access=None) -> dict[str, Skill]:
     skills: dict[str, Skill] = {}
-    for root in roots:
+    groups = None
+    if access is not None:
         try:
-            files = (p for p, _ in access.walk_files(root, set(), max_depth=2)
-                     if p.name == 'SKILL.md' and len(p.relative_to(root).parts) == 2) if access else root.glob('*/SKILL.md')
-            files = sorted(files)
+            groups = read_context(access, directories=[
+                {"path": root, "depth": 2, "match": "*/SKILL.md"} for root in roots
+            ])["directories"]
+        except (OSError, RuntimeError):
+            return skills
+    for index, root in enumerate(roots):
+        try:
+            if groups is not None:
+                group = groups[index]
+                if group["error"] is not None:
+                    continue
+                files = [(Path(item["path"]), item["data"]) for item in group["files"]]
+            else:
+                files = [(path, None) for path in sorted(root.glob('*/SKILL.md'))]
         except (OSError, RuntimeError):
             continue
         real_root = root if access else root.resolve()
-        for file in files:
+        for file, data in files:
             try:
                 (file if access else file.resolve()).relative_to(real_root)
-                data = access.read_bytes(file) if access else file.read_bytes()
+                if groups is None:
+                    data = file.read_bytes()
                 if data is None:
                     continue
                 meta, body = parse_frontmatter(data.decode('utf-8'))

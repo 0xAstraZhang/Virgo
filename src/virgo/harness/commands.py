@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from ..execution import read_context
 from ..i18n import Translator, available_languages
 
 if TYPE_CHECKING:
@@ -101,15 +102,29 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 def load_templates(dirs: list[Path], *, reserved: frozenset[str] = frozenset(), access=None,
                    source_paths: dict | None = None) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
-    for d in dirs:
+    groups = None
+    if access is not None:
         try:
-            files = (p for p, _ in access.walk_files(d, set(), max_depth=1)
-                     if p.suffix == ".md") if access else d.glob("*.md")
-            for f in sorted(files):
+            groups = read_context(access, directories=[
+                {"path": directory, "depth": 1, "match": "*.md"} for directory in dirs
+            ])["directories"]
+        except (OSError, RuntimeError):
+            return out
+    for index, d in enumerate(dirs):
+        try:
+            if groups is not None:
+                group = groups[index]
+                if group["error"] is not None:
+                    continue
+                files = [(Path(item["path"]), item["data"]) for item in group["files"]]
+            else:
+                files = [(path, None) for path in sorted(d.glob("*.md"))]
+            for f, data in files:
                 if f.stem in reserved:
                     raise ValueError(f"Prompt template {f} conflicts with reserved command /{f.stem}; rename the template.")
                 try:
-                    data = access.read_bytes(f) if access else f.read_bytes()
+                    if groups is None:
+                        data = f.read_bytes()
                 except OSError:
                     continue
                 if data is None:

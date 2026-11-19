@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..execution import read_context
+
 if TYPE_CHECKING:
     from ..agent.types import AgentTool
     from .runtime import Runtime
@@ -45,7 +47,7 @@ GUIDELINES = (
 CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
-def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access=None) -> str | None:
+def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access=None, collected=None) -> str | None:
     """Read automatic project context without following project-controlled links."""
     try:
         parts = path.relative_to(workspace).parts
@@ -53,6 +55,9 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
         return None
     if not parts or ".." in parts:
         return None
+    if collected is not None:
+        data = collected.get(path)
+        return data.decode("utf-8", errors=errors) if data is not None else None
     if access is not None:
         try:
             data = access.read_bytes(path)
@@ -90,21 +95,24 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
             os.close(directory)
 
 
-def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None, access=None) -> list[tuple[Path, str]]:
+def _context_directories(cwd, workspace):
+    start = Path(os.path.abspath(cwd))
+    if workspace is not None and not start.is_relative_to(workspace):
+        start = workspace
+    return [directory for directory in reversed((start, *start.parents))
+            if workspace is None or directory.is_relative_to(workspace)]
+
+
+def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None,
+                  access=None, collected=None) -> list[tuple[Path, str]]:
     found: list[tuple[Path, str]] = []
     user_file = user_dir / "AGENTS.md"
     if user_file.is_file():
         found.append((user_file, user_file.read_text(encoding="utf-8")))
-    start = Path(cwd).resolve()
-    if workspace is not None and not start.is_relative_to(workspace):
-        start = workspace
-    chain = [start, *start.parents]
-    if workspace is not None:
-        chain = [directory for directory in chain if directory.is_relative_to(workspace)]
-    for d in reversed(chain):
+    for d in _context_directories(cwd, workspace):
         for name in CONTEXT_FILES:
             f = d / name
-            text = (_project_text(f, workspace, errors="replace", access=access) if workspace is not None
+            text = (_project_text(f, workspace, errors="replace", access=access, collected=collected) if workspace is not None
                     else f.read_text(encoding="utf-8", errors="replace") if f.is_file() else None)
             if text is not None:
                 found.append((f, text))
@@ -112,10 +120,10 @@ def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None, a
     return found
 
 
-def _first_file(paths: list[Path], *, workspace: Path | None = None, access=None) -> str | None:
+def _first_file(paths: list[Path], *, workspace: Path | None = None, access=None, collected=None) -> str | None:
     for index in reversed(range(len(paths))):  # project overrides explicitly trusted user configuration
         p = paths[index]
-        text = (_project_text(p, workspace, access=access) if workspace is not None and index > 0
+        text = (_project_text(p, workspace, access=access, collected=collected) if workspace is not None and index > 0
                 else p.read_text(encoding="utf-8") if p.is_file() else None)
         if text is not None:
             return text.strip()
@@ -154,8 +162,19 @@ def build_system(
             return session.paths.both(name)
         return [session.paths.user / name, workspace / ".virgo" / name]
 
+    collected = None
+    if workspace is not None and access is not None:
+        paths = ([workspace / ".virgo" / "SYSTEM.md"] if role == "main" else [])
+        paths.extend(directory / name for directory in _context_directories(cwd, workspace) for name in CONTEXT_FILES)
+        paths.append(workspace / ".virgo" / "APPEND_SYSTEM.md")
+        try:
+            collected = {Path(item["path"]): item["data"] for item in read_context(access, files=paths)["files"]}
+        except (OSError, RuntimeError):
+            collected = {}
+
     parts: list[str] = []
-    custom = _first_file(instruction_paths("SYSTEM.md"), workspace=workspace, access=access) if role == "main" else None
+    custom = (_first_file(instruction_paths("SYSTEM.md"), workspace=workspace, access=access, collected=collected)
+              if role == "main" else None)
     parts.append(custom or IDENTITY.get(role, IDENTITY["main"]))
     if tools is None:
         tools = session.tools_for(role)
@@ -178,13 +197,13 @@ def build_system(
                                      context={"section": _name, "role": role})
         if text:
             parts.append(text.strip())
-    files = context_files(cwd, session.paths.user, workspace=workspace, access=access)
+    files = context_files(cwd, session.paths.user, workspace=workspace, access=access, collected=collected)
     if files:
         body = "\n".join(
             f'<project_instructions path="{p}">\n{t.strip()}\n</project_instructions>' for p, t in files
         )
         parts.append(f"<project_context>\n{body}\n</project_context>")
-    append = _first_file(instruction_paths("APPEND_SYSTEM.md"), workspace=workspace, access=access)
+    append = _first_file(instruction_paths("APPEND_SYSTEM.md"), workspace=workspace, access=access, collected=collected)
     if append:
         parts.append(append)
     shell = next((getattr(tool, "shell", None) for tool in tools if getattr(tool, "shell", None)), None)
