@@ -15,6 +15,8 @@ uv run --no-sync pytest -q tests/harness/test_permission_modes_e2e.py::test_file
 
 各平台须实际执行原生套件，零失败、零错误、零跳过。核对同一候选提交的 JUnit 报告和完整跨平台比较。验证运行中的命令可以读取刚保存的修改，切换模式后活动任务仍使用原权限，撤销的精确授权在下一次调用时失效。记录操作系统和账户类型；Windows 另分别记录出站、入站和宿主回环连接结果。[POSIX 实时工作区约定](../guides/sandbox.md) · [Windows 要求与已知限制](../guides/windows-sandbox.md)
 
+本地 MCP 用例通过 `official_mcp_sdk` JUnit 属性分别记录官方 SDK 兼容性与同步服务器的隔离结果。Read-Only 和 Workspace-Edit 各按自身策略启动新的 SDK 服务器，仅在初始化并完成真实调用后记录该模式 `supported`。Windows 可对已核实阶段的精确 `PermissionError: [WinError 10013]` 记录 `network_initialization_denied`：`overlapped_import` 表示导入 asyncio 时的 Winsock 初始化，`socketpair_wakeup` 表示之后创建回环唤醒通道。实际启动必须保持该模式的联网策略，不发布失败连接的工具，不生成写入标记，也不使用 Host 权限重试。结果逐模式记录，不能由一个模式被拒绝推论另一个模式的兼容性。任一模式被拒绝时，SDK 总状态为 `runtime_limited`；同步服务器的完整边界断言仍须通过。Linux 和 macOS 的两种模式均必须记录 `supported`。
+
 [权限性能验收](permission-timing.md)将三个模式分别与固定主线提交对照，同时记录审批次数。
 
 ## Windows 完整比较

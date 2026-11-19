@@ -271,6 +271,12 @@ print(json.dumps({'denied': denied, 'scratch': scratch.read_text(), 'public': pu
         assert previous.read_text() == later.read_text() == "other-profile"
 
 
+def test_windows_local_mcp_boundary(native, project, monkeypatch, record_property):
+    from tests.support.mcp_native import local_mcp_boundary
+
+    record_property("official_mcp_sdk", json.dumps(local_mcp_boundary(native, project, monkeypatch)))
+
+
 def test_windows_filesystem_helper_operations(native, project, monkeypatch):
     native_cases.filesystem_helper_operations(native, project, monkeypatch)
 

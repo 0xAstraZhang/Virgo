@@ -113,6 +113,12 @@ print(json.dumps({{'denied': denied, 'public': public.read_text(), 'scratch': sc
         assert all(path.read_text() == "runtime-canary" for path in protected)
 
 
+def test_native_local_mcp_boundary(native, project, monkeypatch, record_property):
+    from tests.support.mcp_native import local_mcp_boundary
+
+    record_property("official_mcp_sdk", json.dumps(local_mcp_boundary(native, project, monkeypatch)))
+
+
 @pytest.fixture
 def short_workspace():
     """Keep AF_UNIX paths under Darwin's sun_path limit."""
@@ -1100,6 +1106,7 @@ def test_native_independent_permission_combinations(native, project, short_works
     policy = PermissionPolicy((
         *(rule for rule in context.policy.filesystem if rule.effect == "deny"),
         *(PathRule(path, "read" if read_only else "write") for path in roots),
+        PathRule(short_workspace, "read"),
     ), network_allowed)
     context = replace(context, resources=replace(context.resources, policy=policy))
     with socket.socket() as listener, socket.socket(socket.AF_UNIX) as host_socket:
@@ -1107,6 +1114,10 @@ def test_native_independent_permission_combinations(native, project, short_works
         listener.listen()
         host_socket.bind(str(short_workspace / 'host.sock'))
         host_socket.listen()
+        with socket.socket(socket.AF_UNIX) as control:
+            control.connect(str(short_workspace / 'host.sock'))
+            connected, _ = host_socket.accept()
+            connected.close()
         source = f'''import socket
 from pathlib import Path
 def attempt(fn):
@@ -1122,8 +1133,14 @@ assert attempt(lambda: socket.create_connection({listener.getsockname()!r}, 2).c
 assert attempt(lambda: socket.socket(socket.AF_UNIX).connect({str(short_workspace / 'host.sock')!r})) is False
 print('independent dimensions checked')
 '''
+        if sys.platform == "linux":
+            probe = Path(__file__).parents[1] / "support" / "socketpair_probe.py"
+            source += probe.read_text() + f"\nverify_socketpairs({str(short_workspace / 'host.sock')!r})\n"
         output, code, status = run_command(python_command(native, source), project, 15, Event(),
                                            interpreter=selected(native), execution_context=context)
+        host_socket.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            host_socket.accept()
     assert code == 0 and status == "ok" and "independent dimensions checked" in output.text, output.text
     for path, allowed in ((inside, not read_only),
                           (outside, not read_only and not workspace_only)):

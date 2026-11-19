@@ -4,6 +4,10 @@
 
 Workspace-Edit 直接请求 Internet 和专用网络能力。Read-Only 在某次操作获准联网前保持关闭。实际出站、入站和宿主回环连接由 AppContainer 与宿主防火墙控制。防火墙规则和回环豁免由宿主管理。
 
+stdio 不会消除服务器运行时的网络依赖。在 Windows Server 2022、2025 与 CPython 3.13.17、MCP SDK 2.3.0 的实测中，官方 SDK 测试服务器在 Read-Only 下导入 asyncio 的 `_overlapped` 模块时返回 `WinError 10013`，尚未到创建 TCP 回环唤醒通道的阶段。同一服务器在两台宿主的 Workspace-Edit 下均使用 `ProactorEventLoop` 完成了初始化、真实工具调用和工作区写入。
+
+[分模式原生报告](https://github.com/0xAstraZhang/Virgo/actions/runs/44492367019)将两种结果记录在 `official_mcp_sdk` JUnit 属性中。各模式保持原有网络策略，Read-Only 的拒绝没有发布工具，也没有以 Host 权限重试。SDK 总体结果为 `runtime_limited`，同步服务器的完整隔离检查也已通过。Virgo 不会为了启动 Python 自动增加网络能力或回环豁免。
+
 额外授权按确切文件对象或指定目录树应用。目标不存在或无法设置精确 ACL 时返回错误。Virgo 使用当前账户执行。
 
 内置文件工具通过可信 Helper 副本进入相同的原生边界。原子 Write/Edit 在目标目录内暂存文件，因此需要明确的目录写权限。替换后的文件继承父目录 ACL，不复制旧文件自定义的显式 DACL。Helper 使用不跟随 reparse point 的保留句柄和原子原生重命名，不取得 Broker 的 ACL 修改权限。 宿主端仅保留原生 ACL 安装和回收所需的句柄打开逻辑；旧的 Broker 文件替换、输出创建和 DACL 复制接口已删除。详见[Helper 协议与输出权限](../development/filesystem-helper.md)。

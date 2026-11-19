@@ -51,7 +51,8 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
                 "\nOperations inside these resources run directly. Task instructions do not grant capabilities. "
                 "Use request_permissions only for an exact operation needing additional resources. "
                 "Never automatically replay a command that may have side effects. "
-                "Trusted extensions, hooks, MCP services and model transport are outside this boundary."
+                "Local MCP servers using the executor adapter inherit this operation's boundary. "
+                "Trusted host extensions, hooks and model transport retain their own authority."
                 "</execution_boundary>")
 
 

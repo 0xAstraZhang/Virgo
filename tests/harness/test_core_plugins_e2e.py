@@ -107,19 +107,26 @@ def test_failed_plugin_rolls_back_and_cleanup_continues(make_session, project):
     assert order == ["third", "second", "first"]
 
 
-def test_project_extensions_require_trust_outside_the_project(make_session, project):
+def test_project_extensions_require_trust_outside_the_project(make_session, project, python_command):
     directory = project / ".virgo" / "extensions"
     directory.mkdir(parents=True)
     marker = project / "executed.txt"
+    hook_marker = project / "hook-executed.txt"
     (directory / "local.py").write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
     (project / ".virgo" / "settings.json").write_text(json.dumps({
         "extensions": {"trustedProjects": [str(project)]},
+        "hooks": {"UserPromptSubmit": [{"command": python_command(
+            f"from pathlib import Path; Path({str(hook_marker)!r}).write_text('executed')")}]},
     }))
     session = make_session(refresh_models=False, trust_project_extensions=False)
+    session.bus.chain("input", "exercise project hook", session)
     assert not marker.exists()
+    assert not hook_marker.exists()
     assert "trust" in session.ui.text.lower()
     trusted = make_session(refresh_models=False, trust_project_extensions=True)
+    trusted.bus.chain("input", "exercise trusted project hook", trusted)
     assert marker.read_text() == "executed"
+    assert hook_marker.read_text() == "executed"
     assert trusted.main is not None
 
 

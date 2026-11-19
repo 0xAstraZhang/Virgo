@@ -302,7 +302,7 @@ class ExecutionContext:
                 "revision": self.revision, "state": "launch_unverified",
                 "native_support": "checked_at_launch",
                 "windows_network": "AppContainer and host firewall policy apply" if os.name == "nt" else None,
-                "unmanaged": ["broker", "trusted Python extensions", "hooks", "MCP services", "model transport"]}
+                "unmanaged": ["broker", "trusted Python extension adapters", "trusted host hooks", "model transport"]}
 
 
 def file_result(result):

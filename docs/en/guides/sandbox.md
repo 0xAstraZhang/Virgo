@@ -16,6 +16,10 @@ Task allow rules are not a complete, identical read whitelist on every platform.
 
 For a Read-Only command that needs networking, request network access for that invocation. Network policy is a Boolean; directional lists are rejected. Each running process retains the permissions it received at launch.
 
+Linux seccomp denies Unix `socket()` calls in both network modes. It permits only `socketpair(AF_UNIX, SOCK_STREAM, 0)`, optionally with `SOCK_CLOEXEC` and `SOCK_NONBLOCK`, so asyncio can wake its own event loop. Unknown flags, other domains, nonzero protocols and datagram/seqpacket pairs are denied. These stream endpoints are already connected: the [Linux Unix-socket implementation](https://github.com/torvalds/linux/blob/v6.8/net/unix/af_unix.c) does not let them disconnect with `AF_UNSPEC`, reconnect to a host socket, or become listeners. Datagram pairs have different reconnect semantics and remain blocked. `socketcall` and `io_uring` remain denied.
+
+On Windows, [CPython's `_overlapped` module](https://github.com/python/cpython/blob/v3.13.17/Modules/overlapped.c) opens a TCP socket to initialize Winsock function pointers during asyncio import. Its later [socketpair fallback](https://github.com/python/cpython/blob/3.13/Lib/socket.py) uses loopback TCP for the event loop's wakeup channel. A stdio server therefore still needs a runtime that can initialize under its captured LPAC/network policy. No native backend automatically widens that policy or retries the server with Host permissions. See [the Windows observations](windows-sandbox.md).
+
 ## File protection
 
 An explicit read deny blocks reads and writes; a write deny leaves reads available. Denies take precedence over every overlapping allow. The native compiler requires explicit deny roots to be exact existing files or directories, and refuses unsupported roots before launching the payload. Existing control metadata and the trusted execution runtime receive write-deny rules. This does not promise protection for arbitrary reserved names that do not yet exist.

@@ -461,6 +461,11 @@ def _with_feedback(res: ToolResult, note: str) -> ToolResult:
 
 def install_command_hooks(session: AgentSession) -> None:
     hooks: dict = session.settings.get("hooks", {}) or {}
+    if not (session.trust_project_extensions or session.settings.project_extensions_trusted):
+        untrusted = {event for event in hooks if session.settings.sources.get(f"hooks.{event}") == "project"}
+        if untrusted:
+            session.ui.print("[extensions: ignored project command hooks without explicit project trust]", "warn")
+            hooks = {event: values for event, values in hooks.items() if event not in untrusted}
     cwd = session.cwd
 
     def base(event: str, store=None) -> dict:

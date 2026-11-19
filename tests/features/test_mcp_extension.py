@@ -14,9 +14,10 @@ from pathlib import Path
 from virgo.agent import ToolContext
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage
+from virgo.harness.extensions import ExtensionAPI
 
 from tests.support import SUPPORT
-from tests.support.harness import calls
+from tests.support.harness import calls, wait_until
 
 EXTENSION = Path(__file__).resolve().parents[2] / "extensions" / "mcp.py"
 SERVER = SUPPORT / "mcp_echo_server.py"
@@ -73,7 +74,7 @@ def test_mcp_extension_exposes_and_rebinds_tools(make_session, project):
     results = [message for message in session.main.messages if isinstance(message, ToolResultMessage)]
     assert [message.text() for message in results] == ["hello mcp", "3"]
     assert session.main.agent.last_text == "ok"
-    context = ToolContext("direct", project, threading.Event())
+    context = ToolContext("direct", project, threading.Event(), origin=session.main.origin)
     direct = session.tool("mcp__echo__add").execute({"a": 20, "b": 30}, context)
     assert direct.as_text() == "50"
     status = session.tool("mcp_status").execute({"server": "echo"}, context).as_text()
@@ -168,17 +169,21 @@ def test_mcp_extension_reports_terminated_connections(make_session, project, tmp
                     result = {"content": [{"type": "text", "text": "ok"}]}
                 print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}), flush=True)
                 if method == "tools/list":
+                    print("server stopped: " + sys.argv[-1], file=sys.stderr, flush=True)
                     sys.exit(0)
             """
         ),
         encoding="utf-8",
     )
-    configure(project / ".virgo" / "mcp.json", args=[str(server)])
+    secret = "private-mcp-test-credential"
+    configure(project / ".virgo" / "mcp.json", args=[str(server), "--api-key", secret])
     session = make_session()
-    context = ToolContext("status", project, threading.Event())
+    context = ToolContext("status", project, threading.Event(), origin=session.main.origin)
     assert session.tool("mcp__echo__echo") is not None
     time.sleep(0.5)  # Let the server process exit before touching the transport.
-    assert session.tool("mcp__echo__echo").execute({}, context).is_error
+    result = session.tool("mcp__echo__echo").execute({}, context)
+    assert result.is_error and "server stopped:" in result.as_text()
+    assert secret not in result.as_text()
     assert '"state": "unavailable"' in session.tool("mcp_status").execute({}, context).as_text()
 
 
@@ -189,3 +194,89 @@ def test_mcp_extension_ignores_malformed_config(make_session, project):
     session = make_session()
     assert "mcp: invalid" in session.ui.text
     assert session.tool("mcp_status") is not None
+
+
+def test_mcp_project_configuration_requires_explicit_trust(make_session, project):
+    install_extension()
+    initialized = project / "untrusted-server-started.json"
+    configure(project / ".virgo" / "mcp.json", args=[str(SERVER), str(initialized)])
+    session = make_session(trust_project_extensions=False)
+    assert not initialized.exists()
+    assert session.tool("mcp__echo__echo") is None
+    assert "project MCP configuration" in session.ui.text
+
+
+def test_mcp_process_call_requires_its_origin(make_session, project):
+    install_extension()
+    configure(project / ".virgo" / "mcp.json")
+    session = make_session()
+    result = session.tool("mcp__echo__echo").execute(
+        {"text": "unbound"}, ToolContext("unbound", project, threading.Event())
+    )
+    assert result.is_error
+    assert "originating runtime" in result.as_text()
+
+
+def test_mcp_connections_follow_runtime_and_filter_ambient_credentials(make_session, project, monkeypatch):
+    install_extension()
+    server = SUPPORT / "mcp_boundary_server.py"
+    if sys.platform == "linux":
+        # Match bubblewrap's real parent-thread lifetime requirement without
+        # changing this Host fixture into a simulated native sandbox.
+        source = server.read_text(encoding="utf-8")
+        server = project / "thread_owned_mcp_server.py"
+        server.write_text(
+            "import ctypes, signal\n"
+            "assert ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0) == 0\n"
+            + source,
+            encoding="utf-8",
+        )
+    monkeypatch.setenv("MCP_AMBIENT_SECRET", "must-not-inherit")
+    monkeypatch.setenv("MCP_APPROVED_SECRET", "approved")
+    session = make_session(settings={"mcpServers": {"boundary": {
+        "command": sys.executable, "args": [str(server)],
+        "env": {"MCP_TEST_CREDENTIAL": "${MCP_APPROVED_SECRET}"},
+    }}})
+    api = ExtensionAPI(session, "mcp-origin-acceptance")
+    child = api.create_runtime("mcp-child", "subagent", parent=session.main)
+    tool = session.tool("mcp__boundary__probe")
+    try:
+        main_context = ToolContext("main", project, threading.Event(), origin=session.main.origin)
+        child_context = ToolContext("child", project, threading.Event(), agent=child.name, origin=child.origin)
+        main = json.loads(tool.execute({}, main_context).as_text())
+        other = json.loads(tool.execute({}, child_context).as_text())
+        again = json.loads(tool.execute({}, main_context).as_text())
+        assert main["pid"] == again["pid"] != other["pid"]
+        assert main["credential"] == other["credential"] == "approved"
+        assert main["ambient_secret"] is other["ambient_secret"] is None
+        assert main["cwd"] == other["cwd"] == str(project)
+        assert tool.execution_scope == "process"
+    finally:
+        api.release_runtime(child)
+
+
+def test_mcp_cancellation_drains_server_tree_without_replay(make_session, project):
+    install_extension()
+    configure(project / ".virgo" / "mcp.json", args=[str(SUPPORT / "mcp_boundary_server.py")])
+    session = make_session()
+    tool = session.tool("mcp__echo__probe")
+    signal = threading.Event()
+    context = ToolContext("cancel", project, signal, origin=session.main.origin)
+    ready, late = project / "mcp-ready", project / "mcp-late"
+    results = []
+    worker = threading.Thread(target=lambda: results.append(tool.execute(
+        {"ready": str(ready), "child_marker": str(late), "wait": 15}, context)))
+    worker.start()
+    try:
+        wait_until(ready.exists, timeout=5)
+        signal.set()
+        worker.join(10)
+        assert not worker.is_alive()
+        assert results[0].is_error and "cancelled" in results[0].as_text()
+        signal.clear()
+        assert tool.execute({}, context).is_error  # No implicit replacement process.
+        time.sleep(2.2)
+        assert not late.exists()
+    finally:
+        signal.set()
+        worker.join(10)

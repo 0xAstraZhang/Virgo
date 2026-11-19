@@ -40,7 +40,7 @@ Every mode stores command and large tool output in the Virgo user directory. `co
 
 Results expose a random `output_id`. `read_output` accepts that ID and byte `offset`/`limit` arguments. The ID must resolve to an exact record owned by the originating conversation; an arbitrary path, a fabricated record or another conversation's ID is rejected. Child tasks keep their originating conversation's output ownership when the selected session changes.
 
-These guarantees cover built-in local tools. Trusted host extensions, hooks and MCP transports retain their separately documented boundaries until their executor integrations are installed.
+These guarantees cover built-in local tools. Local MCP stdio servers use the same executor through the maintained adapter. Its Python adapter, explicitly trusted host extensions and hooks retain host authority. Remote MCP requires a separate external-capability adapter and is not protected by the local OS sandbox.
 
 ## Verification and test migration
 

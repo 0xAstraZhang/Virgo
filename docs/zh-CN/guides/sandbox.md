@@ -16,6 +16,10 @@ Linux 需要系统提供 Bubblewrap、libseccomp 和创建命名空间的权限�
 
 Read-Only 下的 Shell 命令如需联网，可为本次调用申请联网权限。网络策略使用布尔值，方向列表会被拒绝。运行中的进程保持启动时获得的权限。
 
+Linux seccomp 在两种联网策略下都拒绝 Unix `socket()`，仅允许 `socketpair(AF_UNIX, SOCK_STREAM, 0)` 及可选的 `SOCK_CLOEXEC`、`SOCK_NONBLOCK` 标志，使 asyncio 能唤醒自己的事件循环。未知标志、其他地址族、非零协议以及 datagram/seqpacket pair 均被拒绝。这些 stream 端点创建时已连接；[Linux Unix socket 实现](https://github.com/torvalds/linux/blob/v6.8/net/unix/af_unix.c) 不允许它们通过 `AF_UNSPEC` 断开、重连宿主 socket 或变成监听器。Datagram pair 的重连语义不同，仍被阻止。`socketcall` 与 `io_uring` 也继续被拒绝。
+
+Windows 上，[CPython 的 `_overlapped` 模块](https://github.com/python/cpython/blob/v3.13.17/Modules/overlapped.c) 在导入 asyncio 时创建 TCP socket，以初始化 Winsock 函数指针。之后的 [socketpair 实现](https://github.com/python/cpython/blob/3.13/Lib/socket.py) 还会通过回环 TCP 建立事件循环的唤醒通道。因此 stdio 服务器仍需能在来源 LPAC 与网络策略下初始化的运行时。任何原生后端都不会自动扩大策略或使用 Host 权限重试服务器。详见 [Windows 实测范围](windows-sandbox.md)。
+
 ## 文件保护
 
 显式拒绝读取同时拒绝写入；仅拒绝写入仍允许读取。拒绝规则优先于任何重叠的允许规则。原生策略编译要求显式拒绝根是确实存在的文件或目录，无法实施的根会在载荷启动前被拒绝。已有的控制元数据与可信执行运行时获得写入拒绝规则；这并不承诺保护任意尚不存在的保留名称。
