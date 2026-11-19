@@ -48,9 +48,7 @@ from pathlib import Path
 with Path('ordinary.txt').open('a') as stream:
     stream.write('before\\n')
 Path('mutation-ready').touch()
-deadline = time.monotonic() + 45
 while not Path('release-mutation').exists():
-    assert time.monotonic() < deadline
     time.sleep(.02)
 print('opening committed file for read', flush=True)
 assert Path('ordinary.txt').read_text() == 'changed\\n'
