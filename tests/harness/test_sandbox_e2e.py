@@ -866,15 +866,18 @@ def test_missing_backend_is_fail_closed_in_real_session(make_session, project, m
         raise ExecutionUnavailable("Missing native backend")
 
     monkeypatch.setattr("virgo.sandbox.native.platform_backend", unavailable)
-    with pytest.raises(ExecutionUnavailable, match="Missing native backend"):
-        make_session(settings={"execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
+    session = make_session(settings={"execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
+    result = run(session, python_command(session, "from pathlib import Path; Path('payload-ran').write_text('bad')"))
+    assert result.is_error and result.details["status"] == "execution_unavailable"
+    assert result.details["boundary"]["payload_started"] is False
+    assert "Missing native backend" in result.text()
     assert not (project / "payload-ran").exists()
 
 
 def test_required_provider_initialization_failure_aborts_session(make_session, project, monkeypatch):
     import virgo.sandbox as extension
 
-    def broken(api):
+    def broken(api, executor):
         raise RuntimeError('required provider setup failed')
 
     monkeypatch.setattr(extension, 'SandboxExecutionProvider', broken)
@@ -902,8 +905,8 @@ def test_unacknowledged_native_launch_keeps_unknown_facts(broker_session, projec
 
     attempts = []
 
-    def uncertain(self, policy, argv, cwd, env, stdout, output_path, cancellation):
-        attempts.append(argv)
+    def uncertain(self, request, policy, cancellation):
+        attempts.append(request.argv)
         if payload:
             (project / "payload-ran").write_text("once")
         raise ExecutionFailed("The native launcher could not confirm execution")
