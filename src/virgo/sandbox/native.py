@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 from ..execution import ExecutionFailed, ExecutionUnavailable, HostProcess
@@ -12,20 +13,29 @@ class NativeExecutor:
     def __init__(self):
         self.backend, self.path = platform_backend()
         self.identity = (self.backend, str(self.path))
+        self._pool_lock = threading.Lock()
         self._windows_pool = None
 
     def _get_windows_pool(self):
         if self.backend != "windows-appcontainer":
             return None
-        if self._windows_pool is None:
-            from .windows_sandbox import WindowsSessionPool
+        with self._pool_lock:
+            if self._windows_pool is None:
+                from .windows_sandbox import WindowsSessionPool
 
-            self._windows_pool = WindowsSessionPool()
-        return self._windows_pool
+                self._windows_pool = WindowsSessionPool()
+            return self._windows_pool
+
+    def close_idle(self):
+        with self._pool_lock:
+            pool = self._windows_pool
+        if pool is not None:
+            pool.close_idle()
 
     def close(self):
-        pool = self._windows_pool
-        self._windows_pool = None
+        with self._pool_lock:
+            pool = self._windows_pool
+            self._windows_pool = None
         if pool is not None:
             pool.close()
 

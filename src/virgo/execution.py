@@ -130,6 +130,11 @@ class SandboxExecutor:
             sys.platform, "unsupported"
         )
 
+    def close_idle(self):
+        native = self.__dict__.get("native")
+        if native is not None and hasattr(native, "close_idle"):
+            native.close_idle()
+
     def close(self):
         native = self.__dict__.get("native")
         if native is not None and hasattr(native, "close"):

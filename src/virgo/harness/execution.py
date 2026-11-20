@@ -258,6 +258,11 @@ class ModeExecutionProvider(HostExecutionProvider):
             if not runtime.execution_active and not self.session.runtime_is_busy(runtime):
                 runtime.execution_context = context
                 runtime.rebuild_system()
+                if identifier == HOST_MODE.id:
+                    try:
+                        self.executor.close_idle()
+                    except Exception as error:
+                        self.session.report_error(error, phase="execution.cleanup", notify=False)
             self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
 
     def status(self, session, args):

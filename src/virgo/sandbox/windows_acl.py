@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import errno
 import os
 import stat
 import struct
 import sys
+import threading
+from contextlib import contextmanager
 from ctypes import wintypes as w
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,6 +127,10 @@ _ERROR_PATH_NOT_FOUND = 3
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_ABANDONED = 0x00000080
+_WAIT_TIMEOUT = 0x00000102
+_ACL_STATE_MUTEX_NAME = "Local\\VirgoAppContainerStateLock"
 
 
 def _api(library: ctypes.WinDLL, name: str, args: list[Any], result: Any = BOOL):
@@ -143,6 +150,42 @@ _CreateFileW = _api(
     [w.LPCWSTR, DWORD, DWORD, ctypes.c_void_p, DWORD, DWORD, HANDLE],
     HANDLE,
 )
+_CreateMutexW = _api(_kernel32, "CreateMutexW", [ctypes.c_void_p, BOOL, w.LPCWSTR], HANDLE)
+_WaitForSingleObject = _api(_kernel32, "WaitForSingleObject", [HANDLE, DWORD], DWORD)
+_ReleaseMutex = _api(_kernel32, "ReleaseMutex", [HANDLE])
+
+_MUTEX_INIT_LOCK = threading.Lock()
+_ACL_STATE_MUTEX_HANDLE: HANDLE | None = None
+
+
+def _get_state_mutex() -> HANDLE:
+    global _ACL_STATE_MUTEX_HANDLE
+    if _ACL_STATE_MUTEX_HANDLE:
+        return _ACL_STATE_MUTEX_HANDLE
+    with _MUTEX_INIT_LOCK:
+        if not _ACL_STATE_MUTEX_HANDLE:
+            # Default user DACL (lpMutexAttributes=None) in session-local Local\ namespace;
+            # requires zero Administrator privileges and synchronizes concurrent Virgo processes.
+            handle = _CreateMutexW(None, False, _ACL_STATE_MUTEX_NAME)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            _ACL_STATE_MUTEX_HANDLE = handle
+        return _ACL_STATE_MUTEX_HANDLE
+
+
+@contextmanager
+def acl_state_lock(timeout_ms: int = 30000):
+    """Cross-process per-user mutex serializing shared DACL RMW and DOS drive allocation."""
+    handle = _get_state_mutex()
+    status = _WaitForSingleObject(handle, timeout_ms)
+    if status not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
+        if status == _WAIT_TIMEOUT:
+            raise TimeoutError("Timed out waiting for Windows sandbox state mutex")
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        yield
+    finally:
+        _ReleaseMutex(handle)
 
 
 def _system_dir() -> Path:
@@ -361,6 +404,29 @@ def _is_directory_no_follow(path: str | Path) -> bool:
     return stat.S_ISDIR(os.lstat(path).st_mode)
 
 
+def is_appcontainer_package_sid(sid_bytes: bytes) -> bool:
+    """Return True if ``sid_bytes`` is a per-package AppContainer SID (S-1-15-2-<r1>-...).
+
+    Excludes well-known S-1-15-2-1 (ALL APPLICATION PACKAGES) and S-1-15-2-2 (ARAP),
+    which have only two sub-authorities.
+    """
+    return (
+        len(sid_bytes) >= 16
+        and sid_bytes[0] == 1
+        and sid_bytes[1] >= 3
+        and sid_bytes[2:8] == b"\x00\x00\x00\x00\x00\x0f"
+        and struct.unpack_from("<I", sid_bytes, 8)[0] == 2
+    )
+
+
+def _has_other_appcontainer_sid(aces: list[bytes], exclude_sid_bytes: bytes | None) -> bool:
+    for ace in aces:
+        raw = _ace_sid_bytes(ace)
+        if raw is not None and is_appcontainer_package_sid(raw) and raw != exclude_sid_bytes:
+            return True
+    return False
+
+
 def grant_root_access(path: str | Path, sid_str: str, *, writable: bool) -> None:
     """Grant ``sid_str`` read-only or writable access on ``path`` in one OS call.
 
@@ -372,34 +438,37 @@ def grant_root_access(path: str | Path, sid_str: str, *, writable: bool) -> None
     win_path = _normalize_win_path(path)
     sid_bytes = _sid_str_to_bytes(sid_str)
     is_dir = _is_directory_no_follow(win_path)
-    previous = _read_dacl(win_path)
+    with acl_state_lock():
+        previous = _read_dacl(win_path)
+        if previous.is_null:
+            raise OSError(errno.EPERM, "Refusing to overwrite a NULL DACL on Windows", win_path)
 
-    base_aces = [
-        ace
-        for ace in previous.aces
-        if not (
-            not (ace[1] & INHERITED_ACE)
-            and ace[0] not in _DENY_ACE_TYPES
-            and _ace_sid_bytes(ace) == sid_bytes
-        )
-    ]
+        base_aces = [
+            ace
+            for ace in previous.aces
+            if not (
+                not (ace[1] & INHERITED_ACE)
+                and ace[0] not in _DENY_ACE_TYPES
+                and _ace_sid_bytes(ace) == sid_bytes
+            )
+        ]
 
-    if is_dir:
-        oi_ci = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
-        if writable:
-            new_entries = [
-                _build_ace(ACCESS_ALLOWED_ACE_TYPE, oi_ci, WRITE_NO_DELETE_MASK, sid_bytes),
-                _build_ace(ACCESS_ALLOWED_ACE_TYPE, oi_ci | INHERIT_ONLY_ACE, DELETE, sid_bytes),
-            ]
+        if is_dir:
+            oi_ci = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+            if writable:
+                new_entries = [
+                    _build_ace(ACCESS_ALLOWED_ACE_TYPE, oi_ci, WRITE_NO_DELETE_MASK, sid_bytes),
+                    _build_ace(ACCESS_ALLOWED_ACE_TYPE, oi_ci | INHERIT_ONLY_ACE, DELETE, sid_bytes),
+                ]
+            else:
+                new_entries = [
+                    _build_ace(ACCESS_ALLOWED_ACE_TYPE, oi_ci, READ_EXECUTE_MASK, sid_bytes)
+                ]
         else:
-            new_entries = [
-                _build_ace(ACCESS_ALLOWED_ACE_TYPE, oi_ci, READ_EXECUTE_MASK, sid_bytes)
-            ]
-    else:
-        mask = MODIFY_NO_DELETE_CHILD_MASK if writable else READ_EXECUTE_MASK
-        new_entries = [_build_ace(ACCESS_ALLOWED_ACE_TYPE, 0, mask, sid_bytes)]
+            mask = MODIFY_NO_DELETE_CHILD_MASK if writable else READ_EXECUTE_MASK
+            new_entries = [_build_ace(ACCESS_ALLOWED_ACE_TYPE, 0, mask, sid_bytes)]
 
-    _write_dacl_preserving_protection(win_path, previous, base_aces + new_entries)
+        _write_dacl_preserving_protection(win_path, previous, base_aces + new_entries)
 
 
 def capture_dacl_snapshot(path: str | Path, exclude_sid_str: str | None = None) -> dict[str, Any]:
@@ -407,14 +476,19 @@ def capture_dacl_snapshot(path: str | Path, exclude_sid_str: str | None = None) 
     win_path = _normalize_win_path(path)
     previous = _read_dacl(win_path)
     exclude_bytes = _sid_str_to_bytes(exclude_sid_str) if exclude_sid_str else None
+    has_other_ac = _has_other_appcontainer_sid(previous.aces, exclude_bytes)
     explicit_b64 = [
         base64.b64encode(ace).decode("ascii")
         for ace in previous.aces
         if not (ace[1] & INHERITED_ACE)
         and (exclude_bytes is None or _ace_sid_bytes(ace) != exclude_bytes)
+        and not (
+            (raw := _ace_sid_bytes(ace)) is not None and is_appcontainer_package_sid(raw)
+        )
     ]
     return {
-        "was_protected": previous.protected,
+        "was_protected": previous.protected and not has_other_ac,
+        "has_other_appcontainer_sid": has_other_ac,
         "original_explicit_aces_b64": explicit_b64,
     }
 
@@ -449,21 +523,24 @@ def protect_readonly_path(path: str | Path, sid_str: str) -> None:
     win_path = _normalize_win_path(path)
     sid_bytes = _sid_str_to_bytes(sid_str)
     is_dir = _is_directory_no_follow(win_path)
-    previous = _read_dacl(win_path)
     flags = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) if is_dir else 0
+    with acl_state_lock():
+        previous = _read_dacl(win_path)
+        if previous.is_null:
+            raise OSError(errno.EPERM, "Refusing to overwrite a NULL DACL on Windows", win_path)
 
-    preserved = [
-        bytes([ace[0], ace[1] & ~INHERITED_ACE]) + ace[2:]
-        for ace in previous.aces
-        if _ace_sid_bytes(ace) != sid_bytes
-    ]
-    readonly_ace = _build_ace(ACCESS_ALLOWED_ACE_TYPE, flags, READ_EXECUTE_MASK, sid_bytes)
-    _apply_dacl(
-        win_path,
-        previous.revision,
-        [*preserved, readonly_ace],
-        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-    )
+        preserved = [
+            bytes([ace[0], ace[1] & ~INHERITED_ACE]) + ace[2:]
+            for ace in previous.aces
+            if _ace_sid_bytes(ace) != sid_bytes
+        ]
+        readonly_ace = _build_ace(ACCESS_ALLOWED_ACE_TYPE, flags, READ_EXECUTE_MASK, sid_bytes)
+        _apply_dacl(
+            win_path,
+            previous.revision,
+            [*preserved, readonly_ace],
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        )
 
 
 def revoke_sid_from_root(
@@ -478,41 +555,51 @@ def revoke_sid_from_root(
 
     When ``restore_unprotected=True``, restores UNPROTECTED_DACL_SECURITY_INFORMATION
     with ``original_explicit_aces_b64`` so Windows re-inherits parent ACEs and
-    propagates ``sid_str`` removal down the subtree.
+    propagates ``sid_str`` removal down the subtree—unless another AppContainer
+    session SID is still protecting ``path``, in which case only ``sid_str`` is
+    removed while preserving SE_DACL_PROTECTED for the surviving session(s).
     """
     win_path = _normalize_win_path(path)
     sid_bytes = _sid_str_to_bytes(sid_str)
-    try:
-        previous = _read_dacl(win_path)
-    except OSError as exc:
-        if ignore_missing and exc.winerror in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
+    with acl_state_lock():
+        try:
+            previous = _read_dacl(win_path)
+        except OSError as exc:
+            if ignore_missing and exc.winerror in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
+                return
+            raise
+
+        if restore_unprotected and not _has_other_appcontainer_sid(previous.aces, sid_bytes):
+            decoded = [
+                base64.b64decode(item)
+                for item in (original_explicit_aces_b64 or [])
+            ]
+            keep = [
+                ace
+                for ace in decoded
+                if _ace_sid_bytes(ace) != sid_bytes
+                and not (
+                    (raw := _ace_sid_bytes(ace)) is not None and is_appcontainer_package_sid(raw)
+                )
+            ]
+            _apply_dacl(
+                win_path,
+                previous.revision,
+                keep,
+                DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            )
             return
-        raise
 
-    if restore_unprotected:
-        decoded = [
-            base64.b64decode(item)
-            for item in (original_explicit_aces_b64 or [])
-        ]
-        keep = [ace for ace in decoded if _ace_sid_bytes(ace) != sid_bytes]
-        _apply_dacl(
-            win_path,
-            previous.revision,
-            keep,
-            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-        )
-        return
+        if previous.protected:
+            retained = [ace for ace in previous.aces if _ace_sid_bytes(ace) != sid_bytes]
+            changed = len(retained) != len(previous.aces)
+        else:
+            explicit_before = [ace for ace in previous.aces if not (ace[1] & INHERITED_ACE)]
+            retained = [ace for ace in explicit_before if _ace_sid_bytes(ace) != sid_bytes]
+            changed = len(retained) != len(explicit_before)
 
-    if previous.protected:
-        retained = [ace for ace in previous.aces if _ace_sid_bytes(ace) != sid_bytes]
-        changed = len(retained) != len(previous.aces)
-    else:
-        explicit_before = [ace for ace in previous.aces if not (ace[1] & INHERITED_ACE)]
-        retained = [ace for ace in explicit_before if _ace_sid_bytes(ace) != sid_bytes]
-        changed = len(retained) != len(explicit_before)
-
-    if changed:
-        _write_dacl_preserving_protection(win_path, previous, retained)
+        if changed:
+            _write_dacl_preserving_protection(win_path, previous, retained)
 
 
 def has_aap_read_access(path: str | Path, *, require_execute: bool = True) -> bool:

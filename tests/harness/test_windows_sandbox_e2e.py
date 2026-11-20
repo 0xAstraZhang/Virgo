@@ -39,11 +39,14 @@ def native(make_session):
     return native_session(make_session, {"win32"})
 
 
-def _logical_drives_mask() -> int:
+def _is_dos_drive_mapped(drive: str | None) -> bool:
+    if not drive:
+        return False
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.GetLogicalDrives.argtypes = []
-    kernel.GetLogicalDrives.restype = w.DWORD
-    return int(kernel.GetLogicalDrives())
+    kernel.QueryDosDeviceW.argtypes = [w.LPCWSTR, w.LPWSTR, w.DWORD]
+    kernel.QueryDosDeviceW.restype = w.DWORD
+    buf = ctypes.create_unicode_buffer(4096)
+    return bool(kernel.QueryDosDeviceW(drive, buf, len(buf)))
 
 
 def command(source: str) -> str:
@@ -472,7 +475,23 @@ def test_readonly_network_and_workspace_edit_loopback_denied(native):
         port4 = srv4.getsockname()[1]
         port6 = srv6.getsockname()[1]
 
-        probe_source = f"""import json, socket
+        loopback_source = f"""import json, socket
+def try_connect(family, dest, timeout=2.0):
+    try:
+        with socket.socket(family) as s:
+            s.settimeout(timeout)
+            s.connect(dest)
+        return {{'allowed': True}}
+    except OSError as exc:
+        return {{'allowed': False, 'type': type(exc).__name__, 'winerror': getattr(exc, 'winerror', None), 'errno': exc.errno}}
+
+out = {{
+    'loopback_v4': try_connect(socket.AF_INET, ('127.0.0.1', {port4})),
+    'loopback_v6': try_connect(socket.AF_INET6, ('::1', {port6})),
+}}
+print(json.dumps(out))
+"""
+        readonly_probe_source = f"""import json, socket
 out = {{}}
 def try_connect(family, dest, timeout=2.0):
     try:
@@ -503,12 +522,12 @@ except OSError as exc:
 print(json.dumps(out))
 """
         provider.select_mode("workspace-edit")
-        we_out = data(run(native, python_command(native, probe_source)))
+        we_out = data(run(native, python_command(native, loopback_source)))
         assert we_out["loopback_v4"]["allowed"] is False, we_out
         assert we_out["loopback_v6"]["allowed"] is False, we_out
 
         provider.select_mode("read-only")
-        ro_out = data(run(native, python_command(native, probe_source)))
+        ro_out = data(run(native, python_command(native, readonly_probe_source)))
         assert ro_out["loopback_v4"]["allowed"] is False, ro_out
         assert ro_out["loopback_v6"]["allowed"] is False, ro_out
         assert ro_out["tcp_1_1_1_1"]["allowed"] is False, ro_out
@@ -519,7 +538,6 @@ print(json.dumps(out))
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
 def test_session_reuses_sid_releases_per_command_scratch_and_cleans_on_shutdown(make_session, project):
     """Repeated commands reuse one session SID, clean per-command TMPDIR, and leave zero residuals on shutdown."""
-    drives_before = _logical_drives_mask()
     (project / ".virgo").mkdir(exist_ok=True)
     (project / ".virgo" / "config.json").write_text("{}\n")
     session = native_session(make_session, {"win32"})
@@ -537,6 +555,7 @@ def test_session_reuses_sid_releases_per_command_scratch_and_cleans_on_shutdown(
     scratches: set[str] = set()
     sids: set[str] = set()
     profile_temp: Path | None = None
+    allocated_drives: list[str] = []
     for index in range(4):
         source = (
             STANDARD_APPCONTAINER_TOKEN_SOURCE
@@ -554,6 +573,10 @@ print(json.dumps({{'sid': token_result['sid'], 'scratch': os.environ['TMPDIR'], 
         scratches.add(scratch)
         assert (project / f"new-{index}.txt").read_text() == "ordinary"
 
+    pool = session.services["execution"].executor.native._windows_pool
+    if pool is not None:
+        allocated_drives.extend(drive for drive, _target in pool._workspace_drives.values())
+
     assert len(sids) == 1, f"Expected session-level SID reuse across commands, got {sids}"
     session_sid = next(iter(sids))
     assert handle_count() - before < 16, "Repeated executor launches leaked broker handles"
@@ -561,7 +584,8 @@ print(json.dumps({{'sid': token_result['sid'], 'scratch': os.environ['TMPDIR'], 
     session.shutdown()
     assert scan_residual_aces(project, session_sid) == []
     assert profile_temp is not None and not profile_temp.exists()
-    assert _logical_drives_mask() == drives_before
+    for drive in allocated_drives:
+        assert not _is_dos_drive_mapped(drive), f"Virtual drive {drive} still mapped after shutdown"
 
 
 @pytest.mark.parametrize("mode", ["workspace-edit", "read-only"])
@@ -844,7 +868,9 @@ def test_crash_recovery_after_terminate_process(tmp_path):
     (ws / ".virgo" / "config.json").write_text("{}", encoding="utf-8")
     state_dir = tmp_path / "crash_state"
     state_dir.mkdir()
-    drives_before = _logical_drives_mask()
+    # Malformed journals in the same directory must not block recovering valid stale sessions.
+    (state_dir / "000-malformed-list.json").write_text("[]", encoding="utf-8")
+    (state_dir / "001-malformed-pid.json").write_text('{"owner_pid": "bad"}', encoding="utf-8")
 
     worker = f"""import json, os, sys, time
 from pathlib import Path
@@ -888,18 +914,76 @@ time.sleep(120)
     assert len(scan_residual_aces(ws, info["sid"])) > 0
 
     recovered = recover_stale_sessions(state_dir)
-    assert len(recovered) == 1 and recovered[0]["status"] == "recovered", recovered
-    assert recovered[0]["errors"] == [], recovered
+    valid_entries = [item for item in recovered if item.get("sid_str") == info["sid"]]
+    error_entries = [item for item in recovered if item.get("status") == "error"]
+    assert len(valid_entries) == 1 and valid_entries[0]["status"] == "recovered", recovered
+    assert valid_entries[0]["errors"] == [], valid_entries
+    assert len(error_entries) == 2, recovered
     assert not Path(info["state_file"]).exists()
     assert not Path(info["profile_path"]).exists()
     assert scan_residual_aces(ws, info["sid"]) == []
-    assert _logical_drives_mask() == drives_before
-    # Idempotency check
+    assert not _is_dos_drive_mapped(info["dos_drive"])
+    # Remove synthetic malformed files and confirm idempotent empty recovery.
+    for bad in ("000-malformed-list.json", "001-malformed-pid.json"):
+        (state_dir / bad).unlink(missing_ok=True)
     assert recover_stale_sessions(state_dir) == []
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
-def test_inaccessible_runtime_fails_closed(tmp_path, monkeypatch):
+def test_concurrent_sessions_preserve_protected_metadata_until_last_closes(tmp_path):
+    """Closing one session on a shared workspace must not strip SE_DACL_PROTECTED from a surviving session."""
+    from virgo.sandbox.windows_acl import (
+        is_dacl_protected,
+        is_protected_readonly_for_sid,
+        scan_residual_aces,
+    )
+    from virgo.sandbox.windows_sandbox import WindowsSessionPool
+
+    ws = tmp_path / "shared_ws"
+    ws.mkdir()
+    agents = ws / "AGENTS.md"
+    agents.write_text("# shared policy\n", encoding="utf-8")
+    git_dir = ws / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text("[core]\n", encoding="utf-8")
+    journal_dir = tmp_path / "shared_journals"
+
+    pool_a = WindowsSessionPool(journal_dir=journal_dir)
+    pool_b = WindowsSessionPool(journal_dir=journal_dir)
+    try:
+        session_a = pool_a.get_or_create(ws, read_only=False, network_allowed=False)
+        session_a.ensure_protected_paths([agents, git_dir])
+        session_b = pool_b.get_or_create(ws, read_only=False, network_allowed=False)
+        session_b.ensure_protected_paths([agents, git_dir])
+
+        if session_a.dos_drive and session_b.dos_drive:
+            assert session_a.dos_drive != session_b.dos_drive
+
+        # Close Session A first while Session B remains active on the same workspace.
+        pool_a.close()
+        assert scan_residual_aces(ws, session_a.package_name) == []
+        assert not _is_dos_drive_mapped(session_a.dos_drive)
+        assert is_dacl_protected(agents) is True
+        assert is_dacl_protected(git_dir) is True
+        assert is_protected_readonly_for_sid(agents, session_b.package_name) is True
+        assert is_protected_readonly_for_sid(git_dir, session_b.package_name) is True
+
+        # Close Session B last: SE_DACL_PROTECTED must now be cleanly restored to unprotected.
+        pool_b.close()
+        assert scan_residual_aces(ws, session_b.package_name) == []
+        assert not _is_dos_drive_mapped(session_b.dos_drive)
+        assert is_dacl_protected(agents) is False
+        assert is_dacl_protected(git_dir) is False
+    finally:
+        for pool in (pool_a, pool_b):
+            try:
+                pool.close()
+            except Exception:
+                pass
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
+def test_inaccessible_runtime_fails_closed(tmp_path, monkeypatch, make_session):
     """Non-AAP runtime roots without WRITE_DAC fail closed with reason=windows_runtime_inaccessible."""
     from virgo.execution import ExecutionUnavailable
     from virgo.sandbox import windows_sandbox
@@ -919,11 +1003,32 @@ def test_inaccessible_runtime_fails_closed(tmp_path, monkeypatch):
     assert exc_info.value.dimension == "windows_runtime_access"
     assert str(fake_rt) in str(exc_info.value)
 
+    # Verify assembled session fails closed on decline and allows explicit one-shot No-Limit (R6).
+    session = make_session(
+        settings={"execution": {"mode": "workspace-edit"}},
+        refresh_models=False,
+        extensions=False,
+    )
+    provider = session.services["execution"]
+
+    session.ui.answers.append("n")
+    declined = run(session, "Write-Output 'must-not-run'")
+    assert declined.is_error and declined.details["status"] == "execution_unavailable", declined.text()
+    assert "--permission no-limit" in declined.text()
+    assert provider.selected_mode_id == "workspace-edit"
+
+    session.ui.answers.append("y")
+    approved = run(session, "Write-Output 'fallback-ok'")
+    assert not approved.is_error and "fallback-ok" in approved.text(), approved.text()
+    assert provider.selected_mode_id == "workspace-edit"
+
 
 def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
     """Verify no-limit/read-only/workspace-edit modes, protected reads across mode switch, and pwsh CWD."""
     (project / "AGENTS.md").write_text("# agents policy\n", encoding="utf-8")
     session = native_session(make_session, {"win32"})
+    from virgo.sandbox.windows_acl import is_dacl_protected
+
     provider = session.services["execution"]
 
     # Workspace-Edit: pwsh Get-Location must NOT fall back to C:\ and relative write must succeed
@@ -944,7 +1049,12 @@ def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
     ro_denied = run(session, "Set-Content -Path 'pwsh_ro_blocked.txt' -Value 'no'")
     assert ro_denied.is_error and not (project / "pwsh_ro_blocked.txt").exists()
 
-    # No-Limit: works cleanly after sandbox modes
+    # No-Limit: releases idle AppContainer sessions/drives promptly and runs cleanly
+    pool = provider.executor.native._windows_pool
+    drives_before_nl = [drive for drive, _ in pool._workspace_drives.values()] if pool is not None else []
     provider.select_mode("no-limit")
+    assert is_dacl_protected(project / "AGENTS.md") is False
+    for drive in drives_before_nl:
+        assert not _is_dos_drive_mapped(drive), f"Drive {drive} remained mapped after switching to no-limit"
     nl_res = run(session, "Write-Output 'no-limit-ok'")
     assert not nl_res.is_error and "no-limit-ok" in nl_res.text(), nl_res.text()

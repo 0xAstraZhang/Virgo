@@ -38,6 +38,7 @@ from ..execution_policy import PROTECTED_NAMES
 from .platform import SandboxCancelled, SandboxProcessError, SandboxUnavailable
 from .windows_acl import (
     ALL_APPLICATION_PACKAGES_SID,
+    acl_state_lock,
     ancestor_lacks_aap,
     can_open_write_dac,
     capture_dacl_snapshot,
@@ -91,7 +92,6 @@ _HRESULT_MISSING_PROFILE = frozenset({
 
 _ENV_PASSTHROUGH = frozenset({
     "PATH",
-    "PATHEXT",
     "SYSTEMDRIVE",
     "PROGRAMDATA",
     "PROGRAMFILES",
@@ -512,7 +512,7 @@ def _allocate_dos_drive(workspace: Path) -> tuple[str, str] | None:
     """Map an unused drive letter (Z:..M:) to ``workspace`` via DefineDosDeviceW."""
     target = str(workspace)
     probe = ctypes.create_unicode_buffer(4096)
-    with _DOS_DRIVE_LOCK:
+    with _DOS_DRIVE_LOCK, acl_state_lock():
         mask = _GetLogicalDrives()
         if not mask:
             return None
@@ -532,7 +532,7 @@ def _remove_dos_drive(drive: str | None, target: str | None) -> None:
     if not drive:
         return
     buf = ctypes.create_unicode_buffer(4096)
-    with _DOS_DRIVE_LOCK:
+    with _DOS_DRIVE_LOCK, acl_state_lock():
         if not _QueryDosDeviceW(drive, buf, len(buf)):
             return
         if target and _DefineDosDeviceW(
@@ -619,6 +619,12 @@ def validate_policy(policy, cwd: Path) -> Path:
         raise SandboxUnavailable(
             "Command cwd is outside the originating sandbox workspace",
             reason="invalid_cwd",
+        )
+    if policy.private_path(resolved_cwd) or policy.private_path(workspace):
+        raise SandboxUnavailable(
+            "Command cwd is inside private Virgo storage",
+            reason="protected_path",
+            target=resolved_cwd,
         )
     system_roots = (WINDOWS_DIRECTORY, Path(sys.base_prefix).resolve())
     if any(path.is_relative_to(workspace) for path in system_roots):
@@ -812,6 +818,20 @@ def recover_stale_sessions(
     for state_path in sorted(journal_dir.glob("*.json")):
         try:
             data = json.loads(state_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("journal payload is not a JSON object")
+            session_id = data.get("session_id", state_path.stem)
+            profile_name = data.get("profile_name")
+            sid_str = data.get("sid_str")
+            raw_pid = data.get("owner_pid", -1)
+            owner_pid = int(raw_pid) if raw_pid is not None else -1
+            owner_create_time = data.get("owner_create_time")
+            dos_drive = data.get("dos_drive")
+            dos_target = data.get("dos_target")
+            granted_roots = data.get("granted_roots", [])
+            denied_paths = data.get("denied_paths", [])
+            if not isinstance(granted_roots, list) or not isinstance(denied_paths, list):
+                raise ValueError("journal root lists are malformed")
         except Exception as exc:
             results.append({
                 "state_file": str(state_path),
@@ -819,16 +839,6 @@ def recover_stale_sessions(
                 "errors": [f"failed to read journal: {exc}"],
             })
             continue
-
-        session_id = data.get("session_id", state_path.stem)
-        profile_name = data.get("profile_name")
-        sid_str = data.get("sid_str")
-        owner_pid = int(data.get("owner_pid", -1))
-        owner_create_time = data.get("owner_create_time")
-        dos_drive = data.get("dos_drive")
-        dos_target = data.get("dos_target")
-        granted_roots = data.get("granted_roots", [])
-        denied_paths = data.get("denied_paths", [])
 
         alive = is_process_alive(owner_pid, owner_create_time)
         if force_dead_only and alive:
@@ -979,17 +989,16 @@ class WindowsSandboxSession:
         self.home = self.profile_path / "Home"
         self.appdata = self.home / "AppData" / "Roaming"
         self.temp_root = self.profile_path / "Temp"
-        for directory in (self.home, self.home / "AppData", self.appdata, self.temp_root):
-            directory.mkdir(parents=True, exist_ok=True)
-
-        # Write-ahead workspace root entry before applying ACLs.
         ws_key = ntpath.normcase(str(self.workspace))
-        self._granted_roots[ws_key] = {
-            "path": str(self.workspace),
-            "writable": not self.read_only,
-            "kind": "workspace",
-        }
         try:
+            for directory in (self.home, self.home / "AppData", self.appdata, self.temp_root):
+                directory.mkdir(parents=True, exist_ok=True)
+            # Write-ahead workspace root entry before applying ACLs.
+            self._granted_roots[ws_key] = {
+                "path": str(self.workspace),
+                "writable": not self.read_only,
+                "kind": "workspace",
+            }
             self._persist_journal()
             grant_root_access(self.workspace, self.package_name, writable=not self.read_only)
         except BaseException:
@@ -1027,7 +1036,7 @@ class WindowsSandboxSession:
         with self._lock:
             if self._closed:
                 raise SandboxUnavailable("Windows AppContainer session is already closed")
-            added: list[Path] = []
+            added: list[tuple[str, Path]] = []
             for root in roots:
                 key = ntpath.normcase(str(root))
                 if key in self._granted_roots:
@@ -1037,12 +1046,45 @@ class WindowsSandboxSession:
                     "writable": False,
                     "kind": "runtime",
                 }
-                added.append(root)
+                added.append((key, root))
             if not added:
                 return
             self._persist_journal()
-            for root in added:
-                grant_root_access(root, self.package_name, writable=False)
+            applied: set[str] = set()
+            try:
+                for key, root in added:
+                    grant_root_access(root, self.package_name, writable=False)
+                    applied.add(key)
+            except BaseException:
+                for key, _ in added:
+                    if key not in applied:
+                        self._granted_roots.pop(key, None)
+                try:
+                    self._persist_journal()
+                except OSError:
+                    pass
+                raise
+
+    def _lookup_peer_protected_snapshot(self, target_key: str) -> dict[str, Any] | None:
+        """Look up pre-Virgo DACL snapshot from a peer session journal protecting ``target_key``."""
+        if not self._state_dir.exists():
+            return None
+        for state_path in self._state_dir.glob("*.json"):
+            if state_path == self.state_file:
+                continue
+            try:
+                data = json.loads(state_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                for rec in data.get("denied_paths", []):
+                    if isinstance(rec, dict) and ntpath.normcase(str(rec.get("path", ""))) == target_key:
+                        return {
+                            "was_protected": bool(rec.get("was_protected", False)),
+                            "original_explicit_aces_b64": list(rec.get("original_explicit_aces_b64", [])),
+                        }
+            except Exception:
+                continue
+        return None
 
     def _validate_protected_target(self, target: Path) -> Path:
         """Verify a protected path inside workspace contains zero reparse points."""
@@ -1088,7 +1130,7 @@ class WindowsSandboxSession:
                 raise SandboxUnavailable("Windows AppContainer session is already closed")
             seen: set[str] = set()
             to_protect: list[Path] = []
-            to_grant_ro: list[Path] = []
+            to_grant_ro: list[tuple[str, Path]] = []
             dirty = False
 
             for raw_target in candidates:
@@ -1109,7 +1151,7 @@ class WindowsSandboxSession:
                             "writable": False,
                             "kind": "protected_ro_grant",
                         }
-                        to_grant_ro.append(target)
+                        to_grant_ro.append((key, target))
                         dirty = True
                     continue
 
@@ -1119,18 +1161,43 @@ class WindowsSandboxSession:
                         to_protect.append(target)
                     continue
                 snap = capture_dacl_snapshot(target, exclude_sid_str=self.package_name)
+                if snap.get("has_other_appcontainer_sid"):
+                    peer = self._lookup_peer_protected_snapshot(key)
+                    if peer is not None:
+                        was_protected = peer["was_protected"]
+                        orig_explicit = peer["original_explicit_aces_b64"]
+                    else:
+                        # Another AppContainer session protected this path; avoid duplicating
+                        # its converted host ACEs as "original explicit ACEs" on final restore.
+                        was_protected = False
+                        orig_explicit = []
+                else:
+                    was_protected = snap["was_protected"]
+                    orig_explicit = snap["original_explicit_aces_b64"]
                 self._protected_records[key] = {
                     "path": str(target),
-                    "was_protected": snap["was_protected"],
-                    "original_explicit_aces_b64": snap["original_explicit_aces_b64"],
+                    "was_protected": was_protected,
+                    "original_explicit_aces_b64": orig_explicit,
                 }
                 to_protect.append(target)
                 dirty = True
 
             if dirty:
                 self._persist_journal()
-            for target in to_grant_ro:
-                grant_root_access(target, self.package_name, writable=False)
+            applied_ro: set[str] = set()
+            try:
+                for key, target in to_grant_ro:
+                    grant_root_access(target, self.package_name, writable=False)
+                    applied_ro.add(key)
+            except BaseException:
+                for key, _ in to_grant_ro:
+                    if key not in applied_ro:
+                        self._granted_roots.pop(key, None)
+                try:
+                    self._persist_journal()
+                except OSError:
+                    pass
+                raise
             for target in to_protect:
                 protect_readonly_path(target, self.package_name)
 
@@ -1522,20 +1589,16 @@ class WindowsSessionPool:
             for sib_key, sibling in list(self._sessions.items()):
                 if sib_key[0] == ws_key and sib_key != session_key:
                     with sibling._lock:
-                        idle = sibling._active_commands == 0
-                    if idle:
-                        try:
+                        if sibling._active_commands == 0:
                             sibling.close(unmap_drive=False)
-                        finally:
-                            self._sessions.pop(sib_key, None)
+                            if sibling._closed:
+                                self._sessions.pop(sib_key, None)
 
             drive_info = self._workspace_drives.get(ws_key)
-            created_drive = False
             if drive_info is None and ancestor_lacks_aap(workspace):
                 drive_info = _allocate_dos_drive(workspace)
                 if drive_info is not None:
                     self._workspace_drives[ws_key] = drive_info
-                    created_drive = True
 
             dos_drive, dos_target = drive_info if drive_info is not None else (None, None)
             try:
@@ -1548,12 +1611,42 @@ class WindowsSessionPool:
                     journal_dir=self._journal_dir,
                 )
             except BaseException:
-                if created_drive and drive_info is not None:
+                if drive_info is not None and not any(k[0] == ws_key for k in self._sessions):
                     self._workspace_drives.pop(ws_key, None)
                     _remove_dos_drive(*drive_info)
                 raise
             self._sessions[session_key] = session
             return session
+
+    def close_idle(self) -> None:
+        """Close idle sessions and unmap workspace drives that have no remaining active sessions."""
+        with self._lock:
+            errors: list[str] = []
+            for key, session in list(self._sessions.items()):
+                with session._lock:
+                    if session._active_commands > 0:
+                        continue
+                    try:
+                        session.close(unmap_drive=False)
+                    except Exception as exc:
+                        errors.append(str(exc))
+                    if session._closed:
+                        self._sessions.pop(key, None)
+
+            active_workspaces = {key[0] for key in self._sessions}
+            for ws_key, (drive, target) in list(self._workspace_drives.items()):
+                if ws_key in active_workspaces:
+                    continue
+                try:
+                    _remove_dos_drive(drive, target)
+                except OSError as exc:
+                    errors.append(f"unmap drive {drive}: {exc}")
+                else:
+                    self._workspace_drives.pop(ws_key, None)
+            if errors:
+                raise SandboxProcessError(
+                    "Windows sandbox idle teardown encountered errors: " + "; ".join(errors[:5])
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -1565,15 +1658,21 @@ class WindowsSessionPool:
                     session.close(unmap_drive=False)
                 except Exception as exc:
                     errors.append(str(exc))
-                self._sessions.pop(key, None)
+                if session._closed:
+                    self._sessions.pop(key, None)
 
+            active_workspaces = {key[0] for key in self._sessions}
             for ws_key, (drive, target) in list(self._workspace_drives.items()):
+                if ws_key in active_workspaces:
+                    continue
                 try:
                     _remove_dos_drive(drive, target)
                 except OSError as exc:
                     errors.append(f"unmap drive {drive}: {exc}")
-                self._workspace_drives.pop(ws_key, None)
-            self._closed = True
+                else:
+                    self._workspace_drives.pop(ws_key, None)
+            if not self._sessions and not self._workspace_drives:
+                self._closed = True
             if errors:
                 raise SandboxProcessError(
                     "Windows sandbox pool teardown encountered errors: " + "; ".join(errors[:5])

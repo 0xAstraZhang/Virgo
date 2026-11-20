@@ -42,7 +42,7 @@ else: raise AssertionError('outside write succeeded')
         expected_stderr = {b"diagnostic:hello stdio"}
         if sys.platform == "win32":
             # CPython can continue after failing to canonicalize its executable
-            # under LPAC. Keep that exact diagnostic on stderr, never stdout.
+            # inside AppContainer. Keep that exact diagnostic on stderr, never stdout.
             warning = f"Failed to find real location of {sys._base_executable}\n".encode()
             expected_stderr.add(warning + b"diagnostic:hello stdio")
         assert stderr in expected_stderr, {"stdout": stdout, "stderr": stderr}

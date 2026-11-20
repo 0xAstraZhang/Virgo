@@ -7,7 +7,7 @@ Linux、macOS、原生 Windows 与 Windows + WSL2 均为**一级支持**平台�
 ## 护栏覆盖的目标
 
 1. **工作区范围与控制文件写保护**：**Workspace-Edit** 默认仅允许写入当前项目工作区。控制元数据（`.git`、`.virgo`、`AGENTS.md`、`CLAUDE.md`）与解释器安装目录受写保护。Broker 文件工具（`read`、`write`、`edit`、`glob`、`grep`）直接在应用层按 `PermissionPolicy` 校验（即使控制文件在启动时尚不存在，也会拒绝写入），并使用最后一级 `O_NOFOLLOW` 与原子临时文件替换。
-2. **私有数据与凭据保护**：Linux、macOS 与原生 Windows 上 Virgo 的私有目录（`~/.virgo` 或 `$VIRGO_HOME`）和 `~/.ssh` 默认拒绝读写（POSIX 上即使以 `$HOME` 作为工作区，也会对私有目录做 carve-out；原生 Windows 上 `%USERPROFILE%` 默认不含 `ALL APPLICATION PACKAGES`，且不允许以 `$HOME` 作为工作区）。**Read-Only** 默认关闭 Shell 网络，**Workspace-Edit** 允许 Shell 出站联网。
+2. **私有数据与凭据保护**：Linux、macOS 与原生 Windows 上 Virgo 的私有目录（`~/.virgo` 或 `$VIRGO_HOME`）默认拒绝读写（POSIX 上即使以 `$HOME` 作为工作区，也会对 `~/.virgo` 做 carve-out）。`~/.ssh` 等其他用户目录在工作区之外时拒绝读写（原生 Windows 上 `%USERPROFILE%` 默认不含 `ALL APPLICATION PACKAGES`，且不允许以 `$HOME` 作为工作区）。**Read-Only** 默认关闭 Shell 网络，**Workspace-Edit** 允许 Shell 出站联网。
 3. **高危命令逐次确认**：高代价或不可逆的 Shell 命令（`git push --force`、推送至受保护分支、`git reset --hard`、`git clean -f`、`curl | sh`、工作区外递归删除、部署/发布、云资源删除以及破坏性 SQL/Redis 语句）在**所有模式**下均要求显式一次性确认（仅可在 No-Limit 模式下通过 `permissions.confirmHighRisk: false` 关闭）。
 4. **失败可见，不悄悄降级**：原生沙箱后端无法建立时，Virgo 明确报错，在交互式会话中提供显式的“本次使用 No-Limit”选项（不改变会话模式），绝不静默退回 Host，也绝不自动重放可能已经启动的命令。
 

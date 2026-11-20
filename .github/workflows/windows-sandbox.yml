@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'src/virgo/**'
+      - 'tests/conftest.py'
       - 'tests/support/**'
       - 'tests/harness/test_windows_sandbox_e2e.py'
       - 'ci/check_native_report.py'
@@ -119,9 +120,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:PYTHONUTF8 = '1'
           $env:VIRGO_REQUIRE_SANDBOX_TESTS = '1'
+          $env:UV_PYTHON_PREFERENCE = 'only-managed'
           $uv = 'C:\virgo-std-work\bin\uv.exe'
           Set-Location 'C:\virgo-std-work\repo'
-          & $uv sync --locked --dev --python 3.13
+          & $uv sync --locked --dev --python 3.13 --python-preference only-managed
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $uv run --no-sync python ci/run_as_standard_user.py --assert-standard-user
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

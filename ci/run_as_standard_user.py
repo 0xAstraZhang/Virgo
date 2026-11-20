@@ -26,6 +26,9 @@ BOOL = ctypes.c_int32
 
 LOGON_WITH_PROFILE = 0x00000001
 CREATE_NO_WINDOW = 0x08000000
+CREATE_SUSPENDED = 0x00000004
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+JobObjectExtendedLimitInformation = 9
 WAIT_OBJECT_0 = 0x00000000
 WAIT_TIMEOUT = 0x00000102
 
@@ -77,6 +80,42 @@ class _ProcessInformation(ctypes.Structure):
     ]
 
 
+class _JobBasicLimits(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", DWORD),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", DWORD),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", DWORD),
+        ("SchedulingClass", DWORD),
+    ]
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+
+class _JobExtendedLimits(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JobBasicLimits),
+        ("IoInfo", _IoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 _shell32 = ctypes.WinDLL("shell32", use_last_error=True)
@@ -93,6 +132,16 @@ _kernel32.GetExitCodeProcess.argtypes = [HANDLE, ctypes.POINTER(DWORD)]
 _kernel32.GetExitCodeProcess.restype = BOOL
 _kernel32.TerminateProcess.argtypes = [HANDLE, w.UINT]
 _kernel32.TerminateProcess.restype = BOOL
+_kernel32.ResumeThread.argtypes = [HANDLE]
+_kernel32.ResumeThread.restype = DWORD
+_kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, w.LPCWSTR]
+_kernel32.CreateJobObjectW.restype = HANDLE
+_kernel32.SetInformationJobObject.argtypes = [HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD]
+_kernel32.SetInformationJobObject.restype = BOOL
+_kernel32.AssignProcessToJobObject.argtypes = [HANDLE, HANDLE]
+_kernel32.AssignProcessToJobObject.restype = BOOL
+_kernel32.TerminateJobObject.argtypes = [HANDLE, w.UINT]
+_kernel32.TerminateJobObject.restype = BOOL
 
 _advapi32.OpenProcessToken.argtypes = [HANDLE, DWORD, ctypes.POINTER(HANDLE)]
 _advapi32.OpenProcessToken.restype = BOOL
@@ -156,8 +205,11 @@ def inspect_current_token() -> dict[str, object]:
         elev_type = DWORD.from_buffer(_token_info(token, TOKEN_ELEVATION_TYPE_CLASS)).value
         groups_buf = _token_info(token, TOKEN_GROUPS_CLASS)
         count = DWORD.from_buffer(groups_buf).value
-        entries = (_SidAndAttributes * count).from_buffer(groups_buf, _TokenGroups.Groups.offset)
-        group_sids = [_sid_to_str(entries[i].Sid) for i in range(count)]
+        if count > 0:
+            entries = (_SidAndAttributes * count).from_buffer(groups_buf, _TokenGroups.Groups.offset)
+            group_sids = [_sid_to_str(entries[i].Sid) for i in range(count)]
+        else:
+            group_sids = []
         return {
             "username": os.environ.get("USERNAME"),
             "is_user_an_admin": bool(_shell32.IsUserAnAdmin()),
@@ -205,6 +257,18 @@ def launch_as_user(
     startup.cb = ctypes.sizeof(startup)
     proc_info = _ProcessInformation()
 
+    job = _kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    limits = _JobExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not _kernel32.SetInformationJobObject(
+        job, JobObjectExtendedLimitInformation, ctypes.byref(limits), ctypes.sizeof(limits)
+    ):
+        err = ctypes.get_last_error()
+        _kernel32.CloseHandle(job)
+        raise ctypes.WinError(err)
+
     ok = _advapi32.CreateProcessWithLogonW(
         username,
         domain,
@@ -212,20 +276,31 @@ def launch_as_user(
         LOGON_WITH_PROFILE,
         None,
         cmd_buf,
-        CREATE_NO_WINDOW,
+        CREATE_NO_WINDOW | CREATE_SUSPENDED,
         None,  # Let Windows construct the target user's own profile environment block.
         str(cwd),
         ctypes.byref(startup),
         ctypes.byref(proc_info),
     )
     if not ok:
-        raise ctypes.WinError(ctypes.get_last_error())
+        err = ctypes.get_last_error()
+        _kernel32.CloseHandle(job)
+        raise ctypes.WinError(err)
 
     try:
+        if not _kernel32.AssignProcessToJobObject(job, proc_info.hProcess):
+            err = ctypes.get_last_error()
+            _kernel32.TerminateProcess(proc_info.hProcess, 1)
+            raise ctypes.WinError(err)
+        if _kernel32.ResumeThread(proc_info.hThread) == 0xFFFFFFFF:
+            err = ctypes.get_last_error()
+            _kernel32.TerminateJobObject(job, 1)
+            raise ctypes.WinError(err)
+
         wait_ms = max(1, int(timeout_s * 1000))
         status = _kernel32.WaitForSingleObject(proc_info.hProcess, wait_ms)
         if status == WAIT_TIMEOUT:
-            _kernel32.TerminateProcess(proc_info.hProcess, 124)
+            _kernel32.TerminateJobObject(job, 124)
             _kernel32.WaitForSingleObject(proc_info.hProcess, 5000)
             rc = 124
         elif status == WAIT_OBJECT_0:
@@ -236,6 +311,8 @@ def launch_as_user(
         else:
             raise ctypes.WinError(ctypes.get_last_error())
     finally:
+        _kernel32.TerminateJobObject(job, 1)
+        _kernel32.CloseHandle(job)
         _kernel32.CloseHandle(proc_info.hThread)
         _kernel32.CloseHandle(proc_info.hProcess)
 

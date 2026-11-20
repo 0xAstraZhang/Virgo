@@ -110,3 +110,29 @@ def test_realistic_workspace_fixture_and_scale_budgets(tmp_path):
     scaled_read = [{'success': True, 'cold_start_ms': 450.0, 'read_median_ms': 95.0}]
     verdict = measure_permission_modes.evaluate_scale_budgets(small, scaled_read)
     assert verdict['passed'] is False and any('scaled' in v for v in verdict['violations'])
+
+    small_ops = [{
+        'success': True, 'cold_start_ms': 400.0, 'read_median_ms': 8.0,
+        'first_command_ms': 1100.0,
+        'operations': [{'phase': 'first', 'latency_ms': 1100.0}, {'phase': 'repeat', 'latency_ms': 420.0}],
+    }]
+    large_ops_ok = [{
+        'success': True, 'cold_start_ms': 420.0, 'read_median_ms': 9.0,
+        'first_command_ms': 1250.0,
+        'operations': [{'phase': 'first', 'latency_ms': 1250.0}, {'phase': 'repeat', 'latency_ms': 450.0}],
+    }]
+    verdict = measure_permission_modes.evaluate_scale_budgets(small_ops, large_ops_ok)
+    assert verdict['passed'] is True
+    assert verdict['realistic_first_command_median_ms'] == 1250.0
+    assert verdict['realistic_repeat_command_median_ms'] == 450.0
+
+    large_ops_slow_first = [{**large_ops_ok[0], 'first_command_ms': 6500.0}]
+    verdict = measure_permission_modes.evaluate_scale_budgets(small_ops, large_ops_slow_first)
+    assert verdict['passed'] is False and any('first_command_ms' in v for v in verdict['violations'])
+
+    large_ops_scaled_repeat = [{
+        **large_ops_ok[0],
+        'operations': [{'phase': 'first', 'latency_ms': 1250.0}, {'phase': 'repeat', 'latency_ms': 1800.0}],
+    }]
+    verdict = measure_permission_modes.evaluate_scale_budgets(small_ops, large_ops_scaled_repeat)
+    assert verdict['passed'] is False and any('Repeat command latency scaled' in v for v in verdict['violations'])
