@@ -34,6 +34,10 @@ def native(make_session):
     return native_session(make_session, {"win32"})
 
 
+def test_windows_generic_process_stdio(native, project):
+    native_cases.generic_process_stdio(native, project)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="NTFS reparse-point broker test")
 @pytest.mark.parametrize("kind", ["junction", "metadata-junction", "hardlink"])
 def test_reparse_and_shared_file_grants_fail_before_payload(broker_session, project, kind):
@@ -781,7 +785,7 @@ if {tool == "write"}:
 def test_core_create_during_command_preflight_preserves_workspace_writes(native, project, monkeypatch):
     from contextlib import contextmanager
 
-    from virgo.extensions.sandbox import windows_acl, windows_files
+    from virgo.sandbox import windows_acl, windows_files
     from virgo.tools.bash import run_command
 
     target = project / "created-during-preflight.txt"

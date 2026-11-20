@@ -1,21 +1,27 @@
-"""Platform-neutral execution contracts and direct host operations.
+"""Core execution contracts, process ownership and the common executor.
 
-This module must not import an optional isolation implementation. A context is
-captured for its originating task and passed unchanged to deferred operations.
+A context is captured for its originating task and passed unchanged to deferred
+operations. Native backend discovery is lazy so explicit No-Limit execution does
+not depend on an isolation backend being installed.
 """
 from __future__ import annotations
 
 import errno
 import io
 import os
+import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Protocol
+
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ExecutionUnavailable(RuntimeError):
@@ -43,11 +49,102 @@ class FileAccessDenied(PermissionError):
 
 class ProcessHandle(Protocol):
     returncode: int | None
+    stdin: object
+    stdout: object
+    stderr: object
 
     def poll(self) -> int | None: ...
     def wait(self, timeout: float | None = None) -> int: ...
     def kill_tree(self) -> None: ...
     def cleanup_tree(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class ProcessRequest:
+    """An argv-based process operation; permission decisions are supplied separately."""
+
+    argv: tuple[str, ...]
+    cwd: Path
+    env: dict[str, str]
+    stdout: object = subprocess.PIPE
+    stdin: object = subprocess.DEVNULL
+    stderr: object = subprocess.STDOUT
+    output_path: Path | None = None
+    env_overrides: dict[str, str] = field(default_factory=dict)
+
+
+def environment_overrides(values: dict[str, str]) -> dict[str, str]:
+    """Validate explicit adapter grants without letting them alter launcher setup.
+
+    Ambient credentials are still filtered by native backends. These additions
+    must come from trusted configuration, never a model-supplied environment.
+    """
+    reserved = {"HOME", "TMPDIR", "TMP", "TEMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+                "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "ENV", "BASH_ENV"}
+    for name, value in values.items():
+        if not isinstance(name, str) or not isinstance(value, str) or not _ENV_NAME.fullmatch(name):
+            raise ExecutionUnavailable("Explicit environment grants require valid identifier names and string values",
+                                       reason="invalid_environment")
+        if any(ord(ch) < 0x20 and ch not in "\t\n\r" for ch in value):
+            raise ExecutionUnavailable(f"Explicit environment value for {name} contains invalid control characters",
+                                       reason="invalid_environment")
+        if name.upper() in reserved or name.upper().startswith(("VIRGO", "LD_", "DYLD_", "PYTHON")):
+            raise ExecutionUnavailable(f"Explicit environment cannot replace launcher variable {name}",
+                                       reason="invalid_environment")
+    return dict(values)
+
+
+def _merge_environment(base: dict[str, str], overrides: dict[str, str], *,
+                       case_insensitive: bool = os.name == "nt") -> dict[str, str]:
+    if not overrides:
+        return dict(base)
+    if case_insensitive:
+        override_keys = {key.upper() for key in overrides}
+        merged = {key: value for key, value in base.items() if key.upper() not in override_keys}
+        merged.update(overrides)
+        return merged
+    return {**base, **overrides}
+
+
+class SandboxExecutor:
+    """Establish the selected boundary before releasing any local payload."""
+
+    @cached_property
+    def native(self):
+        from .sandbox.native import NativeExecutor
+
+        return NativeExecutor()
+
+    @property
+    def backend(self):
+        # A description is not a capability probe. Discovery and trust checks
+        # belong to launch, not prompt construction or displaying permissions.
+        return {"linux": "bubblewrap", "darwin": "seatbelt", "win32": "windows-lpac"}.get(sys.platform, "unsupported")
+
+    @property
+    def identity(self):
+        return (id(self), self.backend)
+
+    def policy(self, context):
+        return self.native.policy(context)
+
+    def run_process(self, request: ProcessRequest, context=None, cancellation=None) -> ProcessHandle:
+        if cancellation is not None and cancellation.is_set():
+            raise ExecutionCancelled("Execution cancelled before process start")
+        if not request.argv or not all(isinstance(part, str) for part in request.argv) or not request.argv[0]:
+            raise ExecutionUnavailable("Process launch requires a nonempty command argv", reason="invalid_argv")
+        if context is not None:
+            return self.native.run_process(request, context, cancellation)
+        env = _merge_environment(request.env, environment_overrides(request.env_overrides))
+        if os.name == "nt":
+            from .tools.windows_process import WindowsProcess
+
+            return WindowsProcess(request.argv, cwd=request.cwd, env=env, stdin=request.stdin,
+                                  stdout=request.stdout, stderr=request.stderr)
+        return HostProcess(subprocess.Popen(
+            request.argv, cwd=str(request.cwd), env=env,
+            stdin=request.stdin, stdout=request.stdout, stderr=request.stderr, start_new_session=True,
+        ))
 
 
 class ExecutionContext(Protocol):
@@ -60,7 +157,7 @@ class ExecutionContext(Protocol):
     def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None): ...
     def open_output(self, cwd: Path, prefix: str): ...
     def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]: ...
-    def spawn(self, argv, cwd, env, stdout, output_path=None, cancellation=None): ...
+    def run_process(self, request: ProcessRequest, cancellation=None) -> ProcessHandle: ...
     def describe(self) -> dict: ...
 
 
@@ -81,7 +178,9 @@ class HostProcess:
     def __init__(self, process):
         self._process = process
         self.pid = process.pid
+        self.stdin = process.stdin
         self.stdout = process.stdout
+        self.stderr = process.stderr
         self._lock = threading.RLock()
         self._cleanup_error = None
 
@@ -174,6 +273,7 @@ class HostProcess:
 class HostContext:
     workspace: Path
     provider: str = "host"
+    executor: SandboxExecutor = field(default_factory=SandboxExecutor, compare=False, repr=False)
 
     def check_read(self, path: Path) -> None:
         pass
@@ -217,15 +317,8 @@ class HostContext:
             stream.seek(max(0, total - max_bytes))
             return stream.read(max_bytes), total
 
-    def spawn(self, argv, cwd, env, stdout, output_path=None, cancellation=None):
-        if cancellation is not None and cancellation.is_set():
-            raise ExecutionCancelled("Execution cancelled before process start")
-        if os.name == "nt":
-            from .tools.windows_process import WindowsProcess
-
-            return WindowsProcess(argv, cwd=cwd, env=env, stdout=stdout)
-        return HostProcess(subprocess.Popen(argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
-                                stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True))
+    def run_process(self, request: ProcessRequest, cancellation=None):
+        return self.executor.run_process(request, cancellation=cancellation)
 
     def describe(self) -> dict:
         return {"provider": "host", "state": "host", "workspace": str(self.workspace),

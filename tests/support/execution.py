@@ -3,8 +3,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from virgo.extensions.sandbox.policy import SandboxPolicy
 from virgo.harness.execution_modes import PermissionPreset, parse_network
+from virgo.sandbox.policy import SandboxPolicy
 
 
 def file_policy(workspace, *, read_paths=None, write_paths=(), network_allowed=False, private_paths=()):

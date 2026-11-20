@@ -54,11 +54,15 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
     if not parts or ".." in parts:
         return None
     if access is not None:
+        from ..execution import ExecutionUnavailable
+
         try:
             if any(workspace.joinpath(*parts[:i]).is_symlink() for i in range(1, len(parts) + 1)):
                 return None
             data = access.read_bytes(path)
             return data.decode("utf-8", errors=errors) if data is not None else None
+        except ExecutionUnavailable:
+            raise
         except (OSError, RuntimeError):
             return None
     directory = descriptor = None

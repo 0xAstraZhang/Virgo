@@ -1,7 +1,7 @@
 """Windows 10+ command processes, atomically assigned to a kill-on-close Job Object.
 
 The JOB_LIST startup attribute assigns the process before any user code can run.
-Only duplicated stdin/stdout handles are inherited; the job handle never is.
+Only duplicated standard-stream handles are inherited; the job handle never is.
 The job owns process lifetime; an optional sandbox supplies the security token
 and startup attributes. Its process is verified while suspended before release.
 This module is imported only on Windows. There is no uncontained fallback.
@@ -112,10 +112,11 @@ def _close_handles(job, process):
 class WindowsProcess:
     """Small Popen-compatible surface used by foreground and background commands."""
 
-    def __init__(self, argv, *, cwd, env, stdout, sandbox=None):
+    def __init__(self, argv, *, cwd, env, stdout, sandbox=None,
+                 stdin=subprocess.DEVNULL, stderr=subprocess.STDOUT):
         self.args = argv
         self.returncode = None
-        self.stdout = None
+        self.stdin = self.stdout = self.stderr = None
         self._lock = threading.RLock()
         self._sandbox = sandbox
         self._released = False
@@ -131,25 +132,32 @@ class WindowsProcess:
                 limits = ExtendedLimits()
                 limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
                 _check(SetJob(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)))
-                stdin_file = resources.enter_context(open(os.devnull, "rb"))
-                if stdout == subprocess.PIPE:
-                    read_fd, write_fd = os.pipe()
-                    self.stdout = os.fdopen(read_fd, "rb")
-                    output_file = resources.enter_context(os.fdopen(write_fd, "wb", buffering=0))
-                elif stdout == subprocess.DEVNULL:
-                    output_file = resources.enter_context(open(os.devnull, "wb"))
-                else:
-                    output_file = stdout
+                def stream_file(value, name, number, reading=False):
+                    if value == subprocess.PIPE:
+                        read_fd, write_fd = os.pipe()
+                        child, parent = (read_fd, write_fd) if reading else (write_fd, read_fd)
+                        child_file = resources.enter_context(os.fdopen(child, "rb" if reading else "wb", buffering=0))
+                        setattr(self, name, os.fdopen(parent, "wb" if reading else "rb", buffering=0))
+                        return child_file
+                    if value == subprocess.DEVNULL:
+                        return resources.enter_context(open(os.devnull, "rb" if reading else "wb"))
+                    return number if value is None else value
+
+                input_file = stream_file(stdin, "stdin", 0, reading=True)
+                output_file = stream_file(stdout, "stdout", 1)
+                error_file = output_file if stderr == subprocess.STDOUT else stream_file(stderr, "stderr", 2)
 
                 def inherit(file):
                     duplicate = HANDLE()
                     owner = GetCurrentProcess()
-                    _check(DuplicateHandle(owner, msvcrt.get_osfhandle(file.fileno()), owner,
+                    descriptor = file if isinstance(file, int) else file.fileno()
+                    _check(DuplicateHandle(owner, msvcrt.get_osfhandle(descriptor), owner,
                                            ctypes.byref(duplicate), 0, True, 2))  # DUPLICATE_SAME_ACCESS
                     resources.callback(CloseHandle, duplicate.value)
                     return duplicate.value
 
-                input_handle, output_handle = inherit(stdin_file), inherit(output_file)
+                input_handle, output_handle = inherit(input_file), inherit(output_file)
+                error_handle = output_handle if stderr == subprocess.STDOUT else inherit(error_file)
                 extra_attributes = list(sandbox.process_attributes()) if sandbox is not None else []
                 attribute_count = 2 + len(extra_attributes)
                 size = SIZE_T()
@@ -159,7 +167,8 @@ class WindowsProcess:
                 attributes = ctypes.create_string_buffer(size.value)
                 _check(InitializeAttributes(attributes, attribute_count, 0, ctypes.byref(size)))
                 resources.callback(DeleteAttributes, attributes)
-                inherited = (HANDLE * 2)(input_handle, output_handle)
+                handles = tuple(dict.fromkeys((input_handle, output_handle, error_handle)))
+                inherited = (HANDLE * len(handles))(*handles)
                 jobs = (HANDLE * 1)(job)
                 _check(UpdateAttribute(attributes, 0, 0x20002, inherited, ctypes.sizeof(inherited), None, None))
                 _check(UpdateAttribute(attributes, 0, 0x2000D, jobs, ctypes.sizeof(jobs), None, None))
@@ -174,12 +183,17 @@ class WindowsProcess:
                 if sandbox is not None:
                     startup.StartupInfo.lpDesktop = sandbox.desktop
                 startup.StartupInfo.hStdInput = input_handle
-                startup.StartupInfo.hStdOutput = startup.StartupInfo.hStdError = output_handle
+                startup.StartupInfo.hStdOutput = output_handle
+                startup.StartupInfo.hStdError = error_handle
                 startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
-                command = subprocess.list2cmdline(argv) if isinstance(argv, list) else argv
+                command = subprocess.list2cmdline(argv) if isinstance(argv, (list, tuple)) else argv
                 command_buffer = ctypes.create_unicode_buffer(command)
-                environment = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in
-                                                                     sorted(env.items(), key=lambda item: item[0].upper())) + "\0")
+                deduped = {}
+                for key, value in env.items():
+                    deduped[key.upper()] = (key, value)
+                environment = ctypes.create_unicode_buffer(
+                    "\0".join(f"{key}={value}" for _, (key, value) in sorted(deduped.items())) + "\0"
+                )
                 info = ProcessInfo()
                 flags = 0x08000000 | 0x00080000 | 0x00000400  # NO_WINDOW | EXTENDED_STARTUPINFO | UNICODE_ENVIRONMENT
                 if sandbox is not None:
@@ -232,8 +246,9 @@ class WindowsProcess:
                 raise self._failure(f"Windows sandbox launch failed ({error}); cleanup failed: {cleanup_error}",
                                     uncertain=True) from cleanup_error
             finally:
-                if self.stdout is not None:
-                    self.stdout.close()
+                for stream in (self.stdin, self.stdout, self.stderr):
+                    if stream is not None:
+                        stream.close()
             if sandbox is not None and isinstance(error, Exception):
                 from ..execution import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable
 
