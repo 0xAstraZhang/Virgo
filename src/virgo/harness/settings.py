@@ -88,7 +88,7 @@ def _reject_retired_execution(layer: dict) -> None:
     """Fail loudly on retired execution/sandbox/permission keys (S7-02, no silent migration)."""
     if "sandbox" in layer:
         raise ValueError(
-            "Legacy 'sandbox' settings are removed. Configure execution.mode "
+            "Legacy 'sandbox' settings are retired. Configure execution.mode "
             "('workspace-edit', 'read-only', or 'no-limit') instead."
         )
     execution = layer.get("execution")
@@ -164,10 +164,12 @@ def _validate_permissions(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("permissions must be an object")
     retired = {"mode", "modes", "preset", "presets", "readOnlyCommands", "allow", "deny"}
-    hit = retired.intersection(value)
+    hit = sorted(retired.intersection(value))
     if hit:
+        names = ", ".join(f"permissions.{key}" for key in hit)
+        verb = "is" if len(hit) == 1 else "are"
         raise ValueError(
-            f"Retired permissions setting(s): {', '.join(sorted(hit))}. "
+            f"Retired permissions setting(s): {names} {verb} retired. "
             "Configure execution.mode ('workspace-edit', 'read-only', or 'no-limit') and "
             "permissions.approval ('ask' or 'never') instead."
         )

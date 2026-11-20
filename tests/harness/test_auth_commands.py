@@ -161,11 +161,11 @@ def test_project_endpoint_login_stays_consistent_after_restart(project):
         "providers": {"deepseek": {"baseUrl": "http://localhost:1234/v1"}},
     }))
     ui = LoginUI("", "", "secret")
-    s = AgentSession(project, ui=ui, session=None, extensions=False)
+    s = AgentSession(project, ui=ui, session=None, extensions=False, trust_project_extensions=True)
     try:
         s.prompt("/login api deepseek")
         assert s.model.base_url == "http://localhost:1234/v1"
-        again = AgentSession(project, session=None, extensions=False)
+        again = AgentSession(project, session=None, extensions=False, trust_project_extensions=True)
         try:
             assert again.model.base_url == s.model.base_url
             assert authenticated_model(again.model).options["apiKey"] == "secret"
