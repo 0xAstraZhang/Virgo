@@ -193,6 +193,11 @@ class HostProcess:
         self.stderr = process.stderr
         self._lock = threading.RLock()
         self._cleanup_error = None
+        self._drained = False
+
+    @property
+    def tree_drained(self) -> bool:
+        return self._drained
 
     @property
     def returncode(self):
@@ -235,6 +240,7 @@ class HostProcess:
                     try:
                         os.killpg(self.pid, 0)
                     except ProcessLookupError:
+                        self._drained = True
                         return self.returncode
                     except PermissionError:
                         pass
@@ -242,7 +248,9 @@ class HostProcess:
                         self._cleanup_error = error
                         raise
                     time.sleep(0.01)
-            return self._process.wait()
+            code = self._process.wait()
+            self._drained = True
+            return code
 
     def wait(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout

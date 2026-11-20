@@ -154,8 +154,8 @@ def test_native_process_cleanup_releases_scratch_after_drain_error(monkeypatch):
     from virgo.sandbox import native as native_mod
     from virgo.sandbox.native import NativeProcess
 
-    # Exercise the non-HostProcess wrapper path (macOS LaunchdProcess / WindowsProcess) on all OSes.
-    monkeypatch.setattr(native_mod.sys, "platform", "darwin")
+    # Exercise the non-HostProcess wrapper path (WindowsProcess) on all OSes.
+    monkeypatch.setattr(native_mod.sys, "platform", "win32")
     cleaned = []
 
     class FakeScratch:
@@ -179,3 +179,123 @@ def test_native_process_cleanup_releases_scratch_after_drain_error(monkeypatch):
         handle.cleanup_tree()
     assert cleaned == [True]
     assert handle._scratch is None
+
+
+def test_native_process_uses_host_process_on_darwin_and_handles_scratch_on_drain_error(monkeypatch):
+    from types import SimpleNamespace
+
+    from virgo import execution as execution_mod
+    from virgo.execution import ExecutionFailed
+    from virgo.sandbox import native as native_mod
+    from virgo.sandbox.native import NativeProcess
+    from virgo.sandbox.platform import cleanup_process as platform_cleanup_process
+
+    monkeypatch.setattr(native_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(signal, "SIGKILL", sentinel.kill_signal, raising=False)
+
+    class FakeScratch:
+        def __init__(self):
+            self.cleaned = 0
+
+        def cleanup(self):
+            self.cleaned += 1
+
+    fake_context = SimpleNamespace(
+        describe=lambda: {"provider": "sandbox"},
+        resources=SimpleNamespace(flags=lambda: {}),
+    )
+
+    scratch_wrapped = FakeScratch()
+    fake_popen = Mock(
+        pid=201, returncode=None, stdin=None, stdout=None, stderr=None,
+        _virgo_sandbox_tmp=scratch_wrapped, _virgo_sandbox={},
+    )
+    wrapped = NativeProcess(fake_popen, fake_context)
+    assert isinstance(wrapped._process, HostProcess)
+    assert wrapped._process.tree_drained is False
+
+    p_normal = Mock(pid=202, returncode=None)
+    p_normal.wait.side_effect = lambda: setattr(p_normal, "returncode", 0) or 0
+    h_normal = HostProcess(p_normal)
+    monkeypatch.setattr(h_normal, "_leader_exited", lambda: True)
+    monkeypatch.setattr(os, "killpg", Mock(return_value=None), raising=False)
+    assert h_normal.poll() == 0
+    assert h_normal.tree_drained is True
+
+    p_recover = Mock(pid=203, returncode=None)
+    p_recover.wait.side_effect = lambda: setattr(p_recover, "returncode", 17) or 17
+    h_recover = HostProcess(p_recover)
+    monkeypatch.setattr(h_recover, "_leader_exited", lambda: True)
+    monkeypatch.setattr(
+        os, "killpg", Mock(side_effect=[PermissionError(), None, ProcessLookupError()]), raising=False
+    )
+    assert h_recover.poll() == 17
+    assert h_recover.tree_drained is True
+
+    ticks = iter([0.0, 2.0])
+    monkeypatch.setattr(
+        execution_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks, 2.0), sleep=lambda _s: None)
+    )
+    p_poll_timeout = Mock(pid=204, returncode=None)
+    p_poll_timeout.wait.side_effect = lambda: setattr(p_poll_timeout, "returncode", 1) or 1
+    h_timeout = HostProcess(p_poll_timeout)
+    monkeypatch.setattr(h_timeout, "_leader_exited", lambda: True)
+    monkeypatch.setattr(
+        os, "killpg", Mock(side_effect=[PermissionError("busy"), PermissionError("busy")]), raising=False
+    )
+    with pytest.raises(PermissionError, match="busy"):
+        h_timeout.poll()
+    assert h_timeout.tree_drained is False
+
+    scratch_undrained = FakeScratch()
+    p_timeout = Mock(
+        pid=205, returncode=None, stdin=None, stdout=None, stderr=None,
+        _virgo_sandbox_tmp=scratch_undrained, _virgo_sandbox={},
+    )
+    p_timeout.wait.side_effect = lambda: setattr(p_timeout, "returncode", 1) or 1
+    native_undrained = NativeProcess(p_timeout, fake_context)
+    monkeypatch.setattr(native_undrained._process, "_leader_exited", lambda: True)
+    monkeypatch.setattr(
+        os, "killpg", Mock(side_effect=[PermissionError("busy"), PermissionError("busy")]), raising=False
+    )
+    ticks_native = iter([0.0, 2.0])
+    monkeypatch.setattr(
+        execution_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks_native, 2.0), sleep=lambda _s: None)
+    )
+    with pytest.raises(ExecutionFailed, match="busy"):
+        native_undrained.cleanup_tree()
+    assert native_undrained._process.tree_drained is False
+    assert scratch_undrained.cleaned == 0
+    assert native_undrained._scratch is scratch_undrained
+
+    drained_scratch = FakeScratch()
+
+    class DrainedErrorProc:
+        pid = 206
+        tree_drained = True
+        _virgo_sandbox_tmp = drained_scratch
+
+        def cleanup_tree(self):
+            raise RuntimeError("error after drain")
+
+    drained_proc = DrainedErrorProc()
+    with pytest.raises(RuntimeError, match="error after drain"):
+        platform_cleanup_process(drained_proc)
+    assert drained_scratch.cleaned == 1
+    assert drained_proc._virgo_sandbox_tmp is None
+
+    undrained_scratch = FakeScratch()
+
+    class UndrainedErrorProc:
+        pid = 207
+        tree_drained = False
+        _virgo_sandbox_tmp = undrained_scratch
+
+        def cleanup_tree(self):
+            raise RuntimeError("error while still alive")
+
+    undrained_proc = UndrainedErrorProc()
+    with pytest.raises(RuntimeError, match="error while still alive"):
+        platform_cleanup_process(undrained_proc)
+    assert undrained_scratch.cleaned == 0
+    assert undrained_proc._virgo_sandbox_tmp is undrained_scratch

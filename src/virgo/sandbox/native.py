@@ -27,10 +27,6 @@ class NativeExecutor:
             path for path in permissions.deny_roots("write")
             if not any(path.is_relative_to(root) for root in private)
         )
-        if sys.platform == "darwin":
-            from .macos_process import control_root
-
-            private = tuple(dict.fromkeys((*private, control_root())))
         grants: dict[Path, bool] = {}
         for path in (*reads, *writes):
             writable = permissions.allows(path, "write")
@@ -80,7 +76,7 @@ class NativeExecutor:
 class NativeProcess:
     def __init__(self, process, context):
         self._scratch = process._virgo_sandbox_tmp
-        self._process = HostProcess(process) if sys.platform == "linux" else process
+        self._process = HostProcess(process) if sys.platform != "win32" else process
         self.pid = process.pid
         self.stdin = getattr(process, "stdin", None)
         self.stdout = getattr(process, "stdout", None)
