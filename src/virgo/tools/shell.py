@@ -245,9 +245,37 @@ class ShellTool(AgentTool):
     shell: Shell | None = None
 
 
-def make_shell_tool(shell: Shell, jobs=None, *, execution=None) -> ShellTool:
+def make_shell_tool(shell: Shell, jobs=None, *, execution=None, on_unavailable=None) -> ShellTool:
     from .bash import BASH_PARAMS, DEFAULT_TIMEOUT, MAX_TIMEOUT, format_output, run_command
     from .output import MAX_BYTES, MAX_LINES
+
+    def _cancelled_result(error: Exception) -> ToolResult:
+        return ToolResult.error(str(error), details={"status": "aborted", "cancelled": True,
+                                  "boundary": {"kind": "aborted", "payload_started": False,
+                                              "side_effects": "none", "escalation_available": False}})
+
+    def _unavailable_result(error: Exception) -> ToolResult:
+        reason = getattr(error, "reason", None)
+        message = str(error)
+        if (reason in {None, "backend_unavailable", "windows_admin_required",
+                       "windows_network_isolation_unavailable", "device_acl_unavailable"}
+                and "--permission no-limit" not in message):
+            message = (
+                f"{message}\n"
+                "To run without the native sandbox, switch with `/permissions no-limit` "
+                "or start with `--permission no-limit`."
+            )
+        return ToolResult.error(message, details={"status": "execution_unavailable", "boundary": {
+            "kind": "execution_unavailable", "dimension": getattr(error, "dimension", None),
+            "target": getattr(error, "target", None), "reason": reason,
+            "payload_started": False, "side_effects": "none", "escalation_available": False,
+        }})
+
+    def _failed_result(error: Exception) -> ToolResult:
+        return ToolResult.error(str(error), details={"status": "execution_failed", "boundary": {
+            "kind": "execution_failed", "payload_started": "unknown", "side_effects": "possible",
+            "escalation_available": False, **getattr(error, "boundary", {}),
+        }})
 
     def execute(args, ctx):
         from ..execution import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable
@@ -257,20 +285,27 @@ def make_shell_tool(shell: Shell, jobs=None, *, execution=None) -> ShellTool:
             policy = execution(ctx) if execution is not None else None
             result = execute_with_policy(args, ctx, policy)
         except ExecutionCancelled as error:
-            result = ToolResult.error(str(error), details={"status": "aborted", "cancelled": True,
-                                      "boundary": {"kind": "aborted", "payload_started": False,
-                                                  "side_effects": "none", "escalation_available": False}})
+            result = _cancelled_result(error)
         except ExecutionUnavailable as error:
-            result = ToolResult.error(str(error), details={"status": "execution_unavailable", "boundary": {
-                "kind": "execution_unavailable", "dimension": getattr(error, "dimension", None),
-                "target": getattr(error, "target", None), "reason": getattr(error, "reason", None),
-                "payload_started": False, "side_effects": "none", "escalation_available": False,
-            }})
+            fallback = None
+            if on_unavailable is not None and policy is not None and getattr(policy, "provider", None) != "host":
+                fallback = on_unavailable(ctx, args, error)
+            if fallback is not None:
+                policy = fallback
+                try:
+                    result = execute_with_policy(args, ctx, fallback)
+                    facts = (result.details or {}).get("boundary", {})
+                    result.details = {**(result.details or {}), "boundary": {**facts, "fallback": "user_approved_no_limit_once"}}
+                except ExecutionCancelled as inner:
+                    result = _cancelled_result(inner)
+                except ExecutionUnavailable as inner:
+                    result = _unavailable_result(inner)
+                except ExecutionFailed as inner:
+                    result = _failed_result(inner)
+            else:
+                result = _unavailable_result(error)
         except ExecutionFailed as error:
-            result = ToolResult.error(str(error), details={"status": "execution_failed", "boundary": {
-                "kind": "execution_failed", "payload_started": "unknown", "side_effects": "possible",
-                "escalation_available": False, **getattr(error, "boundary", {}),
-            }})
+            result = _failed_result(error)
         if policy is not None:
             facts = (result.details or {}).get("boundary", {})
             result.details = {**(result.details or {}), "boundary": {**policy.describe(), **facts}}

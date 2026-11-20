@@ -1,6 +1,8 @@
 """The permission and task axes expose one canonical command each."""
 from __future__ import annotations
 
+import pytest
+
 from virgo.cli.main import build_parser
 
 
@@ -10,8 +12,11 @@ def test_canonical_cli_flags_and_deprecated_aliases():
     assert args.permission == "read-only"
     assert args.approval == "never"
 
-    legacy = parser.parse_args(["--mode", "read-only", "-p", "x"])
-    assert legacy.legacy_mode == "read-only"
+    # S7-01: Retired flags --mode, --execution, and --sandbox are removed.
+    for retired in (["--mode", "read-only"], ["--execution", "host"], ["--sandbox", "disabled"]):
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args([*retired, "-p", "x"])
+        assert exc.value.code == 2
 
 
 def test_permissions_owns_presets_and_approval(broker_session):

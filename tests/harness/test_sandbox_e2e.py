@@ -347,7 +347,7 @@ def test_native_failure_and_timeout_are_not_reclassified(native):
 
 
 def test_shared_native_policy_is_rejected_before_payload(broker_session, project):
-    session = broker_session()
+    session = broker_session(approval="never")
     result = run(session, "echo forbidden")
     assert result.is_error and result.details["status"] == "execution_unavailable"
     assert result.details["boundary"]["payload_started"] is False
@@ -693,7 +693,7 @@ def test_sandbox_rejects_changed_cwd_before_creating_output(broker_session, proj
     outside.mkdir()
     session = broker_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
-                  "execution": {"provider": "sandbox"}},
+                  "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
 
@@ -726,7 +726,7 @@ def test_sandbox_rejects_external_output_symlink_before_spooling(broker_session,
     (project / ".virgo").symlink_to(outside, target_is_directory=True)
     session = broker_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
-                  "execution": {"provider": "sandbox"}},
+                  "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
     result = run(session, "echo sandbox-output", background=background)
@@ -806,9 +806,9 @@ def test_project_cannot_disable_user_sandbox(make_session, project):
 
     metadata = project / '.virgo'
     metadata.mkdir()
-    (metadata / 'settings.json').write_text(json.dumps({'execution': {'provider': 'host'}}))
+    (metadata / 'settings.json').write_text(json.dumps({'execution': {'mode': 'no-limit'}}))
     with pytest.raises(ValueError, match='[Pp]roject'):
-        make_session(settings={'execution': {'provider': 'sandbox'}}, refresh_models=False)
+        make_session(settings={'execution': {'mode': 'workspace-edit'}}, refresh_models=False)
 
 
 @pytest.mark.parametrize('background', [False, True])

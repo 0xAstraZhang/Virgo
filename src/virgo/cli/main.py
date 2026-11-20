@@ -10,8 +10,8 @@ from pathlib import Path
 from .. import __version__
 from ..ai.types import AssistantMessage
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
+from ..execution_policy import DEFAULT_MODES
 from ..harness.diagnostics import DiagnosticLog
-from ..harness.execution_modes import DEFAULT_MODES
 from ..harness.permissions import APPROVAL_POLICIES, normalize_approval_policy
 from ..harness.session import AgentSession
 from ..harness.settings import Paths, Settings
@@ -73,9 +73,6 @@ def build_parser(language: str = "en") -> argparse.ArgumentParser:
     p.add_argument("-r", "--resume", nargs="?", const="", metavar="FILE", help=tr(t, "ui.cli.resume"))
     p.add_argument("--no-session", action="store_true", help=tr(t, "ui.cli.no_session"))
     p.add_argument("--permission", dest="permission", choices=tuple(DEFAULT_MODES), help=t("ui.cli.permission_mode"))
-    p.add_argument("--mode", dest="legacy_mode", choices=tuple(DEFAULT_MODES), help=argparse.SUPPRESS)
-    p.add_argument("--sandbox", help=argparse.SUPPRESS)
-    p.add_argument("--execution", choices=("host", "sandbox"), help=argparse.SUPPRESS)
     p.add_argument("--no-extensions", action="store_true", help=tr(t, "ui.cli.no_extensions"))
     p.add_argument("--trust-project-extensions", action="store_true", help=t("ui.cli.trust_project_extensions"))
     p.add_argument("-C", "--cwd", default=".", help=tr(t, "ui.cli.cwd"))
@@ -149,15 +146,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     parser = build_parser(t.language)
     args = parser.parse_args(argv)
-    if args.permission is not None and args.legacy_mode is not None:
-        parser.error("--permission and the deprecated --mode alias cannot be combined")
-    if args.legacy_mode is not None:
-        print(t("ui.cli.deprecated_mode"), file=sys.stderr)
-    selected_permission = args.permission if args.permission is not None else args.legacy_mode
-    if selected_permission is not None and args.sandbox is not None:
-        parser.error("--permission and the deprecated --sandbox option cannot be combined; select one permission preset")
-    if args.sandbox is not None:
-        parser.error("--sandbox is retired; select a mode with --permission")
     fullscreen = False
     if not args.print and args.ui != "plain":
         fullscreen = _fullscreen_available()
@@ -196,15 +184,8 @@ def main(argv: list[str] | None = None) -> int:
     overrides = {"effort": args.effort} if args.effort else {}
     if args.language:
         overrides["language"] = args.language
-    if selected_permission is not None:
-        expected = "host" if selected_permission == "no-limit" else "sandbox"
-        if args.execution is not None and args.execution != expected:
-            parser.error("--execution conflicts with the selected --permission mode")
-        overrides["execution"] = {"mode": selected_permission}
-    elif args.execution == "host":
-        overrides["execution"] = {"mode": "no-limit"}
-    elif args.execution == "sandbox":
-        overrides["execution"] = {"provider": "sandbox"}
+    if args.permission is not None:
+        overrides["execution"] = {"mode": args.permission}
     if args.no_extensions:
         print(t("ui.cli.no_extensions_warning"), file=sys.stderr)
     try:

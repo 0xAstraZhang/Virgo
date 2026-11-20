@@ -208,14 +208,10 @@ def test_no_limit_sandbox_switch_preserves_the_active_host_and_child(broker_sess
 
 @pytest.mark.parametrize("legacy", ["workspace-write", "read-only", "disabled"])
 def test_legacy_native_policy_requires_explicit_migration(make_session, legacy):
+    """S7-02: All legacy sandbox.mode settings (including disabled) are rejected explicitly."""
     settings = {"sandbox": {"mode": legacy}}
-    if legacy == "disabled":
-        session = make_session(settings=settings)
-        assert session.services["execution"].selected_mode_id == "no-limit"
-        assert session.services["execution"].sandbox is None
-    else:
-        with pytest.raises(ValueError, match="migrate"):
-            make_session(settings=settings)
+    with pytest.raises(ValueError, match="execution\\.mode"):
+        make_session(settings=settings)
 
 
 @pytest.mark.parametrize("operation", ["select", "save"])

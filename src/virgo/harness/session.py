@@ -93,7 +93,9 @@ class AgentSession:
         self.diagnostics = DiagnosticLog(self.paths.user / "logs")
         self._diagnostic_lock = threading.RLock()
         self._notified_errors: set[str] = set()
-        self.settings = Settings.load(self.paths, settings)
+        self.settings = Settings.load(
+            self.paths, settings, trust_project_extensions=trust_project_extensions
+        )
         self.trust_project_extensions = trust_project_extensions
         self.translator = Translator(self.settings.get("language", "en"))
         self.ui.set_translator(self.translator)

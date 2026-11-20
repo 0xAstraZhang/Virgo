@@ -45,7 +45,7 @@ def test_home_and_model_overrides(project, tmp_path, monkeypatch):
 def test_permission_defaults_and_saved_mode_migration(project, configured):
     """Retain historical case identities while retiring silent mode aliases."""
     if configured is not None:
-        with pytest.raises(ValueError, match="retired|requires|unknown"):
+        with pytest.raises(ValueError, match="(?i)retired|execution\\.mode"):
             AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False,
                          settings={"permissions": {"mode": configured}})
         return
@@ -59,6 +59,7 @@ def test_permission_defaults_and_saved_mode_migration(project, configured):
 
 
 def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp_path, monkeypatch):
+    """S7-02: Retired permissions.mode/modes keys fail clearly instead of silently migrating."""
     user = tmp_path / "legacy-user"
     user.mkdir()
     (user / "settings.json").write_text(json.dumps({
@@ -66,15 +67,12 @@ def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp
         "permissions": {"mode": "workspace-edit", "modes": {"offline": {
             "name": "Offline", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}}}))
     monkeypatch.setenv("VIRGO_HOME", str(user))
-    settings = Settings.load(Paths(project))
-    assert settings.get("execution.mode") == "workspace-edit"
-    assert settings.get("permissions.modes") is None
-    assert settings.get("workMode") is None
-    assert any("workMode" in notice for notice in settings.migration_warnings)
+    with pytest.raises(ValueError, match="Retired permissions setting.*execution\\.mode"):
+        Settings.load(Paths(project))
 
 
 def test_home_directory_is_not_reread_as_project_settings(tmp_path, monkeypatch):
-    """Launching from the Virgo home must not reject the user's own grants."""
+    """Launching from the Virgo home must not reject the user's own settings."""
     home = tmp_path / "home"
     monkeypatch.delenv("VIRGO_HOME")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
@@ -82,40 +80,38 @@ def test_home_directory_is_not_reread_as_project_settings(tmp_path, monkeypatch)
     state.mkdir()
     (state / "settings.json").write_text(json.dumps({
         "model": "faux/user",
-        "permissions": {"mode": "workspace-edit", "modes": {"offline": {
-            "name": "Offline", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}},
+        "execution": {"mode": "workspace-edit"},
     }))
     paths = Paths(home)
     assert paths.user == paths.project
     settings = Settings.load(paths)
     assert settings.get("model") == "faux/user"
     assert settings.get("execution.mode") == "workspace-edit"
-    assert settings.get("permissions.presets") is None
     assert any("state directory" in notice for notice in settings.migration_warnings)
 
 
 def test_project_layer_still_rejects_grants_when_the_paths_differ(project, tmp_path):
     home = tmp_path / "home"
-    (home / "settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
+    (home / "settings.json").write_text(json.dumps({"execution": {"mode": "workspace-edit"}}))
     (project / ".virgo").mkdir()
-    (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"preset": "workspace-edit"}}))
+    (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"approval": "never"}}))
     with pytest.raises(ValueError, match="Project permissions"):
         Settings.load(Paths(project))
 
 
 def test_invalid_legacy_modes_value_is_a_configuration_error(project):
-    with pytest.raises(ValueError, match="permissions.modes"):
+    with pytest.raises(ValueError, match="Retired permissions setting.*execution\\.mode"):
         Settings.load(Paths(project), {"permissions": {"modes": "nope", "presets": {}}})
 
 
 def test_reserved_permission_preset_ids_are_rejected(project):
-    with pytest.raises(ValueError, match="Cannot migrate"):
+    with pytest.raises(ValueError, match="Retired permissions setting.*execution\\.mode"):
         Settings.load(Paths(project), {"permissions": {"preset": "ask", "presets": {"ask": {
             "name": "Ask", "readOnly": True, "workspaceOnly": True, "networkAllowed": False}}}})
 
 
 def test_invalid_presets_value_is_a_configuration_error(project):
-    with pytest.raises(ValueError, match="permissions.presets"):
+    with pytest.raises(ValueError, match="Retired permissions setting.*execution\\.mode"):
         Settings.load(Paths(project), {"permissions": {
             "modes": {"offline": {"name": "Offline", "readOnly": True,
                                   "workspaceOnly": True, "networkAllowed": False}},
@@ -159,29 +155,34 @@ def test_invalid_network_values_rejected(invalid):
 
 def test_unselected_legacy_presets_cannot_widen_to_no_limit(project):
     config = {"permissions": {"presets": {"workspace-edit": {"networkAllowed": False}}}}
-    with pytest.raises(ValueError, match="choose execution.mode"):
+    with pytest.raises(ValueError, match="execution\\.mode"):
         Settings.load(Paths(project), config)
 
-@pytest.mark.parametrize(("saved", "expected"), [("no-limit", "workspace-edit"), ("read-only", "read-only")])
-def test_explicit_sandbox_override_keeps_its_boundary_with_a_saved_mode(project, saved, expected):
+
+@pytest.mark.parametrize(("saved", "override"), [("no-limit", "workspace-edit"), ("read-only", "read-only")])
+def test_explicit_sandbox_override_keeps_its_boundary_with_a_saved_mode(project, saved, override):
     paths = Paths(project)
     (paths.user / "settings.json").write_text(json.dumps({"execution": {"mode": saved}}))
-    settings = Settings.load(paths, {"execution": {"provider": "sandbox"}})
-    assert settings.get("execution.mode") == expected
+    with pytest.raises(ValueError, match="Unsupported execution setting.*provider"):
+        Settings.load(paths, {"execution": {"provider": "sandbox"}})
+    settings = Settings.load(paths, {"execution": {"mode": override}})
+    assert settings.get("execution.mode") == override
 
 
-@pytest.mark.parametrize(("config", "explicit", "expected"), [
+@pytest.mark.parametrize(("config", "explicit"), [
     ({"permissions": {"presets": {"offline": {"name": "Offline", "readOnly": True,
                                               "workspaceOnly": True, "networkAllowed": False}}}},
-     None, "workspace-edit"),
-    ({"sandbox": {"mode": "disabled"}, "permissions": {"preset": "read-only"}}, None, "no-limit"),
-    ({"sandbox": {"mode": "workspace-write"}}, "read-only", "read-only"),
+     None),
+    ({"sandbox": {"mode": "disabled"}, "permissions": {"preset": "read-only"}}, None),
+    ({"sandbox": {"mode": "workspace-write"}}, "read-only"),
 ])
-def test_native_settings_migrate_from_the_effective_main_policy(project, config, explicit, expected):
+def test_native_settings_migrate_from_the_effective_main_policy(project, config, explicit):
+    """S7-02: Legacy sandbox/permissions.preset configs fail loudly instead of silently migrating."""
     paths = Paths(project)
     (paths.user / "settings.json").write_text(json.dumps(config))
     overrides = {"execution": {"mode": explicit}} if explicit else None
-    assert Settings.load(paths, overrides).get("execution.mode") == expected
+    with pytest.raises(ValueError, match="execution\\.mode"):
+        Settings.load(paths, overrides)
 
 
 @pytest.mark.parametrize("previous", [{}, {"language": "zh-CN", "model": "faux/old"}])

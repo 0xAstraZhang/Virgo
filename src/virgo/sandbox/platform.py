@@ -119,7 +119,10 @@ def platform_backend() -> tuple[str, Path]:
 
             return backend()
         except (OSError, AttributeError) as error:
-            raise SandboxUnavailable(f"Required Windows sandbox APIs are unavailable: {error}") from error
+            raise SandboxUnavailable(
+                f"Required Windows sandbox APIs are unavailable: {error}",
+                reason="backend_unavailable",
+            ) from error
     entrys = ("/usr/bin/bwrap", "/bin/bwrap") if sys.platform == "linux" else (
         ("/usr/bin/sandbox-exec",) if sys.platform == "darwin" else ()
     )
@@ -132,7 +135,8 @@ def platform_backend() -> tuple[str, Path]:
             continue
     raise SandboxUnavailable(
         "No supported native sandbox backend is available "
-        "(Linux: system bubblewrap; macOS: sandbox-exec; Windows: experimental native x64 LPAC or WSL2)."
+        "(Linux: system bubblewrap; macOS: sandbox-exec; Windows: experimental native x64 LPAC or WSL2).",
+        reason="backend_unavailable",
     )
 
 
@@ -147,7 +151,7 @@ def _seccomp_file(network_allowed: bool = False):
     machine = platform.machine()
     triplet = {"x86_64": "x86_64-linux-gnu", "aarch64": "aarch64-linux-gnu"}.get(machine)
     if triplet is None:
-        raise SandboxUnavailable(f"Unsupported seccomp architecture: {machine}")
+        raise SandboxUnavailable(f"Unsupported seccomp architecture: {machine}", reason="backend_unavailable")
     lib = None
     for value in (f"/usr/lib/{triplet}/libseccomp.so.2", f"/lib/{triplet}/libseccomp.so.2",
                   "/usr/lib64/libseccomp.so.2", "/usr/lib/libseccomp.so.2"):
@@ -157,7 +161,7 @@ def _seccomp_file(network_allowed: bool = False):
         except FileNotFoundError:
             continue
     if lib is None:
-        raise SandboxUnavailable("A system-owned libseccomp.so.2 is required")
+        raise SandboxUnavailable("A system-owned libseccomp.so.2 is required", reason="backend_unavailable")
     lib.seccomp_init.argtypes = [ctypes.c_uint32]
     lib.seccomp_init.restype = ctypes.c_void_p
     lib.seccomp_release.argtypes = [ctypes.c_void_p]
@@ -336,22 +340,25 @@ class NativePolicy:
         try:
             for path, _writable in self.grants:
                 if path.resolve(strict=True) != path:
-                    raise SandboxUnavailable(f"Native grant path changed: {path}")
+                    raise SandboxUnavailable(f"Native grant path changed: {path}", reason="unsupported_path")
             if os.name == "nt":
                 from .windows_sandbox import validate_policy
 
                 return validate_policy(self, cwd)
             cwd = Path(cwd).resolve(strict=True)
             if not cwd.is_dir() or self.workspace_only and not cwd.is_relative_to(self.workspace):
-                raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
+                raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace", reason="invalid_cwd")
             if self.private_path(cwd):
                 raise SandboxUnavailable("Command cwd is inside private Virgo storage", reason="protected_path")
             if any(path.is_relative_to(self.workspace) for path in self._system_roots()):
-                raise SandboxUnavailable("Workspace must not contain system mount roots")
+                raise SandboxUnavailable("Workspace must not contain system mount roots", reason="unsupported_workspace")
             base = Path(sys.base_prefix).resolve(strict=True)
             prefix = Path(sys.prefix).resolve(strict=True)
             if self.workspace in {base, prefix}:
-                raise SandboxUnavailable("Workspace must not be the active or base interpreter installation")
+                raise SandboxUnavailable(
+                    "Workspace must not be the active or base interpreter installation",
+                    reason="unsupported_workspace",
+                )
             return cwd
         except SandboxUnavailable:
             raise

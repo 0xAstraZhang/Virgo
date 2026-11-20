@@ -1,4 +1,4 @@
-"""Settings precedence with user-owned authorization and project-only restrictions."""
+"""Settings precedence with user-owned authorization and untrusted-project stripping."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from ..execution_policy import DEFAULT_MODES, default_execution_mode
-from .execution_modes import migrate_preset
 from .permissions import normalize_approval_policy
 
 PLUGIN_IDS = (
@@ -22,16 +21,16 @@ REMOVED_FEATURES = frozenset({
 RETIRED_PLUGINS = frozenset({"plan", "code_review"})
 EXTENSION_ONLY = frozenset({"mcp", "todo"})
 _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
+UNTRUSTED_PROJECT_KEYS = ("hooks", "mcpServers", "providers", "extensions")
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
     "execution": {"mode": "workspace-edit"},
-    "sandbox": {},
     "model": "anthropic/claude-opus-5-5",
     "effort": "medium",
     "maxTokens": None,
     "providers": {},
-    "permissions": {"approval": "ask"},
+    "permissions": {"approval": "ask", "confirmHighRisk": True},
     "hooks": {},
     "shell": {"executable": "auto"},
     "plugins": {},
@@ -85,20 +84,34 @@ def _read_json(path: Path) -> dict | None:
     return data
 
 
-def _normalize_layer(layer: dict, notices: list[str]) -> dict:
-    """Translate one configuration source before merging precedence layers.
+def _reject_retired_execution(layer: dict) -> None:
+    """Fail loudly on retired execution/sandbox/permission keys (S7-02, no silent migration)."""
+    if "sandbox" in layer:
+        raise ValueError(
+            "Legacy 'sandbox' settings are removed. Configure execution.mode "
+            "('workspace-edit', 'read-only', or 'no-limit') instead."
+        )
+    execution = layer.get("execution")
+    if execution is not None:
+        if not isinstance(execution, dict):
+            raise ValueError("execution must be an object with 'mode' ('workspace-edit', 'read-only', or 'no-limit')")
+        unknown = set(execution) - {"mode"}
+        if unknown:
+            raise ValueError(
+                f"Unsupported execution setting(s): {', '.join(sorted(unknown))}. "
+                "Use execution.mode ('workspace-edit', 'read-only', or 'no-limit') instead."
+            )
+    permissions = layer.get("permissions")
+    if permissions is not None:
+        _validate_permissions(permissions)
 
-    A project-level legacy flag must still override a user-level plugin flag;
-    explicit new keys win over legacy keys in the same source.
-    """
+
+def _normalize_layer(layer: dict, notices: list[str]) -> dict:
+    """Validate and translate non-execution settings for one configuration source."""
     if not isinstance(layer, dict):
         raise ValueError("settings must be a JSON object")
     out = copy.deepcopy(layer)
-    permissions = out.get("permissions")
-    if isinstance(permissions, dict):
-        _canonicalize_permissions(permissions, notices)
-    if "permissions" in out:
-        _validate_permissions(out["permissions"])
+    _reject_retired_execution(out)
     if isinstance(out.get("plugins"), dict) and "auto_review" in out["plugins"]:
         raise ValueError("plugins.auto_review is retired; remove it and select permissions.approval=ask or never")
     legacy = out.pop("features", {})
@@ -147,59 +160,32 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     return out
 
 
-def _canonicalize_permissions(value: dict, notices: list[str]) -> None:
-    """Translate the 0.2 ``mode``/``modes`` spelling before merging layers."""
-    if "mode" in value:
-        legacy_mode = value.pop("mode")
-        if "preset" in value and value["preset"] != legacy_mode:
-            raise ValueError("permissions.mode and permissions.preset disagree; remove the retired key")
-        value["preset"] = legacy_mode
-        notices.append("permissions.mode is retired; select a fixed execution.mode.")
-    if "modes" in value:
-        legacy_modes = value.pop("modes")
-        if not isinstance(legacy_modes, dict):
-            raise ValueError("permissions.modes must be an object keyed by stable preset ID")
-        if "presets" in value and not isinstance(value["presets"], dict):
-            raise ValueError("permissions.presets must be an object keyed by stable preset ID")
-        if "presets" in value:
-            value["presets"] = deep_merge(legacy_modes, value["presets"])
-        else:
-            value["presets"] = legacy_modes
-        notices.append("permissions.modes is retired; select a fixed execution.mode.")
-
-
 def _validate_permissions(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("permissions must be an object")
-    if "readOnlyCommands" in value:
-        raise ValueError("permissions.readOnlyCommands is retired; permission presets enforce Shell file and network boundaries")
-    unknown = set(value) - {"preset", "presets", "approval", "allow", "deny"}
+    retired = {"mode", "modes", "preset", "presets", "readOnlyCommands", "allow", "deny"}
+    hit = retired.intersection(value)
+    if hit:
+        raise ValueError(
+            f"Retired permissions setting(s): {', '.join(sorted(hit))}. "
+            "Configure execution.mode ('workspace-edit', 'read-only', or 'no-limit') and "
+            "permissions.approval ('ask' or 'never') instead."
+        )
+    unknown = set(value) - {"approval", "confirmHighRisk"}
     if unknown:
         raise ValueError(f"Unknown permissions setting(s): {', '.join(sorted(unknown))}")
     if "approval" in value:
         normalize_approval_policy(value["approval"])
-    if not isinstance(value.get("presets", {}), dict):
-        raise ValueError("permissions.presets must be an object")
-    selected = value.get("preset")
-    if selected is not None and (not isinstance(selected, str) or not selected.strip()):
-        raise ValueError("permissions.preset must be a permission preset ID")
-    for name in ("allow", "deny"):
-        if value.get(name):
-            raise ValueError(f"permissions.{name} is retired; migrate task intent to instructions and authority to resource paths")
-        if name in value and value[name] != []:
-            raise ValueError(f"permissions.{name} is retired; remove the key")
+    if "confirmHighRisk" in value and not isinstance(value["confirmHighRisk"], bool):
+        raise ValueError("permissions.confirmHighRisk must be a boolean")
 
 
 def _validate(data: dict) -> None:
-    _validate_permissions(data.get("permissions", {}))
+    _reject_retired_execution(data)
     execution = data.get("execution")
     if (not isinstance(execution, dict) or set(execution) != {"mode"}
             or not isinstance(execution["mode"], str) or execution["mode"] not in DEFAULT_MODES):
         raise ValueError("execution.mode must be read-only, workspace-edit or no-limit")
-    if data.get("sandbox"):
-        raise ValueError("Legacy sandbox settings are retired; migrate to execution.mode")
-    if set(data.get("permissions", {})) - {"approval", "allow", "deny"}:
-        raise ValueError("Custom permission presets are retired; choose execution.mode")
     plugins = data.get("plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("plugins must be an object keyed by plugin ID")
@@ -247,46 +233,6 @@ def _trusted_projects(user: dict) -> set[Path]:
     return resolved
 
 
-def _migrate_execution(data: dict, explicit: dict, notices: list[str], *, existing_user: bool) -> None:
-    permissions = data["permissions"]
-    selected = permissions.pop("preset", None)
-    presets = permissions.pop("presets", {})
-    execution = data["execution"]
-    if not isinstance(execution, dict):
-        raise ValueError("execution must be an object")
-    provider = execution.pop("provider", None)
-    if provider not in (None, "host", "sandbox"):
-        raise ValueError("execution.provider must be host or sandbox")
-    sandbox = data.pop("sandbox", {})
-    if not isinstance(sandbox, dict) or set(sandbox) - {"mode"}:
-        raise ValueError("Legacy sandbox configuration is retired; migrate to execution.mode")
-    legacy_mode = sandbox.get("mode")
-    if sandbox and legacy_mode not in ("read-only", "workspace-write", "disabled"):
-        raise ValueError("Unknown retired sandbox.mode; choose execution.mode")
-    if "mode" in explicit.get("execution", {}):
-        if selected is not None or presets or legacy_mode or provider:
-            notices.append("Explicit execution.mode overrides the legacy permission selection.")
-    elif legacy_mode == "disabled" and provider != "sandbox":
-        execution["mode"] = "no-limit"
-        notices.append("Legacy sandbox.mode=disabled migrated to execution.mode=no-limit.")
-    elif legacy_mode:
-        raise ValueError("Cannot migrate the legacy sandbox mode with its original permissions; "
-                         "choose execution.mode explicitly.")
-    elif selected is not None or "presets" in explicit.get("permissions", {}) or provider == "sandbox":
-        if provider == "host":
-            raise ValueError("Legacy host and sandbox settings disagree; select execution.mode explicitly")
-        # A saved preset collection without a selector used main's workspace-edit default.
-        execution["mode"] = migrate_preset(selected or "workspace-edit", presets)
-        notices.append(f"Legacy permission selection migrated to execution.mode={execution['mode']}.")
-    elif provider == "host":
-        execution["mode"] = "no-limit"
-    elif existing_user:
-        execution["mode"] = "workspace-edit"
-        notices.append("Existing user settings retain the previous workspace-edit default. Use execution.mode to select a different mode.")
-    if presets:
-        notices.append("Legacy custom presets are no longer selectable. Their user settings are preserved on disk.")
-
-
 class Settings:
     def __init__(self, data: dict, paths: Paths):
         self.data = data
@@ -306,25 +252,37 @@ class Settings:
         return DEFAULTS["language"]
 
     @classmethod
-    def load(cls, paths: Paths, overrides: dict | None = None) -> Settings:
+    def load(cls, paths: Paths, overrides: dict | None = None, *,
+             trust_project_extensions: bool = False) -> Settings:
         notices: list[str] = []
         saved_user = _read_json(paths.user / "settings.json")
         user = saved_user or {}
-        # When <cwd>/.virgo is the user settings directory, reading it again as an
-        # untrusted project layer would reject the user's own grants. The user layer
-        # already carries those settings.
         shared_settings = _same_directory(paths.project, paths.user)
         project = {} if shared_settings else (_read_json(paths.project / "settings.json") or {})
         if shared_settings and saved_user is not None:
             notices.append("The working directory resolves to the Virgo state directory; user settings are not re-read as project settings.")
         trusted = _trusted_projects(user)
+        project_trusted = bool(trust_project_extensions or (paths.cwd in trusted))
         for key in ("sandbox", "execution", "permissions"):
             if project.get(key):
-                raise ValueError(f"Project {key} configuration is retired; execution authority belongs in user settings or startup overrides")
+                raise ValueError(f"Project {key} configuration is not permitted; execution authority belongs in user settings or startup overrides")
             project.pop(key, None)
+        # S1-02 (R5): Strip untrusted project hooks, mcpServers, providers, and
+        # extensions BEFORE merging onto user settings so an untrusted repo
+        # cannot wipe user hooks/MCP or redirect providers.baseUrl.
+        if project and not project_trusted:
+            stripped = [key for key in UNTRUSTED_PROJECT_KEYS if key in project]
+            for key in stripped:
+                project.pop(key, None)
+            if stripped:
+                notices.append(
+                    f"Ignored untrusted project settings ({', '.join(stripped)}); "
+                    "add this directory to extensions.trustedProjects or pass --trust-project-extensions to enable them."
+                )
         for layer in (project, overrides or {}):
             extension_config = layer.get("extensions", {})
             if isinstance(extension_config, dict) and "trustedProjects" in extension_config:
+                extension_config.pop("trustedProjects", None)
                 notices.append("Project/runtime extensions.trustedProjects is ignored. Trust must come from user settings or --trust-project-extensions.")
         user = _normalize_layer(user, notices)
         defaults = deep_merge(DEFAULTS, {"execution": {"mode": default_execution_mode()}})
@@ -334,36 +292,24 @@ class Settings:
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
         normalized_overrides = _normalize_layer(overrides or {}, notices)
-        # A legacy provider override still has startup precedence over a saved
-        # modern mode. Preserve a saved sandbox mode when it already matches.
-        startup_execution = normalized_overrides.get("execution", {})
-        saved_execution = user.get("execution", {})
-        if (isinstance(startup_execution, dict) and "mode" not in startup_execution
-                and isinstance(saved_execution, dict) and isinstance(saved_execution.get("mode"), str)
-                and saved_execution["mode"] in DEFAULT_MODES):
-            if startup_execution.get("provider") == "sandbox":
-                saved_mode = saved_execution["mode"]
-                startup_execution["mode"] = "workspace-edit" if saved_mode == "no-limit" else saved_mode
-            elif startup_execution.get("provider") == "host":
-                startup_execution["mode"] = "no-limit"
         data = deep_merge(data, normalized_overrides)
-        explicit = deep_merge(user, normalized_overrides)
-        _migrate_execution(data, explicit, notices, existing_user=saved_user is not None)
         _validate(data)
         settings = cls(data, paths)
+
         def record_sources(layer, source, prefix=""):
             for key, value in layer.items():
                 dotted = f"{prefix}.{key}" if prefix else key
                 settings.sources[dotted] = source
                 if isinstance(value, dict):
                     record_sources(value, source, dotted)
-        record_sources(DEFAULTS, "default")
+
+        record_sources(defaults, "default")
         record_sources(user, "user")
         record_sources(project, "project")
         record_sources(normalized_overrides, "startup")
         settings.overrides = normalized_overrides
         settings.migration_warnings = list(dict.fromkeys(notices))
-        settings.project_extensions_trusted = paths.cwd in trusted
+        settings.project_extensions_trusted = project_trusted
         return settings
 
     def get(self, dotted: str, default: Any = None) -> Any:
@@ -417,7 +363,6 @@ class Settings:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         saved = _read_json(path)
         if saved is None:
-            # Mark a fresh configuration without persisting the current CLI override.
             saved = {"execution": {"mode": default_execution_mode()}}
         data = deep_merge(saved, patch)
         fd, name = tempfile.mkstemp(prefix=".settings-", suffix=".tmp", dir=path.parent)
@@ -433,9 +378,15 @@ class Settings:
 
     def check_provider_update(self, provider: str, config: dict) -> None:
         """Reject a login that would use a different endpoint on the next startup."""
-        project = _read_json(self.paths.project / "settings.json") or {}
-        effective = deep_merge(config, project.get("providers", {}).get(provider, {}))
-        effective = deep_merge(effective, self.overrides.get("providers", {}).get(provider, {}))
+        effective = copy.deepcopy(config)
+        if self.project_extensions_trusted and not _same_directory(self.paths.project, self.paths.user):
+            project = _read_json(self.paths.project / "settings.json") or {}
+            project_providers = project.get("providers")
+            if isinstance(project_providers, dict):
+                effective = deep_merge(effective, project_providers.get(provider, {}))
+        override_providers = self.overrides.get("providers")
+        if isinstance(override_providers, dict):
+            effective = deep_merge(effective, override_providers.get(provider, {}))
         for key in ("api", "baseUrl", "apiKeyEnv"):
             if effective.get(key) != config.get(key):
                 raise ValueError(
