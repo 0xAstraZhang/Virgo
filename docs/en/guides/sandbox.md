@@ -20,7 +20,7 @@ On Windows, we recommend running Virgo inside WSL2, where it uses the same sandb
 
 ## Platform backends and honest differences
 
-- **Linux (Tier 1 — `bubblewrap` + `libseccomp2`)**: Requires system `bwrap`, `libseccomp.so.2`, and unprivileged user namespaces. Isolates mounts, network namespace (when networking is off), and syscalls while allowing anonymous Unix stream `socketpair(AF_UNIX, SOCK_STREAM, 0)` so Python `asyncio` and test runners work normally. Existing control files are bind-mounted read-only; absent control names are still blocked by Broker file tools and untrusted project settings stripping.
+- **Linux (Tier 1 — `bubblewrap` + `libseccomp2`)**: Requires system `bwrap`, `libseccomp.so.2`, and unprivileged user namespaces. Isolates mounts, network namespace (when networking is off), and syscalls while allowing anonymous Unix stream `socketpair(AF_UNIX, SOCK_STREAM, 0)` so Python `asyncio` and test runners work normally. Existing control files (and readable targets of symlinked control names such as `CLAUDE.md -> AGENTS.md`) are bind-mounted read-only; absent control names and unlinking a symlinked control entry itself are bind-mount limitations on Linux, while Broker file tools and untrusted project settings stripping still protect them.
 - **macOS (Tier 1 — Seatbelt)**: Uses `/usr/bin/sandbox-exec` with a launchd job supervisor for process-tree cleanup. Seatbelt write-denies control metadata paths both when they exist and when they do not yet exist.
 - **Windows + WSL2 (Tier 1)**: Recommended on Windows; uses the Linux `bubblewrap` + `libseccomp2` backend inside WSL2.
 - **Native Windows (Experimental)**: Feature-frozen LPAC backend; defaults to **No-Limit**. See [experimental native Windows sandbox](windows-sandbox.md).

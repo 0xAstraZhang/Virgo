@@ -224,6 +224,17 @@ def test_s308_linux_bwrap_only_remounts_tmp_ro_when_not_writable(tmp_path):
     idx_rw = [i for i, a in enumerate(args_rw) if a == "--remount-ro"]
     assert not any(args_rw[i + 1] == "/tmp" for i in idx_rw)
 
+    # S3-02: Symlinked control metadata protects in-scope targets but never adds outside host read mounts.
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("secret")
+    inside = ws / "instructions.txt"
+    inside.write_text("rules")
+    (ws / "AGENTS.md").symlink_to(outside)
+    (ws / "CLAUDE.md").symlink_to(inside)
+    protected = ro_tmp_policy.protected_paths()
+    assert outside.resolve() not in protected
+    assert inside.resolve() in protected
+
 
 def test_s310_invalid_utf8_prompts_and_system_md_warn_without_crashing(make_session, project):
     """S3-10: Invalid UTF-8 in .virgo/prompts/*.md or SYSTEM.md warns and skips cleanly."""
@@ -261,12 +272,15 @@ def test_s311_glob_match_no_exponential_backtracking_and_walk_limit(tmp_path):
     assert len(found) == 5
 
 
-def test_ver13_native_windows_defaults_to_no_limit_and_prechecks_experimental_sandbox(make_session, project, monkeypatch):
-    """S1-04 / S7-06 / VER-13: Native Windows defaults to No-Limit with WSL2 hint; sandbox prechecks cleanly."""
+def test_ver13_native_windows_defaults_to_no_limit_and_prechecks_experimental_sandbox(project, monkeypatch):
+    """S1-04 / S7-06 / VER-13: Native Windows defaults to No-Limit with one-time WSL2 hint; sandbox prechecks cleanly."""
+    import types
+
     import virgo.execution_policy as ep
     import virgo.harness.execution as he
     import virgo.harness.session as hs
     import virgo.sandbox as sb
+    from virgo.harness.session import AgentSession
 
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
     monkeypatch.setattr(he, "is_native_windows", lambda: True)
@@ -274,10 +288,22 @@ def test_ver13_native_windows_defaults_to_no_limit_and_prechecks_experimental_sa
     monkeypatch.setattr(sb, "is_native_windows", lambda: True)
 
     ui = RecordingUI()
-    session = make_session(ui=ui, extensions=False, refresh_models=False)
+    session = AgentSession(
+        project, ui=ui, model="faux/test", session=None, extensions=False, refresh_models=False,
+    )
     try:
         assert session.services["execution"].selected_mode_id == "no-limit"
         assert any("WSL2" in line for line in ui.lines)
+
+        # Second startup in the same VIRGO_HOME must not repeat the one-time WSL2 hint.
+        ui2 = RecordingUI()
+        second = AgentSession(
+            project, ui=ui2, model="faux/test", session=None, extensions=False, refresh_models=False,
+        )
+        try:
+            assert not any("WSL2" in line for line in ui2.lines)
+        finally:
+            second.shutdown()
 
         session.prompt("/permissions list")
         assert "experimental" in ui.lines[-1].lower()
@@ -288,7 +314,6 @@ def test_ver13_native_windows_defaults_to_no_limit_and_prechecks_experimental_sa
                 reason="windows_admin_required",
             )
 
-        import types
         fake_ws = types.SimpleNamespace(precheck_experimental_sandbox=fail_non_admin)
         monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
         with pytest.raises(ExecutionUnavailable, match="WSL2"):

@@ -312,7 +312,7 @@ def test_next_preset_selected_after_admission_applies_to_next_task(broker_sessio
     monkeypatch.setattr(session.ui, "command_suspended", admitted)
     faux.push("test", faux.reply("done"))
     session.prompt("Inspect the workspace")
-    status = json.loads(session.ui.lines[0].split("\n", 1)[1])
+    status = json.loads(session.ui.lines[-1].split("\n", 1)[1])
     assert status["current_mode"] == "Read-Only" and status["shell_network"] is False
     assert status["next_mode"] == "Workspace-Edit" and status["web_allowed"] is True
     assert session.main.permission_snapshot.mode.id == "read-only"

@@ -10,6 +10,7 @@ import pytest
 
 from virgo.ai.catalog import CatalogError, CatalogModel
 from virgo.ai.providers import faux
+from virgo.execution_policy import default_execution_mode
 from virgo.harness.preferences import PreferenceChoice, configure_preference, model_choices
 from virgo.harness.settings import Settings
 
@@ -271,7 +272,7 @@ def test_saved_model_choice_preserves_other_settings_and_applies_to_future_sessi
         "custom": {"keep": True},
         "model": "deepseek/deepseek-flash",
         "effort": "max",
-        "execution": {"mode": "workspace-edit"},
+        "execution": {"mode": default_execution_mode()},
     }
     loaded = Settings.load(session.paths)
     assert loaded.get("model") == session.model.spec == "deepseek/deepseek-flash"
@@ -291,7 +292,7 @@ def test_effort_choice_only_changes_effort(make_session, persist):
     assert session.model is original_model
     path = session.paths.user / "settings.json"
     if persist:
-        assert json.loads(path.read_text()) == {"effort": "xhigh", "execution": {"mode": "workspace-edit"}}
+        assert json.loads(path.read_text()) == {"effort": "xhigh", "execution": {"mode": default_execution_mode()}}
     else:
         assert not path.exists()
         assert session.settings.get("effort") == "medium"

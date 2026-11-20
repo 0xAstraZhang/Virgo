@@ -756,22 +756,31 @@ def test_native_protected_symlink_cannot_add_a_host_read_mount(native, project):
     assert result.is_error, result.text()
     assert "credential-that-must-stay-outside" not in result.text()
     assert secret.read_text() == "credential-that-must-stay-outside"
-    if sys.platform == "linux":
-        assert result.details["status"] == "execution_unavailable"
 
 
 def test_native_existing_metadata_symlink_cannot_be_replaced(native, project):
-    """Protect the metadata directory entry, not only its resolved file target."""
+    """S3-02: Symlinked control metadata protects its real target (and directory entry on macOS) without breaking sessions."""
     target = project / "instructions.txt"
     target.write_text("original instructions")
     link = project / "AGENTS.md"
     link.symlink_to(target)
-    result = run(native, python_command(native,
-        "from pathlib import Path; p=Path('AGENTS.md'); p.unlink(); p.write_text('replaced')"
-    ))
-    assert result.is_error, result.text()
-    assert link.is_symlink()
-    assert link.read_text() == target.read_text() == "original instructions"
+    if sys.platform == "darwin":
+        result = run(native, python_command(native,
+            "from pathlib import Path; p=Path('AGENTS.md'); p.unlink(); p.write_text('replaced')"
+        ))
+        assert result.is_error, result.text()
+        assert link.is_symlink()
+        assert link.read_text() == target.read_text() == "original instructions"
+    else:
+        # On Linux bwrap, symlinked control files (e.g. CLAUDE.md -> AGENTS.md)
+        # bind-mount their readable target read-only so sessions work without false
+        # positives while writes through the symlink fail with EROFS.
+        read_res = run(native, python_command(native, "from pathlib import Path; print(Path('AGENTS.md').read_text())"))
+        assert not read_res.is_error and "original instructions" in read_res.text(), read_res.text()
+        write_res = run(native, python_command(native, "from pathlib import Path; Path('AGENTS.md').write_text('replaced')"))
+        assert write_res.is_error, write_res.text()
+        assert link.is_symlink()
+        assert link.read_text() == target.read_text() == "original instructions"
 
 
 def test_missing_backend_is_fail_closed_in_real_session(make_session, project, monkeypatch):

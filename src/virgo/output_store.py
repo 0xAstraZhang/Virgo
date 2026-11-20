@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -214,7 +215,7 @@ class OutputStore:
             if record is None and self._persist:
                 self._load_registry()
                 record = self._records.get(identifier)
-        if record is None or not record._path.is_file():
+        if record is None or record._path.is_symlink() or not record._path.is_file():
             raise FileAccessDenied("Output ID is unknown or belongs to another session", dimension="output_id")
         return record
 
@@ -224,6 +225,11 @@ class OutputStore:
 
         if not isinstance(record, OutputRecord) or self.lookup(record.id) is not record:
             raise FileAccessDenied("Output record does not belong to this session", dimension="output_id")
+        try:
+            if record._path.is_symlink() or not stat.S_ISREG(os.lstat(record._path).st_mode):
+                raise FileAccessDenied("Output record cannot be opened safely: symlink", dimension="output_id")
+        except OSError as error:
+            raise FileAccessDenied(f"Output record cannot be opened safely: {error}", dimension="output_id") from error
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
         try:
             fd = os.open(record._path, flags)

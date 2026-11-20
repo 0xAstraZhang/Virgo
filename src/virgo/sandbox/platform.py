@@ -308,11 +308,16 @@ class NativePolicy:
     def protected_paths(self) -> tuple[Path, ...]:
         """Existing non-symlink write-denied paths (resolving symlinked metadata to their real targets)."""
         existing = set()
+        readable = self.read_roots()
         for path in self.all_write_denies():
             try:
                 if path.is_symlink():
                     resolved = path.resolve(strict=True)
-                    if (resolved.is_dir() or resolved.is_file()) and not self.private_path(resolved):
+                    if (
+                        (resolved.is_dir() or resolved.is_file())
+                        and not self.private_path(resolved)
+                        and any(resolved.is_relative_to(root) for root in readable)
+                    ):
                         existing.add(resolved)
                 elif path.exists() and (path.is_dir() or path.is_file()):
                     existing.add(path)

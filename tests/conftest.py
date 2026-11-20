@@ -77,6 +77,11 @@ def make_session(project):
         # Migration tests opt out by supplying sandbox/permission configuration.
         if not {"execution", "sandbox", "permissions"}.intersection(configured):
             configured["execution"] = {"mode": "no-limit"}
+            home = os.environ.get("VIRGO_HOME")
+            if home:
+                marker = Path(home) / "migrations" / "windows-wsl2-hint"
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.touch(exist_ok=True)
         s = AgentSession(
             kw.pop("cwd", project),
             ui=ui or RecordingUI(),
