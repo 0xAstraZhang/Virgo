@@ -1,8 +1,8 @@
 """Native, fail-closed subprocess isolation; never an approval decision.
 
 Linux uses a system-owned bubblewrap plus a seccomp filter. macOS uses Seatbelt.
-Windows uses experimental LPAC plus a separately write-restricted token and
-temporary ACLs (frozen; WSL2 is recommended on Windows).
+Windows uses Standard AppContainer with a session-scoped SID and single-call
+OS-propagated inheritable NTFS ACEs.
 The broker stays outside so model transport and diagnostic persistence keep their
 own authority.
 """
@@ -135,7 +135,7 @@ def platform_backend() -> tuple[str, Path]:
             continue
     raise SandboxUnavailable(
         "No supported native sandbox backend is available "
-        "(Linux: system bubblewrap; macOS: sandbox-exec; Windows: experimental native x64 LPAC or WSL2).",
+        "(Linux: system bubblewrap; macOS: sandbox-exec; Windows: native x64 AppContainer or WSL2).",
         reason="backend_unavailable",
     )
 
@@ -268,7 +268,10 @@ class NativePolicy:
             "workspace_only": self.workspace_only,
             "network_allowed": self.network_allowed,
             "runtime_read_dependencies": [str(path) for path in self._read_roots()],
-            "ambient_read_access": "Windows LPAC ambient readable objects" if os.name == "nt" else None,
+            "ambient_read_access": (
+                "Windows Standard AppContainer (ALL APPLICATION PACKAGES) ambient readable objects"
+                if os.name == "nt" else None
+            ),
         }
 
     def read_roots(self) -> tuple[Path, ...]:
@@ -510,7 +513,8 @@ class NativePolicy:
 
     def spawn(self, argv: list[str] | tuple[str, ...], cwd: Path, env: dict[str, str], stdout,
               cancellation=None, *, stdin=subprocess.DEVNULL,
-              stderr=subprocess.STDOUT, env_overrides: dict[str, str] | None = None) -> subprocess.Popen:
+              stderr=subprocess.STDOUT, env_overrides: dict[str, str] | None = None,
+              session_pool=None) -> subprocess.Popen:
         if cancellation is not None and cancellation.is_set():
             raise SandboxCancelled("Sandbox launch cancelled")
         argv = list(argv)
@@ -519,11 +523,11 @@ class NativePolicy:
         explicit_env = environment_overrides(env_overrides or {})
         cwd = self.validate(cwd)
         backend, launcher = platform_backend()
-        if backend == "windows-lpac":
+        if backend == "windows-appcontainer":
             from .windows_sandbox import spawn
 
             return spawn(self, argv, cwd, env, stdout, cancellation, stdin=stdin,
-                         stderr=stderr, env_overrides=explicit_env)
+                         stderr=stderr, env_overrides=explicit_env, session_pool=session_pool)
         if launcher.is_relative_to(self.workspace):
             raise SandboxUnavailable("Workspace must not contain the sandbox launcher")
         scratch = _CommandScratch()

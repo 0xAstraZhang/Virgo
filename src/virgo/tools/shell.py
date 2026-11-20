@@ -257,8 +257,8 @@ def make_shell_tool(shell: Shell, jobs=None, *, execution=None, on_unavailable=N
     def _unavailable_result(error: Exception) -> ToolResult:
         reason = getattr(error, "reason", None)
         message = str(error)
-        if (reason in {None, "backend_unavailable", "windows_admin_required",
-                       "windows_network_isolation_unavailable", "device_acl_unavailable"}
+        if (reason in {None, "backend_unavailable",
+                       "windows_network_isolation_unavailable", "windows_runtime_inaccessible"}
                 and "--permission no-limit" not in message):
             message = (
                 f"{message}\n"

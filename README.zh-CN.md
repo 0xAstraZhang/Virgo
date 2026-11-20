@@ -8,7 +8,7 @@ Virgo 是一个轻量、可扩展的终端编程 Agent。你可以让它理解�
 
 > Virgo 的沙箱是防止误操作的**护栏**：它把模型偶发失误的影响限制在当前工作区内，保护 Virgo 的私有数据和项目控制文件，并在越界或高危操作前请求确认。它**不是**抵御恶意代码、主动绕过行为或提示词注入攻击链的安全边界。处理不可信的仓库或内容时，请在容器或虚拟机中运行 Virgo。
 
-在 Linux、macOS 和 WSL2 上，Virgo 默认以 **Workspace-Edit** 启动，通过原生沙箱约束 Shell 命令，并支持按操作申请额外权限。选择 **No-Limit**（`--permission no-limit` 或 `/permissions no-limit`）则直接使用当前宿主账户权限。在 Windows 上，推荐在 WSL2 中运行 Virgo，这样可以使用与 Linux 相同的沙箱。原生 Windows 沙箱是实验性功能，启动较慢，功能也有限（因此原生 Windows 默认以 **No-Limit** 启动）。见[执行边界](docs/zh-CN/guides/sandbox.md)与 [WSL2 使用指南](docs/zh-CN/guides/wsl2.md)。
+在 Linux、macOS、WSL2 和原生 Windows 上，Virgo 默认以 **Workspace-Edit** 启动，通过原生沙箱约束 Shell 命令，并支持按操作申请额外权限。选择 **No-Limit**（`--permission no-limit` 或 `/permissions no-limit`）则直接使用当前宿主账户权限。原生 Windows 使用标准 AppContainer（无需管理员权限）；如果你偏好 Linux 工具链或需要在沙箱命令中访问本机回环服务（`127.0.0.1`），WSL2 同样是一级支持选项。见[执行边界](docs/zh-CN/guides/sandbox.md)、[原生 Windows 沙箱](docs/zh-CN/guides/windows-sandbox.md)与 [WSL2 使用指南](docs/zh-CN/guides/wsl2.md)。
 
 ## 平台支持分级
 
@@ -16,8 +16,8 @@ Virgo 是一个轻量、可扩展的终端编程 Agent。你可以让它理解�
 | --- | --- | --- |
 | Linux（`bubblewrap` + `libseccomp2`） | 一级 | 完整支持，默认 **Workspace-Edit**，CI 阻塞门槛与性能门槛 |
 | macOS（Seatbelt） | 一级 | 完整支持，默认 **Workspace-Edit**，CI 阻塞门槛与性能门槛 |
-| Windows + WSL2（Ubuntu / Linux） | 一级 | **Windows 用户推荐方式** — 使用 Linux 沙箱后端（见 [WSL2 使用指南](docs/zh-CN/guides/wsl2.md)） |
-| 原生 Windows（LPAC） | 实验性 | 功能冻结；默认 **No-Limit**；原生沙箱需管理员权限、每条命令约 14 秒、不强制私有目录读拒绝、不支持 `$HOME` 工作区（见[详细说明](docs/zh-CN/guides/windows-sandbox.md)） |
+| 原生 Windows（标准 AppContainer） | 一级 | 完整支持，默认 **Workspace-Edit**，无需管理员权限，会话级单 SID，CI 阻塞门槛与性能门槛；本机回环（`127.0.0.1`/`[::1]`）与 `$HOME` 工作区有如实说明的平台限制（见[详细说明](docs/zh-CN/guides/windows-sandbox.md)） |
+| Windows + WSL2（Ubuntu / Linux） | 一级 | 使用 Linux 沙箱后端 — 适合 Linux 工具链或需要沙箱内访问本机回环服务的工作流（见 [WSL2 使用指南](docs/zh-CN/guides/wsl2.md)） |
 
 ## 为什么使用 Virgo？
 

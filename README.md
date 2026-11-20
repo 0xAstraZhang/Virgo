@@ -8,7 +8,7 @@ Virgo is a lightweight, extensible coding agent for your terminal. Ask it to exp
 
 > Virgo's sandbox is a **guardrail** against occasional model mistakes. It keeps their effects inside the current workspace, protects Virgo's private data and project control files, and asks before out-of-scope or high-risk operations. It is **not** a security boundary against malicious code, deliberate evasion, or prompt-injection attack chains. Run Virgo in a container or VM when working with untrusted repositories or content.
 
-On Linux, macOS, and WSL2, Virgo starts in **Workspace-Edit**, using native Shell sandboxing against the live project with operation-specific approvals. Select **No-Limit** (`--permission no-limit` or `/permissions no-limit`) to use the current host account. On Windows, we recommend running Virgo inside WSL2, where it uses the same sandbox as Linux. The native Windows sandbox is experimental, slower to start and limited in scope (so native Windows defaults to **No-Limit**). See [execution boundaries](docs/en/guides/sandbox.md) and [WSL2 setup](docs/en/guides/wsl2.md).
+On Linux, macOS, WSL2, and native Windows, Virgo starts in **Workspace-Edit**, using native Shell sandboxing against the live project with operation-specific approvals. Select **No-Limit** (`--permission no-limit` or `/permissions no-limit`) to use the current host account. Native Windows uses Standard AppContainer with no Administrator privileges required; WSL2 remains a Tier 1 option if you prefer Linux tooling or need localhost/loopback access inside sandboxed commands. See [execution boundaries](docs/en/guides/sandbox.md), [native Windows sandbox](docs/en/guides/windows-sandbox.md), and [WSL2 setup](docs/en/guides/wsl2.md).
 
 ## Platform support
 
@@ -16,8 +16,8 @@ On Linux, macOS, and WSL2, Virgo starts in **Workspace-Edit**, using native Shel
 | --- | --- | --- |
 | Linux (`bubblewrap` + `libseccomp2`) | Tier 1 | Full support, default **Workspace-Edit**, blocking CI & performance gates |
 | macOS (Seatbelt) | Tier 1 | Full support, default **Workspace-Edit**, blocking CI & performance gates |
-| Windows + WSL2 (Ubuntu / Linux) | Tier 1 | **Recommended on Windows** — uses the Linux sandbox backend ([WSL2 guide](docs/en/guides/wsl2.md)) |
-| Native Windows (LPAC) | Experimental | Feature-frozen; defaults to **No-Limit**; native sandbox requires Administrator privileges, adds ~14s/command, does not enforce private-directory read denial, and does not support `$HOME` as a workspace ([details](docs/en/guides/windows-sandbox.md)) |
+| Native Windows (Standard AppContainer) | Tier 1 | Full support, default **Workspace-Edit**, unelevated (no Administrator rights), session-level single SID, blocking CI & performance gates; loopback (`127.0.0.1`/`[::1]`) and `$HOME` workspaces have honest platform limits ([details](docs/en/guides/windows-sandbox.md)) |
+| Windows + WSL2 (Ubuntu / Linux) | Tier 1 | Uses the Linux sandbox backend — ideal for Linux toolchains or sandboxed localhost/loopback workflows ([WSL2 guide](docs/en/guides/wsl2.md)) |
 
 ## Why Virgo?
 

@@ -272,52 +272,55 @@ def test_s311_glob_match_no_exponential_backtracking_and_walk_limit(tmp_path):
     assert len(found) == 5
 
 
-def test_ver13_native_windows_defaults_to_no_limit_and_prechecks_experimental_sandbox(project, monkeypatch):
-    """S1-04 / S7-06 / VER-13: Native Windows defaults to No-Limit with one-time WSL2 hint; sandbox prechecks cleanly."""
+def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontainer(project, monkeypatch):
+    """VER-13: Native Windows Tier-1 Standard AppContainer defaults to Workspace-Edit with no experimental badge."""
     import types
 
     import virgo.execution_policy as ep
-    import virgo.harness.execution as he
-    import virgo.harness.session as hs
     import virgo.sandbox as sb
     from virgo.harness.session import AgentSession
 
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
-    monkeypatch.setattr(he, "is_native_windows", lambda: True)
-    monkeypatch.setattr(hs, "is_native_windows", lambda: True)
     monkeypatch.setattr(sb, "is_native_windows", lambda: True)
+    assert ep.default_execution_mode() == "workspace-edit"
+
+    precheck_calls = 0
+
+    def ok_precheck():
+        nonlocal precheck_calls
+        precheck_calls += 1
+
+    fake_ws = types.SimpleNamespace(precheck_windows_sandbox=ok_precheck)
+    monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
+    monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
 
     ui = RecordingUI()
     session = AgentSession(
         project, ui=ui, model="faux/test", session=None, extensions=False, refresh_models=False,
     )
     try:
-        assert session.services["execution"].selected_mode_id == "no-limit"
-        assert any("WSL2" in line for line in ui.lines)
-
-        # Second startup in the same VIRGO_HOME must not repeat the one-time WSL2 hint.
-        ui2 = RecordingUI()
-        second = AgentSession(
-            project, ui=ui2, model="faux/test", session=None, extensions=False, refresh_models=False,
-        )
-        try:
-            assert not any("WSL2" in line for line in ui2.lines)
-        finally:
-            second.shutdown()
+        assert session.services["execution"].selected_mode_id == "workspace-edit"
+        assert precheck_calls >= 1
+        # No startup No-Limit / WSL2 / experimental warning on Tier-1 Windows
+        assert not any("experimental" in line.lower() or "no-limit" in line.lower() for line in ui.lines)
 
         session.prompt("/permissions list")
-        assert "experimental" in ui.lines[-1].lower()
+        assert "experimental" not in ui.lines[-1].lower()
+        session.prompt("/permissions show")
+        assert "[experimental]" not in ui.lines[-1].lower()
 
-        def fail_non_admin():
+        # Precheck fails closed cleanly when Windows filtering services (BFE/MpsSvc) are unavailable
+        def fail_network_services():
             raise ExecutionUnavailable(
-                "The experimental native Windows sandbox requires an Administrator account. Use WSL2 or No-Limit.",
-                reason="windows_admin_required",
+                "Windows network isolation requires the running BFE service.",
+                reason="windows_network_isolation_unavailable",
+                dimension="windows_appcontainer_sandbox",
             )
 
-        fake_ws = types.SimpleNamespace(precheck_experimental_sandbox=fail_non_admin)
-        monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
-        with pytest.raises(ExecutionUnavailable, match="WSL2"):
-            session.services["execution"].select_mode("workspace-edit")
-        assert session.services["execution"].selected_mode_id == "no-limit"
+        fake_ws.precheck_windows_sandbox = fail_network_services
+        with pytest.raises(ExecutionUnavailable) as exc_info:
+            session.services["execution"].select_mode("read-only")
+        assert exc_info.value.reason == "windows_network_isolation_unavailable"
+        assert session.services["execution"].selected_mode_id == "workspace-edit"
     finally:
         session.shutdown()

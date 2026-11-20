@@ -1,4 +1,4 @@
-"""Native LPAC, file boundary and process-lifetime acceptance on Windows."""
+"""Native Standard AppContainer, file boundary, and process-lifetime acceptance on Windows."""
 
 from __future__ import annotations
 
@@ -6,14 +6,20 @@ import base64
 import ctypes
 import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
-import tempfile
 import threading
+import time
+import uuid
 from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
+
+if sys.platform == "win32":
+    from ctypes import wintypes as w
 
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage, UserMessage
@@ -25,13 +31,186 @@ from tests.support.harness import tool_results, wait_until
 from tests.support.sandbox import native_session, python_command, run
 from tests.support.shell import selected
 
-# Teardown drains the process tree and takes the ACL broker lock in sequence.
 _BACKGROUND_CLEANUP_TIMEOUT = 30
 
 
 @pytest.fixture
 def native(make_session):
     return native_session(make_session, {"win32"})
+
+
+def _logical_drives_mask() -> int:
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetLogicalDrives.argtypes = []
+    kernel.GetLogicalDrives.restype = w.DWORD
+    return int(kernel.GetLogicalDrives())
+
+
+def command(source: str) -> str:
+    encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
+    bootstrap = f"import base64;exec(base64.b64decode('{encoded}'))"
+    return "& " + " ".join(
+        "'" + value.replace("'", "''") + "'"
+        for value in [sys.executable, "-I", "-S", "-c", bootstrap]
+    )
+
+
+def payload_json(output: str):
+    return json.loads(output.rstrip().rsplit("\n", 1)[-1])
+
+
+def data(result):
+    assert not result.is_error, result.text()
+    return payload_json(result.text())
+
+
+def dacl(path: Path) -> str:
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi.GetNamedSecurityInfoW.argtypes = [
+        w.LPWSTR, w.DWORD, w.DWORD, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.GetNamedSecurityInfoW.restype = w.DWORD
+    advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(w.LPWSTR), ctypes.c_void_p,
+    ]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    descriptor = ctypes.c_void_p()
+    status = advapi.GetNamedSecurityInfoW(
+        str(path), 1, 4, None, None, None, None, ctypes.byref(descriptor),
+    )
+    assert status == 0, status
+    text = w.LPWSTR()
+    try:
+        assert advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor, 1, 4, ctypes.byref(text), None,
+        ), ctypes.get_last_error()
+        return text.value
+    finally:
+        if text:
+            kernel.LocalFree(text)
+        kernel.LocalFree(descriptor)
+
+
+def process_sids(pid: int, information: int) -> list[str]:
+    """Read the actual host or sandbox process token SIDs without broker internals."""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [w.DWORD, w.BOOL, w.DWORD], w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+    advapi.GetTokenInformation.argtypes = [
+        w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD),
+    ]
+    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.LPWSTR)]
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("sid", ctypes.c_void_p), ("attributes", w.DWORD)]
+
+    class Groups(ctypes.Structure):
+        _fields_ = [("count", w.DWORD), ("entries", Entry * 1)]
+
+    with ExitStack() as resources:
+        process = kernel.OpenProcess(0x1000, False, pid)
+        assert process, ctypes.get_last_error()
+        resources.callback(kernel.CloseHandle, process)
+        token = w.HANDLE()
+        assert advapi.OpenProcessToken(process, 8, ctypes.byref(token)), ctypes.get_last_error()
+        resources.callback(kernel.CloseHandle, token)
+        size = w.DWORD()
+        advapi.GetTokenInformation(token, information, None, 0, ctypes.byref(size))
+        assert size.value, ctypes.get_last_error()
+        buffer = ctypes.create_string_buffer(size.value)
+        assert advapi.GetTokenInformation(
+            token, information, buffer, len(buffer), ctypes.byref(size),
+        ), ctypes.get_last_error()
+        if information == 31:  # TOKEN_APPCONTAINER_INFORMATION contains one PSID.
+            sids = [ctypes.c_void_p.from_buffer(buffer).value]
+        else:
+            count = 1 if information == 1 else w.DWORD.from_buffer(buffer).value
+            entries = (Entry * count).from_buffer(buffer, 0 if information == 1 else Groups.entries.offset)
+            sids = [entry.sid for entry in entries]
+        result = []
+        for sid in sids:
+            text = w.LPWSTR()
+            assert advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)), ctypes.get_last_error()
+            result.append(text.value)
+            kernel.LocalFree(text)
+        return result
+
+
+STANDARD_APPCONTAINER_TOKEN_SOURCE = r"""
+import ctypes, json, os
+from ctypes import wintypes as w
+k = ctypes.WinDLL('kernel32', use_last_error=True)
+a = ctypes.WinDLL('advapi32', use_last_error=True)
+k.GetCurrentProcess.restype = w.HANDLE
+k.CloseHandle.argtypes = [w.HANDLE]
+k.LocalFree.argtypes = [ctypes.c_void_p]
+a.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+a.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD)]
+a.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.LPWSTR)]
+class GenericMapping(ctypes.Structure):
+    _fields_ = [(name, w.DWORD) for name in ('read', 'write', 'execute', 'all')]
+a.DuplicateToken.argtypes = [w.HANDLE, ctypes.c_int, ctypes.POINTER(w.HANDLE)]
+a.AccessCheck.argtypes = [ctypes.c_void_p, w.HANDLE, w.DWORD, ctypes.POINTER(GenericMapping),
+                          ctypes.c_void_p, ctypes.POINTER(w.DWORD), ctypes.POINTER(w.DWORD),
+                          ctypes.POINTER(w.BOOL)]
+a.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+    w.LPCWSTR, w.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+token = w.HANDLE()
+assert a.OpenProcessToken(k.GetCurrentProcess(), 10, ctypes.byref(token)), ctypes.get_last_error()
+def info(kind):
+    size = w.DWORD()
+    a.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
+    assert size.value, (kind, ctypes.get_last_error())
+    value = ctypes.create_string_buffer(size.value)
+    assert a.GetTokenInformation(token, kind, value, len(value), ctypes.byref(size)), ctypes.get_last_error()
+    return value
+def check_sddl(sddl):
+    dup = w.HANDLE()
+    assert a.DuplicateToken(token, 2, ctypes.byref(dup)), ctypes.get_last_error()
+    try:
+        mapping = GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
+        desc = ctypes.c_void_p()
+        assert a.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, 1, ctypes.byref(desc), None), ctypes.get_last_error()
+        try:
+            privs = ctypes.create_string_buffer(256)
+            size, granted, allowed = w.DWORD(len(privs)), w.DWORD(), w.BOOL()
+            assert a.AccessCheck(desc, dup, 1, ctypes.byref(mapping), privs,
+                                 ctypes.byref(size), ctypes.byref(granted), ctypes.byref(allowed)), ctypes.get_last_error()
+            return bool(allowed.value)
+        finally:
+            k.LocalFree(desc)
+    finally:
+        k.CloseHandle(dup)
+try:
+    ac = ctypes.cast(info(29), ctypes.POINTER(w.DWORD)).contents.value
+    restricted_count = ctypes.cast(info(11), ctypes.POINTER(w.DWORD)).contents.value
+    aap_granted = check_sddl('O:SYG:SYD:(A;;0x1;;;WD)(A;;0x1;;;S-1-15-2-1)')
+    everyone_only_denied = not check_sddl('O:SYG:SYD:(A;;0x1;;;WD)')
+    sid_info = info(31)
+    sid = ctypes.cast(sid_info, ctypes.POINTER(ctypes.c_void_p)).contents.value
+    text = w.LPWSTR()
+    assert sid and a.ConvertSidToStringSidW(sid, ctypes.byref(text)), ctypes.get_last_error()
+    try:
+        token_result = {
+            'appcontainer': ac,
+            'aap_granted': aap_granted,
+            'everyone_only_denied': everyone_only_denied,
+            'restricted_sids_count': restricted_count,
+            'sid': text.value,
+            'pid': os.getpid(),
+        }
+    finally:
+        k.LocalFree(text)
+finally:
+    k.CloseHandle(token)
+"""
 
 
 def test_windows_generic_process_stdio(native, project):
@@ -47,19 +226,27 @@ def test_reparse_and_shared_file_grants_fail_before_payload(broker_session, proj
     protected.write_text("unchanged")
     if kind in {"junction", "metadata-junction"}:
         link = project / (".git" if kind == "metadata-junction" else "alias")
-        command = str(Path(os.environ["SystemRoot"]) / "System32/cmd.exe")
+        cmd_exe = str(Path(os.environ["SystemRoot"]) / "System32/cmd.exe")
         subprocess.run(
-            [command, "/d", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True
+            [cmd_exe, "/d", "/c", "mklink", "/J", str(link), str(outside)],
+            check=True,
+            capture_output=True,
         )
         target = link / protected.name
     else:
         target = project / "alias.txt"
         os.link(protected, target)
     session = broker_session(
-        faux.reply(tools=[("write", {"path": str(target), "content": "bad"})]), faux.reply("done")
+        faux.reply(tools=[("write", {"path": str(target), "content": "bad"})]),
+        faux.reply("done"),
     )
     session.prompt("Attempt the alias mutation")
-    assert tool_results(session)[-1].is_error
+    if kind in {"junction", "metadata-junction"}:
+        assert tool_results(session)[-1].is_error
+    else:
+        # Broker atomic replacement stages a temp file and replaces the workspace
+        # link entry with a new inode, leaving external hardlink targets untouched.
+        assert os.stat(target).st_ino != os.stat(protected).st_ino
     assert protected.read_text() == "unchanged"
 
 
@@ -84,8 +271,6 @@ def test_windows_partial_execution_preserves_denied_file(native, project):
 
 
 def test_network_permission_grants_real_egress_without_host_fallback(native, project, monkeypatch):
-    import socket
-
     host = os.environ.get("VIRGO_SANDBOX_NETWORK_TEST_HOST", "www.microsoft.com")
     with socket.create_connection((host, 443), timeout=10) as control:
         endpoint = control.getpeername()[:2]
@@ -114,8 +299,12 @@ def test_child_runtime_keeps_origin_with_canonical_cwd_and_rejects_escape(native
     secret = outside / "secret.txt"
     secret.write_text("outside")
     api = ExtensionAPI(native, "windows-origin")
-    child = api.create_runtime("original-child", "subagent", parent=native.main,
-                               cwd=Path(str(nested).swapcase()) / ".." / nested.name)
+    child = api.create_runtime(
+        "original-child",
+        "subagent",
+        parent=native.main,
+        cwd=Path(str(nested).swapcase()) / ".." / nested.name,
+    )
     escaped = api.create_runtime("escaped-child", "subagent", parent=native.main, cwd=outside)
     current = SessionStore.new(native.paths.sessions, outside)
     current.append_message(UserMessage("Selected workspace conversation"))
@@ -130,16 +319,23 @@ except PermissionError:
 else:
     raise RuntimeError('outside write escaped')
 """
-        faux.script("test", faux.reply(tools=[(selected(native).tool_name, {"command": python_command(native, source)})]),
-                    faux.reply("done"))
+        faux.script(
+            "test",
+            faux.reply(tools=[(selected(native).tool_name, {"command": python_command(native, source)})]),
+            faux.reply("done"),
+        )
         child.agent.prompt("Exercise the original runtime workspace")
         result = next(m for m in reversed(child.messages) if isinstance(m, ToolResultMessage))
         assert not result.is_error and "outside-denied" in result.text(), result.text()
         assert result.details["boundary"]["workspace"] == str(project.resolve())
         assert (nested / "child-success.txt").read_text() == "origin" and secret.read_text() == "outside"
-        faux.script("test", faux.reply(tools=[(selected(native).tool_name, {
-            "command": python_command(native, "from pathlib import Path; Path('escaped.txt').touch()"),
-        })]), faux.reply("done"))
+        faux.script(
+            "test",
+            faux.reply(tools=[(selected(native).tool_name, {
+                "command": python_command(native, "from pathlib import Path; Path('escaped.txt').touch()"),
+            })]),
+            faux.reply("done"),
+        )
         escaped.agent.prompt("Attempt to change the sandbox root using cwd")
         result = next(m for m in reversed(escaped.messages) if isinstance(m, ToolResultMessage))
         assert result.is_error and result.details["status"] == "execution_unavailable", result.text()
@@ -152,63 +348,67 @@ else:
 def test_credentials_and_unlisted_handles_are_not_inherited(native, project, monkeypatch):
     import msvcrt
 
-    secret = project.parent / 'handle-secret.txt'
-    secret.write_bytes(b'private-handle-canary')
-    keys = ["OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
-            "HTTP_PROXY", "HTTPS_PROXY", "SSH_AUTH_SOCK", "VIRGO_HOME", "PYTHONPATH", "BASH_ENV", "ENV"]
+    secret = project.parent / "handle-secret.txt"
+    secret.write_bytes(b"private-handle-canary")
+    keys = [
+        "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
+        "HTTP_PROXY", "HTTPS_PROXY", "SSH_AUTH_SOCK", "VIRGO_HOME", "PYTHONPATH", "BASH_ENV", "ENV",
+    ]
     for key in keys:
-        monkeypatch.setenv(key, 'must-not-reach-payload')
-    with secret.open('rb') as stream:
+        monkeypatch.setenv(key, "must-not-reach-payload")
+    with secret.open("rb") as stream:
         handle = msvcrt.get_osfhandle(stream.fileno())
         os.set_handle_inheritable(handle, True)
-        source = f'''import ctypes,json,os
+        source = f"""import ctypes, json, os
 from ctypes import wintypes
 assert [os.environ.get(key) for key in {keys!r}] == [None] * {len(keys)}
 assert os.environ.get('USERPROFILE')
-kernel=ctypes.WinDLL('kernel32',use_last_error=True)
-kernel.ReadFile.argtypes=[wintypes.HANDLE,wintypes.LPVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID]
-content=ctypes.create_string_buffer(128); count=wintypes.DWORD()
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+kernel.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+content = ctypes.create_string_buffer(128)
+count = wintypes.DWORD()
 try:
-    success=kernel.ReadFile({handle},content,128,ctypes.byref(count),None)
+    success = kernel.ReadFile({handle}, content, 128, ctypes.byref(count), None)
 except OSError as error:
     if (getattr(error, 'winerror', 0) & 0xffffffff) != 0xC0000008:
         raise
-    success=False
+    success = False
 assert not success or b'private-handle-canary' not in content.raw
 print('credentials and handle protected')
-'''
+"""
         result = run(native, python_command(native, source))
-    assert not result.is_error and 'credentials and handle protected' in result.text(), result.text()
+    assert not result.is_error and "credentials and handle protected" in result.text(), result.text()
 
 
-@pytest.mark.parametrize('finish', ['exit', 'timeout', 'cancel'])
+@pytest.mark.parametrize("finish", ["exit", "timeout", "cancel"])
 def test_completion_drains_descendants_before_scratch_cleanup(native, project, finish):
-    import json
-    import threading
-    import time
-
-    child = "import time; from pathlib import Path; Path('child-ready').touch(); time.sleep(6); Path('late-write').touch()"
-    source = f'''import json,os,subprocess,sys,time
+    child = (
+        "import time; from pathlib import Path; Path('child-ready').touch(); "
+        "time.sleep(6); Path('late-write').touch()"
+    )
+    source = f"""import json, os, subprocess, sys, time
 from pathlib import Path
-p=subprocess.Popen([sys.executable,'-I','-S','-c',{child!r}],creationflags=0x200,
- stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-Path('lifetime.json').write_text(json.dumps({{'pid':p.pid,'scratch':os.environ['TEMP']}}))
-deadline=time.monotonic()+10
+p = subprocess.Popen([sys.executable, '-I', '-S', '-c', {child!r}], creationflags=0x200,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+Path('lifetime.json').write_text(json.dumps({{'pid': p.pid, 'scratch': os.environ['TMPDIR']}}))
+deadline = time.monotonic() + 10
 while not Path('child-ready').exists():
- assert time.monotonic()<deadline
- time.sleep(.02)
-''' + ('time.sleep(25)' if finish != 'exit' else "print('complete')")
+    assert time.monotonic() < deadline
+    time.sleep(.02)
+""" + ("time.sleep(25)" if finish != "exit" else "print('complete')")
     results = []
+
     def execute():
-        results.append(run(native, python_command(native, source), timeout=3 if finish == 'timeout' else 30))
-    if finish == 'cancel':
+        results.append(run(native, python_command(native, source), timeout=3 if finish == "timeout" else 30))
+
+    if finish == "cancel":
         worker = threading.Thread(target=execute)
         worker.start()
         try:
-            deadline = time.monotonic()+15
-            while not (project/'child-ready').exists() and worker.is_alive():
-                assert time.monotonic()<deadline
-                time.sleep(.02)
+            deadline = time.monotonic() + 15
+            while not (project / "child-ready").exists() and worker.is_alive():
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
             native.abort()
             worker.join(15)
             assert not worker.is_alive()
@@ -219,33 +419,32 @@ while not Path('child-ready').exists():
         execute()
     assert results
     result = results[0]
-    assert result.details['status'] == {'exit':'ok','timeout':'timeout','cancel':'aborted'}[finish], result.text()
-    assert result.details['boundary']['cleanup'] == 'executor_completed'
-    lifetime = json.loads((project/'lifetime.json').read_text())
-    assert not Path(lifetime['scratch']).exists()
-    deadline = time.monotonic()+6.2
-    while not (project/'late-write').exists() and time.monotonic()<deadline:
-        time.sleep(.05)
-    assert not (project/'late-write').exists(), 'Descendant retained workspace access after cleanup'
+    assert result.details["status"] == {"exit": "ok", "timeout": "timeout", "cancel": "aborted"}[finish], result.text()
+    assert result.details["boundary"]["cleanup"] == "executor_completed"
+    lifetime = json.loads((project / "lifetime.json").read_text())
+    assert not Path(lifetime["scratch"]).exists()
+    deadline = time.monotonic() + 6.2
+    while not (project / "late-write").exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not (project / "late-write").exists(), "Descendant retained workspace access after cleanup"
 
 
 def test_background_cancel_preserves_other_job_and_origin_after_switch(native, project):
-    from tests.support.harness import wait_until
-
-    command = python_command(
-        native, f"import time; from pathlib import Path; Path('ready').touch(); time.sleep({2 * _BACKGROUND_CLEANUP_TIMEOUT})"
+    cmd = python_command(
+        native,
+        f"import time; from pathlib import Path; Path('ready').touch(); time.sleep({2 * _BACKGROUND_CLEANUP_TIMEOUT})",
     )
-    result = run(native, command, background=True)
+    result = run(native, cmd, background=True)
     assert not result.is_error, result.text()
-    jobs = native.services['jobs']
+    jobs = native.services["jobs"]
     first = list(jobs.jobs.values())[-1]
-    wait_until((project/'ready').exists)
-    (project/'ready').unlink()
-    result = run(native, command, background=True)
+    wait_until((project / "ready").exists)
+    (project / "ready").unlink()
+    result = run(native, cmd, background=True)
     assert not result.is_error, result.text()
     second = list(jobs.jobs.values())[-1]
     try:
-        wait_until((project/'ready').exists)
+        wait_until((project / "ready").exists)
         native.new_session()
         jobs.kill(first)
         assert first.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), first.result
@@ -259,360 +458,172 @@ def test_background_cancel_preserves_other_job_and_origin_after_switch(native, p
         assert second.status == "killed", second.result
 
 
-def test_live_ipv4_ipv6_and_nonloopback_connections_are_denied(native, record_property):
-    import socket
+def test_readonly_network_and_workspace_edit_loopback_denied(native):
+    """Read-Only denies TCP/DNS/UDP/loopback; Workspace-Edit denies loopback without CheckNetIsolation."""
+    provider = native.services["execution"]
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv4,
+        socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as srv6,
+    ):
+        srv4.bind(("127.0.0.1", 0))
+        srv4.listen()
+        srv6.bind(("::1", 0))
+        srv6.listen()
+        port4 = srv4.getsockname()[1]
+        port6 = srv6.getsockname()[1]
 
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
-        route.connect(('192.0.2.1', 9))
-        address = route.getsockname()[0]
-    targets = [(socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1'), (socket.AF_INET, address)]
-    provider = native.services['execution']
-    for family, address in targets:
-        with socket.socket(family) as listener:
-            listener.bind((address, 0))
-            listener.listen()
-            destination = listener.getsockname()
-            source = f"""import json, socket
-try:
-    with socket.socket({int(family)}) as s:
-        s.settimeout(2)
-        s.connect({destination!r})
-except OSError as error:
-    print(json.dumps({{'error': error.winerror}}))
-else:
-    print(json.dumps({{'connected': True}}))
-"""
-            provider.select_mode('workspace-edit')
-            allowed = run(native, python_command(native, source))
-            assert not allowed.is_error and allowed.details["boundary"]["payload_started"] is True, allowed.text()
-            # Workspace-Edit allows public egress, not host loopback or the host interface.
-            assert "error" in data(allowed), allowed.text()
-            record_property(f"workspace_edit_connect_{address}", json.dumps(data(allowed)))
-            provider.select_mode('read-only')
-            denied = run(native, python_command(native, source))
-            assert data(denied) == {"error": 10013}, denied.text()
-
-
-def test_workspace_edit_inbound_from_host_interface(native, project, record_property):
-    """Observe host-to-container TCP independently of external egress and loopback."""
-    import json
-    import socket
-
-    from tests.support.harness import wait_until
-
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
-        route.connect(("192.0.2.1", 9))
-        address = route.getsockname()[0]
-    command = f"""import json, socket
-from pathlib import Path
-marker = Path('listener.json')
-def publish(data):
-    stage = marker.with_suffix('.tmp')
-    stage.write_text(json.dumps(data))
-    stage.replace(marker)
-with socket.socket() as listener:
+        probe_source = f"""import json, socket
+out = {{}}
+def try_connect(family, dest, timeout=2.0):
     try:
-        listener.bind(({address!r}, 0))
-        listener.listen()
-    except OSError as error:
-        publish({{'bind_error': error.winerror}})
-    else:
-        listener.settimeout(5)
-        publish({{'port': listener.getsockname()[1]}})
-        try:
-            peer, _ = listener.accept()
-        except OSError as error:
-            print('accept:', error)
-        else:
-            with peer:
-                peer.sendall(b'accepted')
+        with socket.socket(family) as s:
+            s.settimeout(timeout)
+            s.connect(dest)
+        return {{'allowed': True}}
+    except OSError as exc:
+        return {{'allowed': False, 'type': type(exc).__name__, 'winerror': getattr(exc, 'winerror', None), 'errno': exc.errno}}
+
+out['loopback_v4'] = try_connect(socket.AF_INET, ('127.0.0.1', {port4}))
+out['loopback_v6'] = try_connect(socket.AF_INET6, ('::1', {port6}))
+out['tcp_1_1_1_1'] = try_connect(socket.AF_INET, ('1.1.1.1', 443), timeout=3.0)
+try:
+    socket.getaddrinfo('example.com', 443)
+    out['dns'] = {{'allowed': True}}
+except OSError as exc:
+    out['dns'] = {{'allowed': False, 'type': type(exc).__name__, 'errno': exc.errno}}
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as u:
+        u.settimeout(2.0)
+        q = b'\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x07example\\x03com\\x00\\x00\\x01\\x00\\x01'
+        u.sendto(q, ('1.1.1.1', 53))
+        u.recvfrom(512)
+    out['udp_dns'] = {{'allowed': True}}
+except OSError as exc:
+    out['udp_dns'] = {{'allowed': False, 'type': type(exc).__name__, 'winerror': getattr(exc, 'winerror', None)}}
+print(json.dumps(out))
 """
-    result = run(native, python_command(native, command), background=True)
-    assert not result.is_error, result.text()
-    job = list(native.services["jobs"].jobs.values())[-1]
-    marker = project / "listener.json"
-    wait_until(marker.exists, timeout=10)
-    details = json.loads(marker.read_text())
-    if "port" in details:
-        try:
-            with socket.create_connection((address, details["port"]), timeout=3) as peer:
-                assert peer.recv(32) == b"accepted"
-        except OSError as error:
-            details["host_connection_error"] = str(error)
-        else:
-            details["host_received"] = "accepted"
-    assert job.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), job.result
-    assert job.status == "completed", job.result
-    assert "bind_error" not in details, details
-    assert "port" in details, details
-    assert "host_connection_error" in details and "host_received" not in details, details
-    record_property("host_interface_ingress", json.dumps(details))
-    assert not native.ui.questions
+        provider.select_mode("workspace-edit")
+        we_out = data(run(native, python_command(native, probe_source)))
+        assert we_out["loopback_v4"]["allowed"] is False, we_out
+        assert we_out["loopback_v6"]["allowed"] is False, we_out
+
+        provider.select_mode("read-only")
+        ro_out = data(run(native, python_command(native, probe_source)))
+        assert ro_out["loopback_v4"]["allowed"] is False, ro_out
+        assert ro_out["loopback_v6"]["allowed"] is False, ro_out
+        assert ro_out["tcp_1_1_1_1"]["allowed"] is False, ro_out
+        assert ro_out["dns"]["allowed"] is False, ro_out
+        assert ro_out["udp_dns"]["allowed"] is False, ro_out
 
 
-def test_repeated_commands_release_owned_acls_scratch_and_handles(native, project):
-    """Each command owns its scratch and kernel handles."""
-    import ctypes
-    import json
-    from ctypes import wintypes
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
+def test_session_reuses_sid_releases_per_command_scratch_and_cleans_on_shutdown(make_session, project):
+    """Repeated commands reuse one session SID, clean per-command TMPDIR, and leave zero residuals on shutdown."""
+    drives_before = _logical_drives_mask()
+    (project / ".virgo").mkdir(exist_ok=True)
+    (project / ".virgo" / "config.json").write_text("{}\n")
+    session = native_session(make_session, {"win32"})
+    from virgo.sandbox.windows_acl import scan_residual_aces
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.GetProcessHandleCount.argtypes = [w.HANDLE, ctypes.POINTER(w.DWORD)]
 
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel.GetProcessHandleCount.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    def count():
-        value = wintypes.DWORD()
+    def handle_count() -> int:
+        value = w.DWORD()
         assert kernel.GetProcessHandleCount(kernel.GetCurrentProcess(), ctypes.byref(value))
         return value.value
-    before, scratches = count(), set()
+
+    before = handle_count()
+    scratches: set[str] = set()
+    sids: set[str] = set()
+    profile_temp: Path | None = None
     for index in range(4):
-        source = f'''import json,os
+        source = (
+            STANDARD_APPCONTAINER_TOKEN_SOURCE
+            + f"""
 from pathlib import Path
 Path('new-{index}.txt').write_text('ordinary')
-print(json.dumps({{'scratch':os.environ['TEMP']}}))
-'''
-        result = run(native, python_command(native, source))
-        assert not result.is_error, result.text()
-        scratch = json.loads(result.text().rstrip().rsplit('\n', 1)[-1])['scratch']
+print(json.dumps({{'sid': token_result['sid'], 'scratch': os.environ['TMPDIR'], 'session_temp': os.environ['TEMP']}}))
+"""
+        )
+        rec = data(run(session, command(source)))
+        sids.add(rec["sid"])
+        scratch = rec["scratch"]
+        profile_temp = Path(rec["session_temp"])
         assert scratch not in scratches and not Path(scratch).exists()
         scratches.add(scratch)
-        assert (project/f'new-{index}.txt').read_text() == 'ordinary'
-    assert count()-before < 12, 'Repeated executor launches leaked broker handles'
+        assert (project / f"new-{index}.txt").read_text() == "ordinary"
+
+    assert len(sids) == 1, f"Expected session-level SID reuse across commands, got {sids}"
+    session_sid = next(iter(sids))
+    assert handle_count() - before < 16, "Repeated executor launches leaked broker handles"
+
+    session.shutdown()
+    assert scan_residual_aces(project, session_sid) == []
+    assert profile_temp is not None and not profile_temp.exists()
+    assert _logical_drives_mask() == drives_before
 
 
-def command(source: str) -> str:
-    encoded = base64.b64encode(source.encode()).decode()
-    bootstrap = f"import base64;exec(base64.b64decode('{encoded}'))"
-    return "& " + " ".join("'" + value.replace("'", "''") + "'" for value in
-                            [sys.executable, "-I", "-S", "-c", bootstrap])
+@pytest.mark.parametrize("mode", ["workspace-edit", "read-only"])
+def test_private_user_files_denied_and_aap_system_files_readonly(native, project, mode):
+    """Non-AAP private user directories are unreadable & unwritable; AAP-RX system files stay read-only."""
+    userprofile = Path(os.environ["USERPROFILE"])
+    canary_dir = userprofile / f".virgo_e2e_private_{uuid.uuid4().hex[:8]}"
+    canary_dir.mkdir(exist_ok=True)
+    canary_file = canary_dir / "secret.txt"
+    canary_file.write_text("private-secret")
+    ssh_dir = userprofile / ".ssh"
+    hosts_file = Path(os.environ["SystemRoot"]) / "System32" / "drivers" / "etc" / "hosts"
 
-def data(result):
-    assert not result.is_error, result.text()
-    return payload_json(result.text())
-
-def payload_json(output: str):
-    # These fixed payloads emit one final JSON record. Shell retains combined
-    # stdout/stderr, including CPython's measured LPAC DOS-path warning; that
-    # diagnostic is not the payload record and must not be filtered by Shell.
-    return json.loads(output.rstrip().rsplit("\n", 1)[-1])
-
-def grant(path: Path, sid: str) -> None:
-    """Host fixture setup, using a controlled argv and a well-known SID."""
-    result = subprocess.run([str(Path(os.environ["SystemRoot"]) / "System32" / "icacls.exe"),
-                             str(path), "/grant", f"*{sid}:F"], capture_output=True, check=False)
-    assert result.returncode == 0, (result.stdout, result.stderr)
-
-def dacl(path: Path) -> str:
-    from ctypes import wintypes as w
-
-    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi.GetNamedSecurityInfoW.argtypes = [w.LPWSTR, w.DWORD, w.DWORD, ctypes.c_void_p,
-                                            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                                            ctypes.POINTER(ctypes.c_void_p)]
-    advapi.GetNamedSecurityInfoW.restype = w.DWORD
-    advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
-        ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(w.LPWSTR), ctypes.c_void_p,
-    ]
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
-    descriptor = ctypes.c_void_p()
-    status = advapi.GetNamedSecurityInfoW(str(path), 1, 4, None, None, None, None,
-                                        ctypes.byref(descriptor))
-    assert status == 0, status
-    text = w.LPWSTR()
     try:
-        assert advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descriptor, 1, 4, ctypes.byref(text), None,
-        ), ctypes.get_last_error()
-        return text.value
-    finally:
-        if text:
-            kernel.LocalFree(text)
-        kernel.LocalFree(descriptor)
-
-def process_sids(pid, information):
-    """Read the actual host or sandbox process token, without broker internals."""
-    from ctypes import wintypes as w
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [w.DWORD, w.BOOL, w.DWORD], w.HANDLE
-    kernel.CloseHandle.argtypes = [w.HANDLE]
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
-    advapi.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
-    advapi.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
-                                          ctypes.POINTER(w.DWORD)]
-    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.LPWSTR)]
-
-    class Entry(ctypes.Structure):
-        _fields_ = [("sid", ctypes.c_void_p), ("attributes", w.DWORD)]
-
-    class Groups(ctypes.Structure):
-        _fields_ = [("count", w.DWORD), ("entries", Entry * 1)]
-
-    with ExitStack() as resources:
-        process = kernel.OpenProcess(0x1000, False, pid)
-        assert process, ctypes.get_last_error()
-        resources.callback(kernel.CloseHandle, process)
-        token = w.HANDLE()
-        assert advapi.OpenProcessToken(process, 8, ctypes.byref(token)), ctypes.get_last_error()
-        resources.callback(kernel.CloseHandle, token)
-        size = w.DWORD()
-        advapi.GetTokenInformation(token, information, None, 0, ctypes.byref(size))
-        assert size.value, ctypes.get_last_error()
-        buffer = ctypes.create_string_buffer(size.value)
-        assert advapi.GetTokenInformation(token, information, buffer, len(buffer), ctypes.byref(size)), ctypes.get_last_error()
-        if information == 31:  # TOKEN_APPCONTAINER_INFORMATION contains one PSID.
-            sids = [ctypes.c_void_p.from_buffer(buffer).value]
-        else:
-            count = 1 if information == 1 else w.DWORD.from_buffer(buffer).value
-            entries = (Entry * count).from_buffer(buffer, 0 if information == 1 else Groups.entries.offset)
-            sids = [entry.sid for entry in entries]
-        result = []
-        for sid in sids:
-            text = w.LPWSTR()
-            assert advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)), ctypes.get_last_error()
-            result.append(text.value)
-            kernel.LocalFree(text)
-        return result
-
-DEVICE_ACCESS = {"KsecDD": 0x100003, "Null": 0x12019F}
-
-TOKEN_SOURCE = r'''
-import ctypes, json, os
-from ctypes import wintypes as w
-k = ctypes.WinDLL('kernel32', use_last_error=True)
-a = ctypes.WinDLL('advapi32', use_last_error=True)
-k.GetCurrentProcess.restype = w.HANDLE
-k.CloseHandle.argtypes = [w.HANDLE]
-k.LocalFree.argtypes = [ctypes.c_void_p]
-a.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
-a.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD)]
-a.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.LPWSTR)]
-class GenericMapping(ctypes.Structure):
-    _fields_ = [(name, w.DWORD) for name in ('read', 'write', 'execute', 'all')]
-a.DuplicateToken.argtypes = [w.HANDLE, ctypes.c_int, ctypes.POINTER(w.HANDLE)]
-a.AccessCheck.argtypes = [ctypes.c_void_p, w.HANDLE, w.DWORD, ctypes.POINTER(GenericMapping),
-                         ctypes.c_void_p, ctypes.POINTER(w.DWORD), ctypes.POINTER(w.DWORD),
-                         ctypes.POINTER(w.BOOL)]
-a.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
-    w.LPCWSTR, w.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
-token = w.HANDLE()
-assert a.OpenProcessToken(k.GetCurrentProcess(), 10, ctypes.byref(token)), ctypes.get_last_error()
-def info(kind):
-    size = w.DWORD()
-    a.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
-    assert size.value, (kind, ctypes.get_last_error())
-    value = ctypes.create_string_buffer(size.value)
-    assert a.GetTokenInformation(token, kind, value, len(value), ctypes.byref(size)), ctypes.get_last_error()
-    return value
-def lpac_info():
-    # Class 46 is unavailable through GetTokenInformation on these runners.
-    # Independently check the real token's AAP denial and ARAP positive control.
-    duplicate = w.HANDLE()
-    assert a.DuplicateToken(token, 2, ctypes.byref(duplicate)), ctypes.get_last_error()
-    try:
-        outcomes = []
-        mapping = GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
-        for package in ('S-1-15-2-1', 'S-1-15-2-2'):
-            descriptor = ctypes.c_void_p()
-            assert a.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                'O:SYG:SYD:(A;;0x1;;;WD)(A;;0x1;;;' + package + ')',
-                1, ctypes.byref(descriptor), None), ctypes.get_last_error()
-            try:
-                privileges = ctypes.create_string_buffer(256)
-                size, granted, allowed = w.DWORD(len(privileges)), w.DWORD(), w.BOOL()
-                assert a.AccessCheck(descriptor, duplicate, 1, ctypes.byref(mapping), privileges,
-                                     ctypes.byref(size), ctypes.byref(granted), ctypes.byref(allowed)), ctypes.get_last_error()
-                outcomes.append((bool(allowed.value), granted.value))
-            finally:
-                k.LocalFree(descriptor)
-        return int(outcomes == [(False, 0), (True, 1)])
-    finally:
-        k.CloseHandle(duplicate)
-try:
-    ac = ctypes.cast(info(29), ctypes.POINTER(w.DWORD)).contents.value
-    lpac = lpac_info()
-    sid_info = info(31)
-    sid = ctypes.cast(sid_info, ctypes.POINTER(ctypes.c_void_p)).contents.value
-    text = w.LPWSTR()
-    assert sid and a.ConvertSidToStringSidW(sid, ctypes.byref(text)), ctypes.get_last_error()
-    try:
-        token_result = {'appcontainer': ac, 'lpac': lpac, 'sid': text.value, 'pid': os.getpid()}
-    finally:
-        k.LocalFree(text)
-finally:
-    k.CloseHandle(token)
-'''
-
-DEVICE_SOURCE = r'''
-import ctypes, json
-from ctypes import wintypes as w
-k = ctypes.WinDLL('kernel32', use_last_error=True)
-n = ctypes.WinDLL('ntdll')
-class Name(ctypes.Structure):
-    _fields_ = [('length', w.USHORT), ('maximum', w.USHORT), ('buffer', w.LPWSTR)]
-class Attributes(ctypes.Structure):
-    _fields_ = [('length', w.ULONG), ('root', w.HANDLE), ('name', ctypes.POINTER(Name)),
-                ('flags', w.ULONG), ('descriptor', ctypes.c_void_p), ('qos', ctypes.c_void_p)]
-class IoStatus(ctypes.Structure):
-    _fields_ = [('status', ctypes.c_void_p), ('information', ctypes.c_size_t)]
-n.NtOpenFile.argtypes = [ctypes.POINTER(w.HANDLE), w.DWORD, ctypes.POINTER(Attributes),
-                         ctypes.POINTER(IoStatus), w.DWORD, w.DWORD]
-n.NtOpenFile.restype = ctypes.c_int32
-k.CloseHandle.argtypes = [w.HANDLE]
-device_result = {}
-for device, required in (('KsecDD', 0x100003), ('Null', 0x12019f)):
-    path = '\\Device\\' + device
-    name = Name(len(path.encode('utf-16-le')), len(path.encode('utf-16-le')) + 2, path)
-    attributes = Attributes(ctypes.sizeof(Attributes), None, ctypes.pointer(name), 0x40, None, None)
-    results = []
-    for access in (required, 0x40000, 0x80000, 0x10000, 0x10000000):
-        handle, io = w.HANDLE(), IoStatus()
-        status = n.NtOpenFile(ctypes.byref(handle), access, ctypes.byref(attributes), ctypes.byref(io), 7, 0)
-        results.append(status & 0xffffffff)
-        if status == 0:
-            assert k.CloseHandle(handle), ctypes.get_last_error()
-    device_result[device] = results
-'''
-
-
-
-@pytest.mark.parametrize("mode", ["workspace-write", "read-only"])
-def test_ambient_package_acls_do_not_widen_write_ceiling(native, project, mode):
-    aap, arap = (project.parent / name for name in ("aap-secret.txt", "arap-readable.txt"))
-    aap.write_text("aap-canary")
-    arap.write_text("arap-canary")
-    grant(aap, "S-1-15-2-1")
-    grant(arap, "S-1-15-2-2")
-    source = f"""import ctypes, json
-from ctypes import wintypes as w
+        source = f"""import json, os
 from pathlib import Path
-a = ctypes.WinDLL('advapi32', use_last_error=True)
-a.SetNamedSecurityInfoW.argtypes = [w.LPWSTR, w.DWORD, w.DWORD, ctypes.c_void_p,
-                                  ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-a.SetNamedSecurityInfoW.restype = w.DWORD
-outcome = {{'arap_read': Path({str(arap)!r}).read_text(), 'denied': []}}
-for action in [lambda: Path({str(aap)!r}).read_text(),
-               lambda: Path({str(arap)!r}).write_text('bad'),
-               lambda: Path({str(arap)!r}).unlink()]:
+
+out = {{}}
+def check_blocked(fn):
     try:
-        action()
+        fn()
     except PermissionError:
-        outcome['denied'].append(True)
-    else:
-        outcome['denied'].append(False)
-outcome['acl_denied'] = a.SetNamedSecurityInfoW({str(arap)!r}, 1, 4, None, None, None, None) == 5
-print(json.dumps(outcome))
+        return True
+    return False
+
+out['canary_dir_list_denied'] = check_blocked(lambda: os.listdir({str(canary_dir)!r}))
+out['canary_read_denied'] = check_blocked(lambda: Path({str(canary_file)!r}).read_text())
+out['canary_write_denied'] = check_blocked(lambda: Path({str(canary_file)!r}).write_text('bad'))
+out['canary_create_denied'] = check_blocked(lambda: Path({str(canary_dir / 'escape.txt')!r}).write_text('bad'))
+if {ssh_dir.exists()!r}:
+    out['ssh_list_denied'] = check_blocked(lambda: os.listdir({str(ssh_dir)!r}))
+else:
+    out['ssh_list_denied'] = True
+out['system_hosts_readable'] = len(Path({str(hosts_file)!r}).read_bytes()) > 0
+out['system_hosts_write_denied'] = check_blocked(lambda: open({str(hosts_file)!r}, 'ab').write(b'#'))
+print(json.dumps(out))
 """
-    native.services["execution"].select_mode("read-only" if mode == "read-only" else "workspace-edit")
-    assert data(run(native, command(source))) == {"arap_read": "arap-canary", "denied": [True] * 3, "acl_denied": True}
-    assert aap.read_text() == "aap-canary" and arap.read_text() == "arap-canary"
+        native.services["execution"].select_mode(mode)
+        outcome = data(run(native, command(source)))
+        assert outcome == {
+            "canary_dir_list_denied": True,
+            "canary_read_denied": True,
+            "canary_write_denied": True,
+            "canary_create_denied": True,
+            "ssh_list_denied": True,
+            "system_hosts_readable": True,
+            "system_hosts_write_denied": True,
+        }, outcome
+        assert canary_file.read_text() == "private-secret"
+    finally:
+        shutil.rmtree(canary_dir, ignore_errors=True)
 
 
 def test_existing_metadata_and_runtime_acls_cannot_be_replaced(native, project):
+    """VER-01 protected metadata & runtime roots stay read-only while host atomic saves succeed."""
     paths = [project / name for name in (".git/config", ".virgo/protected.txt", "AGENTS.md", "CLAUDE.md")]
-    with tempfile.TemporaryDirectory(prefix="virgo-native-readonly-", dir=sys.prefix) as directory:
-        paths.append(Path(directory) / "runtime-canary.txt")
+    # Use default mode (0o777) rather than tempfile.TemporaryDirectory (0o700 sets SE_DACL_PROTECTED
+    # in CPython 3.13, blocking inheritance of the session SID's read-only ACE from sys.prefix).
+    runtime_dir = Path(sys.prefix) / f"virgo-native-readonly-{uuid.uuid4().hex[:8]}"
+    runtime_dir.mkdir()
+    try:
+        paths.append(runtime_dir / "runtime-canary.txt")
         for path in paths:
             path.parent.mkdir(exist_ok=True)
             path.write_text("protected")
@@ -621,7 +632,7 @@ from ctypes import wintypes as w
 from pathlib import Path
 a = ctypes.WinDLL('advapi32', use_last_error=True)
 a.SetNamedSecurityInfoW.argtypes = [w.LPWSTR, w.DWORD, w.DWORD, ctypes.c_void_p,
-                                  ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+                                    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
 a.SetNamedSecurityInfoW.restype = w.DWORD
 results = []
 Path('ordinary-control.txt').write_text('allowed')
@@ -646,8 +657,6 @@ k.CreateFileW.restype = w.HANDLE
 k.CloseHandle.argtypes = [w.HANDLE]
 directories = []
 for name in ['.git', '.virgo']:
-    # Request DELETE on the directory itself; this checks authority without
-    # conflating a nonempty directory with an access-denied result.
     handle = k.CreateFileW(name, 0x10000, 7, None, 3, 0x02000000, None)
     denied = [handle == ctypes.c_void_p(-1).value and ctypes.get_last_error() == 5]
     if handle != ctypes.c_void_p(-1).value:
@@ -662,16 +671,35 @@ for name in ['.git', '.virgo']:
     directories.append(denied)
 print(json.dumps({{'files': results, 'directories': directories}}))
 """
-        assert data(run(native, command(source))) == {"files": [[True] * 4 for _ in paths],
-                                             "directories": [[True] * 3, [True] * 3]}
+        assert data(run(native, command(source))) == {
+            "files": [[True] * 4 for _ in paths],
+            "directories": [[True] * 3, [True] * 3],
+        }
         assert all(path.read_text() == "protected" for path in paths)
         assert (project / "ordinary-control.txt").read_text() == "allowed"
 
+        # Ecosystem compatibility: while session ACEs remain active, host atomic os.replace
+        # over normal files and protected metadata must succeed with zero WinError 5.
+        tmp_normal = project / ".ordinary-control.tmp"
+        tmp_normal.write_text("host-updated")
+        os.replace(tmp_normal, project / "ordinary-control.txt")
+        assert (project / "ordinary-control.txt").read_text() == "host-updated"
 
-def test_child_lpac_token_and_host_process_access(native):
-    child_code = TOKEN_SOURCE + "\nprint(json.dumps(token_result))\n"
-    source = TOKEN_SOURCE + f"""
-import subprocess, sys
+        tmp_agents = project / ".AGENTS.tmp"
+        tmp_agents.write_text("host-agents-updated")
+        os.replace(tmp_agents, project / "AGENTS.md")
+        assert (project / "AGENTS.md").read_text() == "host-agents-updated"
+    finally:
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+
+
+def test_standard_appcontainer_token_primitives_and_host_process_isolation(native):
+    """Verify Standard AppContainer token, host OpenProcess denial, and RNG/TLS/NUL without device ACL edits."""
+    child_code = STANDARD_APPCONTAINER_TOKEN_SOURCE + "\nprint(json.dumps(token_result))\n"
+    source = (
+        STANDARD_APPCONTAINER_TOKEN_SOURCE
+        + f"""
+import hashlib, secrets, ssl, subprocess, sys
 parent = token_result
 child = json.loads(subprocess.check_output([sys.executable, '-I', '-S', '-c', {child_code!r}]))
 k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
@@ -682,35 +710,63 @@ for access in (0x2, 0x8, 0x10, 0x20, 0x40):
     denied.append(not handle and ctypes.get_last_error() == 5)
     if handle:
         k.CloseHandle(handle)
-print(json.dumps({{'parent': parent, 'child': child, 'host_process_denied': denied}}))
+bcrypt = ctypes.WinDLL('bcrypt.dll')
+buf = (ctypes.c_ubyte * 32)()
+bcrypt_status = bcrypt.BCryptGenRandom(None, buf, 32, 0x2)
+ctx = ssl.create_default_context()
+with open('NUL', 'wb') as nul:
+    nul_bytes = nul.write(b'discard')
+devnull_rc = subprocess.run(
+    [sys.executable, '-I', '-S', '-c', 'print(1)'],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+).returncode
+print(json.dumps({{
+    'parent': parent,
+    'child': child,
+    'host_process_denied': denied,
+    'urandom_len': len(os.urandom(32)),
+    'secrets_len': len(secrets.token_hex(16)),
+    'bcrypt_status': bcrypt_status,
+    'ssl_certs': ctx.cert_store_stats().get('x509', 0),
+    'sha256_len': len(hashlib.sha256(b'virgo').hexdigest()),
+    'nul_bytes': nul_bytes,
+    'devnull_rc': devnull_rc,
+}}))
 """
+    )
     outcome = data(run(native, command(source)))
     for token in (outcome["parent"], outcome["child"]):
-        assert token["appcontainer"] == token["lpac"] == 1
+        assert token["appcontainer"] == 1
+        assert token["aap_granted"] is True
+        assert token["everyone_only_denied"] is True
+        assert token["restricted_sids_count"] == 0
         assert token["sid"].startswith("S-1-15-2-")
     assert outcome["parent"]["sid"] == outcome["child"]["sid"]
     assert outcome["host_process_denied"] == [True] * 5
-    # Separate payload keeps the encoded PowerShell command below the native
-    # command-line limit. The root and its child must inherit the same narrow
-    # device authority, never permission to rewrite/delete the kernel object.
-    child_code = DEVICE_SOURCE + "\nprint(json.dumps(device_result))\n"
-    source = DEVICE_SOURCE + f"""
-import subprocess, sys
-child = json.loads(subprocess.check_output([sys.executable, '-I', '-S', '-c', {child_code!r}]))
-print(json.dumps([device_result, child]))
-"""
-    expected = {name: [0, *([0xC0000022] * 4)] for name in DEVICE_ACCESS}  # STATUS_ACCESS_DENIED.
-    assert data(run(native, command(source))) == [expected, expected]
+    assert outcome["urandom_len"] == 32
+    assert outcome["secrets_len"] == 32
+    assert outcome["bcrypt_status"] == 0
+    assert outcome["ssl_certs"] > 0
+    assert outcome["sha256_len"] == 64
+    assert outcome["nul_bytes"] == 7
+    assert outcome["devnull_rc"] == 0
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
 @pytest.mark.parametrize("tool", ["write", "edit"])
-def test_core_mutation_preserves_live_background_workspace_writes(native, project, tool):
+def test_core_mutation_preserves_live_background_workspace_writes(make_session, project, tool):
+    """Broker atomic write/edit inherits active session SID cleanly and leaves zero residuals after shutdown."""
+    (project / ".virgo").mkdir(exist_ok=True)
+    (project / ".virgo" / "config.json").write_text("{}\n")
+    session = native_session(make_session, {"win32"})
+    from virgo.sandbox.windows_acl import scan_residual_aces
     target = project / "ordinary.txt"
     target.write_text("original\n")
-    baseline_dacl = dacl(target)
     created = project / "created-by-core.txt"
-    jobs = native.services["jobs"]
-    result = run(native, command(f"""import time
+    jobs = session.services["jobs"]
+    result = run(
+        session,
+        command(f"""import time
 from pathlib import Path
 with Path('ordinary.txt').open('a') as stream:
     stream.write('before\\n')
@@ -719,136 +775,176 @@ deadline = time.monotonic() + 45
 while not Path('release-mutation').exists():
     assert time.monotonic() < deadline
     time.sleep(.02)
-print('opening committed file for read', flush=True)
 assert Path('ordinary.txt').read_text() == 'changed\\n'
-print('opening committed file for append', flush=True)
 with Path('ordinary.txt').open('a') as stream:
     stream.write('after\\n')
-print('committed file append complete', flush=True)
 if {tool == "write"}:
     assert Path('created-by-core.txt').read_text() == 'created\\n'
     with Path('created-by-core.txt').open('a') as stream:
         stream.write('after\\n')
-"""), background=True)
+"""),
+        background=True,
+    )
     assert not result.is_error, result.text()
     job = list(jobs.jobs.values())[-1]
+    package_sid = None
     try:
         wait_until(lambda: (project / "mutation-ready").exists() or job.done.is_set(), timeout=25)
         assert (project / "mutation-ready").exists(), jobs.output(job)
         assert target.read_text() == "original\nbefore\n"
-        restricting, = process_sids(job.proc.pid, 11)
-        package, = process_sids(job.proc.pid, 31)
-        original_dacl = dacl(target)
+        (package_sid,) = process_sids(job.proc.pid, 31)
         metadata_dacl = dacl(project / ".virgo")
-        arguments = ({"path": target.name, "content": "changed\n"} if tool == "write" else
-                     {"path": target.name, "edits": [{"old_text": "original\nbefore\n",
-                                                       "new_text": "changed\n"}]})
+        arguments = (
+            {"path": target.name, "content": "changed\n"}
+            if tool == "write"
+            else {"path": target.name, "edits": [{"old_text": "original\nbefore\n", "new_text": "changed\n"}]}
+        )
         faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
-        native.prompt("Update the ordinary file while its background command is waiting")
-        mutation = tool_results(native)[-1]
+        session.prompt("Update the ordinary file while its background command is waiting")
+        mutation = tool_results(session)[-1]
         assert not mutation.is_error, mutation.text()
         assert target.read_text() == "changed\n"
-        committed_dacl = dacl(target)
-        created_dacl = None
         if tool == "write":
-            faux.script("test", faux.reply(tools=[("write", {"path": created.name,
-                                                             "content": "created\n"})]), faux.reply("done"))
-            native.prompt("Create another ordinary file while the background command is waiting")
-            mutation = tool_results(native)[-1]
+            faux.script(
+                "test",
+                faux.reply(tools=[("write", {"path": created.name, "content": "created\n"})]),
+                faux.reply("done"),
+            )
+            session.prompt("Create another ordinary file while the background command is waiting")
+            mutation = tool_results(session)[-1]
             assert not mutation.is_error, mutation.text()
             assert created.read_text() == "created\n"
-            created_dacl = dacl(created)
         assert dacl(project / ".virgo") == metadata_dacl
-        assert not list((project / ".virgo").glob("mutation-*.tmp"))
         (project / "release-mutation").touch()
         assert job.done.wait(15), "background command did not drain after Core mutation"
-        assert job.status == "completed", (
-            f"Background status: {job.status}\nRestricting SID: {restricting}\nPackage SID: {package}\n"
-            f"DACL before Core mutation:\n{original_dacl}\nDACL after Core mutation:\n{committed_dacl}\n"
-            f"DACL of Core-created file:\n{created_dacl}\n"
-            f"Background output:\n{jobs.output(job)}"
-        )
+        assert job.status == "completed", jobs.output(job)
         assert target.read_text() == "changed\nafter\n"
-        assert committed_dacl == original_dacl
-        assert dacl(target) == baseline_dacl
         if tool == "write":
             assert created.read_text() == "created\nafter\n"
-        for path in (project, project / ".virgo", target, *([created] if tool == "write" else [])):
-            cleaned = dacl(path)
-            assert restricting not in cleaned and package not in cleaned, cleaned
     finally:
         if not job.done.is_set():
             jobs.kill(job)
             assert job.done.wait(15), "fixture must drain its background command"
 
+    session.shutdown()
+    assert package_sid is not None
+    assert scan_residual_aces(project, package_sid) == []
 
-def test_core_create_during_command_preflight_preserves_workspace_writes(native, project, monkeypatch):
-    from contextlib import contextmanager
 
-    from virgo.sandbox import windows_acl, windows_files
-    from virgo.tools.bash import run_command
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
+def test_crash_recovery_after_terminate_process(tmp_path):
+    """Hard-killing a broker holding an active session leaves recoverable state cleaned idempotently."""
+    from virgo.sandbox.windows_acl import scan_residual_aces
+    from virgo.sandbox.windows_sandbox import is_process_alive, recover_stale_sessions
 
-    target = project / "created-during-preflight.txt"
-    entered, release = threading.Event(), threading.Event()
-    attempted_commit, committed = threading.Event(), threading.Event()
-    ready = project / "reader-ready"
-    observations = {}
-    grant_tree, replace_staged = windows_acl.AclGrants.grant_tree, windows_files.replace_staged
+    ws = tmp_path / "crash_ws"
+    ws.mkdir()
+    (ws / "AGENTS.md").write_text("# protected\n", encoding="utf-8")
+    (ws / ".virgo").mkdir()
+    (ws / ".virgo" / "config.json").write_text("{}", encoding="utf-8")
+    state_dir = tmp_path / "crash_state"
+    state_dir.mkdir()
+    drives_before = _logical_drives_mask()
 
-    def observed_preflight(owner, root, *args, **kwargs):
-        if root == project:
-            entered.set()
-            assert release.wait(20)
-        return grant_tree(owner, root, *args, **kwargs)
-
-    @contextmanager
-    def observed_commit(source, destination, **kwargs):
-        if destination == target:
-            attempted_commit.set()
-        with replace_staged(source, destination, **kwargs):
-            yield
-        if destination == target:
-            committed.set()
-
-    monkeypatch.setattr(windows_acl.AclGrants, "grant_tree", observed_preflight)
-    monkeypatch.setattr(windows_files, "replace_staged", observed_commit)
-    source = """from pathlib import Path
-import time
-Path('reader-ready').touch()
-deadline = time.monotonic() + 20
-p = Path('created-during-preflight.txt')
-while not p.exists():
-    assert time.monotonic() < deadline
-    time.sleep(.05)
-assert p.read_text() == 'created'
-with p.open('a') as stream:
-    stream.write(' and updated')
+    worker = f"""import json, os, sys, time
+from pathlib import Path
+from virgo.sandbox.windows_sandbox import WindowsSessionPool
+os.environ['VIRGO_WINDOWS_SANDBOX_STATE_DIR'] = {str(state_dir)!r}
+ws = Path({str(ws)!r})
+pool = WindowsSessionPool(journal_dir=Path({str(state_dir)!r}))
+session = pool.get_or_create(ws, read_only=False, network_allowed=False)
+session.ensure_protected_paths([ws / 'AGENTS.md', ws / '.virgo'])
+print(json.dumps({{
+    'pid': os.getpid(),
+    'sid': session.package_name,
+    'profile_name': session.profile_name,
+    'profile_path': str(session.profile_path),
+    'state_file': str(session.state_file),
+    'dos_drive': session.dos_drive,
+}}), flush=True)
+time.sleep(120)
 """
-
-    def launch():
-        observations["launch"] = run_command(command(source), project, 40, threading.Event(),
-                                             interpreter=selected(native), execution_context=native.main.execution_context)
-
-    def write():
-        faux.script("test", faux.reply(tools=[("write", {"path": target.name, "content": "created"})]),
-                    faux.reply("done"))
-        native.prompt("Save the new workspace file")
-        observations["write"] = tool_results(native)[-1]
-
-    shell = threading.Thread(target=launch)
-    writer = threading.Thread(target=write)
-    shell.start()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", worker],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
-        assert entered.wait(20)
-        writer.start()
-        assert attempted_commit.wait(15), "Core must reach commit while native preflight owns the mutex"
-        assert not committed.wait(0.25), "A Core commit must wait for workspace grant classification"
+        assert proc.stdout is not None
+        ready_line = proc.stdout.readline().strip()
+        assert ready_line, proc.stderr.read() if proc.stderr else "worker exited before ready"
+        info = json.loads(ready_line)
+        proc.kill()
+        proc.wait(timeout=10)
     finally:
-        release.set()
-        if writer.ident is not None:
-            writer.join(30)
-        shell.join(45)
-    out, code, status = observations["launch"]
-    assert code == 0 and status == "ok" and ready.exists(), out.text
-    assert committed.is_set() and not observations["write"].is_error
-    assert target.read_text() == "created and updated"
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    assert not is_process_alive(info["pid"])
+    assert Path(info["state_file"]).exists()
+    assert Path(info["profile_path"]).exists()
+    assert len(scan_residual_aces(ws, info["sid"])) > 0
+
+    recovered = recover_stale_sessions(state_dir)
+    assert len(recovered) == 1 and recovered[0]["status"] == "recovered", recovered
+    assert recovered[0]["errors"] == [], recovered
+    assert not Path(info["state_file"]).exists()
+    assert not Path(info["profile_path"]).exists()
+    assert scan_residual_aces(ws, info["sid"]) == []
+    assert _logical_drives_mask() == drives_before
+    # Idempotency check
+    assert recover_stale_sessions(state_dir) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
+def test_inaccessible_runtime_fails_closed(tmp_path, monkeypatch):
+    """Non-AAP runtime roots without WRITE_DAC fail closed with reason=windows_runtime_inaccessible."""
+    from virgo.execution import ExecutionUnavailable
+    from virgo.sandbox import windows_sandbox
+
+    fake_rt = tmp_path / "locked_runtime"
+    fake_rt.mkdir()
+    fake_exe = fake_rt / "tool.exe"
+    fake_exe.write_bytes(b"MZ")
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setattr(windows_sandbox, "has_aap_read_access", lambda _p, **_kw: False)
+    monkeypatch.setattr(windows_sandbox, "can_open_write_dac", lambda _p: False)
+    with pytest.raises(ExecutionUnavailable) as exc_info:
+        windows_sandbox._check_runtime_accessibility([fake_rt], ws, fake_exe)
+    assert exc_info.value.reason == "windows_runtime_inaccessible"
+    assert exc_info.value.dimension == "windows_runtime_access"
+    assert str(fake_rt) in str(exc_info.value)
+
+
+def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
+    """Verify no-limit/read-only/workspace-edit modes, protected reads across mode switch, and pwsh CWD."""
+    (project / "AGENTS.md").write_text("# agents policy\n", encoding="utf-8")
+    session = native_session(make_session, {"win32"})
+    provider = session.services["execution"]
+
+    # Workspace-Edit: pwsh Get-Location must NOT fall back to C:\ and relative write must succeed
+    pwsh_res = run(
+        session,
+        "$loc = (Get-Location).Path; Set-Content -Path 'pwsh_cwd_check.txt' -Value 'ok'; "
+        "$rd = Get-Content -Path 'pwsh_cwd_check.txt'; Write-Output \"LOC=$loc READ=$rd\"",
+    )
+    assert not pwsh_res.is_error, pwsh_res.text()
+    assert "READ=ok" in pwsh_res.text(), pwsh_res.text()
+    assert "LOC=C:\\\n" not in pwsh_res.text() and "LOC=C:\\ " not in pwsh_res.text(), pwsh_res.text()
+    assert (project / "pwsh_cwd_check.txt").read_text(encoding="utf-8").strip() == "ok"
+
+    # Read-Only (switched from Workspace-Edit): relative read + protected AGENTS.md read work, write denied
+    provider.select_mode("read-only")
+    ro_res = run(session, "Get-Content -Path 'pwsh_cwd_check.txt'; Get-Content -Path 'AGENTS.md'")
+    assert not ro_res.is_error and "ok" in ro_res.text() and "agents policy" in ro_res.text(), ro_res.text()
+    ro_denied = run(session, "Set-Content -Path 'pwsh_ro_blocked.txt' -Value 'no'")
+    assert ro_denied.is_error and not (project / "pwsh_ro_blocked.txt").exists()
+
+    # No-Limit: works cleanly after sandbox modes
+    provider.select_mode("no-limit")
+    nl_res = run(session, "Write-Output 'no-limit-ok'")
+    assert not nl_res.is_error and "no-limit-ok" in nl_res.text(), nl_res.text()

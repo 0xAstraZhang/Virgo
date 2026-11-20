@@ -301,7 +301,7 @@ def evaluate_scale_budgets(
     max_cold_start_ms: float = DEFAULT_MAX_COLD_START_MS,
     max_read_ms: float = DEFAULT_MAX_READ_MS,
 ) -> dict:
-    """Enforce S5-04 performance budgets on Linux and macOS (cold start <= 5s, O(1) Read overhead)."""
+    """Enforce S5-04 performance budgets on Tier 1 platforms (cold start <= 5s, O(1) Read overhead)."""
     violations: list[str] = []
     if not small_samples or not all(s.get("success") for s in small_samples):
         violations.append("Small-workspace samples did not all succeed")
@@ -362,16 +362,6 @@ def main():
         print(json.dumps(sample(args)))
         return
     if args.check_budgets:
-        if sys.platform == 'win32':
-            skipped = {
-                'platform': platform.platform(), 'mode': args.mode,
-                'budget_skipped': True,
-                'reason': 'Native Windows is experimental (§6.2); S5-04 performance budgets apply to Linux and macOS.',
-            }
-            if args.output:
-                checkpoint(args.output, skipped)
-            print(json.dumps(skipped, indent=2))
-            return 0
         read_repeats = max(args.read_repeats, 10)
         base_cmd = [
             sys.executable, str(Path(__file__).resolve()), '--worker',

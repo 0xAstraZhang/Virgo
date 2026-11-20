@@ -77,11 +77,6 @@ def make_session(project):
         # Migration tests opt out by supplying sandbox/permission configuration.
         if not {"execution", "sandbox", "permissions"}.intersection(configured):
             configured["execution"] = {"mode": "no-limit"}
-            home = os.environ.get("VIRGO_HOME")
-            if home:
-                marker = Path(home) / "migrations" / "windows-wsl2-hint"
-                marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.touch(exist_ok=True)
         s = AgentSession(
             kw.pop("cwd", project),
             ui=ui or RecordingUI(),
@@ -128,7 +123,7 @@ def broker_session(make_session, monkeypatch, tmp_path):
 
     monkeypatch.setattr("virgo.sandbox.native.platform_backend", lambda: ("not-launched", tmp_path))
     if sys.platform == "win32":
-        monkeypatch.setattr("virgo.sandbox.windows_sandbox.precheck_experimental_sandbox", lambda: None)
+        monkeypatch.setattr("virgo.sandbox.windows_sandbox.precheck_windows_sandbox", lambda: None)
 
     def unavailable(*args, **kwargs):
         raise ExecutionUnavailable("Native backend deliberately unavailable in broker test", reason="backend_unavailable")

@@ -23,8 +23,8 @@ def is_native_windows() -> bool:
 
 
 def default_execution_mode() -> str:
-    """Native Windows defaults to No-Limit while its LPAC backend is experimental."""
-    return "no-limit" if is_native_windows() else "workspace-edit"
+    """Default execution mode across all Tier 1 platforms (Linux, macOS, Windows)."""
+    return "workspace-edit"
 
 
 def parse_network(value: object) -> bool:
@@ -148,7 +148,6 @@ class ExecutionMode:
     id: str
     name: str
     policy: PermissionPolicy
-    experimental_on_windows: bool = False
 
     @property
     def web_allowed(self) -> bool:
@@ -188,12 +187,10 @@ HOST_MODE = ExecutionMode(
 READ_ONLY_MODE = ExecutionMode(
     "read-only", "Read-Only",
     PermissionPolicy((PathRule(Path("."), "read"),), False),
-    experimental_on_windows=True,
 )
 WORKSPACE_EDIT_MODE = ExecutionMode(
     "workspace-edit", "Workspace-Edit",
     PermissionPolicy((PathRule(Path("."), "write"),), True),
-    experimental_on_windows=True,
 )
 DEFAULT_MODES = {mode.id: mode for mode in (READ_ONLY_MODE, WORKSPACE_EDIT_MODE, HOST_MODE)}
 

@@ -31,14 +31,13 @@ from ..ai.types import (
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
-from ..execution_policy import is_native_windows
 from ..i18n import Translator, normalize_language
 from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
 from .commands import Commands, expand_template, load_templates, parse_frontmatter, register_builtins
 from .diagnostics import DiagnosticLog
-from .execution import _WINDOWS_EXPERIMENTAL_NOTE, install_execution
+from .execution import install_execution
 from .extensions import (
     EventBus,
     Handled,
@@ -184,7 +183,6 @@ class AgentSession:
                 "previously saved approvals must be granted again.",
                 "warn",
             )
-        self._warn_windows_sandbox()
         for warning in self.settings.migration_warnings:
             self.ui.print(warning, "warn")
         self._warn_retired_data()
@@ -196,27 +194,6 @@ class AgentSession:
             self._catalog_refresh_done.set()
 
     # -- diagnostics -----------------------------------------------------------
-    def _warn_windows_sandbox(self) -> None:
-        """Show the native Windows WSL2 hint once in No-Limit, or mark experimental sandbox modes."""
-        if not is_native_windows():
-            return
-        if self.settings.get("execution.mode") != "no-limit":
-            self.ui.print(_WINDOWS_EXPERIMENTAL_NOTE, "warn")
-            return
-        marker = self.paths.user / "migrations" / "windows-wsl2-hint"
-        if marker.exists():
-            return
-        self.ui.print(
-            "Native Windows defaults to No-Limit because the native Windows sandbox is experimental. "
-            "For full sandbox support on Windows, we recommend running Virgo inside WSL2.",
-            "warn",
-        )
-        try:
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.touch(exist_ok=True)
-        except OSError as error:
-            self.report_error(error, phase="windows.notice", notify=False)
-
     def _warn_retired_data(self):
         """Only inspect existence; old files are neither parsed nor migrated."""
         retired = ("schedules.json", "tasks", "runs", "workflows", "memory", "MEMORY.md", "worktrees")

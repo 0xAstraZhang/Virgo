@@ -1,67 +1,186 @@
-"""Windows LPAC and a per-command write-restricted token.
+"""Native Windows Standard AppContainer sandbox with session-level single SID.
 
-The lowbox enforces network/process isolation and object-ACL read access. Reads
-also include Windows' ambient LPAC grants; this is not a filesystem namespace.
-A separate, unique restricting SID is the only authority in the additional
-write check. Neither approval nor an environment variable replaces these APIs.
-Only the existing WindowsProcess adapter launches and supervises processes.
+Replaces the legacy Administrator-only LPAC backend with Standard AppContainer:
+- Retains ALL APPLICATION PACKAGES (S-1-15-2-1); never sets LPAC opt-out.
+- Launches via CreateProcessW (no CreateProcessAsUserW, no restricted token,
+  no WRITE_RESTRICTED, no device DACL edits, no admin mutex, no WindowStation
+  or Desktop DACL mutations).
+- Reuses one AppContainer profile and SID per (workspace, mode) session with
+  single-call OS-propagated SetNamedSecurityInfoW inheritable ACEs for O(1)
+  per-command launch overhead.
+- Maps a session-local DefineDosDeviceW virtual drive when workspace ancestors
+  (such as C:\\Users) lack S-1-15-2-1 read access so pwsh, powershell.exe,
+  cmd dir, and pytest work cleanly without ancestor-ACL failures.
+- Persists an atomic write-ahead JSON session journal for deterministic crash
+  recovery via recover_stale_sessions().
 """
 from __future__ import annotations
 
+import atexit
 import ctypes
-import struct
+import json
+import ntpath
+import os
+import shutil
 import subprocess
 import sys
+import threading
 import uuid
+import weakref
+from collections.abc import Sequence
 from contextlib import ExitStack
 from ctypes import wintypes as w
-from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+from ..execution_policy import PROTECTED_NAMES
 from .platform import SandboxCancelled, SandboxProcessError, SandboxUnavailable
-from .windows_files import normalize_path, open_path
+from .windows_acl import (
+    ALL_APPLICATION_PACKAGES_SID,
+    ancestor_lacks_aap,
+    can_open_write_dac,
+    capture_dacl_snapshot,
+    grant_root_access,
+    has_aap_read_access,
+    is_dacl_protected,
+    is_protected_readonly_for_sid,
+    protect_readonly_path,
+    revoke_sid_from_root,
+)
+from .windows_files import is_reparse_point, normalize_path, verify_local_ntfs
+
+if sys.platform != "win32":  # pragma: no cover - imported only on Windows
+    raise ImportError("virgo.sandbox.windows_sandbox requires Windows")
+
+BACKEND_NAME = "windows-appcontainer"
+READ_ONLY_CAPABILITIES: tuple[str, ...] = ()
+WORKSPACE_EDIT_CAPABILITIES: tuple[str, ...] = ("internetClient", "privateNetworkClientServer")
 
 HANDLE = ctypes.c_void_p
 PSID = ctypes.c_void_p
 DWORD = ctypes.c_uint32
 BOOL = ctypes.c_int32
-kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+HRESULT = ctypes.c_int32
+
+PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
+SE_GROUP_ENABLED = 0x00000004
+TOKEN_DUPLICATE = 0x0002
+TOKEN_QUERY = 0x0008
+TOKEN_RESTRICTED_SIDS = 11
+TOKEN_IS_APPCONTAINER = 29
+TOKEN_CAPABILITIES = 30
+TOKEN_APPCONTAINER_SID = 31
+SECURITY_IMPERSONATION = 2
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+STILL_ACTIVE = 259
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_ACCESS_DENIED = 5
+_ERROR_INVALID_PARAMETER = 87
+
+DDD_REMOVE_DEFINITION = 0x00000002
+DDD_EXACT_MATCH_ON_REMOVE = 0x00000004
+
+HRESULT_ALREADY_EXISTS = 0x800700B7
+_HRESULT_MISSING_PROFILE = frozenset({
+    0x80070002,  # ERROR_FILE_NOT_FOUND
+    0x80070003,  # ERROR_PATH_NOT_FOUND
+    0x80070490,  # ERROR_NOT_FOUND
+})
+
+_ENV_PASSTHROUGH = frozenset({
+    "PATH",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)",
+    "COMMONPROGRAMW6432",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "OS",
+    "COMPUTERNAME",
+    "USERNAME",
+    "USERDOMAIN",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TERM",
+})
 
 
-def _api(library, name, args, result=BOOL):
-    function = getattr(library, name)
-    function.argtypes, function.restype = args, result
-    return function
+def _api(library: ctypes.WinDLL, name: str, args: list[Any], result: Any = BOOL):
+    fn = getattr(library, name)
+    fn.argtypes = args
+    fn.restype = result
+    return fn
 
 
-def _check(value):
+def _check(value: Any) -> Any:
     if not value:
         raise ctypes.WinError(ctypes.get_last_error())
     return value
 
 
-GetSystemDirectory = _api(kernel, "GetSystemDirectoryW", [w.LPWSTR, DWORD], DWORD)
-GetWindowsDirectory = _api(kernel, "GetWindowsDirectoryW", [w.LPWSTR, DWORD], DWORD)
-CloseHandle = _api(kernel, "CloseHandle", [HANDLE])
-LocalFree = _api(kernel, "LocalFree", [ctypes.c_void_p], ctypes.c_void_p)
-GetCurrentProcess = _api(kernel, "GetCurrentProcess", [], HANDLE)
-IsWow64Process = _api(kernel, "IsWow64Process2", [HANDLE, ctypes.POINTER(w.WORD), ctypes.POINTER(w.WORD)])
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+_GetSystemDirectoryW = _api(_kernel32, "GetSystemDirectoryW", [w.LPWSTR, DWORD], DWORD)
+_GetWindowsDirectoryW = _api(_kernel32, "GetWindowsDirectoryW", [w.LPWSTR, DWORD], DWORD)
+_CloseHandle = _api(_kernel32, "CloseHandle", [HANDLE])
+_LocalFree = _api(_kernel32, "LocalFree", [ctypes.c_void_p], ctypes.c_void_p)
+_GetCurrentProcess = _api(_kernel32, "GetCurrentProcess", [], HANDLE)
+_GetCurrentThreadId = _api(_kernel32, "GetCurrentThreadId", [], DWORD)
+_IsWow64Process2 = _api(
+    _kernel32, "IsWow64Process2", [HANDLE, ctypes.POINTER(w.WORD), ctypes.POINTER(w.WORD)]
+)
+_OpenProcess = _api(_kernel32, "OpenProcess", [DWORD, BOOL, DWORD], HANDLE)
+_GetExitCodeProcess = _api(_kernel32, "GetExitCodeProcess", [HANDLE, ctypes.POINTER(DWORD)])
+_GetLogicalDrives = _api(_kernel32, "GetLogicalDrives", [], DWORD)
+_DefineDosDeviceW = _api(_kernel32, "DefineDosDeviceW", [DWORD, w.LPCWSTR, w.LPCWSTR])
+_QueryDosDeviceW = _api(_kernel32, "QueryDosDeviceW", [w.LPCWSTR, w.LPWSTR, DWORD], DWORD)
 
 
-def _directory(api):
-    output = ctypes.create_unicode_buffer(32768)
-    count = _check(api(output, len(output)))
-    if count >= len(output):
+class _FileTime(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", DWORD), ("dwHighDateTime", DWORD)]
+
+
+_GetProcessTimes = _api(
+    _kernel32,
+    "GetProcessTimes",
+    [
+        HANDLE,
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+    ],
+)
+
+
+def _directory(api) -> Path:
+    buf = ctypes.create_unicode_buffer(32768)
+    count = _check(api(buf, len(buf)))
+    if count >= len(buf):
         raise SandboxUnavailable("Windows system directory exceeds the native path limit")
-    return Path(normalize_path(output.value))
+    return Path(normalize_path(buf.value))
 
 
-SYSTEM_DIRECTORY = _directory(GetSystemDirectory)
-advapi = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "advapi32.dll"), use_last_error=True)
-userenv = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "userenv.dll"), use_last_error=True)
-base = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "kernelbase.dll"), use_last_error=True)
-ole = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "ole32.dll"), use_last_error=True)
-user = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "user32.dll"), use_last_error=True)
+SYSTEM_DIRECTORY = _directory(_GetSystemDirectoryW)
+WINDOWS_DIRECTORY = _directory(_GetWindowsDirectoryW)
+
+_advapi32 = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "advapi32.dll"), use_last_error=True)
+_userenv = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "userenv.dll"), use_last_error=True)
+_kernelbase = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "kernelbase.dll"), use_last_error=True)
+_ole32 = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "ole32.dll"), use_last_error=True)
+_user32 = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "user32.dll"), use_last_error=True)
 
 
 class SidAndAttributes(ctypes.Structure):
@@ -73,156 +192,479 @@ class TokenGroups(ctypes.Structure):
 
 
 class SecurityCapabilities(ctypes.Structure):
-    _fields_ = [("AppContainerSid", PSID), ("Capabilities", ctypes.POINTER(SidAndAttributes)),
-                ("CapabilityCount", DWORD), ("Reserved", DWORD)]
+    _fields_ = [
+        ("AppContainerSid", PSID),
+        ("Capabilities", ctypes.POINTER(SidAndAttributes)),
+        ("CapabilityCount", DWORD),
+        ("Reserved", DWORD),
+    ]
 
 
 class GenericMapping(ctypes.Structure):
     _fields_ = [(name, DWORD) for name in ("Read", "Write", "Execute", "All")]
 
 
-class SecurityAttributes(ctypes.Structure):
-    _fields_ = [("Length", DWORD), ("Descriptor", ctypes.c_void_p), ("Inherit", BOOL)]
-
-
 class ServiceStatus(ctypes.Structure):
-    _fields_ = [(name, DWORD) for name in (
-        "ServiceType", "CurrentState", "ControlsAccepted", "Win32ExitCode",
-        "ServiceSpecificExitCode", "CheckPoint", "WaitHint", "ProcessId", "ServiceFlags",
-    )]
+    _fields_ = [
+        (name, DWORD)
+        for name in (
+            "ServiceType",
+            "CurrentState",
+            "ControlsAccepted",
+            "Win32ExitCode",
+            "ServiceSpecificExitCode",
+            "CheckPoint",
+            "WaitHint",
+            "ProcessId",
+            "ServiceFlags",
+        )
+    ]
 
 
-OpenProcessToken = _api(advapi, "OpenProcessToken", [HANDLE, DWORD, ctypes.POINTER(HANDLE)])
-DuplicateToken = _api(advapi, "DuplicateToken", [HANDLE, ctypes.c_int, ctypes.POINTER(HANDLE)])
-AccessCheck = _api(advapi, "AccessCheck", [
-    ctypes.c_void_p, HANDLE, DWORD, ctypes.POINTER(GenericMapping), ctypes.c_void_p,
-    ctypes.POINTER(DWORD), ctypes.POINTER(DWORD), ctypes.POINTER(BOOL),
-])
-GetTokenInformation = _api(advapi, "GetTokenInformation", [HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                                         DWORD, ctypes.POINTER(DWORD)])
-SetTokenInformation = _api(advapi, "SetTokenInformation", [HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD])
-CreateRestrictedToken = _api(advapi, "CreateRestrictedToken", [
-    HANDLE, DWORD, DWORD, ctypes.c_void_p, DWORD, ctypes.c_void_p,
-    DWORD, ctypes.POINTER(SidAndAttributes), ctypes.POINTER(HANDLE),
-])
-ConvertStringSid = _api(advapi, "ConvertStringSidToSidW", [w.LPCWSTR, ctypes.POINTER(PSID)])
-ConvertSidToString = _api(advapi, "ConvertSidToStringSidW", [PSID, ctypes.POINTER(w.LPWSTR)])
-GetLengthSid = _api(advapi, "GetLengthSid", [PSID], DWORD)
-FreeSid = _api(advapi, "FreeSid", [PSID], ctypes.c_void_p)
-ConvertSecurityDescriptor = _api(advapi, "ConvertStringSecurityDescriptorToSecurityDescriptorW", [
-    w.LPCWSTR, DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
-])
-GetSecurityDescriptorDacl = _api(advapi, "GetSecurityDescriptorDacl", [
-    ctypes.c_void_p, ctypes.POINTER(BOOL), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(BOOL),
-])
-GetSecurityDescriptorOwner = _api(advapi, "GetSecurityDescriptorOwner", [
-    ctypes.c_void_p, ctypes.POINTER(PSID), ctypes.POINTER(BOOL),
-])
-CreateMutexEx = _api(kernel, "CreateMutexExW", [
-    ctypes.POINTER(SecurityAttributes), w.LPCWSTR, DWORD, DWORD,
-], HANDLE)
-CreateFile = _api(kernel, "CreateFileW", [
-    w.LPCWSTR, DWORD, DWORD, ctypes.c_void_p, DWORD, DWORD, HANDLE,
-], HANDLE)
-CreateProfile = _api(userenv, "CreateAppContainerProfile", [
-    w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, ctypes.POINTER(SidAndAttributes), DWORD, ctypes.POINTER(PSID),
-], ctypes.c_int32)
-DeleteProfile = _api(userenv, "DeleteAppContainerProfile", [w.LPCWSTR], ctypes.c_int32)
-GetProfilePath = _api(userenv, "GetAppContainerFolderPath", [w.LPCWSTR, ctypes.POINTER(w.LPWSTR)], ctypes.c_int32)
-CoTaskMemFree = _api(ole, "CoTaskMemFree", [ctypes.c_void_p], None)
-DeriveCapability = _api(base, "DeriveCapabilitySidsFromName", [
-    w.LPCWSTR, ctypes.POINTER(ctypes.POINTER(PSID)), ctypes.POINTER(DWORD),
-    ctypes.POINTER(ctypes.POINTER(PSID)), ctypes.POINTER(DWORD),
-])
-OpenSCManager = _api(advapi, "OpenSCManagerW", [w.LPCWSTR, w.LPCWSTR, DWORD], HANDLE)
-OpenService = _api(advapi, "OpenServiceW", [HANDLE, w.LPCWSTR, DWORD], HANDLE)
-QueryServiceStatus = _api(advapi, "QueryServiceStatusEx", [HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                                       DWORD, ctypes.POINTER(DWORD)])
-CloseServiceHandle = _api(advapi, "CloseServiceHandle", [HANDLE])
-MakeSelfRelativeSD = _api(advapi, "MakeSelfRelativeSD", [
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(DWORD),
-])
-GetProcessWindowStation = _api(user, "GetProcessWindowStation", [], HANDLE)
-GetUserObjectInformation = _api(user, "GetUserObjectInformationW", [
-    HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD),
-])
-OpenWindowStation = _api(user, "OpenWindowStationW", [w.LPCWSTR, BOOL, DWORD], HANDLE)
-CloseWindowStation = _api(user, "CloseWindowStation", [HANDLE])
-GetUserObjectSecurity = _api(user, "GetUserObjectSecurity", [
-    HANDLE, ctypes.POINTER(DWORD), ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD),
-])
-SetUserObjectSecurity = _api(user, "SetUserObjectSecurity", [
-    HANDLE, ctypes.POINTER(DWORD), ctypes.c_void_p,
-])
-CreateDesktop = _api(user, "CreateDesktopW", [
-    w.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p, DWORD, DWORD,
-    ctypes.POINTER(SecurityAttributes),
-], HANDLE)
-CloseDesktop = _api(user, "CloseDesktop", [HANDLE])
-GetCurrentThreadId = _api(kernel, "GetCurrentThreadId", [], DWORD)
-GetThreadDesktop = _api(user, "GetThreadDesktop", [DWORD], HANDLE)
-SetThreadDesktop = _api(user, "SetThreadDesktop", [HANDLE])
+_OpenProcessToken = _api(_advapi32, "OpenProcessToken", [HANDLE, DWORD, ctypes.POINTER(HANDLE)])
+_DuplicateToken = _api(_advapi32, "DuplicateToken", [HANDLE, ctypes.c_int, ctypes.POINTER(HANDLE)])
+_GetTokenInformation = _api(
+    _advapi32,
+    "GetTokenInformation",
+    [HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD)],
+)
+_AccessCheck = _api(
+    _advapi32,
+    "AccessCheck",
+    [
+        ctypes.c_void_p,
+        HANDLE,
+        DWORD,
+        ctypes.POINTER(GenericMapping),
+        ctypes.c_void_p,
+        ctypes.POINTER(DWORD),
+        ctypes.POINTER(DWORD),
+        ctypes.POINTER(BOOL),
+    ],
+)
+_ConvertSidToStringSidW = _api(
+    _advapi32, "ConvertSidToStringSidW", [PSID, ctypes.POINTER(w.LPWSTR)]
+)
+_ConvertStringSecurityDescriptorToSecurityDescriptorW = _api(
+    _advapi32,
+    "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+    [w.LPCWSTR, DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p],
+)
+_GetLengthSid = _api(_advapi32, "GetLengthSid", [PSID], DWORD)
+_FreeSid = _api(_advapi32, "FreeSid", [PSID], ctypes.c_void_p)
+_OpenSCManagerW = _api(_advapi32, "OpenSCManagerW", [w.LPCWSTR, w.LPCWSTR, DWORD], HANDLE)
+_OpenServiceW = _api(_advapi32, "OpenServiceW", [HANDLE, w.LPCWSTR, DWORD], HANDLE)
+_QueryServiceStatusEx = _api(
+    _advapi32,
+    "QueryServiceStatusEx",
+    [HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD)],
+)
+_CloseServiceHandle = _api(_advapi32, "CloseServiceHandle", [HANDLE])
+
+_CreateAppContainerProfile = _api(
+    _userenv,
+    "CreateAppContainerProfile",
+    [
+        w.LPCWSTR,
+        w.LPCWSTR,
+        w.LPCWSTR,
+        ctypes.POINTER(SidAndAttributes),
+        DWORD,
+        ctypes.POINTER(PSID),
+    ],
+    HRESULT,
+)
+_DeriveAppContainerSidFromAppContainerName = _api(
+    _userenv, "DeriveAppContainerSidFromAppContainerName", [w.LPCWSTR, ctypes.POINTER(PSID)], HRESULT
+)
+_DeleteAppContainerProfile = _api(_userenv, "DeleteAppContainerProfile", [w.LPCWSTR], HRESULT)
+_GetAppContainerFolderPath = _api(
+    _userenv, "GetAppContainerFolderPath", [w.LPCWSTR, ctypes.POINTER(w.LPWSTR)], HRESULT
+)
+_CoTaskMemFree = _api(_ole32, "CoTaskMemFree", [ctypes.c_void_p], None)
+_DeriveCapabilitySidsFromName = _api(
+    _kernelbase,
+    "DeriveCapabilitySidsFromName",
+    [
+        w.LPCWSTR,
+        ctypes.POINTER(ctypes.POINTER(PSID)),
+        ctypes.POINTER(DWORD),
+        ctypes.POINTER(ctypes.POINTER(PSID)),
+        ctypes.POINTER(DWORD),
+    ],
+)
+
+_GetProcessWindowStation = _api(_user32, "GetProcessWindowStation", [], HANDLE)
+_GetThreadDesktop = _api(_user32, "GetThreadDesktop", [DWORD], HANDLE)
+_GetUserObjectInformationW = _api(
+    _user32,
+    "GetUserObjectInformationW",
+    [HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD)],
+)
+_OpenDesktopW = _api(_user32, "OpenDesktopW", [w.LPCWSTR, DWORD, BOOL, DWORD], HANDLE)
+_CloseDesktop = _api(_user32, "CloseDesktop", [HANDLE])
 
 
-def _get_user_security(handle, information, descriptor, size, needed):
-    return GetUserObjectSecurity(handle, ctypes.byref(DWORD(information)), descriptor, size, needed)
+def _sid_bytes(sid_ptr: Any) -> bytes:
+    size = _check(_GetLengthSid(sid_ptr))
+    return ctypes.string_at(sid_ptr, size)
 
 
-def _set_user_security(handle, information, descriptor):
-    # Unlike SetKernelObjectSecurity, USER objects require a self-relative SD.
-    size = DWORD()
-    MakeSelfRelativeSD(descriptor, None, ctypes.byref(size))
-    if not size.value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    relative = ctypes.create_string_buffer(size.value)
-    _check(MakeSelfRelativeSD(descriptor, relative, ctypes.byref(size)))
-    return SetUserObjectSecurity(handle, ctypes.byref(DWORD(information)), relative)
-
-
-def _hresult(value, operation):
-    if value < 0:
-        raise SandboxUnavailable(f"Windows {operation} failed (HRESULT 0x{value & 0xffffffff:08X})")
-
-
-def _sid_bytes(sid):
-    size = _check(GetLengthSid(sid))
-    return ctypes.string_at(sid, size)
-
-
-def _sid_string(sid):
+def _sid_string(sid_ptr: Any) -> str:
     output = w.LPWSTR()
-    _check(ConvertSidToString(sid, ctypes.byref(output)))
+    _check(_ConvertSidToStringSidW(sid_ptr, ctypes.byref(output)))
     try:
         return output.value
     finally:
-        LocalFree(output)
+        _LocalFree(output)
 
 
-def _sid_from_string(text):
-    output = PSID()
-    _check(ConvertStringSid(text, ctypes.byref(output)))
+def _hresult(value: int, operation: str) -> None:
+    if value < 0:
+        raise SandboxUnavailable(f"Windows {operation} failed (HRESULT 0x{value & 0xFFFFFFFF:08X})")
+
+
+def _filetime_to_int(ft: _FileTime) -> int:
+    return (int(ft.dwHighDateTime) << 32) | int(ft.dwLowDateTime)
+
+
+def _current_process_create_time() -> int | None:
+    ct, et, kt, ut = _FileTime(), _FileTime(), _FileTime(), _FileTime()
+    if _GetProcessTimes(
+        _GetCurrentProcess(), ctypes.byref(ct), ctypes.byref(et), ctypes.byref(kt), ctypes.byref(ut)
+    ):
+        return _filetime_to_int(ct)
+    return None
+
+
+def is_process_alive(pid: int, expected_create_time: int | None = None) -> bool:
+    """Return True if ``pid`` is still running (and matches ``expected_create_time`` if given)."""
+    if pid <= 0:
+        return False
+    handle = _OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
     try:
-        return ctypes.create_string_buffer(_sid_bytes(output))
+        code = DWORD()
+        if not _GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != STILL_ACTIVE:
+            return False
+        if expected_create_time is not None:
+            ct, et, kt, ut = _FileTime(), _FileTime(), _FileTime(), _FileTime()
+            if _GetProcessTimes(
+                handle, ctypes.byref(ct), ctypes.byref(et), ctypes.byref(kt), ctypes.byref(ut)
+            ):
+                if _filetime_to_int(ct) != expected_create_time:
+                    return False
+        return True
     finally:
-        LocalFree(output)
+        _CloseHandle(handle)
 
 
-def _token_info(token, kind):
+def state_dir() -> Path:
+    """Return the per-user directory storing Windows AppContainer session journals."""
+    override = os.environ.get("VIRGO_WINDOWS_SANDBOX_STATE_DIR")
+    if override:
+        return Path(os.path.abspath(override))
+    local = os.environ.get("LOCALAPPDATA")
+    base = Path(local) if local else (Path.home() / "AppData" / "Local")
+    return base / "Virgo" / "sandbox-sessions"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    data = json.dumps(payload, indent=2, sort_keys=True)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _derive_capability(name: str) -> bytes:
+    groups = ctypes.POINTER(PSID)()
+    caps = ctypes.POINTER(PSID)()
+    group_count, cap_count = DWORD(), DWORD()
+    _check(
+        _DeriveCapabilitySidsFromName(
+            name,
+            ctypes.byref(groups),
+            ctypes.byref(group_count),
+            ctypes.byref(caps),
+            ctypes.byref(cap_count),
+        )
+    )
+    try:
+        if cap_count.value != 1:
+            raise SandboxUnavailable(f"Windows did not resolve the required {name} capability")
+        return _sid_bytes(caps[0])
+    finally:
+        for pointers, count in ((groups, group_count.value), (caps, cap_count.value)):
+            if pointers:
+                for idx in range(count):
+                    if pointers[idx]:
+                        _LocalFree(pointers[idx])
+                _LocalFree(pointers)
+
+
+def _create_profile(name: str, cap_bytes_list: Sequence[bytes]) -> tuple[str, bytes, Path]:
+    cap_bufs = [ctypes.create_string_buffer(raw) for raw in cap_bytes_list]
+    if cap_bufs:
+        cap_array = (SidAndAttributes * len(cap_bufs))(
+            *(SidAndAttributes(ctypes.cast(buf, PSID), SE_GROUP_ENABLED) for buf in cap_bufs)
+        )
+        cap_ptr = ctypes.cast(cap_array, ctypes.POINTER(SidAndAttributes))
+    else:
+        cap_array = None
+        cap_ptr = None
+
+    sid_ptr = PSID()
+    hr = _CreateAppContainerProfile(
+        name,
+        name,
+        "Virgo session Windows AppContainer sandbox",
+        cap_ptr,
+        len(cap_bufs),
+        ctypes.byref(sid_ptr),
+    )
+    if hr >= 0:
+        try:
+            sid_str = _sid_string(sid_ptr)
+            sid_raw = _sid_bytes(sid_ptr)
+        finally:
+            if sid_ptr:
+                _FreeSid(sid_ptr)
+    elif (hr & 0xFFFFFFFF) == HRESULT_ALREADY_EXISTS:
+        derived = PSID()
+        _hresult(
+            _DeriveAppContainerSidFromAppContainerName(name, ctypes.byref(derived)),
+            "DeriveAppContainerSidFromAppContainerName",
+        )
+        try:
+            sid_str = _sid_string(derived)
+            sid_raw = _sid_bytes(derived)
+        finally:
+            if derived:
+                _FreeSid(derived)
+    else:
+        _hresult(hr, "CreateAppContainerProfile")
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    folder_ptr = w.LPWSTR()
+    _hresult(
+        _GetAppContainerFolderPath(sid_str, ctypes.byref(folder_ptr)),
+        "GetAppContainerFolderPath",
+    )
+    try:
+        folder = Path(normalize_path(folder_ptr.value))
+    finally:
+        if folder_ptr:
+            _CoTaskMemFree(folder_ptr)
+    return sid_str, sid_raw, folder
+
+
+def _delete_profile(name: str, *, ignore_missing: bool = False) -> bool:
+    hr = _DeleteAppContainerProfile(name)
+    if hr >= 0:
+        return True
+    if ignore_missing and (hr & 0xFFFFFFFF) in _HRESULT_MISSING_PROFILE:
+        return False
+    raise SandboxProcessError(
+        f"Could not remove Windows AppContainer profile {name} (HRESULT 0x{hr & 0xFFFFFFFF:08X})"
+    )
+
+
+def _resolve_desktop() -> str | None:
+    """Return 'WinSta0\\Default' under non-Default custom desktops; None otherwise.
+
+    Never mutates any WindowStation or Desktop DACL.
+    """
+    def _obj_name(handle: HANDLE) -> str | None:
+        if not handle:
+            return None
+        buf = ctypes.create_unicode_buffer(256)
+        needed = DWORD()
+        if not _GetUserObjectInformationW(handle, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed)):
+            return None
+        return buf.value
+
+    station = (_obj_name(_GetProcessWindowStation()) or "").lower()
+    desktop = (_obj_name(_GetThreadDesktop(_GetCurrentThreadId())) or "").lower()
+    if station == "winsta0" and desktop != "default":
+        hd = _OpenDesktopW("Default", 0, False, 0x20000)  # READ_CONTROL only
+        if hd:
+            _CloseDesktop(hd)
+            return "WinSta0\\Default"
+    return None
+
+
+_DOS_DRIVE_LOCK = threading.Lock()
+
+
+def _allocate_dos_drive(workspace: Path) -> tuple[str, str] | None:
+    """Map an unused drive letter (Z:..M:) to ``workspace`` via DefineDosDeviceW."""
+    target = str(workspace)
+    probe = ctypes.create_unicode_buffer(4096)
+    with _DOS_DRIVE_LOCK:
+        mask = _GetLogicalDrives()
+        if not mask:
+            return None
+        for code in range(ord("Z"), ord("M") - 1, -1):
+            if mask & (1 << (code - ord("A"))):
+                continue
+            drive = f"{chr(code)}:"
+            # DefineDosDeviceW pushes onto an existing definition; confirm unmapped first.
+            if _QueryDosDeviceW(drive, probe, len(probe)):
+                continue
+            if _DefineDosDeviceW(0, drive, target):
+                return drive, target
+    return None
+
+
+def _remove_dos_drive(drive: str | None, target: str | None) -> None:
+    if not drive:
+        return
+    buf = ctypes.create_unicode_buffer(4096)
+    with _DOS_DRIVE_LOCK:
+        if not _QueryDosDeviceW(drive, buf, len(buf)):
+            return
+        if target and _DefineDosDeviceW(
+            DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE, drive, target
+        ):
+            return
+        err = ctypes.get_last_error()
+        if err == _ERROR_FILE_NOT_FOUND:
+            return
+        # Verify whether the mapping still points at our target before fallback removal.
+        if target and ntpath.normcase(buf.value) == ntpath.normcase("\\??\\" + target):
+            _DefineDosDeviceW(DDD_REMOVE_DEFINITION, drive, None)
+
+
+def _map_cwd_to_drive(cwd: Path, workspace: Path, dos_drive: str | None) -> Path:
+    if not dos_drive:
+        return cwd
+    rel = os.path.relpath(str(cwd), str(workspace))
+    if rel == ".":
+        return Path(dos_drive + "\\")
+    if rel == ".." or rel.startswith("..\\"):
+        return cwd
+    return Path(dos_drive + "\\" + rel)
+
+
+def backend() -> tuple[str, Path]:
+    """Discover native x64 Windows 10+ AppContainer API availability."""
+    if sys.getwindowsversion().major < 10:
+        raise SandboxUnavailable("The Windows sandbox requires Windows 10-family native APIs")
+    process_machine, native_machine = w.WORD(), w.WORD()
+    _check(_IsWow64Process2(_GetCurrentProcess(), ctypes.byref(process_machine), ctypes.byref(native_machine)))
+    if ctypes.sizeof(HANDLE) != 8 or process_machine.value != 0 or native_machine.value != 0x8664:
+        raise SandboxUnavailable("The Windows sandbox currently supports native x64 Python only")
+    return BACKEND_NAME, SYSTEM_DIRECTORY / "kernelbase.dll"
+
+
+def _require_network_isolation() -> None:
+    with ExitStack() as resources:
+        manager = _check(_OpenSCManagerW(None, None, 0x1))
+        resources.callback(_CloseServiceHandle, manager)
+        for name in ("BFE", "MpsSvc"):
+            service = _check(_OpenServiceW(manager, name, 0x4))
+            resources.callback(_CloseServiceHandle, service)
+            status, needed = ServiceStatus(), DWORD()
+            _check(
+                _QueryServiceStatusEx(
+                    service, 0, ctypes.byref(status), ctypes.sizeof(status), ctypes.byref(needed)
+                )
+            )
+            if status.CurrentState != 4:  # SERVICE_RUNNING
+                raise SandboxUnavailable(
+                    f"Windows network isolation requires the running {name} service",
+                    reason="windows_network_isolation_unavailable",
+                    dimension="windows_network_isolation",
+                )
+
+
+def precheck_windows_sandbox() -> None:
+    """Verify Standard AppContainer prerequisites (x64 Win10+ and BFE/MpsSvc; no Admin required)."""
+    backend()
+    try:
+        _require_network_isolation()
+    except SandboxUnavailable as error:
+        raise SandboxUnavailable(
+            f"{error}. On Windows, ensure Windows Filtering Platform (BFE/MpsSvc) is running, "
+            "or switch to No-Limit (--permission no-limit / /permissions no-limit).",
+            reason="windows_network_isolation_unavailable",
+            dimension="windows_network_isolation",
+        ) from error
+
+
+def validate_policy(policy, cwd: Path) -> Path:
+    """Validate workspace and cwd on local NTFS without following reparse points."""
+    if not policy.workspace_only:
+        raise SandboxUnavailable(
+            "The Windows AppContainer backend does not support constrained full-host filesystem access; "
+            "select a workspace-scoped policy or explicitly request No-Limit.",
+            reason="unsupported_policy",
+            dimension="workspace_only",
+        )
+    workspace = verify_local_ntfs(policy.workspace, allow_reparse=False, expect_directory=True)
+    resolved_cwd = verify_local_ntfs(cwd, allow_reparse=False, expect_directory=True)
+    if not resolved_cwd.is_relative_to(workspace):
+        raise SandboxUnavailable(
+            "Command cwd is outside the originating sandbox workspace",
+            reason="invalid_cwd",
+        )
+    system_roots = (WINDOWS_DIRECTORY, Path(sys.base_prefix).resolve())
+    if any(path.is_relative_to(workspace) for path in system_roots):
+        raise SandboxUnavailable(
+            "Workspace must not contain Windows or the base interpreter installation",
+            reason="unsupported_workspace",
+        )
+    if Path(sys.prefix).resolve() == workspace:
+        raise SandboxUnavailable(
+            "Workspace must not be the active interpreter installation",
+            reason="unsupported_workspace",
+        )
+    home = Path(normalize_path(Path.home().resolve()))
+    if (
+        workspace == home
+        or home.is_relative_to(workspace)
+        or any(Path(normalize_path(root)).is_relative_to(workspace) for root in policy.private_paths)
+    ):
+        raise SandboxUnavailable(
+            "Native Windows sandbox does not support using the home or private Virgo "
+            "directory as the workspace. Switch to a project directory or No-Limit "
+            "(--permission no-limit / /permissions no-limit).",
+            reason="unsupported_workspace",
+            target=workspace,
+        )
+    return resolved_cwd
+
+
+def _token_info(token: HANDLE, kind: int) -> ctypes.Array[ctypes.c_char]:
     size = DWORD()
-    GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
-    if not size.value or size.value > 1 << 20:
+    _GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
+    if not size.value or size.value > (1 << 20):
         error = ctypes.WinError(ctypes.get_last_error())
         raise SandboxUnavailable(f"Could not query Windows token information {kind}: {error}")
     output = ctypes.create_string_buffer(size.value)
-    _check(GetTokenInformation(token, kind, output, len(output), ctypes.byref(size)))
+    _check(_GetTokenInformation(token, kind, output, len(output), ctypes.byref(size)))
     if size.value > len(output):
         raise SandboxUnavailable("Windows returned inconsistent token information")
     return output
 
 
-def _token_sids(token, kind):
+def _token_sids(token: HANDLE, kind: int) -> set[bytes]:
     output = _token_info(token, kind)
     count = DWORD.from_buffer(output).value
+    if count == 0:
+        return set()
     offset = TokenGroups.Groups.offset
     if offset + count * ctypes.sizeof(SidAndAttributes) > len(output):
         raise SandboxUnavailable("Windows returned an invalid token SID list")
@@ -230,547 +672,1015 @@ def _token_sids(token, kind):
     return {_sid_bytes(value.Sid) for value in values}
 
 
-def _verify_lpac(token):
-    """Prove the LPAC access distinction using the actual suspended token.
-
-    The class-46 GetTokenInformation query is unavailable on the supported
-    Windows runners. LPAC must ignore AAP grants while retaining ARAP access.
-    Everyone satisfies only the ordinary user/group check in each descriptor.
-    """
+def _verify_standard_appcontainer_access(token: HANDLE) -> None:
+    """Confirm Standard AppContainer semantics via AccessCheck on the suspended token."""
     duplicate = HANDLE()
-    _check(DuplicateToken(token, 2, ctypes.byref(duplicate)))  # SecurityImpersonation
+    _check(_DuplicateToken(token, SECURITY_IMPERSONATION, ctypes.byref(duplicate)))
     try:
-        mapping = GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
-        for package, expected in (("S-1-15-2-1", False), ("S-1-15-2-2", True)):
+        mapping = GenericMapping(0x00120089, 0x00120116, 0x001200A0, 0x001F01FF)
+        checks = (
+            (f"O:SYG:SYD:(A;;0x1;;;WD)(A;;0x1;;;{ALL_APPLICATION_PACKAGES_SID})", True),
+            ("O:SYG:SYD:(A;;0x1;;;WD)", False),
+        )
+        for sddl, expected in checks:
             descriptor = ctypes.c_void_p()
-            _check(ConvertSecurityDescriptor(
-                f"O:SYG:SYD:(A;;0x1;;;WD)(A;;0x1;;;{package})",
-                1, ctypes.byref(descriptor), None,
-            ))
+            _check(
+                _ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl, 1, ctypes.byref(descriptor), None
+                )
+            )
             try:
                 privileges = ctypes.create_string_buffer(256)
                 size, granted, permitted = DWORD(len(privileges)), DWORD(), BOOL()
-                # FILE_READ_DATA is already specific, with no generic bits or
-                # write rights that could conflate LPAC and write restrictions.
-                _check(AccessCheck(descriptor, duplicate, 0x1, ctypes.byref(mapping),
-                                   privileges, ctypes.byref(size), ctypes.byref(granted),
-                                   ctypes.byref(permitted)))
+                _check(
+                    _AccessCheck(
+                        descriptor,
+                        duplicate,
+                        0x1,
+                        ctypes.byref(mapping),
+                        privileges,
+                        ctypes.byref(size),
+                        ctypes.byref(granted),
+                        ctypes.byref(permitted),
+                    )
+                )
                 if bool(permitted.value) != expected or granted.value != int(expected):
                     raise SandboxUnavailable(
-                        f"Windows did not establish LPAC access semantics for {package}: "
+                        f"Windows did not establish Standard AppContainer semantics for {sddl}: "
                         f"allowed={bool(permitted.value)}, access=0x{granted.value:X}"
                     )
             finally:
-                LocalFree(descriptor)
+                _LocalFree(descriptor)
     finally:
-        CloseHandle(duplicate)
+        _CloseHandle(duplicate)
 
 
-def _capability(name):
-    groups, capabilities = ctypes.POINTER(PSID)(), ctypes.POINTER(PSID)()
-    group_count, capability_count = DWORD(), DWORD()
-    _check(DeriveCapability(name, ctypes.byref(groups), ctypes.byref(group_count),
-                            ctypes.byref(capabilities), ctypes.byref(capability_count)))
-    try:
-        if capability_count.value != 1:
-            raise SandboxUnavailable(f"Windows did not resolve the required {name} capability")
-        return ctypes.create_string_buffer(_sid_bytes(capabilities[0]))
-    finally:
-        for pointers, count in ((groups, group_count.value), (capabilities, capability_count.value)):
-            if pointers:
-                for index in range(count):
-                    LocalFree(pointers[index])
-                LocalFree(pointers)
+def _discover_runtime_candidates(policy, executable: Path) -> list[Path]:
+    """Collect runtime directories required by the broker Python and launched executable."""
+    candidates: list[Path] = [Path(root) for root in policy.runtime_paths()]
+    exe_resolved = executable.resolve(strict=True)
+    exe_dir = exe_resolved.parent
+    candidates.append(exe_dir)
 
+    # Git for Windows: ...\Git\cmd\git.exe needs ...\Git (mingw64\bin, etc.)
+    if exe_resolved.name.lower() == "git.exe" and exe_dir.name.lower() == "cmd":
+        git_root = exe_dir.parent
+        if (git_root / "mingw64").is_dir():
+            candidates.append(git_root)
 
-def _is_administrator() -> bool:
-    """Return True when the current Windows process token has elevated Admin rights."""
-    try:
-        shell32 = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "shell32.dll"), use_last_error=True)
-        is_admin = _api(shell32, "IsUserAnAdmin", [], BOOL)
-        return bool(is_admin())
-    except (OSError, AttributeError):
-        return False
-
-
-def precheck_experimental_sandbox() -> None:
-    """Fail fast with clear guidance before LPAC setup hits raw WinError 1307 (S1-04)."""
-    backend()
-    if not _is_administrator():
-        raise SandboxUnavailable(
-            "The experimental native Windows sandbox requires an Administrator account "
-            "(non-administrator accounts cannot acquire LPAC device ACLs). "
-            "Use WSL2 for full Linux sandbox support, or stay on No-Limit "
-            "(--permission no-limit / /permissions no-limit).",
-            reason="windows_admin_required",
-            dimension="windows_experimental_sandbox",
-        )
-    try:
-        _require_network_isolation()
-    except SandboxUnavailable as error:
-        raise SandboxUnavailable(
-            f"{error}. On Windows, use WSL2 for full Linux sandbox support, "
-            "or stay on No-Limit (--permission no-limit / /permissions no-limit).",
-            reason="windows_network_isolation_unavailable",
-            dimension="windows_experimental_sandbox",
-        ) from error
-
-
-def backend():
-    """Discovery only; each actual process must pass suspended-token checks."""
-    if sys.getwindowsversion().major < 10:
-        raise SandboxUnavailable("The Windows sandbox requires Windows 10-family native APIs")
-    process_machine, native_machine = w.WORD(), w.WORD()
-    _check(IsWow64Process(GetCurrentProcess(), ctypes.byref(process_machine), ctypes.byref(native_machine)))
-    if ctypes.sizeof(HANDLE) != 8 or process_machine.value != 0 or native_machine.value != 0x8664:
-        raise SandboxUnavailable("The Windows sandbox currently supports native x64 Python only")
-    return "windows-lpac", SYSTEM_DIRECTORY / "kernelbase.dll"
-
-
-def _require_network_isolation():
-    # AppContainer network isolation depends on Windows filtering services, not
-    # proxy settings. Never start a payload on a host without these services.
-    with ExitStack() as resources:
-        manager = _check(OpenSCManager(None, None, 0x1))
-        resources.callback(CloseServiceHandle, manager)
-        for name in ("BFE", "MpsSvc"):
-            service = _check(OpenService(manager, name, 0x4))
-            resources.callback(CloseServiceHandle, service)
-            status, needed = ServiceStatus(), DWORD()
-            _check(QueryServiceStatus(service, 0, ctypes.byref(status), ctypes.sizeof(status),
-                                      ctypes.byref(needed)))
-            if status.CurrentState != 4:  # SERVICE_RUNNING
-                raise SandboxUnavailable(f"Windows network isolation requires the running {name} service")
-
-
-def validate_policy(policy, cwd):
-    """Retain the runtime's lexical root; a later junction cannot redefine it."""
-    if not policy.workspace_only:
-        raise SandboxUnavailable(
-            "The Windows LPAC backend does not support constrained full-host filesystem access; "
-            "select a workspace-scoped policy or explicitly request No-Limit.",
-            reason="unsupported_policy", dimension="workspace_only",
-        )
-    workspace = Path(normalize_path(policy.workspace))
-    cwd = Path(normalize_path(cwd))
-    if not cwd.is_relative_to(workspace):
-        raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
-    for path in (workspace, cwd):
-        with open_path(path, 0x1, directory=True):
-            pass
-    roots = (SYSTEM_DIRECTORY.parent, Path(sys.base_prefix).absolute())
-    if any(path.is_relative_to(workspace) for path in roots):
-        raise SandboxUnavailable("Workspace must not contain Windows or the base interpreter installation")
-    if Path(sys.prefix).absolute() == workspace:
-        raise SandboxUnavailable("Workspace must not be the active interpreter installation")
-    home = Path(normalize_path(Path.home().resolve()))
-    if workspace == home or home.is_relative_to(workspace) or any(
-            Path(normalize_path(root)).is_relative_to(workspace) for root in policy.private_paths):
-        raise SandboxUnavailable(
-            "Native experimental Windows sandbox does not support using the home or private Virgo "
-            "directory as the workspace. Use WSL2 for full Linux sandbox support, or switch to No-Limit.",
-            reason="unsupported_workspace", target=workspace,
-        )
-    return cwd
-
-
-@dataclass
-class _DeviceLease:
-    name: str
-    access: int
-    sids: tuple[bytes, ...]
-    handle: int | None = None
-    mutex: int | None = None
-
-
-class WindowsSandbox:
-    """One token/profile/ACL lease, released only after verified Job drain."""
-
-    def __init__(self, policy, argv, cwd, env, cancellation, *, env_overrides=None):
-        self.policy, self.cancellation = policy, cancellation
-        self.process = None
-        self.token = None
-        self._profile = None
-        self._package_sid = PSID()
-        self._grants = None
-        self._devices: list[_DeviceLease] = []
-        self._station = None
-        self._desktop = None
-        self.desktop = None
-        self._pins = ExitStack()
-        self._closed = False
-        self._check_cancelled()
+    # Python virtualenv launcher: ...\venv\Scripts\python.exe needs venv root + base home
+    if exe_dir.name.lower() == "scripts" and (exe_dir.parent / "pyvenv.cfg").is_file():
+        venv_root = exe_dir.parent
+        candidates.append(venv_root)
         try:
-            precheck_experimental_sandbox()
-            self.cwd = validate_policy(policy, cwd)
-            if not argv:
-                raise SandboxUnavailable("Windows sandbox execution requires an explicit native .exe path")
-            executable = Path(normalize_path(argv[0]))
-            if executable.suffix.lower() != ".exe":
-                raise SandboxUnavailable("Windows sandbox execution requires an explicit native .exe path")
-            with open_path(executable, 0x1, directory=False):
-                pass
-            # Deny deletion of the root/cwd themselves, but permit write sharing:
-            # native child renames open their destination directory for ADD_FILE.
-            self._pins.enter_context(open_path(policy.workspace, 0x1, directory=True,
-                                                share_delete=False))
-            self._pins.enter_context(open_path(self.cwd, 0x1, directory=True,
-                                                share_delete=False))
-            # These capabilities use Windows' existing token-wide grants.
-            # lpacInstrumentation permits ETW registrations wherever its SID is
-            # authorized; this is not a per-provider whitelist or an ETW ACL edit.
-            names = ["registryRead", "lpacInstrumentation"]
-            if policy.network_allowed:
-                names += ["internetClientServer", "privateNetworkClientServer"]
-            self._capability_buffers = [_capability(name) for name in names]
-            self._capabilities = (SidAndAttributes * len(self._capability_buffers))(
-                *(SidAndAttributes(ctypes.cast(value, PSID), 0x4) for value in self._capability_buffers)
-            )
-            profile = "VirgoProcess." + uuid.uuid4().hex
-            _hresult(CreateProfile(profile, profile, "Temporary Virgo process sandbox",
-                                   self._capabilities, len(self._capabilities),
-                                   ctypes.byref(self._package_sid)), "CreateAppContainerProfile")
-            self._profile = profile
-            self.package_sid = _sid_bytes(self._package_sid)
-            self.package_name = _sid_string(self._package_sid)
-            # This ordinary SID is unrelated to AppContainer capability SIDs.
-            # A fresh 128-bit value is never shared by concurrent commands.
-            self.write_name = "S-1-5-21-" + "-".join(str(value) for value in struct.unpack("<4I", uuid.uuid4().bytes))
-            self._write_sid = _sid_from_string(self.write_name)
-            self.write_sid = _sid_bytes(self._write_sid)
-            self._make_token()
-            folder = w.LPWSTR()
-            _hresult(GetProfilePath(self.package_name, ctypes.byref(folder)), "GetAppContainerFolderPath")
-            try:
-                self.profile_path = Path(normalize_path(folder.value))
-            finally:
-                CoTaskMemFree(folder)
-            self.home = self.profile_path / "home"
-            self.scratch = self.profile_path / "tmp"
-            for path in (self.home, self.home / "AppData", self.home / "AppData" / "Roaming",
-                         self.home / "AppData" / "Local", self.scratch):
-                path.mkdir(exist_ok=True)
-            from .windows_acl import AclGrants
+            for line in (venv_root / "pyvenv.cfg").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip().lower() == "home" and v.strip():
+                        candidates.append(Path(v.strip()))
+        except OSError:
+            pass
 
-            self._grants = AclGrants(self.package_sid, self.write_sid, cancellation)
-            # Exactly the measured native BCrypt open, plus the CRT O_RDWR
-            # open used by subprocess.DEVNULL. Null has no ambient LPAC grant,
-            # so it also needs this command's package identity. Neither lease
-            # grants ownership, DACL mutation, deletion or other device names.
-            self._prepare_device("KsecDD", 0x100003, (self.write_sid,))
-            self._prepare_device("Null", 0x12019F, (self.package_sid, self.write_sid))
-            runtime_roots = tuple(dict.fromkeys((
-                *policy.runtime_paths(),
-                # Retain the selected Shell's established installation grant.
-                # Other payloads must use existing runtime/workspace resources
-                # or explicit read grants, not expose arbitrary sibling files.
-                *((executable.parent,) if executable.name.lower() == "pwsh.exe"
-                  and not executable.is_relative_to(policy.workspace) else ()),
-            )))
-            protected = tuple(dict.fromkeys((*policy.protected_paths(), *runtime_roots)))
-            # Core commits use this same mutex. Keep workspace path
-            # classification and retained-object grants together, so a staged
-            # inode cannot move out of .virgo between preflight and its update.
-            # Runtime/profile grants retain their per-object locking below.
-            with self._grants._locked():
-                roots = ((policy.workspace, not policy.read_only), *policy.grants)
-                for root, writable in roots:
-                    excluded = (*runtime_roots, *(p for p, _ in roots if p != root and p.is_relative_to(root)))
-                    self._grants.grant_tree(root, writable, protected, reject_hardlinks=True, excluded=excluded)
-            for root in runtime_roots:
-                self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)
-            self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
-            self._grants.validate_hardlinks()
-            self._prepare_desktop()
-            self.environment = self._environment(env, env_overrides or {})
-            self._check_cancelled()
-        except BaseException as setup_error:
+    resolved_unique: list[Path] = []
+    seen: set[str] = set()
+    for root in candidates:
+        try:
+            resolved = root.resolve(strict=True)
+        except OSError:
+            continue
+        key = ntpath.normcase(str(resolved))
+        if key not in seen:
+            seen.add(key)
+            resolved_unique.append(resolved)
+
+    # Collapse overlapping parent/child roots (keep outermost).
+    resolved_unique.sort(key=lambda p: len(p.parts))
+    collapsed: list[Path] = []
+    for root in resolved_unique:
+        if not any(root.is_relative_to(parent) for parent in collapsed):
+            collapsed.append(root)
+    return collapsed
+
+
+def _check_runtime_accessibility(
+    candidates: Sequence[Path],
+    workspace: Path,
+    executable: Path,
+) -> list[Path]:
+    """Return runtime roots that need a read-only session ACE, failing closed if inaccessible."""
+    to_grant: list[Path] = []
+    exe_resolved = executable.resolve(strict=True)
+    for root in candidates:
+        if root.is_relative_to(WINDOWS_DIRECTORY) or root.is_relative_to(workspace):
+            continue
+        root_has_aap = has_aap_read_access(root, require_execute=True)
+        exe_needs_grant = exe_resolved.is_relative_to(root) and not has_aap_read_access(
+            exe_resolved, require_execute=True
+        )
+        if root_has_aap and not exe_needs_grant:
+            continue
+        if can_open_write_dac(root):
+            to_grant.append(root)
+            continue
+        raise SandboxUnavailable(
+            f"The Windows AppContainer sandbox cannot access required runtime directory '{root}' "
+            "(it lacks ALL APPLICATION PACKAGES read permission and the current user lacks WRITE_DAC). "
+            "Install Python/tools in a user-owned directory (e.g. `uv python install` or "
+            "%LOCALAPPDATA%\\Programs\\Python`) or standard C:\\Program Files, "
+            "or run with No-Limit (--permission no-limit / /permissions no-limit).",
+            reason="windows_runtime_inaccessible",
+            dimension="windows_runtime_access",
+            target=root,
+        )
+    return to_grant
+
+
+def recover_stale_sessions(
+    target_dir: str | Path | None = None,
+    *,
+    force_dead_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Recover orphaned Windows AppContainer sessions left by crashed/killed processes.
+
+    Idempotent: a second call after clean recovery returns [].
+    """
+    journal_dir = Path(os.path.abspath(os.fspath(target_dir))) if target_dir is not None else state_dir()
+    if not journal_dir.exists():
+        return []
+
+    results: list[dict[str, Any]] = []
+    for state_path in sorted(journal_dir.glob("*.json")):
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            results.append({
+                "state_file": str(state_path),
+                "status": "error",
+                "errors": [f"failed to read journal: {exc}"],
+            })
+            continue
+
+        session_id = data.get("session_id", state_path.stem)
+        profile_name = data.get("profile_name")
+        sid_str = data.get("sid_str")
+        owner_pid = int(data.get("owner_pid", -1))
+        owner_create_time = data.get("owner_create_time")
+        dos_drive = data.get("dos_drive")
+        dos_target = data.get("dos_target")
+        granted_roots = data.get("granted_roots", [])
+        denied_paths = data.get("denied_paths", [])
+
+        alive = is_process_alive(owner_pid, owner_create_time)
+        if force_dead_only and alive:
+            results.append({
+                "session_id": session_id,
+                "profile_name": profile_name,
+                "sid_str": sid_str,
+                "owner_pid": owner_pid,
+                "owner_alive": True,
+                "status": "skipped_alive",
+                "errors": [],
+            })
+            continue
+
+        errors: list[str] = []
+        revoked_roots: list[str] = []
+        revoked_denies: list[str] = []
+        drive_unmapped = False
+        profile_deleted = False
+        state_removed = False
+
+        if sid_str:
+            # Fail-closed order: revoke ALLOW roots first, then restore protected read-only paths.
+            for entry in granted_roots:
+                root_path = entry["path"] if isinstance(entry, dict) else str(entry)
+                try:
+                    revoke_sid_from_root(root_path, sid_str, ignore_missing=True)
+                    revoked_roots.append(root_path)
+                except OSError as exc:
+                    errors.append(f"revoke root {root_path}: {exc}")
+
+            for entry in denied_paths:
+                if isinstance(entry, dict):
+                    target_path = str(entry["path"])
+                    restore_unprot = not entry.get("was_protected", False)
+                    orig_b64 = entry.get("original_explicit_aces_b64", [])
+                else:
+                    target_path = str(entry)
+                    restore_unprot = False
+                    orig_b64 = []
+                try:
+                    revoke_sid_from_root(
+                        target_path,
+                        sid_str,
+                        ignore_missing=True,
+                        restore_unprotected=restore_unprot,
+                        original_explicit_aces_b64=orig_b64,
+                    )
+                    revoked_denies.append(target_path)
+                except OSError as exc:
+                    errors.append(f"restore protected {target_path}: {exc}")
+
+        if dos_drive:
             try:
-                self.cleanup()
-            except BaseException as cleanup_error:
-                failure = SandboxProcessError(
-                    f"Windows sandbox setup failed ({setup_error}); cleanup failed ({cleanup_error}); "
-                    f"profile: {self._profile}"
-                )
-                failure.envelope = self
-                raise failure from setup_error
+                _remove_dos_drive(dos_drive, dos_target)
+                drive_unmapped = True
+            except OSError as exc:
+                errors.append(f"unmap drive {dos_drive}: {exc}")
+
+        if profile_name:
+            try:
+                profile_deleted = _delete_profile(profile_name, ignore_missing=True)
+            except Exception as exc:
+                errors.append(f"delete profile {profile_name}: {exc}")
+
+        if not errors:
+            try:
+                state_path.unlink(missing_ok=True)
+                state_removed = True
+            except OSError as exc:
+                errors.append(f"remove state file {state_path}: {exc}")
+
+        results.append({
+            "session_id": session_id,
+            "profile_name": profile_name,
+            "sid_str": sid_str,
+            "owner_pid": owner_pid,
+            "owner_alive": alive,
+            "status": "recovered" if not errors else "error",
+            "revoked_roots": revoked_roots,
+            "revoked_denies": revoked_denies,
+            "drive_unmapped": drive_unmapped,
+            "profile_deleted": profile_deleted,
+            "state_file_removed": state_removed,
+            "errors": errors,
+        })
+    return results
+
+
+_STARTUP_RECOVERY_LOCK = threading.Lock()
+_STARTUP_RECOVERY_DONE = False
+
+
+def _run_startup_recovery_once() -> None:
+    global _STARTUP_RECOVERY_DONE
+    with _STARTUP_RECOVERY_LOCK:
+        if _STARTUP_RECOVERY_DONE:
+            return
+        _STARTUP_RECOVERY_DONE = True
+    try:
+        recover_stale_sessions()
+    except Exception:
+        # Best-effort recovery of previous crashed sessions must never prevent starting a new session.
+        pass
+
+
+class WindowsSandboxSession:
+    """Session-scoped Standard AppContainer SID, inheritable root ACLs, and journal."""
+
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        read_only: bool,
+        network_allowed: bool,
+        dos_drive: str | None = None,
+        dos_target: str | None = None,
+        journal_dir: Path | None = None,
+    ) -> None:
+        self.workspace = workspace
+        self.read_only = bool(read_only)
+        self.network_allowed = bool(network_allowed)
+        self.dos_drive = dos_drive
+        self.dos_target = dos_target
+        self.desktop = _resolve_desktop()
+        self.session_id = uuid.uuid4().hex[:16]
+        self.profile_name = f"VirgoSession.{self.session_id}"
+        self.capabilities = WORKSPACE_EDIT_CAPABILITIES if self.network_allowed else READ_ONLY_CAPABILITIES
+        self._state_dir = journal_dir or state_dir()
+        self.state_file = self._state_dir / f"{self.session_id}.json"
+        self.created_at = datetime.now(UTC).isoformat()
+
+        self._lock = threading.RLock()
+        self._active_commands = 0
+        self._closed = False
+        self._granted_roots: dict[str, dict[str, Any]] = {}
+        # Maps normalized path_key -> [read_refs, write_refs]
+        self._command_grant_refs: dict[str, list[int]] = {}
+        self._command_grant_paths: dict[str, Path] = {}
+        self._protected_records: dict[str, dict[str, Any]] = {}
+
+        self._capability_bytes: tuple[bytes, ...] = tuple(
+            _derive_capability(name) for name in self.capabilities
+        )
+        self.package_name, self.package_sid, self.profile_path = _create_profile(
+            self.profile_name, self._capability_bytes
+        )
+        self.home = self.profile_path / "Home"
+        self.appdata = self.home / "AppData" / "Roaming"
+        self.temp_root = self.profile_path / "Temp"
+        for directory in (self.home, self.home / "AppData", self.appdata, self.temp_root):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        # Write-ahead workspace root entry before applying ACLs.
+        ws_key = ntpath.normcase(str(self.workspace))
+        self._granted_roots[ws_key] = {
+            "path": str(self.workspace),
+            "writable": not self.read_only,
+            "kind": "workspace",
+        }
+        try:
+            self._persist_journal()
+            grant_root_access(self.workspace, self.package_name, writable=not self.read_only)
+        except BaseException:
+            try:
+                self.close(unmap_drive=False)
+            except Exception:
+                pass
             raise
 
-    def _check_cancelled(self):
-        if self.cancellation is not None and self.cancellation.is_set():
-            raise SandboxCancelled("Windows sandbox setup cancelled before payload release")
+    def _persist_journal(self) -> None:
+        all_roots = list(self._granted_roots.values())
+        for key, (r_refs, w_refs) in self._command_grant_refs.items():
+            if (r_refs > 0 or w_refs > 0) and key not in self._granted_roots:
+                all_roots.append({
+                    "path": str(self._command_grant_paths[key]),
+                    "writable": w_refs > 0,
+                    "kind": "command_grant",
+                })
+        payload = {
+            "session_id": self.session_id,
+            "profile_name": self.profile_name,
+            "sid_str": self.package_name,
+            "owner_pid": os.getpid(),
+            "owner_create_time": _current_process_create_time(),
+            "created_at": self.created_at,
+            "dos_drive": self.dos_drive,
+            "dos_target": self.dos_target,
+            "granted_roots": all_roots,
+            "denied_paths": list(self._protected_records.values()),
+            "capabilities": list(self.capabilities),
+        }
+        _write_json_atomic(self.state_file, payload)
 
-    def _make_token(self):
-        source = HANDLE()
-        _check(OpenProcessToken(GetCurrentProcess(), 0x008B, ctypes.byref(source)))  # QUERY | DUPLICATE | ASSIGN_PRIMARY | ADJUST_DEFAULT
-        try:
-            user = _token_info(source, 1)
-            user_name = _sid_string(ctypes.c_void_p.from_buffer(user).value)
-            self._user_name = user_name
-            restricting = (SidAndAttributes * 1)(SidAndAttributes(ctypes.cast(self._write_sid, PSID), 0))
-            token = HANDLE()
-            # DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED. No Everyone/logon SID
-            # alternatives are added to this additional write-access check.
-            _check(CreateRestrictedToken(source, 0x1 | 0x8, 0, None, 0, None,
-                                          1, restricting, ctypes.byref(token)))
-            self.token = token.value
-            descriptor = ctypes.c_void_p()
-            text = (f"D:(A;;GA;;;{user_name})(A;;GA;;;{self.package_name})"
-                    f"(A;;GA;;;{self.write_name})(A;;RC;;;OW)")
-            _check(ConvertSecurityDescriptor(text, 1, ctypes.byref(descriptor), None))
-            try:
-                present, defaulted, acl = BOOL(), BOOL(), ctypes.c_void_p()
-                _check(GetSecurityDescriptorDacl(descriptor, ctypes.byref(present),
-                                                 ctypes.byref(acl), ctypes.byref(defaulted)))
-                if not present.value or not acl.value:
-                    raise SandboxUnavailable("Could not construct the Windows token default DACL")
-                _check(SetTokenInformation(self.token, 6, ctypes.byref(acl), ctypes.sizeof(acl)))
-            finally:
-                LocalFree(descriptor)
-        finally:
-            CloseHandle(source)
+    def ensure_runtime_roots(self, roots: Sequence[Path]) -> None:
+        with self._lock:
+            if self._closed:
+                raise SandboxUnavailable("Windows AppContainer session is already closed")
+            added: list[Path] = []
+            for root in roots:
+                key = ntpath.normcase(str(root))
+                if key in self._granted_roots:
+                    continue
+                self._granted_roots[key] = {
+                    "path": str(root),
+                    "writable": False,
+                    "kind": "runtime",
+                }
+                added.append(root)
+            if not added:
+                return
+            self._persist_journal()
+            for root in added:
+                grant_root_access(root, self.package_name, writable=False)
 
-    def _prepare_device(self, name, access, sids):
-        from .windows_acl import GetSecurity, _ace, _read
-
-        # These fixed devices each need a machine-wide mutex, separate from
-        # the filesystem's per-user mutex. Only authorized administrators or
-        # SYSTEM may use this fixed protected mutex; never take over an existing
-        # object with an untrusted owner or a different access policy.
-        lease = _DeviceLease(name, access, sids)
-        self._devices.append(lease)
-        descriptor = ctypes.c_void_p()
-        _check(ConvertSecurityDescriptor(
-            "O:BAG:BAD:P(A;;0x1f0001;;;SY)(A;;0x120001;;;BA)",
-            1, ctypes.byref(descriptor), None,
-        ))
-        try:
-            attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
-            try:
-                lease.mutex = _check(CreateMutexEx(
-                    ctypes.byref(attributes), rf"Global\Virgo.NativeSandbox.{name}.v1", 0, 0x120001,
-                ))  # SYNCHRONIZE | MUTEX_MODIFY_STATE | READ_CONTROL.
-            except OSError as error:
+    def _validate_protected_target(self, target: Path) -> Path:
+        """Verify a protected path inside workspace contains zero reparse points."""
+        current = target
+        while True:
+            if is_reparse_point(current):
                 raise SandboxUnavailable(
-                    f"The current Windows account cannot acquire the protected {name} device ACL lease "
-                    f"required by LPAC (WinError {error.winerror}).",
-                    reason="device_acl_unavailable", dimension="windows_device_acl",
-                ) from error
-        finally:
-            LocalFree(descriptor)
-        size = DWORD()
-        GetSecurity(lease.mutex, 1 | 4, None, 0, ctypes.byref(size))
-        if not size.value:
-            raise ctypes.WinError(ctypes.get_last_error())
-        security = ctypes.create_string_buffer(size.value)
-        _check(GetSecurity(lease.mutex, 1 | 4, security, len(security), ctypes.byref(size)))
-        owner, defaulted = PSID(), BOOL()
-        _check(GetSecurityDescriptorOwner(security, ctypes.byref(owner), ctypes.byref(defaulted)))
-        policy = _read(lease.mutex)
-        expected = [_ace(0, 0, mask, _sid_bytes(_sid_from_string(sid))) for sid, mask in (
-            ("S-1-5-18", 0x1F0001), ("S-1-5-32-544", 0x120001),
-        )]
-        if (not owner or _sid_string(owner) not in {"S-1-5-18", "S-1-5-32-544"}
-                or not policy.control & 0x1000 or policy.aces != expected):
-            raise SandboxUnavailable(f"Windows {name} coordination mutex has an untrusted security descriptor")
-        self._check_cancelled()
-        # This exact native object and native authority were measured in the
-        # failing runtime operations. No path, capability or broader device set is
-        # supplied by the payload. Retain the handle until verified Job drain.
-        handle = CreateFile(rf"\\?\GLOBALROOT\Device\{name}", 0x60000, 7, None, 3, 0, None)
-        if handle == HANDLE(-1).value:
-            raise ctypes.WinError(ctypes.get_last_error())
-        lease.handle = _check(handle)  # READ_CONTROL | WRITE_DAC, never elevation.
-        self._device_access(lease)
-
-    def _device_access(self, lease, *, cleanup=False):
-        from .windows_acl import _ace, _read, _sid_in_ace, _write
-
-        with self._grants._locked(cleanup=cleanup, mutex=lease.mutex):
-            previous = _read(lease.handle, cleanup=cleanup)
-            if previous is None:
-                return
-            retained = [entry for entry in previous.aces if _sid_in_ace(entry) not in lease.sids]
-            owned = [] if cleanup else [_ace(0, 0, lease.access, sid) for sid in lease.sids]
-            entries = retained + owned
-            if entries != previous.aces:
-                _write(lease.handle, previous, entries, previous.control)
-            current = _read(lease.handle, cleanup=cleanup)
-            actual = [] if current is None else [
-                entry for entry in current.aces if _sid_in_ace(entry) in lease.sids
-            ]
-            if actual != owned:
-                raise OSError(f"Windows did not retain the required {lease.name} lease state")
-
-    def _release_device(self):
+                    f"Protected Windows sandbox path must not be a reparse point: {current}",
+                    reason="unsupported_path",
+                    target=current,
+                )
+            if current == self.workspace:
+                break
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
         try:
-            for lease in tuple(self._devices):
-                if lease.handle is not None:
-                    self._device_access(lease, cleanup=True)
-                    _check(CloseHandle(lease.handle))
-                    lease.handle = None
-                if lease.mutex is not None:
-                    _check(CloseHandle(lease.mutex))
-                    lease.mutex = None
-                self._devices.remove(lease)
+            return verify_local_ntfs(target, allow_reparse=False)
         except OSError as error:
-            raise SandboxProcessError(f"Could not release Windows sandbox device resources: {error}") from error
+            raise SandboxUnavailable(
+                f"Protected Windows sandbox path is invalid: {target} ({error})",
+                reason="unsupported_path",
+                target=target,
+            ) from error
 
-    def _station_access(self, *, cleanup=False):
-        from .windows_acl import _ace, _read, _sid_in_ace, _write
+    def ensure_protected_paths(self, paths: Sequence[Path]) -> None:
+        """Ensure existing protected targets under workspace are read-only and non-reparse.
 
-        # Limit the station lease to attributes/global atoms for the private
-        # desktop. Do not grant clipboard, screen or desktop creation
-        # rights on the host station, and never lower its integrity label.
-        access = 0x20022  # READ_CONTROL | WINSTA_READATTRIBUTES | ACCESSGLOBALATOMS
-        with self._grants._locked(cleanup=cleanup):
-            previous = _read(self._station, cleanup=cleanup, getter=_get_user_security)
-            if previous is None:
-                return
-            retained = [ace for ace in previous.aces if _sid_in_ace(ace) not in self._grants.sids]
-            if cleanup:
-                if len(retained) == len(previous.aces):
-                    return
-                aces = retained
+        - In writable sessions: enforces SE_DACL_PROTECTED + ALLOW(RX) so writes,
+          deletes, and renames are blocked while reads and host access succeed.
+        - In read-only sessions: rejects reparse points on protected names, and
+          if a concurrent busy writable sibling has set SE_DACL_PROTECTED on a
+          target, explicitly grants RX for this read-only SID (recorded in
+          _granted_roots so teardown/recovery revokes it cleanly).
+        """
+        candidates: list[Path] = list(paths)
+        for name in PROTECTED_NAMES:
+            candidates.append(self.workspace / name)
+
+        with self._lock:
+            if self._closed:
+                raise SandboxUnavailable("Windows AppContainer session is already closed")
+            seen: set[str] = set()
+            to_protect: list[Path] = []
+            to_grant_ro: list[Path] = []
+            dirty = False
+
+            for raw_target in candidates:
+                if not raw_target.is_relative_to(self.workspace) or raw_target == self.workspace:
+                    continue
+                if not os.path.lexists(raw_target):
+                    continue
+                target = self._validate_protected_target(raw_target)
+                key = ntpath.normcase(str(target))
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                if self.read_only:
+                    if is_dacl_protected(target) and key not in self._granted_roots:
+                        self._granted_roots[key] = {
+                            "path": str(target),
+                            "writable": False,
+                            "kind": "protected_ro_grant",
+                        }
+                        to_grant_ro.append(target)
+                        dirty = True
+                    continue
+
+                if key in self._protected_records:
+                    # Re-apply if host replaced the file/dir since initial snapshot.
+                    if not is_protected_readonly_for_sid(target, self.package_name):
+                        to_protect.append(target)
+                    continue
+                snap = capture_dacl_snapshot(target, exclude_sid_str=self.package_name)
+                self._protected_records[key] = {
+                    "path": str(target),
+                    "was_protected": snap["was_protected"],
+                    "original_explicit_aces_b64": snap["original_explicit_aces_b64"],
+                }
+                to_protect.append(target)
+                dirty = True
+
+            if dirty:
+                self._persist_journal()
+            for target in to_grant_ro:
+                grant_root_access(target, self.package_name, writable=False)
+            for target in to_protect:
+                protect_readonly_path(target, self.package_name)
+
+    def _reconcile_path_acl(self, key: str, path: Path) -> None:
+        """Apply the exact required ACL for ``key`` given current refcounts and base state."""
+        r_refs, w_refs = self._command_grant_refs.get(key, [0, 0])
+        if w_refs > 0:
+            grant_root_access(path, self.package_name, writable=True)
+            return
+        if r_refs > 0:
+            if key in self._protected_records:
+                protect_readonly_path(path, self.package_name)
+            elif key in self._granted_roots and self._granted_roots[key]["writable"]:
+                grant_root_access(path, self.package_name, writable=True)
             else:
-                deny = [_ace(1, 0, 0xF037F & ~access, sid) for sid in self._grants.sids]
-                allow = [_ace(0, 0, access, sid) for sid in self._grants.sids]
-                aces = deny + retained + allow
-            _write(self._station, previous, aces, previous.control, setter=_set_user_security)
+                grant_root_access(path, self.package_name, writable=False)
+            return
+        # Both refcounts reached 0: restore pre-command baseline for this path.
+        if key in self._protected_records:
+            protect_readonly_path(path, self.package_name)
+        elif key in self._granted_roots:
+            grant_root_access(
+                path,
+                self.package_name,
+                writable=bool(self._granted_roots[key]["writable"]),
+            )
+        else:
+            revoke_sid_from_root(path, self.package_name, ignore_missing=True)
 
-    def _prepare_desktop(self):
-        # GetProcessWindowStation returns a borrowed handle; acquire our own
-        # handle before editing its DACL, and retain it through Job drain.
-        current = _check(GetProcessWindowStation())
-        station_name, needed = ctypes.create_unicode_buffer(32768), DWORD()
-        _check(GetUserObjectInformation(current, 2, station_name,
-                                        ctypes.sizeof(station_name), ctypes.byref(needed)))
-        self._station = _check(OpenWindowStation(station_name.value, False, 0x60002))
-        self._station_access()
-        name = "VirgoShell." + uuid.uuid4().hex
-        descriptor = ctypes.c_void_p()
-        # The private desktop permits ordinary window operations, but not hooks,
-        # journaling, switching desktops or rewriting its security descriptor.
-        participant = 0x200C7  # READ_CONTROL | READ/WRITEOBJECTS | CREATEWINDOW/MENU | ENUMERATE
-        text = (f"O:{self._user_name}G:{self._user_name}D:P(A;;GA;;;SY)"
-                f"(A;;GA;;;{self._user_name})(A;;0x{participant:X};;;{self.package_name})"
-                f"(A;;0x{participant:X};;;{self.write_name})(A;;RC;;;OW)S:(ML;;NW;;;LW)")
-        _check(ConvertSecurityDescriptor(text, 1, ctypes.byref(descriptor), None))
-        try:
-            attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
-            original = _check(GetThreadDesktop(GetCurrentThreadId()))  # Borrowed.
-            ctypes.set_last_error(0)
-            self._desktop = _check(CreateDesktop(name, None, None, 0, 0xF01FF, ctypes.byref(attributes)))
-            existing = ctypes.get_last_error() == 183
-            if _check(GetThreadDesktop(GetCurrentThreadId())) != original:
-                _check(SetThreadDesktop(original))
-            if existing:
-                raise SandboxUnavailable("Windows sandbox desktop identity was already in use")
-            self.desktop = station_name.value + "\\" + name
-        finally:
-            LocalFree(descriptor)
+    def acquire_command(
+        self, command_grants: Sequence[tuple[Path, bool]]
+    ) -> list[tuple[Path, bool]]:
+        """Increment active command count and apply refcounted one-shot path grants."""
+        with self._lock:
+            if self._closed:
+                raise SandboxUnavailable("Windows AppContainer session is already closed")
+            acquired: list[tuple[Path, bool]] = []
+            touched: list[tuple[str, Path]] = []
+            try:
+                for raw_path, writable in command_grants:
+                    validated = verify_local_ntfs(raw_path, allow_reparse=False)
+                    if not can_open_write_dac(validated):
+                        raise SandboxUnavailable(
+                            f"Cannot grant Windows AppContainer access to '{validated}' "
+                            "(current user lacks WRITE_DAC).",
+                            reason="unsupported_path",
+                            target=validated,
+                        )
+                    key = ntpath.normcase(str(validated))
+                    refs = self._command_grant_refs.setdefault(key, [0, 0])
+                    if writable:
+                        refs[1] += 1
+                    else:
+                        refs[0] += 1
+                    self._command_grant_paths[key] = validated
+                    acquired.append((validated, bool(writable)))
+                    touched.append((key, validated))
+                if touched:
+                    self._persist_journal()
+                    seen_keys: set[str] = set()
+                    for key, path in touched:
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                        self._reconcile_path_acl(key, path)
+                self._active_commands += 1
+                return acquired
+            except BaseException:
+                rollback_keys: list[tuple[str, Path]] = []
+                for path, writable in reversed(acquired):
+                    key = ntpath.normcase(str(path))
+                    refs = self._command_grant_refs.get(key)
+                    if refs is not None:
+                        if writable:
+                            refs[1] = max(0, refs[1] - 1)
+                        else:
+                            refs[0] = max(0, refs[0] - 1)
+                        if refs[0] == 0 and refs[1] == 0:
+                            self._command_grant_refs.pop(key, None)
+                            self._command_grant_paths.pop(key, None)
+                    rollback_keys.append((key, path))
+                seen_rb: set[str] = set()
+                for key, path in rollback_keys:
+                    if key in seen_rb:
+                        continue
+                    seen_rb.add(key)
+                    try:
+                        self._reconcile_path_acl(key, path)
+                    except OSError:
+                        pass
+                try:
+                    self._persist_journal()
+                except OSError:
+                    pass
+                raise
 
-    def _release_desktop(self):
-        try:
-            if self._desktop is not None:
-                _check(CloseDesktop(self._desktop))
-                self._desktop = None
-            if self._station is not None:
-                self._station_access(cleanup=True)
-                _check(CloseWindowStation(self._station))
-                self._station = None
-        except OSError as error:
-            raise SandboxProcessError(f"Could not release Windows sandbox desktop resources: {error}") from error
+    def release_command(self, command_grants: Sequence[tuple[Path, bool]]) -> None:
+        """Reconcile/revoke refcounted one-shot command grants and decrement count."""
+        errors: list[str] = []
+        with self._lock:
+            self._active_commands = max(0, self._active_commands - 1)
+            reconcile_targets: list[tuple[str, Path]] = []
+            for path, writable in command_grants:
+                key = ntpath.normcase(str(path))
+                refs = self._command_grant_refs.get(key)
+                if refs is not None:
+                    if writable:
+                        refs[1] = max(0, refs[1] - 1)
+                    else:
+                        refs[0] = max(0, refs[0] - 1)
+                    if refs[0] == 0 and refs[1] == 0:
+                        self._command_grant_refs.pop(key, None)
+                        self._command_grant_paths.pop(key, None)
+                reconcile_targets.append((key, path))
+            seen: set[str] = set()
+            for key, path in reconcile_targets:
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    self._reconcile_path_acl(key, path)
+                except OSError as exc:
+                    errors.append(f"{path}: {exc}")
+            if reconcile_targets and not self._closed:
+                try:
+                    self._persist_journal()
+                except OSError as exc:
+                    errors.append(f"journal update: {exc}")
+        if errors:
+            raise SandboxProcessError(
+                "Could not revoke Windows command grants: " + "; ".join(errors)
+            )
 
-    def process_attributes(self):
-        capabilities = SecurityCapabilities(self._package_sid, self._capabilities,
-                                             len(self._capabilities), 0)
-        # SECURITY_CAPABILITIES; ALL_APPLICATION_PACKAGES_POLICY with OPT_OUT.
-        return [(0x20009, capabilities), (0x2000F, DWORD(1))]
-
-    def verify_process(self, process):
-        token = HANDLE()
-        _check(OpenProcessToken(process, 0xA, ctypes.byref(token)))  # QUERY | DUPLICATE
-        try:
-            info = _token_info(token, 29)  # TokenIsAppContainer
-            if len(info) != ctypes.sizeof(DWORD) or DWORD.from_buffer(info).value != 1:
-                raise SandboxUnavailable("Windows did not establish the required AppContainer token")
-            _verify_lpac(token)
-            info = _token_info(token, 31)  # TOKEN_APPCONTAINER_INFORMATION
-            if _sid_bytes(ctypes.c_void_p.from_buffer(info).value) != self.package_sid:
-                raise SandboxUnavailable("Windows returned the wrong AppContainer identity")
-            if _token_sids(token, 11) != {self.write_sid}:  # TokenRestrictedSids
-                raise SandboxUnavailable("Windows did not retain the exclusive write-restricting SID")
-            expected = {_sid_bytes(value) for value in self._capability_buffers}
-            if _token_sids(token, 30) != expected:  # TokenCapabilities
-                raise SandboxUnavailable("Windows returned unexpected sandbox capabilities")
-        finally:
-            CloseHandle(token)
-
-    def _environment(self, source, explicit):
-        allowed = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"}
-        result = {key.upper(): value for key, value in source.items() if key.upper() in allowed}
+    def build_environment(
+        self,
+        source: dict[str, str],
+        explicit: dict[str, str],
+        command_scratch: Path,
+    ) -> dict[str, str]:
+        result = {
+            key.upper(): value
+            for key, value in source.items()
+            if key.upper() in _ENV_PASSTHROUGH
+        }
         result.update({key.upper(): value for key, value in explicit.items()})
-        windows = _directory(GetWindowsDirectory)
+
+        # Derive base LocalAppData (<base>\Packages\<pkg>\AC -> <base>) so Windows'
+        # BasepAppContainerEnvironmentExtension maps child LOCALAPPDATA -> <AC>
+        # and TEMP/TMP -> <AC>\Temp cleanly without double-nesting or WinError 203.
+        if (
+            self.profile_path.name.lower() == "ac"
+            and self.profile_path.parent.parent.name.lower() == "packages"
+        ):
+            base_localappdata = str(self.profile_path.parent.parent.parent)
+        else:
+            base_localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+
         result.update(
-            SYSTEMROOT=str(windows), WINDIR=str(windows), COMSPEC=str(SYSTEM_DIRECTORY / "cmd.exe"),
-            PATHEXT=".COM;.EXE;.BAT;.CMD", HOME=str(self.home), USERPROFILE=str(self.home),
-            HOMEDRIVE=self.home.drive, HOMEPATH=str(self.home)[len(self.home.drive):],
-            APPDATA=str(self.home / "AppData" / "Roaming"),
-            LOCALAPPDATA=str(self.home / "AppData" / "Local"),
-            TEMP=str(self.scratch), TMP=str(self.scratch), TMPDIR=str(self.scratch), VIRGO="1",
-            POWERSHELL_TELEMETRY_OPTOUT="1", POWERSHELL_UPDATECHECK="Off",
+            SYSTEMROOT=str(WINDOWS_DIRECTORY),
+            WINDIR=str(WINDOWS_DIRECTORY),
+            COMSPEC=str(SYSTEM_DIRECTORY / "cmd.exe"),
+            PATHEXT=".COM;.EXE;.BAT;.CMD",
+            HOME=str(self.home),
+            USERPROFILE=str(self.home),
+            HOMEDRIVE=self.home.drive,
+            HOMEPATH=str(self.home)[len(self.home.drive) :],
+            APPDATA=str(self.appdata),
+            LOCALAPPDATA=base_localappdata,
+            TEMP=str(self.temp_root),
+            TMP=str(self.temp_root),
+            TMPDIR=str(command_scratch),
+            VIRGO="1",
+            POWERSHELL_TELEMETRY_OPTOUT="1",
+            POWERSHELL_UPDATECHECK="Off",
             DOTNET_CLI_TELEMETRY_OPTOUT="1",
         )
         return result
 
-    def cleanup(self):
+    def verify_process(self, process_handle: HANDLE) -> None:
+        """Verify suspended child process token is a Standard AppContainer for this session."""
+        token = HANDLE()
+        _check(_OpenProcessToken(process_handle, TOKEN_QUERY | TOKEN_DUPLICATE, ctypes.byref(token)))
+        try:
+            info = _token_info(token, TOKEN_IS_APPCONTAINER)
+            if len(info) != ctypes.sizeof(DWORD) or DWORD.from_buffer(info).value != 1:
+                raise SandboxUnavailable("Windows did not establish the required AppContainer token")
+            pkg_info = _token_info(token, TOKEN_APPCONTAINER_SID)
+            pkg_sid_ptr = ctypes.c_void_p.from_buffer(pkg_info).value
+            if not pkg_sid_ptr or _sid_bytes(pkg_sid_ptr) != self.package_sid:
+                raise SandboxUnavailable("Windows returned the wrong AppContainer identity")
+            if _token_sids(token, TOKEN_CAPABILITIES) != set(self._capability_bytes):
+                raise SandboxUnavailable("Windows returned unexpected AppContainer capabilities")
+            if _token_sids(token, TOKEN_RESTRICTED_SIDS):
+                raise SandboxUnavailable("Standard AppContainer token unexpectedly contains restricted SIDs")
+            _verify_standard_appcontainer_access(token)
+        finally:
+            _CloseHandle(token)
+
+    def close(self, *, unmap_drive: bool = True) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._active_commands > 0:
+                raise SandboxProcessError(
+                    f"Cannot tear down Windows AppContainer session with {self._active_commands} active command(s)"
+                )
+            errors: list[str] = []
+
+            # Fail-closed order: revoke all ALLOW roots first, then restore protected read-only paths.
+            for key, path in list(self._command_grant_paths.items()):
+                if key not in self._granted_roots:
+                    try:
+                        revoke_sid_from_root(path, self.package_name, ignore_missing=True)
+                    except OSError as exc:
+                        errors.append(f"revoke command grant {path}: {exc}")
+            self._command_grant_refs.clear()
+            self._command_grant_paths.clear()
+
+            for entry in list(self._granted_roots.values()):
+                root_path = entry["path"]
+                try:
+                    revoke_sid_from_root(root_path, self.package_name, ignore_missing=True)
+                except OSError as exc:
+                    errors.append(f"revoke root {root_path}: {exc}")
+
+            for rec in list(self._protected_records.values()):
+                target_path = rec["path"]
+                try:
+                    revoke_sid_from_root(
+                        target_path,
+                        self.package_name,
+                        ignore_missing=True,
+                        restore_unprotected=not rec.get("was_protected", False),
+                        original_explicit_aces_b64=rec.get("original_explicit_aces_b64", []),
+                    )
+                except OSError as exc:
+                    errors.append(f"restore protected {target_path}: {exc}")
+
+            if unmap_drive and self.dos_drive:
+                try:
+                    _remove_dos_drive(self.dos_drive, self.dos_target)
+                except OSError as exc:
+                    errors.append(f"unmap drive {self.dos_drive}: {exc}")
+
+            try:
+                _delete_profile(self.profile_name, ignore_missing=True)
+            except Exception as exc:
+                errors.append(str(exc))
+
+            if not errors:
+                try:
+                    self.state_file.unlink(missing_ok=True)
+                except OSError as exc:
+                    errors.append(f"remove journal {self.state_file}: {exc}")
+
+            self._closed = True
+            if errors:
+                raise SandboxProcessError(
+                    "Windows AppContainer session teardown failed: " + "; ".join(errors[:5])
+                )
+
+
+class _CommandEnvelope:
+    """Lightweight per-command adapter passed to WindowsProcess and NativeProcess."""
+
+    token = None  # Signals WindowsProcess to use CreateProcessW (no CreateProcessAsUserW).
+
+    def __init__(
+        self,
+        session: WindowsSandboxSession,
+        policy,
+        argv: Sequence[str],
+        cwd: Path,
+        env: dict[str, str],
+        cancellation,
+        *,
+        env_overrides: dict[str, str] | None = None,
+    ) -> None:
+        self.session = session
+        self.policy = policy
+        self.cancellation = cancellation
+        self.desktop = session.desktop
+        self.process = None
+        self._closed = False
+        self._command_grants: list[tuple[Path, bool]] = []
+        self._acquired = False
+
+        # Keep ctypes buffers referenced for the lifetime of CreateProcessW attribute consumption.
+        self._sid_buf = ctypes.create_string_buffer(session.package_sid)
+        self._cap_bufs = [ctypes.create_string_buffer(raw) for raw in session._capability_bytes]
+        if self._cap_bufs:
+            self._cap_array = (SidAndAttributes * len(self._cap_bufs))(
+                *(
+                    SidAndAttributes(ctypes.cast(buf, PSID), SE_GROUP_ENABLED)
+                    for buf in self._cap_bufs
+                )
+            )
+            self._cap_ptr = ctypes.cast(self._cap_array, ctypes.POINTER(SidAndAttributes))
+        else:
+            self._cap_array = None
+            self._cap_ptr = None
+
+        self.command_scratch = session.temp_root / f"cmd-{uuid.uuid4().hex[:12]}"
+        self.command_scratch.mkdir(parents=True, exist_ok=True)
+        try:
+            self._check_cancelled()
+            self._command_grants = session.acquire_command(policy.grants)
+            self._acquired = True
+            self.cwd = _map_cwd_to_drive(cwd, session.workspace, session.dos_drive)
+            self.environment = session.build_environment(
+                env, env_overrides or {}, self.command_scratch
+            )
+            self._check_cancelled()
+        except BaseException:
+            self.cleanup()
+            raise
+
+    def _check_cancelled(self) -> None:
+        if self.cancellation is not None and self.cancellation.is_set():
+            raise SandboxCancelled("Windows sandbox launch cancelled before payload release")
+
+    def process_attributes(self) -> list[tuple[int, Any]]:
+        capabilities = SecurityCapabilities(
+            ctypes.cast(self._sid_buf, PSID),
+            self._cap_ptr,
+            len(self._cap_bufs),
+            0,
+        )
+        # Standard AppContainer ONLY — keeps ALL APPLICATION PACKAGES (no 0x2000F LPAC opt-out).
+        return [(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, capabilities)]
+
+    def verify_process(self, process_handle: HANDLE) -> None:
+        self.session.verify_process(process_handle)
+
+    def cleanup(self) -> None:
         if self._closed:
             return
         if self.process is not None and not self.process.tree_drained:
             raise SandboxProcessError("Windows sandbox resources require verified process-tree drain")
-        # The caller must first prove Job drain. If revocation fails, retain
-        # the profile/lease for diagnosis rather than claiming complete cleanup.
-        self._release_desktop()
-        self._release_device()
-        if self._grants is not None:
-            self._grants.cleanup()
-            self._grants = None
-        self._pins.close()
-        if self.token is not None:
-            _check(CloseHandle(self.token))
-            self.token = None
-        if self._profile is not None:
-            result = DeleteProfile(self._profile)
-            if result < 0:
-                raise SandboxProcessError(f"Could not remove Windows sandbox profile {self._profile} (0x{result & 0xffffffff:08X})")
-            self._profile = None
-        if self._package_sid:
-            FreeSid(self._package_sid)
-            self._package_sid = PSID()
+        errors: list[str] = []
+        try:
+            shutil.rmtree(self.command_scratch, ignore_errors=True)
+        except OSError as exc:
+            errors.append(f"scratch cleanup: {exc}")
+        if self._acquired:
+            try:
+                self.session.release_command(self._command_grants)
+            except Exception as exc:
+                errors.append(str(exc))
+            self._acquired = False
         self._closed = True
         self.process = None
+        if errors:
+            raise SandboxProcessError(
+                "Could not release Windows command sandbox resources: " + "; ".join(errors)
+            )
 
 
-def spawn(policy, argv, cwd, env, stdout, cancellation, *, stdin=subprocess.DEVNULL,
-          stderr=subprocess.STDOUT, env_overrides=None):
+class WindowsSessionPool:
+    """Owns active session-level Standard AppContainer leases for one executor."""
+
+    def __init__(self, *, journal_dir: Path | None = None) -> None:
+        self._lock = threading.RLock()
+        self._sessions: dict[tuple[str, bool, bool], WindowsSandboxSession] = {}
+        self._workspace_drives: dict[str, tuple[str, str]] = {}
+        self._journal_dir = journal_dir
+        self._closed = False
+        _LIVE_POOLS.add(self)
+
+    def get_or_create(
+        self,
+        workspace: Path,
+        *,
+        read_only: bool,
+        network_allowed: bool,
+    ) -> WindowsSandboxSession:
+        ws_key = ntpath.normcase(str(workspace))
+        session_key = (ws_key, bool(read_only), bool(network_allowed))
+        with self._lock:
+            if self._closed:
+                self._closed = False
+            existing = self._sessions.get(session_key)
+            if existing is not None and not existing._closed:
+                return existing
+
+            # Close idle sibling-mode sessions on the same workspace first so
+            # SE_DACL_PROTECTED flags from a prior writable session are restored
+            # before a new read-only session grants workspace inheritance.
+            for sib_key, sibling in list(self._sessions.items()):
+                if sib_key[0] == ws_key and sib_key != session_key:
+                    with sibling._lock:
+                        idle = sibling._active_commands == 0
+                    if idle:
+                        try:
+                            sibling.close(unmap_drive=False)
+                        finally:
+                            self._sessions.pop(sib_key, None)
+
+            drive_info = self._workspace_drives.get(ws_key)
+            created_drive = False
+            if drive_info is None and ancestor_lacks_aap(workspace):
+                drive_info = _allocate_dos_drive(workspace)
+                if drive_info is not None:
+                    self._workspace_drives[ws_key] = drive_info
+                    created_drive = True
+
+            dos_drive, dos_target = drive_info if drive_info is not None else (None, None)
+            try:
+                session = WindowsSandboxSession(
+                    workspace,
+                    read_only=read_only,
+                    network_allowed=network_allowed,
+                    dos_drive=dos_drive,
+                    dos_target=dos_target,
+                    journal_dir=self._journal_dir,
+                )
+            except BaseException:
+                if created_drive and drive_info is not None:
+                    self._workspace_drives.pop(ws_key, None)
+                    _remove_dos_drive(*drive_info)
+                raise
+            self._sessions[session_key] = session
+            return session
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed and not self._sessions and not self._workspace_drives:
+                return
+            errors: list[str] = []
+            for key, session in list(self._sessions.items()):
+                try:
+                    session.close(unmap_drive=False)
+                except Exception as exc:
+                    errors.append(str(exc))
+                self._sessions.pop(key, None)
+
+            for ws_key, (drive, target) in list(self._workspace_drives.items()):
+                try:
+                    _remove_dos_drive(drive, target)
+                except OSError as exc:
+                    errors.append(f"unmap drive {drive}: {exc}")
+                self._workspace_drives.pop(ws_key, None)
+            self._closed = True
+            if errors:
+                raise SandboxProcessError(
+                    "Windows sandbox pool teardown encountered errors: " + "; ".join(errors[:5])
+                )
+
+
+_LIVE_POOLS: weakref.WeakSet[WindowsSessionPool] = weakref.WeakSet()
+_DEFAULT_POOL_LOCK = threading.Lock()
+_DEFAULT_POOL: WindowsSessionPool | None = None
+
+
+def _get_default_pool() -> WindowsSessionPool:
+    global _DEFAULT_POOL
+    with _DEFAULT_POOL_LOCK:
+        if _DEFAULT_POOL is None:
+            _DEFAULT_POOL = WindowsSessionPool()
+        return _DEFAULT_POOL
+
+
+def _atexit_cleanup() -> None:
+    for pool in list(_LIVE_POOLS):
+        try:
+            pool.close()
+        except Exception:
+            pass
+
+
+atexit.register(_atexit_cleanup)
+
+
+def spawn(
+    policy,
+    argv: list[str] | tuple[str, ...],
+    cwd: Path,
+    env: dict[str, str],
+    stdout,
+    cancellation,
+    *,
+    stdin=subprocess.DEVNULL,
+    stderr=subprocess.STDOUT,
+    env_overrides: dict[str, str] | None = None,
+    session_pool: WindowsSessionPool | None = None,
+):
+    """Launch a command inside a session-scoped Standard AppContainer via WindowsProcess."""
     from ..tools.windows_process import WindowsProcess
 
-    envelope, proc = None, None
+    envelope = None
+    proc = None
     try:
-        envelope = WindowsSandbox(policy, argv, cwd, env, cancellation, env_overrides=env_overrides)
-        proc = WindowsProcess(argv, cwd=envelope.cwd, env=envelope.environment,
-                              stdin=stdin, stdout=stdout, stderr=stderr, sandbox=envelope)
+        if cancellation is not None and cancellation.is_set():
+            raise SandboxCancelled("Windows sandbox setup cancelled before payload release")
+        precheck_windows_sandbox()
+        _run_startup_recovery_once()
+
+        validated_cwd = validate_policy(policy, cwd)
+        if not argv:
+            raise SandboxUnavailable("Windows sandbox execution requires an explicit native .exe path")
+        executable = Path(normalize_path(argv[0]))
+        if executable.suffix.lower() != ".exe" or not executable.is_file():
+            raise SandboxUnavailable("Windows sandbox execution requires an explicit native .exe path")
+
+        workspace = verify_local_ntfs(policy.workspace, allow_reparse=False, expect_directory=True)
+        runtime_candidates = _discover_runtime_candidates(policy, executable)
+        runtime_to_grant = _check_runtime_accessibility(runtime_candidates, workspace, executable)
+
+        pool = session_pool if session_pool is not None else _get_default_pool()
+        session = pool.get_or_create(
+            workspace,
+            read_only=policy.read_only,
+            network_allowed=policy.network_allowed,
+        )
+        session.ensure_runtime_roots(runtime_to_grant)
+        session.ensure_protected_paths(policy.protected_paths())
+
+        envelope = _CommandEnvelope(
+            session,
+            policy,
+            argv,
+            validated_cwd,
+            env,
+            cancellation,
+            env_overrides=env_overrides,
+        )
+        proc = WindowsProcess(
+            argv,
+            cwd=envelope.cwd,
+            env=envelope.environment,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            sandbox=envelope,
+        )
         proc._virgo_sandbox_tmp = envelope
-        proc._virgo_sandbox = {**policy.describe(), "backend": "windows-lpac",
-                               "filesystem": "lpac-acl-with-write-restriction"}
+        proc._virgo_sandbox = {
+            **policy.describe(),
+            "backend": BACKEND_NAME,
+            "filesystem": "standard-appcontainer-session-acl",
+            "appcontainer_sid": session.package_name,
+            "dos_drive": session.dos_drive,
+        }
         return proc
     except BaseException as error:
         proc = proc or getattr(error, "process", None) or (envelope.process if envelope is not None else None)
         if envelope is not None:
             if proc is not None:
                 proc._virgo_sandbox_tmp = envelope
-            cleanup_errors = []
+            cleanup_errors: list[str] = []
             if proc is not None:
                 try:
                     proc.cleanup_tree()
@@ -789,7 +1699,9 @@ def spawn(policy, argv, cwd, env, stdout, cancellation, *, stdin=subprocess.DEVN
         if proc is not None and getattr(proc, "_released", False):
             if isinstance(error, (SandboxCancelled, SandboxProcessError)):
                 raise
-            raise SandboxProcessError(f"Windows sandbox process started but launch reporting failed: {error}") from error
+            raise SandboxProcessError(
+                f"Windows sandbox process started but launch reporting failed: {error}"
+            ) from error
         if isinstance(error, (OSError, AttributeError)) and not isinstance(error, SandboxCancelled):
             raise SandboxUnavailable(f"Could not establish the Windows sandbox: {error}") from error
         raise

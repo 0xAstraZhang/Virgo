@@ -24,9 +24,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # S5-04 (§6.2): Performance budgets apply to Tier 1 POSIX platforms (Linux and macOS);
-        # native Windows LPAC is experimental and excluded from this gate.
-        os: [ubuntu-latest, macos-latest]
+        # S5-04: Performance budgets apply across all Tier 1 platforms (Linux, macOS, Windows).
+        os: [ubuntu-latest, macos-latest, windows-latest]
         mode: [no-limit, read-only, workspace-edit]
     env:
       PYTHONUTF8: '1'
@@ -40,6 +39,7 @@ jobs:
           path: head
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: runner.os != 'Windows'
         with:
           ref: ${{ env.BASELINE }}
           path: baseline
@@ -58,13 +58,16 @@ jobs:
           if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Install the locked environments
+      - name: Install the locked baseline environment
+        if: runner.os != 'Windows'
         shell: bash
-        run: |
-          uv sync --directory baseline --locked --dev
-          uv sync --directory head --locked --dev
+        run: uv sync --directory baseline --locked --dev
+      - name: Install the locked head environment
+        shell: bash
+        run: uv sync --directory head --locked --dev
       - name: Measure baseline
         id: baseline
+        if: runner.os != 'Windows'
         working-directory: baseline
         shell: bash
         run: uv run --no-sync python ../head/ci/measure_permission_modes.py --mode "$MODE" --contract original --samples 3 --repeat 5 --output ../baseline.json
@@ -74,7 +77,7 @@ jobs:
         shell: bash
         run: uv run --no-sync python ci/measure_permission_modes.py --mode "$MODE" --samples 3 --repeat 5 --output ../head.json
       - name: Compare validated samples
-        if: ${{ !cancelled() && hashFiles('head.json', 'baseline.json') != '' }}
+        if: ${{ !cancelled() && runner.os != 'Windows' && hashFiles('head.json', 'baseline.json') != '' }}
         working-directory: head
         shell: bash
         run: uv run --no-sync python ci/compare_permission_timing.py --mode "$MODE" --head-sha "$HEAD_SHA" --head ../head.json --baseline ../baseline.json --output ../comparison.json
