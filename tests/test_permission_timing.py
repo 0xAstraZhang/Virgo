@@ -91,3 +91,22 @@ def test_paired_comparison_requires_clean_complete_same_workload():
                    {'tracked_diff_sha256': 'dirty'}, {'samples': [{**sample, 'approval_questions': ['allow?']}]}):
         with pytest.raises(ValueError):
             comparison({**head, **change}, base, 'head', mode)
+
+
+def test_realistic_workspace_fixture_and_scale_budgets(tmp_path):
+    created = measure_permission_modes.populate_realistic_workspace(tmp_path, 50)
+    assert len(created) == 50
+    assert all((tmp_path / rel).is_file() for rel in created)
+
+    small = [{'success': True, 'cold_start_ms': 400.0, 'read_median_ms': 8.0}]
+    large_ok = [{'success': True, 'cold_start_ms': 450.0, 'read_median_ms': 10.0}]
+    verdict = measure_permission_modes.evaluate_scale_budgets(small, large_ok)
+    assert verdict['passed'] is True and not verdict['violations']
+
+    slow_cold = [{'success': True, 'cold_start_ms': 6200.0, 'read_median_ms': 10.0}]
+    verdict = measure_permission_modes.evaluate_scale_budgets(small, slow_cold)
+    assert verdict['passed'] is False and any('cold_start_ms' in v for v in verdict['violations'])
+
+    scaled_read = [{'success': True, 'cold_start_ms': 450.0, 'read_median_ms': 95.0}]
+    verdict = measure_permission_modes.evaluate_scale_budgets(small, scaled_read)
+    assert verdict['passed'] is False and any('scaled' in v for v in verdict['violations'])

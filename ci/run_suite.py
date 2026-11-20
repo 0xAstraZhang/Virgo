@@ -14,12 +14,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--execution', choices=['serial', 'parallel'], required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--ignore', action='append', default=[])
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     target = args.output / 'junit.xml'
     target.unlink(missing_ok=True)
+    ignored = {Path(p).as_posix() for p in args.ignore}
+    ignore_flags = [f'--ignore={p}' for p in args.ignore]
     manifest = json.loads(Path(__file__).with_name('parallel-files.json').read_text())
-    groups = [[p for p in group if Path(p).is_file()] for group in manifest]
+    groups = [[p for p in group if Path(p).is_file() and Path(p).as_posix() not in ignored] for group in manifest]
     selected = [p for group in groups for p in group]
     if len(selected) != len(set(selected)):
         raise ValueError('Duplicate files in parallel manifest')
@@ -29,7 +32,7 @@ def main():
         xml.unlink(missing_ok=True)
         command = [sys.executable, '-u', str(Path(__file__).with_name('run_pytest.py')),
                    '-v', '-ra', '--tb=long', '--color=no', '--durations=30',
-                   '-o', 'junit_family=legacy', f'--junitxml={xml}', *selection]
+                   '-o', 'junit_family=legacy', f'--junitxml={xml}', *ignore_flags, *selection]
         with (args.output / f'{label}.log').open('w', encoding='utf-8') as log:
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True, encoding='utf-8', errors='replace', bufsize=1) as process:

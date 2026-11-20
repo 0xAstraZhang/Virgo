@@ -24,7 +24,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # S5-04 (§6.2): Performance budgets apply to Tier 1 POSIX platforms (Linux and macOS);
+        # native Windows LPAC is experimental and excluded from this gate.
+        os: [ubuntu-latest, macos-latest]
         mode: [no-limit, read-only, workspace-edit]
     env:
       PYTHONUTF8: '1'
@@ -76,6 +78,13 @@ jobs:
         working-directory: head
         shell: bash
         run: uv run --no-sync python ci/compare_permission_timing.py --mode "$MODE" --head-sha "$HEAD_SHA" --head ../head.json --baseline ../baseline.json --output ../comparison.json
+      - name: Enforce realistic-scale cold-start and Read budgets (S5-04)
+        working-directory: head
+        shell: bash
+        run: >-
+          uv run --no-sync python ci/measure_permission_modes.py
+          --mode "$MODE" --samples 2 --repeat 2 --read-repeats 10
+          --realistic-files 1000 --check-budgets --output ../budget.json
       - name: Fetch the pinned public license in Read-Only mode
         if: ${{ !cancelled() && matrix.mode == 'read-only' }}
         working-directory: head
@@ -88,5 +97,6 @@ jobs:
             head.json
             baseline.json
             comparison.json
+            budget.json
           if-no-files-found: error
           retention-days: 14

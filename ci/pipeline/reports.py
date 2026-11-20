@@ -1,12 +1,9 @@
-"""Report integrity, aliases, and separately reviewed duplicate/product retirements."""
+"""Report integrity and test-name normalization (no SHA-bound retirement files)."""
 
 from __future__ import annotations
 
 import math
 from collections import Counter
-from pathlib import Path
-
-from .io import read_json
 
 BAD = {"failed", "error"}
 STATUSES = BAD | {"passed", "skipped"}
@@ -86,145 +83,6 @@ PARAMETER_ALIASES = {
     "test_work_mode_command_is_localized_and_available_without_plugins[zh-CN-\\u5de5\\u4f5c\\u6a21\\u5f0f]":
         "test_work_mode_command_is_localized_and_available_without_plugins[zh-CN-Plan \\u4efb\\u52a1]",
 }
-
-
-# Each retirement is scoped to the reviewed baseline and original module.
-# Coverage and rationale: docs/en/development/test-retirements.md. These are not aliases:
-# the removed test stays visible and its retained coverage must pass in both runs.
-APPROVED_RETIREMENTS = {
-    "a722c9d3b13edbbd99b835072bae13ed6d7ebf01": {
-        "test_work_mode_startup_is_separate_from_output_approval_and_sandbox[checkout]": (
-            "tests.cli.test_main", (
-                "test_work_mode_startup_is_separate_from_output_approval_and_sandbox[command]",
-                "test_work_mode_startup_is_separate_from_output_approval_and_sandbox[module]",
-            )),
-        "test_cli_identity[checkout]": (
-            "tests.cli.test_main", ("test_cli_identity[command]", "test_cli_identity[module]")),
-        "test_cli_loads_features_and_streams_json[checkout]": (
-            "tests.cli.test_main", (
-                "test_cli_loads_features_and_streams_json[command]",
-                "test_cli_loads_features_and_streams_json[module]",
-            )),
-        "test_fullscreen_rejects_non_terminal_before_starting_session[checkout]": (
-            "tests.cli.test_main", (
-                "test_fullscreen_rejects_non_terminal_before_starting_session[command]",
-                "test_fullscreen_rejects_non_terminal_before_starting_session[module]",
-            )),
-        "test_non_terminal_uses_plain_repl[checkout-auto]": (
-            "tests.cli.test_main", (
-                "test_non_terminal_uses_plain_repl[command-auto]",
-                "test_non_terminal_uses_plain_repl[module-auto]",
-            )),
-        "test_non_terminal_uses_plain_repl[checkout-plain]": (
-            "tests.cli.test_main", (
-                "test_non_terminal_uses_plain_repl[command-plain]",
-                "test_non_terminal_uses_plain_repl[module-plain]",
-            )),
-        "test_print_text_ignores_fullscreen_option[checkout]": (
-            "tests.cli.test_main", (
-                "test_print_text_ignores_fullscreen_option[command]",
-                "test_print_text_ignores_fullscreen_option[module]",
-            )),
-    },
-    "0ffc23707de6e87a579a46a8f027679c253b78dc": {
-        "test_tool_calls_and_results_are_paired_in_order": ("tests.agent.test_loop", (
-            "test_parallel_results_are_emitted_as_completed_but_history_keeps_call_order",
-            "test_tool_completion_order_survives_reload_without_changing_model_history",
-        )),
-        "test_after_tool_call_overrides_result": ("tests.agent.test_loop", (
-            "test_post_tool_hook_feedback_keeps_image_results",
-            "test_post_tool_hook_feedback_keeps_terminate",
-            "test_hooks_cannot_erase_or_override_execution_and_adapter_facts",
-        )),
-        "test_result_hook_failure_preserves_the_original_tool_failure": ("tests.agent.test_diagnostics", (
-            "test_projection_sees_final_hooks_and_recorded_evidence_once_in_provider_content",
-        )),
-        "test_result_hook_recovery_keeps_original_diagnostic_without_marking_success_failed": (
-            "tests.agent.test_diagnostics", (
-                "test_tool_failure_and_recovered_result_hook_keep_original_evidence",
-            ),
-        ),
-        "test_retry_on_retryable_errors": ("tests.harness.test_session", (
-            "test_recovered_retry_exposes_its_log_reference_in_text_and_json",
-            "test_retry_failure_survives_success_and_reload_without_prompt_contents",
-        )),
-        "test_system_prompt_includes_context_files": ("tests.harness.test_session", (
-            "test_user_system_and_project_context_survive_for_their_roles",
-            "test_default_request_keeps_tool_definitions_without_duplicate_or_empty_sections",
-        )),
-        "test_model_errors_are_reported": ("tests.harness.test_session", (
-            "test_final_model_error_is_written_once_and_exposed_with_its_log_path",
-            "test_provider_error_ends_run_without_crash",
-        )),
-        "test_codex_http_failure_redacts_access_token": ("tests.ai.providers.test_codex", (
-            "test_http_failure_has_correlation_without_response_payload[429-virgo.ai.providers.codex-openai-codex]",
-        )),
-        "test_responses_http_error_is_classified": ("tests.ai.providers.test_responses", (
-            "test_http_failure_has_correlation_without_response_payload[429-virgo.ai.providers.responses-openai-responses]",
-        )),
-    },
-}
-
-# This is an exact reviewed inventory, not a feature-directory exemption. Each
-# original case must have passed at this SHA and all preservation/migration
-# gates must pass at their specified revisions before a deletion is accepted.
-PRODUCT_RETIREMENTS = tuple(read_json(Path(__file__).with_name(filename)) for filename in (
-    "core_plugin_retirements.json",
-    "execution_policy_retirements.json",
-    "shell_scope_retirements.json",
-    "plan_review_login_retirements.json",
-    "mcp_extension_retirements.json",
-    "fixed_permission_mode_retirements.json",
-))
-
-
-def product_retirement_policy(baseline_sha):
-    policies = [policy for policy in PRODUCT_RETIREMENTS if policy["baseline_sha"] == baseline_sha]
-    # Missing or ambiguous policies must not turn into a combined exemption.
-    return policies[0] if len(policies) == 1 else None
-
-
-def approved_retirements(base, head):
-    retired = {}
-    for name, (module, coverage) in APPROVED_RETIREMENTS.get(base["sha"], {}).items():
-        old = base["tests"].get(name, {})
-        if name in head["tests"] or old.get("status") != "passed" or old.get("classname") != module:
-            continue
-        if coverage and all(report["tests"].get(case, {}).get("status") == "passed"
-                            for report in (base, head) for case in coverage):
-            retired[name] = list(coverage)
-    return retired
-
-
-def approved_product_retirements(base, head):
-    policy = product_retirement_policy(base["sha"])
-    if policy is None:
-        return {}
-
-    def passed(report, identity):
-        case = report["tests"].get(identity["name"], {})
-        return case.get("status") == "passed" and case.get("classname") == identity["classname"]
-
-    preserved, acceptance = policy["preservation_gates"], policy["acceptance_gates"]
-    if (not preserved or not acceptance
-            or not all(passed(report, identity) for report in (base, head) for identity in preserved)
-            or not all(passed(head, identity) for identity in acceptance)):
-        return {}
-    products = policy.get("products") or {}
-
-    def product_passes(product):
-        entry = products.get(product)
-        if entry is None:
-            return not products
-        gates = entry.get("replacement_acceptance") or ()
-        return bool(gates) and all(passed(head, identity) for identity in gates)
-
-    return {
-        identity["name"]: {"classname": identity["classname"], "product": identity["product"]}
-        for identity in policy["retired_cases"]
-        if identity["name"] not in head["tests"] and passed(base, identity)
-        and product_passes(identity["product"])
-    }
 
 
 def validate_report(data):

@@ -23,10 +23,13 @@ def run(args):
     (output / "results.json").unlink(missing_ok=True)
     started = time.monotonic()
     with (output / "pytest.log").open("w", encoding="utf-8") as log:
-        with subprocess.Popen([
+        command = [
             sys.executable, "-u", str(Path(__file__).resolve().parents[1] / "run_suite.py"),
             "--execution", args.execution, "--output", str(output),
-        ], cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        ]
+        for ignored in getattr(args, "ignore", ()) or ():
+            command.extend(["--ignore", ignored])
+        with subprocess.Popen(command, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
             env={**os.environ, "PYTHONUNBUFFERED": "1"}) as result:
             for line in result.stdout:

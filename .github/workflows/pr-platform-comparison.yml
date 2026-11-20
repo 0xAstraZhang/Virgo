@@ -152,15 +152,23 @@ jobs:
         run: uv run --no-sync python ../ci-config/ci/checks/powershell_cache.py
       - name: Run complete pytest suite
         # Only test failures are deferred; the final job validates reports AND job results.
+        # S6-02 (§6.2): On Windows, run non-native-sandbox tests on a single runner as a
+        # blocking gate; experimental native Windows LPAC tests run daily in windows-sandbox.yml.
         continue-on-error: true
         working-directory: candidate
         env:
           TEST_SHA: ${{ matrix.revision == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
+          RUNNER_OS_NAME: ${{ runner.os }}
         shell: bash
-        run: >-
-          uv run --no-sync python ../ci-config/ci/compare_tests.py run
-          --project . --output ../result
-          --platform '${{ matrix.os }}' --label '${{ matrix.revision }}' --sha "$TEST_SHA"
+        run: |
+          extra=()
+          if [ "$RUNNER_OS_NAME" = "Windows" ]; then
+            extra+=(--ignore tests/harness/test_windows_sandbox_e2e.py)
+          fi
+          uv run --no-sync python ../ci-config/ci/compare_tests.py run \
+            --project . --output ../result \
+            --platform '${{ matrix.os }}' --label '${{ matrix.revision }}' --sha "$TEST_SHA" \
+            "${extra[@]}"
       - name: Build and smoke test installed distribution
         if: runner.os == 'Linux' && matrix.revision == 'head'
         working-directory: candidate
