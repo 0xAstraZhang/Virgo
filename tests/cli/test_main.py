@@ -70,6 +70,8 @@ def test_cli_applies_execution_override_before_validating_user_preset(project, m
     home = Path(os.environ["VIRGO_HOME"])
     executor = SimpleNamespace(backend="not-launched")
     monkeypatch.setattr("virgo.sandbox.SandboxExecutor", lambda: executor)
+    if sys.platform == "win32":
+        monkeypatch.setattr("virgo.sandbox.windows_sandbox.precheck_experimental_sandbox", lambda: None)
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     # S7-02: Retired permissions.preset fails clearly with exit code 2 instead of silent migration.
     (home / "settings.json").write_text(json.dumps({"language": "zh-CN", "permissions": {"preset": "workspace-edit"}}))

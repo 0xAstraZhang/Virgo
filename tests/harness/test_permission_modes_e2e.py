@@ -155,11 +155,18 @@ def test_child_created_before_mode_change_keeps_its_origin_permissions(broker_se
 
 
 def test_default_profile_is_workspace_edit_with_resource_approval(project):
+    from virgo.execution_policy import default_execution_mode
+
+    expected = default_execution_mode()
     session = AgentSession(project, model="faux/test", session=None, extensions=False, refresh_models=False)
     try:
-        assert session.services["execution"].name == "sandbox"
-        assert session.services["execution"].selected_mode_id == "workspace-edit"
-        assert "request_permissions" in {t.name for t in session.main.tools}
+        assert session.services["execution"].selected_mode_id == expected
+        if expected == "no-limit":
+            assert session.services["execution"].name == "host"
+            assert "request_permissions" not in {t.name for t in session.main.tools}
+        else:
+            assert session.services["execution"].name == "sandbox"
+            assert "request_permissions" in {t.name for t in session.main.tools}
     finally:
         session.shutdown()
 

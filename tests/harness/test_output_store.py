@@ -69,7 +69,7 @@ def test_s309_untruncated_command_leaves_no_log_files(make_session, project):
         session.shutdown()
 
 
-def test_s309_truncated_command_persists_record_and_trash_cleans_up(make_session, project):
+def test_s309_truncated_command_persists_record_and_trash_cleans_up(make_session, project, trash):
     """S3-09: Truncated command persists an output_id; trashing the session deletes its outputs."""
     session = make_session(
         session="new", settings={"execution": {"mode": "no-limit"}},

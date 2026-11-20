@@ -259,7 +259,7 @@ def test_ver09_jsonrpc_error_keeps_connection_healthy_and_shared_across_subagent
         encoding="utf-8",
     )
     configure(Path(os.environ["VIRGO_HOME"]) / "mcp.json", args=[str(server)])
-    session = make_session(settings={"execution": {"mode": "workspace-edit"}})
+    session = make_session(settings={"execution": {"mode": "no-limit"}})
     ctx = ToolContext("call", project, threading.Event())
     ping = session.tool("mcp__echo__ping")
     assert ping is not None

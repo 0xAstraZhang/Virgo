@@ -51,9 +51,12 @@ def test_permission_defaults_and_saved_mode_migration(project, configured):
         return
     session = AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False)
     try:
+        from virgo.execution_policy import default_execution_mode
+
+        expected_mode = default_execution_mode()
         assert session.approval_policy == "ask"
-        assert session.services["execution"].name == "sandbox"
-        assert session.services["execution"].selected_mode_id == "workspace-edit"
+        assert session.services["execution"].name == ("host" if expected_mode == "no-limit" else "sandbox")
+        assert session.services["execution"].selected_mode_id == expected_mode
     finally:
         session.shutdown()
 
@@ -187,24 +190,30 @@ def test_native_settings_migrate_from_the_effective_main_policy(project, config,
 
 @pytest.mark.parametrize("previous", [{}, {"language": "zh-CN", "model": "faux/old"}])
 def test_upgraded_user_keeps_previous_implicit_workspace_boundary(project, previous):
+    from virgo.execution_policy import default_execution_mode
+
+    expected = default_execution_mode()
     paths = Paths(project)
     path = paths.user / "settings.json"
     original = json.dumps(previous)
     path.write_text(original)
-    assert Settings.load(paths).get("execution.mode") == "workspace-edit"
+    assert Settings.load(paths).get("execution.mode") == expected
     assert Settings.load(paths, {"execution": {"mode": "no-limit"}}).get("execution.mode") == "no-limit"
     assert path.read_text() == original
 
 
 def test_first_user_save_preserves_fresh_default_across_projects_and_cli_overrides(project, tmp_path):
+    from virgo.execution_policy import default_execution_mode
+
+    expected = default_execution_mode()
     paths = Paths(project)
     paths.project.mkdir()
     (paths.project / "settings.json").write_text(json.dumps({"effort": "low"}))
-    assert Settings.load(paths).get("execution.mode") == "workspace-edit"
+    assert Settings.load(paths).get("execution.mode") == expected
     path = paths.user / "settings.json"
     assert not path.exists()
     settings = Settings.load(paths, {"execution": {"mode": "read-only"}})
     settings.save_user({"language": "zh-CN"})
     assert settings.get("execution.mode") == "read-only"
-    assert json.loads(path.read_text())["execution"]["mode"] == "workspace-edit"
-    assert Settings.load(Paths(tmp_path / "other-project")).get("execution.mode") == "workspace-edit"
+    assert json.loads(path.read_text())["execution"]["mode"] == expected
+    assert Settings.load(Paths(tmp_path / "other-project")).get("execution.mode") == expected

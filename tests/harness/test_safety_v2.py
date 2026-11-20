@@ -11,6 +11,8 @@ from virgo.harness.high_risk import detect_high_risk_command
 from virgo.harness.settings import Paths, Settings
 
 from tests.support.harness import RecordingUI, tool_results
+from tests.support.sandbox import python_command
+from tests.support.shell import selected
 
 # -- S1-02 / VER-02: Untrusted project settings stripping --------------------
 
@@ -151,19 +153,15 @@ def test_high_risk_detector_allows_normal_commands(tmp_path, command):
 def test_ver10_high_risk_command_prompts_in_workspace_edit_and_no_limit(broker_session, make_session, mode):
     ui = RecordingUI(["n"])
     if mode == "no-limit":
-        session = make_session(
-            faux.reply(tools=[("bash", {"command": "git push --force origin feat"})]),
-            faux.reply("done"),
-            ui=ui,
-            settings={"execution": {"mode": "no-limit"}},
-        )
+        session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
     else:
-        session = broker_session(
-            faux.reply(tools=[("bash", {"command": "git push --force origin feat"})]),
-            faux.reply("done"),
-            ui=ui,
-            preset="workspace-edit",
-        )
+        session = broker_session(ui=ui, preset="workspace-edit")
+    shell = selected(session).tool_name
+    faux.script(
+        "test",
+        faux.reply(tools=[(shell, {"command": "git push --force origin feat"})]),
+        faux.reply("done"),
+    )
     session.prompt("Force push")
     results = tool_results(session)
     assert results and results[0].is_error
@@ -177,11 +175,12 @@ def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session,
     ui_host = RecordingUI()
     marker = project / "ran.txt"
     host_session = make_session(
-        faux.reply(tools=[("bash", {"command": f"echo 'DROP TABLE demo;' > {marker}"})]),
-        faux.reply("done"),
         ui=ui_host,
         settings={"execution": {"mode": "no-limit"}, "permissions": {"confirmHighRisk": False}},
     )
+    host_shell = selected(host_session).tool_name
+    cmd = python_command(host_session, f"from pathlib import Path; Path({str(marker)!r}).write_text('DROP TABLE demo;')")
+    faux.script("test", faux.reply(tools=[(host_shell, {"command": cmd})]), faux.reply("done"))
     host_session.prompt("Run with confirmation disabled")
     assert not ui_host.questions
     assert marker.read_text().strip() == "DROP TABLE demo;"
@@ -189,11 +188,15 @@ def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session,
     # In workspace-edit, confirmHighRisk=False does NOT disable high-risk confirmation!
     ui_sandbox = RecordingUI(["n"])
     sandbox_session = broker_session(
-        faux.reply(tools=[("bash", {"command": "git push --force origin feat"})]),
-        faux.reply("done"),
         ui=ui_sandbox,
         preset="workspace-edit",
         settings={"permissions": {"confirmHighRisk": False}},
+    )
+    sandbox_shell = selected(sandbox_session).tool_name
+    faux.script(
+        "test",
+        faux.reply(tools=[(sandbox_shell, {"command": "git push --force origin feat"})]),
+        faux.reply("done"),
     )
     sandbox_session.prompt("Try force push in sandbox")
     results = tool_results(sandbox_session)
@@ -205,12 +208,15 @@ def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session,
 def test_ver10_high_risk_approved_once_executes_and_second_call_prompts_again(make_session, project):
     ui = RecordingUI(["y", "n"])
     marker = project / "marker.txt"
-    session = make_session(
-        faux.reply(tools=[("bash", {"command": f"echo 'DROP DATABASE x' > {marker}"})]),
-        faux.reply(tools=[("bash", {"command": f"echo 'DROP DATABASE y' > {marker}"})]),
+    session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
+    shell = selected(session).tool_name
+    cmd1 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('DROP DATABASE x')")
+    cmd2 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('DROP DATABASE y')")
+    faux.script(
+        "test",
+        faux.reply(tools=[(shell, {"command": cmd1})]),
+        faux.reply(tools=[(shell, {"command": cmd2})]),
         faux.reply("done"),
-        ui=ui,
-        settings={"execution": {"mode": "no-limit"}},
     )
     session.prompt("Run twice")
     results = tool_results(session)
@@ -227,12 +233,15 @@ def test_ver10_high_risk_approved_once_executes_and_second_call_prompts_again(ma
 def test_s502_sandbox_unavailable_offers_one_shot_no_limit_and_preserves_session_mode(broker_session, project):
     marker = project / "fallback.txt"
     ui = RecordingUI(["y", "n"])
-    session = broker_session(
-        faux.reply(tools=[("bash", {"command": f"echo ok-once > {marker}"})]),
-        faux.reply(tools=[("bash", {"command": f"echo blocked-second > {marker}"})]),
+    session = broker_session(ui=ui, preset="workspace-edit")
+    shell = selected(session).tool_name
+    cmd1 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('ok-once')")
+    cmd2 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('blocked-second')")
+    faux.script(
+        "test",
+        faux.reply(tools=[(shell, {"command": cmd1})]),
+        faux.reply(tools=[(shell, {"command": cmd2})]),
         faux.reply("done"),
-        ui=ui,
-        preset="workspace-edit",
     )
     session.prompt("Run command with unavailable sandbox")
     results = tool_results(session)
@@ -257,12 +266,9 @@ def test_s502_execution_failed_never_offers_no_limit_fallback(broker_session, mo
 
     monkeypatch.setattr(NativeExecutor, "run_process", started_then_failed)
     ui = RecordingUI(["y"])
-    session = broker_session(
-        faux.reply(tools=[("bash", {"command": "echo maybe-ran"})]),
-        faux.reply("done"),
-        ui=ui,
-        preset="workspace-edit",
-    )
+    session = broker_session(ui=ui, preset="workspace-edit")
+    shell = selected(session).tool_name
+    faux.script("test", faux.reply(tools=[(shell, {"command": "echo maybe-ran"})]), faux.reply("done"))
     session.prompt("Run")
     results = tool_results(session)
     assert results and results[0].is_error
@@ -278,12 +284,9 @@ def test_s502_protected_path_unavailable_never_offers_no_limit_fallback(broker_s
 
     monkeypatch.setattr(NativeExecutor, "run_process", protected_cwd)
     ui = RecordingUI(["y"])
-    session = broker_session(
-        faux.reply(tools=[("bash", {"command": "echo forbidden"})]),
-        faux.reply("done"),
-        ui=ui,
-        preset="workspace-edit",
-    )
+    session = broker_session(ui=ui, preset="workspace-edit")
+    shell = selected(session).tool_name
+    faux.script("test", faux.reply(tools=[(shell, {"command": "echo forbidden"})]), faux.reply("done"))
     session.prompt("Run")
     results = tool_results(session)
     assert results and results[0].is_error

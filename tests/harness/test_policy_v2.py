@@ -205,6 +205,7 @@ def test_s305_posix_home_as_workspace_carves_out_private_dir(make_session, tmp_p
         session.shutdown()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Linux bwrap argument generation requires POSIX paths")
 def test_s308_linux_bwrap_only_remounts_tmp_ro_when_not_writable(tmp_path):
     """S3-08: Linux bwrap must not lock /tmp read-only when /tmp is granted writable."""
     ws = tmp_path / "ws"

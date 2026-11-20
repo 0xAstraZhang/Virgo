@@ -122,6 +122,8 @@ def broker_session(make_session, monkeypatch, tmp_path):
     from tests.support.execution import sandbox_config
 
     monkeypatch.setattr("virgo.sandbox.native.platform_backend", lambda: ("not-launched", tmp_path))
+    if sys.platform == "win32":
+        monkeypatch.setattr("virgo.sandbox.windows_sandbox.precheck_experimental_sandbox", lambda: None)
 
     def unavailable(*args, **kwargs):
         raise ExecutionUnavailable("Native backend deliberately unavailable in broker test", reason="backend_unavailable")
