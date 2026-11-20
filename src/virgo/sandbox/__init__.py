@@ -2,14 +2,43 @@
 from __future__ import annotations
 
 import json
+import sys
+from dataclasses import replace
 from pathlib import Path
 
 from ..agent import AgentTool, ToolCallEvent
-from ..execution import SandboxExecutor
+from ..execution import SandboxContext, SandboxExecutor
+from ..execution_policy import (
+    PROTECTED_NAMES,
+    PathRule,
+    PermissionSnapshot,
+    is_native_windows,
+)
 from ..harness.execution import HostExecutionProvider
-from ..harness.execution_modes import NETWORK_DIRECTIONS, PermissionSnapshot
 from ..harness.resource_approvals import Grant, ResourceApprovals
-from .policy import SandboxPolicy
+
+
+def _default_deny_rules(workspace: Path, private_paths: tuple[Path, ...]) -> tuple[PathRule, ...]:
+    rules: list[PathRule] = [PathRule(root, "read", "deny") for root in private_paths]
+    # S1-01 & S3-02: Always write-deny protected metadata names whether or not
+    # they exist at startup. When a protected name is a symlink (e.g.
+    # CLAUDE.md -> AGENTS.md), also write-deny its real target without failing.
+    for name in PROTECTED_NAMES:
+        target = workspace / name
+        rules.append(PathRule(target, "write", "deny"))
+        if target.is_symlink():
+            try:
+                resolved = target.resolve(strict=True)
+                if resolved != target:
+                    rules.append(PathRule(resolved, "write", "deny"))
+            except OSError:
+                pass
+    # Keep interpreter installations read-only (especially when workspace is $HOME).
+    for value in (sys.base_prefix, sys.prefix):
+        rt_path = Path(value).resolve()
+        if rt_path != workspace:
+            rules.append(PathRule(rt_path, "write", "deny"))
+    return tuple(dict.fromkeys(rules))
 
 
 class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
@@ -24,14 +53,32 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
         self._denied: dict[str, object] = {}
 
     def context_for_mode(self, runtime, mode, revision):
+        if is_native_windows():
+            from .windows_sandbox import precheck_experimental_sandbox
+
+            precheck_experimental_sandbox()
         workspace = Path(runtime.accounting_store.cwd).resolve()
+        user_dir = self.session.paths.user.resolve()
+        # Ensure the private state directory exists when nested inside workspace
+        # (e.g. workspace == $HOME on POSIX) so Linux bwrap can mask it cleanly.
+        if user_dir.is_relative_to(workspace):
+            user_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private = (user_dir,)
+        resolved_mode = mode.resolve(workspace)
+        deny_rules = _default_deny_rules(workspace, private)
+        effective_mode = replace(resolved_mode, policy=resolved_mode.policy.with_rules(*deny_rules))
         approval = "never" if runtime.approval_policy == "never" else self.session.approval_policy
-        policy = SandboxPolicy(workspace, mode.resolve(workspace),
-                               (self.session.paths.user.resolve(),),
-                               self.executor, PermissionSnapshot(mode, approval, revision),
-                               spool_home=self.session.paths.user.resolve() if mode.id == "read-only" else None)
-        policy.validate(runtime.cwd)
-        return policy
+        spool_home = user_dir if (mode.id == "read-only" or user_dir.is_relative_to(workspace)) else None
+        context = SandboxContext(
+            workspace,
+            effective_mode,
+            private,
+            self.executor,
+            PermissionSnapshot(mode, approval, revision),
+            spool_home=spool_home,
+        )
+        context.validate(runtime.cwd)
+        return context
 
     def instructions(self, runtime):
         return ("<execution_boundary>" + json.dumps(runtime.execution_context.describe(), ensure_ascii=False) +
@@ -51,8 +98,8 @@ def install_resource_tool(api, provider):
             "permissions": {"type": "object", "properties": {
                 "read_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "write_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                "network_allowed": {"type": ["boolean", "array"], "items": {"type": "string", "enum": list(NETWORK_DIRECTIONS)},
-                                    "description": "Additional allowed directions. true requests all three."},
+                "network_allowed": {"type": "boolean",
+                                    "description": "Request Shell/task network access for this operation."},
             }, "additionalProperties": False},
         }, "required": ["tool", "arguments", "reason", "permissions"], "additionalProperties": False},
         execute=provider.request_permissions, side_effect="read", sequential=True,

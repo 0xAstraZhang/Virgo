@@ -12,7 +12,8 @@ from pathlib import Path
 from ..agent import Block, ToolCallEvent, ToolResult
 from ..ai.validate import validate
 from ..execution import ExecutionContext, ExecutionUnavailable, FileAccessDenied
-from .execution_modes import parse_network
+from ..execution_policy import PathRule, lexical_path, parse_network
+from ..file_access import resolve_read_path, resolve_write_path
 from .origin_context import origin_key, source_for
 from .resource_rules import ResourceRules, operation_id
 from .ui import UI
@@ -44,6 +45,11 @@ def _targets(paths):
     return tuple(_target_identity(p) for p in paths)
 
 
+def _resolve_grant_root(value: str | Path, cwd: Path) -> Path:
+    """Resolve a requested grant root so approval dialogs and native rules use real paths (S3-02)."""
+    return lexical_path(value, cwd).resolve()
+
+
 def manage_grants(session, command):
     rules = ResourceRules(session.paths.user)
     project = str(session.main.execution_context.workspace)
@@ -63,25 +69,24 @@ def manage_grants(session, command):
 
 
 def _extend(base, grants):
-    reads = list(base.resources.read_paths)
-    writes = list(base.resources.write_paths)
-    network = set(base.resources.network)
+    rules = []
+    network = base.policy.network_allowed
     for kind, target in grants:
         if kind == "network_allowed":
-            network.add(target)
+            network = True
         elif kind == "read_paths":
-            reads.append(target)
+            rules.append(PathRule(Path(target), "read", "allow"))
         elif kind == "write_paths":
-            writes.append(target)
-    return replace(base, resources=replace(base.resources, read_paths=tuple(dict.fromkeys(reads)),
-                   write_paths=tuple(dict.fromkeys(writes)), network=frozenset(network)))
+            rules.append(PathRule(Path(target), "write", "allow"))
+    policy = replace(base.policy.with_rules(*rules), network_allowed=network)
+    return replace(base, resources=replace(base.resources, policy=policy))
 
 
-def _covered(policy, kind, target):
+def _covered(context, kind, target):
     if kind == "network_allowed":
-        return target in policy.resources.network
-    roots = policy.read_roots() if kind == "read_paths" else policy.resources.write_paths
-    return any(Path(target).is_relative_to(root) for root in roots)
+        return context.policy.network_allowed
+    access = "read" if kind == "read_paths" else "write"
+    return context.policy.allows(Path(target), access)
 
 
 class ResourceApprovals:
@@ -105,7 +110,13 @@ class ResourceApprovals:
             raise ValueError("Permission requests require the originating runtime")
         shell = getattr(event.tool, "shell", None)
         path = event.args.get("path")
-        target = str((event.cwd / Path(path).expanduser()).resolve()) if isinstance(path, str) else None
+        target = None
+        if isinstance(path, str):
+            try:
+                resolver = resolve_read_path if (event.tool and event.tool.read_only) else resolve_write_path
+                target = str(resolver(path, event.cwd))
+            except ValueError:
+                target = path
         # Bind the exact effective environment without retaining credential values.
         environment = hashlib.sha256(json.dumps(dict(os.environ), sort_keys=True).encode()).hexdigest()
         return json.dumps([environment, origin_key(self.session, event), runtime.diagnostic_id, runtime.run_id,
@@ -137,7 +148,11 @@ class ResourceApprovals:
             path = event.args.get("path", ".")
             if not isinstance(path, str):
                 return self._denial(policy, "File operations require a path", "filesystem")
-            target = (event.cwd / Path(path).expanduser()).resolve()
+            try:
+                target = (resolve_read_path(path, event.cwd) if event.tool.read_only
+                          else resolve_write_path(path, event.cwd))
+            except ValueError as error:
+                return self._denial(policy, str(error), "filesystem", path)
             try:
                 (policy.check_read if event.tool.read_only else policy.check_write)(target)
             except FileAccessDenied as error:
@@ -236,6 +251,7 @@ class ResourceApprovals:
             _, errors = validate(copy.deepcopy(event.args), event.tool.parameters)
             if errors:
                 return self._denial(base, "; ".join(errors), dimension, boundary["target"])
+            # S3-02 & S3-03: Grant the single real target directly without requiring parent access.
             missing = ((dimension, boundary["target"]),)
             policy = _extend(policy, missing)
         # Waiting for a user must not hold the session lock.
@@ -295,16 +311,20 @@ class ResourceApprovals:
         base = runtime.execution_context
         delta = args["permissions"]
         requested = []
-        for kind in ("read_paths", "write_paths"):
-            for value in delta.get(kind, []):
-                path = (event.cwd / Path(value).expanduser()).resolve()
-                if base.private_path(path):
-                    return ToolResult.error("Private broker resources cannot be granted")
-                if kind == "write_paths" and any(path.is_relative_to(root) for root in base.protected_paths()):
-                    return ToolResult.error("Protected runtime/control resources cannot be granted")
-                requested.append((kind, str(path)))
-        requested.extend(("network_allowed", direction)
-                         for direction in sorted(parse_network(delta.get("network_allowed", False))))
+        try:
+            for kind in ("read_paths", "write_paths"):
+                access = "read" if kind == "read_paths" else "write"
+                for value in delta.get(kind, []):
+                    # S3-02: Broker resolves grant roots so symlinks like /tmp -> /private/tmp
+                    # display and compile using their real path.
+                    real = _resolve_grant_root(value, event.cwd)
+                    if base.policy.denied(real, access):
+                        return ToolResult.error(f"Protected resources cannot be granted: {real}")
+                    requested.append((kind, str(real)))
+            if parse_network(delta.get("network_allowed", False)):
+                requested.append(("network_allowed", "true"))
+        except ValueError as error:
+            return ToolResult.error(str(error))
         saved = self._saved(event, base)
         current = _extend(base, saved)
         missing = tuple(dict.fromkeys(item for item in requested if not _covered(current, *item)))

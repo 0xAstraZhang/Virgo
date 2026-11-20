@@ -9,7 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .execution_modes import DEFAULT_MODES, migrate_preset
+from ..execution_policy import DEFAULT_MODES, default_execution_mode
+from .execution_modes import migrate_preset
 from .permissions import normalize_approval_policy
 
 PLUGIN_IDS = (
@@ -326,7 +327,8 @@ class Settings:
             if isinstance(extension_config, dict) and "trustedProjects" in extension_config:
                 notices.append("Project/runtime extensions.trustedProjects is ignored. Trust must come from user settings or --trust-project-extensions.")
         user = _normalize_layer(user, notices)
-        data = deep_merge(DEFAULTS, user)
+        defaults = deep_merge(DEFAULTS, {"execution": {"mode": default_execution_mode()}})
+        data = deep_merge(defaults, user)
         project = _normalize_layer(project, notices)
         data = deep_merge(data, project)
         if os.environ.get("VIRGO_MODEL"):
@@ -416,7 +418,7 @@ class Settings:
         saved = _read_json(path)
         if saved is None:
             # Mark a fresh configuration without persisting the current CLI override.
-            saved = {"execution": {"mode": DEFAULTS["execution"]["mode"]}}
+            saved = {"execution": {"mode": default_execution_mode()}}
         data = deep_merge(saved, patch)
         fd, name = tempfile.mkstemp(prefix=".settings-", suffix=".tmp", dir=path.parent)
         try:

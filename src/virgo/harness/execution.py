@@ -6,8 +6,14 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..execution import HostContext, SandboxExecutor
+from ..execution_policy import DEFAULT_MODES, HOST_MODE, is_native_windows
 from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
-from .execution_modes import DEFAULT_MODES, HOST_MODE
+
+_WINDOWS_EXPERIMENTAL_NOTE = (
+    "Experimental native Windows sandbox: requires an Administrator account, "
+    "adds ~14s overhead per command, does not enforce private-directory read denial, "
+    "and does not support $HOME as a workspace. WSL2 is recommended on Windows."
+)
 
 
 class HostExecutionProvider:
@@ -135,6 +141,8 @@ class ModeExecutionProvider(HostExecutionProvider):
             if not runtime.execution_active and not self.session.runtime_is_busy(runtime):
                 runtime.execution_context = context
                 runtime.rebuild_system()
+            if is_native_windows() and identifier != HOST_MODE.id:
+                self.session.ui.print(_WINDOWS_EXPERIMENTAL_NOTE, "warn")
             self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
 
     def status(self, session, args):
@@ -143,14 +151,23 @@ class ModeExecutionProvider(HostExecutionProvider):
             current = self.mode_for(session.main)
             facts = {**context.describe(), "current_mode": current.name, "next_mode": self.selected_mode.name,
                      "web_allowed": current.web_allowed, "shell_network": current.flags()["network_allowed"]}
-            session.ui.command_result(f"{current.name} ({context.provider.title()})\n" + json.dumps(facts, ensure_ascii=False))
+            label = f"{current.name} ({context.provider.title()})"
+            if is_native_windows() and current.experimental_on_windows:
+                label += " [experimental]"
+            session.ui.command_result(f"{label}\n" + json.dumps(facts, ensure_ascii=False))
 
     def command(self, session, args):
         value = args.strip()
         if value in {"", "show", "status"}:
             self.status(session, args)
         elif value == "list":
-            session.ui.command_result("\n".join(f"{m.id}: {m.name}" for m in self.modes.values()))
+            rows = []
+            for mode in self.modes.values():
+                suffix = " [experimental on native Windows; WSL2 recommended]" if (
+                    is_native_windows() and mode.experimental_on_windows
+                ) else ""
+                rows.append(f"{mode.id}: {mode.name}{suffix}")
+            session.ui.command_result("\n".join(rows))
         elif value == "grants" or value.startswith("revoke "):
             from .resource_approvals import manage_grants
             manage_grants(session, value)

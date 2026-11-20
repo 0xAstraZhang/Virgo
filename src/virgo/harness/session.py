@@ -31,12 +31,13 @@ from ..ai.types import (
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
+from ..execution_policy import is_native_windows
 from ..i18n import Translator, normalize_language
 from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
 from .commands import Commands, expand_template, load_templates, parse_frontmatter, register_builtins
 from .diagnostics import DiagnosticLog
-from .execution import install_execution
+from .execution import _WINDOWS_EXPERIMENTAL_NOTE, install_execution
 from .extensions import (
     EventBus,
     Handled,
@@ -47,6 +48,7 @@ from .extensions import (
 from .jobs import JobManager
 from .origin_context import ExecutionOrigin, source_for
 from .permissions import normalize_approval_policy
+from .resource_rules import ResourceRules
 from .runtime import Runtime
 from .runtime_limits import ChildCancellation
 from .services import Services
@@ -155,10 +157,13 @@ class AgentSession:
                 jobs.background_enabled = False
                 self.services["shell"].install_tools()
             install_command_hooks(self)
-            self.templates.update(load_templates([self.paths.user / "prompts"]))
+            def warn(message: str) -> None:
+                self.ui.print(message, "warn")
+            self.templates.update(load_templates([self.paths.user / "prompts"], on_warning=warn))
             self.main = self._new_main(self.store)
             self.templates.update(load_templates([self.paths.project / "prompts"],
-                                  access=self.main.execution_context, source_paths=self._template_paths))
+                                  access=self.main.execution_context, source_paths=self._template_paths,
+                                  on_warning=warn))
         except BaseException:
             self.cleanup_plugins()
             raise
@@ -168,6 +173,20 @@ class AgentSession:
             if context.get("session_id") == self.store.id and context.get("agent") in (None, "main"):
                 self.main.recovery.safely("queue", record)
         self.bus.emit("session_start", self)
+        if ResourceRules.purge_legacy(self.paths.user):
+            self.ui.print(
+                "Removed legacy saved resource grants (resource-grants.sqlite3); "
+                "previously saved approvals must be granted again.",
+                "warn",
+            )
+        if is_native_windows():
+            self.ui.print(
+                "Native Windows defaults to No-Limit because the native Windows sandbox is experimental. "
+                "For full sandbox support on Windows, we recommend running Virgo inside WSL2.",
+                "warn",
+            )
+            if self.settings.get("execution.mode") != "no-limit":
+                self.ui.print(_WINDOWS_EXPERIMENTAL_NOTE, "warn")
         for warning in self.settings.migration_warnings:
             self.ui.print(warning, "warn")
         self._warn_retired_data()

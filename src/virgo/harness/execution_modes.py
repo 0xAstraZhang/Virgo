@@ -1,57 +1,32 @@
-"""Fixed permission modes and legacy resource decoding. No backend imports, discovery or process startup."""
+"""Execution mode re-exports and legacy preset migration helper (removed in S7-02)."""
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
-from pathlib import Path
 
-NETWORK_DIRECTIONS = ("egress", "ingress", "hostLoopback")
-FULL_NETWORK = frozenset(NETWORK_DIRECTIONS)
-
-
-def parse_network(value: object) -> frozenset[str]:
-    if isinstance(value, bool):
-        return FULL_NETWORK if value else frozenset()
-    if (not isinstance(value, list) or any(direction not in NETWORK_DIRECTIONS for direction in value)
-            or len(set(value)) != len(value)):
-        raise ValueError("networkAllowed must be boolean or a list of distinct egress, ingress, hostLoopback directions")
-    return frozenset(value)
-
-
-def network_config(directions: frozenset[str]) -> bool | list[str]:
-    if not directions or directions == FULL_NETWORK:
-        return bool(directions)
-    return [direction for direction in NETWORK_DIRECTIONS if direction in directions]
-
-
-@dataclass(frozen=True)
-class PermissionPreset:
-    id: str
-    name: str
-    read_paths: tuple[str, ...]
-    write_paths: tuple[str, ...]
-    network: frozenset[str]
-
-    @property
-    def web_allowed(self) -> bool:
-        return True
-
-    def flags(self) -> dict:
-        return {"read_paths": list(self.read_paths), "write_paths": list(self.write_paths),
-                "network_allowed": network_config(self.network), "web_allowed": self.web_allowed}
-
-    def resolve(self, workspace: Path) -> PermissionPreset:
-        def paths(values):
-            return tuple(dict.fromkeys(str((workspace / Path(value).expanduser()).resolve()) for value in values))
-        return replace(self, read_paths=paths(self.read_paths), write_paths=paths(self.write_paths))
-
-
-HOST_MODE = PermissionPreset("no-limit", "No-Limit", (), (), FULL_NETWORK)
-DEFAULT_MODES = {mode.id: mode for mode in (
-    PermissionPreset("read-only", "Read-Only", (".",), (), frozenset()),
-    PermissionPreset("workspace-edit", "Workspace-Edit", (".",), (".",), FULL_NETWORK),
+from ..execution_policy import (
+    DEFAULT_MODES,
     HOST_MODE,
-)}
+    READ_ONLY_MODE,
+    WORKSPACE_EDIT_MODE,
+    ExecutionMode,
+    PermissionSnapshot,
+    default_execution_mode,
+    is_native_windows,
+    parse_network,
+)
+
+__all__ = [
+    "DEFAULT_MODES",
+    "HOST_MODE",
+    "READ_ONLY_MODE",
+    "WORKSPACE_EDIT_MODE",
+    "ExecutionMode",
+    "PermissionSnapshot",
+    "default_execution_mode",
+    "is_native_windows",
+    "migrate_preset",
+    "parse_network",
+]
 
 
 def migrate_preset(identifier: str, presets: dict) -> str:
@@ -74,10 +49,3 @@ def migrate_preset(identifier: str, presets: dict) -> str:
         return "workspace-edit" if flags["workspaceOnly"] else "no-limit"
     raise ValueError(f"Cannot migrate legacy preset {identifier!r}: no fixed mode has the same "
                      "filesystem, web and Shell network permissions; choose execution.mode explicitly.")
-
-
-@dataclass(frozen=True)
-class PermissionSnapshot:
-    mode: PermissionPreset
-    approval: str
-    revision: int

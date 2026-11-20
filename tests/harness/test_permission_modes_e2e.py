@@ -113,8 +113,13 @@ def test_custom_mode_names_and_permissions_persist_without_changing_active_run(b
     manager = session.services["execution"]
     assert list(manager.modes) == ["read-only", "workspace-edit", "no-limit"]
     manager.select_mode("read-only")
-    assert manager.mode_for(session.main).flags() == {
-        "read_paths": [str(session.cwd)], "write_paths": [], "network_allowed": False, "web_allowed": True}
+    flags = manager.mode_for(session.main).flags()
+    assert flags["read_paths"] == [str(session.cwd)]
+    assert flags["write_paths"] == []
+    assert flags["network_allowed"] is False
+    assert flags["web_allowed"] is True
+    assert flags["unrestricted"] is False
+    assert str(session.paths.user.resolve()) in flags["read_deny_paths"]
     manager.select_mode("no-limit")
     assert session.main.execution_context.provider == "host"
     manager.select_mode("workspace-edit")

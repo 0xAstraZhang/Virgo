@@ -142,25 +142,18 @@ def test_retired_task_configuration_is_ignored_with_a_notice(project, tmp_path, 
         assert name in notices
 
 
-@pytest.mark.parametrize(("selection", "expected"), [
-    (True, ("allow", "allow", "allow")),
-    (False, ("deny", "deny", "deny")),
-    (["egress"], ("allow", "deny", "deny")),
-    (["ingress", "hostLoopback"], ("deny", "allow", "allow")),
-])
-def test_network_directions_preserve_resource_approval_scope(selection, expected):
-    from virgo.harness.execution_modes import network_config, parse_network
+@pytest.mark.parametrize(("selection", "expected"), [(True, True), (False, False)])
+def test_network_boolean_setting_parsed(selection, expected):
+    from virgo.execution_policy import parse_network
 
-    directions = parse_network(selection)
-    assert network_config(directions) == selection
-    assert tuple("allow" if d in directions else "deny" for d in ("egress", "ingress", "hostLoopback")) == expected
+    assert parse_network(selection) is expected
 
 
-@pytest.mark.parametrize("invalid", [["public"], ["egress", "egress"], ["ingress", True], 1, "egress"])
-def test_invalid_network_directions_rejected(invalid):
-    from virgo.harness.execution_modes import parse_network
+@pytest.mark.parametrize("invalid", [["public"], ["egress"], ["ingress", True], 1, "egress", None])
+def test_invalid_network_values_rejected(invalid):
+    from virgo.execution_policy import parse_network
 
-    with pytest.raises(ValueError, match="networkAllowed"):
+    with pytest.raises(ValueError, match="boolean"):
         parse_network(invalid)
 
 

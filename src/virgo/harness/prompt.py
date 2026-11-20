@@ -45,7 +45,8 @@ GUIDELINES = (
 CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
-def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access=None) -> str | None:
+def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access=None,
+                  on_warning=None) -> str | None:
     """Read automatic project context without following project-controlled links."""
     try:
         parts = path.relative_to(workspace).parts
@@ -63,6 +64,10 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
             return data.decode("utf-8", errors=errors) if data is not None else None
         except ExecutionUnavailable:
             raise
+        except UnicodeDecodeError as error:
+            if on_warning is not None:
+                on_warning(f"Skipping {path}: invalid UTF-8 ({error})")
+            return None
         except (OSError, RuntimeError):
             return None
     directory = descriptor = None
@@ -87,6 +92,10 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
         with os.fdopen(descriptor, "r", encoding="utf-8", errors=errors) as stream:
             descriptor = None
             return stream.read()
+    except UnicodeDecodeError as error:
+        if on_warning is not None:
+            on_warning(f"Skipping {path}: invalid UTF-8 ({error})")
+        return None
     except (OSError, RuntimeError):
         return None
     finally:
@@ -96,11 +105,16 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
             os.close(directory)
 
 
-def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None, access=None) -> list[tuple[Path, str]]:
+def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None, access=None,
+                  on_warning=None) -> list[tuple[Path, str]]:
     found: list[tuple[Path, str]] = []
     user_file = user_dir / "AGENTS.md"
     if user_file.is_file():
-        found.append((user_file, user_file.read_text(encoding="utf-8")))
+        try:
+            found.append((user_file, user_file.read_text(encoding="utf-8")))
+        except UnicodeDecodeError as error:
+            if on_warning is not None:
+                on_warning(f"Skipping {user_file}: invalid UTF-8 ({error})")
     start = Path(cwd).resolve()
     if workspace is not None and not start.is_relative_to(workspace):
         start = workspace
@@ -110,7 +124,8 @@ def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None, a
     for d in reversed(chain):
         for name in CONTEXT_FILES:
             f = d / name
-            text = (_project_text(f, workspace, errors="replace", access=access) if workspace is not None
+            text = (_project_text(f, workspace, errors="replace", access=access, on_warning=on_warning)
+                    if workspace is not None
                     else f.read_text(encoding="utf-8", errors="replace") if f.is_file() else None)
             if text is not None:
                 found.append((f, text))
@@ -118,11 +133,21 @@ def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None, a
     return found
 
 
-def _first_file(paths: list[Path], *, workspace: Path | None = None, access=None) -> str | None:
+def _first_file(paths: list[Path], *, workspace: Path | None = None, access=None,
+                on_warning=None) -> str | None:
     for index in reversed(range(len(paths))):  # project overrides explicitly trusted user configuration
         p = paths[index]
-        text = (_project_text(p, workspace, access=access) if workspace is not None and index > 0
-                else p.read_text(encoding="utf-8") if p.is_file() else None)
+        if workspace is not None and index > 0:
+            text = _project_text(p, workspace, access=access, on_warning=on_warning)
+        elif p.is_file():
+            try:
+                text = p.read_text(encoding="utf-8")
+            except UnicodeDecodeError as error:
+                if on_warning is not None:
+                    on_warning(f"Skipping {p}: invalid UTF-8 ({error})")
+                text = None
+        else:
+            text = None
         if text is not None:
             return text.strip()
     return None
@@ -160,8 +185,11 @@ def build_system(
             return session.paths.both(name)
         return [session.paths.user / name, workspace / ".virgo" / name]
 
+    def warn(message: str) -> None:
+        session.ui.print(message, "warn")
+
     parts: list[str] = []
-    custom = _first_file(instruction_paths("SYSTEM.md"), workspace=workspace, access=access) if role == "main" else None
+    custom = _first_file(instruction_paths("SYSTEM.md"), workspace=workspace, access=access, on_warning=warn) if role == "main" else None
     parts.append(custom or IDENTITY.get(role, IDENTITY["main"]))
     if tools is None:
         tools = session.tools_for(role)
@@ -184,13 +212,13 @@ def build_system(
                                      context={"section": _name, "role": role})
         if text:
             parts.append(text.strip())
-    files = context_files(cwd, session.paths.user, workspace=workspace, access=access)
+    files = context_files(cwd, session.paths.user, workspace=workspace, access=access, on_warning=warn)
     if files:
         body = "\n".join(
             f'<project_instructions path="{p}">\n{t.strip()}\n</project_instructions>' for p, t in files
         )
         parts.append(f"<project_context>\n{body}\n</project_context>")
-    append = _first_file(instruction_paths("APPEND_SYSTEM.md"), workspace=workspace, access=access)
+    append = _first_file(instruction_paths("APPEND_SYSTEM.md"), workspace=workspace, access=access, on_warning=warn)
     if append:
         parts.append(append)
     shell = next((getattr(tool, "shell", None) for tool in tools if getattr(tool, "shell", None)), None)

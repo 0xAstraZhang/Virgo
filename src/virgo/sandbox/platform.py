@@ -1,9 +1,10 @@
 """Native, fail-closed subprocess isolation; never an approval decision.
 
 Linux uses a system-owned bubblewrap plus a seccomp filter. macOS uses Seatbelt.
-Windows uses LPAC plus a separately write-restricted token and temporary ACLs.
+Windows uses experimental LPAC plus a separately write-restricted token and
+temporary ACLs (frozen; WSL2 is recommended on Windows).
 The broker stays outside so model transport and diagnostic persistence keep their
-own authority. POSIX exposes selected paths; Windows also has ambient LPAC reads.
+own authority.
 """
 from __future__ import annotations
 
@@ -27,10 +28,11 @@ from ..execution import ExecutionCancelled as SandboxCancelled
 from ..execution import ExecutionFailed as SandboxProcessError
 from ..execution import ExecutionUnavailable as SandboxUnavailable
 from ..execution import HostProcess, environment_overrides
-from .links import external_writable_links
+from ..execution_policy import PROTECTED_NAMES
 
-PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 _ENV_KEYS = frozenset({"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"})
+_RUNTIME_ROOTS = tuple(dict.fromkeys(Path(value).resolve() for value in (sys.base_prefix, sys.prefix)))
+_TRAMPOLINE_PYTHON = str(Path(sys.executable).resolve())
 
 # This fixed trampoline runs inside the actual envelope, with isolated Python
 # startup. The status descriptor closes only on successful exec; setup/exec
@@ -128,7 +130,10 @@ def platform_backend() -> tuple[str, Path]:
                 return ("bubblewrap" if sys.platform == "linux" else "seatbelt"), path
         except FileNotFoundError:
             continue
-    raise SandboxUnavailable("No supported native sandbox backend is available (Linux: system bubblewrap; macOS: sandbox-exec; Windows: native x64 LPAC).")
+    raise SandboxUnavailable(
+        "No supported native sandbox backend is available "
+        "(Linux: system bubblewrap; macOS: sandbox-exec; Windows: experimental native x64 LPAC or WSL2)."
+    )
 
 
 def _seccomp_file(network_allowed: bool = False):
@@ -160,12 +165,13 @@ def _seccomp_file(network_allowed: bool = False):
     lib.seccomp_syscall_resolve_name.restype = ctypes.c_int
     lib.seccomp_rule_add.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint]
     lib.seccomp_rule_add.restype = ctypes.c_int
+
     class ArgumentComparison(ctypes.Structure):
         _fields_ = [("arg", ctypes.c_uint), ("op", ctypes.c_int),
                     ("datum_a", ctypes.c_uint64), ("datum_b", ctypes.c_uint64)]
 
     lib.seccomp_rule_add_array.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int,
-                                         ctypes.c_uint, ctypes.POINTER(ArgumentComparison)]
+                                           ctypes.c_uint, ctypes.POINTER(ArgumentComparison)]
     lib.seccomp_rule_add_array.restype = ctypes.c_int
     lib.seccomp_export_bpf.argtypes = [ctypes.c_void_p, ctypes.c_int]
     lib.seccomp_export_bpf.restype = ctypes.c_int
@@ -204,7 +210,7 @@ def _seccomp_file(network_allowed: bool = False):
         for arg, operator, value, mask_value in comparisons:
             comparison = ArgumentComparison(arg, operator, value, mask_value)
             if lib.seccomp_rule_add_array(context, 0x00050000 | errno.EPERM, number, 1,
-                                         ctypes.byref(comparison)) != 0:
+                                          ctypes.byref(comparison)) != 0:
                 raise SandboxUnavailable("Could not restrict socketpair to private stream pairs")
         if network_allowed:
             number = lib.seccomp_syscall_resolve_name(b"socket")
@@ -218,7 +224,7 @@ def _seccomp_file(network_allowed: bool = False):
             for operator, value in comparisons:
                 comparison = ArgumentComparison(0, operator, value, 0)
                 if lib.seccomp_rule_add_array(context, 0x00050000 | errno.EPERM, number, 1,
-                                             ctypes.byref(comparison)) != 0:
+                                              ctypes.byref(comparison)) != 0:
                     raise SandboxUnavailable("Could not restrict non-Internet socket families")
         if lib.seccomp_export_bpf(context, output.fileno()) != 0:
             raise SandboxUnavailable("Could not export seccomp filter")
@@ -238,12 +244,11 @@ class NativePolicy:
     network_allowed: bool
     private_paths: tuple[Path, ...]
     grants: tuple[tuple[Path, bool], ...]
+    read_only_paths: tuple[Path, ...] = ()
     workspace_only = True
 
     def __post_init__(self):
         if os.name == "nt":
-            # The runtime captured this root before execution. Do not follow a
-            # junction installed later and turn its target into a fresh grant.
             from .windows_files import normalize_path
 
             workspace = Path(normalize_path(self.workspace))
@@ -252,34 +257,71 @@ class NativePolicy:
         object.__setattr__(self, "workspace", workspace)
 
     def describe(self) -> dict:
-        return {"network": "allowed" if self.network_allowed else "restricted",
-                "workspace": str(self.workspace), "read_only": self.read_only,
-                "workspace_only": self.workspace_only, "network_allowed": self.network_allowed}
+        return {
+            "network": "allowed" if self.network_allowed else "restricted",
+            "workspace": str(self.workspace),
+            "read_only": self.read_only,
+            "workspace_only": self.workspace_only,
+            "network_allowed": self.network_allowed,
+            "runtime_read_dependencies": [str(path) for path in self._read_roots()],
+            "ambient_read_access": "Windows LPAC ambient readable objects" if os.name == "nt" else None,
+        }
 
     def read_roots(self) -> tuple[Path, ...]:
-        return (self.workspace, *self._read_roots()) if self.workspace_only else (Path(self.workspace.anchor),)
+        return (self.workspace, *self._read_roots(), *(path for path, _ in self.grants))
 
     def private_path(self, path: Path) -> bool:
         return any(path.is_relative_to(root) for root in self.private_paths)
 
     def runtime_paths(self) -> tuple[Path, ...]:
         """Keep interpreter roots explicit even when a broader read mount covers them."""
-        return tuple(dict.fromkeys(path for value in (sys.base_prefix, sys.prefix)
-                                   for path in (Path(value).absolute(), Path(value).resolve())))
+        return _RUNTIME_ROOTS
+
+    def all_write_denies(self) -> tuple[Path, ...]:
+        """All write-denied paths, including nonexistent protected names and symlink targets."""
+        candidates = set(self.read_only_paths)
+        for name in PROTECTED_NAMES:
+            p = self.workspace / name
+            candidates.add(p)
+            if p.is_symlink():
+                try:
+                    candidates.add(p.resolve(strict=True))
+                except OSError:
+                    pass
+        candidates.update(self.runtime_paths())
+        paths = set()
+        readable = self.read_roots()
+        for denied in candidates:
+            if self.private_path(denied):
+                continue
+            for root in readable:
+                if denied.is_relative_to(root):
+                    paths.add(denied)
+                elif root.is_relative_to(denied):
+                    paths.add(root)
+        return tuple(sorted(paths, key=lambda item: (len(item.parts), str(item))))
 
     def protected_paths(self) -> tuple[Path, ...]:
-        paths = []
-        for name in PROTECTED_NAMES:
-            path = self.workspace / name
-            if path.is_symlink():
-                # A resolved metadata link must never become a new host read
-                # grant, and a writable link entry would bypass target mounts.
-                raise SandboxUnavailable(f"Protected sandbox metadata must not be a symbolic link: {path}")
-            if path.exists():
-                paths.append(path)
-        paths.extend(path for path in self.runtime_paths()
-                     if path != self.workspace and (not self.workspace_only or path.is_relative_to(self.workspace)))
-        return tuple(dict.fromkeys(paths))
+        """Existing non-symlink write-denied paths (resolving symlinked metadata to their real targets)."""
+        existing = set()
+        for path in self.all_write_denies():
+            try:
+                if path.is_symlink():
+                    resolved = path.resolve(strict=True)
+                    if (resolved.is_dir() or resolved.is_file()) and not self.private_path(resolved):
+                        existing.add(resolved)
+                elif path.exists() and (path.is_dir() or path.is_file()):
+                    existing.add(path)
+            except OSError:
+                continue
+        return tuple(sorted(existing, key=lambda item: (len(item.parts), str(item))))
+
+    def _writable(self, path: Path) -> bool:
+        allowed = (not self.read_only and path.is_relative_to(self.workspace)
+                   or any(writable and path.is_relative_to(root) for root, writable in self.grants))
+        return allowed and not self.private_path(path) and not any(
+            path.is_relative_to(root) for root in self.all_write_denies()
+        )
 
     @staticmethod
     def _system_roots() -> list[Path]:
@@ -290,7 +332,7 @@ class NativePolicy:
         return list(dict.fromkeys(Path(value).resolve() for value in values if Path(value).is_dir()))
 
     def validate(self, cwd: Path) -> Path:
-        """Check the envelope before the broker creates output directories/files."""
+        """Check the envelope before process launch."""
         try:
             for path, _writable in self.grants:
                 if path.resolve(strict=True) != path:
@@ -304,34 +346,12 @@ class NativePolicy:
                 raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
             if self.private_path(cwd):
                 raise SandboxUnavailable("Command cwd is inside private Virgo storage", reason="protected_path")
+            if any(path.is_relative_to(self.workspace) for path in self._system_roots()):
+                raise SandboxUnavailable("Workspace must not contain system mount roots")
             base = Path(sys.base_prefix).resolve(strict=True)
             prefix = Path(sys.prefix).resolve(strict=True)
-            if any(path.is_relative_to(self.workspace) for path in (*self._system_roots(), base)):
-                raise SandboxUnavailable("Workspace must not contain a system or base interpreter installation")
-            if prefix.is_relative_to(self.workspace) and (prefix == self.workspace or prefix == base):
-                raise SandboxUnavailable("Only a nested virtual environment may be inside the sandbox workspace")
-            for value in (sys.base_prefix, sys.prefix):
-                name = Path(value).absolute()
-                for alias in (*name.parents, name):
-                    if alias.is_relative_to(self.workspace) and alias.is_symlink():
-                        # bin/python links inside a protected venv remain usable;
-                        # a writable alias of the installation directory does not.
-                        raise SandboxUnavailable(f"Interpreter directory alias is writable in the workspace: {alias}")
-            protected = self.protected_paths()
-            if os.name == "posix" and self.workspace_only:
-                roots = tuple(path for path, writable in self.grants if writable)
-                if not self.read_only:
-                    roots = (self.workspace, *roots)
-                external = external_writable_links(roots, protected)
-                if external:
-                    path = next(iter(external.values()))
-                    raise SandboxUnavailable(
-                        f"Writable sandbox files must not link outside the writable scope: {path}",
-                        reason="protected_path", target=path,
-                    )
-            for path in (self.workspace / ".virgo", self.workspace / ".virgo" / "outputs"):
-                if path.is_symlink() or not path.resolve().is_relative_to(self.workspace):
-                    raise SandboxUnavailable(f"Sandbox output directory must stay inside its workspace: {path}")
+            if self.workspace in {base, prefix}:
+                raise SandboxUnavailable("Workspace must not be the active or base interpreter installation")
             return cwd
         except SandboxUnavailable:
             raise
@@ -349,14 +369,20 @@ class NativePolicy:
         return result
 
     def _linux(self, launcher: Path, scratch: Path, cwd: Path, seccomp_fd: int,
-               protected_mounts: tuple[tuple[int, Path], ...] | None = None) -> list[str]:
+               protected_mounts: tuple[tuple[int, Path], ...] | None = None,
+               denied_files: tuple[tuple[int, Path], ...] = ()) -> list[str]:
         args = [str(launcher), "--die-with-parent", "--new-session", "--unshare-all", "--unshare-user",
                 "--disable-userns", "--cap-drop", "ALL"]
         if self.network_allowed:
             args += ["--share-net"]
         if not self.workspace_only:
             args += ["--ro-bind" if self.read_only else "--bind", "/", "/"]
+        args += ["--proc", "/proc", "--dev", "/dev"]
+        if self.workspace_only:
+            args += ["--tmpfs", "/tmp", "--dir", "/run"]
         else:
+            args += ["--tmpfs", "/run"]
+        if self.workspace_only:
             for root in self._read_roots():
                 if not root.is_relative_to(self.workspace):
                     args += ["--ro-bind", str(root), str(root)]
@@ -380,20 +406,12 @@ class NativePolicy:
                 target = Path(os.readlink(alias))
                 pending.append(target if target.is_absolute() else alias.parent / target)
                 if any(alias.is_relative_to(root) for root in roots):
-                    continue  # The alias is already present inside a mounted root.
+                    continue
                 resolved = alias.resolve(strict=True)
                 if not any(resolved.is_relative_to(root) for root in (*roots, self.workspace)):
                     raise SandboxUnavailable(f"Interpreter alias leaves permitted roots: {alias}")
                 args += ["--symlink", str(resolved), str(alias)]
-        args += ["--proc", "/proc", "--dev", "/dev"]
-        if self.workspace_only:
-            args += ["--tmpfs", "/tmp", "--dir", "/run"]
-        else:
-            args += ["--tmpfs", "/run"]
         if self.network_allowed:
-            # Resolvers commonly link /etc/resolv.conf into /run, which remains
-            # private. Expose only the verified system configuration targets,
-            # never the surrounding service sockets or host runtime directory.
             for value in ("/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"):
                 if Path(value).exists():
                     source = _network_config_file(Path(value))
@@ -404,29 +422,33 @@ class NativePolicy:
                  str(self.workspace), str(self.workspace)]
         for path, writable in self.grants:
             args += ["--bind" if writable else "--ro-bind", str(path), str(path)]
-        # Apply nested interpreter protection after the workspace bind so it
-        # cannot be hidden by that broader writable mount. Callers can pin the
-        # sources by descriptor to prevent replacement between check and mount.
         if protected_mounts is None:
             raise SandboxUnavailable("Protected sandbox mounts require pinned descriptors")
         for descriptor, target in protected_mounts:
-            # bwrap verifies the mounted inode against this descriptor and
-            # closes it before exec; a /proc/self/fd path alone is insufficient.
             args += ["--ro-bind-fd", str(descriptor), str(target)]
-        for path in self.private_paths:
-            exposed = not self.workspace_only or any(path.is_relative_to(root)
-                                                    for root in (*self._read_roots(), self.workspace))
-            if exposed and path.exists():
-                if not path.is_dir() or path.is_symlink():
-                    raise SandboxUnavailable(f"Private Virgo storage must be a directory: {path}")
-                args += ["--tmpfs", str(path), "--remount-ro", str(path)]
-        # Bubblewrap creates mount-point parents in its empty root and /tmp.
-        # Keep those synthetic directories read-only, even when the project
-        # lives below /tmp. Only the explicit writable mounts and private
-        # command scratch should accept new files.
-        args += ["--bind", str(scratch), str(scratch), "--remount-ro", "/tmp", "--remount-ro", "/",
-                 "--chdir", str(cwd),
-                 "--seccomp", str(seccomp_fd), "--"]
+        masks = {path: descriptor for descriptor, path in denied_files}
+        covered = []
+        for path in sorted(self.private_paths, key=lambda item: len(item.parts)):
+            if any(path.is_relative_to(root) for root in covered):
+                continue
+            if not any(path.is_relative_to(root) for root in self.read_roots()):
+                continue
+            if not path.exists():
+                continue
+            if path.is_symlink():
+                raise SandboxUnavailable(f"Denied sandbox root is a symbolic link: {path}")
+            if path.is_dir():
+                args += ["--perms", "000", "--tmpfs", str(path), "--remount-ro", str(path)]
+            elif path in masks:
+                args += ["--perms", "000", "--ro-bind-data", str(masks[path]), str(path)]
+            else:
+                raise SandboxUnavailable(f"Denied sandbox file requires an isolated mask: {path}")
+            covered.append(path)
+        args += ["--bind", str(scratch), str(scratch)]
+        # S3-08: Do not lock /tmp read-only when /tmp itself was explicitly granted writable.
+        if not self._writable(Path("/tmp")):
+            args += ["--remount-ro", "/tmp"]
+        args += ["--remount-ro", "/", "--chdir", str(cwd), "--seccomp", str(seccomp_fd), "--"]
         return args
 
     def _macos(self, launcher: Path, scratch: Path, output_path: Path | None) -> list[str]:
@@ -448,56 +470,66 @@ class NativePolicy:
             scope = "subpath" if path.is_dir() else "literal"
             operations = "file-read* file-map-executable" + (" file-write*" if writable else "")
             lines.append(f"(allow {operations} ({scope} {quoted(path)}))")
+        write_denies = self.all_write_denies()
         if not self.read_only:
-            exclusions = " ".join(f"(require-not (subpath {quoted(self.workspace / name)}))"
-                                  for name in PROTECTED_NAMES)
-            # Explicit exclusions also protect metadata paths which do not exist yet.
             root = self.workspace if self.workspace_only else Path("/")
-            lines.append(f"(allow file-write* (require-all (subpath {quoted(root)}) {exclusions}))")
-            for path in self.runtime_paths():
-                lines.append(f"(deny file-write* (subpath {quoted(path)}))")
+            # S1-01: Explicitly exclude protected names even when they do not exist yet.
+            exclusions = " ".join(f"(require-not (subpath {quoted(path)}))" for path in write_denies)
+            if exclusions:
+                lines.append(f"(allow file-write* (require-all (subpath {quoted(root)}) {exclusions}))")
+            else:
+                lines.append(f"(allow file-write* (subpath {quoted(root)}))")
+        for path in write_denies:
+            scope = "literal" if (path.exists() and not path.is_dir() and not path.is_symlink()) else "subpath"
+            lines.append(f"(deny file-write* ({scope} {quoted(path)}))")
         if self.network_allowed:
-            # The system resolver and routing control are narrow OS exceptions,
-            # also used by Chromium's Seatbelt network policy. This does not
-            # authorize arbitrary pathname sockets in the workspace or home.
             lines.extend(['(allow network-outbound (remote tcp) (remote udp) '
                           '(literal "/private/var/run/mDNSResponder") (control-name "com.apple.netsrc"))',
                           "(allow network-bind network-inbound (local tcp) (local udp))"])
             lines.append('(allow file-read* (literal "/private/var/run/resolv.conf"))')
         from .macos_process import control_root
 
-        for path in (*self.private_paths, control_root()):
-            lines.append(f"(deny file-read* file-write* (subpath {quoted(path)}))")
+        private = (*self.private_paths, control_root())
+        for path in private:
+            scope = "literal" if path.is_file() else "subpath"
+            lines.append(f"(deny file-read* file-map-executable file-write* ({scope} {quoted(path)}))")
+        ancestors = {parent for path in (*self.protected_paths(), *private) for parent in path.parents}
+        for path in sorted(ancestors, key=str):
+            lines.append(f"(deny file-write-unlink (literal {quoted(path)}))")
         if output_path is not None:
-            # The broker owns this exact spool file; do not open the output directory.
             lines.append(f"(allow file-write-data (literal {quoted(output_path.resolve())}))")
         return [str(launcher), "-p", "\n".join(lines)]
 
-    def spawn(self, argv: list[str], cwd: Path, env: dict[str, str], stdout,
+    def spawn(self, argv: list[str] | tuple[str, ...], cwd: Path, env: dict[str, str], stdout,
               output_path: Path | None = None, cancellation=None, *, stdin=subprocess.DEVNULL,
-              stderr=subprocess.STDOUT, env_overrides=None) -> subprocess.Popen:
+              stderr=subprocess.STDOUT, env_overrides: dict[str, str] | None = None) -> subprocess.Popen:
         if cancellation is not None and cancellation.is_set():
             raise SandboxCancelled("Sandbox launch cancelled")
-        if not argv:
-            raise SandboxUnavailable("Sandbox execution requires a nonempty command argv")
-        cwd = self.validate(cwd)
+        argv = list(argv)
+        if not argv or not all(isinstance(part, str) for part in argv) or not argv[0]:
+            raise SandboxUnavailable("Sandbox launch requires a nonempty command argv", reason="invalid_argv")
         explicit_env = environment_overrides(env_overrides or {})
+        cwd = self.validate(cwd)
         backend, launcher = platform_backend()
         if backend == "windows-lpac":
             from .windows_sandbox import spawn
 
-            return spawn(self, argv, cwd, env, stdout, cancellation, stdin=stdin, stderr=stderr,
-                         env_overrides=explicit_env)
+            return spawn(self, argv, cwd, env, stdout, cancellation, stdin=stdin,
+                         stderr=stderr, env_overrides=explicit_env)
         if launcher.is_relative_to(self.workspace):
             raise SandboxUnavailable("Workspace must not contain the sandbox launcher")
         scratch = _CommandScratch()
         scratch_path = Path(scratch.name).resolve()
         filter_file = None
         pinned = []
+        masks = []
         status_read = status_write = None
         proc = None
         acknowledged = False
         try:
+            if self.private_path(scratch_path) or any(scratch_path.is_relative_to(root)
+                                                      for root in self.all_write_denies()):
+                raise SandboxUnavailable("The command scratch directory conflicts with a filesystem deny rule")
             (scratch_path / "home").mkdir()
             clean_env = {key: value for key, value in env.items() if key in _ENV_KEYS}
             clean_env.update(explicit_env)
@@ -528,14 +560,17 @@ class NativePolicy:
                             raise
                 finally:
                     os.close(root)
-                prefix = self._linux(launcher, scratch_path, cwd, filter_file.fileno(), tuple(pinned))
-                inherited = (filter_file.fileno(), *(descriptor for descriptor, _ in pinned))
+                for path in self.private_paths:
+                    if any(path.is_relative_to(r) for r in self.read_roots()) and path.is_file():
+                        masks.append((tempfile.TemporaryFile(), path))
+                denied_files = tuple((stream.fileno(), path) for stream, path in masks)
+                prefix = self._linux(launcher, scratch_path, cwd, filter_file.fileno(), tuple(pinned), denied_files)
+                inherited = (filter_file.fileno(), *(descriptor for descriptor, _ in pinned),
+                             *(descriptor for descriptor, _ in denied_files))
             else:
                 prefix = self._macos(launcher, scratch_path, output_path)
                 inherited = ()
             extra = {"pass_fds": inherited}
-            # Probe the exact envelope without invoking the user's shell or payload.
-            # A launch denied by namespaces/Seatbelt is not permission to retry natively.
             true = str(_system_file(Path("/usr/bin/true")))
             probe = subprocess.run([*prefix, true], cwd=cwd, env=clean_env, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5,
@@ -548,14 +583,12 @@ class NativePolicy:
             if filter_file is not None:
                 filter_file.seek(0)
             status_read, status_write = os.pipe()
-            command = [*prefix, sys.executable, "-I", "-S", "-c", _EXEC_HANDSHAKE,
+            command = [*prefix, _TRAMPOLINE_PYTHON, "-I", "-S", "-c", _EXEC_HANDSHAKE,
                        str(status_write), *argv]
             if backend == "seatbelt" and sys.platform == "darwin":
                 from .macos_process import LaunchdProcess
 
                 proc = LaunchdProcess(self, cwd, clean_env)
-                # Attach scratch before startup so every partial launch goes
-                # through the same verified process-tree cleanup path.
                 proc._virgo_sandbox_tmp = scratch
                 proc._virgo_sandbox = {**self.describe(), "backend": backend}
                 proc.start(command, stdout, status_write, len(prefix) + 5, cancellation,
@@ -607,6 +640,8 @@ class NativePolicy:
                     os.close(descriptor)
             for descriptor, _ in pinned:
                 os.close(descriptor)
+            for stream, _ in masks:
+                stream.close()
             if filter_file is not None:
                 filter_file.close()
             if not acknowledged:
@@ -620,11 +655,6 @@ class NativePolicy:
                         )
                         failure.boundary = {"cleanup": "failed", "payload_started": "unknown", "side_effects": "possible"}
                         raise failure from cleanup_error
-                    finally:
-                        for name in ("stdin", "stdout", "stderr"):
-                            stream = getattr(proc, name, None)
-                            if stream is not None:
-                                stream.close()
                 else:
                     scratch.cleanup()
 
@@ -634,13 +664,9 @@ def cleanup_process(proc) -> None:
     if scratch is not None:
         cleanup_tree = getattr(proc, "cleanup_tree", None)
         if cleanup_tree is not None:
-            # The macOS adapter verifies that its complete resource coalition
-            # has drained before writable scratch can be removed.
             try:
                 cleanup_tree()
             except BaseException:
-                # A diagnostic/control-file error can follow verified drain.
-                # Preserve the error without leaking already-safe scratch.
                 if proc.tree_drained:
                     scratch.cleanup()
                     proc._virgo_sandbox_tmp = None
@@ -648,8 +674,6 @@ def cleanup_process(proc) -> None:
             scratch.cleanup()
             proc._virgo_sandbox_tmp = None
             return
-        # The neutral process handle pins the group identity through leader
-        # exit and reaps it only after the remaining members are signalled.
         HostProcess(proc).cleanup_tree()
         scratch.cleanup()
         proc._virgo_sandbox_tmp = None

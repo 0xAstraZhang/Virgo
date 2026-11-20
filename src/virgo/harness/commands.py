@@ -99,7 +99,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def load_templates(dirs: list[Path], *, reserved: frozenset[str] = frozenset(), access=None,
-                   source_paths: dict | None = None) -> dict[str, tuple[str, str]]:
+                   source_paths: dict | None = None, on_warning=None) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
     for d in dirs:
         try:
@@ -114,7 +114,13 @@ def load_templates(dirs: list[Path], *, reserved: frozenset[str] = frozenset(), 
                     continue
                 if data is None:
                     continue
-                meta, body = parse_frontmatter(data.decode("utf-8"))
+                try:
+                    text = data.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    if on_warning is not None:
+                        on_warning(f"Skipping prompt template {f}: invalid UTF-8 ({error})")
+                    continue
+                meta, body = parse_frontmatter(text)
                 out[f.stem] = (str(meta.get("description", "")), body.strip())
                 if source_paths is not None:
                     source_paths[f.stem] = f
