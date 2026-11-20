@@ -5,11 +5,24 @@ from __future__ import annotations
 import contextlib
 import json
 import socket
+import socketserver
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    """Loopback-only HTTPServer that avoids slow reverse-DNS lookups in server_bind()."""
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind() calls socket.getfqdn(host), which stalls ~35 s per
+        # process on GitHub macOS runners when reverse DNS for 127.0.0.1 times out.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
 
 
 def bypass_proxies(monkeypatch) -> None:
@@ -22,7 +35,7 @@ def bypass_proxies(monkeypatch) -> None:
 @contextlib.contextmanager
 def serve(handler: type[BaseHTTPRequestHandler]) -> Iterator[str]:
     """Serve ``handler`` on an ephemeral loopback port and yield its base URL."""
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), handler)
     # The default 0.5 s poll interval made every shutdown wait about half a second.
     worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     worker.start()

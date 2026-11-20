@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import secrets
+import socketserver
 import threading
 import time
 import webbrowser
@@ -217,12 +218,19 @@ class _Callback:
             def log_message(self, *args):
                 pass  # callback URLs contain credentials
 
+        class _LoopbackHTTPServer(ThreadingHTTPServer):
+            def server_bind(self) -> None:
+                socketserver.TCPServer.server_bind(self)
+                host, bound_port = self.server_address[:2]
+                self.server_name = str(host)
+                self.server_port = bound_port
+
         try:
-            self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            self.server = _LoopbackHTTPServer(("127.0.0.1", port), Handler)
         except OSError:
             if not dynamic_port:
                 raise
-            self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            self.server = _LoopbackHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
         self.uri = f"http://localhost:{self.server.server_port}{path}"
         self.thread = threading.Thread(

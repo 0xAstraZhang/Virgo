@@ -163,6 +163,105 @@ def main():
         classify(docs, docs, True)  # Empty change lists conservatively run tests.
         if os.name != "nt":
             classify(config, odd_name, False)
+
+        # Green baseline caching: stage-cache and plan-matrix end-to-end checks.
+        cache_dir = root / "cache"
+        reused_dir = root / "reused"
+        sample_report = {
+            "platform": "ubuntu-latest", "label": "head", "sha": "a" * 40,
+            "python": "3.13", "system": "linux", "exit_code": 0, "duration": 12.5,
+            "complete": True, "counts": {"passed": 2},
+            "tests": {"test_a": {"status": "passed", "classname": "m"},
+                      "test_b": {"status": "passed", "classname": "m"}},
+            "collection_skips": [], "problems": [],
+        }
+
+        def run_stage(report_obj, platform_name, sha):
+            src = root / "stage-src.json"
+            dst = cache_dir / platform_name / "results.json"
+            dst.unlink(missing_ok=True)
+            src.write_text(json.dumps(report_obj), encoding="utf-8")
+            out_file = root / "stage-outputs"
+            out_file.unlink(missing_ok=True)
+            res = subprocess.run(
+                [sys.executable, str(RUNNER), "stage-cache", "--report", str(src),
+                 "--destination", str(dst), "--platform", platform_name, "--sha", sha],
+                env={**os.environ, "GITHUB_OUTPUT": str(out_file)},
+                capture_output=True, text=True, check=False,
+            )
+            assert res.returncode == 0, res.stderr
+            out_map = dict(line.split("=", 1) for line in out_file.read_text().splitlines())
+            return out_map["eligible"] == "true", dst.is_file()
+
+        assert run_stage(sample_report, "ubuntu-latest", "a" * 40) == (True, True)
+        # Failing, problem-bearing, wrong-SHA, or wrong-platform reports must never be cached.
+        failing_report = {**sample_report, "exit_code": 1, "counts": {"passed": 1, "failed": 1},
+                          "tests": {**sample_report["tests"], "test_b": {"status": "failed", "classname": "m"}}}
+        assert run_stage(failing_report, "windows-latest", "a" * 40) == (False, False)
+        assert run_stage({**sample_report, "problems": ["ambiguous"]}, "windows-latest", "a" * 40) == (False, False)
+        assert run_stage(sample_report, "ubuntu-latest", "b" * 40) == (False, False)
+        assert run_stage(sample_report, "macos-latest", "a" * 40) == (False, False)
+        # Re-stage valid Ubuntu cache, corrupt Windows cache, and omit macOS cache.
+        assert run_stage(sample_report, "ubuntu-latest", "a" * 40) == (True, True)
+        (cache_dir / "windows-latest").mkdir(parents=True, exist_ok=True)
+        (cache_dir / "windows-latest" / "results.json").write_text("{corrupt", encoding="utf-8")
+        (cache_dir / "macos-latest").mkdir(parents=True, exist_ok=True)
+        (cache_dir / "macos-latest" / "results.json").write_text(
+            json.dumps({**sample_report, "platform": "macos-latest", "sha": "9" * 40}), encoding="utf-8"
+        )
+
+        def run_plan(target_obj):
+            tfile = root / "plan-target.json"
+            tfile.write_text(json.dumps(target_obj), encoding="utf-8")
+            out_file = root / "plan-outputs"
+            out_file.unlink(missing_ok=True)
+            res = subprocess.run(
+                [sys.executable, str(RUNNER), "plan-matrix", "--target", str(tfile),
+                 "--cache-dir", str(cache_dir), "--reused-dir", str(reused_dir)],
+                env={**os.environ, "GITHUB_OUTPUT": str(out_file)},
+                capture_output=True, text=True, check=False,
+            )
+            assert res.returncode == 0, res.stderr
+            return dict(line.split("=", 1) for line in out_file.read_text().splitlines())
+
+        pr_plan = run_plan({
+            "base_sha": "a" * 40, "head_sha": "b" * 40, "mode": "comparison",
+            "run_tests": True, "can_reuse_base": True,
+        })
+        assert pr_plan["reused_ubuntu"] == "true"
+        assert pr_plan["reused_windows"] == "false"
+        assert pr_plan["reused_macos"] == "false"
+        reused_ubuntu = json.loads((reused_dir / "ubuntu-latest" / "results.json").read_text())
+        assert reused_ubuntu["label"] == "base" and reused_ubuntu["sha"] == "a" * 40
+        matrix = json.loads(pr_plan["matrix"])
+        assert {"os": "ubuntu-latest", "revision": "base"} not in matrix
+        assert {"os": "ubuntu-latest", "revision": "head"} in matrix
+        assert {"os": "windows-latest", "revision": "base"} in matrix
+        assert {"os": "macos-latest", "revision": "base"} in matrix
+
+        # Manual runs (can_reuse_base=False) always schedule fresh base jobs.
+        manual_plan = run_plan({
+            "base_sha": "a" * 40, "head_sha": "b" * 40, "mode": "comparison",
+            "run_tests": True, "can_reuse_base": False,
+        })
+        assert manual_plan["reused_ubuntu"] == "false"
+        assert len(json.loads(manual_plan["matrix"])) == 6
+
+        # Push mode only schedules head jobs; docs-only schedules none.
+        push_plan = run_plan({
+            "base_sha": "a" * 40, "head_sha": "b" * 40, "mode": "head",
+            "run_tests": True, "can_reuse_base": False,
+        })
+        assert json.loads(push_plan["matrix"]) == [
+            {"os": "ubuntu-latest", "revision": "head"},
+            {"os": "windows-latest", "revision": "head"},
+            {"os": "macos-latest", "revision": "head"},
+        ]
+        skip_plan = run_plan({
+            "base_sha": "a" * 40, "head_sha": "b" * 40, "mode": "comparison",
+            "run_tests": False, "can_reuse_base": True,
+        })
+        assert json.loads(skip_plan["matrix"]) == []
     print("Revision resolution CLI end-to-end checks passed")
 
 

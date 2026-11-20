@@ -125,7 +125,8 @@ def test_inline_escape_interrupt_and_next_login_preserve_draft(make_session):
     asyncio.run(scenario())
 
 
-def test_real_login_wizard_reuses_command_list_and_saves_key_without_history(make_session):
+def test_real_login_wizard_reuses_command_list_and_saves_key_without_history(make_session, monkeypatch):
+    monkeypatch.setattr("virgo.harness.auth_commands.refresh_provider_catalog", lambda session, provider: None)
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui)

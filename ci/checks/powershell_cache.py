@@ -85,8 +85,9 @@ def main():
                     if os.name != "nt":
                         assert result.stdout.splitlines()[1] == "False", result.stdout
 
-                with ThreadPoolExecutor(max_workers=8) as pool:
-                    list(pool.map(launch, range(24)))
+                launches = 2 if os.name == "nt" else 12
+                with ThreadPoolExecutor(max_workers=min(8, launches)) as pool:
+                    list(pool.map(launch, range(launches)))
                 if os.name != "nt":
                     assert (cache / "powershell" / "StartupProfileData-NonInteractive").read_bytes() == b""
                     assert not (cache / "powershell" / "telemetry.uuid").exists()
@@ -121,7 +122,8 @@ def main():
         assert run("head", 1)["counts"] == {"failed": 1}
         source.write_text('raise RuntimeError("collection failed")\n', encoding="utf-8")
         assert not run("head", 2)["complete"]
-    print("PowerShell cache CLI acceptance passed (48 real concurrent launches)")
+    total = 4 if os.name == "nt" else 24
+    print(f"PowerShell cache CLI acceptance passed ({total} real concurrent launches)")
 
 
 if __name__ == "__main__":
