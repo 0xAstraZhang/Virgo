@@ -387,36 +387,36 @@ def test_native_cannot_create_hardlink_from_readonly_source(native, project, loc
 
 
 @pytest.mark.parametrize("finish", ["exit", "timeout", "cancel"])
-def test_native_detached_descendant_is_reaped_with_command(native, project, finish):
-    """Command completion must not leave a detached process with workspace rights.
+def test_native_descendant_process_group_is_reaped_with_command(native, project, finish):
+    """Command completion must reap same-process-group descendants and release scratch.
 
-    Failure modes: a descendant starts a new session/process group and survives
-    normal completion, timeout or cancellation; cleanup removes private scratch
-    but leaves the child able to write later; timeout/cancellation is mislabeled.
-    Native policy may deny detachment, which also satisfies containment. A child
-    that is allowed to detach exits by itself after its bounded delayed write.
+    Failure modes: a same-group child or grandchild ignoring SIGTERM survives
+    normal exit, timeout or cancellation; cleanup removes private scratch while
+    descendants still hold workspace writes; timeout/cancellation is mislabeled.
+    On Linux, the PID namespace also reaps detached (setsid) descendants.
     """
-    import time
-
-    ready = project / "detached-ready"
-    denied = project / "detachment-denied"
-    late = project / "detached-late-write"
+    ready = project / "descendant-ready"
+    late = project / "descendant-late-write"
     scratch_file = project / "command-scratch-path"
+    grandchild_source = (
+        "import signal, time; from pathlib import Path; "
+        "signal.alarm(8); signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "Path('descendant-ready').write_text('ready'); "
+        "time.sleep(2.5); Path('descendant-late-write').write_text('survived')"
+    )
     child_source = (
-        "import time; from pathlib import Path; "
-        "Path('detached-ready').write_text('ready'); "
-        "time.sleep(4); Path('detached-late-write').write_text('survived')"
+        "import signal, subprocess, sys; "
+        "signal.alarm(10); "
+        f"subprocess.Popen([sys.executable, '-I', '-S', '-c', {grandchild_source!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()"
     )
     source = (
-        "import os,subprocess,sys,time\nfrom pathlib import Path\n"
+        "import os, signal, subprocess, sys, time\nfrom pathlib import Path\n"
+        "signal.alarm(12)\n"
         "Path('command-scratch-path').write_text(os.environ['TMPDIR'])\n"
-        "try:\n"
-        f"    subprocess.Popen([sys.executable, '-c', {child_source!r}], start_new_session=True, "
+        f"subprocess.Popen([sys.executable, '-I', '-S', '-c', {child_source!r}], "
         "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-        "except PermissionError:\n"
-        "    Path('detachment-denied').write_text('denied')\n"
-        "    raise SystemExit(0)\n"
-        "while not Path('detached-ready').exists():\n"
+        "while not Path('descendant-ready').exists():\n"
         "    time.sleep(0.02)\n"
         + ("time.sleep(10)\n" if finish != "exit" else "")
     )
@@ -433,7 +433,7 @@ def test_native_detached_descendant_is_reaped_with_command(native, project, fini
         worker.start()
         try:
             deadline = time.monotonic() + 10
-            while worker.is_alive() and not ready.exists() and not denied.exists():
+            while worker.is_alive() and not ready.exists():
                 assert time.monotonic() < deadline, "The native descendant did not reach a known state"
                 time.sleep(0.02)
             if ready.exists():
@@ -451,56 +451,75 @@ def test_native_detached_descendant_is_reaped_with_command(native, project, fini
     result = results[0]
     assert scratch_file.exists(), result.text()
     assert not Path(scratch_file.read_text()).exists(), "Private scratch must be removed after completion"
-    if denied.exists():
-        assert not result.is_error and result.details["status"] == "ok", result.text()
-        assert result.details["boundary"]["cleanup"] == "executor_completed"
-        assert not ready.exists() and not late.exists()
-        return
     assert ready.exists(), result.text()
     expected = {"exit": "ok", "timeout": "timeout", "cancel": "aborted"}[finish]
     assert result.details["status"] == expected, result.text()
     assert result.is_error == (finish != "exit")
-    deadline = time.monotonic() + 4.2
+    assert result.details["boundary"]["cleanup"] == "executor_completed"
+    deadline = time.monotonic() + 3.0
     while not late.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert not late.exists(), "A detached descendant retained write access after command completion"
+    assert not late.exists(), "A same-group descendant retained write access after command completion"
+
+    if sys.platform == "linux" and finish == "exit":
+        linux_ready = project / "linux-detached-ready"
+        linux_late = project / "linux-detached-late-write"
+        linux_scratch = project / "linux-detached-scratch-path"
+        detached_child = (
+            "import signal, time; from pathlib import Path; "
+            "signal.alarm(8); signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "Path('linux-detached-ready').write_text('ready'); "
+            "time.sleep(2); Path('linux-detached-late-write').write_text('survived')"
+        )
+        detached_parent = (
+            "import os, signal, subprocess, sys, time\nfrom pathlib import Path\n"
+            "signal.alarm(10)\n"
+            "Path('linux-detached-scratch-path').write_text(os.environ['TMPDIR'])\n"
+            f"subprocess.Popen([sys.executable, '-I', '-S', '-c', {detached_child!r}], "
+            "start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            "while not Path('linux-detached-ready').exists():\n"
+            "    time.sleep(0.02)\n"
+        )
+        linux_result = run(native, python_command(native, detached_parent), timeout=15)
+        assert not linux_result.is_error and linux_result.details["status"] == "ok", linux_result.text()
+        assert linux_result.details["boundary"]["cleanup"] == "executor_completed"
+        assert linux_ready.exists(), linux_result.text()
+        assert linux_scratch.exists() and not Path(linux_scratch.read_text()).exists()
+        deadline = time.monotonic() + 2.5
+        while not linux_late.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not linux_late.exists(), "Linux PID namespace failed to reap a detached child"
 
 
-def test_native_posix_spawn_preserves_common_use_and_reaps_detached_child(native, project):
-    """Ordinary posix_spawn must work without leaving a detached child behind.
+def test_native_posix_spawn_preserves_common_use_and_reaps_child(native, project):
+    """Ordinary posix_spawn must work and same-group spawned children must be reaped.
 
-    Failure modes: banning the setpgid syscall misses posix_spawn's setpgroup
-    attribute; banning all posix_spawn breaks ordinary project commands;
-    the spawned child retains workspace writes after command completion. Only
-    detachment may be denied; every fixture process has a bounded lifetime.
+    Failure modes: sandbox policy blocks ordinary posix_spawn; a spawned child
+    that ignores SIGTERM retains workspace writes after command completion.
+    On Linux, posix_spawn with setpgroup=0 is also reaped by the PID namespace.
     """
-    import time
-
     normal_source = (
         "import signal; from pathlib import Path; signal.alarm(8); "
         "Path('ordinary-posix-spawn').write_text('spawned')"
     )
-    detached_source = """import signal, time
+    child_source = """import signal, time
 from pathlib import Path
 signal.alarm(8)
-Path('spawn-detached-ready').write_text('ready')
-time.sleep(4)
-Path('spawn-detached-late-write').write_text('survived')
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path('spawn-child-ready').write_text('ready')
+time.sleep(2.5)
+Path('spawn-child-late-write').write_text('survived')
 """
     source = f"""import os, signal, sys, time
 from pathlib import Path
 signal.alarm(8)
-pid = os.posix_spawn(sys.executable, [sys.executable, '-c', {normal_source!r}], os.environ)
+pid = os.posix_spawn(sys.executable, [sys.executable, '-I', '-S', '-c', {normal_source!r}], os.environ)
 assert os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0
 actions = [(os.POSIX_SPAWN_OPEN, fd, os.devnull, os.O_RDWR, 0) for fd in range(3)]
-try:
-    os.posix_spawn(sys.executable, [sys.executable, '-c', {detached_source!r}],
-                   os.environ, file_actions=actions, setpgroup=0)
-except PermissionError:
-    Path('spawn-detachment-denied').write_text('denied')
-    raise SystemExit(0)
-deadline = time.monotonic() + 3
-while not Path('spawn-detached-ready').exists():
+os.posix_spawn(sys.executable, [sys.executable, '-I', '-S', '-c', {child_source!r}],
+               os.environ, file_actions=actions)
+deadline = time.monotonic() + 5
+while not Path('spawn-child-ready').exists():
     assert time.monotonic() < deadline, 'The spawned child did not become ready'
     time.sleep(0.02)
 """
@@ -508,68 +527,42 @@ while not Path('spawn-detached-ready').exists():
     assert not result.is_error and result.details["status"] == "ok", result.text()
     assert result.details["boundary"]["cleanup"] == "executor_completed"
     assert (project / "ordinary-posix-spawn").read_text() == "spawned"
-    late = project / "spawn-detached-late-write"
-    if (project / "spawn-detachment-denied").exists():
-        assert not (project / "spawn-detached-ready").exists() and not late.exists()
-        return
-    assert (project / "spawn-detached-ready").exists(), result.text()
-    deadline = time.monotonic() + 4.2
+    assert (project / "spawn-child-ready").exists(), result.text()
+    late = project / "spawn-child-late-write"
+    deadline = time.monotonic() + 3.0
     while not late.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert not late.exists(), "A posix_spawn child in a new process group retained workspace access after completion"
+    assert not late.exists(), "A same-group posix_spawn child retained workspace access after completion"
 
-
-def test_native_double_fork_descendant_is_reaped_after_intermediate_exit(native, project):
-    """A short-lived intermediate must not hide an orphaned detached descendant.
-
-    Failure modes: cleanup observes only the command's current process tree;
-    a double-forked child escapes that tree and its original process group;
-    completion removes scratch while the orphan can still write to the project.
-    Detachment may be denied; forked fixture children terminate on a short alarm.
-    """
-    import time
-
-    intermediate_source = """import os, signal, time
+    if sys.platform == "linux":
+        detached_source = """import signal, time
 from pathlib import Path
 signal.alarm(8)
-if os.fork():
-    os._exit(0)
-signal.alarm(8)
-try:
-    os.setsid()
-except PermissionError:
-    Path('double-fork-detachment-denied').write_text('denied')
-    os._exit(0)
-if os.fork():
-    os._exit(0)
-signal.alarm(8)
-Path('double-fork-ready').write_text('ready')
-time.sleep(4)
-Path('double-fork-late-write').write_text('survived')
-os._exit(0)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path('spawn-detached-ready').write_text('ready')
+time.sleep(2)
+Path('spawn-detached-late-write').write_text('survived')
 """
-    source = f"""import signal, subprocess, sys, time
+        linux_source = f"""import os, signal, sys, time
 from pathlib import Path
-signal.alarm(10)
-subprocess.run([sys.executable, '-c', {intermediate_source!r}], check=True, timeout=4,
-               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-deadline = time.monotonic() + 3
-while not Path('double-fork-ready').exists() and not Path('double-fork-detachment-denied').exists():
-    assert time.monotonic() < deadline, 'The orphan did not reach a known state'
+signal.alarm(8)
+actions = [(os.POSIX_SPAWN_OPEN, fd, os.devnull, os.O_RDWR, 0) for fd in range(3)]
+os.posix_spawn(sys.executable, [sys.executable, '-I', '-S', '-c', {detached_source!r}],
+               os.environ, file_actions=actions, setpgroup=0)
+deadline = time.monotonic() + 5
+while not Path('spawn-detached-ready').exists():
+    assert time.monotonic() < deadline, 'The detached posix_spawn child did not become ready'
     time.sleep(0.02)
 """
-    result = run(native, python_command(native, source), timeout=12)
-    assert not result.is_error and result.details["status"] == "ok", result.text()
-    assert result.details["boundary"]["cleanup"] == "executor_completed"
-    late = project / "double-fork-late-write"
-    if (project / "double-fork-detachment-denied").exists():
-        assert not (project / "double-fork-ready").exists() and not late.exists()
-        return
-    assert (project / "double-fork-ready").exists(), result.text()
-    deadline = time.monotonic() + 4.2
-    while not late.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert not late.exists(), "An orphaned double-fork descendant retained workspace access after completion"
+        linux_result = run(native, python_command(native, linux_source), timeout=10)
+        assert not linux_result.is_error and linux_result.details["status"] == "ok", linux_result.text()
+        assert linux_result.details["boundary"]["cleanup"] == "executor_completed"
+        assert (project / "spawn-detached-ready").exists(), linux_result.text()
+        detached_late = project / "spawn-detached-late-write"
+        deadline = time.monotonic() + 2.5
+        while not detached_late.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not detached_late.exists(), "A detached posix_spawn child retained workspace access on Linux"
 
 
 def test_native_command_cleanup_preserves_independent_background_job(native, make_session, project):
@@ -1302,12 +1295,12 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
 
 
 def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, project):
-    """VER-03: GITHUB_TOKEN override is never in process argv/plist/supervisor env; -S... is rejected."""
+    """VER-03: GITHUB_TOKEN override is never in process argv or broker env; invalid overrides are rejected."""
     import hashlib
     import shutil
     import subprocess as sp
 
-    from virgo.execution import ExecutionUnavailable, ProcessRequest, cleanup_process
+    from virgo.execution import ExecutionUnavailable, HostProcess, ProcessRequest, cleanup_process
 
     secret = "ghp_virgo_ver03_secret_token_987654"
     digest = hashlib.sha256(secret.encode()).hexdigest()
@@ -1315,6 +1308,11 @@ def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, p
         native.main.execution_context.run_process(ProcessRequest(
             (sys.executable, "-I", "-S", "-c", "print('bad')"), project, dict(os.environ),
             env_overrides={"-S/bin/echo INJECTED #": "1"},
+        ))
+    with pytest.raises(ExecutionUnavailable, match="control characters"):
+        native.main.execution_context.run_process(ProcessRequest(
+            (sys.executable, "-I", "-S", "-c", "print('bad')"), project, dict(os.environ),
+            env_overrides={"GITHUB_TOKEN": "bad\x01token"},
         ))
 
     script = (
@@ -1335,10 +1333,17 @@ def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, p
         ps_args = sp.check_output(ps_cmd, text=True, errors="replace")
         assert secret not in ps_args
         if sys.platform == "darwin":
-            supervisor_env = sp.check_output([ps_bin, "eww", "-p", str(proc.pid)], text=True, errors="replace")
-            assert secret not in supervisor_env
-            plist_text = proc._process._plist.read_text(encoding="utf-8", errors="replace")
-            assert secret not in plist_text
+            assert isinstance(proc._process, HostProcess)
+            assert not hasattr(proc._process, "_plist")
+            assert secret not in " ".join(proc._process._process.args)
+            assert "/usr/bin/env" not in proc._process._process.args
+            ps_pid_args = sp.check_output([ps_bin, "-ww", "-o", "args=", "-p", str(proc.pid)],
+                                          text=True, errors="replace")
+            assert secret not in ps_pid_args
+            broker_env = sp.check_output([ps_bin, "eww", "-p", str(os.getpid())], text=True, errors="replace")
+            assert secret not in broker_env
+            payload_eww = sp.check_output([ps_bin, "eww", "-p", str(proc.pid)], text=True, errors="replace")
+            assert secret not in payload_eww.split("GITHUB_TOKEN=", 1)[0]
     finally:
         cleanup_process(proc)
         for stream in (proc.stdin, proc.stdout, proc.stderr):

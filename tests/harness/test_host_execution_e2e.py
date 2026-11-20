@@ -20,7 +20,7 @@ def test_fresh_host_executes_without_importing_isolation(project, tmp_path):
 import importlib.abc, json, pathlib, sys
 class NoIsolation(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith("virgo.") and any(word in fullname for word in ("sandbox", "mxc", "macos_process")):
+        if fullname.startswith("virgo.") and any(word in fullname for word in ("sandbox", "mxc")):
             raise AssertionError("Host imported isolation: " + fullname)
 sys.meta_path.insert(0, NoIsolation())
 from virgo.harness.session import AgentSession

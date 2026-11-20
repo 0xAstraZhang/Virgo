@@ -1,5 +1,7 @@
 # Review of macOS Launchd Supervisor (`src/virgo/sandbox/macos_process.py`)
 
+> **Status: Implemented (Option A)** — `src/virgo/sandbox/macos_process.py` has been removed, and macOS now uses direct `/usr/bin/sandbox-exec` + `HostProcess` process-group management. The review table and rationale below are kept for historical reference.
+
 > Scope: Checklist item **S5-03** — re-evaluate the 785-line macOS launchd supervisor against Virgo's execution safety principles (**R1–R7**: "Guardrail, not fortress"). Native Windows LPAC (`windows_sandbox.py` / `windows_acl.py`, ~2,200 lines) remains frozen per §6.2 pending its future AppContainer rewrite.
 
 ## 1. Current Architecture Summary

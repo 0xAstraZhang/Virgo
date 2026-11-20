@@ -499,9 +499,7 @@ class NativePolicy:
                           '(literal "/private/var/run/mDNSResponder") (control-name "com.apple.netsrc"))',
                           "(allow network-bind network-inbound (local tcp) (local udp))"])
             lines.append('(allow file-read* (literal "/private/var/run/resolv.conf"))')
-        from .macos_process import control_root
-
-        private = (*self.private_paths, control_root())
+        private = self.private_paths
         for path in private:
             scope = "literal" if path.is_file() else "subpath"
             lines.append(f"(deny file-read* file-map-executable file-write* ({scope} {quoted(path)}))")
@@ -595,18 +593,9 @@ class NativePolicy:
             status_read, status_write = os.pipe()
             command = [*prefix, _TRAMPOLINE_PYTHON, "-I", "-S", "-c", _EXEC_HANDSHAKE,
                        str(status_write), *argv]
-            if backend == "seatbelt" and sys.platform == "darwin":
-                from .macos_process import LaunchdProcess
-
-                proc = LaunchdProcess(self, cwd, clean_env)
-                proc._virgo_sandbox_tmp = scratch
-                proc._virgo_sandbox = {**self.describe(), "backend": backend}
-                proc.start(command, stdout, status_write, len(prefix) + 5, cancellation,
-                           stdin=stdin, stderr=stderr)
-            else:
-                proc = subprocess.Popen(command, cwd=cwd, env=clean_env,
-                                        stdin=stdin, stdout=stdout, stderr=stderr,
-                                        start_new_session=True, pass_fds=(*inherited, status_write))
+            proc = subprocess.Popen(command, cwd=cwd, env=clean_env,
+                                    stdin=stdin, stdout=stdout, stderr=stderr,
+                                    start_new_session=True, pass_fds=(*inherited, status_write))
             proc._virgo_sandbox_tmp = scratch
             proc._virgo_sandbox = {**self.describe(), "backend": backend}
             os.close(status_write)
@@ -672,18 +661,13 @@ class NativePolicy:
 def cleanup_process(proc) -> None:
     scratch = getattr(proc, "_virgo_sandbox_tmp", None)
     if scratch is not None:
-        cleanup_tree = getattr(proc, "cleanup_tree", None)
-        if cleanup_tree is not None:
-            try:
-                cleanup_tree()
-            except BaseException:
-                if proc.tree_drained:
-                    scratch.cleanup()
-                    proc._virgo_sandbox_tmp = None
-                raise
-            scratch.cleanup()
-            proc._virgo_sandbox_tmp = None
-            return
-        HostProcess(proc).cleanup_tree()
+        target = proc if getattr(proc, "cleanup_tree", None) is not None else HostProcess(proc)
+        try:
+            target.cleanup_tree()
+        except BaseException:
+            if getattr(target, "tree_drained", False):
+                scratch.cleanup()
+                proc._virgo_sandbox_tmp = None
+            raise
         scratch.cleanup()
         proc._virgo_sandbox_tmp = None

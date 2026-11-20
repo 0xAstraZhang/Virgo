@@ -21,7 +21,7 @@
 ## 各平台后端与如实说明的差异
 
 - **Linux（一级 — `bubblewrap` + `libseccomp2`）**：需要系统 `bwrap`、`libseccomp.so.2` 与非特权用户命名空间。隔离挂载、网络命名空间（关闭联网时）及系统调用，同时放行匿名 Unix 流 `socketpair(AF_UNIX, SOCK_STREAM, 0)`，确保 Python `asyncio` 与测试框架正常运行。已存在的控制文件（以及 `CLAUDE.md -> AGENTS.md` 这类软链指向的可读目标）通过只读 bind 挂载保护；不存在的控制文件名及删除软链目录项本身属于 Linux bind 挂载的固有限制，Broker 文件工具与不可信项目配置剥离仍对其进行保护。
-- **macOS（一级 — Seatbelt）**：使用 `/usr/bin/sandbox-exec` 搭配 launchd 监督器清理进程树。Seatbelt 对已存在和尚不存在的控制元路径均实施写拒绝。
+- **macOS（一级 — Seatbelt）**：直接在独立 POSIX 进程组中启动 `/usr/bin/sandbox-exec`（与 Linux `bwrap` 及 POSIX Host 命令一致，由 `HostProcess` 通过 `waitid(WNOWAIT)` / `kqueue` + `os.killpg` 清理同进程组子进程树）。Seatbelt 对已存在和尚不存在的控制元路径均实施写拒绝。显式调用 `setsid()` 或脱离进程组的后台进程不会被自动回收（与 POSIX Host 命令一致）。
 - **Windows + WSL2（一级）**：Windows 用户的推荐方式，在 WSL2 中直接使用 Linux `bubblewrap` + `libseccomp2` 后端。
 - **原生 Windows（实验性）**：功能冻结的 LPAC 后端，默认以 **No-Limit** 启动。见[原生 Windows 沙箱（实验性）](windows-sandbox.md)。
 
