@@ -36,27 +36,72 @@ jobs:
       base_repository: ${{ steps.target.outputs.base_repository }}
       head_repository: ${{ steps.target.outputs.head_repository }}
       revisions: ${{ steps.target.outputs.revisions }}
+      ci_fingerprint: ${{ steps.target.outputs.ci_fingerprint }}
       run_tests: ${{ steps.changes.outputs.run_tests }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: '0.13.8'
-          python-version: '3.13'
-          enable-cache: false
       - name: Resolve immutable event revisions
         id: target
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
-        run: uv run --no-project python ci/compare_tests.py resolve
+        run: python3 ci/compare_tests.py resolve
       - name: Classify changes between resolved revisions
         id: changes
-        run: uv run --no-project python ci/compare_tests.py classify --target target.json
+        run: python3 ci/compare_tests.py classify --target target.json
+      - name: Restore cached Ubuntu baseline report
+        if: steps.target.outputs.can_reuse_base == 'true' && steps.changes.outputs.run_tests == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: base-cache/ubuntu-latest/results.json
+          key: ci-base-v1-${{ steps.target.outputs.ci_fingerprint }}-ubuntu-latest-${{ steps.target.outputs.base_sha }}
+          enableCrossOsArchive: true
+      - name: Restore cached Windows baseline report
+        if: steps.target.outputs.can_reuse_base == 'true' && steps.changes.outputs.run_tests == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: base-cache/windows-latest/results.json
+          key: ci-base-v1-${{ steps.target.outputs.ci_fingerprint }}-windows-latest-${{ steps.target.outputs.base_sha }}
+          enableCrossOsArchive: true
+      - name: Restore cached macOS baseline report
+        if: steps.target.outputs.can_reuse_base == 'true' && steps.changes.outputs.run_tests == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: base-cache/macos-latest/results.json
+          key: ci-base-v1-${{ steps.target.outputs.ci_fingerprint }}-macos-latest-${{ steps.target.outputs.base_sha }}
+          enableCrossOsArchive: true
+      - name: Plan test matrix and validate cached baselines
+        id: matrix
+        run: python3 ci/compare_tests.py plan-matrix --target target.json --cache-dir base-cache --reused-dir reused-base
+      - name: Publish cached Ubuntu baseline report
+        if: steps.matrix.outputs.reused_ubuntu == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results-ubuntu-latest-base
+          path: reused-base/ubuntu-latest/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish cached Windows baseline report
+        if: steps.matrix.outputs.reused_windows == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results-windows-latest-base
+          path: reused-base/windows-latest/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish cached macOS baseline report
+        if: steps.matrix.outputs.reused_macos == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results-macos-latest-base
+          path: reused-base/macos-latest/
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: target
@@ -92,36 +137,42 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint"
-      - name: Check revision resolution and change classification end to end
-        run: uv run --no-sync python ci/checks/resolution.py
-      - name: Check parallel execution and failure diagnostics end to end
-        run: uv run --no-sync python ci/checks/parallel.py
-      - name: Check comparison and strict results end to end
-        run: uv run --no-sync python ci/checks/comparison.py
+      - name: Run CI acceptance checks end to end
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-sync python ci/checks/resolution.py & pid_res=$!
+          uv run --no-sync python ci/checks/parallel.py & pid_par=$!
+          uv run --no-sync python ci/checks/comparison.py & pid_cmp=$!
+          status=0
+          wait "$pid_res" || status=1
+          wait "$pid_par" || status=1
+          wait "$pid_cmp" || status=1
+          exit "$status"
 
   test:
-    needs: [resolve, checks]
+    needs: [resolve]
     if: needs.resolve.outputs.run_tests == 'true'
-    name: ${{ matrix.os }} / ${{ matrix.revision }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 35 || 20 }}
+    name: ${{ matrix.entry.os }} / ${{ matrix.entry.revision }}
+    runs-on: ${{ matrix.entry.os }}
+    timeout-minutes: ${{ matrix.entry.os == 'windows-latest' && 35 || 20 }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        revision: ${{ fromJSON(needs.resolve.outputs.revisions) }}
+        entry: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     steps:
       - name: Check out comparison tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: ci-config
+          sparse-checkout: ci
           persist-credentials: false
       - name: Check out tested revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ matrix.revision == 'base' && needs.resolve.outputs.base_repository || needs.resolve.outputs.head_repository }}
-          ref: ${{ matrix.revision == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
+          repository: ${{ matrix.entry.revision == 'base' && needs.resolve.outputs.base_repository || needs.resolve.outputs.head_repository }}
+          ref: ${{ matrix.entry.revision == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
           path: candidate
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -134,9 +185,17 @@ jobs:
             uv.lock
       - name: Install Linux shell dependencies
         if: runner.os == 'Linux'
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y zsh curl bubblewrap libseccomp2
+          missing=()
+          command -v zsh >/dev/null 2>&1 || missing+=(zsh)
+          command -v curl >/dev/null 2>&1 || missing+=(curl)
+          command -v bwrap >/dev/null 2>&1 || missing+=(bubblewrap)
+          dpkg -s libseccomp2 >/dev/null 2>&1 || missing+=(libseccomp2)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
           if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
@@ -145,9 +204,9 @@ jobs:
         run: uv sync --locked --dev
       - name: Record environment
         working-directory: candidate
-        run: uv run --no-sync python -c "import platform, shutil, sys; print(sys.version); print(platform.platform()); print({s:shutil.which(s) for s in ('bash','zsh','pwsh','powershell','curl')})"
+        run: uv run --no-sync python -c "import os, platform, shutil, sys; print(sys.version); print(platform.platform(), 'cpus=', os.cpu_count()); print({s:shutil.which(s) for s in ('bash','zsh','pwsh','powershell','curl')})"
       - name: Check PowerShell startup isolation end to end
-        if: matrix.revision == 'head'
+        if: matrix.entry.revision == 'head'
         working-directory: candidate
         run: uv run --no-sync python ../ci-config/ci/checks/powershell_cache.py
       - name: Run complete pytest suite
@@ -155,14 +214,41 @@ jobs:
         continue-on-error: true
         working-directory: candidate
         env:
-          TEST_SHA: ${{ matrix.revision == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
+          TEST_SHA: ${{ matrix.entry.revision == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
         shell: bash
         run: |
           uv run --no-sync python ../ci-config/ci/compare_tests.py run \
             --project . --output ../result \
-            --platform '${{ matrix.os }}' --label '${{ matrix.revision }}' --sha "$TEST_SHA"
+            --platform '${{ matrix.entry.os }}' --label '${{ matrix.entry.revision }}' --sha "$TEST_SHA"
+      - name: Stage green baseline report for caching
+        id: cache_check
+        if: >-
+          success() &&
+          (github.event_name == 'push' ||
+           (matrix.entry.revision == 'base' &&
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository))
+        working-directory: candidate
+        shell: bash
+        env:
+          TEST_SHA: ${{ matrix.entry.revision == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
+          TEST_PLATFORM: ${{ matrix.entry.os }}
+        run: >-
+          uv run --no-sync python ../ci-config/ci/compare_tests.py stage-cache
+          --report ../result/results.json
+          --destination "../base-cache/$TEST_PLATFORM/results.json"
+          --platform "$TEST_PLATFORM"
+          --sha "$TEST_SHA"
+      - name: Cache green baseline report
+        if: steps.cache_check.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: base-cache/${{ matrix.entry.os }}/results.json
+          key: ci-base-v1-${{ needs.resolve.outputs.ci_fingerprint }}-${{ matrix.entry.os }}-${{ matrix.entry.revision == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
+          enableCrossOsArchive: true
       - name: Build and smoke test installed distribution
-        if: runner.os == 'Linux' && matrix.revision == 'head'
+        if: runner.os == 'Linux' && matrix.entry.revision == 'head'
         working-directory: candidate
         shell: bash
         run: |
@@ -177,7 +263,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: results-${{ matrix.os }}-${{ matrix.revision }}
+          name: results-${{ matrix.entry.os }}-${{ matrix.entry.revision }}
           path: result/
           if-no-files-found: error
           retention-days: 14
@@ -192,12 +278,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          sparse-checkout: ci
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: '0.13.8'
-          python-version: '3.13'
-          enable-cache: false
       - name: Download test reports
         if: needs.resolve.outputs.run_tests == 'true'
         continue-on-error: true
@@ -213,7 +295,7 @@ jobs:
           path: .
       - name: Summarize and enforce results
         run: >-
-          uv run --no-project python ci/compare_tests.py compare
+          python3 ci/compare_tests.py compare
           --reports reports --target target.json --output comparison
           --resolve-result '${{ needs.resolve.result }}'
           --checks-result '${{ needs.checks.result }}'

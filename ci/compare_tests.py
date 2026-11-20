@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pipeline.comparison import compare
 from pipeline.execution import run
-from pipeline.targets import classify, resolve
+from pipeline.targets import classify, plan_matrix, resolve, stage_cache
 
 PLATFORMS = ["ubuntu-latest", "windows-latest", "macos-latest"]
 
@@ -20,6 +20,16 @@ def main():
     classifier = subparsers.add_parser("classify")
     classifier.add_argument("--target", type=Path, required=True)
     classifier.add_argument("--project", type=Path, default=Path("."))
+    planner = subparsers.add_parser("plan-matrix")
+    planner.add_argument("--target", type=Path, required=True)
+    planner.add_argument("--cache-dir", type=Path, required=True)
+    planner.add_argument("--reused-dir", type=Path, required=True)
+    planner.add_argument("--platforms", nargs="+", default=PLATFORMS)
+    stager = subparsers.add_parser("stage-cache")
+    stager.add_argument("--report", type=Path, required=True)
+    stager.add_argument("--destination", type=Path, required=True)
+    stager.add_argument("--platform", required=True)
+    stager.add_argument("--sha", required=True)
     runner = subparsers.add_parser("run")
     runner.add_argument("--project", type=Path, required=True)
     runner.add_argument("--output", type=Path, required=True)
@@ -41,6 +51,10 @@ def main():
         return resolve()
     if args.command == "classify":
         return classify(args)
+    if args.command == "plan-matrix":
+        return plan_matrix(args)
+    if args.command == "stage-cache":
+        return stage_cache(args)
     return run(args) if args.command == "run" else compare(args)
 
 

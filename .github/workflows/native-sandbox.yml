@@ -35,12 +35,20 @@ jobs:
         with:
           version: '0.13.8'
           python-version: '3.13'
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
       - name: Install Linux sandbox requirements on the test host
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap libseccomp2
+          missing=()
+          command -v bwrap >/dev/null 2>&1 || missing+=(bubblewrap)
+          dpkg -s libseccomp2 >/dev/null 2>&1 || missing+=(libseccomp2)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
           if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi

@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   compare:
-    name: ${{ matrix.os }} / ${{ matrix.mode }}
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     strategy:
@@ -26,11 +26,9 @@ jobs:
       matrix:
         # S5-04: Performance budgets apply across all Tier 1 platforms (Linux, macOS, Windows).
         os: [ubuntu-latest, macos-latest, windows-latest]
-        mode: [no-limit, read-only, workspace-edit]
     env:
       PYTHONUTF8: '1'
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      MODE: ${{ matrix.mode }}
       BASELINE: '04e94ed45992d8e2cbf2178c8c6b562704092a83'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,13 +46,22 @@ jobs:
         with:
           version: '0.13.8'
           python-version: '3.13'
-          enable-cache: false
+          cache-dependency-glob: |
+            head/pyproject.toml
+            head/uv.lock
+            baseline/pyproject.toml
+            baseline/uv.lock
       - name: Install native Linux dependencies
-        if: runner.os == 'Linux' && matrix.mode != 'no-limit'
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap libseccomp2
+          missing=()
+          command -v bwrap >/dev/null 2>&1 || missing+=(bubblewrap)
+          dpkg -s libseccomp2 >/dev/null 2>&1 || missing+=(libseccomp2)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
           if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
@@ -65,41 +72,48 @@ jobs:
       - name: Install the locked head environment
         shell: bash
         run: uv sync --directory head --locked --dev
-      - name: Measure baseline
-        id: baseline
-        if: runner.os != 'Windows'
-        working-directory: baseline
+      - name: Measure, compare, and enforce budgets across all permission modes
+        env:
+          RUNNER_OS_NAME: ${{ runner.os }}
         shell: bash
-        run: uv run --no-sync python ../head/ci/measure_permission_modes.py --mode "$MODE" --contract original --samples 3 --repeat 5 --output ../baseline.json
-      - name: Measure final revision
-        if: ${{ !cancelled() && (success() || steps.baseline.outcome == 'failure') }}
-        working-directory: head
-        shell: bash
-        run: uv run --no-sync python ci/measure_permission_modes.py --mode "$MODE" --samples 3 --repeat 5 --output ../head.json
-      - name: Compare validated samples
-        if: ${{ !cancelled() && runner.os != 'Windows' && hashFiles('head.json', 'baseline.json') != '' }}
-        working-directory: head
-        shell: bash
-        run: uv run --no-sync python ci/compare_permission_timing.py --mode "$MODE" --head-sha "$HEAD_SHA" --head ../head.json --baseline ../baseline.json --output ../comparison.json
-      - name: Enforce realistic-scale cold-start and Read budgets (S5-04)
-        working-directory: head
-        shell: bash
-        run: >-
-          uv run --no-sync python ci/measure_permission_modes.py
-          --mode "$MODE" --samples 2 --repeat 2 --read-repeats 10
-          --realistic-files 1000 --check-budgets --output ../budget.json
+        run: |
+          set -u
+          status=0
+          for mode in no-limit read-only workspace-edit; do
+            echo "::group::Mode: $mode"
+            out_rel="timing-results/$mode"
+            mkdir -p "$out_rel"
+            base_ok=0
+            head_ok=0
+            if [ "$RUNNER_OS_NAME" != "Windows" ]; then
+              (cd baseline && uv run --no-sync python ../head/ci/measure_permission_modes.py \
+                --mode "$mode" --contract original --samples 3 --repeat 5 --output "../$out_rel/baseline.json") || base_ok=1
+            fi
+            (cd head && uv run --no-sync python ci/measure_permission_modes.py \
+              --mode "$mode" --samples 3 --repeat 5 --output "../$out_rel/head.json") || head_ok=1
+            if [ "$RUNNER_OS_NAME" != "Windows" ] && [ -f "$out_rel/head.json" ] && [ -f "$out_rel/baseline.json" ]; then
+              (cd head && uv run --no-sync python ci/compare_permission_timing.py \
+                --mode "$mode" --head-sha "$HEAD_SHA" \
+                --head "../$out_rel/head.json" --baseline "../$out_rel/baseline.json" \
+                --output "../$out_rel/comparison.json") || status=1
+            fi
+            (cd head && uv run --no-sync python ci/measure_permission_modes.py \
+              --mode "$mode" --samples 2 --repeat 2 --read-repeats 10 \
+              --realistic-files 1000 --check-budgets --output "../$out_rel/budget.json") || status=1
+            if [ "$base_ok" -ne 0 ] || [ "$head_ok" -ne 0 ]; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
       - name: Fetch the pinned public license in Read-Only mode
-        if: ${{ !cancelled() && matrix.mode == 'read-only' }}
+        if: ${{ !cancelled() }}
         working-directory: head
         run: uv run --no-sync python ci/checks/readonly_web.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
-          name: permission-timing-${{ matrix.os }}-${{ matrix.mode }}
-          path: |
-            head.json
-            baseline.json
-            comparison.json
-            budget.json
+          name: permission-timing-${{ matrix.os }}
+          path: timing-results/
           if-no-files-found: error
           retention-days: 14

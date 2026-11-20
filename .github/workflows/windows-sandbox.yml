@@ -43,6 +43,9 @@ jobs:
         with:
           version: '0.13.8'
           python-version: '3.13'
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
       - run: uv sync --locked --dev
       - name: Record exact revision and native environment
         shell: pwsh
