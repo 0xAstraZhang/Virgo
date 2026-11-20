@@ -1,7 +1,7 @@
 """A run captures one permission decision; later selection changes apply to the next run."""
 from __future__ import annotations
 
-from virgo.harness.execution_modes import PermissionSnapshot
+from virgo.execution_policy import PermissionSnapshot
 
 
 def test_snapshot_freezes_preset_approval_and_revision(broker_session):

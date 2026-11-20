@@ -60,16 +60,19 @@ def test_trash_failure_keeps_active_session_and_all_cached_stores(make_session, 
     assert SessionStore.load(path).build_context()[0][-1].text() == "still writable"
 
 
-def test_replacement_runtime_failure_keeps_current_session_out_of_trash(make_session, trash):
+def test_replacement_runtime_failure_keeps_current_session_out_of_trash(make_session, monkeypatch, trash):
     session = make_session(persist=True)
     store, runtime = session.store, session.main
     store.append_message(UserMessage("keep this conversation"))
     path = store.path
     original = path.read_bytes()
-    session.paths.project.mkdir(parents=True, exist_ok=True)
-    (session.paths.project / "SYSTEM.md").write_bytes(b"\xff")
 
-    with pytest.raises(UnicodeDecodeError):
+    def fail_prepare(_replacement):
+        raise RuntimeError("replacement runtime initialization failed")
+
+    monkeypatch.setattr(session, "_prepare_main", fail_prepare)
+
+    with pytest.raises(RuntimeError, match="replacement runtime initialization failed"):
         session.trash_session(path)
 
     assert not trash

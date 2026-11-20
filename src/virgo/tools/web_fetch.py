@@ -351,7 +351,7 @@ def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=N
             }
             if cut:
                 access = execution_context(ctx) if execution_context else None
-                result["output_path"] = str(save_output(content, ctx.cwd, "web-fetch", execution_context=access))
+                result["output_id"] = str(save_output(content, ctx.cwd, "web-fetch", execution_context=access))
             return ToolResult.text(
                 json.dumps(result, ensure_ascii=False),
                 details={

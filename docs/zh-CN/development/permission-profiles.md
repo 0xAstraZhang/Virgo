@@ -3,18 +3,24 @@
 | 模式 | 文件权限 | 公共网页工具 | Shell 联网 | 执行后端 |
 | --- | --- | --- | --- | --- |
 | Read-Only | 可读项目及所需运行时文件，命令有私有临时目录 | 允许 | 按操作申请 | 原生沙箱 |
-| Workspace-Edit | 可读写真实工作区，Git 元数据及 Virgo 私有状态等路径受保护 | 允许 | 允许 | 原生沙箱 |
+| Workspace-Edit | 可读写真实工作区；`.git`、`.virgo`、`AGENTS.md`、`CLAUDE.md` 与解释器目录受写保护 | 允许 | 允许 | 原生沙箱 |
 | No-Limit | 使用宿主账户权限 | 允许 | 允许 | Host |
 
-没有用户设置文件时默认 Workspace-Edit。已有用户配置沿用旧版隐式 Workspace-Edit 的，升级后仍使用该模式。可在用户设置中指定 `execution.mode`，或通过 `--permission read-only`、`--permission workspace-edit`、`--permission no-limit` 启动。旧参数 `--execution host` 对应 No-Limit。`/permissions list` 和 TUI 的 Shift+Tab 列出三个模式。`/permissions <id>` 切换下一任务的模式，`/permissions show` 显示当前任务及下一任务的选择。
+## 默认模式与选择方式
 
-Core 在接纳任务时固定来源工作区和执行上下文。排队的子任务继承提交时的上下文，运行中的任务在切换模式后继续使用原权限。子任务的 `approval_policy="never"` 对其后代同样生效。文件工具和 Shell 直接访问同一工作区。No-Limit 直接使用 Host。选用沙箱时才加载平台后端，无法实施请求的文件或网络边界时停止操作。[各平台支持范围及实时文件系统约定](../guides/sandbox.md)
+- **Linux、macOS 与 WSL2**：默认 **Workspace-Edit**。
+- **原生 Windows**：默认 **No-Limit**，因为原生 Windows LPAC 沙箱为实验性功能（详见 [WSL2 使用指南](../guides/wsl2.md) 与[原生 Windows 沙箱（实验性）](../guides/windows-sandbox.md)）。
+- 在用户设置中配置 `execution.mode`（`read-only`、`workspace-edit` 或 `no-limit`），或通过命令行 `--permission <mode>` 启动。已退役的配置项（`sandbox`、`execution.provider`、`permissions.preset`/`presets`/`mode`/`modes`/`allow`/`deny`）与旧参数（`--execution`、`--mode`、`--sandbox`）会直接报错并指引改用 `execution.mode` / `--permission`。
+- 会话内使用 `/permissions show`、`/permissions list`、`/permissions <id>` 或 TUI 的 Shift+Tab 查看和切换模式。切换模式作用于下一任务；运行中的任务及其排队子任务保持启动时固定的不可变执行上下文。
 
-Core 根据本次操作判断缺少的权限。文件读写超出范围时，Virgo 在执行前直接询问用户。Shell 可在执行前通过 `request_permissions` 同时申请额外的路径和联网权限。审批框列出具体操作、工作目录、新增资源和原因。
+## 操作审批、高危命令确认与持久授权
 
-- **仅允许一次**绑定当前任务的确切操作，执行时消费。显式申请后尚未使用的一次批准在五分钟后或本轮任务结束时失效。
-- **始终允许**将操作及资源保存在用户目录的 `resource-grants.sqlite3`。匹配时检查项目、模式、工作目录、工具和完整参数，Shell 操作还检查解释器身份。已有目录读取权限的同一命令再次申请写入时，只询问写权限。
-- **拒绝**保留原权限。已经启动的进程继续使用启动时取得的权限。
-- 受信任扩展和 MCP 工具运行在原生文件边界之外。声明为只读的工具直接执行；可能修改宿主状态的工具在 Read-Only 与 Workspace-Edit 下每次调用都需要用户批准。No-Limit 不弹出此类审批。
+Core 依据 deny 优先的 `PermissionPolicy` 校验每次工具调用：
 
-`/permissions grants` 查看当前项目的持久授权，`/permissions revoke ID` 撤销指定记录。TUI 模式选择器也提供「已保存的授权」入口。项目配置无权添加批准记录。[旧配置迁移](../guides/migrating-execution-policy.md)
+- **文件工具**（`read`、`write`、`edit`、`glob`、`grep`）由 Broker 直接按 `PermissionPolicy` 执行。越界读写在派发前询问用户，并在审批时解析符号链接以展示真实路径。单文件授权直接生效，无需授权父目录。
+- **Shell 命令**在 Read-Only 与 Workspace-Edit 下运行在 OS 沙箱中，可通过 `request_permissions` 申请已存在的额外路径或联网开关（`network_allowed: true`）。
+- **高危 Shell 命令**（`git push --force`、推送至受保护分支、`git reset --hard`、`git clean -f`、`curl | sh`、工作区外递归删除、部署/发布、云资源删除、破坏性 SQL/Redis）在**所有模式**下均需逐次确认。配置 `permissions.confirmHighRisk: false` **仅在 No-Limit 模式下**关闭该确认。
+- **沙箱不可用时的一次性回退**：当原生沙箱后端在启动载荷前无法建立时，Virgo 明确报错，并在交互式会话中提供显式的“本次使用 No-Limit”选项（不改变会话模式）。
+- **仅允许一次**绑定当前任务的确切操作，派发时消费（`request_permissions` 显式申请的授权在 5 分钟后或本轮任务结束时失效）。
+- **始终允许**保存在 `<VIRGO_HOME>/permission-grants.sqlite3`（升级启动时会自动删除旧版 `resource-grants.sqlite3`，不迁移旧数据）。用 `/permissions grants` 查看、用 `/permissions revoke ID` 撤销。项目配置无权添加授权。
+- **受信任扩展与 MCP 工具**以 **Host** 权限运行。声明为只读的工具直接执行；可能修改宿主状态的工具在 Read-Only 与 Workspace-Edit 下需要审批（No-Limit 不询问）。MCP 工具支持“始终允许”，并与服务器展开后的 `command`、`args`、`env` 的 SHA-256 指纹绑定；服务器配置一旦变化，旧授权自动失效。

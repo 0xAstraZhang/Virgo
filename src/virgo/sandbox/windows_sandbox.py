@@ -283,6 +283,39 @@ def _capability(name):
                 LocalFree(pointers)
 
 
+def _is_administrator() -> bool:
+    """Return True when the current Windows process token has elevated Admin rights."""
+    try:
+        shell32 = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "shell32.dll"), use_last_error=True)
+        is_admin = _api(shell32, "IsUserAnAdmin", [], BOOL)
+        return bool(is_admin())
+    except (OSError, AttributeError):
+        return False
+
+
+def precheck_experimental_sandbox() -> None:
+    """Fail fast with clear guidance before LPAC setup hits raw WinError 1307 (S1-04)."""
+    backend()
+    if not _is_administrator():
+        raise SandboxUnavailable(
+            "The experimental native Windows sandbox requires an Administrator account "
+            "(non-administrator accounts cannot acquire LPAC device ACLs). "
+            "Use WSL2 for full Linux sandbox support, or stay on No-Limit "
+            "(--permission no-limit / /permissions no-limit).",
+            reason="windows_admin_required",
+            dimension="windows_experimental_sandbox",
+        )
+    try:
+        _require_network_isolation()
+    except SandboxUnavailable as error:
+        raise SandboxUnavailable(
+            f"{error}. On Windows, use WSL2 for full Linux sandbox support, "
+            "or stay on No-Limit (--permission no-limit / /permissions no-limit).",
+            reason="windows_network_isolation_unavailable",
+            dimension="windows_experimental_sandbox",
+        ) from error
+
+
 def backend():
     """Discovery only; each actual process must pass suspended-token checks."""
     if sys.getwindowsversion().major < 10:
@@ -330,6 +363,14 @@ def validate_policy(policy, cwd):
         raise SandboxUnavailable("Workspace must not contain Windows or the base interpreter installation")
     if Path(sys.prefix).absolute() == workspace:
         raise SandboxUnavailable("Workspace must not be the active interpreter installation")
+    home = Path(normalize_path(Path.home().resolve()))
+    if workspace == home or home.is_relative_to(workspace) or any(
+            Path(normalize_path(root)).is_relative_to(workspace) for root in policy.private_paths):
+        raise SandboxUnavailable(
+            "Native experimental Windows sandbox does not support using the home or private Virgo "
+            "directory as the workspace. Use WSL2 for full Linux sandbox support, or switch to No-Limit.",
+            reason="unsupported_workspace", target=workspace,
+        )
     return cwd
 
 
@@ -360,8 +401,7 @@ class WindowsSandbox:
         self._closed = False
         self._check_cancelled()
         try:
-            backend()
-            _require_network_isolation()
+            precheck_experimental_sandbox()
             self.cwd = validate_policy(policy, cwd)
             if not argv:
                 raise SandboxUnavailable("Windows sandbox execution requires an explicit native .exe path")

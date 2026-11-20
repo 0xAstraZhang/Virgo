@@ -1,17 +1,34 @@
-# 原生命令沙箱
+# 执行边界与沙箱
 
-执行器是 Core 基础设施。No-Limit 经过同一个执行器使用当前账户的 Host 权限；Read-Only 和 Workspace-Edit 使用原生沙箱后端。两者均允许网页搜索与读取。Read-Only 默认关闭 Shell 网络，Workspace-Edit 允许 Shell 联网。详见[模式与审批](../development/permission-profiles.md)。
+> Virgo 的沙箱是防止误操作的**护栏**：它把模型偶发失误的影响限制在当前工作区内，保护 Virgo 的私有数据和项目控制文件，并在越界或高危操作前请求确认。它**不是**抵御恶意代码、主动绕过行为或提示词注入攻击链的安全边界。处理不可信的仓库或内容时，请在容器或虚拟机中运行 Virgo。
 
-## 实时工作区
+在 Windows 上，推荐在 WSL2 中运行 Virgo，这样可以使用与 Linux 相同的沙箱。原生 Windows 沙箱是实验性功能，启动较慢，功能也有限。详见 [WSL2 使用指南](wsl2.md)和[原生 Windows 沙箱（实验性）](windows-sandbox.md)。
 
-命令、文件工具和宿主编辑器访问同一目录。文件工具保留打开对象的身份，写入新文件并替换目标。编辑器和运行中的监听器可以立即重新打开该路径读取结果。每条命令拥有私有临时目录和 HOME。Read-Only 的命令输出由 Core 按工作区保存在 Virgo 用户目录，Workspace-Edit 的输出保存在项目中受保护的 .virgo/outputs 目录。
+## 护栏覆盖的目标
 
-Linux 需要系统提供 Bubblewrap、libseccomp 和创建命名空间的权限。macOS 使用系统 `sandbox-exec` 和 launchd 监督命令及其后代。Windows 使用 LPAC、受限令牌、临时 ACL 和 Job Object。如果平台无法建立请求的边界，本次操作返回错误。
+1. **工作区范围与控制文件写保护**：**Workspace-Edit** 默认仅允许写入当前项目工作区。控制元数据（`.git`、`.virgo`、`AGENTS.md`、`CLAUDE.md`）与解释器安装目录受写保护。Broker 文件工具（`read`、`write`、`edit`、`glob`、`grep`）直接在应用层按 `PermissionPolicy` 校验（即使控制文件在启动时尚不存在，也会拒绝写入），并使用最后一级 `O_NOFOLLOW` 与原子临时文件替换。
+2. **私有数据与凭据保护**：Linux 与 macOS 上 Virgo 的私有目录（`~/.virgo` 或 `$VIRGO_HOME`）默认拒绝读写（POSIX 上即使以 `$HOME` 作为工作区，也会对私有目录做 carve-out）。**Read-Only** 默认关闭 Shell 网络，**Workspace-Edit** 允许 Shell 联网。
+3. **高危命令逐次确认**：高代价或不可逆的 Shell 命令（`git push --force`、推送至受保护分支、`git reset --hard`、`git clean -f`、`curl | sh`、工作区外递归删除、部署/发布、云资源删除以及破坏性 SQL/Redis 语句）在**所有模式**下均要求显式一次性确认（仅可在 No-Limit 模式下通过 `permissions.confirmHighRisk: false` 关闭）。
+4. **失败可见，不悄悄降级**：原生沙箱后端无法建立时，Virgo 明确报错，在交互式会话中提供显式的“本次使用 No-Limit”选项（不改变会话模式），绝不静默退回 Host，也绝不自动重放可能已经启动的命令。
 
-Read-Only 下的 Shell 命令如需联网，可为本次调用申请联网权限。原生后端支持开启或关闭联网，只申请某一个网络方向的请求会被拒绝。运行中的进程保持启动时获得的权限。
+## 不在范围内的目标
 
-## 文件保护
+- 抵御主动试图绕过护栏的模型。
+- 抵御精心构造的攻击链（TOCTOU 竞态、预埋软硬链、大小写变形、恶意依赖、恶意并发宿主写入者或操作系统/内核漏洞）。
+- 承诺防住提示词注入攻击链（但私有目录只读拒绝、控制文件写保护和 Read-Only 断网仍能缓解常见的凭据窃取、持久化与数据外传风险）。
+- 要求所有操作系统的隔离强度完全一致。
 
-工作区内已有的控制文件和嵌套解释器目录受写保护。POSIX 启动检查只拒绝“链接指向可写范围之外”的可写文件；所有链接都在工作区内的文件仍可使用。从工作区之外的存储硬链接的包管理器（例如 pnpm 的全局 store）仍会触发该检查，请使用 No-Limit 或把 store 放在工作区内。实时工作区的支持前提是宿主写入者在命令运行期间维持路径的权限边界。宿主并发改变链接关系可以改变路径所指对象，启动检查无法持续验证这种变更。额外的 Shell 路径必须是确实存在的文件或目录，单个文件的授权仅覆盖该文件。
+## 各平台后端与如实说明的差异
 
-Broker 和可信扩展使用各自的操作系统权限。发布验收以最终提交的原生测试和完整跨平台比较为准。见[验收记录](../development/execution-acceptance.md)和 [Windows 平台范围](windows-sandbox.md)。
+- **Linux（一级 — `bubblewrap` + `libseccomp2`）**：需要系统 `bwrap`、`libseccomp.so.2` 与非特权用户命名空间。隔离挂载、网络命名空间（关闭联网时）及系统调用，同时放行匿名 Unix 流 `socketpair(AF_UNIX, SOCK_STREAM, 0)`，确保 Python `asyncio` 与测试框架正常运行。已存在的控制文件（以及 `CLAUDE.md -> AGENTS.md` 这类软链指向的可读目标）通过只读 bind 挂载保护；不存在的控制文件名及删除软链目录项本身属于 Linux bind 挂载的固有限制，Broker 文件工具与不可信项目配置剥离仍对其进行保护。
+- **macOS（一级 — Seatbelt）**：使用 `/usr/bin/sandbox-exec` 搭配 launchd 监督器清理进程树。Seatbelt 对已存在和尚不存在的控制元路径均实施写拒绝。
+- **Windows + WSL2（一级）**：Windows 用户的推荐方式，在 WSL2 中直接使用 Linux `bubblewrap` + `libseccomp2` 后端。
+- **原生 Windows（实验性）**：功能冻结的 LPAC 后端，默认以 **No-Limit** 启动。见[原生 Windows 沙箱（实验性）](windows-sandbox.md)。
+
+## Broker 工具、输出存储与可信集成
+
+- **文件工具**由 Broker 直接按 `PermissionPolicy` 执行（不再启动独立的 OS 沙箱 helper 进程），保证冷启动在 5 秒内、单次 Read 开销不随工作区规模增长。
+- **命令输出**通过管道写入 Broker 管理的会话级持久 `OutputStore`（位于 `<VIRGO_HOME>/outputs/session-<id>`），恢复历史会话后仍可通过 `read_output` 读取，随会话删除或 7 天 TTL 清理；未截断的前台命令不残留文件。
+- **用户可信集成**（Python 扩展、命令 hooks、stdio MCP 服务器）以 **Host** 权限运行；信任边界在安装或显式信任项目（`extensions.trustedProjects` / `--trust-project-extensions`）。不可信项目中的 `hooks`、`mcpServers`、`.virgo/mcp.json`、`providers` 与 `extensions` 会在合并到用户配置前被剥离。
+
+见[权限模式与审批](../development/permission-profiles.md) · [原生执行验收](../development/execution-acceptance.md) · [WSL2 使用指南](wsl2.md) · [原生 Windows 沙箱（实验性）](windows-sandbox.md)

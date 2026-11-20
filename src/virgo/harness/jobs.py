@@ -146,7 +146,7 @@ class JobManager:
             else job.status,
             "exit_code": job.exit_code,
             "cwd": str(job.cwd),
-            "output_path": str(job.log) if job.log else None,
+            "output_id": str(job.log) if job.log else None,
             "duration": round((job.ended or time.time()) - job.started, 6),
             **({"boundary": job.boundary} if job.boundary is not None else {}),
             **(context or {}),
@@ -266,7 +266,7 @@ class JobManager:
             job.boundary = execution_context.describe() if execution_context is not None else None
             job.log, fh = open_output(cwd, job.id, **({"execution_context": execution_context} if execution_context else {}))
             proc = spawn(command, cwd, stdout=fh, interpreter=shell,
-                         **({"execution_context": execution_context, "output_path": job.log, "cancellation": cancellation} if execution_context else {}))
+                         **({"execution_context": execution_context, "cancellation": cancellation} if execution_context else {}))
         except BaseException as error:
             # A job that never started must not count as pending work forever.
             self._start_failed(job, error, fh)

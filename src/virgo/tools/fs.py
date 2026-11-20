@@ -1,4 +1,4 @@
-"""File tools: read, write, edit, glob, grep (pure Python, no external binaries)."""
+"""File tools: read, write, edit, glob, grep (pure Python, enforced by PermissionPolicy)."""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ import re
 import threading
 from contextlib import ExitStack
 from dataclasses import replace
+from functools import cache
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult, image_result
 from ..execution import FileAccessDenied, HostContext
+from ..file_access import MAX_WALK_FILES, resolve_read_path, resolve_write_path
 from .output import MAX_BYTES, MAX_LINES
 
 IGNORE_DIRS = {
@@ -31,6 +33,7 @@ IGNORE_DIRS = {
     "build",
 }
 BOM = "\ufeff"
+MAX_EDIT_BYTES = 20 * 1024 * 1024
 IMAGE_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -44,8 +47,7 @@ _locks_guard = threading.Lock()
 
 
 def resolve(path: str, cwd: Path) -> Path:
-    p = Path(os.path.expanduser(path))
-    return (p if p.is_absolute() else Path(cwd) / p).resolve()
+    return resolve_read_path(path, cwd)
 
 
 def file_lock(path: Path) -> threading.Lock:
@@ -68,23 +70,30 @@ def _display(p: Path, cwd: Path) -> str:
 
 def _read(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
     access = access or HostContext(ctx.cwd)
-    p = resolve(args["path"], ctx.cwd)
-    if access is not None:
-        access.check_read(p)
+    try:
+        p = resolve_read_path(args["path"], ctx.cwd)
+    except ValueError as error:
+        return ToolResult.error(str(error))
+    access.check_read(p)
     if not p.exists():
         return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
     if p.is_dir():
         return ToolResult.error(ctx.t("tools.fs.is_directory", path=args["path"]))
-    if p.suffix.lower() in IMAGE_TYPES:
-        data = access.read_bytes(p) if access is not None else p.read_bytes()
-        if len(data) > 5 * 1024 * 1024:
-            return ToolResult.error(ctx.t("tools.fs.large_image"))
-        return image_result(
-            base64.b64encode(data).decode(),
-            IMAGE_TYPES[p.suffix.lower()],
-            ctx.t("tools.fs.image", name=p.name),
-        )
-    raw = access.read_bytes(p) if access is not None else p.read_bytes()
+    try:
+        if p.suffix.lower() in IMAGE_TYPES:
+            data = access.read_bytes(p)
+            if len(data) > 5 * 1024 * 1024:
+                return ToolResult.error(ctx.t("tools.fs.large_image"))
+            return image_result(
+                base64.b64encode(data).decode(),
+                IMAGE_TYPES[p.suffix.lower()],
+                ctx.t("tools.fs.image", name=p.name),
+            )
+        raw = access.read_bytes(p)
+    except FileNotFoundError:
+        return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
+    except IsADirectoryError:
+        return ToolResult.error(ctx.t("tools.fs.is_directory", path=args["path"]))
     if b"\x00" in raw[:8192]:
         return ToolResult.error(ctx.t("tools.fs.binary", path=args["path"]))
     lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
@@ -144,19 +153,20 @@ READ = AgentTool(
 
 def _write(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
     access = access or HostContext(ctx.cwd)
-    p = resolve(args["path"], ctx.cwd)
+    try:
+        p = resolve_write_path(args["path"], ctx.cwd)
+    except ValueError as error:
+        return ToolResult.error(str(error))
+    data = args["content"].encode("utf-8", errors="replace")
     with file_lock(p):
-        if access is not None:
-            data = args["content"].encode("utf-8")
+        try:
             with access.open_mutation(p, create=True) as (stream, existed, commit):
                 stream.write(data)
                 stream.truncate()
                 commit()
-        else:
-            existed = p.exists()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(args["content"], encoding="utf-8")
-    n = len(args["content"].encode("utf-8"))
+        except IsADirectoryError:
+            return ToolResult.error(ctx.t("tools.fs.is_directory", path=args["path"]))
+    n = len(data)
     verb = ctx.t("tools.fs.overwrite") if existed else ctx.t("tools.fs.create")
     return ToolResult.text(
         ctx.t("tools.fs.written", verb=verb, path=_display(p, ctx.cwd), size=n),
@@ -269,14 +279,23 @@ def _prepare_edit(args: dict) -> dict:
 
 def _edit(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
     access = access or HostContext(ctx.cwd)
-    p = resolve(args["path"], ctx.cwd)
-    if not p.is_file():
-        return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
+    try:
+        p = resolve_write_path(args["path"], ctx.cwd)
+    except ValueError as error:
+        return ToolResult.error(str(error))
+    access.check_write(p)
     with file_lock(p), ExitStack() as stack:
-        stream = None
-        if access is not None:
-            stream, _, commit = stack.enter_context(access.open_mutation(p, create=False))
-        raw = (stream.read() if stream is not None else p.read_bytes()).decode("utf-8")
+        try:
+            stream, _, commit = stack.enter_context(
+                access.open_mutation(p, create=False, max_read_bytes=MAX_EDIT_BYTES)
+            )
+        except FileNotFoundError:
+            return ToolResult.error(ctx.t("tools.fs.file_missing", path=args["path"]))
+        except IsADirectoryError:
+            return ToolResult.error(ctx.t("tools.fs.is_directory", path=args["path"]))
+        except ValueError as error:
+            return ToolResult.error(str(error))
+        raw = stream.read().decode("utf-8")
         # No newline translation: CRLF is preserved explicitly.
         bom = raw.startswith(BOM)
         if bom:
@@ -308,13 +327,10 @@ def _edit(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
             return ToolResult.error(ctx.t("tools.fs.edit_unchanged"))
         final = updated.replace("\n", "\r\n") if crlf else updated
         final = (BOM if bom else "") + final
-        if stream is not None:
-            stream.seek(0)
-            stream.write(final.encode("utf-8"))
-            stream.truncate()
-            commit()
-        else:
-            p.write_text(final, encoding="utf-8", newline="")
+        stream.seek(0)
+        stream.write(final.encode("utf-8", errors="replace"))
+        stream.truncate()
+        commit()
     diff = "".join(
         difflib.unified_diff(
             content.splitlines(keepends=True),
@@ -389,47 +405,65 @@ def make_file_tool(tool: AgentTool, execution) -> AgentTool:
 # ---------------------------------------------------------------------------
 
 
-def _walk(root: Path):
+def _walk(root: Path, *, max_files: int = MAX_WALK_FILES):
+    yielded = 0
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
-        for f in filenames:
+        for f in sorted(filenames):
+            if yielded >= max_files:
+                return
+            yielded += 1
             yield Path(dirpath) / f
 
 
+def _collapse_glob(pattern: str) -> tuple[str, ...]:
+    raw = pattern.split("/")
+    if len(raw) == 1:
+        raw = ["**", pattern]
+    collapsed: list[str] = []
+    for seg in raw:
+        if seg == "**" and collapsed and collapsed[-1] == "**":
+            continue
+        collapsed.append(seg)
+    return tuple(collapsed)
+
+
 def glob_match(path: str, pattern: str) -> bool:
-    """Match a ``/``-separated path against a glob.
+    """Match a ``/``-separated path against a glob in O(N*M) time.
 
-    ``*``, ``?`` and ``[...]`` stay within one path segment; a ``**`` segment spans any number of
-    directories, including none. A pattern without ``/`` matches the file name at any depth.
+    ``*``, ``?`` and ``[...]`` stay within one path segment; consecutive ``**``
+    segments are collapsed to prevent exponential backtracking. A pattern without
+    ``/`` matches the file name at any depth.
     """
-    segments = pattern.split("/")
-    if len(segments) == 1:
-        segments = ["**", pattern]
-    return _match_segments(path.split("/"), segments)
+    parts = tuple(path.split("/"))
+    segments = _collapse_glob(pattern)
 
+    @cache
+    def match(pi: int, si: int) -> bool:
+        if si == len(segments):
+            return pi == len(parts)
+        head = segments[si]
+        if head == "**":
+            if si + 1 == len(segments):
+                return pi < len(parts)
+            return match(pi, si + 1) or (pi < len(parts) and match(pi + 1, si))
+        return pi < len(parts) and fnmatch.fnmatchcase(parts[pi], head) and match(pi + 1, si + 1)
 
-def _match_segments(parts: list[str], segments: list[str]) -> bool:
-    if not segments:
-        return not parts
-    head, rest = segments[0], segments[1:]
-    if head == "**":
-        if not rest:
-            return bool(parts)
-        return any(_match_segments(parts[i:], rest) for i in range(len(parts) + 1))
-    return bool(parts) and fnmatch.fnmatchcase(parts[0], head) and _match_segments(parts[1:], rest)
+    return match(0, 0)
 
 
 def _glob(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
     access = access or HostContext(ctx.cwd)
-    base = resolve(args.get("path") or ".", ctx.cwd)
-    if access is not None:
-        access.check_read(base)
+    try:
+        base = resolve_read_path(args.get("path") or ".", ctx.cwd)
+    except ValueError as error:
+        return ToolResult.error(str(error))
+    access.check_read(base)
     if not base.is_dir():
         return ToolResult.error(ctx.t("tools.fs.not_directory", path=args.get("path")))
     pattern = args["pattern"]
     hits = []
-    entries = (access.walk_files(base, IGNORE_DIRS) if access is not None else
-               ((path, path.stat() if path.exists() else None) for path in _walk(base)))
+    entries = access.walk_files(base, IGNORE_DIRS, max_files=MAX_WALK_FILES)
     modified = {}
     for f, info in entries:
         if glob_match(f.relative_to(base).as_posix(), pattern):
@@ -471,12 +505,14 @@ def _grep(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
         rx = re.compile(args["pattern"], flags)
     except re.error as e:
         return ToolResult.error(ctx.t("tools.fs.regex", error=e))
-    base = resolve(args.get("path") or ".", ctx.cwd)
-    if access is not None:
-        access.check_read(base)
+    try:
+        base = resolve_read_path(args.get("path") or ".", ctx.cwd)
+    except ValueError as error:
+        return ToolResult.error(str(error))
+    access.check_read(base)
+    base_is_dir = base.is_dir()
     files = [base] if base.is_file() else (
-        (path for path, _info in access.walk_files(base, IGNORE_DIRS))
-        if access is not None else _walk(base)
+        path for path, _info in access.walk_files(base, IGNORE_DIRS, max_files=MAX_WALK_FILES)
     )
     gl = args.get("glob")
     ctxn = int(args.get("context") or 0)
@@ -484,17 +520,14 @@ def _grep(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
     out: list[str] = []
     matches = 0
     for f in files:
-        if gl and not glob_match(Path(_display(f, ctx.cwd)).as_posix(), gl):
-            continue
+        if gl:
+            rel = f.relative_to(base).as_posix() if base_is_dir else f.name
+            if not glob_match(rel, gl):
+                continue
         try:
-            if access is not None:
-                raw = access.read_bytes(f.resolve(), max_bytes=5 * 1024 * 1024)
-                if raw is None or len(raw) > 5 * 1024 * 1024:
-                    continue
-            else:
-                if f.stat().st_size > 5 * 1024 * 1024:
-                    continue
-                raw = f.read_bytes()
+            raw = access.read_bytes(f, max_bytes=5 * 1024 * 1024)
+            if raw is None or len(raw) > 5 * 1024 * 1024:
+                continue
         except FileAccessDenied:
             raise
         except OSError:

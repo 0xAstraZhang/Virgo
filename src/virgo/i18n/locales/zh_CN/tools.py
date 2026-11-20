@@ -91,14 +91,13 @@ MESSAGES = {
     "tools.output.aborted": "{text}\n\n[命令已中止]",
     "tools.output.budget": "{shown}\n"
     "\n"
-    "[输出已截断：显示{where} {count} 行，共 {total} 行。完整输出保存于 {path} — 用 read 的 offset/limit 或 "
-    "grep 查看。]",
+    "[输出已截断：显示{where} {count} 行，共 {total} 行。完整输出 ID: {path}。使用 read_output 的 output_id 和字节 offset/limit 查看。]",
     "tools.output.empty": "（没有输出）",
     "tools.output.exit": "{text}\n\n[退出码 {code}]",
     "tools.output.first": "开头",
     "tools.output.last": "末尾",
     "tools.output.timeout": "{text}\n\n[命令在 {timeout:g} 秒后超时]",
-    "tools.output.truncated": "[输出已截断：显示末尾内容（上限 {max_lines} 行 / {max_kb}KB；共 {total} 字节）。完整输出: {path}]\n",
+    "tools.output.truncated": "[输出已截断：显示末尾内容（上限 {max_lines} 行 / {max_kb}KB；共 {total} 字节）。完整输出 ID: {path}；使用 read_output 读取]\n",
     "tools.read.description": "读取文本文件（或图片）。每次最多返回 2000 行 / 50KB；用 offset（从 1 开始的行号）和 limit 分页读取较大的文件。",
     "tools.read.label": "读取文件",
     "tools.read.parameters.properties.limit.description": "最多读取的行数",

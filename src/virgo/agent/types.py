@@ -60,6 +60,7 @@ class AgentTool:
     prepare_arguments: Callable[[dict], dict] | None = None
     i18n_key: str = field(default="", kw_only=True)
     i18n_values: dict | Callable[[Translator], dict] = field(default_factory=dict, kw_only=True)
+    config_fingerprint: str | None = field(default=None, kw_only=True)
 
     def __init__(
         self,
@@ -76,6 +77,7 @@ class AgentTool:
         execution_scope: str = "external",
         i18n_key: str = "",
         i18n_values: dict | Callable[[Translator], dict] | None = None,
+        config_fingerprint: str | None = None,
     ):
         if read_only is not None:
             # Compatibility for extensions written before the 0.3 rename.
@@ -93,6 +95,7 @@ class AgentTool:
         self.prepare_arguments = prepare_arguments
         self.i18n_key = i18n_key
         self.i18n_values = {} if i18n_values is None else i18n_values
+        self.config_fingerprint = config_fingerprint
 
     @property
     def read_only(self) -> bool:

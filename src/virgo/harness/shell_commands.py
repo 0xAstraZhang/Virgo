@@ -51,12 +51,17 @@ class ShellSelection:
         def execution(ctx):
             return s.services["execution"].for_context(ctx)
 
+        def on_unavailable(ctx, args, error):
+            provider = s.services["execution"]
+            handler = getattr(provider, "confirm_no_limit_once", None)
+            return handler(ctx, args, error) if callable(handler) else None
+
         if jobs.background_enabled:
             # Children keep a foreground-only shell; the main runtime may background a command.
-            tools.append((make_shell_tool(self.current, execution=execution), ("subagent",)))
-            tools.append((make_shell_tool(self.current, jobs, execution=execution), ("main",)))
+            tools.append((make_shell_tool(self.current, execution=execution, on_unavailable=on_unavailable), ("subagent",)))
+            tools.append((make_shell_tool(self.current, jobs, execution=execution, on_unavailable=on_unavailable), ("main",)))
         else:
-            tools.append((make_shell_tool(self.current, execution=execution), ROLES_ALL))
+            tools.append((make_shell_tool(self.current, execution=execution, on_unavailable=on_unavailable), ROLES_ALL))
         s.replace_tools("shell", tools, owner="core.shell")
 
     def select(self, shell: Shell, *, automatic=False) -> None:

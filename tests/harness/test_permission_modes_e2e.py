@@ -113,8 +113,13 @@ def test_custom_mode_names_and_permissions_persist_without_changing_active_run(b
     manager = session.services["execution"]
     assert list(manager.modes) == ["read-only", "workspace-edit", "no-limit"]
     manager.select_mode("read-only")
-    assert manager.mode_for(session.main).flags() == {
-        "read_paths": [str(session.cwd)], "write_paths": [], "network_allowed": False, "web_allowed": True}
+    flags = manager.mode_for(session.main).flags()
+    assert flags["read_paths"] == [str(session.cwd)]
+    assert flags["write_paths"] == []
+    assert flags["network_allowed"] is False
+    assert flags["web_allowed"] is True
+    assert flags["unrestricted"] is False
+    assert str(session.paths.user.resolve()) in flags["read_deny_paths"]
     manager.select_mode("no-limit")
     assert session.main.execution_context.provider == "host"
     manager.select_mode("workspace-edit")
@@ -150,11 +155,18 @@ def test_child_created_before_mode_change_keeps_its_origin_permissions(broker_se
 
 
 def test_default_profile_is_workspace_edit_with_resource_approval(project):
+    from virgo.execution_policy import default_execution_mode
+
+    expected = default_execution_mode()
     session = AgentSession(project, model="faux/test", session=None, extensions=False, refresh_models=False)
     try:
-        assert session.services["execution"].name == "sandbox"
-        assert session.services["execution"].selected_mode_id == "workspace-edit"
-        assert "request_permissions" in {t.name for t in session.main.tools}
+        assert session.services["execution"].selected_mode_id == expected
+        if expected == "no-limit":
+            assert session.services["execution"].name == "host"
+            assert "request_permissions" not in {t.name for t in session.main.tools}
+        else:
+            assert session.services["execution"].name == "sandbox"
+            assert "request_permissions" in {t.name for t in session.main.tools}
     finally:
         session.shutdown()
 
@@ -203,14 +215,10 @@ def test_no_limit_sandbox_switch_preserves_the_active_host_and_child(broker_sess
 
 @pytest.mark.parametrize("legacy", ["workspace-write", "read-only", "disabled"])
 def test_legacy_native_policy_requires_explicit_migration(make_session, legacy):
+    """S7-02: All legacy sandbox.mode settings (including disabled) are rejected explicitly."""
     settings = {"sandbox": {"mode": legacy}}
-    if legacy == "disabled":
-        session = make_session(settings=settings)
-        assert session.services["execution"].selected_mode_id == "no-limit"
-        assert session.services["execution"].sandbox is None
-    else:
-        with pytest.raises(ValueError, match="migrate"):
-            make_session(settings=settings)
+    with pytest.raises(ValueError, match="execution\\.mode"):
+        make_session(settings=settings)
 
 
 @pytest.mark.parametrize("operation", ["select", "save"])
@@ -304,7 +312,7 @@ def test_next_preset_selected_after_admission_applies_to_next_task(broker_sessio
     monkeypatch.setattr(session.ui, "command_suspended", admitted)
     faux.push("test", faux.reply("done"))
     session.prompt("Inspect the workspace")
-    status = json.loads(session.ui.lines[0].split("\n", 1)[1])
+    status = json.loads(session.ui.lines[-1].split("\n", 1)[1])
     assert status["current_mode"] == "Read-Only" and status["shell_network"] is False
     assert status["next_mode"] == "Workspace-Edit" and status["web_allowed"] is True
     assert session.main.permission_snapshot.mode.id == "read-only"

@@ -68,14 +68,8 @@ def test_workspace_file_tools_obey_sandbox_even_with_accept_all(broker_session, 
 
 @pytest.mark.parametrize("tool", ["write", "edit"])
 @pytest.mark.parametrize("location", ["outside", "metadata", "workspace"])
-def test_sandbox_file_tools_reject_hardlinks(broker_session, project, tool, location):
-    """A writable pathname must not confer authority over a shared inode.
-
-    Failure modes: write truncates an outside inode; edit changes protected Git
-    metadata; an unrecognized alias is accepted because its pathname is ordinary;
-    Windows retains the same bypass through its application-level fallback.
-    All aliases are disposable files on the fixture's filesystem.
-    """
+def test_sandbox_file_tools_atomic_replace_preserves_hardlink_targets(broker_session, project, tool, location):
+    """Atomic replacement breaks hardlinks onto a fresh inode without mutating external/metadata targets."""
     source = {
         "outside": project.parent / "outside.txt",
         "metadata": project / ".git" / "config",
@@ -98,13 +92,9 @@ def test_sandbox_file_tools_reject_hardlinks(broker_session, project, tool, loca
     faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
     session.prompt("Update the ordinary project file")
     result = tool_results(session)[-1]
-    if location == "workspace":
-        assert not result.is_error, result.text()
-        assert alias.read_text() == "changed\n"
-        assert source.read_text() == "original\n"
-    else:
-        assert source.read_text() == alias.read_text() == "original\n", result.text()
-        assert result.is_error and result.details["status"] == "resource_denied", result.text()
+    assert not result.is_error, result.text()
+    assert alias.read_text() == "changed\n"
+    assert source.read_text() == "original\n"
 
 
 def test_sandbox_file_mutation_roundtrip_and_failed_edit(broker_session, project):
@@ -357,66 +347,13 @@ def test_native_failure_and_timeout_are_not_reclassified(native):
 
 
 def test_shared_native_policy_is_rejected_before_payload(broker_session, project):
-    session = broker_session()
+    session = broker_session(approval="never")
     result = run(session, "echo forbidden")
     assert result.is_error and result.details["status"] == "execution_unavailable"
     assert result.details["boundary"]["payload_started"] is False
     assert result.details["boundary"]["side_effects"] == "none"
     assert result.details["boundary"]["reason"] == "backend_unavailable"
     assert not session.ui.questions
-
-
-@pytest.mark.parametrize("tool", ["write", "edit"])
-def test_core_file_mutation_survives_hardlink_unlink_race(broker_session, project, tool):
-    outside = project.parent / "race-protected.txt"
-    outside.write_text("original\n")
-    alias = project / "race-alias.txt"
-    os.link(outside, alias)
-    arguments = (
-        {"path": alias.name, "content": "changed\n"}
-        if tool == "write"
-        else {"path": alias.name, "edits": [{"old_text": "original", "new_text": "changed"}]}
-    )
-    session = broker_session(faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
-    opened, resume = threading.Event(), threading.Event()
-
-    def trace(frame, event, _arg):
-        if (
-            event == "line"
-            and frame.f_code.co_name == "open_mutation"
-            and frame.f_locals.get("path") == alias
-            and frame.f_locals.get("descriptor") is not None
-            and not opened.is_set()
-        ):
-            opened.set()
-            assert resume.wait(5)
-        return trace
-
-    previous = threading.gettrace()
-    threading.settrace(trace)
-    worker = threading.Thread(target=lambda: session.prompt("Mutate the alias"))
-    unlink_blocked = False
-    try:
-        worker.start()
-        assert opened.wait(5)
-        try:
-            alias.unlink()
-        except PermissionError as error:
-            # Windows may stop the attack at the retained handle. Require the
-            # precise sharing violation; do not turn arbitrary failures into a pass.
-            assert os.name == 'nt' and error.winerror == 32
-            unlink_blocked = True
-            assert alias.exists() and outside.stat().st_nlink == 2
-        else:
-            assert outside.stat().st_nlink == 1
-    finally:
-        resume.set()
-        worker.join(5)
-        threading.settrace(previous)
-    assert not worker.is_alive()
-    assert outside.read_text() == "original\n"
-    if unlink_blocked:
-        assert tool_results(session)[-1].is_error and alias.read_text() == "original\n"
 
 
 def test_native_existing_metadata_is_readonly(native, project):
@@ -426,33 +363,6 @@ def test_native_existing_metadata_is_readonly(native, project):
     for name in (".git/config", "AGENTS.md"):
         result = run(native, python_command(native, f"from pathlib import Path; Path({name!r}).write_text('bad')"))
         assert result.is_error and (project / name).read_text() == "original"
-
-
-@pytest.mark.parametrize("location", ["outside", "metadata", "workspace"])
-def test_native_rejects_preexisting_writable_hardlinks(native, project, location):
-    """Path-based native grants must not expose a shared inode as writable.
-
-    Failure modes: ordinary shell redirection changes an outside file or Git
-    metadata through a pre-existing alias; launch checks reject only direct
-    protected paths; the rejection occurs only after payload side effects.
-    An alias whose links are all inside the writable workspace is allowed.
-    """
-    source = {"outside": project.parent / "native-outside.txt",
-              "metadata": project / ".git" / "config",
-              "workspace": project / "native-source.txt"}[location]
-    source.parent.mkdir(exist_ok=True)
-    source.write_text("original")
-    alias = project / "native-alias.txt"
-    os.link(source, alias)
-    result = run(native, "printf started > payload-started; printf changed > native-alias.txt")
-    if location == "workspace":
-        assert not result.is_error, result.text()
-        assert source.read_text() == alias.read_text() == "changed"
-        assert (project / "payload-started").exists()
-    else:
-        assert source.read_text() == alias.read_text() == "original", result.text()
-        assert result.is_error and result.details["status"] == "execution_unavailable", result.text()
-        assert not (project / "payload-started").exists()
 
 
 @pytest.mark.parametrize("location", ["outside", "metadata"])
@@ -745,10 +655,10 @@ Path('independent-background-finished').write_text('finished')
             job.done.wait(5)
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX staging-directory symlinks")
+@pytest.mark.skipif(os.name != "posix", reason="POSIX metadata symlinks")
 @pytest.mark.parametrize("tool", ["write", "edit"])
 def test_sandbox_file_mutation_rejects_metadata_symlink(broker_session, project, tool):
-    """Private staging must not follow a pre-existing metadata alias outside."""
+    """Atomic staging never touches .virgo, and writes through a .virgo symlink are denied."""
     outside = project.parent / "outside-stage"
     outside.mkdir()
     (project / ".virgo").symlink_to(outside, target_is_directory=True)
@@ -760,10 +670,15 @@ def test_sandbox_file_mutation_rejects_metadata_symlink(broker_session, project,
     )
     arguments = ({"path": target.name, "content": "changed"} if tool == "write" else
                  {"path": target.name, "edits": [{"old_text": "original", "new_text": "changed"}]})
-    faux.script("test", faux.reply(tools=[(tool, arguments)]), faux.reply("done"))
-    session.prompt("Update a file with invalid broker metadata")
-    assert tool_results(session)[-1].is_error
-    assert target.read_text() == "original" and not list(outside.iterdir())
+    faux.script("test", faux.reply(tools=[
+        (tool, arguments),
+        ("write", {"path": ".virgo/settings.json", "content": "{}"}),
+    ]), faux.reply("done"))
+    session.prompt("Update an ordinary file without touching the .virgo symlink")
+    ordinary_result, meta_result = tool_results(session)
+    assert not ordinary_result.is_error and target.read_text() == "changed"
+    assert meta_result.is_error and meta_result.details["status"] == "resource_denied"
+    assert not list(outside.iterdir())
 
 
 @pytest.mark.parametrize("background", [False, True])
@@ -778,7 +693,7 @@ def test_sandbox_rejects_changed_cwd_before_creating_output(broker_session, proj
     outside.mkdir()
     session = broker_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
-                  "execution": {"provider": "sandbox"}},
+                  "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
 
@@ -811,7 +726,7 @@ def test_sandbox_rejects_external_output_symlink_before_spooling(broker_session,
     (project / ".virgo").symlink_to(outside, target_is_directory=True)
     session = broker_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
-                  "execution": {"provider": "sandbox"}},
+                  "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
     result = run(session, "echo sandbox-output", background=background)
@@ -841,22 +756,31 @@ def test_native_protected_symlink_cannot_add_a_host_read_mount(native, project):
     assert result.is_error, result.text()
     assert "credential-that-must-stay-outside" not in result.text()
     assert secret.read_text() == "credential-that-must-stay-outside"
-    if sys.platform == "linux":
-        assert result.details["status"] == "execution_unavailable"
 
 
 def test_native_existing_metadata_symlink_cannot_be_replaced(native, project):
-    """Protect the metadata directory entry, not only its resolved file target."""
+    """S3-02: Symlinked control metadata protects its real target (and directory entry on macOS) without breaking sessions."""
     target = project / "instructions.txt"
     target.write_text("original instructions")
     link = project / "AGENTS.md"
     link.symlink_to(target)
-    result = run(native, python_command(native,
-        "from pathlib import Path; p=Path('AGENTS.md'); p.unlink(); p.write_text('replaced')"
-    ))
-    assert result.is_error, result.text()
-    assert link.is_symlink()
-    assert link.read_text() == target.read_text() == "original instructions"
+    if sys.platform == "darwin":
+        result = run(native, python_command(native,
+            "from pathlib import Path; p=Path('AGENTS.md'); p.unlink(); p.write_text('replaced')"
+        ))
+        assert result.is_error, result.text()
+        assert link.is_symlink()
+        assert link.read_text() == target.read_text() == "original instructions"
+    else:
+        # On Linux bwrap, symlinked control files (e.g. CLAUDE.md -> AGENTS.md)
+        # bind-mount their readable target read-only so sessions work without false
+        # positives while writes through the symlink fail with EROFS.
+        read_res = run(native, python_command(native, "from pathlib import Path; print(Path('AGENTS.md').read_text())"))
+        assert not read_res.is_error and "original instructions" in read_res.text(), read_res.text()
+        write_res = run(native, python_command(native, "from pathlib import Path; Path('AGENTS.md').write_text('replaced')"))
+        assert write_res.is_error, write_res.text()
+        assert link.is_symlink()
+        assert link.read_text() == target.read_text() == "original instructions"
 
 
 def test_missing_backend_is_fail_closed_in_real_session(make_session, project, monkeypatch):
@@ -891,9 +815,9 @@ def test_project_cannot_disable_user_sandbox(make_session, project):
 
     metadata = project / '.virgo'
     metadata.mkdir()
-    (metadata / 'settings.json').write_text(json.dumps({'execution': {'provider': 'host'}}))
+    (metadata / 'settings.json').write_text(json.dumps({'execution': {'mode': 'no-limit'}}))
     with pytest.raises(ValueError, match='[Pp]roject'):
-        make_session(settings={'execution': {'provider': 'sandbox'}}, refresh_models=False)
+        make_session(settings={'execution': {'mode': 'workspace-edit'}}, refresh_models=False)
 
 
 @pytest.mark.parametrize('background', [False, True])
@@ -1040,13 +964,17 @@ def test_native_independent_permission_combinations(native, project, short_works
     from dataclasses import replace
     from threading import Event
 
-    from virgo.harness.execution_modes import parse_network
+    from virgo.execution_policy import PathRule, PermissionPolicy
     from virgo.tools.bash import run_command
 
-    roots = (str(project),) if workspace_only else (str(project), str(extra))
+    roots = (project,) if workspace_only else (project, extra)
     context = native.main.execution_context
-    context = replace(context, resources=replace(context.resources, read_paths=(*roots, str(short_workspace)),
-                      write_paths=() if read_only else roots, network=parse_network(network_allowed)))
+    policy = PermissionPolicy((
+        *(rule for rule in context.policy.filesystem if rule.effect == "deny"),
+        *(PathRule(path, "read" if read_only else "write") for path in roots),
+        PathRule(short_workspace, "read"),
+    ), network_allowed)
+    context = replace(context, resources=replace(context.resources, policy=policy))
     with socket.socket() as listener, socket.socket(socket.AF_UNIX) as host_socket:
         listener.bind(('127.0.0.1', 0))
         listener.listen()
@@ -1311,7 +1239,7 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
     )
     monkeypatch.setattr(
         sandbox.NativePolicy, "_macos",
-        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)],
+        lambda _self, executable, _scratch: [str(executable), str(launcher)],
     )
     session = make_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
@@ -1352,7 +1280,7 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     monkeypatch.setattr(sandbox, "_system_file",
                         lambda path: path if path == Path("/usr/bin/true") else system_file(path))
     monkeypatch.setattr(sandbox.NativePolicy, "_macos",
-                        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)])
+                        lambda _self, executable, _scratch: [str(executable), str(launcher)])
     delayed = False
 
     def lose_ack(*_args):

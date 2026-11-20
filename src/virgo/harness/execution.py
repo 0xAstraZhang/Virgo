@@ -5,9 +5,26 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+from ..agent import Block
 from ..execution import HostContext, SandboxExecutor
+from ..execution_policy import DEFAULT_MODES, HOST_MODE, is_native_windows
 from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
-from .execution_modes import DEFAULT_MODES, HOST_MODE
+from ..tools.output import make_read_output_tool
+from .high_risk import detect_high_risk_command
+from .ui import UI
+
+_BACKEND_UNAVAILABLE_REASONS = frozenset({
+    "backend_unavailable",
+    "windows_admin_required",
+    "windows_network_isolation_unavailable",
+    "device_acl_unavailable",
+})
+
+_WINDOWS_EXPERIMENTAL_NOTE = (
+    "Experimental native Windows sandbox: requires an Administrator account, "
+    "adds ~14s overhead per command, does not enforce private-directory read denial, "
+    "and does not support $HOME as a workspace. WSL2 is recommended on Windows."
+)
 
 
 class HostExecutionProvider:
@@ -76,7 +93,11 @@ class ModeExecutionProvider(HostExecutionProvider):
 
     def _context(self, runtime, mode, revision):
         if mode == HOST_MODE:
-            return HostContext(Path(runtime.accounting_store.cwd).resolve(), executor=self.executor)
+            return HostContext(
+                Path(runtime.accounting_store.cwd).resolve(),
+                executor=self.executor,
+                outputs=self.session.output_store_for(runtime.accounting_store),
+            )
         return self.load_sandbox().context_for_mode(runtime, mode, revision)
 
     def capture_runtime(self, runtime):
@@ -102,13 +123,119 @@ class ModeExecutionProvider(HostExecutionProvider):
         base = super().for_context(event)
         return base if base.provider == "host" else self.sandbox.for_context(event)
 
+    def _confirm_callable(self):
+        ui = self.session.ui
+        once = getattr(ui, "confirm_once", None)
+        if callable(once) and getattr(once, "__func__", None) is not UI.confirm_once:
+            return once
+        confirm = getattr(ui, "confirm", None)
+        if callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm:
+            return confirm
+        return None
+
+    def _approval_allowed(self, base, signal) -> bool:
+        snapshot = getattr(base, "permission_snapshot", None)
+        return (
+            self.session.approval_policy != "never"
+            and (snapshot is None or snapshot.approval != "never")
+            and (signal is None or not signal.is_set())
+            and self._confirm_callable() is not None
+        )
+
+    def _check_high_risk(self, event, base, *, confirm: bool):
+        """Enforce high-risk shell command confirmation across all modes (S5-01)."""
+        if event.tool is None or event.tool.execution_scope != "process":
+            return None
+        # Disable knob is honored ONLY in No-Limit mode.
+        if base.provider == "host" and self.session.settings.get("permissions.confirmHighRisk", True) is False:
+            return None
+        command = event.args.get("command", "") if isinstance(event.args, dict) else ""
+        match = detect_high_risk_command(command, event.cwd, base.workspace)
+        if match is None:
+            return None
+
+        def deny(reason: str):
+            return Block(reason, details={
+                "status": "high_risk_denied",
+                "category": match.category,
+                "boundary": {
+                    **base.describe(),
+                    "kind": "high_risk_denied",
+                    "category": match.category,
+                    "payload_started": False,
+                    "side_effects": "none",
+                    "escalation_available": False,
+                },
+            })
+
+        if not self._approval_allowed(base, event.signal):
+            return deny(f"High-risk command blocked ({match.reason}). Interactive confirmation is required.")
+        if not confirm:
+            return None
+        question = (
+            f"High-risk command detected ({match.category}): {match.reason}\n"
+            f"Command: {command}\n"
+            f"Working directory: {Path(event.cwd).resolve()}\n"
+            "Approve executing this command once? [y/n]"
+        )
+        answer = self._confirm_callable()(question, event.agent)
+        if answer != "y":
+            return deny(f"High-risk command was not approved: {match.reason}")
+        return None
+
+    @staticmethod
+    def _is_backend_unavailable(error: Exception) -> bool:
+        reason = getattr(error, "reason", None)
+        if reason in _BACKEND_UNAVAILABLE_REASONS:
+            return True
+        if reason is not None:
+            return False
+        text = str(error).lower()
+        return any(token in text for token in ("backend", "sandbox-exec", "bubblewrap", "libseccomp"))
+
+    def confirm_no_limit_once(self, ctx, args, error):
+        """Offer an explicit one-shot No-Limit (Host) fallback when the sandbox backend is unavailable (S5-02)."""
+        if not self._is_backend_unavailable(error):
+            return None
+        runtime = self.session.runtime_for_context(ctx)
+        if runtime is None:
+            return None
+        base = runtime.execution_context
+        if base.provider == "host" or not self._approval_allowed(base, getattr(ctx, "signal", None)):
+            return None
+        command = args.get("command", "") if isinstance(args, dict) else ""
+        mode_name = self.mode_for(runtime).name
+        question = (
+            f"Native sandbox is unavailable: {error}\n"
+            f"Command: {command}\n"
+            f"Working directory: {Path(ctx.cwd).resolve()}\n"
+            f"Run this single command with No-Limit (Host) authority? "
+            f"(Session remains in {mode_name}; switch permanently with /permissions no-limit.) [y/n]"
+        )
+        if self._confirm_callable()(question, ctx.agent) != "y":
+            return None
+        return HostContext(
+            base.workspace,
+            executor=self.executor,
+            outputs=self.session.output_store_for(runtime.accounting_store),
+        )
+
     def preflight(self, event):
-        if super().for_context(event).provider != "host":
-            return self.sandbox.preflight(event)
+        base = super().for_context(event)
+        if base.provider != "host":
+            block = self.sandbox.preflight(event)
+            if block is not None:
+                return block
+        return self._check_high_risk(event, base, confirm=False)
 
     def before_execute(self, event):
-        if super().for_context(event).provider != "host":
+        base = super().for_context(event)
+        block = self._check_high_risk(event, base, confirm=True)
+        if block is not None:
+            return block
+        if base.provider != "host":
             return self.sandbox.before_execute(event)
+        return None
 
     def instructions(self, runtime):
         if runtime.execution_context.provider == "host":
@@ -135,6 +262,8 @@ class ModeExecutionProvider(HostExecutionProvider):
             if not runtime.execution_active and not self.session.runtime_is_busy(runtime):
                 runtime.execution_context = context
                 runtime.rebuild_system()
+            if is_native_windows() and identifier != HOST_MODE.id:
+                self.session.ui.print(_WINDOWS_EXPERIMENTAL_NOTE, "warn")
             self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
 
     def status(self, session, args):
@@ -143,14 +272,23 @@ class ModeExecutionProvider(HostExecutionProvider):
             current = self.mode_for(session.main)
             facts = {**context.describe(), "current_mode": current.name, "next_mode": self.selected_mode.name,
                      "web_allowed": current.web_allowed, "shell_network": current.flags()["network_allowed"]}
-            session.ui.command_result(f"{current.name} ({context.provider.title()})\n" + json.dumps(facts, ensure_ascii=False))
+            label = f"{current.name} ({context.provider.title()})"
+            if is_native_windows() and current.experimental_on_windows:
+                label += " [experimental]"
+            session.ui.command_result(f"{label}\n" + json.dumps(facts, ensure_ascii=False))
 
     def command(self, session, args):
         value = args.strip()
         if value in {"", "show", "status"}:
             self.status(session, args)
         elif value == "list":
-            session.ui.command_result("\n".join(f"{m.id}: {m.name}" for m in self.modes.values()))
+            rows = []
+            for mode in self.modes.values():
+                suffix = " [experimental on native Windows; WSL2 recommended]" if (
+                    is_native_windows() and mode.experimental_on_windows
+                ) else ""
+                rows.append(f"{mode.id}: {mode.name}{suffix}")
+            session.ui.command_result("\n".join(rows))
         elif value == "grants" or value.startswith("revoke "):
             from .resource_approvals import manage_grants
             manage_grants(session, value)
@@ -171,5 +309,7 @@ def install_execution(session):
     for tool in (READ, GLOB, GREP, WRITE, EDIT):
         session.replace_tools(f"tool:{tool.name}", [(make_file_tool(tool, provider.for_context), ("main", "subagent"))],
                               owner="core")
+    session.replace_tools("tool:read_output", [(make_read_output_tool(provider.for_context), ("main", "subagent"))],
+                          owner="core")
     session.commands.register("permissions", provider.command, "show execution boundary and resource permissions",
                               source="core", concurrent=True, argument_hint="[show|list|read-only|workspace-edit|no-limit|grants|revoke ID]")

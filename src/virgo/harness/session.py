@@ -31,12 +31,14 @@ from ..ai.types import (
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
+from ..execution_policy import is_native_windows
 from ..i18n import Translator, normalize_language
+from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
 from .commands import Commands, expand_template, load_templates, parse_frontmatter, register_builtins
 from .diagnostics import DiagnosticLog
-from .execution import install_execution
+from .execution import _WINDOWS_EXPERIMENTAL_NOTE, install_execution
 from .extensions import (
     EventBus,
     Handled,
@@ -47,6 +49,7 @@ from .extensions import (
 from .jobs import JobManager
 from .origin_context import ExecutionOrigin, source_for
 from .permissions import normalize_approval_policy
+from .resource_rules import ResourceRules
 from .runtime import Runtime
 from .runtime_limits import ChildCancellation
 from .services import Services
@@ -90,7 +93,9 @@ class AgentSession:
         self.diagnostics = DiagnosticLog(self.paths.user / "logs")
         self._diagnostic_lock = threading.RLock()
         self._notified_errors: set[str] = set()
-        self.settings = Settings.load(self.paths, settings)
+        self.settings = Settings.load(
+            self.paths, settings, trust_project_extensions=trust_project_extensions
+        )
         self.trust_project_extensions = trust_project_extensions
         self.translator = Translator(self.settings.get("language", "en"))
         self.ui.set_translator(self.translator)
@@ -108,6 +113,7 @@ class AgentSession:
         self._failed_stores: list = []
         self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
         self._main_runtimes: dict[str, Runtime] = {}
+        self._output_stores: dict[str, OutputStore] = {}
         self._pending_child_work: dict[str, tuple[Runtime, int]] = {}
         self._tool_groups: dict[tuple[str, str], tuple[tuple[AgentTool, tuple], ...]] = {}
         self._tool_version = 0
@@ -155,10 +161,13 @@ class AgentSession:
                 jobs.background_enabled = False
                 self.services["shell"].install_tools()
             install_command_hooks(self)
-            self.templates.update(load_templates([self.paths.user / "prompts"]))
+            def warn(message: str) -> None:
+                self.ui.print(message, "warn")
+            self.templates.update(load_templates([self.paths.user / "prompts"], on_warning=warn))
             self.main = self._new_main(self.store)
             self.templates.update(load_templates([self.paths.project / "prompts"],
-                                  access=self.main.execution_context, source_paths=self._template_paths))
+                                  access=self.main.execution_context, source_paths=self._template_paths,
+                                  on_warning=warn))
         except BaseException:
             self.cleanup_plugins()
             raise
@@ -168,6 +177,14 @@ class AgentSession:
             if context.get("session_id") == self.store.id and context.get("agent") in (None, "main"):
                 self.main.recovery.safely("queue", record)
         self.bus.emit("session_start", self)
+        OutputStore.prune_expired(self.paths.user / "outputs")
+        if ResourceRules.purge_legacy(self.paths.user):
+            self.ui.print(
+                "Removed legacy saved resource grants (resource-grants.sqlite3); "
+                "previously saved approvals must be granted again.",
+                "warn",
+            )
+        self._warn_windows_sandbox()
         for warning in self.settings.migration_warnings:
             self.ui.print(warning, "warn")
         self._warn_retired_data()
@@ -179,6 +196,27 @@ class AgentSession:
             self._catalog_refresh_done.set()
 
     # -- diagnostics -----------------------------------------------------------
+    def _warn_windows_sandbox(self) -> None:
+        """Show the native Windows WSL2 hint once in No-Limit, or mark experimental sandbox modes."""
+        if not is_native_windows():
+            return
+        if self.settings.get("execution.mode") != "no-limit":
+            self.ui.print(_WINDOWS_EXPERIMENTAL_NOTE, "warn")
+            return
+        marker = self.paths.user / "migrations" / "windows-wsl2-hint"
+        if marker.exists():
+            return
+        self.ui.print(
+            "Native Windows defaults to No-Limit because the native Windows sandbox is experimental. "
+            "For full sandbox support on Windows, we recommend running Virgo inside WSL2.",
+            "warn",
+        )
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch(exist_ok=True)
+        except OSError as error:
+            self.report_error(error, phase="windows.notice", notify=False)
+
     def _warn_retired_data(self):
         """Only inspect existence; old files are neither parsed nor migrated."""
         retired = ("schedules.json", "tasks", "runs", "workflows", "memory", "MEMORY.md", "worktrees")
@@ -468,6 +506,17 @@ class AgentSession:
                     call_metadata=call_metadata)
         return message
 
+    def output_store_for(self, store) -> OutputStore:
+        """Return the per-session persistent OutputStore for ``store``."""
+        with self._lock:
+            session_id = store.id if store is not None else "ephemeral"
+            existing = self._output_stores.get(session_id)
+            if existing is None:
+                persist = store is not None and store.path is not None
+                existing = OutputStore.for_session(self.paths.user, session_id, persist=persist)
+                self._output_stores[session_id] = existing
+            return existing
+
     def _open_store(self, session) -> SessionStore:
         if session is None:
             return SessionStore(None, self.cwd)
@@ -626,6 +675,11 @@ class AgentSession:
             self._retained_sessions.pop(path, None)
             for store in stores:
                 self._main_runtimes.pop(store.id, None)
+                output_store = self._output_stores.pop(store.id, None)
+                if output_store is not None:
+                    output_store.delete_all()
+                else:
+                    OutputStore.delete_session(self.paths.user, store.id)
             if current:
                 self._activate_store(replacement, runtime=runtime)
 
@@ -1138,6 +1192,15 @@ class AgentSession:
         """Remove only empty stores visited by this process, including abandoned /new sessions."""
         for store in self._visited_stores:
             try:
-                store.discard_if_empty()
+                if store.path is None:
+                    output_store = self._output_stores.pop(store.id, None)
+                    if output_store is not None:
+                        output_store.delete_all()
+                else:
+                    store.discard_if_empty()
+                    if not store.path.exists():
+                        output_store = self._output_stores.pop(store.id, None)
+                        if output_store is not None:
+                            output_store.delete_all()
             except OSError as error:
                 self.report_error(error, phase="session.cleanup", store=store)

@@ -246,7 +246,8 @@ def test_error_timeout_and_truncation_through_agent_loop(make_session, name):
     command = "1..2100 | ForEach-Object { 'line' }" if shell.tool_name == "powershell" else "i=0; while [ $i -lt 2100 ]; do echo line; i=$((i+1)); done"
     truncated = invoke(session, command)
     assert "truncated" in truncated.text().lower()
-    assert Path(truncated.details["output_path"]).is_file()
+    record = session.main.execution_context.outputs.lookup(truncated.details["output_id"])
+    assert record._path.is_file()
 
 
 @pytest.mark.parametrize("name", [n for n in SHELLS if n in ("pwsh", "powershell")])

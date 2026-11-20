@@ -44,25 +44,24 @@ def test_permission_mode_arguments_and_legacy_aliases(value):
 def test_removed_task_flags_are_rejected_and_permission_output_stays_independent(entry, project):
     result = subprocess.run(
         [*entry, "--no-session", "--no-extensions", "--model", "faux/demo", "-p",
-         "--format", "json", "--execution", "host", "/permissions"],
+         "--format", "json", "--permission", "no-limit", "/permissions"],
         cwd=project, input="", capture_output=True, text=True, check=True, timeout=10,
     )
     assert "Host" in result.stdout
     assert all(isinstance(json.loads(line), dict) for line in result.stdout.splitlines())
-    for flag, value in (("--work-mode", "plan"), ("--plan", None), ("--profile", "minimal")):
+    for flag, value in (
+        ("--work-mode", "plan"),
+        ("--plan", None),
+        ("--profile", "minimal"),
+        ("--execution", "host"),
+        ("--sandbox", "disabled"),
+        ("--mode", "json"),
+    ):
         rejected = subprocess.run(
             [*entry, "--no-session", flag, *([value] if value else [])],
             cwd=project, input="", capture_output=True, text=True, timeout=10,
         )
         assert rejected.returncode == 2 and "unrecognized arguments" in rejected.stderr
-    # The retired output flag must not become an abbreviation of --model.
-    legacy = subprocess.run(
-        [*entry, "--no-session", "--no-extensions", "--mode", "json",
-         "--model", "faux/demo", "-p", "/permissions"],
-        cwd=project, input="", capture_output=True, text=True, timeout=10,
-    )
-    assert legacy.returncode == 2
-    assert "invalid choice" in legacy.stderr and not legacy.stdout
 
 
 @pytest.mark.parametrize("language_args", [[], ["--language", "en"]])
@@ -71,12 +70,19 @@ def test_cli_applies_execution_override_before_validating_user_preset(project, m
     home = Path(os.environ["VIRGO_HOME"])
     executor = SimpleNamespace(backend="not-launched")
     monkeypatch.setattr("virgo.sandbox.SandboxExecutor", lambda: executor)
+    if sys.platform == "win32":
+        monkeypatch.setattr("virgo.sandbox.windows_sandbox.precheck_experimental_sandbox", lambda: None)
     monkeypatch.setattr(sys, "stdin", io.StringIO())
+    # S7-02: Retired permissions.preset fails clearly with exit code 2 instead of silent migration.
     (home / "settings.json").write_text(json.dumps({"language": "zh-CN", "permissions": {"preset": "workspace-edit"}}))
+    rejected = cli.main(["-C", str(project), "--permission", "workspace-edit", "--no-session", "-m", "faux/demo",
+                         *language_args, "-p", "/permissions show"])
+    assert rejected == 2
 
-    result = cli.main(["-C", str(project), "--execution", "sandbox", "--no-session", "-m", "faux/demo",
+    # Valid user settings accept --permission override cleanly.
+    (home / "settings.json").write_text(json.dumps({"language": "zh-CN", "execution": {"mode": "no-limit"}}))
+    result = cli.main(["-C", str(project), "--permission", "workspace-edit", "--no-session", "-m", "faux/demo",
                        *language_args, "-p", "/permissions show"])
-
     assert result == 0
     assert '"provider": "sandbox"' in capsys.readouterr().out
 

@@ -6,7 +6,18 @@
 
 Virgo 是一个轻量、可扩展的终端编程 Agent。你可以让它理解代码库、实现改动、调查故障或审查 diff。它能够读取和编辑文件、执行命令，并在持续对话中推进任务。
 
-Virgo 首次启动使用 **Workspace-Edit**，通过原生沙箱访问真实工作区，支持按具体操作申请额外权限。选择 **No-Limit** 才直接使用当前宿主账户权限。见[执行边界](docs/zh-CN/guides/sandbox.md)。
+> Virgo 的沙箱是防止误操作的**护栏**：它把模型偶发失误的影响限制在当前工作区内，保护 Virgo 的私有数据和项目控制文件，并在越界或高危操作前请求确认。它**不是**抵御恶意代码、主动绕过行为或提示词注入攻击链的安全边界。处理不可信的仓库或内容时，请在容器或虚拟机中运行 Virgo。
+
+在 Linux、macOS 和 WSL2 上，Virgo 默认以 **Workspace-Edit** 启动，通过原生沙箱约束 Shell 命令，并支持按操作申请额外权限。选择 **No-Limit**（`--permission no-limit` 或 `/permissions no-limit`）则直接使用当前宿主账户权限。在 Windows 上，推荐在 WSL2 中运行 Virgo，这样可以使用与 Linux 相同的沙箱。原生 Windows 沙箱是实验性功能，启动较慢，功能也有限（因此原生 Windows 默认以 **No-Limit** 启动）。见[执行边界](docs/zh-CN/guides/sandbox.md)与 [WSL2 使用指南](docs/zh-CN/guides/wsl2.md)。
+
+## 平台支持分级
+
+| 平台 | 级别 | 说明 |
+| --- | --- | --- |
+| Linux（`bubblewrap` + `libseccomp2`） | 一级 | 完整支持，默认 **Workspace-Edit**，CI 阻塞门槛与性能门槛 |
+| macOS（Seatbelt） | 一级 | 完整支持，默认 **Workspace-Edit**，CI 阻塞门槛与性能门槛 |
+| Windows + WSL2（Ubuntu / Linux） | 一级 | **Windows 用户推荐方式** — 使用 Linux 沙箱后端（见 [WSL2 使用指南](docs/zh-CN/guides/wsl2.md)） |
+| 原生 Windows（LPAC） | 实验性 | 功能冻结；默认 **No-Limit**；原生沙箱需管理员权限、每条命令约 14 秒、不强制私有目录读拒绝、不支持 `$HOME` 工作区（见[详细说明](docs/zh-CN/guides/windows-sandbox.md)） |
 
 ## 为什么使用 Virgo？
 
@@ -59,7 +70,7 @@ uv run virgo --continue
 uv run virgo -p --format json "总结 README"
 ```
 
-使用 `/permissions show` 查看当前任务和下一任务的模式，使用 `/permissions` 在三种模式间切换。见[权限模式与审批](docs/zh-CN/development/permission-profiles.md)。
+使用 `/permissions show` 查看当前任务和下一任务的模式，使用 `/permissions` 或 `--permission <read-only|workspace-edit|no-limit>` 在三种模式间切换。见[权限模式与审批](docs/zh-CN/development/permission-profiles.md)。
 
 ## 查看错误记录
 
@@ -73,7 +84,7 @@ uv run virgo -p --format json "总结 README"
 
 ## 继续了解
 
-[安装可选扩展](extensions/README.zh-CN.md) · [示例](examples/README.zh-CN.md) · [反馈问题](https://github.com/0xAstraZhang/Virgo/issues)
+[执行边界](docs/zh-CN/guides/sandbox.md) · [WSL2 使用指南](docs/zh-CN/guides/wsl2.md) · [安装可选扩展](extensions/README.zh-CN.md) · [示例](examples/README.zh-CN.md) · [反馈问题](https://github.com/0xAstraZhang/Virgo/issues)
 
 ## 许可证
 

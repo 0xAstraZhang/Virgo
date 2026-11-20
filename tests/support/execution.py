@@ -3,15 +3,23 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from virgo.harness.execution_modes import PermissionPreset, parse_network
-from virgo.sandbox.policy import SandboxPolicy
+from virgo.execution import SandboxContext
+from virgo.execution_policy import ExecutionMode, PathRule, PermissionPolicy, parse_network
+from virgo.sandbox import _default_deny_rules
 
 
 def file_policy(workspace, *, read_paths=None, write_paths=(), network_allowed=False, private_paths=()):
     workspace = Path(workspace).resolve()
-    reads = (str(workspace),) if read_paths is None else tuple(map(str, read_paths))
-    resources = PermissionPreset("test", "Test", reads, tuple(map(str, write_paths)), parse_network(network_allowed))
-    return SandboxPolicy(workspace, resources, tuple(private_paths), SimpleNamespace(backend="not-launched"))
+    reads = (workspace,) if read_paths is None else tuple(Path(p).resolve() for p in read_paths)
+    writes = tuple(Path(p).resolve() for p in write_paths)
+    privates = tuple(Path(p).resolve() for p in private_paths)
+    rules = (
+        *(PathRule(p, "read", "allow") for p in reads),
+        *(PathRule(p, "write", "allow") for p in writes),
+        *_default_deny_rules(workspace, privates),
+    )
+    mode = ExecutionMode("test", "Test", PermissionPolicy(rules, parse_network(network_allowed)))
+    return SandboxContext(workspace, mode, privates, SimpleNamespace(backend="not-launched"))
 
 
 def sandbox_config(preset="workspace-edit"):

@@ -460,8 +460,38 @@ def _with_feedback(res: ToolResult, note: str) -> ToolResult:
 
 
 def install_command_hooks(session: AgentSession) -> None:
-    hooks: dict = session.settings.get("hooks", {}) or {}
+    raw_hooks = session.settings.get("hooks", {})
+    if raw_hooks is None:
+        return
+    if not isinstance(raw_hooks, dict):
+        session.ui.print("Ignoring invalid hooks configuration: expected a JSON object.", "warn")
+        return
+    hooks: dict = raw_hooks
     cwd = session.cwd
+
+    def valid_entries(event_name: str) -> list[dict]:
+        entries = hooks.get(event_name)
+        if entries is None:
+            return []
+        if not isinstance(entries, list):
+            session.ui.print(
+                f"Ignoring invalid hooks.{event_name}: expected a list of hook objects.",
+                "warn",
+            )
+            return []
+        valid: list[dict] = []
+        for idx, item in enumerate(entries, 1):
+            if (not isinstance(item, dict)
+                    or not isinstance(item.get("command"), str)
+                    or not item["command"].strip()):
+                session.ui.print(
+                    f"Ignoring invalid hook entry in hooks.{event_name} at index {idx}: "
+                    "expected an object with a nonempty string 'command'.",
+                    "warn",
+                )
+                continue
+            valid.append(item)
+        return valid
 
     def base(event: str, store=None) -> dict:
         return {"hook_event_name": event, "cwd": str(cwd), "session_id": (store or session.store).id}
@@ -474,7 +504,7 @@ def install_command_hooks(session: AgentSession) -> None:
     def source(ev):
         return ev.origin.root if ev.origin is not None else session.store
 
-    for index, hook in enumerate(hooks.get("PreToolUse", []), 1):
+    for index, hook in enumerate(valid_entries("PreToolUse"), 1):
 
         def pre(ev, _s, hook=hook, index=index):
             if not _matches(hook.get("matcher"), ev.tool_name):
@@ -490,7 +520,7 @@ def install_command_hooks(session: AgentSession) -> None:
 
         session.bus.on("tool_call", pre, priority=50)
 
-    for index, hook in enumerate(hooks.get("PostToolUse", []), 1):
+    for index, hook in enumerate(valid_entries("PostToolUse"), 1):
 
         def post(res: ToolResult, ev, _s, hook=hook, index=index):
             if not _matches(hook.get("matcher"), ev.tool_name):
@@ -512,7 +542,7 @@ def install_command_hooks(session: AgentSession) -> None:
 
         session.bus.on("tool_result", post)
 
-    for index, hook in enumerate(hooks.get("UserPromptSubmit", []), 1):
+    for index, hook in enumerate(valid_entries("UserPromptSubmit"), 1):
 
         def submit(text: str, _s, hook=hook, index=index):
             code, out, err = run(hook, {**base("UserPromptSubmit"), "prompt": text}, index)
@@ -524,7 +554,7 @@ def install_command_hooks(session: AgentSession) -> None:
 
         session.bus.on("input", submit)
 
-    for index, hook in enumerate(hooks.get("Stop", []), 1):
+    for index, hook in enumerate(valid_entries("Stop"), 1):
 
         def stop(rt, hook=hook, index=index):
             if rt.role != "main":
