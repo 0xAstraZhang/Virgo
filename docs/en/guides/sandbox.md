@@ -1,17 +1,34 @@
-# Native command sandbox
+# Execution boundaries and sandbox
 
-No-Limit runs on Host with the current account's permissions. Read-Only and Workspace-Edit select the core native executor. Both allow managed web search and reading. Shell networking starts disabled in Read-Only and enabled in Workspace-Edit. See [permission modes and approvals](../development/permission-profiles.md).
+> Virgo's sandbox is a **guardrail** against occasional model mistakes. It keeps their effects inside the current workspace, protects Virgo's private data and project control files, and asks before out-of-scope or high-risk operations. It is **not** a security boundary against malicious code, deliberate evasion, or prompt-injection attack chains. Run Virgo in a container or VM when working with untrusted repositories or content.
 
-## Live workspace
+On Windows, we recommend running Virgo inside WSL2, where it uses the same sandbox as Linux. The native Windows sandbox is experimental, slower to start and limited in scope. See [WSL2 setup](wsl2.md) and [experimental native Windows sandbox](windows-sandbox.md).
 
-The command's working tree is the same directory edited by file tools and host editors. File tools open retained objects, stage changed content and replace the destination. A watcher can reopen the path immediately after the edit. Commands have private writable scratch and a private home. In Read-Only, Core stores command output under the Virgo user directory, keyed by workspace. Workspace-Edit stores it under the project’s protected .virgo/outputs directory.
+## What the guardrail covers
 
-Linux requires system Bubblewrap, libseccomp and permission to create namespaces. macOS uses the system `sandbox-exec` and a launchd supervisor to track the command and its descendants. Windows uses LPAC, a restricted token, temporary ACLs and a Job Object. If the platform cannot establish the requested boundary, the operation reports an error.
+1. **Workspace scoping and control metadata protection**: By default, **Workspace-Edit** allows writing only inside the live project workspace. Control files (`.git`, `.virgo`, `AGENTS.md`, `CLAUDE.md`) and interpreter roots are write-protected. Broker file tools (`read`, `write`, `edit`, `glob`, `grep`) enforce `PermissionPolicy` directly—denying writes to protected names even when they do not yet exist—with final-component `O_NOFOLLOW` and atomic temp-file replacement.
+2. **Private state and credential protection**: Virgo's private directory (`~/.virgo` or `$VIRGO_HOME`) is read- and write-denied on Linux and macOS (including when the workspace itself is `$HOME` on POSIX). **Read-Only** disables Shell networking by default; **Workspace-Edit** enables Shell networking.
+3. **High-risk command confirmation**: High-cost or irreversible Shell commands (`git push --force`, pushes to protected branches, `git reset --hard`, `git clean -f`, `curl | sh`, recursive deletion outside the workspace, deploy/publish, cloud resource deletion, and destructive SQL/Redis commands) require explicit one-shot user confirmation in **all** modes (including **No-Limit**, unless `permissions.confirmHighRisk` is set to `false` in No-Limit).
+4. **Visible failure without silent downgrade**: If the native sandbox backend cannot be established, Virgo fails closed with an error, offers an explicit one-shot **No-Limit** option in interactive sessions (leaving the session mode unchanged), and never silently falls back to Host or automatically replays a command that may have started.
 
-For a Read-Only command that needs networking, request network access for that invocation. The native backends support on/off networking. A request limited to a single direction is refused. Each running process retains the permissions it received at launch.
+## What is out of scope
 
-## File protection
+- Resisting a model actively attempting to evade the guardrail.
+- Defending against crafted attack chains (TOCTOU races, pre-planted symlink/hardlink chains, case-folding tricks, malicious packages/dependencies, malicious concurrent host writers, or OS/kernel bugs).
+- Defending against prompt-injection attack chains (though read-denying private state, write-protecting control files, and Read-Only network isolation still mitigate common exfiltration and persistence impact).
+- Identical isolation strength across all operating systems.
 
-Existing workspace control metadata and nested interpreter roots remain protected. The POSIX launch check rejects a writable file when any of its links is outside the writable scope; files whose links are all inside the workspace remain usable. Package managers that hardlink from a store outside the workspace (for example pnpm's global store) still hit this check, so use No-Limit or keep the store inside the workspace. The supported live-workspace contract requires trusted host writers to preserve the filesystem boundary during a command. A hostile concurrent host writer can change what a pathname denotes between checks or after launch. The startup scan does not continuously protect against that behavior. An external Shell grant requires an existing, exact file or directory. File-level approval never substitutes its parent directory.
+## Platform backends and honest differences
 
-The broker and trusted extensions retain their own OS authority. Use the final revision's native results and full-suite comparison for release decisions. [Acceptance evidence](../development/execution-acceptance.md) · [Windows platform scope](windows-sandbox.md)
+- **Linux (Tier 1 — `bubblewrap` + `libseccomp2`)**: Requires system `bwrap`, `libseccomp.so.2`, and unprivileged user namespaces. Isolates mounts, network namespace (when networking is off), and syscalls while allowing anonymous Unix stream `socketpair(AF_UNIX, SOCK_STREAM, 0)` so Python `asyncio` and test runners work normally. Existing control files are bind-mounted read-only; absent control names are still blocked by Broker file tools and untrusted project settings stripping.
+- **macOS (Tier 1 — Seatbelt)**: Uses `/usr/bin/sandbox-exec` with a launchd job supervisor for process-tree cleanup. Seatbelt write-denies control metadata paths both when they exist and when they do not yet exist.
+- **Windows + WSL2 (Tier 1)**: Recommended on Windows; uses the Linux `bubblewrap` + `libseccomp2` backend inside WSL2.
+- **Native Windows (Experimental)**: Feature-frozen LPAC backend; defaults to **No-Limit**. See [experimental native Windows sandbox](windows-sandbox.md).
+
+## Broker tools, output storage, and trusted integrations
+
+- **File tools** run in the Broker directly against `PermissionPolicy` (no separate OS sandbox helper process), keeping cold start under 5 seconds and per-Read latency constant regardless of workspace size.
+- **Command outputs** are piped to the Broker's session-persisted `OutputStore` under `<VIRGO_HOME>/outputs/session-<id>` (readable via `read_output` after session resume, cleaned up on session trash and by a 7-day TTL; untruncated foreground commands leave no spool files behind).
+- **Trusted user integrations** (Python extensions, command hooks, and stdio MCP servers) run on **Host**; trust is established when you install them or trust a project (`extensions.trustedProjects` / `--trust-project-extensions`). Untrusted project `hooks`, `mcpServers`, `.virgo/mcp.json`, `providers`, and `extensions` are ignored before merging onto user settings.
+
+See [Permission modes and approvals](../development/permission-profiles.md) · [Execution acceptance](../development/execution-acceptance.md) · [WSL2 setup](wsl2.md) · [Native Windows sandbox (experimental)](windows-sandbox.md)

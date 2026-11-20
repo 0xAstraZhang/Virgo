@@ -56,7 +56,7 @@ uv tool install 'virgo[mcp]'    # 安装发行版
 uv sync --extra mcp             # 源码检出
 ```
 
-在 `~/.virgo/mcp.json` 或 `.virgo/mcp.json` 中按通用格式配置服务器：
+在 `~/.virgo/mcp.json`（或受信任项目的 `.virgo/mcp.json`）中按通用格式配置服务器：
 
 ```json
 {
@@ -70,9 +70,12 @@ uv sync --extra mcp             # 源码检出
 }
 ```
 
-也接受 `mcpServers` 配置项。服务器参数和环境值支持 `${VARIABLE}` 展开；禁用条目会被跳过。
-工具名为 `mcp__<server>__<tool>`，仍受 Core 权限约束：调用被视为未受管远程操作，
-离线或限定文件范围的任务需要显式的单次操作例外。
+也接受 `mcpServers` 配置项（项目级的 `mcpServers` 与 `.virgo/mcp.json` 需通过
+`extensions.trustedProjects` 或 `--trust-project-extensions` 显式信任）。服务器参数和环境值支持
+`${VARIABLE}` 展开；禁用条目会被跳过。MCP 服务器通过 `SandboxExecutor` 在 Host 启动，主会话与所有子
+Agent 共享同一个连接（原生 Windows 支持通过 `PATH` 查找命令与 `.cmd`/`.bat`，如 `npx`）。工具名为
+`mcp__<server>__<tool>`：只读工具直接执行，可能修改宿主状态的工具在 Read-Only 与 Workspace-Edit
+下需经审批（“始终允许”绑定服务器展开后的 `command`、`args`、`env` 的 SHA-256 指纹），在 No-Limit 下直接执行。
 
 `/mcp` 列出已配置服务器和工具数量；`/mcp reconnect` 重新加载配置，失败时保留原有连接和工具。
 `mcp_status` 向模型暴露同样的本地状态，不联系服务器。

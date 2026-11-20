@@ -65,8 +65,8 @@ uv tool install 'virgo[mcp]'    # installed distribution
 uv sync --extra mcp             # source checkout
 ```
 
-Configure servers in `~/.virgo/mcp.json` or `.virgo/mcp.json` using the common
-format:
+Configure servers in `~/.virgo/mcp.json` (or `.virgo/mcp.json` in a trusted
+project) using the common format:
 
 ```json
 {
@@ -80,12 +80,16 @@ format:
 }
 ```
 
-The `mcpServers` setting is accepted as well. Server arguments and environment
-values expand `${VARIABLE}`; disabled entries are skipped. Tools appear as
-`mcp__<server>__<tool>` and remain subject to Core permissions: calls are treated
-as unmanaged external operations. Host dispatches directly; Sandbox refuses
-calls whose requested resource scope cannot be enforced. Grants cannot switch
-to Host. Server startup and autonomous activity remain outside the managed boundary.
+The `mcpServers` setting is accepted as well (project-level `mcpServers` and
+`.virgo/mcp.json` require explicit project trust via `extensions.trustedProjects`
+or `--trust-project-extensions`). Server arguments and environment values expand
+`${VARIABLE}`; disabled entries are skipped. Servers launch on Host via
+`SandboxExecutor` with one shared connection per server across main and subagent
+runtimes (including `PATH` lookup and `.cmd`/`.bat` wrappers such as `npx` on
+native Windows). Tools appear as `mcp__<server>__<tool>`: read-only tools run
+directly, while mutating tools require approval in Read-Only and Workspace-Edit
+(with **Always allow** bound to the SHA-256 fingerprint of the server's expanded
+`command`, `args`, and `env`) and run directly in No-Limit.
 
 `/mcp` lists configured servers and tool counts. `/mcp reconnect` reloads the
 configuration; a failed reload keeps the previous connections and tools.
