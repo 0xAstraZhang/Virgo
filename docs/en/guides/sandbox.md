@@ -1,6 +1,6 @@
 # Native command sandbox
 
-No-Limit runs on Host with the current account's permissions. Read-Only and Workspace-Edit load the Sandbox extension on selection. Both allow managed web search and reading. Shell networking starts disabled in Read-Only and enabled in Workspace-Edit. See [permission modes and approvals](../development/permission-profiles.md).
+No-Limit runs on Host with the current account's permissions. Read-Only and Workspace-Edit select the core native executor. Both allow managed web search and reading. Shell networking starts disabled in Read-Only and enabled in Workspace-Edit. See [permission modes and approvals](../development/permission-profiles.md).
 
 ## Live workspace
 

@@ -1,12 +1,11 @@
 """Required, single-owner execution provider binding for an AgentSession."""
 from __future__ import annotations
 
-import importlib
 import json
 from dataclasses import replace
 from pathlib import Path
 
-from ..execution import HostContext
+from ..execution import HostContext, SandboxExecutor
 from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
 from .execution_modes import DEFAULT_MODES, HOST_MODE
 
@@ -32,6 +31,7 @@ class ModeExecutionProvider(HostExecutionProvider):
     def __init__(self, session):
         super().__init__(session)
         self.startup_mode = session.settings.get("execution.mode")
+        self.executor = SandboxExecutor()
         self.sandbox = None
         self.resource_tool = None
 
@@ -53,15 +53,15 @@ class ModeExecutionProvider(HostExecutionProvider):
 
     def load_sandbox(self):
         if self.sandbox is None:
+            from ..sandbox import SandboxExecutionProvider, install_resource_tool
             from .extensions import ExtensionAPI
 
-            extension = importlib.import_module("virgo.extensions.sandbox")
-            provider = extension.SandboxExecutionProvider(self.session)
-            api = ExtensionAPI(self.session, "sandbox")
+            provider = SandboxExecutionProvider(self.session, self.executor)
+            api = ExtensionAPI(self.session, "core:execution")
             try:
                 api.on("tool_result", provider._result)
                 api.on("agent_event", provider._event)
-                self.resource_tool = extension.install_resource_tool(api, provider)
+                self.resource_tool = install_resource_tool(api, provider)
             except BaseException:
                 api._rollback()
                 raise
@@ -76,7 +76,7 @@ class ModeExecutionProvider(HostExecutionProvider):
 
     def _context(self, runtime, mode, revision):
         if mode == HOST_MODE:
-            return HostContext(Path(runtime.accounting_store.cwd).resolve())
+            return HostContext(Path(runtime.accounting_store.cwd).resolve(), executor=self.executor)
         return self.load_sandbox().context_for_mode(runtime, mode, revision)
 
     def capture_runtime(self, runtime):

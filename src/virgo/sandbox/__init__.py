@@ -1,23 +1,23 @@
-"""Explicit resource-bound execution. Loading this extension is mandatory when selected."""
+"""Core native execution provider and operation-scoped resource approvals."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from ...agent import AgentTool, ToolCallEvent
-from ...harness.execution import HostExecutionProvider
-from ...harness.execution_modes import NETWORK_DIRECTIONS, PermissionSnapshot
-from ...harness.resource_approvals import Grant, ResourceApprovals
-from .native import NativeExecutor
+from ..agent import AgentTool, ToolCallEvent
+from ..execution import SandboxExecutor
+from ..harness.execution import HostExecutionProvider
+from ..harness.execution_modes import NETWORK_DIRECTIONS, PermissionSnapshot
+from ..harness.resource_approvals import Grant, ResourceApprovals
 from .policy import SandboxPolicy
 
 
 class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
     name = "sandbox"
 
-    def __init__(self, session):
+    def __init__(self, session, executor=None):
         super().__init__(session)
-        self.executor = NativeExecutor()
+        self.executor = executor or SandboxExecutor()
         self.revision = 0
         self._pending: dict[str, Grant] = {}
         self._active: dict[tuple[int, int], tuple[Grant, ToolCallEvent]] = {}

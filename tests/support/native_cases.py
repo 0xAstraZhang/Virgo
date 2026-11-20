@@ -2,6 +2,58 @@
 from tests.support.sandbox import python_command, run
 
 
+def generic_process_stdio(native, project):
+    """A non-Shell process exchanges separate protocol and diagnostic streams."""
+    import os
+    import subprocess
+    import sys
+
+    from virgo.execution import ProcessRequest, cleanup_process
+
+    outside = project.parent / "stdio-outside.txt"
+    outside.write_text("unchanged")
+    source = f"""import os, sys
+from pathlib import Path
+assert 'UNGRANTED_TEST_SECRET' not in os.environ
+assert os.environ['MCP_TEST_CREDENTIAL'] == 'explicit-grant'
+value = sys.stdin.buffer.read()
+sys.stdout.buffer.write(b'protocol:' + value)
+sys.stdout.buffer.flush()
+sys.stderr.buffer.write(b'diagnostic:' + value)
+sys.stderr.buffer.flush()
+try: Path({str(outside)!r}).write_text('bad')
+except OSError: pass
+else: raise AssertionError('outside write succeeded')
+"""
+    request = ProcessRequest((sys.executable, "-I", "-S", "-c", source), project,
+                             {**os.environ, "UNGRANTED_TEST_SECRET": "must-not-inherit"},
+                             stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+                             env_overrides={"MCP_TEST_CREDENTIAL": "explicit-grant"})
+    process = native.main.execution_context.run_process(request)
+    try:
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        process.stdin.write(b"hello stdio")
+        process.stdin.close()
+        assert process.wait(timeout=15) == 0
+        stdout, stderr = process.stdout.read(), process.stderr.read()
+        assert stdout == b"protocol:hello stdio", {"stdout": stdout, "stderr": stderr}
+        expected_stderr = {b"diagnostic:hello stdio"}
+        if sys.platform == "win32":
+            # CPython can continue after failing to canonicalize its executable
+            # under LPAC. Keep that exact diagnostic on stderr, never stdout.
+            warning = f"Failed to find real location of {sys._base_executable}\n".encode()
+            expected_stderr.add(warning + b"diagnostic:hello stdio")
+        assert stderr in expected_stderr, {"stdout": stdout, "stderr": stderr}
+        assert outside.read_text() == "unchanged"
+    finally:
+        cleanup_process(process)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
 def workspace_write_and_indirect_escape(native, project):
     outside = project.parent / "outside.txt"
     outside.write_text("unchanged")

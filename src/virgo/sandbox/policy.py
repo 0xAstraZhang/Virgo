@@ -8,8 +8,8 @@ import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ...execution import ExecutionUnavailable, FileAccessDenied
-from ...harness.execution_modes import PermissionPreset, PermissionSnapshot
+from ..execution import ExecutionUnavailable, FileAccessDenied
+from ..harness.execution_modes import PermissionPreset, PermissionSnapshot
 
 PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
 
@@ -85,6 +85,9 @@ class SandboxPolicy:
 
     def validate(self, cwd: Path) -> Path:
         cwd = Path(cwd).resolve()
+        if self.private_path(cwd):
+            raise ExecutionUnavailable(f"Working directory is inside private Virgo storage: {cwd}",
+                                       reason="invalid_cwd", dimension="protected_path", target=cwd)
         try:
             self.check_read(cwd)
         except FileAccessDenied as error:
@@ -141,9 +144,9 @@ class SandboxPolicy:
             if directory is not None:
                 os.close(directory)
 
-    def spawn(self, argv, cwd, env, stdout, output_path=None, cancellation=None):
-        cwd = self.validate(cwd)
-        return self.executor.spawn(self, argv, cwd, env, stdout, output_path, cancellation)
+    def run_process(self, request, cancellation=None):
+        self.validate(request.cwd)
+        return self.executor.run_process(request, self, cancellation)
 
     def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
         from .files import read_bytes

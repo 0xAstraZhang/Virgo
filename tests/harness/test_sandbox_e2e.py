@@ -33,6 +33,10 @@ def native(make_session):
     return native_session(make_session, {"linux", "darwin"})
 
 
+def test_native_generic_process_stdio(native, project):
+    native_cases.generic_process_stdio(native, project)
+
+
 @pytest.fixture
 def short_workspace():
     """Keep AF_UNIX paths under Darwin's sun_path limit."""
@@ -861,16 +865,19 @@ def test_missing_backend_is_fail_closed_in_real_session(make_session, project, m
     def unavailable():
         raise ExecutionUnavailable("Missing native backend")
 
-    monkeypatch.setattr("virgo.extensions.sandbox.native.platform_backend", unavailable)
-    with pytest.raises(ExecutionUnavailable, match="Missing native backend"):
-        make_session(settings={"execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
+    monkeypatch.setattr("virgo.sandbox.native.platform_backend", unavailable)
+    session = make_session(settings={"execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
+    result = run(session, python_command(session, "from pathlib import Path; Path('payload-ran').write_text('bad')"))
+    assert result.is_error and result.details["status"] == "execution_unavailable"
+    assert result.details["boundary"]["payload_started"] is False
+    assert "Missing native backend" in result.text()
     assert not (project / "payload-ran").exists()
 
 
 def test_required_provider_initialization_failure_aborts_session(make_session, project, monkeypatch):
-    import virgo.extensions.sandbox as extension
+    import virgo.sandbox as extension
 
-    def broken(api):
+    def broken(api, executor):
         raise RuntimeError('required provider setup failed')
 
     monkeypatch.setattr(extension, 'SandboxExecutionProvider', broken)
@@ -894,18 +901,18 @@ def test_project_cannot_disable_user_sandbox(make_session, project):
 def test_unacknowledged_native_launch_keeps_unknown_facts(broker_session, project, monkeypatch, background, payload):
     """A lost startup acknowledgement cannot authorize replay."""
     from virgo.execution import ExecutionFailed
-    from virgo.extensions.sandbox.native import NativeExecutor
+    from virgo.sandbox.native import NativeExecutor
 
     attempts = []
 
-    def uncertain(self, policy, argv, cwd, env, stdout, output_path, cancellation):
-        attempts.append(argv)
+    def uncertain(self, request, policy, cancellation):
+        attempts.append(request.argv)
         if payload:
             (project / "payload-ran").write_text("once")
         raise ExecutionFailed("The native launcher could not confirm execution")
 
     session = broker_session()
-    monkeypatch.setattr(NativeExecutor, "spawn", uncertain)
+    monkeypatch.setattr(NativeExecutor, "run_process", uncertain)
     result = run(session, "synthetic workload", background=background)
     assert result.is_error and result.details["status"] == "execution_failed"
     if background:
@@ -1038,13 +1045,17 @@ def test_native_independent_permission_combinations(native, project, short_works
 
     roots = (str(project),) if workspace_only else (str(project), str(extra))
     context = native.main.execution_context
-    context = replace(context, resources=replace(context.resources, read_paths=roots,
+    context = replace(context, resources=replace(context.resources, read_paths=(*roots, str(short_workspace)),
                       write_paths=() if read_only else roots, network=parse_network(network_allowed)))
     with socket.socket() as listener, socket.socket(socket.AF_UNIX) as host_socket:
         listener.bind(('127.0.0.1', 0))
         listener.listen()
         host_socket.bind(str(short_workspace / 'host.sock'))
         host_socket.listen()
+        with socket.socket(socket.AF_UNIX) as control:
+            control.connect(str(short_workspace / 'host.sock'))
+            connected, _ = host_socket.accept()
+            connected.close()
         source = f'''import socket
 from pathlib import Path
 def attempt(fn):
@@ -1060,8 +1071,14 @@ assert attempt(lambda: socket.create_connection({listener.getsockname()!r}, 2).c
 assert attempt(lambda: socket.socket(socket.AF_UNIX).connect({str(short_workspace / 'host.sock')!r})) is False
 print('independent dimensions checked')
 '''
+        if sys.platform == "linux":
+            probe = Path(__file__).parents[1] / "support" / "socketpair_probe.py"
+            source += probe.read_text() + f"\nverify_socketpairs({str(short_workspace / 'host.sock')!r})\n"
         output, code, status = run_command(python_command(native, source), project, 15, Event(),
                                            interpreter=selected(native), execution_context=context)
+        host_socket.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            host_socket.accept()
     assert code == 0 and status == "ok" and "independent dimensions checked" in output.text, output.text
     for path, allowed in ((inside, not read_only),
                           (outside, not read_only and not workspace_only)):
@@ -1196,7 +1213,7 @@ def test_linux_resolver_configuration_accepts_only_trusted_service_metadata(proj
     """
     import pwd
 
-    from virgo.extensions.sandbox import platform as sandbox
+    from virgo.sandbox import platform as sandbox
 
     entry = Path("/etc/resolv.conf")
     target = Path("/run/systemd/resolve/stub-resolv.conf")
@@ -1265,8 +1282,8 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
     This launches a real synthetic wrapper that never executes the payload. It
     validates the launch protocol, not OS isolation (covered by native tests).
     """
-    from virgo.extensions.sandbox import native as dispatcher
-    from virgo.extensions.sandbox import platform as sandbox
+    from virgo.sandbox import native as dispatcher
+    from virgo.sandbox import platform as sandbox
 
     launcher = project.parent / "reject_after_probe.py"
     attempts = project.parent / "launch-attempts.txt"
@@ -1318,8 +1335,8 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     isolation. Only acknowledgement observation and the broker deadline clock
     are controlled; the payload writes a disposable marker exactly once.
     """
-    from virgo.extensions.sandbox import native as dispatcher
-    from virgo.extensions.sandbox import platform as sandbox
+    from virgo.sandbox import native as dispatcher
+    from virgo.sandbox import platform as sandbox
 
     launcher = project.parent / "forward_payload.py"
     marker = project / "payload-ran.txt"
@@ -1354,3 +1371,71 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     assert marker.read_text() == "once"
     assert result.is_error and result.details.get("status") == "execution_failed", result.text()
     assert result.details["boundary"]["side_effects"] == "possible"
+
+
+def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, project):
+    """VER-03: GITHUB_TOKEN override is never in process argv/plist/supervisor env; -S... is rejected."""
+    import hashlib
+    import shutil
+    import subprocess as sp
+
+    from virgo.execution import ExecutionUnavailable, ProcessRequest, cleanup_process
+
+    secret = "ghp_virgo_ver03_secret_token_987654"
+    digest = hashlib.sha256(secret.encode()).hexdigest()
+    with pytest.raises(ExecutionUnavailable, match="identifier"):
+        native.main.execution_context.run_process(ProcessRequest(
+            (sys.executable, "-I", "-S", "-c", "print('bad')"), project, dict(os.environ),
+            env_overrides={"-S/bin/echo INJECTED #": "1"},
+        ))
+
+    script = (
+        "import hashlib, os, sys, time\n"
+        "assert hashlib.sha256(os.environ['GITHUB_TOKEN'].encode()).hexdigest() == sys.argv[1]\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(5)\n"
+    )
+    proc = native.main.execution_context.run_process(ProcessRequest(
+        (sys.executable, "-I", "-S", "-c", script, digest), project, dict(os.environ),
+        stdout=sp.PIPE, stderr=sp.PIPE,
+        env_overrides={"GITHUB_TOKEN": secret},
+    ))
+    try:
+        assert proc.stdout.readline().strip() == b"ready"
+        ps_bin = shutil.which("ps") or "/bin/ps"
+        ps_cmd = [ps_bin, "-axww", "-o", "args="] if sys.platform == "darwin" else [ps_bin, "-eo", "args="]
+        ps_args = sp.check_output(ps_cmd, text=True, errors="replace")
+        assert secret not in ps_args
+        if sys.platform == "darwin":
+            supervisor_env = sp.check_output([ps_bin, "eww", "-p", str(proc.pid)], text=True, errors="replace")
+            assert secret not in supervisor_env
+            plist_text = proc._process._plist.read_text(encoding="utf-8", errors="replace")
+            assert secret not in plist_text
+    finally:
+        cleanup_process(proc)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def test_startup_rejects_cwd_inside_private_virgo_dir(broker_session, project):
+    from virgo.execution import ExecutionUnavailable
+
+    private_dir = project.parent / "home"
+    nested = private_dir / "nested-cwd"
+    nested.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(ExecutionUnavailable, match="private Virgo storage"):
+        broker_session(cwd=nested, preset="workspace-edit", extensions=False, refresh_models=False)
+
+
+def test_native_sandbox_runs_asyncio_event_loop(native, project):
+    """VER-06: asyncio programs (requiring AF_UNIX SOCK_STREAM socketpair) run inside the sandbox."""
+    source = (
+        "import asyncio\n"
+        "async def main():\n"
+        "    await asyncio.sleep(0)\n"
+        "    return 'asyncio-ok'\n"
+        "print(asyncio.run(main()))\n"
+    )
+    result = run(native, python_command(native, source))
+    assert not result.is_error and "asyncio-ok" in result.text(), result.text()

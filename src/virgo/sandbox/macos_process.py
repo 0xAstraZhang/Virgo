@@ -69,7 +69,7 @@ ctypes.set_errno(0)
 unprivileged = terminate(0, 0) == -1 and ctypes.get_errno() == errno.EPERM
 if not report({'token': token, 'pid': os.getpid(), 'unprivileged': unprivileged}):
     raise SystemExit(1)
-marker, descriptors, flags, _ = socket.recv_fds(connection, 1, 2)
+marker, descriptors, flags, _ = socket.recv_fds(connection, 1, 4)
 if marker != b'S' or flags & socket.MSG_CTRUNC:
     raise RuntimeError('Invalid launch descriptor message')
 for descriptor in descriptors:
@@ -124,13 +124,13 @@ os._exit(0)
             if ready_write is not None:
                 os.close(ready_write)
     elif request['mode'] == 'command':
-        if len(descriptors) != 2 or not unprivileged:
+        if len(descriptors) != 4 or not unprivileged:
             raise RuntimeError('Unverified command launch')
-        output_fd, status_fd = descriptors
+        input_fd, output_fd, error_fd, status_fd = descriptors
         argv = request['argv']
         argv[request['status_index']] = str(status_fd)
         child = subprocess.Popen(argv, cwd=request['cwd'], env=request['env'],
-            stdin=subprocess.DEVNULL, stdout=output_fd, stderr=subprocess.STDOUT,
+            stdin=input_fd, stdout=output_fd, stderr=error_fd,
             pass_fds=(status_fd,), start_new_session=True)
         report({'started': child.pid})
     else:
@@ -354,7 +354,6 @@ class LaunchdProcess:
         from .platform import _system_file
 
         self._launchctl = str(_system_file(Path("/bin/launchctl")))
-        self._env_program = str(_system_file(Path("/usr/bin/env")))
         self._kernel = _Kernel()
         self._policy = policy
         self._cwd = policy.validate(cwd)
@@ -377,7 +376,7 @@ class LaunchdProcess:
         self.payload_pid = None
         self.returncode = None
         self.args: list[str] = []
-        self.stdout = None
+        self.stdin = self.stdout = self.stderr = None
         self._label = "io.virgo.shell." + secrets.token_hex(16)
         self._target = f"user/{os.getuid()}/{self._label}"
         self._token = secrets.token_hex(32)
@@ -391,19 +390,25 @@ class LaunchdProcess:
             self._plist = self._control / "job.plist"
             descriptor = os.open(self._plist, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "wb") as stream:
-                plistlib.dump({
-                    "Label": self._label,
-                    # user/<uid> is the Background domain; the default Aqua
-                    # session type does not match this explicitly chosen domain.
-                    "LimitLoadToSessionType": "Background",
-                    "ProgramArguments": [self._env_program, "-i", *(f"{key}={value}" for key, value in self._env.items()),
-                                         sys.executable, "-I", "-S", "-c", _SUPERVISOR,
-                                         str(self._socket_path), self._token, self._target],
-                    "WorkingDirectory": str(self._control),
-                    "RunAtLoad": True, "KeepAlive": False, "LaunchOnlyOnce": True,
-                    "ExitTimeOut": 1, "StandardInPath": "/dev/null",
-                    "StandardOutPath": "/dev/null", "StandardErrorPath": str(self._control / "bootstrap.log"),
-                }, stream)
+                try:
+                    plistlib.dump({
+                        "Label": self._label,
+                        # user/<uid> is the Background domain; the default Aqua
+                        # session type does not match this explicitly chosen domain.
+                        "LimitLoadToSessionType": "Background",
+                        # Never place payload environment overrides in ProgramArguments:
+                        # launchd arguments are readable via ps and parsed before Seatbelt.
+                        # The payload environment is sent strictly over the 0700 Unix socket.
+                        "ProgramArguments": [sys.executable, "-I", "-S", "-c", _SUPERVISOR,
+                                             str(self._socket_path), self._token, self._target],
+                        "EnvironmentVariables": {"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+                        "WorkingDirectory": str(self._control),
+                        "RunAtLoad": True, "KeepAlive": False, "LaunchOnlyOnce": True,
+                        "ExitTimeOut": 1, "StandardInPath": "/dev/null",
+                        "StandardOutPath": "/dev/null", "StandardErrorPath": str(self._control / "bootstrap.log"),
+                    }, stream)
+                except ValueError as error:
+                    raise _unavailable(f"Could not encode launchd job specification: {error}") from error
         except BaseException:
             self._close_local()
             raise
@@ -506,7 +511,8 @@ class LaunchdProcess:
         self._safe_coalition = True
         self._connection.setblocking(False)
 
-    def _launch(self, mode: str, argv, stdout, status_fd, status_arg_index, cancellation) -> None:
+    def _launch(self, mode: str, argv, stdout, status_fd, status_arg_index, cancellation, *,
+                stdin=subprocess.DEVNULL, stderr=subprocess.STDOUT) -> None:
         _check_cancel(cancellation)
         self._mode = mode
         self.args = list(argv)
@@ -522,19 +528,27 @@ class LaunchdProcess:
         if len(data) > _MESSAGE_LIMIT:
             raise _unavailable("Sandbox command exceeds the launch protocol limit")
         owned = []
+
+        def descriptor(stream, name, number, reading=False):
+            if stream == subprocess.PIPE:
+                read_fd, write_fd = os.pipe()
+                child, parent = (read_fd, write_fd) if reading else (write_fd, read_fd)
+                owned.append(child)
+                setattr(self, name, os.fdopen(parent, "wb" if reading else "rb", buffering=0))
+                return child
+            if stream == subprocess.DEVNULL:
+                child = os.open(os.devnull, os.O_RDONLY if reading else os.O_WRONLY)
+                owned.append(child)
+                return child
+            return number if stream is None else (stream if isinstance(stream, int) else stream.fileno())
+
         try:
             descriptors = []
             if mode == "command":
-                if stdout == subprocess.PIPE:
-                    read_fd, output_fd = os.pipe()
-                    self.stdout = os.fdopen(read_fd, "rb")
-                    owned.append(output_fd)
-                elif stdout == subprocess.DEVNULL:
-                    output_fd = os.open(os.devnull, os.O_WRONLY)
-                    owned.append(output_fd)
-                else:
-                    output_fd = 1 if stdout is None else (stdout if isinstance(stdout, int) else stdout.fileno())
-                descriptors = [output_fd, status_fd]
+                input_fd = descriptor(stdin, "stdin", 0, reading=True)
+                output_fd = descriptor(stdout, "stdout", 1)
+                error_fd = output_fd if stderr == subprocess.STDOUT else descriptor(stderr, "stderr", 2)
+                descriptors = [input_fd, output_fd, error_fd, status_fd]
             self._connection.settimeout(_START_TIMEOUT)
             if socket.send_fds(self._connection, [b"S"], descriptors) != 1:
                 raise _unavailable("Could not transfer launch descriptors")
@@ -548,17 +562,20 @@ class LaunchdProcess:
             for descriptor in owned:
                 os.close(descriptor)
 
-    def start(self, argv: list[str], stdout, status_fd: int, status_arg_index: int, cancellation=None):
+    def start(self, argv: list[str], stdout, status_fd: int, status_arg_index: int, cancellation=None, *,
+              stdin=subprocess.DEVNULL, stderr=subprocess.STDOUT):
         try:
             if (not 0 <= status_arg_index < len(argv) or argv[status_arg_index] != str(status_fd)
                     or status_fd < 0):
                 raise _unavailable("Invalid sandbox exec acknowledgement descriptor")
             _ensure_capability(self._policy, self._cwd, self._env, cancellation)
-            self._launch("command", argv, stdout, status_fd, status_arg_index, cancellation)
+            self._launch("command", argv, stdout, status_fd, status_arg_index, cancellation,
+                         stdin=stdin, stderr=stderr)
             return self
         except BaseException as error:
-            if self.stdout is not None:
-                self.stdout.close()
+            for stream in (self.stdin, self.stdout, self.stderr):
+                if stream is not None:
+                    stream.close()
             try:
                 self.cleanup_tree()
             except Exception as cleanup_error:

@@ -1,6 +1,6 @@
 # 原生命令沙箱
 
-No-Limit 直接使用当前账户的 Host 权限。Read-Only 和 Workspace-Edit 在选用时加载 Sandbox 扩展。两者均允许网页搜索与读取。Read-Only 默认关闭 Shell 网络，Workspace-Edit 允许 Shell 联网。详见[模式与审批](../development/permission-profiles.md)。
+执行器是 Core 基础设施。No-Limit 经过同一个执行器使用当前账户的 Host 权限；Read-Only 和 Workspace-Edit 使用原生沙箱后端。两者均允许网页搜索与读取。Read-Only 默认关闭 Shell 网络，Workspace-Edit 允许 Shell 联网。详见[模式与审批](../development/permission-profiles.md)。
 
 ## 实时工作区
 
