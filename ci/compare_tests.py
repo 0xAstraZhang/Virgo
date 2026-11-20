@@ -27,6 +27,7 @@ def main():
     runner.add_argument("--label", choices=("base", "head"), required=True)
     runner.add_argument("--sha", required=True)
     runner.add_argument("--execution", choices=("serial", "parallel"), default="parallel")
+    runner.add_argument("--ignore", action="append", default=[])
     comparer = subparsers.add_parser("compare")
     comparer.add_argument("--reports", type=Path, required=True)
     comparer.add_argument("--output", type=Path, required=True)

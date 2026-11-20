@@ -10,6 +10,7 @@ import os
 import platform
 import shlex
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,28 @@ import time
 from pathlib import Path
 
 WORKER_TIMEOUT_SECONDS = 180
+DEFAULT_MAX_COLD_START_MS = 5000.0
+DEFAULT_MAX_READ_MS = 250.0
+
+
+def populate_realistic_workspace(workspace: Path, file_count: int) -> list[str]:
+    """Create a realistic nested repository layout without touching answer.py."""
+    if file_count <= 0:
+        return []
+    created: list[str] = []
+    repo = workspace / "repo"
+    packages = max(1, min(25, file_count // 20 or 1))
+    for pkg in range(packages):
+        (repo / f"pkg_{pkg:02d}").mkdir(parents=True, exist_ok=True)
+    for index in range(file_count):
+        pkg = index % packages
+        rel = f"repo/pkg_{pkg:02d}/mod_{index:04d}.py"
+        (workspace / rel).write_text(
+            f'"""Module {index}."""\n\nVALUE = {index}\n\ndef compute(x: int) -> int:\n    return x + VALUE\n',
+            encoding="utf-8",
+        )
+        created.append(rel)
+    return created
 
 
 def session_settings(contract, mode):
@@ -60,7 +83,12 @@ def issue_operation(session, name, arguments, *, expected=None):
 def sample(args):
     from_environment = os.environ.get("VIRGO_BENCHMARK_START_NS")
     interpreter_ms = (time.perf_counter_ns() - int(from_environment)) / 1e6 if from_environment else 0.0
-    result = {"mode": args.mode, "contract": args.contract, "success": False, "operations": []}
+    workspace_files = getattr(args, "workspace_files", 0) or 0
+    read_repeats = getattr(args, "read_repeats", 0) or 0
+    result = {
+        "mode": args.mode, "contract": args.contract, "workspace_files": workspace_files,
+        "read_repeats": read_repeats, "success": False, "operations": [],
+    }
     with tempfile.TemporaryDirectory(prefix="virgo-measure-") as directory:
         root = Path(directory).resolve()
         workspace = root / "workspace"
@@ -69,6 +97,7 @@ def sample(args):
         source.write_text("def answer():\n    return 41\n", encoding="utf-8")
         (workspace / "check_answer.py").write_text(
             "from answer import answer\nassert answer() == 42\nprint('tested-edit')\n", encoding="utf-8")
+        extra_files = populate_realistic_workspace(workspace, workspace_files)
         start = time.perf_counter()
         session = None
         try:
@@ -108,6 +137,17 @@ def sample(args):
             if observed_network is not (args.mode != "read-only"):
                 raise ValueError(f"Wrong Shell network policy: {observed_network}")
             result["shell_network_allowed"] = observed_network
+            if read_repeats > 0:
+                read_targets = extra_files if extra_files else ["answer.py"]
+                read_latencies: list[float] = []
+                for idx in range(read_repeats):
+                    target_rel = read_targets[idx % len(read_targets)]
+                    t0 = time.perf_counter()
+                    issue_operation(session, "read", {"path": target_rel})
+                    read_latencies.append((time.perf_counter() - t0) * 1000)
+                result["read_latencies_ms"] = read_latencies
+                result["read_median_ms"] = statistics.median(read_latencies)
+                result["read_total_ms"] = sum(read_latencies)
             shell = session.services["shell"].current
             short = "echo measured-short-command"
             for index in range(args.repeat + 1):
@@ -254,24 +294,115 @@ def stop_worker(_signum, _frame):
     raise SystemExit(1)
 
 
+def evaluate_scale_budgets(
+    small_samples: list[dict],
+    large_samples: list[dict],
+    *,
+    max_cold_start_ms: float = DEFAULT_MAX_COLD_START_MS,
+    max_read_ms: float = DEFAULT_MAX_READ_MS,
+) -> dict:
+    """Enforce S5-04 performance budgets on Linux and macOS (cold start <= 5s, O(1) Read overhead)."""
+    violations: list[str] = []
+    if not small_samples or not all(s.get("success") for s in small_samples):
+        violations.append("Small-workspace samples did not all succeed")
+    if not large_samples or not all(s.get("success") for s in large_samples):
+        violations.append("Realistic-workspace samples did not all succeed")
+    if violations:
+        return {"passed": False, "violations": violations}
+
+    small_cold = statistics.median(s["cold_start_ms"] for s in small_samples)
+    large_cold = statistics.median(s["cold_start_ms"] for s in large_samples)
+    small_read = statistics.median(s["read_median_ms"] for s in small_samples)
+    large_read = statistics.median(s["read_median_ms"] for s in large_samples)
+
+    if small_cold > max_cold_start_ms:
+        violations.append(f"Small workspace cold_start_ms {small_cold:.1f}ms exceeds {max_cold_start_ms:.1f}ms")
+    if large_cold > max_cold_start_ms:
+        violations.append(f"Realistic workspace cold_start_ms {large_cold:.1f}ms exceeds {max_cold_start_ms:.1f}ms")
+    if large_read > max_read_ms:
+        violations.append(f"Realistic workspace read_median_ms {large_read:.1f}ms exceeds {max_read_ms:.1f}ms")
+    scaling_ceiling = max(small_read * 3.0, small_read + 50.0)
+    if large_read > scaling_ceiling:
+        violations.append(
+            f"Per-Read latency scaled with workspace size: small={small_read:.1f}ms, "
+            f"realistic={large_read:.1f}ms (ceiling {scaling_ceiling:.1f}ms)"
+        )
+    return {
+        "passed": not violations,
+        "violations": violations,
+        "small_cold_start_median_ms": round(small_cold, 2),
+        "realistic_cold_start_median_ms": round(large_cold, 2),
+        "small_read_median_ms": round(small_read, 2),
+        "realistic_read_median_ms": round(large_read, 2),
+        "max_cold_start_ms": max_cold_start_ms,
+        "max_read_ms": max_read_ms,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['no-limit', 'read-only', 'workspace-edit'], default='no-limit')
     parser.add_argument('--contract', choices=['current', 'original'], default='current')
     parser.add_argument('--samples', type=int, default=3)
     parser.add_argument('--repeat', type=int, default=3)
+    parser.add_argument('--workspace-files', type=int, default=0)
+    parser.add_argument('--read-repeats', type=int, default=0)
+    parser.add_argument('--check-budgets', action='store_true')
+    parser.add_argument('--realistic-files', type=int, default=1000)
+    parser.add_argument('--max-cold-start-ms', type=float, default=DEFAULT_MAX_COLD_START_MS)
+    parser.add_argument('--max-read-ms', type=float, default=DEFAULT_MAX_READ_MS)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.samples < 1 or args.repeat < 1:
-        parser.error('samples and repeat must be positive')
+    if args.samples < 1 or args.repeat < 1 or args.workspace_files < 0 or args.read_repeats < 0:
+        parser.error('samples and repeat must be positive; file/read counts must be non-negative')
     if args.worker:
         if os.name == 'posix':
             signal.signal(signal.SIGTERM, stop_worker)
         print(json.dumps(sample(args)))
         return
+    if args.check_budgets:
+        if sys.platform == 'win32':
+            skipped = {
+                'platform': platform.platform(), 'mode': args.mode,
+                'budget_skipped': True,
+                'reason': 'Native Windows is experimental (§6.2); S5-04 performance budgets apply to Linux and macOS.',
+            }
+            if args.output:
+                checkpoint(args.output, skipped)
+            print(json.dumps(skipped, indent=2))
+            return 0
+        read_repeats = max(args.read_repeats, 10)
+        base_cmd = [
+            sys.executable, str(Path(__file__).resolve()), '--worker',
+            '--mode', args.mode, '--contract', args.contract,
+            '--repeat', str(args.repeat), '--read-repeats', str(read_repeats),
+        ]
+        small_samples = [
+            {**run_worker([*base_cmd, '--workspace-files', '0'], args.repeat + 1), 'sample': idx}
+            for idx in range(args.samples)
+        ]
+        large_samples = [
+            {**run_worker([*base_cmd, '--workspace-files', str(args.realistic_files)], args.repeat + 1), 'sample': idx}
+            for idx in range(args.samples)
+        ]
+        budget = evaluate_scale_budgets(
+            small_samples, large_samples,
+            max_cold_start_ms=args.max_cold_start_ms,
+            max_read_ms=args.max_read_ms,
+        )
+        summary = {
+            'platform': platform.platform(), 'python': sys.version, 'mode': args.mode,
+            'realistic_files': args.realistic_files, 'read_repeats': read_repeats,
+            'budget': budget, 'small_samples': small_samples, 'realistic_samples': large_samples,
+        }
+        if args.output:
+            checkpoint(args.output, summary)
+        print(json.dumps(summary, indent=2))
+        return 0 if budget['passed'] else 1
     command = [sys.executable, str(Path(__file__).resolve()), '--worker', '--mode', args.mode, '--contract', args.contract,
-               '--repeat', str(args.repeat)]
+               '--repeat', str(args.repeat), '--workspace-files', str(args.workspace_files),
+               '--read-repeats', str(args.read_repeats)]
     head = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     diff = subprocess.run(['git', 'diff', '--binary', 'HEAD'], capture_output=True, check=True).stdout
     report = {'revision': head, 'tracked_diff_sha256': hashlib.sha256(diff).hexdigest(),

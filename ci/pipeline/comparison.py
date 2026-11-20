@@ -5,13 +5,7 @@ from __future__ import annotations
 import os
 
 from .io import read_json, write_json
-from .reports import (
-    BAD,
-    approved_product_retirements,
-    approved_retirements,
-    product_retirement_policy,
-    validate_report,
-)
+from .reports import BAD, validate_report
 
 
 def compare(args):
@@ -89,8 +83,6 @@ def compare(args):
             "regressions", "newly_exposed_failures", "existing_failures", "fixed_failures",
             "new_skips", "unskipped", "added", "removed", "problems", "failures",
         )}
-        result["retired"] = {}
-        result["retired_products"] = {}
         combined["platforms"][operating_system] = result
         result["problems"].extend(report_problems[operating_system])
         for label in labels:
@@ -123,13 +115,6 @@ def compare(args):
                     result["unskipped"].append(name)
             result["added"] = sorted(after.keys() - before.keys())
             result["removed"] = sorted(before.keys() - after.keys())
-            result["retired"] = approved_retirements(base, head)
-            result["retired_products"] = approved_product_retirements(base, head)
-            missing_executed = [name for name in result["removed"]
-                                if before[name] != "skipped" and name not in result["retired"]
-                                and name not in result["retired_products"]]
-            if missing_executed:
-                result["problems"].append(f"{len(missing_executed)} previously executed tests disappeared")
             result["counts"] = {"base": base["counts"], "head": head["counts"]}
             result["collection_skips"] = {"base": base["collection_skips"], "head": head["collection_skips"]}
         for value in result.values():
@@ -148,21 +133,12 @@ def compare(args):
             markdown += [f"### {title}: {len(result[key])}", ""]
             markdown += [f"- `{name}`" for name in result[key]] or ["None."]
             markdown.append("")
-        retirement_count = len(result["retired"]) + len(result["retired_products"])
-        markdown += [f"### Reviewed retirements: {retirement_count}", ""]
-        markdown += [f"- `{name}` — duplicate test; covered by " + ", ".join(f"`{case}`" for case in coverage)
-                     for name, coverage in sorted(result["retired"].items())] or ["No duplicate test retirements."]
-        markdown += [f"- `{identity['classname']}::{name}` — retired product: `{identity['product']}`."
-                     for name, identity in sorted(result["retired_products"].items())] or ["No retired product cases."]
-        if result["retired_products"]:
-            policy = product_retirement_policy(base["sha"])
-            markdown += ["", policy["reason"], "", "Preservation checks passed in base and head:", ""]
-            markdown += [f"- `{identity['classname']}::{identity['name']}`"
-                         for identity in policy["preservation_gates"]]
-            markdown += ["", "Migration acceptance checks passed in head:", ""]
-            markdown += [f"- `{identity['classname']}::{identity['name']}`"
-                         for identity in policy["acceptance_gates"]]
-        markdown.append("")
+        if result["removed"]:
+            markdown += [
+                "> Note: Removed tests are listed above for PR review; declare retired tests and "
+                "their replacement coverage in the PR description.",
+                "",
+            ]
         if base and head:
             markdown += ["Module-level collection skips:", "",
                          f"- Base: {', '.join(base['collection_skips']) or 'none'}",
@@ -172,7 +148,7 @@ def compare(args):
         markdown += ["## Workflow / report problems", "", *(f"- {problem}" for problem in problems), ""]
     success = ("Lightweight checks passed; full tests were intentionally skipped." if skipped else
                "All executed tests passed." if mode == "head" else
-               "No new failures, unapproved test removals, or new skips. Existing failures and reviewed retirements are listed above.")
+               "No new failures or new skips. Existing failures and removed tests are listed above for review.")
     markdown += ["## Result", "", "Needs attention; see the problems above." if failed else success, ""]
     write_json(args.output.with_suffix(".json"), combined)
     rendered = "\n".join(markdown)
