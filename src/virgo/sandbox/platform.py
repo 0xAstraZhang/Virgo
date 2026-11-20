@@ -456,6 +456,8 @@ class NativePolicy:
               stderr=subprocess.STDOUT, env_overrides=None) -> subprocess.Popen:
         if cancellation is not None and cancellation.is_set():
             raise SandboxCancelled("Sandbox launch cancelled")
+        if not argv:
+            raise SandboxUnavailable("Sandbox execution requires a nonempty command argv")
         cwd = self.validate(cwd)
         explicit_env = environment_overrides(env_overrides or {})
         backend, launcher = platform_backend()

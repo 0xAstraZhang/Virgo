@@ -188,8 +188,12 @@ class WindowsProcess:
                 startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
                 command = subprocess.list2cmdline(argv) if isinstance(argv, (list, tuple)) else argv
                 command_buffer = ctypes.create_unicode_buffer(command)
-                environment = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in
-                                                                     sorted(env.items(), key=lambda item: item[0].upper())) + "\0")
+                deduped = {}
+                for key, value in env.items():
+                    deduped[key.upper()] = (key, value)
+                environment = ctypes.create_unicode_buffer(
+                    "\0".join(f"{key}={value}" for _, (key, value) in sorted(deduped.items())) + "\0"
+                )
                 info = ProcessInfo()
                 flags = 0x08000000 | 0x00080000 | 0x00000400  # NO_WINDOW | EXTENDED_STARTUPINFO | UNICODE_ENVIRONMENT
                 if sandbox is not None:

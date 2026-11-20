@@ -6,6 +6,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, call, sentinel
 
+import pytest
+
 from virgo.execution import HostContext, HostProcess, ProcessRequest, cleanup_process
 
 
@@ -105,3 +107,26 @@ def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
         assert not imports, imports
     """)
     subprocess.run([sys.executable, "-c", check, str(tmp_path)], check=True, timeout=15)
+
+
+def test_native_policy_rejects_empty_argv_and_host_overrides_case_colliding_env(tmp_path):
+    from virgo.execution import ExecutionUnavailable
+    from virgo.sandbox.platform import NativePolicy
+
+    policy = NativePolicy(tmp_path, True, False, (), ())
+    with pytest.raises(ExecutionUnavailable, match="nonempty command argv"):
+        policy.spawn([], tmp_path, {}, subprocess.DEVNULL)
+
+    host = HostContext(tmp_path)
+    code = "import os; print(os.environ.get('CUSTOM_OVERRIDE', os.environ.get('custom_override', '')))"
+    env = {**os.environ, "CUSTOM_OVERRIDE": "base"}
+    process = host.run_process(ProcessRequest(
+        (sys.executable, "-c", code), tmp_path, env, env_overrides={"custom_override": "override"},
+    ))
+    try:
+        assert process.wait(timeout=10) == 0
+        expected = b"override" if os.name == "nt" else b"base"
+        assert process.stdout.read().strip() == expected
+    finally:
+        cleanup_process(process)
+        process.stdout.close()

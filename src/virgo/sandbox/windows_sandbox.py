@@ -363,6 +363,8 @@ class WindowsSandbox:
             backend()
             _require_network_isolation()
             self.cwd = validate_policy(policy, cwd)
+            if not argv:
+                raise SandboxUnavailable("Windows sandbox execution requires an explicit native .exe path")
             executable = Path(normalize_path(argv[0]))
             if executable.suffix.lower() != ".exe":
                 raise SandboxUnavailable("Windows sandbox execution requires an explicit native .exe path")
