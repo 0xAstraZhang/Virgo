@@ -68,14 +68,13 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
         deny_rules = _default_deny_rules(workspace, private)
         effective_mode = replace(resolved_mode, policy=resolved_mode.policy.with_rules(*deny_rules))
         approval = "never" if runtime.approval_policy == "never" else self.session.approval_policy
-        spool_home = user_dir if (mode.id == "read-only" or user_dir.is_relative_to(workspace)) else None
         context = SandboxContext(
             workspace,
             effective_mode,
             private,
             self.executor,
             PermissionSnapshot(mode, approval, revision),
-            spool_home=spool_home,
+            outputs=self.session.output_store_for(runtime.accounting_store),
         )
         context.validate(runtime.cwd)
         return context

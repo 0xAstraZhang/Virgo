@@ -109,15 +109,15 @@ MESSAGES = {
     "tools.output.aborted": "{text}\n\n[Command aborted]",
     "tools.output.budget": "{shown}\n"
     "\n"
-    "[Output truncated: showing the {where} {count} of {total} lines. Full output saved "
-    "to {path} — use read with offset/limit or grep to inspect it.]",
+    "[Output truncated: showing the {where} {count} of {total} lines. Full output ID: "
+    "{path}. Use read_output with output_id and byte offset/limit to inspect it.]",
     "tools.output.empty": "(no output)",
     "tools.output.exit": "{text}\n\n[Exit code {code}]",
     "tools.output.first": "first",
     "tools.output.last": "last",
     "tools.output.timeout": "{text}\n\n[Command timed out after {timeout:g}s]",
     "tools.output.truncated": "[Output truncated: showing the tail (limit {max_lines} lines / {max_kb}KB; "
-    "{total} bytes total). Full output: {path}]\n",
+    "{total} bytes total). Full output ID: {path}; use read_output]\n",
     "tools.read.description": "Read a text file (or an image). Returns at most 2000 lines / 50KB per call; use "
     "offset (1-based line number) and limit to page through larger files.",
     "tools.read.label": "Read",

@@ -19,7 +19,7 @@ MAX_TIMEOUT = 3600
 SHELL = os.environ.get("VIRGO_SHELL") or ("bash" if os.name != "nt" else None)
 
 
-def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, execution_context=None, output_path=None, cancellation=None) -> subprocess.Popen:
+def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, execution_context=None, cancellation=None) -> subprocess.Popen:
     from .shell import shell_environment
 
     env = shell_environment()
@@ -39,7 +39,7 @@ def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter=None, 
             raise ValueError("Managed execution requires an explicit interpreter argv")
         from ..execution import ProcessRequest
 
-        request = ProcessRequest(tuple(argv), cwd, env, stdout=stdout, output_path=output_path)
+        request = ProcessRequest(tuple(argv), cwd, env, stdout=stdout)
         return execution_context.run_process(request, cancellation)
     if os.name == "nt":
         from .windows_process import WindowsProcess
@@ -92,17 +92,14 @@ def run_command(
     if signal.is_set():
         return CommandOutput(""), None, "aborted"
     prefix = interpreter.tool_name if interpreter is not None else "bash"
-    path, output_file = open_output(cwd, prefix, **({"execution_context": execution_context} if execution_context else {}))
+    record, output_file = open_output(cwd, prefix, **({"execution_context": execution_context} if execution_context else {}))
     with output_file:
         try:
             proc = spawn(command, cwd, stdout=output_file, interpreter=interpreter,
-                         **({"execution_context": execution_context, "output_path": path, "cancellation": signal} if execution_context else {}))
+                         **({"execution_context": execution_context, "cancellation": signal} if execution_context else {}))
         except BaseException:
-            if execution_context is not None:
-                # Windows intentionally denies delete sharing for the exact
-                # spool handle. Close it before removing a failed launch's log.
-                output_file.close()
-                path.unlink(missing_ok=True)
+            output_file.close()
+            record.unlink(missing_ok=True)
             raise
         deadline = time.monotonic() + timeout
         status = "ok"
@@ -130,7 +127,13 @@ def run_command(
     boundary = getattr(proc, "_virgo_boundary", None)
     if boundary is None and execution_context is not None:
         boundary = {**execution_context.describe(), "payload_started": True, "side_effects": "possible", "cleanup": "process_group_best_effort" if os.name != "nt" else "job_object"}
-    return replace(read_output(path, execution_context=execution_context), boundary=boundary), proc.returncode, status
+    captured = read_output(record, execution_context=execution_context)
+    # S3-09: Normal un-truncated foreground commands must not leak spool files on disk.
+    needs_record = captured.truncated or len(captured.text.rstrip().encode("utf-8", errors="replace")) > MAX_BYTES - 256
+    if not needs_record:
+        record.unlink(missing_ok=True)
+        captured = replace(captured, path=None)
+    return replace(captured, boundary=boundary), proc.returncode, status
 
 
 def format_output(
@@ -152,9 +155,9 @@ def format_output(
         "exit_code": code,
         "status": status,
         "truncated": output.truncated
-        or len((output.text.rstrip() or t("tools.output.empty")).encode("utf-8")) > MAX_BYTES - 256,
+        or len((output.text.rstrip() or t("tools.output.empty")).encode("utf-8", errors="replace")) > MAX_BYTES - 256,
         "output_bytes": output.total_bytes,
-        "output_path": str(output.path) if output.path else None,
+        "output_id": str(output.path) if output.path else None,
     }
     if status == "timeout":
         return ToolResult.error(t("tools.output.timeout", text=text, timeout=timeout), details)

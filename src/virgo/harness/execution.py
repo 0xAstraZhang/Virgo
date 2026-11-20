@@ -8,6 +8,7 @@ from pathlib import Path
 from ..execution import HostContext, SandboxExecutor
 from ..execution_policy import DEFAULT_MODES, HOST_MODE, is_native_windows
 from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
+from ..tools.output import make_read_output_tool
 
 _WINDOWS_EXPERIMENTAL_NOTE = (
     "Experimental native Windows sandbox: requires an Administrator account, "
@@ -82,7 +83,11 @@ class ModeExecutionProvider(HostExecutionProvider):
 
     def _context(self, runtime, mode, revision):
         if mode == HOST_MODE:
-            return HostContext(Path(runtime.accounting_store.cwd).resolve(), executor=self.executor)
+            return HostContext(
+                Path(runtime.accounting_store.cwd).resolve(),
+                executor=self.executor,
+                outputs=self.session.output_store_for(runtime.accounting_store),
+            )
         return self.load_sandbox().context_for_mode(runtime, mode, revision)
 
     def capture_runtime(self, runtime):
@@ -188,5 +193,7 @@ def install_execution(session):
     for tool in (READ, GLOB, GREP, WRITE, EDIT):
         session.replace_tools(f"tool:{tool.name}", [(make_file_tool(tool, provider.for_context), ("main", "subagent"))],
                               owner="core")
+    session.replace_tools("tool:read_output", [(make_read_output_tool(provider.for_context), ("main", "subagent"))],
+                          owner="core")
     session.commands.register("permissions", provider.command, "show execution boundary and resource permissions",
                               source="core", concurrent=True, argument_hint="[show|list|read-only|workspace-edit|no-limit|grants|revoke ID]")

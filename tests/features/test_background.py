@@ -156,8 +156,8 @@ def test_background_output_alias_cannot_read_outside_resource_boundary(broker_se
     protected.write_text('output-resource-canary')
     job.log, stream = session.main.execution_context.open_output(project, 'owned-output')
     stream.close()
-    job.log.unlink()
-    job.log.symlink_to(protected)
+    job.log._path.unlink()
+    job.log._path.symlink_to(protected)
     faux.script('test', faux.reply(tools=[('job_output', {'id': job.id})]), faux.reply('done'))
     session.prompt('Read the owned background output')
     result = tool_results(session)[-1]

@@ -7,7 +7,6 @@ not depend on an isolation backend being installed.
 from __future__ import annotations
 
 import errno
-import hashlib
 import os
 import re
 import signal
@@ -15,7 +14,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -29,6 +27,7 @@ from .execution_policy import (
     PermissionSnapshot,
     is_native_windows,
 )
+from .output_store import OutputStore, private_output_store
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -78,7 +77,6 @@ class ProcessRequest:
     stdout: object = subprocess.PIPE
     stdin: object = subprocess.DEVNULL
     stderr: object = subprocess.STDOUT
-    output_path: Path | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
 
 
@@ -160,6 +158,7 @@ class ExecutionContext(Protocol):
     provider: str
     workspace: Path
     policy: PermissionPolicy
+    outputs: OutputStore
 
     def check_read(self, path: Path) -> None: ...
     def check_write(self, path: Path) -> None: ...
@@ -168,7 +167,6 @@ class ExecutionContext(Protocol):
     def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None,
                    max_files: int | None = None): ...
     def open_output(self, cwd: Path, prefix: str): ...
-    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]: ...
     def run_process(self, request: ProcessRequest, cancellation=None) -> ProcessHandle: ...
     def describe(self) -> dict: ...
 
@@ -287,6 +285,7 @@ class HostContext:
     provider: str = "host"
     executor: SandboxExecutor = field(default_factory=SandboxExecutor, compare=False, repr=False)
     resources: ExecutionMode = HOST_MODE
+    outputs: OutputStore = field(default_factory=private_output_store, compare=False, repr=False)
 
     @property
     def policy(self) -> PermissionPolicy:
@@ -297,8 +296,13 @@ class HostContext:
         return True
 
     @classmethod
-    def unrestricted(cls, workspace: Path, executor: SandboxExecutor | None = None) -> HostContext:
-        return cls(Path(workspace).resolve(), executor=executor or SandboxExecutor())
+    def unrestricted(cls, workspace: Path, executor: SandboxExecutor | None = None,
+                     outputs: OutputStore | None = None) -> HostContext:
+        return cls(
+            Path(workspace).resolve(),
+            executor=executor or SandboxExecutor(),
+            outputs=outputs or private_output_store(),
+        )
 
     def check_read(self, path: Path) -> None:
         pass
@@ -327,15 +331,7 @@ class HostContext:
         return Path(cwd).resolve()
 
     def open_output(self, cwd: Path, prefix: str):
-        from .tools.output import open_output
-
-        return open_output(self.workspace, prefix)
-
-    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
-        with path.open("rb") as stream:
-            total = stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, total - max_bytes))
-            return stream.read(max_bytes), total
+        return self.outputs.create(prefix)
 
     def run_process(self, request: ProcessRequest, cancellation=None):
         return self.executor.run_process(request, cancellation=cancellation)
@@ -355,7 +351,7 @@ class SandboxContext:
     executor: SandboxExecutor = field(compare=False, repr=False)
     permission_snapshot: PermissionSnapshot | None = None
     provider: str = "sandbox"
-    spool_home: Path | None = None
+    outputs: OutputStore = field(default_factory=private_output_store, compare=False, repr=False)
 
     @property
     def policy(self) -> PermissionPolicy:
@@ -381,15 +377,7 @@ class SandboxContext:
     def protected_paths(self) -> tuple[Path, ...]:
         return self.policy.deny_roots("write")
 
-    def _owns_private_output(self, path: Path) -> bool:
-        if self.spool_home is None:
-            return False
-        root, parts = self.spool_location()
-        return path.parent == root.joinpath(*parts) and not path.is_dir()
-
     def check_read(self, path: Path) -> None:
-        if self._owns_private_output(path):
-            return
         from .file_access import check_read
 
         check_read(path, self.policy)
@@ -402,8 +390,7 @@ class SandboxContext:
     def read_bytes(self, path: Path, *, max_bytes: int | None = None) -> bytes | None:
         from .file_access import read_bytes
 
-        effective = HOST_MODE.policy if self._owns_private_output(path) else self.policy
-        return read_bytes(path, effective, max_bytes=max_bytes)
+        return read_bytes(path, self.policy, max_bytes=max_bytes)
 
     def open_mutation(self, path: Path, *, create: bool, max_read_bytes: int | None = None):
         from .file_access import open_mutation
@@ -448,42 +435,9 @@ class SandboxContext:
         self.validate(cwd)
         return self.executor.policy(self).validate(cwd)
 
-    def spool_location(self):
-        if self.spool_home is None:
-            return self.workspace, (".virgo", "outputs")
-        workspace_id = hashlib.sha256(os.fsencode(self.workspace)).hexdigest()
-        return self.spool_home, ("outputs", workspace_id)
-
     def open_output(self, cwd: Path, prefix: str):
         self.validate(cwd)
-        root, parts = self.spool_location()
-        directory = root.joinpath(*parts)
-        try:
-            current = root
-            for part in parts:
-                current = current / part
-                if current.is_symlink() or not current.resolve().is_relative_to(root.resolve()):
-                    raise OSError(errno.ELOOP, "Output directory is a symbolic link", str(current))
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            name = f"{prefix}-{uuid.uuid4().hex}.log"
-            target = directory / name
-            flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                     | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
-            fd = os.open(target, flags, 0o600)
-            return target, os.fdopen(fd, "wb", buffering=0)
-        except OSError as error:
-            raise ExecutionUnavailable(
-                "Protected output location is unavailable",
-                reason="invalid_output", dimension="output_path", target=str(directory),
-            ) from error
-
-    def read_output_tail(self, path: Path, max_bytes: int) -> tuple[bytes, int]:
-        from .file_access import read_bytes
-
-        root, parts = self.spool_location()
-        if path.parent != root.joinpath(*parts):
-            raise FileAccessDenied("Output is outside the originating workspace", target=path)
-        return read_bytes(path, HOST_MODE.policy, max_bytes=max_bytes, tail=True)
+        return self.outputs.create(prefix)
 
     def run_process(self, request: ProcessRequest, cancellation=None):
         self.validate(request.cwd)

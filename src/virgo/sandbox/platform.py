@@ -451,7 +451,7 @@ class NativePolicy:
         args += ["--remount-ro", "/", "--chdir", str(cwd), "--seccomp", str(seccomp_fd), "--"]
         return args
 
-    def _macos(self, launcher: Path, scratch: Path, output_path: Path | None) -> list[str]:
+    def _macos(self, launcher: Path, scratch: Path) -> list[str]:
         def quoted(path):
             # JSON string escaping also prevents policy injection by path spelling.
             return json.dumps(str(path), ensure_ascii=False)
@@ -496,12 +496,10 @@ class NativePolicy:
         ancestors = {parent for path in (*self.protected_paths(), *private) for parent in path.parents}
         for path in sorted(ancestors, key=str):
             lines.append(f"(deny file-write-unlink (literal {quoted(path)}))")
-        if output_path is not None:
-            lines.append(f"(allow file-write-data (literal {quoted(output_path.resolve())}))")
         return [str(launcher), "-p", "\n".join(lines)]
 
     def spawn(self, argv: list[str] | tuple[str, ...], cwd: Path, env: dict[str, str], stdout,
-              output_path: Path | None = None, cancellation=None, *, stdin=subprocess.DEVNULL,
+              cancellation=None, *, stdin=subprocess.DEVNULL,
               stderr=subprocess.STDOUT, env_overrides: dict[str, str] | None = None) -> subprocess.Popen:
         if cancellation is not None and cancellation.is_set():
             raise SandboxCancelled("Sandbox launch cancelled")
@@ -568,7 +566,7 @@ class NativePolicy:
                 inherited = (filter_file.fileno(), *(descriptor for descriptor, _ in pinned),
                              *(descriptor for descriptor, _ in denied_files))
             else:
-                prefix = self._macos(launcher, scratch_path, output_path)
+                prefix = self._macos(launcher, scratch_path)
                 inherited = ()
             extra = {"pass_fds": inherited}
             true = str(_system_file(Path("/usr/bin/true")))

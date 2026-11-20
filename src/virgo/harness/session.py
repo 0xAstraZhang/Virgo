@@ -33,6 +33,7 @@ from ..ai.types import (
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
 from ..execution_policy import is_native_windows
 from ..i18n import Translator, normalize_language
+from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
 from .commands import Commands, expand_template, load_templates, parse_frontmatter, register_builtins
@@ -110,6 +111,7 @@ class AgentSession:
         self._failed_stores: list = []
         self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
         self._main_runtimes: dict[str, Runtime] = {}
+        self._output_stores: dict[str, OutputStore] = {}
         self._pending_child_work: dict[str, tuple[Runtime, int]] = {}
         self._tool_groups: dict[tuple[str, str], tuple[tuple[AgentTool, tuple], ...]] = {}
         self._tool_version = 0
@@ -173,6 +175,7 @@ class AgentSession:
             if context.get("session_id") == self.store.id and context.get("agent") in (None, "main"):
                 self.main.recovery.safely("queue", record)
         self.bus.emit("session_start", self)
+        OutputStore.prune_expired(self.paths.user / "outputs")
         if ResourceRules.purge_legacy(self.paths.user):
             self.ui.print(
                 "Removed legacy saved resource grants (resource-grants.sqlite3); "
@@ -487,6 +490,17 @@ class AgentSession:
                     call_metadata=call_metadata)
         return message
 
+    def output_store_for(self, store) -> OutputStore:
+        """Return the per-session persistent OutputStore for ``store``."""
+        with self._lock:
+            session_id = store.id if store is not None else "ephemeral"
+            existing = self._output_stores.get(session_id)
+            if existing is None:
+                persist = store is not None and store.path is not None
+                existing = OutputStore.for_session(self.paths.user, session_id, persist=persist)
+                self._output_stores[session_id] = existing
+            return existing
+
     def _open_store(self, session) -> SessionStore:
         if session is None:
             return SessionStore(None, self.cwd)
@@ -645,6 +659,11 @@ class AgentSession:
             self._retained_sessions.pop(path, None)
             for store in stores:
                 self._main_runtimes.pop(store.id, None)
+                output_store = self._output_stores.pop(store.id, None)
+                if output_store is not None:
+                    output_store.delete_all()
+                else:
+                    OutputStore.delete_session(self.paths.user, store.id)
             if current:
                 self._activate_store(replacement, runtime=runtime)
 
@@ -1157,6 +1176,15 @@ class AgentSession:
         """Remove only empty stores visited by this process, including abandoned /new sessions."""
         for store in self._visited_stores:
             try:
-                store.discard_if_empty()
+                if store.path is None:
+                    output_store = self._output_stores.pop(store.id, None)
+                    if output_store is not None:
+                        output_store.delete_all()
+                else:
+                    store.discard_if_empty()
+                    if not store.path.exists():
+                        output_store = self._output_stores.pop(store.id, None)
+                        if output_store is not None:
+                            output_store.delete_all()
             except OSError as error:
                 self.report_error(error, phase="session.cleanup", store=store)

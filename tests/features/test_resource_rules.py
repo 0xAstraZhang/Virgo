@@ -92,11 +92,10 @@ def test_read_only_broker_output_leaves_the_project_untouched(broker_session, pr
     session = broker_session(preset="read-only")
     context = session.main.execution_context
     original = list(project.iterdir())
-    path, stream = context.open_output(project, "shell")
+    record, stream = context.open_output(project, "shell")
     with stream:
         stream.write(b"result")
     assert list(project.iterdir()) == original
-    assert path.is_relative_to(session.paths.user)
-    context.check_read(path)
-    assert context.read_bytes(path) == b"result"
-    assert context.read_output_tail(path, 3) == (b"ult", 6)
+    assert record._path.is_relative_to(session.paths.user)
+    data, total, _ = context.outputs.read(record, limit=3, tail=True)
+    assert (data, total) == (b"ult", 6)

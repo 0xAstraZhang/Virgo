@@ -19,7 +19,6 @@ import sys
 import threading
 import time
 import tracemalloc
-from pathlib import Path
 
 import pytest
 
@@ -69,7 +68,8 @@ def test_foreground_spools_before_exit_with_bounded_memory(make_session, engine)
     worker.start()
     try:
         wait_until(lambda: (session.cwd / "ready").exists())
-        logs = list((session.cwd / ".virgo" / "outputs").glob("*.log"))
+        out_dir = session.main.execution_context.outputs.directory
+        logs = list(out_dir.glob("*.log"))
         assert len(logs) == 1, "output must exist on disk while the command is still running"
         assert logs[0].stat().st_size >= size
         assert tracemalloc.get_traced_memory()[1] - baseline < 8 * 1024 * 1024
@@ -80,7 +80,8 @@ def test_foreground_spools_before_exit_with_bounded_memory(make_session, engine)
         assert not result.is_error and "FINAL" in result.text() and "中文尾部" in result.text()
         assert len(result.text().encode()) < MAX_BYTES + 1024
         assert result.details["truncated"] is True
-        assert Path(result.details["output_path"]) == logs[0]
+        record = session.main.execution_context.outputs.lookup(result.details["output_id"])
+        assert record._path == logs[0]
         with logs[0].open("rb") as log:
             assert log.read(6) == b"BEGIN\n"
             log.seek(-6, 2)
@@ -105,21 +106,16 @@ def test_output_bytes_and_tail_are_preserved_on_failure_and_timeout(make_session
         result = invoke(session, command, timeout=3)
         assert result.is_error and result.details["status"] == expected
         assert "中\nTAIL" in result.text()
-        raw = Path(result.details["output_path"]).read_bytes()
-        expected_bytes = b'\xff\xe4\xb8\xad\nTAIL\n'
-        assert raw.startswith(expected_bytes)
-        # Modern PowerShell appends its native-failure diagnostic to merged stderr.
-        if expected == "timeout" or not selected(session).native_errors:
-            assert raw == expected_bytes
+        assert result.details["output_id"] is None  # Short un-truncated output leaves no leftover file.
 
 
 @pytest.mark.parametrize("engine", ENGINES)
 def test_unwritable_output_destination_does_not_start_command(make_session, engine):
     session = make_session()
     session.prompt(f"/shell {engine}")
-    root = session.cwd / ".virgo"
-    root.mkdir(exist_ok=True)
-    (root / "outputs").write_text("not a directory")
+    out_dir = session.main.execution_context.outputs.directory
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    out_dir.write_text("not a directory")
     result = invoke(session, python_command(selected(session), "from pathlib import Path; Path('started').touch()"))
     assert result.is_error and not (session.cwd / "started").exists()
 
@@ -131,7 +127,7 @@ def test_background_output_reader_and_notification_are_bounded(make_session, eng
     invoke(session, python_command(selected(session), "import sys; sys.stdout.write('x'*32000000+'\\nFINAL\\n')"), background=True)
     job = next(iter(session.services["jobs"].jobs.values()))
     wait_until(lambda: job.reported)
-    assert job.status == "completed" and job.log.stat().st_size > 32000000
+    assert job.status == "completed" and job.log._path.stat().st_size > 32000000
     gc.collect()
     tracemalloc.start()
     try:
@@ -237,5 +233,5 @@ def test_two_sessions_keep_separate_background_logs(make_session, engine):
     b = second.services["jobs"].start_command(python_command(selected(second), "print('second session')"), second.cwd)
     wait_until(lambda: a.reported and b.reported)
     assert a.log != b.log
-    assert a.log.read_text().strip() == "first session"
-    assert b.log.read_text().strip() == "second session"
+    assert a.log._path.read_text().strip() == "first session"
+    assert b.log._path.read_text().strip() == "second session"

@@ -1230,7 +1230,7 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
     )
     monkeypatch.setattr(
         sandbox.NativePolicy, "_macos",
-        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)],
+        lambda _self, executable, _scratch: [str(executable), str(launcher)],
     )
     session = make_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
@@ -1271,7 +1271,7 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     monkeypatch.setattr(sandbox, "_system_file",
                         lambda path: path if path == Path("/usr/bin/true") else system_file(path))
     monkeypatch.setattr(sandbox.NativePolicy, "_macos",
-                        lambda _self, executable, _scratch, _output: [str(executable), str(launcher)])
+                        lambda _self, executable, _scratch: [str(executable), str(launcher)])
     delayed = False
 
     def lose_ack(*_args):
