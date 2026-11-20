@@ -42,7 +42,15 @@ jobs:
             uv.lock
       - name: Install Linux shell dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh curl
+        shell: bash
+        run: |
+          missing=()
+          command -v zsh >/dev/null 2>&1 || missing+=(zsh)
+          command -v curl >/dev/null 2>&1 || missing+=(curl)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
       - run: uv sync --locked --dev
       - name: Record environment
         run: uv run --no-sync python -c "import platform, shutil, sys; print(sys.version); print(platform.platform()); print({s:shutil.which(s) for s in ('bash','zsh','pwsh','powershell','curl')})"

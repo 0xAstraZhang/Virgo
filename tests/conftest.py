@@ -9,10 +9,16 @@ from pathlib import Path
 import pytest
 
 from virgo.ai.providers import faux
+from virgo.harness import shell_commands as _shell_commands
 from virgo.harness.session import AgentSession
+from virgo.tools import shell as _shell_tools
 
 from tests.support.harness import RecordingUI
 from tests.support.terminal import HAS_PTY
+
+_ORIG_DISCOVER_SHELLS = _shell_tools.discover_shells
+_ORIG_PROBE_SHELL = _shell_tools.probe_shell
+_SHELL_CATALOG_CACHE: dict[tuple[str, bool], tuple[_shell_tools.Shell, ...]] = {}
 
 
 def pytest_collection_modifyitems(config, items):
@@ -82,17 +88,64 @@ def make_session(project):
                 marker = Path(home) / "migrations" / "windows-wsl2-hint"
                 marker.parent.mkdir(parents=True, exist_ok=True)
                 marker.touch(exist_ok=True)
-        s = AgentSession(
-            kw.pop("cwd", project),
-            ui=ui or RecordingUI(),
-            model="faux/test",
-            session=kw.pop("session", "new" if persist else None),
-            approval_policy=approval,
-            settings=configured,
-            # These local fixtures create their own extension files deliberately.
-            trust_project_extensions=kw.pop("trust_project_extensions", True),
-            **kw,
+        cwd = kw.pop("cwd", project)
+        home_override = kw.get("home")
+        user_dir = Path(home_override) if home_override else Path(os.environ["VIRGO_HOME"])
+        shell_cfg = configured.get("shell")
+        exec_cfg = configured.get("execution")
+        exec_mode = exec_cfg.get("mode") if isinstance(exec_cfg, dict) else None
+        if shell_cfg is None:
+            configured_shell = "auto"
+        elif isinstance(shell_cfg, dict):
+            configured_shell = shell_cfg.get("executable", "auto")
+        else:
+            configured_shell = None
+        choice = os.environ.get("VIRGO_SHELL") or configured_shell
+        can_reuse_shells = (
+            "shell_catalog" not in kw
+            and choice == "auto"
+            and exec_mode in {"no-limit", "read-only", "workspace-edit"}
+            and "sandbox" not in configured
+            and "permissions" not in configured
+            and not (user_dir / "settings.json").exists()
+            and not (Path(cwd) / ".virgo" / "settings.json").exists()
+            and _shell_commands.discover_shells is _ORIG_DISCOVER_SHELLS
+            and _shell_commands.probe_shell is _ORIG_PROBE_SHELL
+            and _shell_tools.discover_shells is _ORIG_DISCOVER_SHELLS
+            and _shell_tools.probe_shell is _ORIG_PROBE_SHELL
         )
+        orig_probe = _shell_commands.probe_shell
+        if can_reuse_shells:
+            execute = exec_mode == "no-limit"
+            cache_key = (os.environ.get("PATH", ""), execute)
+            catalog = _SHELL_CATALOG_CACHE.get(cache_key)
+            if catalog is None:
+                catalog = tuple(_ORIG_DISCOVER_SHELLS(execute=execute))
+                _SHELL_CATALOG_CACHE[cache_key] = catalog
+            kw["shell_catalog"] = catalog
+            by_exec = {sh.executable: sh for sh in catalog}
+
+            def _fast_probe(value: str, *, t=None, execute: bool = True):
+                if execute == cache_key[1] and value in by_exec:
+                    return by_exec[value]
+                return orig_probe(value, t=t, execute=execute)
+
+            _shell_commands.probe_shell = _fast_probe
+        try:
+            s = AgentSession(
+                cwd,
+                ui=ui or RecordingUI(),
+                model="faux/test",
+                session=kw.pop("session", "new" if persist else None),
+                approval_policy=approval,
+                settings=configured,
+                # These local fixtures create their own extension files deliberately.
+                trust_project_extensions=kw.pop("trust_project_extensions", True),
+                **kw,
+            )
+        finally:
+            if can_reuse_shells:
+                _shell_commands.probe_shell = orig_probe
         made.append(s)
         return s
 
