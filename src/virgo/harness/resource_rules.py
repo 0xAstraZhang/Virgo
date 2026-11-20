@@ -13,9 +13,21 @@ GRANTS_FILENAME = "permission-grants.sqlite3"
 
 def operation_id(event):
     shell = getattr(event.tool, "shell", None)
-    return json.dumps({
+    fingerprint = getattr(event.tool, "config_fingerprint", None)
+    data = {
         "tool": event.tool_name, "arguments": event.args,
         "shell": [shell.kind, shell.executable, shell.version] if shell else None,
+    }
+    if fingerprint is not None:
+        data["config_fingerprint"] = fingerprint
+    return json.dumps(data, sort_keys=True, ensure_ascii=False)
+
+
+def external_operation_id(event) -> str:
+    """Bind persistent 'Always allow' for an MCP/external tool to its server config fingerprint (S4-02)."""
+    return json.dumps({
+        "tool": event.tool_name,
+        "config_fingerprint": getattr(event.tool, "config_fingerprint", None),
     }, sort_keys=True, ensure_ascii=False)
 
 
@@ -75,6 +87,10 @@ class ResourceRules:
                 if target == "true":
                     matched.append((kind, "true"))
                 continue
+            if kind == "external_tool":
+                if target:
+                    matched.append((kind, target))
+                continue
             path = Path(target)
             if path.resolve() == path and path.is_dir() == bool(directory):
                 matched.append((kind, target))
@@ -87,7 +103,7 @@ class ResourceRules:
                 ON CONFLICT(project, mode, cwd, operation, resource, target)
                 DO UPDATE SET directory=excluded.directory""", (
                 (*scope, kind, "true" if kind == "network_allowed" else target,
-                 int(kind != "network_allowed" and Path(target).is_dir()))
+                 int(kind not in {"network_allowed", "external_tool"} and Path(target).is_dir()))
                 for kind, target in resources
             ))
 

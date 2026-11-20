@@ -15,7 +15,7 @@ from ..execution import ExecutionContext, ExecutionUnavailable, FileAccessDenied
 from ..execution_policy import PathRule, lexical_path, parse_network
 from ..file_access import resolve_read_path, resolve_write_path
 from .origin_context import origin_key, source_for
-from .resource_rules import ResourceRules, operation_id
+from .resource_rules import ResourceRules, external_operation_id, operation_id
 from .ui import UI
 
 
@@ -192,24 +192,59 @@ class ResourceApprovals:
                 and event.signal is not None and not event.signal.is_set()
                 and self._confirm_callable() is not None)
 
+    def _external_scope(self, event, base):
+        return (str(base.workspace), base.permission_snapshot.mode.id,
+                str(event.cwd.resolve()), external_operation_id(event))
+
+    def _external_saved_match(self, event, base) -> bool:
+        fingerprint = getattr(event.tool, "config_fingerprint", None)
+        if not fingerprint:
+            return False
+        if base.permission_snapshot.approval == "never" or self.session.approval_policy == "never":
+            return False
+        rules = ResourceRules(self.session.paths.user)
+        if not rules.path.exists():
+            return False
+        return ("external_tool", fingerprint) in rules.match(self._external_scope(event, base))
+
     def _confirm_external(self, event, base, block):
+        fingerprint = getattr(event.tool, "config_fingerprint", None)
+        if fingerprint and self._external_saved_match(event, base):
+            return None
         if not self._external_admitted(event, base):
             return block
         question = (f"External tool: {event.tool_name}\n"
                     f"Arguments: {json.dumps(event.args, ensure_ascii=False)}\n"
                     "This trusted extension runs outside the native sandbox and may modify host state."
                     + self.session.t("features.permission.external_suffix"))
-        answer = self._confirm_callable()(question, event.agent)
-        if answer != "y":
-            return self._denial(base, "External tool operation was not approved",
-                                "unmanaged_tool", event.tool_name)
-        return None
+        if fingerprint:
+            confirm = getattr(self.session.ui, "confirm", None)
+            if callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm:
+                answer = confirm(question, event.agent)
+            else:
+                answer = self._confirm_callable()(question, event.agent)
+            if answer == "a":
+                ResourceRules(self.session.paths.user).allow(
+                    self._external_scope(event, base),
+                    (("external_tool", fingerprint),),
+                )
+                return None
+            if answer == "y":
+                return None
+        else:
+            answer = self._confirm_callable()(question, event.agent)
+            if answer == "y":
+                return None
+        return self._denial(base, "External tool operation was not approved",
+                            "unmanaged_tool", event.tool_name)
 
     def _admit(self, event, *, consume):
         base = super().for_context(event)
         if self._external_write(event):
             block = self._check(event, base)
             if block is None:
+                return None
+            if self._external_saved_match(event, base):
                 return None
             if not consume:
                 return None if self._external_admitted(event, base) else block
