@@ -26,6 +26,7 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
     def context_for_mode(self, runtime, mode, revision):
         workspace = Path(runtime.accounting_store.cwd).resolve()
         approval = "never" if runtime.approval_policy == "never" else self.session.approval_policy
+        self.session.paths.user.mkdir(mode=0o700, parents=True, exist_ok=True)
         policy = SandboxPolicy(workspace, mode.resolve(workspace),
                                (self.session.paths.user.resolve(),),
                                self.executor, PermissionSnapshot(mode, approval, revision),

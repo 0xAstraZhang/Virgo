@@ -93,12 +93,16 @@ def test_workspace_spool_stays_readable_inside_private_storage(project):
     spool.mkdir(parents=True)
     log = spool / "bash-1.log"
     log.write_text("full-output")
+    subdir = spool / "nested"
+    subdir.mkdir()
     (private / "auth.json").write_text("token")
     policy = file_policy(project, write_paths=(project,), private_paths=(private,))
     read = make_file_tool(READ, lambda _ctx: policy)
     assert "full-output" in read.execute({"path": str(log)}, ctx(project)).as_text()
     denied = read.execute({"path": str(private / "auth.json")}, ctx(project))
     assert denied.is_error and denied.details["boundary"]["dimension"] == "protected_path"
+    denied_dir = read.execute({"path": str(subdir)}, ctx(project))
+    assert denied_dir.is_error and denied_dir.details["boundary"]["dimension"] == "protected_path"
 
 
 def test_write_creates_parents(project):

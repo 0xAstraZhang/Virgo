@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from virgo.ai.providers import faux
-from virgo.execution import FileAccessDenied
+from virgo.execution import ExecutionUnavailable, FileAccessDenied
 from virgo.harness.session import AgentSession
 
 from tests.support.harness import RecordingUI, calls, tool_results
@@ -360,3 +360,11 @@ def test_workspace_may_contain_the_private_state_directory(broker_session, tmp_p
     assert contract.read_bytes(tmp_path / "notes.txt") == b"visible"
     with pytest.raises(FileAccessDenied):
         contract.read_bytes(home / "secret.txt")
+    root, parts = contract.spool_location()
+    nested = root.joinpath(*parts, "subdir")
+    nested.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(ExecutionUnavailable):
+        contract.validate(home)
+    if nested.is_relative_to(home):
+        with pytest.raises(ExecutionUnavailable):
+            contract.validate(nested)

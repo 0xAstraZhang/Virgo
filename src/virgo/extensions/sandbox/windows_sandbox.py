@@ -9,6 +9,7 @@ Only the existing WindowsProcess adapter launches and supervises processes.
 from __future__ import annotations
 
 import ctypes
+import os
 import struct
 import sys
 import uuid
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .platform import SandboxCancelled, SandboxProcessError, SandboxUnavailable
-from .windows_files import normalize_path, open_path
+from .windows_files import FILE_ATTRIBUTE_DIRECTORY, normalize_path, open_path
 
 HANDLE = ctypes.c_void_p
 PSID = ctypes.c_void_p
@@ -321,9 +322,16 @@ def validate_policy(policy, cwd):
     cwd = Path(normalize_path(cwd))
     if not cwd.is_relative_to(workspace):
         raise SandboxUnavailable("Command cwd is outside the originating sandbox workspace")
+    private = tuple(dict.fromkeys(Path(normalize_path(path)) for path in policy.private_paths))
+    if any(cwd.is_relative_to(root) for root in private):
+        raise SandboxUnavailable("Command cwd is inside private Virgo storage", reason="protected_path")
     for path in (workspace, cwd):
         with open_path(path, 0x1, directory=True):
             pass
+    for path in private:
+        if path.is_relative_to(workspace):
+            with open_path(path, 0x1, directory=True):
+                pass
     roots = (SYSTEM_DIRECTORY.parent, Path(sys.base_prefix).absolute())
     if any(path.is_relative_to(workspace) for path in roots):
         raise SandboxUnavailable("Workspace must not contain Windows or the base interpreter installation")
@@ -356,6 +364,7 @@ class WindowsSandbox:
         self._desktop = None
         self.desktop = None
         self._pins = ExitStack()
+        self._private_handles: list[tuple[Path, object]] = []
         self._closed = False
         self._check_cancelled()
         try:
@@ -419,7 +428,8 @@ class WindowsSandbox:
             runtime_roots = tuple(dict.fromkeys((
                 *policy.runtime_paths(), executable.parent,
             )))
-            protected = tuple(dict.fromkeys((*policy.protected_paths(), *runtime_roots)))
+            private = tuple(dict.fromkeys(Path(normalize_path(path)) for path in policy.private_paths))
+            protected = tuple(dict.fromkeys((*policy.protected_paths(), *runtime_roots, *private)))
             # Core commits use this same mutex. Keep workspace path
             # classification and retained-object grants together, so a staged
             # inode cannot move out of .virgo between preflight and its update.
@@ -427,10 +437,13 @@ class WindowsSandbox:
             with self._grants._locked():
                 roots = ((policy.workspace, not policy.read_only), *policy.grants)
                 for root, writable in roots:
-                    excluded = (*runtime_roots, *(p for p, _ in roots if p != root and p.is_relative_to(root)))
+                    excluded = (*runtime_roots, *private, *(p for p, _ in roots if p != root and p.is_relative_to(root)))
                     self._grants.grant_tree(root, writable, protected, reject_hardlinks=True, excluded=excluded)
+                for root in private:
+                    if any(root.is_relative_to(base) for base, _ in roots):
+                        self._pin_private_tree(root)
             for root in runtime_roots:
-                self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True)
+                self._grants.grant_tree(root, False, reject_hardlinks=False, skip_reparse=True, excluded=private)
             self._grants.grant_tree(self.profile_path, True, reject_hardlinks=True)
             self._grants.validate_hardlinks()
             self._prepare_desktop()
@@ -640,6 +653,49 @@ class WindowsSandbox:
         # SECURITY_CAPABILITIES; ALL_APPLICATION_PACKAGES_POLICY with OPT_OUT.
         return [(0x20009, capabilities), (0x2000F, DWORD(1))]
 
+    def _pin_private_tree(self, root: Path):
+        pending = [root]
+        while pending:
+            self._check_cancelled()
+            path = pending.pop()
+            handle = self._pins.enter_context(
+                open_path(path, 0x20000, share_delete=path != root)
+            )
+            self._private_handles.append((path, handle))
+            if handle.info.attributes & FILE_ATTRIBUTE_DIRECTORY:
+                with os.scandir(path) as entries:
+                    pending.extend(Path(entry.path) for entry in entries)
+
+    def _verify_private_paths(self, token):
+        if not self._private_handles:
+            return
+        from .windows_acl import GetSecurity
+
+        duplicate = HANDLE()
+        _check(DuplicateToken(token, 2, ctypes.byref(duplicate)))  # SecurityImpersonation
+        try:
+            mapping = GenericMapping(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
+            for path, handle in self._private_handles:
+                size = DWORD()
+                GetSecurity(handle.value, 0x17, None, 0, ctypes.byref(size))
+                if not size.value:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                security = ctypes.create_string_buffer(size.value)
+                _check(GetSecurity(handle.value, 0x17, security, len(security), ctypes.byref(size)))
+                for desired in (0x1, 0x2):
+                    privileges = ctypes.create_string_buffer(256)
+                    priv_size, granted, permitted = DWORD(len(privileges)), DWORD(), BOOL()
+                    _check(AccessCheck(security, duplicate, desired, ctypes.byref(mapping),
+                                       privileges, ctypes.byref(priv_size), ctypes.byref(granted),
+                                       ctypes.byref(permitted)))
+                    if permitted.value or granted.value:
+                        raise SandboxUnavailable(
+                            f"Windows LPAC cannot protect private Virgo storage: {path}",
+                            reason="protected_path", target=path,
+                        )
+        finally:
+            CloseHandle(duplicate)
+
     def verify_process(self, process):
         token = HANDLE()
         _check(OpenProcessToken(process, 0xA, ctypes.byref(token)))  # QUERY | DUPLICATE
@@ -656,6 +712,7 @@ class WindowsSandbox:
             expected = {_sid_bytes(value) for value in self._capability_buffers}
             if _token_sids(token, 30) != expected:  # TokenCapabilities
                 raise SandboxUnavailable("Windows returned unexpected sandbox capabilities")
+            self._verify_private_paths(token)
         finally:
             CloseHandle(token)
 
@@ -688,6 +745,7 @@ class WindowsSandbox:
             self._grants.cleanup()
             self._grants = None
         self._pins.close()
+        self._private_handles.clear()
         if self.token is not None:
             _check(CloseHandle(self.token))
             self.token = None

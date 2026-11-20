@@ -58,10 +58,13 @@ class SandboxPolicy:
 
     def _owns_private_output(self, path):
         # The spool can sit inside private storage when the workspace contains
-        # the state directory. Ownership is the exact spool directory, so the
-        # read grant covers only the output files the broker created there.
+        # the state directory. Ownership covers only regular output files
+        # directly inside the exact spool directory, never subdirectories or
+        # unresolved parent references.
+        if path.name in {"", ".", ".."}:
+            return False
         root, parts = self.spool_location()
-        return path.parent == root.joinpath(*parts)
+        return path.parent == root.joinpath(*parts) and not path.is_dir()
 
     def check_read(self, path: Path):
         from .files import check_read
@@ -86,6 +89,9 @@ class SandboxPolicy:
 
     def validate(self, cwd: Path) -> Path:
         cwd = Path(cwd).resolve()
+        if self.private_path(cwd):
+            raise ExecutionUnavailable(f"Working directory is inside private Virgo storage: {cwd}",
+                                       reason="invalid_cwd", dimension="protected_path", target=cwd)
         try:
             self.check_read(cwd)
         except FileAccessDenied as error:

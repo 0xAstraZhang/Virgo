@@ -1354,3 +1354,46 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     assert marker.read_text() == "once"
     assert result.is_error and result.details.get("status") == "execution_failed", result.text()
     assert result.details["boundary"]["side_effects"] == "possible"
+
+
+def test_native_workspace_containing_private_state_keeps_secrets_hidden(native, make_session, tmp_path):
+    """A workspace enclosing VIRGO_HOME must deny reading, writing, and relocating private storage."""
+    workspace = (tmp_path / "enclosing").resolve()
+    nested = workspace / "nested"
+    private = nested / "state"
+    private.mkdir(parents=True)
+    secret = private / "auth.json"
+    secret.write_text("broker-secret")
+    visible = workspace / "notes.txt"
+    visible.write_text("workspace-visible")
+    session = make_session(
+        cwd=workspace,
+        home=private,
+        settings={"execution": {"mode": "workspace-edit"}},
+        refresh_models=False,
+        extensions=False,
+    )
+    source = f"""import json
+from pathlib import Path
+secret = Path({str(secret)!r})
+nested = Path({str(nested)!r})
+denied = []
+for op in (secret.read_text, lambda: secret.write_text('bad'),
+           lambda: nested.rename(nested.with_name('relocated'))):
+    try:
+        op()
+    except OSError:
+        denied.append(True)
+    else:
+        denied.append(False)
+out = Path({str(workspace / 'written.txt')!r})
+out.write_text('allowed')
+print(json.dumps({{'denied': denied, 'visible': Path({str(visible)!r}).read_text(), 'out': out.read_text()}}))
+"""
+    result = run(session, python_command(session, source))
+    assert not result.is_error, result.text()
+    assert json.loads(result.text().strip().splitlines()[-1]) == {
+        "denied": [True, True, True], "visible": "workspace-visible", "out": "allowed",
+    }
+    assert secret.read_text() == "broker-secret"
+    assert nested.is_dir() and not (workspace / "relocated").exists()

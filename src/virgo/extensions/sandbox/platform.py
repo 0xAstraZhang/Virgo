@@ -300,7 +300,7 @@ class NativePolicy:
                 roots = tuple(path for path, writable in self.grants if writable)
                 if not self.read_only:
                     roots = (self.workspace, *roots)
-                external = external_writable_links(roots, protected)
+                external = external_writable_links(roots, (*protected, *self.private_paths))
                 if external:
                     path = next(iter(external.values()))
                     raise SandboxUnavailable(
@@ -382,6 +382,32 @@ class NativePolicy:
                  str(self.workspace), str(self.workspace)]
         for path, writable in self.grants:
             args += ["--bind" if writable else "--ro-bind", str(path), str(path)]
+        read_roots = (*self._read_roots(), self.workspace, *(grant for grant, _ in self.grants))
+        exposed_private = []
+        for path in sorted(dict.fromkeys(self.private_paths), key=lambda item: (len(item.parts), str(item))):
+            if any(path.is_relative_to(done) for done in exposed_private):
+                continue
+            if any(root.is_relative_to(path) for root in self._read_roots()):
+                raise SandboxUnavailable(f"Private Virgo storage conflicts with a required runtime root: {path}")
+            exposed = not self.workspace_only or any(path.is_relative_to(root) for root in read_roots)
+            if not exposed:
+                continue
+            if not path.exists() or not path.is_dir() or path.is_symlink():
+                raise SandboxUnavailable(f"Private Virgo storage must be an existing directory: {path}")
+            exposed_private.append(path)
+        writable_roots = tuple(path for path, writable in self.grants if writable)
+        if not self.read_only:
+            writable_roots = (self.workspace, *writable_roots)
+        ancestors = sorted(
+            {
+                parent for path in exposed_private for parent in path.parents
+                if any(parent.is_relative_to(root) and parent != root for root in writable_roots)
+                and not self.private_path(parent)
+            },
+            key=lambda item: (len(item.parts), str(item)),
+        )
+        for parent in ancestors:
+            args += ["--bind", str(parent), str(parent)]
         # Apply nested interpreter protection after the workspace bind so it
         # cannot be hidden by that broader writable mount. Callers can pin the
         # sources by descriptor to prevent replacement between check and mount.
@@ -391,13 +417,8 @@ class NativePolicy:
             # bwrap verifies the mounted inode against this descriptor and
             # closes it before exec; a /proc/self/fd path alone is insufficient.
             args += ["--ro-bind-fd", str(descriptor), str(target)]
-        for path in self.private_paths:
-            exposed = not self.workspace_only or any(path.is_relative_to(root)
-                                                    for root in (*self._read_roots(), self.workspace))
-            if exposed and path.exists():
-                if not path.is_dir() or path.is_symlink():
-                    raise SandboxUnavailable(f"Private Virgo storage must be a directory: {path}")
-                args += ["--tmpfs", str(path), "--remount-ro", str(path)]
+        for path in exposed_private:
+            args += ["--perms", "000", "--tmpfs", str(path), "--remount-ro", str(path)]
         # Bubblewrap creates mount-point parents in its empty root and /tmp.
         # Keep those synthetic directories read-only, even when the project
         # lives below /tmp. Only the explicit writable mounts and private
@@ -444,8 +465,12 @@ class NativePolicy:
             lines.append('(allow file-read* (literal "/private/var/run/resolv.conf"))')
         from .macos_process import control_root
 
-        for path in (*self.private_paths, control_root()):
+        private = (*self.private_paths, control_root())
+        for path in private:
             lines.append(f"(deny file-read* file-write* (subpath {quoted(path)}))")
+        ancestors = {parent for path in private for parent in path.parents}
+        for path in sorted(ancestors, key=str):
+            lines.append(f"(deny file-write-unlink (literal {quoted(path)}))")
         if output_path is not None:
             # The broker owns this exact spool file; do not open the output directory.
             lines.append(f"(allow file-write-data (literal {quoted(output_path.resolve())}))")
