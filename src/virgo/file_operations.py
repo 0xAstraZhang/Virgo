@@ -208,11 +208,11 @@ class FileOperations:
                 self._condition.wait(remaining)
             if self._retained:
                 raise ExecutionFailed("Filesystem worker cleanup was incomplete; retained its trusted runtime")
-        if self.directory.exists():
-            self.directory.chmod(0o700)
-            for file in self.directory.iterdir():
-                file.chmod(0o600)
-            shutil.rmtree(self.directory)
+            if self.directory.exists():
+                self.directory.chmod(0o700)
+                for file in self.directory.iterdir():
+                    file.chmod(0o600)
+                shutil.rmtree(self.directory)
 
     def run(self, executor, operation, arguments, cwd, policy, cancellation):
         from .execution import ExecutionCancelled, ExecutionUnavailable

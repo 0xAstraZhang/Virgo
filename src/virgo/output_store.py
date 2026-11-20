@@ -38,7 +38,12 @@ class OutputPipe:
             while chunk := source.read(64 * 1024):
                 if self._error is None:
                     try:
-                        target.write(chunk)
+                        pending = memoryview(chunk)
+                        while pending:
+                            written = target.write(pending)
+                            if not written:
+                                raise OSError("Output capture target stopped accepting bytes")
+                            pending = pending[written:]
                     except OSError as error:
                         # Continue draining so the child cannot block forever
                         # after a disk error. Report the failed capture at close.
@@ -81,7 +86,11 @@ class OutputStore:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         identifier = "out_" + secrets.token_hex(24)
         path = self.directory / (identifier + ".log")
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
         record = OutputRecord(identifier, self, path)
         self._records[identifier] = record
         try:

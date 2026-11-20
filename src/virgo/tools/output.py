@@ -135,9 +135,12 @@ def make_read_output_tool(resolve_context):
         access = resolve_context(context)
         try:
             record = access.outputs.lookup(arguments["output_id"])
-            limit = min(MAX_BYTES, max(1, int(arguments.get("limit", MAX_BYTES))))
-            data, total, start = access.outputs.read(record, offset=arguments.get("offset", 0), limit=limit)
-        except (FileAccessDenied, OSError, ValueError) as error:
+            raw_limit = arguments.get("limit")
+            raw_offset = arguments.get("offset")
+            limit = min(MAX_BYTES, max(1, MAX_BYTES if raw_limit is None else int(raw_limit)))
+            offset = 0 if raw_offset is None else int(raw_offset)
+            data, total, start = access.outputs.read(record, offset=offset, limit=limit)
+        except (FileAccessDenied, OSError, ValueError, TypeError) as error:
             return ToolResult.error(str(error))
         end = start + len(data)
         return ToolResult.text(data.decode("utf-8", errors="replace"), details={

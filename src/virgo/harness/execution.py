@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import weakref
 from dataclasses import replace
 from pathlib import Path
 
@@ -32,7 +33,7 @@ class ModeExecutionProvider(HostExecutionProvider):
         super().__init__(session)
         self.startup_mode = session.settings.get("execution.mode")
         self.executor = SandboxExecutor()
-        self._outputs = {}
+        self._outputs: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
         session.register_cleanup("core.execution", self.executor.close)
         self.sandbox = None
         self.resource_tool = None
@@ -79,12 +80,13 @@ class ModeExecutionProvider(HostExecutionProvider):
     def _context(self, runtime, mode, revision):
         from ..output_store import OutputStore
 
-        key = id(runtime.accounting_store)
-        if key not in self._outputs:
+        store = runtime.accounting_store
+        outputs = self._outputs.get(store)
+        if outputs is None:
             import secrets
 
-            self._outputs[key] = OutputStore(self.session.paths.user / "outputs" / secrets.token_hex(16))
-        outputs = self._outputs[key]
+            outputs = OutputStore(self.session.paths.user / "outputs" / secrets.token_hex(16))
+            self._outputs[store] = outputs
         if mode == HOST_MODE:
             return HostContext(Path(runtime.accounting_store.cwd).resolve(), executor=self.executor, outputs=outputs)
         return replace(self.load_sandbox().context_for_mode(runtime, mode, revision), outputs=outputs)

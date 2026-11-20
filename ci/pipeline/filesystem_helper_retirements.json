@@ -1,5 +1,5 @@
 {
-  "baseline_sha": "a03b305ae55a6d220ada2f1b53affef237ba59ef",
+  "baseline_sha": "9546982ade3dc0550741f76bb3c3258571034f8d",
   "reason": "Filesystem mutations moved out of the Broker into isolated helper processes. The retired cases used Python frame tracing to race a Broker implementation that no longer runs. Real helper acceptance replaces those implementation-specific checks; native hardlink and replacement cases remain required separately.",
   "preservation_gates": [
     {"classname": "tests.tools.test_fs", "name": "test_edit_unique_multi_and_errors"},

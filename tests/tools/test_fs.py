@@ -225,3 +225,61 @@ def test_glob_patterns_respect_path_segments(project):
     assert searched("src/**/*.py") == nested
     assert searched("src/*.py") == {"src/top.py"}
     assert searched("*.md") == {"src/pkg/notes.md"}
+
+
+def test_fs_worker_tilde_double_slash_and_symlink_loop_and_ebusy(project, monkeypatch):
+    import errno
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from virgo import fs_worker
+    from virgo.file_operations import FileOperations
+
+    home = project / "fake-home"
+    home.mkdir()
+    assert fs_worker.resolve("~//nested/file.txt", project, str(home)) == (home / "nested" / "file.txt").resolve()
+
+    if os.name == "posix":
+        loop_a, loop_b = project / "loop-a", project / "loop-b"
+        loop_a.symlink_to(loop_b)
+        loop_b.symlink_to(loop_a)
+        res = READ.execute({"path": str(loop_a)}, ctx(project))
+        assert res.is_error and res.details["status"] == "file_operation_failed"
+
+        target = project / "protected.txt"
+        target.write_text("original")
+
+        def busy(*_args, **_kwargs):
+            raise OSError(errno.EBUSY, "Device or resource busy")
+
+        monkeypatch.setattr(os, "replace", busy)
+        with pytest.raises(PermissionError):
+            with fs_worker._mutation(target, create=True) as (stream, _, commit):
+                stream.write(b"changed")
+                commit()
+        assert target.read_text() == "original"
+
+    files = FileOperations()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(files.close) for _ in range(4)]
+        for future in futures:
+            future.result()
+    assert not files.directory.exists()
+
+
+def test_read_output_handles_none_and_invalid_bounds(make_session, project):
+    from virgo.agent import ToolContext
+
+    session = make_session()
+    tool = session.tool("read_output")
+    record, stream = session.main.execution_context.outputs.create("test")
+    with stream:
+        stream.write(b"abcdef")
+    context = ToolContext("read-out", project, threading.Event(), origin=session.main.origin)
+    result = tool.execute({"output_id": record.id, "offset": None, "limit": None}, context)
+    assert not result.is_error and result.as_text() == "abcdef"
+    invalid = tool.execute({"output_id": record.id, "offset": "bad"}, context)
+    assert invalid.is_error
+    first_store = session.main.execution_context.outputs
+    session.new_session()
+    assert session.main.execution_context.outputs is not first_store

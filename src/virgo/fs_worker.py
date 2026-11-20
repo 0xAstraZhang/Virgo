@@ -88,7 +88,7 @@ def resolve(path, cwd, home, *, follow_symlinks=True):
     if not isinstance(path, str) or not path or "\0" in path:
         raise ValueError("File path must be a nonempty string without NUL")
     if path == "~" or path.startswith(("~/", "~\\")):
-        path = str(Path(home) / path[2:]) if len(path) > 1 else home
+        path = str(Path(home) / path[2:].lstrip("/\\")) if len(path) > 1 else home
     elif path.startswith("~"):
         path = os.path.expanduser(path)
     target = Path(path)
@@ -98,7 +98,11 @@ def resolve(path, cwd, home, *, follow_symlinks=True):
         # Retained native opens below reject filesystem reparses themselves.
         return Path(_windows().normalize_path(target))
     if follow_symlinks:
-        target = target.resolve()
+        try:
+            target = target.resolve()
+        except RuntimeError as error:
+            # Python 3.11/3.12 raise RuntimeError on symlink loops; 3.13 raises OSError(ELOOP).
+            raise OSError(errno.ELOOP, str(error), str(target)) from error
     else:
         target = Path(os.path.abspath(target))
     return target
@@ -253,7 +257,13 @@ def _mutation(path, *, create):
                         os.link(name, path.name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
                         os.unlink(name, dir_fd=parent)
                     else:
-                        os.replace(name, path.name, src_dir_fd=parent, dst_dir_fd=parent)
+                        try:
+                            os.replace(name, path.name, src_dir_fd=parent, dst_dir_fd=parent)
+                        except OSError as error:
+                            if error.errno == errno.EBUSY:
+                                raise PermissionError(errno.EACCES, "Protected target cannot be replaced",
+                                                      str(path)) from error
+                            raise
                 else:
                     win = _windows()
                     # A CRT stat uses the same native volume/index identity.
