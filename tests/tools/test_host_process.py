@@ -147,12 +147,15 @@ def test_native_policy_rejects_empty_argv_and_host_overrides_case_colliding_env(
         process.stdout.close()
 
 
-def test_native_process_cleanup_releases_scratch_after_drain_error():
+def test_native_process_cleanup_releases_scratch_after_drain_error(monkeypatch):
     from types import SimpleNamespace
 
     from virgo.execution import ExecutionFailed
+    from virgo.sandbox import native as native_mod
     from virgo.sandbox.native import NativeProcess
 
+    # Exercise the non-HostProcess wrapper path (macOS LaunchdProcess / WindowsProcess) on all OSes.
+    monkeypatch.setattr(native_mod.sys, "platform", "darwin")
     cleaned = []
 
     class FakeScratch:
