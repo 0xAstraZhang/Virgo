@@ -280,3 +280,48 @@ def test_mcp_cancellation_drains_server_tree_without_replay(make_session, projec
     finally:
         signal.set()
         worker.join(10)
+
+
+def test_mcp_validates_config_releases_closed_connections_and_handles_shared_home(make_session, project, monkeypatch):
+    install_extension()
+    session = make_session(settings={"mcpServers": {
+        "bad_args": {"command": sys.executable, "args": "--not-a-list"},
+        "bad_env": {"command": sys.executable, "args": [str(SERVER)], "env": ["NOT=DICT"]},
+        "bad_timeout": {"command": sys.executable, "args": [str(SERVER)], "timeout": True},
+        "good": {"command": sys.executable, "args": [str(SERVER)]},
+    }})
+    context = ToolContext("status", project, threading.Event(), origin=session.main.origin)
+    rows = {row["server"]: row for row in json.loads(session.tool("mcp_status").execute({}, context).as_text())["servers"]}
+    assert rows["bad_args"]["state"] == "unavailable" and "args must be a list" in rows["bad_args"]["error"]
+    assert rows["bad_env"]["state"] == "unavailable" and "env must be an object" in rows["bad_env"]["error"]
+    assert rows["bad_timeout"]["state"] == "unavailable" and "timeout" in rows["bad_timeout"]["error"]
+    assert rows["good"]["state"] == "ready"
+
+    manager = session.tool("mcp_status").execute.__self__
+    assert len(manager._owned) == 1
+    api = ExtensionAPI(session, "mcp-owned-check")
+    child = api.create_runtime("mcp-ephemeral", "subagent", parent=session.main)
+    try:
+        child_ctx = ToolContext("child", project, threading.Event(), agent=child.name, origin=child.origin)
+        assert session.tool("mcp__good__echo").execute({"text": "hi"}, child_ctx).as_text() == "hi"
+        assert len(manager._owned) == 2
+    finally:
+        api.release_runtime(child)
+    assert len(manager._owned) == 1
+
+    # When VIRGO_HOME resolves to <project>/.virgo (even through a symlink),
+    # user mcp.json and user extensions load once without an untrusted-project warning.
+    shared_dir = project / ".virgo"
+    configure(shared_dir / "mcp.json")
+    (shared_dir / "extensions").mkdir(parents=True, exist_ok=True)
+    shutil.copy(EXTENSION, shared_dir / "extensions" / "mcp.py")
+    if os.name == "posix":
+        alias = project.parent / "virgo-home-link"
+        alias.symlink_to(shared_dir)
+        monkeypatch.setenv("VIRGO_HOME", str(alias))
+    else:
+        monkeypatch.setenv("VIRGO_HOME", str(shared_dir))
+    shared_session = make_session(trust_project_extensions=False)
+    assert shared_session.tool("mcp__echo__echo") is not None
+    assert "ignored project MCP configuration" not in shared_session.ui.text
+    assert "untrusted" not in shared_session.ui.text.lower()

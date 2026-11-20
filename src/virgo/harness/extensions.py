@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 from ..agent.types import AgentTool, Block, Continue, ToolResult
 from ..ai.types import TextContent
 from ..diagnostics import capture_error, emergency_write, safe_text
-from .settings import PLUGIN_IDS
+from .settings import PLUGIN_IDS, _same_directory
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -363,7 +363,10 @@ def load_builtin_features(session: AgentSession) -> None:
 
 
 def load_user_extensions(session: AgentSession) -> None:
-    for d in session.paths.both("extensions"):
+    dirs = [session.paths.user / "extensions"]
+    if not _same_directory(session.paths.project, session.paths.user):
+        dirs.append(session.paths.project / "extensions")
+    for d in dirs:
         if not d.is_dir():
             continue
         if d == session.paths.project / "extensions" and not (
@@ -377,7 +380,7 @@ def load_user_extensions(session: AgentSession) -> None:
 
 
 def _load_file(session: AgentSession, path: Path) -> None:
-    scope = "project" if path.parent == session.paths.project / "extensions" else "user"
+    scope = "user" if _same_directory(path.parent, session.paths.user / "extensions") else "project"
 
     def load(api):
         spec = importlib.util.spec_from_file_location(f"virgo_ext_{path.stem}", path)
@@ -460,7 +463,9 @@ def _with_feedback(res: ToolResult, note: str) -> ToolResult:
 
 
 def install_command_hooks(session: AgentSession) -> None:
-    hooks: dict = session.settings.get("hooks", {}) or {}
+    hooks = session.settings.get("hooks", {}) or {}
+    if not isinstance(hooks, dict):
+        return
     if not (session.trust_project_extensions or session.settings.project_extensions_trusted):
         untrusted = {event for event in hooks if session.settings.sources.get(f"hooks.{event}") == "project"}
         if untrusted:

@@ -186,3 +186,11 @@ def test_explicit_plugin_overrides_and_layering(make_session, project):
     result = subprocess.run([sys.executable, "-m", "virgo", "--help"], env=os.environ.copy(),
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 0 and "--no-extensions" in result.stdout
+
+
+def test_malformed_project_hooks_do_not_crash_startup(make_session, project):
+    (project / ".virgo").mkdir(parents=True, exist_ok=True)
+    (project / ".virgo" / "settings.json").write_text(json.dumps({"hooks": ["not-an-object"]}), encoding="utf-8")
+    for trusted in (False, True):
+        session = make_session(refresh_models=False, trust_project_extensions=trusted)
+        assert session.main is not None

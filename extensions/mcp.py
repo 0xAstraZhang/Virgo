@@ -66,10 +66,36 @@ def _expand(value: str) -> str:
     return re.sub(r"\$\{(\w+)\}", lambda match: os.environ.get(match.group(1), ""), value)
 
 
+def _same_directory(left, right) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _validate_config(config: dict) -> tuple[str, list, dict]:
+    command = config.get("command")
+    if not isinstance(command, str) or not command:
+        raise MCPConnectionError("MCP server command must be a nonempty string")
+    args = config.get("args")
+    if args is None:
+        args = []
+    elif not isinstance(args, list):
+        raise MCPConnectionError("MCP server args must be a list")
+    env = config.get("env")
+    if env is None:
+        env = {}
+    elif not isinstance(env, dict) or any(not isinstance(key, str) for key in env):
+        raise MCPConnectionError("MCP server env must be an object with string keys")
+    return command, args, env
+
+
 def _secrets(config: dict) -> tuple[str, ...]:
     """Values that must not reach diagnostics or the terminal."""
-    values = [str(value) for value in (config.get("env") or {}).values()]
-    args = [str(value) for value in config.get("args") or []]
+    raw_env = config.get("env")
+    values = [str(value) for value in raw_env.values()] if isinstance(raw_env, dict) else []
+    raw_args = config.get("args")
+    args = [str(value) for value in raw_args] if isinstance(raw_args, list) else []
     sensitive = []
     previous = ""
     for value in args:
@@ -85,7 +111,7 @@ def _secrets(config: dict) -> tuple[str, ...]:
 class _Connection:
     """One immutable execution boundary and one SDK session, never shared by tasks."""
 
-    def __init__(self, name: str, config: dict, context, signal=None):
+    def __init__(self, name: str, config: dict, context, signal=None, *, on_closed=None):
         self.name, self.config, self.context = name, config, context
         self.cwd = context.workspace
         self.tools: list = []
@@ -93,6 +119,7 @@ class _Connection:
         self.inflight = 0
         self.retired = False
         self._closed = False
+        self._on_closed = on_closed
         self._lock = threading.Lock()
         self._close_lock = threading.Lock()
         self._process_lock = threading.Lock()
@@ -139,15 +166,16 @@ class _Connection:
 
     def _request(self) -> ProcessRequest:
         env = get_default_environment()
-        command = _expand(str(self.config["command"]))
+        raw_command, raw_args, raw_env = _validate_config(self.config)
+        command = _expand(raw_command)
         # POSIX resolves executable names inside the selected process boundary
         # and cwd. Windows requires an exact executable for its suspended launch.
         if os.name == "nt" and not os.path.isabs(command):
             raise MCPConnectionError("Windows MCP servers require an absolute native .exe path")
         return ProcessRequest(
-            (command, *(_expand(str(value)) for value in self.config.get("args") or [])),
+            (command, *(_expand(str(value)) for value in raw_args)),
             self.cwd, env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr,
-            env_overrides={key: _expand(str(value)) for key, value in (self.config.get("env") or {}).items()},
+            env_overrides={key: _expand(str(value)) for key, value in raw_env.items()},
         )
 
     def _terminate(self):
@@ -378,6 +406,8 @@ class _Connection:
         self._loop.close()
         self._stderr.close()
         self._stderr_thread.join(2)
+        if self._on_closed is not None:
+            self._on_closed(self)
 
 
 def _norm(value: str) -> str:
@@ -477,11 +507,15 @@ class _Manager:
         servers: dict = {}
         trusted = (self.api.session.trust_project_extensions
                    or self.api.settings.project_extensions_trusted)
-        paths = list(dict.fromkeys(self.api.paths.both("mcp.json")))
+        user_file = self.api.paths.user / "mcp.json"
+        project_file = self.api.paths.project / "mcp.json"
+        paths = [user_file]
+        if not _same_directory(self.api.paths.project, self.api.paths.user):
+            paths.append(project_file)
         for path in paths:
             if not path.is_file():
                 continue
-            if path == self.api.paths.project / "mcp.json" and path != self.api.paths.user / "mcp.json" and not trusted:
+            if path == project_file and not trusted:
                 self.api.ui.print("[mcp: ignored project MCP configuration without explicit project trust]", "warn")
                 continue
             try:
@@ -508,14 +542,26 @@ class _Manager:
         return {name: deepcopy(config) for name, config in servers.items()
                 if isinstance(config, dict) and config.get("command") and not config.get("disabled")}
 
+    def _release_owned(self, connection: _Connection) -> None:
+        with self._ownership_lock:
+            if connection in self._owned:
+                self._owned.remove(connection)
+
     def _connect(self, name: str, config: dict, context, signal=None) -> _Connection:
-        timeout = float(config.get("timeout", 30))
+        _validate_config(config)
+        raw_timeout = config.get("timeout", 30)
+        if isinstance(raw_timeout, bool):
+            raise MCPConnectionError("MCP connection timeout must be a positive finite number")
+        try:
+            timeout = float(raw_timeout)
+        except (TypeError, ValueError) as error:
+            raise MCPConnectionError("MCP connection timeout must be a positive finite number") from error
         if not math.isfinite(timeout) or timeout <= 0:
             raise MCPConnectionError("MCP connection timeout must be a positive finite number")
         with self._ownership_lock:
             if self._closed:
                 raise MCPConnectionError("MCP manager has shut down")
-            connection = _Connection(name, config, context, signal)
+            connection = _Connection(name, config, context, signal, on_closed=self._release_owned)
             self._owned.append(connection)
         connection.connect(timeout=timeout)
         return connection
@@ -555,11 +601,21 @@ class _Manager:
             raise MCPCallCancelled("MCP operation cancelled before process start")
         context = self.api.services["execution"].for_context(ctx)
         transient = context is not runtime.execution_context
+        if transient:
+            with server.lock:
+                if server.retired:
+                    raise MCPConnectionError("MCP configuration replaced; use the refreshed tool set")
+                name, config = server.name, server.config
+            connection = self._connect(name, config, context, ctx.signal)
+            with server.lock:
+                retired = server.retired
+            if retired:
+                connection.close()
+                raise MCPConnectionError("MCP configuration replaced; use the refreshed tool set")
+            return connection, True
         with server.lock:
             if server.retired:
                 raise MCPConnectionError("MCP configuration replaced; use the refreshed tool set")
-            if transient:
-                return self._connect(server.name, server.config, context, ctx.signal), True
             connection = server.connections.get(runtime)
             if connection is not None and connection.context != context:
                 connection.retire()
@@ -727,8 +783,7 @@ class _Manager:
             except Exception as error:
                 errors.append(safe_text(error, secrets=connection._secrets))
             else:
-                with self._ownership_lock:
-                    self._owned.remove(connection)
+                self._release_owned(connection)
         self.servers.clear()
         self.retired.clear()
         if errors:
