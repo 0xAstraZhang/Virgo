@@ -1373,10 +1373,10 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     assert result.details["boundary"]["side_effects"] == "possible"
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS launchd supervisor env isolation")
 def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, project):
-    """VER-03: GITHUB_TOKEN override is never in launchd argv/plist/supervisor env; -S... is rejected."""
+    """VER-03: GITHUB_TOKEN override is never in process argv/plist/supervisor env; -S... is rejected."""
     import hashlib
+    import shutil
     import subprocess as sp
 
     from virgo.execution import ExecutionUnavailable, ProcessRequest, cleanup_process
@@ -1402,14 +1402,15 @@ def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, p
     ))
     try:
         assert proc.stdout.readline().strip() == b"ready"
-        # Neither any process's command line (argv) nor the launchd supervisor's
-        # environment/plist may expose the secret override.
-        ps_args = sp.check_output(["/bin/ps", "-axww", "-o", "args="], text=True, errors="replace")
+        ps_bin = shutil.which("ps") or "/bin/ps"
+        ps_cmd = [ps_bin, "-axww", "-o", "args="] if sys.platform == "darwin" else [ps_bin, "-eo", "args="]
+        ps_args = sp.check_output(ps_cmd, text=True, errors="replace")
         assert secret not in ps_args
-        supervisor_env = sp.check_output(["/bin/ps", "eww", "-p", str(proc.pid)], text=True, errors="replace")
-        assert secret not in supervisor_env
-        plist_text = proc._process._plist.read_text(encoding="utf-8", errors="replace")
-        assert secret not in plist_text
+        if sys.platform == "darwin":
+            supervisor_env = sp.check_output([ps_bin, "eww", "-p", str(proc.pid)], text=True, errors="replace")
+            assert secret not in supervisor_env
+            plist_text = proc._process._plist.read_text(encoding="utf-8", errors="replace")
+            assert secret not in plist_text
     finally:
         cleanup_process(proc)
         for stream in (proc.stdin, proc.stdout, proc.stderr):
@@ -1417,15 +1418,14 @@ def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, p
                 stream.close()
 
 
-def test_startup_rejects_cwd_inside_private_virgo_dir(make_session, project, monkeypatch):
+def test_startup_rejects_cwd_inside_private_virgo_dir(broker_session, project):
     from virgo.execution import ExecutionUnavailable
 
     private_dir = project.parent / "home"
     nested = private_dir / "nested-cwd"
     nested.mkdir(parents=True, exist_ok=True)
     with pytest.raises(ExecutionUnavailable, match="private Virgo storage"):
-        make_session(cwd=nested, settings={"execution": {"mode": "workspace-edit"}},
-                     extensions=False, refresh_models=False)
+        broker_session(cwd=nested, preset="workspace-edit", extensions=False, refresh_models=False)
 
 
 def test_native_sandbox_runs_asyncio_event_loop(native, project):
