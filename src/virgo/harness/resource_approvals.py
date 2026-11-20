@@ -120,7 +120,10 @@ class ResourceApprovals:
             path = event.args.get("path", ".")
             if not isinstance(path, str):
                 return self._denial(policy, "File operations require a path", "filesystem")
-            target = lexical_path(path, event.cwd)
+            try:
+                target = lexical_path(path, event.cwd)
+            except ValueError as error:
+                return self._denial(policy, error, "filesystem")
             access = "read" if event.tool.read_only else "write"
             if policy.policy.denied(target, access):
                 return self._denial(policy, f"Protected resource cannot be granted: {target}",
@@ -261,15 +264,18 @@ class ResourceApprovals:
         base = runtime.execution_context
         delta = args["permissions"]
         requested = []
-        for kind in ("read_paths", "write_paths"):
-            for value in delta.get(kind, []):
-                path = lexical_path(value, event.cwd)
-                access = "read" if kind == "read_paths" else "write"
-                if base.policy.denied(path, access):
-                    return ToolResult.error(f"Protected resources cannot be granted: {path}")
-                requested.append((kind, str(path)))
-        if parse_network(delta.get("network_allowed", False)):
-            requested.append(("network_allowed", "true"))
+        try:
+            for kind in ("read_paths", "write_paths"):
+                for value in delta.get(kind, []):
+                    path = lexical_path(value, event.cwd)
+                    access = "read" if kind == "read_paths" else "write"
+                    if base.policy.denied(path, access):
+                        return ToolResult.error(f"Protected resources cannot be granted: {path}")
+                    requested.append((kind, str(path)))
+            if parse_network(delta.get("network_allowed", False)):
+                requested.append(("network_allowed", "true"))
+        except ValueError as error:
+            return ToolResult.error(str(error))
         saved = self._saved(event, base)
         current = _extend(base, saved)
         missing = tuple(dict.fromkeys(item for item in requested if not _covered(current, *item)))

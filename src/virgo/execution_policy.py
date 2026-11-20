@@ -25,7 +25,10 @@ def lexical_path(value: str | Path, cwd: Path, *, home: Path = _USER_HOME) -> Pa
         if text == "~":
             text = str(home)
         elif text[1:2] in {"/", "\\"}:
-            text = str(home / text[2:])
+            suffix = text[2:].lstrip("/\\")
+            if Path(suffix).drive or Path(suffix).is_absolute():
+                raise ValueError("Resource path after ~ must be relative to the user home")
+            text = str(home / suffix)
         else:
             raise ValueError("Resource paths support ~ for the current user, not ~username")
     path = Path(text)

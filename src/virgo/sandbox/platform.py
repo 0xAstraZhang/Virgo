@@ -389,6 +389,11 @@ class NativePolicy:
         for path in sorted(self.private_paths, key=lambda item: len(item.parts)):
             if any(path.is_relative_to(root) for root in covered):
                 continue
+            if any(root.is_relative_to(path) for root in self.read_roots()):
+                raise SandboxUnavailable(
+                    f"A read deny rule conflicts with a required mounted root: {path}",
+                    reason="unsupported_read_deny", target=path, dimension="filesystem_read_deny",
+                )
             if not any(path.is_relative_to(root) for root in self.read_roots()):
                 continue  # Already absent from this filesystem namespace.
             if path.is_symlink():

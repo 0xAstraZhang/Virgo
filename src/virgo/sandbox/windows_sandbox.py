@@ -433,14 +433,19 @@ class WindowsSandbox:
             # grants ownership, DACL mutation, deletion or other device names.
             self._prepare_device("KsecDD", 0x100003, (self.write_sid,))
             self._prepare_device("Null", 0x12019F, (self.package_sid, self.write_sid))
-            runtime_roots = tuple(dict.fromkeys((
-                *policy.runtime_paths(),
+            raw_runtime = (
+                *(Path(normalize_path(path)) for path in policy.runtime_paths()),
                 # Retain the selected Shell's established installation grant.
                 # Other payloads must use existing runtime/workspace resources
                 # or explicit read grants, not expose arbitrary sibling files.
                 *((executable.parent,) if executable.name.lower() == "pwsh.exe"
                   and not executable.is_relative_to(policy.workspace) else ()),
-            )))
+            )
+            runtime_roots_list: list[Path] = []
+            for path in sorted(raw_runtime, key=lambda item: (len(item.parts), str(item).casefold())):
+                if not any(path.is_relative_to(parent) for parent in runtime_roots_list):
+                    runtime_roots_list.append(path)
+            runtime_roots = tuple(runtime_roots_list)
             private = tuple(sorted(set(policy.private_paths), key=lambda path: len(path.parts)))
             protected = tuple(dict.fromkeys((*policy.protected_paths(), *runtime_roots, *private, profile_parent)))
             # Keep path classification and retained-object ACL updates under

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -120,3 +121,33 @@ def test_overlapping_dispatches_keep_their_context_when_call_labels_repeat(broke
     for event in events:
         policy = provider.for_context(replace(context, dispatch_event=event))
         assert policy.resources.read_paths == (*runtime.execution_context.resources.read_paths, event.args["path"])
+
+
+def test_lexical_path_tilde_normalization_and_invalid_request_paths(broker_session, tmp_path):
+    from virgo.execution_policy import lexical_path
+    from virgo.sandbox.platform import NativePolicy, SandboxUnavailable
+
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    assert lexical_path("~//nested/file.txt", tmp_path, home=fake_home) == fake_home / "nested" / "file.txt"
+    assert lexical_path("~//", tmp_path, home=fake_home) == fake_home
+
+    session = broker_session(ui=RecordingUI(["y"]))
+    for bad in ("~other/secret.txt", "bad\0path"):
+        res_perm = request(session, "read", {"path": str(tmp_path / "ok.txt")}, permissions={"read_paths": [bad]})
+        assert res_perm.is_error
+        res_arg = request(session, "read", {"path": bad}, permissions={"read_paths": [str(tmp_path)]})
+        assert res_arg.is_error
+
+    if os.name == "posix":
+        workspace = tmp_path / "native-workspace"
+        workspace.mkdir()
+        enclosing = tmp_path / "enclosing"
+        runtime_root = enclosing / "runtime"
+        runtime_root.mkdir(parents=True)
+        native = NativePolicy(workspace, True, False, (enclosing.resolve(),), (),
+                              extra_runtime_paths=(runtime_root.resolve(),))
+        with pytest.raises(SandboxUnavailable) as failure:
+            native._linux(Path("/usr/bin/bwrap"), tmp_path, workspace.resolve(), 3, protected_mounts=())
+        assert failure.value.reason == "unsupported_read_deny"
+        assert failure.value.dimension == "filesystem_read_deny"

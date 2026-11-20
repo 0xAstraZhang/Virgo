@@ -1,5 +1,5 @@
 {
-  "baseline_sha": "61c965c56793e26b61c996e24c518cfa8ff8ae5e",
+  "baseline_sha": "14cfb321d2d7591521bd65035b845549ecb42a29",
   "reason": "Effective policies replace Broker inode binding and inferred file approvals. POSIX startup no longer scans entire writable trees for pre-existing hardlink aliases. Exact caller binding, explicit approvals, and real helper atomic replacement remain covered; arbitrary Shell writes through pre-existing aliases are a documented limitation.",
   "preservation_gates": [
     {"classname": "tests.features.test_permission_scope", "name": "test_grant_cannot_be_reused_after_context_changes[arguments]"},
