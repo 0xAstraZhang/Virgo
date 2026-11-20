@@ -135,8 +135,9 @@ def _seccomp_file(network_allowed: bool = False):
     """Compile with the system libseccomp instead of hard-coding syscall numbers.
 
     Network namespaces alone do not block pathname Unix sockets. With networking
-    enabled only Internet-family sockets are allowed; Unix sockets, socketpair,
-    and io_uring remain blocked so a host service socket is not an implicit grant.
+    enabled only Internet-family socket() calls are allowed. Anonymous connected
+    Unix stream pairs support event-loop wakeups without opening host services;
+    other socketpair variants, Unix socket() and io_uring remain blocked.
     """
     machine = platform.machine()
     triplet = {"x86_64": "x86_64-linux-gnu", "aarch64": "aarch64-linux-gnu"}.get(machine)
@@ -173,7 +174,7 @@ def _seccomp_file(network_allowed: bool = False):
         raise SandboxUnavailable("Could not initialize seccomp")
     output = tempfile.TemporaryFile()
     try:
-        blocked = ("socketpair", "socketcall", "io_uring_setup", "io_uring_enter",
+        blocked = ("socketcall", "io_uring_setup", "io_uring_enter",
                      "io_uring_register", "ptrace", "process_vm_writev", "process_vm_readv",
                      "bpf", "perf_event_open", "mount", "umount2", "pivot_root", "setns", "unshare")
         for name in blocked + (() if network_allowed else ("socket",)):
@@ -184,6 +185,27 @@ def _seccomp_file(network_allowed: bool = False):
                 continue
             if lib.seccomp_rule_add(context, 0x00050000 | errno.EPERM, number, 0) != 0:
                 raise SandboxUnavailable(f"Could not restrict syscall {name}")
+        number = lib.seccomp_syscall_resolve_name(b"socketpair")
+        if number < 0:
+            raise SandboxUnavailable("System libseccomp does not recognize socketpair")
+        # Only AF_UNIX, SOCK_STREAM (+ CLOEXEC/NONBLOCK), protocol 0. Unlike
+        # datagram pairs, connected stream endpoints cannot disconnect, reconnect
+        # or become listeners. Keep socket(AF_UNIX) denied even with networking.
+        allowed_type = int(socket.SOCK_STREAM | socket.SOCK_CLOEXEC | socket.SOCK_NONBLOCK)
+        comparisons = [
+            (0, 1, socket.AF_UNIX, 0), (2, 1, 0, 0),  # SCMP_CMP_NE
+            (1, 6, allowed_type, 0),  # SCMP_CMP_GT also rejects upper argument bits.
+            (1, 7, socket.SOCK_STREAM, 0),  # SCMP_CMP_MASKED_EQ: require STREAM's bit.
+        ]
+        # libseccomp has no masked-not-equal comparison. Reject each forbidden
+        # lower bit; the upper bound above handles every higher/unknown flag.
+        comparisons += [(1, 7, 1 << bit, 1 << bit) for bit in range(allowed_type.bit_length())
+                        if not allowed_type & (1 << bit)]
+        for arg, operator, value, mask_value in comparisons:
+            comparison = ArgumentComparison(arg, operator, value, mask_value)
+            if lib.seccomp_rule_add_array(context, 0x00050000 | errno.EPERM, number, 1,
+                                         ctypes.byref(comparison)) != 0:
+                raise SandboxUnavailable("Could not restrict socketpair to private stream pairs")
         if network_allowed:
             number = lib.seccomp_syscall_resolve_name(b"socket")
             if number < 0:

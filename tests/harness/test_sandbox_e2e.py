@@ -1045,13 +1045,17 @@ def test_native_independent_permission_combinations(native, project, short_works
 
     roots = (str(project),) if workspace_only else (str(project), str(extra))
     context = native.main.execution_context
-    context = replace(context, resources=replace(context.resources, read_paths=roots,
+    context = replace(context, resources=replace(context.resources, read_paths=(*roots, str(short_workspace)),
                       write_paths=() if read_only else roots, network=parse_network(network_allowed)))
     with socket.socket() as listener, socket.socket(socket.AF_UNIX) as host_socket:
         listener.bind(('127.0.0.1', 0))
         listener.listen()
         host_socket.bind(str(short_workspace / 'host.sock'))
         host_socket.listen()
+        with socket.socket(socket.AF_UNIX) as control:
+            control.connect(str(short_workspace / 'host.sock'))
+            connected, _ = host_socket.accept()
+            connected.close()
         source = f'''import socket
 from pathlib import Path
 def attempt(fn):
@@ -1067,8 +1071,14 @@ assert attempt(lambda: socket.create_connection({listener.getsockname()!r}, 2).c
 assert attempt(lambda: socket.socket(socket.AF_UNIX).connect({str(short_workspace / 'host.sock')!r})) is False
 print('independent dimensions checked')
 '''
+        if sys.platform == "linux":
+            probe = Path(__file__).parents[1] / "support" / "socketpair_probe.py"
+            source += probe.read_text() + f"\nverify_socketpairs({str(short_workspace / 'host.sock')!r})\n"
         output, code, status = run_command(python_command(native, source), project, 15, Event(),
                                            interpreter=selected(native), execution_context=context)
+        host_socket.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            host_socket.accept()
     assert code == 0 and status == "ok" and "independent dimensions checked" in output.text, output.text
     for path, allowed in ((inside, not read_only),
                           (outside, not read_only and not workspace_only)):
@@ -1416,3 +1426,16 @@ def test_startup_rejects_cwd_inside_private_virgo_dir(make_session, project, mon
     with pytest.raises(ExecutionUnavailable, match="private Virgo storage"):
         make_session(cwd=nested, settings={"execution": {"mode": "workspace-edit"}},
                      extensions=False, refresh_models=False)
+
+
+def test_native_sandbox_runs_asyncio_event_loop(native, project):
+    """VER-06: asyncio programs (requiring AF_UNIX SOCK_STREAM socketpair) run inside the sandbox."""
+    source = (
+        "import asyncio\n"
+        "async def main():\n"
+        "    await asyncio.sleep(0)\n"
+        "    return 'asyncio-ok'\n"
+        "print(asyncio.run(main()))\n"
+    )
+    result = run(native, python_command(native, source))
+    assert not result.is_error and "asyncio-ok" in result.text(), result.text()
