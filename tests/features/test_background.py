@@ -94,6 +94,9 @@ def test_disabled_background_capability_keeps_the_shell_foreground_only(make_ses
     assert session.commands.get("jobs") is None
     shell_tool = session.tool(selected(session).tool_name)
     assert "background" not in shell_tool.parameters["properties"]
+    agent_tool = session.tool("agent")
+    assert "background" not in agent_tool.parameters["properties"]
+    assert "background=true" not in agent_tool.description
 
 
 def test_disabled_background_capability_runs_an_agent_synchronously(make_session):
@@ -102,11 +105,17 @@ def test_disabled_background_capability_runs_an_agent_synchronously(make_session
         settings={"plugins": {"background": {"enabled": False}}},
     )
     ctx = ToolContext("agent-origin", session.cwd, threading.Event(), origin=session.main.origin)
-    result = session.tool("agent").execute(
+    rejected = session.tool("agent").execute(
         {"description": "private label", "prompt": "private prompt", "background": True}, ctx
+    )
+    assert rejected.is_error and "disabled" in rejected.as_text().lower()
+    assert not session.services["jobs"].jobs
+    result = session.tool("agent").execute(
+        {"description": "private label", "prompt": "private prompt"}, ctx
     )
     assert not result.is_error and result.as_text() == "foreground result"
     assert not session.services["jobs"].jobs
+
 
 def test_failed_background_setup_keeps_the_shell_foreground_only(make_session, monkeypatch):
     from virgo.plugins import background
@@ -120,7 +129,17 @@ def test_failed_background_setup_keeps_the_shell_foreground_only(make_session, m
     assert not session.services["jobs"].background_enabled
     shell_tool = session.tool(selected(session).tool_name)
     assert "background" not in shell_tool.parameters["properties"]
+    agent_tool = session.tool("agent")
+    assert "background" not in agent_tool.parameters["properties"]
     assert session.tool("job_output") is None
+
+
+def test_job_kill_has_write_side_effect_under_broker_scope(broker_session):
+    session = broker_session(preset="read-only")
+    kill_tool = session.tool("job_kill")
+    assert kill_tool is not None
+    assert kill_tool.side_effect == "write"
+    assert kill_tool.execution_scope == "broker"
 
 
 def test_job_tools_cannot_borrow_another_conversations_resources(make_session, project):

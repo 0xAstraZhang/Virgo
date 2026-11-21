@@ -4,6 +4,7 @@ MESSAGES = {
     "features.agent.aborted": "Sub-agent was aborted.",
     "features.agent.background": "Started background agent {id} ({description}). You will be notified when it "
     "finishes; use job_output to read its result.",
+    "features.agent.background_disabled": "Background execution is disabled for this session.",
     "features.agent.failed": "Sub-agent failed: {error}",
     "features.agent.turn_limit": "Sub-agent stopped at its {turns}-turn limit without finishing. "
     "Inspect completed work before delegating a smaller task or increasing subagents.maxTurns.",

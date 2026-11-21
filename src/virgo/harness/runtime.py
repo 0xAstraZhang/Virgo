@@ -385,10 +385,10 @@ class Runtime:
         s = self.session
         system = self.system + "\n\n<language>\n" + s.t("harness.response_language") + "\n</language>"
         tools = []
-        approval_tool = s.services["execution"].resource_tool if self.execution_context.provider == "host" else None
-        for tool in self.tools:
-            if tool is approval_tool:
-                continue
+        execution_provider = s.services["execution"]
+        filter_tools = getattr(execution_provider, "filter_tools", None)
+        visible_tools = filter_tools(self, self.tools) if callable(filter_tools) else self.tools
+        for tool in visible_tools:
             try:
                 tools.append(tool.spec(s.translator))
             except Exception as error:
@@ -397,7 +397,7 @@ class Runtime:
                 if report_errors:
                     self.report_error(error, phase="i18n.tool", context={"tool_name": tool.name})
                 tools.append(tool.spec())
-        if instructions := s.services["execution"].instructions(self):
+        if instructions := execution_provider.instructions(self):
             system += "\n\n" + instructions
         for _order, _name, section in sorted(s.request_sections, key=lambda item: item[0]):
             if instructions := section(self):

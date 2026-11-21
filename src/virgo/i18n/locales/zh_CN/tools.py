@@ -1,9 +1,10 @@
 """Simplified Chinese tools messages."""
 
 MESSAGES = {
-    "tools.agent.description": "把独立任务委派给具有全新上下文的子代理。它无法看到本段对话，请提供必要上下文；仅返回最终回答。同一次回复中的多个调用会并行执行。设置 "
-    "background=true 可在其运行期间继续工作；子代理继承来源任务的资源边界。",
+    "tools.agent.background": "设置 background=true 可在其运行期间继续工作。",
+    "tools.agent.description": "把独立任务委派给具有全新上下文的子代理。它无法看到本段对话，请提供必要上下文；仅返回最终回答。同一次回复中的多个调用会并行执行。子代理继承来源任务的执行边界。{background}",
     "tools.agent.label": "子代理",
+    "tools.agent.parameters.properties.background.description": "在后台运行；使用 job_output/job_kill 管理任务。",
     "tools.agent.parameters.properties.description.description": "简短的任务标签",
     "tools.agent.parameters.properties.prompt.description": "给子代理的完整指令",
     "tools.ask_user.description": "向用户提出一个问题并等待答复。最多提供 3 "
@@ -15,7 +16,7 @@ MESSAGES = {
     "tools.ask_user.parameters.properties.options.items.properties.label.description": "简短的选项文字",
     "tools.ask_user.parameters.properties.question.description": "完整的问题，无需其他上下文即可理解",
     "tools.bash.description": "在工作目录中运行 Shell 命令（非交互模式，标准输入已关闭）。Bash/Zsh "
-    "遇到未处理的命令或管道失败会停止；请显式处理预期的非零退出状态。输出最多保留末尾 2000 行 / 50KB，更长的输出会保存到文件。",
+    "遇到未处理的命令或管道失败会停止；请显式处理预期的非零退出状态。输出最多保留末尾 2000 行 / 50KB，更长的输出会保存并返回 output_id，可用 read_output 读取。",
     "tools.bash.label": "Bash",
     "tools.bash.parameters.properties.timeout.description": "秒数（默认 300，最大 3600）",
     "tools.diagnostic_get.description": "使用已提供给当前运行实例的完整 error_id 读取保留的诊断证据。支持 "
@@ -63,7 +64,7 @@ MESSAGES = {
     "tools.fs.image": "图片: {name}",
     "tools.fs.is_directory": "{path} 是目录。请用 glob 列出文件。",
     "tools.fs.large_image": "图片超过 5MB。",
-    "tools.fs.long_line": "第 {line} 行超过 {max_kb}KB。可用 bash: sed -n '{line}p' {path} | head -c 20000",
+    "tools.fs.long_line": "第 {line} 行超过 {max_kb}KB。请使用当前 Shell 工具截取 {path} 第 {line} 行的片段（例如前 20000 字节）查看。",
     "tools.fs.match_limit": "… 达到 {limit} 个匹配项后停止；请缩小范围或提高 limit",
     "tools.fs.more_matches": "… 还有 {count} 个匹配项；请缩小匹配范围",
     "tools.fs.no_matches": "（没有匹配项）",
@@ -103,6 +104,20 @@ MESSAGES = {
     "tools.read.parameters.properties.limit.description": "最多读取的行数",
     "tools.read.parameters.properties.offset.description": "起始行号，从 1 开始",
     "tools.read.parameters.properties.path.description": "文件路径，可相对于工作目录，也可使用绝对路径",
+    "tools.read_output.description": "通过 output_id 读取私有的命令或工具完整输出。offset 和 limit 均按字节计算。",
+    "tools.read_output.label": "读取输出",
+    "tools.read_output.parameters.properties.limit.description": "最多读取的字节数。",
+    "tools.read_output.parameters.properties.offset.description": "从 0 开始的起始字节偏移量。",
+    "tools.read_output.parameters.properties.output_id.description": "截断后的命令或工具结果返回的 output_id。",
+    "tools.request_permissions.description": "为 Shell 或受管操作申请会话级或持久化的路径读写权限或网络访问权限。",
+    "tools.request_permissions.label": "申请资源权限",
+    "tools.request_permissions.parameters.properties.arguments.description": "可选，用于在审批提示中展示的目标工具参数。",
+    "tools.request_permissions.parameters.properties.permissions.description": "需要申请的额外路径前缀或 Shell 网络访问权限。",
+    "tools.request_permissions.parameters.properties.permissions.properties.network_allowed.description": "申请 Shell/任务的网络访问权限。",
+    "tools.request_permissions.parameters.properties.permissions.properties.read_paths.description": "需要额外读取的文件或目录路径。",
+    "tools.request_permissions.parameters.properties.permissions.properties.write_paths.description": "需要额外写入的文件或目录路径。",
+    "tools.request_permissions.parameters.properties.reason.description": "需要额外访问权限的原因。",
+    "tools.request_permissions.parameters.properties.tool.description": "可选，用于审批上下文的目标受管工具名（如 bash 或 write）。",
     "tools.search.backend": "search.backend 必须为 'duckduckgo' 或 'deepseek'。",
     "tools.search.balance": "搜索服务账户余额不足。请充值后重试。",
     "tools.search.cancelled": "联网搜索已取消。",
@@ -124,7 +139,7 @@ MESSAGES = {
     "tools.search.timeout_config": "search.timeout 必须为正数，单位为秒。",
     "tools.shell.background": " background=true 会在命令完成前返回任务 ID。",
     "tools.shell.description": "在工作目录中运行 {syntax} 代码。{environment}\n"
-    "{errors} 输出最多保留末尾 {max_lines} 行 / {max_kb}KB；更长的输出会保存到文件。{background}",
+    "{errors} 输出最多保留末尾 {max_lines} 行 / {max_kb}KB；更长的输出会保存并返回 output_id，可用 read_output 读取。{background}",
     "tools.shell.environment": "命令工具: {tool}\n"
     "Shell: {kind} {version}\n"
     "可执行文件: {executable}\n"

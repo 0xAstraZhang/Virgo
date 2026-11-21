@@ -193,6 +193,22 @@ class ExtensionAPI:
     def translator(self):
         return self._session.translator
 
+    @property
+    def project_trusted(self) -> bool:
+        """Whether project-level extensions, hooks, and MCP configurations are trusted."""
+        return bool(
+            getattr(self._session, "trust_project_extensions", False)
+            or getattr(self._session.settings, "project_extensions_trusted", False)
+        )
+
+    def host_context(self, cwd: Path | None = None):
+        """Return an unrestricted HostContext reusing the session's shared SandboxExecutor."""
+        from ..execution import HostContext, SandboxExecutor
+
+        provider = self._session.services.get("execution")
+        executor = getattr(provider, "executor", None) or SandboxExecutor()
+        return HostContext.unrestricted(Path(cwd) if cwd is not None else self._session.cwd, executor=executor)
+
     def t(self, key: str, /, **values: object) -> str:
         """Translate an extension-owned key using the current session language."""
         return self.session.t(key, **values)

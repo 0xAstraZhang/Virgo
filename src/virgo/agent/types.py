@@ -47,6 +47,9 @@ class ToolContext:
         return (self.translator or Translator())(key, **values)
 
 
+EXECUTION_SCOPES = frozenset({"file", "process", "web", "broker", "delegate", "external"})
+
+
 @dataclass(init=False)
 class AgentTool:
     name: str
@@ -84,6 +87,10 @@ class AgentTool:
             side_effect = "read" if read_only else "write"
         if side_effect not in {"read", "write"}:
             raise ValueError("AgentTool.side_effect must be 'read' or 'write'")
+        if execution_scope not in EXECUTION_SCOPES:
+            raise ValueError(
+                f"AgentTool.execution_scope must be one of {sorted(EXECUTION_SCOPES)}"
+            )
         self.name = name
         self.description = description
         self.parameters = parameters

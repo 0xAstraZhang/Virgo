@@ -143,6 +143,7 @@ READ = AgentTool(
     },
     execute=_read,
     side_effect="read",
+    execution_scope="file",
     i18n_key="tools.read",
 )
 
@@ -184,6 +185,7 @@ WRITE = AgentTool(
         "required": ["path", "content"],
     },
     execute=_write,
+    execution_scope="file",
     i18n_key="tools.write",
 )
 
@@ -376,6 +378,7 @@ EDIT = AgentTool(
         "required": ["path", "edits"],
     },
     execute=_edit,
+    execution_scope="file",
     prepare_arguments=_prepare_edit,
     i18n_key="tools.edit",
 )
@@ -494,6 +497,7 @@ GLOB = AgentTool(
     },
     execute=_glob,
     side_effect="read",
+    execution_scope="file",
     i18n_key="tools.glob",
 )
 
@@ -576,5 +580,6 @@ GREP = AgentTool(
     },
     execute=_grep,
     side_effect="read",
+    execution_scope="file",
     i18n_key="tools.grep",
 )

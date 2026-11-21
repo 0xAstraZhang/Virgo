@@ -187,10 +187,14 @@ def setup(api: ExtensionAPI) -> None:
 
     def execute(args: dict, ctx: ToolContext) -> ToolResult:
         prompt, desc = args["prompt"], args.get("description") or args["prompt"][:60]
-        unknown = set(args) - {"description", "prompt", "background"}
-        if unknown:
-            return ToolResult.error(f"Unexpected agent argument(s): {', '.join(sorted(unknown))}")
         jobs = api.services.get("jobs")
+        background_enabled = bool(jobs is not None and jobs.background_enabled)
+        allowed_keys = {"description", "prompt", "background"} if background_enabled else {"description", "prompt"}
+        unknown = set(args) - allowed_keys
+        if unknown:
+            if unknown == {"background"} and not background_enabled:
+                return ToolResult.error(ctx.t("features.agent.background_disabled"))
+            return ToolResult.error(f"Unexpected agent argument(s): {', '.join(sorted(unknown))}")
         runtime = api.runtime_for_context(ctx)
         if runtime is None and ctx.origin is None and ctx.agent == "main":
             # Trusted direct main-tool integrations predate runtime-bound contexts.
@@ -206,7 +210,9 @@ def setup(api: ExtensionAPI) -> None:
             return subs.run(prompt, desc, signal, ctx.cwd, origin_parent,
                             execution_context=execution_context)
 
-        if args.get("background") and jobs is not None and jobs.background_enabled:
+        if args.get("background"):
+            if not background_enabled:
+                return ToolResult.error(ctx.t("features.agent.background_disabled"))
             job = jobs.start_callable(
                 f"agent: {desc}",
                 run_child,
@@ -222,34 +228,47 @@ def setup(api: ExtensionAPI) -> None:
             return ToolResult.text(ctx.t("features.agent.background", id=job.id, description=desc))
         return run_child(ctx.signal)
 
-    api.register_tool(
-        AgentTool(execution_scope="delegate",
+    def install_tools() -> None:
+        from ..i18n import Translator
+
+        jobs = api.services.get("jobs")
+        background_enabled = bool(jobs is not None and jobs.background_enabled)
+        properties: dict = {
+            "description": {"type": "string", "description": "Short task label"},
+            "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Complete instructions for the sub-agent",
+            },
+        }
+        if background_enabled:
+            properties["background"] = {
+                "type": "boolean",
+                "description": "Run in the background; job_output/job_kill manage the job.",
+            }
+
+        def values(t):
+            return {"background": t("tools.agent.background") if background_enabled else ""}
+
+        english = Translator()
+        tool = AgentTool(
+            execution_scope="delegate",
             name="agent",
             label="Agent",
-            description=(
-                "Delegate a self-contained task to a sub-agent with a fresh context. It cannot see this "
-                "conversation, so include the needed context; only its final answer comes back. Several calls in one "
-                "response run in parallel. Children inherit the originating task execution boundary. "
-                "Set background=true to keep working while it runs."
-            ),
+            description=english("tools.agent.description", **values(english)),
             parameters={
                 "type": "object",
-                "properties": {
-                    "description": {"type": "string", "description": "Short task label"},
-                    "prompt": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Complete instructions for the sub-agent",
-                    },
-                    "background": {"type": "boolean"},
-                },
+                "properties": properties,
                 "required": ["description", "prompt"],
                 "additionalProperties": False,
             },
             execute=execute,
             side_effect="read",  # its own tool calls are permission-checked individually
             i18n_key="tools.agent",
-        ),
-        roles=("main",),
-    )
+            i18n_values=values,
+        )
+        api.replace_tools("tool:agent", [(tool, ("main",))])
+
+    subs.install_tools = install_tools
+    install_tools()
 

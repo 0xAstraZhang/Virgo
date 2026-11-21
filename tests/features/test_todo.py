@@ -80,7 +80,7 @@ def test_parallel_todos_have_no_size_cap_or_stop_continuation(make_session, todo
     session.prompt("track parallel work")
     result, = tool_results(session)
     assert not result.is_error and result.details["todos"] == todos
-    assert result.text() == "Todos 状态更新成功"
+    assert result.text() == "Todos updated."
     assert len(calls()) == 2
     assert "<todos_state>" not in calls()[-1]["system"]
     assert not any(isinstance(m, UserMessage) and m.kind == "continue" for m in session.main.messages)
@@ -91,7 +91,6 @@ def test_parallel_todos_have_no_size_cap_or_stop_continuation(make_session, todo
     [item("new", "unknown")],
     [None],
     "not a list",
-    [{"content": "no step", "status": "pending"}],
     [item("bad step", step="Step1")],
     [item("bad step", step="StepA\n")],
 ])
@@ -279,7 +278,8 @@ def test_invalid_explanation_and_failed_compaction_preserve_state(make_session, 
     value = {"todos": [item("keep this")], "explanation": "keep this reason"}
     session = make_session(
         faux.reply(tools=[("todo_write", value)]),
-        faux.reply(tools=[("todo_write", {"todos": [], "explanation": 7})]), faux.reply("work " * 1000),
+        faux.reply(tools=[("todo_write", {"todos": [], "explanation": ["not", "a", "string"]})]),
+        faux.reply("work " * 1000),
         settings={"compaction": {"keepRecentTokens": 1}},
     )
     session.prompt("record work")
@@ -289,3 +289,28 @@ def test_invalid_explanation_and_failed_compaction_preserve_state(make_session, 
     assert retained(session.main) is None
     summarize(session)
     assert retained(session.main) == value
+
+
+def test_optional_step_null_explanation_coercion_and_language_ack(make_session, todo_extension):
+    # Optional step, explicit null explanation, and JSON-stringified todos all work via validate().
+    raw_todos = json.dumps([{"content": "linear task", "status": "pending"}])
+    session = make_session(
+        faux.reply(tools=[("todo_write", {"todos": raw_todos, "explanation": None})]),
+        faux.reply("done"),
+    )
+    session.prompt("track simple work")
+    result, = tool_results(session)
+    assert not result.is_error
+    assert result.text() == "Todos updated."
+    assert result.details["todos"] == [{"content": "linear task", "status": "pending"}]
+    assert "explanation" not in result.details
+
+    zh_session = make_session(
+        faux.reply(tools=[("todo_write", {"todos": [{"content": "中文任务", "status": "in_progress"}]})]),
+        faux.reply("完成"),
+        settings={"language": "zh-CN"},
+    )
+    zh_session.prompt("记录任务")
+    zh_result, = tool_results(zh_session)
+    assert not zh_result.is_error
+    assert zh_result.text() == "Todos 状态更新成功"

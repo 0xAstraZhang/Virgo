@@ -361,3 +361,72 @@ def test_child_grant_respects_scope_of_changes_in_other_conversation(broker_sess
         assert (target.read_text() if target.exists() else None) == ("ok" if allowed else None)
     finally:
         session.release_runtime(child)
+
+
+def test_request_permissions_hidden_when_escalation_disabled(broker_session, project):
+    from virgo.harness.ui import UI
+
+    # Interactive sandbox session exposes request_permissions and guidance.
+    interactive = broker_session(preset="read-only", approval="ask")
+    ctx = interactive.main.request_context([])
+    assert "request_permissions" in [t.name for t in ctx.tools]
+    assert "Use request_permissions" in ctx.system
+
+    # approval="never" hides request_permissions and updates boundary guidance.
+    never = broker_session(preset="read-only", approval="never")
+    never_ctx = never.main.request_context([])
+    assert "request_permissions" not in [t.name for t in never_ctx.tools]
+    assert "Use request_permissions" not in never_ctx.system
+    assert "escalation is disabled" in never_ctx.system
+
+    # Headless UI without confirm() also hides request_permissions.
+    headless = broker_session(preset="read-only", approval="ask", ui=UI())
+    headless_ctx = headless.main.request_context([])
+    assert "request_permissions" not in [t.name for t in headless_ctx.tools]
+    assert "Use request_permissions" not in headless_ctx.system
+
+
+def test_execution_scope_validation_and_sandbox_layering():
+    import ast
+    from pathlib import Path
+
+    from virgo.agent.types import EXECUTION_SCOPES, AgentTool
+    from virgo.tools import BASH, EDIT, GLOB, GREP, READ, WRITE
+
+    assert "network" not in EXECUTION_SCOPES
+    for file_tool in (READ, WRITE, EDIT, GLOB, GREP):
+        assert file_tool.execution_scope == "file"
+    assert BASH.execution_scope == "process"
+    with pytest.raises(ValueError, match="execution_scope"):
+        AgentTool("bad", "desc", {"type": "object"}, lambda *_: "ok", execution_scope="network")
+
+    # virgo.sandbox must stay free of reverse imports from virgo.harness.
+    sandbox_dir = Path(__file__).resolve().parents[2] / "src" / "virgo" / "sandbox"
+    for path in sandbox_dir.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and "harness" in node.module:
+                raise AssertionError(f"Reverse harness import in {path.name}: {node.module}")
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert "harness" not in alias.name, f"Reverse harness import in {path.name}: {alias.name}"
+
+
+def test_builtin_tool_localization_covers_read_output_and_request_permissions(broker_session):
+    from virgo.i18n import Translator
+
+    session = broker_session(preset="read-only")
+    zh = Translator("zh-CN")
+    en = Translator("en")
+
+    read_output = session.tool("read_output")
+    req_perm = session.tool("request_permissions")
+    assert read_output is not None and req_perm is not None
+    assert read_output.spec(zh).description != read_output.spec(en).description
+    assert "output_id" in read_output.spec(zh).description
+    assert req_perm.spec(zh).description != req_perm.spec(en).description
+    assert "权限" in req_perm.spec(zh).description
+    assert "read_output" in en("tools.bash.description")
+    assert "read_output" in zh("tools.bash.description")
+    assert "sed -n" not in en("tools.fs.long_line", line=1, max_kb=50, path="a.txt")
+    assert "sed -n" not in zh("tools.fs.long_line", line=1, max_kb=50, path="a.txt")

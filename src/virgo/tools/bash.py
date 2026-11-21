@@ -193,9 +193,11 @@ BASH = AgentTool(
     description=(
         "Run a shell command in the working directory (non-interactive; stdin is closed). "
         "Bash/Zsh stop on unhandled command or pipeline failures; handle expected nonzero statuses explicitly. "
-        f"Output is limited to the last {MAX_LINES} lines / {MAX_BYTES // 1024}KB; longer output is saved to a file."
+        f"Output is limited to the last {MAX_LINES} lines / {MAX_BYTES // 1024}KB; longer output is saved with an "
+        "output_id for read_output."
     ),
     parameters=BASH_PARAMS,
     execute=_bash,
+    execution_scope="process",
     i18n_key="tools.bash",
 )

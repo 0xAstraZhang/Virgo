@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from virgo.ai.validate import INVALID_ARGUMENTS, parse_json_loose, parse_tool_arguments, validate
+from virgo.ai.validate import (
+    INVALID_ARGUMENTS,
+    parse_json_loose,
+    parse_tool_arguments,
+    valid_schema,
+    validate,
+)
 
 
 def test_validate_coercions():
@@ -32,3 +38,18 @@ def test_tool_arguments_must_be_a_json_object():
 def test_parse_json_loose():
     assert parse_json_loose('```json\n{"a": 1}\n```') == {"a": 1}
     assert parse_json_loose('Sure! {"ok": true} hope that helps') == {"ok": True}
+
+
+def test_valid_schema_and_tuple_items():
+    tuple_schema = {
+        "type": "object",
+        "properties": {
+            "pair": {"type": "array", "items": [{"type": "string"}, {"type": "integer"}]},
+        },
+        "required": ["pair"],
+    }
+    assert valid_schema(tuple_schema)
+    val, errs = validate({"pair": ["age", "42"]}, tuple_schema)
+    assert errs == [] and val == {"pair": ["age", 42]}
+    assert not valid_schema({"type": "object", "properties": {"x": {"type": 42}}})
+    assert not valid_schema({"type": "object", "properties": {"x": {"type": "string", "minLength": "1"}}})

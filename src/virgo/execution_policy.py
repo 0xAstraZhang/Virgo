@@ -376,3 +376,20 @@ class PermissionSnapshot:
     mode: ExecutionMode
     approval: str
     revision: int
+
+
+def default_deny_rules(workspace: Path, private_paths: tuple[Path, ...]) -> tuple[PathRule, ...]:
+    rules: list[PathRule] = [PathRule(root, "read", "deny") for root in private_paths]
+    # Protect project .virgo with confirm-on-write (write-deny, overridable by explicit user approval).
+    for name in PROTECTED_NAMES:
+        target = workspace / name
+        if not any(target.is_relative_to(root) for root in private_paths):
+            rules.append(PathRule(target, "write", "deny"))
+        if target.is_symlink():
+            try:
+                resolved = target.resolve(strict=True)
+                if resolved != target and not any(resolved.is_relative_to(root) for root in private_paths):
+                    rules.append(PathRule(resolved, "write", "deny"))
+            except OSError:
+                pass
+    return tuple(dict.fromkeys(rules))

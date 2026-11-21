@@ -68,8 +68,8 @@ def test_removed_task_flags_are_rejected_and_permission_output_stays_independent
 def test_cli_applies_execution_override_before_validating_user_preset(project, monkeypatch, capsys, language_args):
     cli = import_module("virgo.cli.main")
     home = Path(os.environ["VIRGO_HOME"])
-    executor = SimpleNamespace(backend="not-launched")
-    monkeypatch.setattr("virgo.sandbox.SandboxExecutor", lambda: executor)
+    executor = SimpleNamespace(backend="not-launched", close=lambda: None, close_idle=lambda: None)
+    monkeypatch.setattr("virgo.harness.execution.SandboxExecutor", lambda: executor)
     if sys.platform == "win32":
         monkeypatch.setattr("virgo.sandbox.windows_sandbox.precheck_windows_sandbox", lambda: None)
     monkeypatch.setattr(sys, "stdin", io.StringIO())

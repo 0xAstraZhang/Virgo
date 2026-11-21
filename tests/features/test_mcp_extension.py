@@ -426,3 +426,163 @@ def test_ver09_s408_windows_host_path_and_cmd_bat_resolution():
         "python", ["-V"], {}, platform_nt=True, which=fake_which,
     )
     assert exe_argv == (r"C:\Python313\python.exe", "-V")
+
+
+def test_mcp_bounded_startup_does_not_block_cold_start_and_cancels_cleanly(make_session, project, tmp_path):
+    """A hanging MCP server must not block AgentSession startup past the bounded grace window."""
+    install_extension()
+    hang = tmp_path / "hang_mcp.py"
+    hang.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+    cfg = Path(os.environ["VIRGO_HOME"]) / "mcp.json"
+    cfg.write_text(
+        json.dumps({
+            "mcpServers": {
+                "fast": {"command": sys.executable, "args": [str(SERVER)]},
+                "slow": {"command": sys.executable, "args": [str(hang)], "timeout": 30},
+            }
+        }),
+        encoding="utf-8",
+    )
+    started = time.monotonic()
+    session = make_session(settings={"execution": {"mode": "no-limit"}})
+    elapsed = time.monotonic() - started
+    assert elapsed < 5.0, f"MCP startup blocked cold start for {elapsed:.2f}s"
+    # Fast server is already published; slow server reports connecting.
+    assert session.tool("mcp__fast__echo") is not None
+    status = json.loads(
+        session.tool("mcp_status").execute({}, ToolContext("st", project, threading.Event())).as_text()
+    )
+    by_name = {row["server"]: row for row in status["servers"]}
+    assert by_name["fast"]["state"] == "ready"
+    assert by_name["slow"]["state"] == "connecting"
+    assert session.tool("mcp_status").execution_scope == "broker"
+    # Shutting down cancels the hanging handshake promptly without leaking threads.
+    close_start = time.monotonic()
+    session.shutdown()
+    assert time.monotonic() - close_start < 5.0
+    alive = [t.name for t in threading.enumerate() if t.name.startswith("mcp-slow")]
+    assert not alive
+
+
+def test_mcp_tool_name_collision_disambiguation_and_filtering(make_session, project, tmp_path):
+    """Long truncated names and punctuation-normalized duplicates are disambiguated; include/exclude filter tools."""
+    install_extension()
+    prefix = "create_pull_request_review_comment_for_enterprise_repository_"
+    server = tmp_path / "collision_server.py"
+    server.write_text(
+        textwrap.dedent(
+            f"""
+            import json, sys
+            for line in sys.stdin:
+                req = json.loads(line)
+                if "id" not in req:
+                    continue
+                rid, method = req["id"], req.get("method")
+                if method == "initialize":
+                    res = {{"protocolVersion": req["params"]["protocolVersion"],
+                           "capabilities": {{"tools": {{}}}},
+                           "serverInfo": {{"name": "col", "version": "1"}}}}
+                elif method == "tools/list":
+                    res = {{"tools": [
+                        {{"name": "{prefix}alpha", "description": "alpha", "inputSchema": {{"type": "object", "properties": {{}}}}}},
+                        {{"name": "{prefix}beta", "description": "beta", "inputSchema": {{"type": "object", "properties": {{}}}}}},
+                        {{"name": "foo.bar", "description": "dot", "inputSchema": {{"type": "object", "properties": {{}}}}}},
+                        {{"name": "foo_bar", "description": "under", "inputSchema": {{"type": "object", "properties": {{}}}}}},
+                        {{"name": "secret_admin", "description": "excluded", "inputSchema": {{"type": "object", "properties": {{}}}}}},
+                    ]}}
+                else:
+                    res = {{"content": [{{"type": "text", "text": req["params"]["name"]}}]}}
+                print(json.dumps({{"jsonrpc": "2.0", "id": rid, "result": res}}), flush=True)
+            """
+        ),
+        encoding="utf-8",
+    )
+    cfg = Path(os.environ["VIRGO_HOME"]) / "mcp.json"
+    cfg.write_text(
+        json.dumps({
+            "mcpServers": {
+                "col": {
+                    "command": sys.executable,
+                    "args": [str(server)],
+                    "excludeTools": ["secret_*"],
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    session = make_session(settings={"execution": {"mode": "no-limit"}})
+    mcp_tools = [t for t in session.tools_for("main") if t.name.startswith("mcp__col__")]
+    assert len(mcp_tools) == 4
+    assert all(len(t.name) <= 64 for t in mcp_tools)
+    assert not any("secret_admin" in t.name for t in mcp_tools)
+    ctx = ToolContext("c", project, threading.Event())
+    returned = {t.execute({}, ctx).as_text() for t in mcp_tools}
+    assert returned == {f"{prefix}alpha", f"{prefix}beta", "foo.bar", "foo_bar"}
+
+
+def test_mcp_config_precedence_and_reconnect_reloads_settings_and_call_timeout(make_session, project, tmp_path):
+    """Trusted project mcp.json overrides user settings.json; reconnect reloads settings.json; callTimeout & cancel work."""
+    install_extension()
+    home = Path(os.environ["VIRGO_HOME"])
+    slow = tmp_path / "slow_call.py"
+    slow.write_text(
+        textwrap.dedent(
+            """
+            import json, sys, time
+            for line in sys.stdin:
+                req = json.loads(line)
+                if "id" not in req:
+                    continue
+                rid, method = req["id"], req.get("method")
+                if method == "initialize":
+                    res = {"protocolVersion": req["params"]["protocolVersion"],
+                           "capabilities": {"tools": {}},
+                           "serverInfo": {"name": "slow", "version": "1"}}
+                elif method == "tools/list":
+                    res = {"tools": [
+                        {"name": "sleep", "description": "sleep", "inputSchema": {"type": "object", "properties": {}}},
+                    ]}
+                else:
+                    time.sleep(5)
+                    res = {"content": [{"type": "text", "text": "late"}]}
+                print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": res}), flush=True)
+            """
+        ),
+        encoding="utf-8",
+    )
+    # User settings.json defines 'svc' -> broken; trusted project .virgo/mcp.json overrides 'svc' -> echo server.
+    (home / "settings.json").write_text(
+        json.dumps({"mcpServers": {"svc": {"command": "/nonexistent/user-cmd"}}}),
+        encoding="utf-8",
+    )
+    (project / ".virgo").mkdir(parents=True, exist_ok=True)
+    (project / ".virgo" / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"svc": {"command": sys.executable, "args": [str(SERVER)], "includeTools": ["echo"]}}}),
+        encoding="utf-8",
+    )
+    session = make_session(trust_project_extensions=True, settings={"execution": {"mode": "no-limit"}})
+    assert session.tool("mcp__svc__echo") is not None
+    assert session.tool("mcp__svc__add") is None  # filtered out by includeTools
+
+    # Removing project override and updating user settings.json is picked up by /mcp reconnect.
+    (project / ".virgo" / "mcp.json").unlink()
+    (home / "settings.json").write_text(
+        json.dumps({"mcpServers": {"svc": {"command": sys.executable, "args": [str(slow)], "callTimeout": 0.25}}}),
+        encoding="utf-8",
+    )
+    session.prompt("/mcp reconnect")
+    sleep_tool = session.tool("mcp__svc__sleep")
+    assert sleep_tool is not None
+
+    # Cancelled call marks details['cancelled'] = True.
+    aborted = threading.Event()
+    aborted.set()
+    cancel_res = sleep_tool.execute({}, ToolContext("cancel", project, aborted))
+    assert cancel_res.is_error and cancel_res.details.get("cancelled") is True
+
+    # Timed-out call uses per-server callTimeout and guides /mcp reconnect.
+    timeout_res = sleep_tool.execute({}, ToolContext("to", project, threading.Event()))
+    assert timeout_res.is_error and "/mcp reconnect" in timeout_res.as_text()
+    # Subsequent call on dead connection also guides /mcp reconnect.
+    dead_res = sleep_tool.execute({}, ToolContext("dead", project, threading.Event()))
+    assert dead_res.is_error and "/mcp reconnect" in dead_res.as_text()

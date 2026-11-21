@@ -9,6 +9,7 @@ objects/arrays, and a scalar where an array is expected.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 _PY = {
@@ -95,11 +96,23 @@ def validate(value: Any, schema: dict, path: str = "$") -> tuple[Any, list[str]]
         if "maxItems" in schema and len(value) > schema["maxItems"]:
             errors.append(f"{path}: must have at most {schema['maxItems']} items")
         if "items" in schema:
+            item_schema = schema["items"]
             out = []
-            for i, item in enumerate(value):
-                v, errs = validate(item, schema["items"], f"{path}[{i}]")
-                out.append(v)
-                errors.extend(errs)
+            if isinstance(item_schema, dict):
+                for i, item in enumerate(value):
+                    v, errs = validate(item, item_schema, f"{path}[{i}]")
+                    out.append(v)
+                    errors.extend(errs)
+            elif isinstance(item_schema, list):
+                for i, item in enumerate(value):
+                    if i < len(item_schema):
+                        v, errs = validate(item, item_schema[i], f"{path}[{i}]")
+                        out.append(v)
+                        errors.extend(errs)
+                    else:
+                        out.append(item)
+            else:
+                out = list(value)
             value = out
     elif isinstance(value, dict):
         props = schema.get("properties", {})
@@ -119,6 +132,38 @@ def validate(value: Any, schema: dict, path: str = "$") -> tuple[Any, list[str]]
                 errors.append(f"{path}: unexpected properties {extra}")
         value = out
     return value, errors
+
+
+def valid_schema(schema: Any, depth: int = 0) -> bool:
+    """Return True when ``schema`` is structurally valid for ``validate()``."""
+    if not isinstance(schema, dict) or depth > 32:
+        return False
+    if "type" in schema:
+        names = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        if not names or any(not isinstance(name, str) or name not in _PY for name in names):
+            return False
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return False
+    required = schema.get("required", [])
+    if not isinstance(required, list) or any(not isinstance(name, str) for name in required):
+        return False
+    if "enum" in schema and not isinstance(schema["enum"], list):
+        return False
+    for key in ("minLength", "minItems", "maxItems"):
+        if key in schema and (type(schema[key]) is not int or schema[key] < 0):
+            return False
+    for key in ("minimum", "maximum"):
+        if key in schema and (type(schema[key]) not in (int, float) or not math.isfinite(schema[key])):
+            return False
+    if "items" in schema:
+        items = schema["items"]
+        if isinstance(items, list):
+            if not all(valid_schema(child, depth + 1) for child in items):
+                return False
+        elif not valid_schema(items, depth + 1):
+            return False
+    return all(valid_schema(child, depth + 1) for child in properties.values())
 
 
 INVALID_ARGUMENTS = "__invalid_json__"

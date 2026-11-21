@@ -788,12 +788,12 @@ def test_missing_backend_is_fail_closed_in_real_session(make_session, project, m
 
 
 def test_required_provider_initialization_failure_aborts_session(make_session, project, monkeypatch):
-    import virgo.sandbox as extension
+    import virgo.harness.resource_approvals as approvals
 
     def broken(api, executor):
         raise RuntimeError('required provider setup failed')
 
-    monkeypatch.setattr(extension, 'SandboxExecutionProvider', broken)
+    monkeypatch.setattr(approvals, 'SandboxExecutionProvider', broken)
     with pytest.raises(RuntimeError, match='required provider setup failed'):
         make_session(settings={'execution': {'mode': 'workspace-edit'}}, extensions=False, refresh_models=False)
     assert not (project / 'payload-ran').exists()

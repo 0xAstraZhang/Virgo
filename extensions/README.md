@@ -37,21 +37,22 @@ The main model receives `todo_write`, with no `/todos` or `/plan` command:
 }
 ```
 
-Each call replaces the full list. `step`, `content` and `status` are required;
-`explanation` applies to the entire update and is cleared when omitted. Steps
-progress from `StepA` through `StepZ`, then `StepAA`, `StepAB`, and so on. A shared
-step permits parallel work; the tool does not enforce scheduling. An empty list
-clears the checklist. Multiple items may be `in_progress`.
+Each call replaces the full list. `content` and `status` are required; `step` is
+optional (for phased ordering: `StepA` through `StepZ`, then `StepAA`, `StepAB`,
+and so on), and `explanation` applies to the entire update and is cleared when
+omitted or `null`. A shared step permits parallel work; the tool does not enforce
+scheduling. An empty list clears the checklist. Multiple items may be
+`in_progress`.
 
-Successful model-visible results contain only `Todos 状态更新成功`. Full state
-stays in result details and follows the originating conversation and active
-branch. If compaction removes the latest complete call/result pair while any
-item remains unfinished, a request section retains the entire latest state,
-including completed items and the explanation. It survives summary/native
-compaction and resume without repeatedly appending snapshots to history. A
-finished or cleared list is not pinned, and unfinished work does not force
-another model turn. Old results without steps remain readable without inferred
-grouping; subsequent writes require the new fields.
+Successful model-visible results contain only a short acknowledgement (`Todos
+updated.` in English, `Todos 状态更新成功` in Chinese). Full state stays in result
+details and follows the originating conversation and active branch. If compaction
+removes the latest complete call/result pair while any item remains unfinished, a
+request section retains the entire latest state, including completed items and
+the explanation. It survives summary/native compaction and resume without
+repeatedly appending snapshots to history. A finished or cleared list is not
+pinned, and unfinished work does not force another model turn. Old results
+without steps remain readable without inferred grouping.
 
 ## MCP
 
@@ -80,17 +81,24 @@ project) using the common format:
 }
 ```
 
-The `mcpServers` setting is accepted as well (project-level `mcpServers` and
-`.virgo/mcp.json` require explicit project trust via `extensions.trustedProjects`
-or `--trust-project-extensions`). Server arguments and environment values expand
-`${VARIABLE}`; disabled entries are skipped. Servers launch on Host via
-`SandboxExecutor` with one shared connection per server across main and subagent
-runtimes (including `PATH` lookup and `.cmd`/`.bat` wrappers such as `npx` on
-native Windows). Tools appear as `mcp__<server>__<tool>`: read-only tools run
-directly, while mutating tools require approval in Read-Only and Workspace-Edit
-(with **Always allow** bound to the SHA-256 fingerprint of the server's expanded
-`command`, `args`, and `env`) and run directly in No-Limit.
+The `mcpServers` setting is accepted as well (precedence: `~/.virgo/mcp.json` <
+`~/.virgo/settings.json` < trusted `.virgo/mcp.json` < trusted
+`.virgo/settings.json`; project-level `mcpServers` and `.virgo/mcp.json` require
+explicit project trust via `extensions.trustedProjects` or
+`--trust-project-extensions`). Server arguments and environment values expand
+`${VARIABLE}`; disabled entries are skipped. Optional per-server `callTimeout`
+overrides the default 300s tool-call timeout, and `includeTools` / `excludeTools`
+filter exposed MCP tools with glob patterns. Servers launch on Host via
+`SandboxExecutor` with bounded startup wait and one shared connection per server
+across main and subagent runtimes (including `PATH` lookup and `.cmd`/`.bat`
+wrappers such as `npx` on native Windows). Tools appear as
+`mcp__<server>__<tool>` (long or colliding names receive a deterministic hash
+suffix): read-only tools run directly, while mutating tools require approval in
+Read-Only and Workspace-Edit (with **Always allow** bound to the SHA-256
+fingerprint of the server's expanded `command`, `args`, and `env`) and run
+directly in No-Limit.
 
-`/mcp` lists configured servers and tool counts. `/mcp reconnect` reloads the
-configuration; a failed reload keeps the previous connections and tools.
-`mcp_status` exposes the same local state to the model without contacting servers.
+`/mcp` lists configured servers and tool counts. `/mcp reconnect` reloads
+`mcp.json` and `settings.json`; a failed reload keeps the previous connections
+and tools. `mcp_status` exposes the same local state to the model without
+contacting servers.

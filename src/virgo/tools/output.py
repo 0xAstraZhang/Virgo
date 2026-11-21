@@ -152,10 +152,33 @@ def make_read_output_tool(resolve_context):
         })
 
     return AgentTool(
-        name="read_output", label="Read output", execution_scope="broker", side_effect="read",
+        name="read_output",
+        label="Read output",
+        execution_scope="broker",
+        side_effect="read",
         description="Read a private command/tool output using its output_id. offset and limit are byte counts.",
-        parameters={"type": "object", "properties": {
-            "output_id": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": MAX_BYTES},
-        }, "required": ["output_id"], "additionalProperties": False}, execute=execute,
+        parameters={
+            "type": "object",
+            "properties": {
+                "output_id": {
+                    "type": "string",
+                    "description": "Opaque output_id from a truncated command or tool result.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "0-based byte offset to start reading from.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_BYTES,
+                    "description": "Maximum number of bytes to read.",
+                },
+            },
+            "required": ["output_id"],
+            "additionalProperties": False,
+        },
+        execute=execute,
+        i18n_key="tools.read_output",
     )
