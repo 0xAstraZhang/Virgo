@@ -8,8 +8,7 @@
 
 ## Default mode and selection
 
-- **Linux, macOS, and WSL2**: default is **Workspace-Edit**.
-- **Native Windows**: default is **No-Limit** because the native Windows LPAC sandbox is experimental (see [WSL2 setup](../guides/wsl2.md) and [experimental native Windows sandbox](../guides/windows-sandbox.md)).
+- **Supported Tier 1 platforms (Linux, macOS, updated Windows 11 with `null.sys` Feature `60692039`, and WSL2)**: default is **Workspace-Edit**. Supported Windows 11 uses the unelevated Standard AppContainer backend (`windows-appcontainer`, no Administrator privileges required); older Windows builds where `\Device\Null` lacks `S-1-15-2-1` default to **No-Limit** with a one-time notice offering **1. WSL2**, **2. No-Limit**, and **3. Update Windows** (and fail closed if a sandbox mode is explicitly selected; see [native Windows sandbox](../guides/windows-sandbox.md) and [WSL2 setup](../guides/wsl2.md)).
 - Configure `execution.mode` (`read-only`, `workspace-edit`, or `no-limit`) in user settings, or pass `--permission <mode>` on the command line. Retired keys (`sandbox`, `execution.provider`, `permissions.preset`/`presets`/`mode`/`modes`/`allow`/`deny`) and retired flags (`--execution`, `--mode`, `--sandbox`) are rejected explicitly with guidance to `execution.mode` / `--permission`.
 - Inspect or change modes in-session with `/permissions show`, `/permissions list`, `/permissions <id>`, or Shift+Tab in the TUI. Switching modes applies to the next task; active tasks and their queued children keep their captured immutable execution context.
 

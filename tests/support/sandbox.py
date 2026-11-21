@@ -42,6 +42,13 @@ def native_session(make_session, platforms):
     if sys.platform == "win32":
         import shutil
 
+        from virgo.execution_policy import is_windows_sandbox_supported
+
+        if not required and not is_windows_sandbox_supported():
+            pytest.skip(
+                "Native Windows sandbox requires Windows 11 with updated null.sys "
+                "(Feature 60692039); set VIRGO_REQUIRE_SANDBOX_TESTS=1 to fail instead"
+            )
         executable = shutil.which("pwsh")
         assert executable, "PowerShell 7 is required by native Windows acceptance"
         settings["shell"] = {"executable": executable}

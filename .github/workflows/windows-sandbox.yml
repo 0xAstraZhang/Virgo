@@ -1,14 +1,26 @@
-name: Windows sandbox boundaries (experimental)
-# S6-02 (§6.2): Native Windows LPAC sandbox is experimental and frozen.
-# Runs daily on schedule and on manual dispatch; does not block pull requests.
+name: Windows sandbox boundaries
 on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'src/virgo/**'
+      - 'tests/conftest.py'
+      - 'tests/support/**'
+      - 'tests/harness/test_windows_sandbox_e2e.py'
+      - 'ci/check_native_report.py'
+      - 'ci/prepare_windows_null_device.py'
+      - 'ci/run_as_standard_user.py'
+      - '.github/workflows/windows-sandbox.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
   schedule:
     - cron: '0 4 * * *'
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: windows-sandbox-${{ github.ref }}
+  group: windows-sandbox-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   native:
@@ -43,18 +55,15 @@ jobs:
           Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture | Format-List
           $PSVersionTable | Format-List
           uv run --no-sync python -c "import platform,struct,sys; print(platform.platform()); print(sys.version); print(sys.executable); assert struct.calcsize('P') == 8"
+      - name: Verify stock unsupported Windows Server fallback before CI null-device alignment
+        run: uv run --no-sync python ci/prepare_windows_null_device.py --verify-unsupported
+      - name: Align Windows Server runner null device with Win11 Feature 60692039
+        run: uv run --no-sync python ci/prepare_windows_null_device.py
       - name: Exercise actual Windows security boundaries
         run: uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
-      - name: Reject empty or skipped security reports
+      - name: Reject empty, failed or skipped native reports
         if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          [xml]$report = Get-Content windows-sandbox.xml
-          $cases = @($report.SelectNodes('//testcase'))
-          if ($cases.Count -eq 0) { throw 'No native Windows security cases executed' }
-          $problems = @($report.SelectNodes('//testcase/failure | //testcase/error | //testcase/skipped'))
-          if ($problems.Count -ne 0) { throw "Native security report contains $($problems.Count) failures/errors/skips" }
-          Write-Output "Validated $($cases.Count) real Windows security cases with zero failures, errors or skips"
+        run: uv run --no-sync python ci/check_native_report.py windows-sandbox.xml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
@@ -62,3 +71,98 @@ jobs:
           path: windows-sandbox.xml
           if-no-files-found: error
           retention-days: 14
+
+  standard-user:
+    name: Windows native isolation / standard-user (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: '1'
+      VIRGO_REQUIRE_SANDBOX_TESTS: '1'
+    steps:
+      - name: Check out the exact requested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+      - name: Create pure non-Administrators Standard User and isolated workspace
+        id: stduser
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pw = 'Vrg!' + [Guid]::NewGuid().ToString('N').Substring(0, 16) + 'aA9!'
+          Write-Output "::add-mask::$pw"
+          "VIRGO_STD_PASSWORD=$pw" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Set-Service -Name seclogon -StartupType Manual
+          Start-Service -Name seclogon
+
+          net user virgo_std "$pw" /add /y
+          if ($LASTEXITCODE -ne 0) { throw "net user /add failed: $LASTEXITCODE" }
+          # Confirm virgo_std is in Users only and NOT in Administrators.
+          $admins = net localgroup Administrators | Out-String
+          if ($admins -match '(?m)^\s*virgo_std\s*$') { throw 'virgo_std unexpectedly in Administrators' }
+
+          $work = 'C:\virgo-std-work'
+          if (Test-Path $work) { Remove-Item -Recurse -Force $work }
+          New-Item -ItemType Directory -Path "$work\bin", "$work\repo" -Force | Out-Null
+          $uvPath = (Get-Command uv.exe).Source
+          Copy-Item -LiteralPath $uvPath -Destination "$work\bin\uv.exe" -Force
+          robocopy . "$work\repo" /E /XD .git .venv /NFL /NDL /NJH /NJS /NC /NS | Out-Null
+          if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
+
+          icacls $work /grant 'virgo_std:(OI)(CI)F' /T /Q
+          if ($LASTEXITCODE -ne 0) { throw "icacls grant failed: $LASTEXITCODE" }
+      - name: Align Windows Server runner null device with Win11 Feature 60692039
+        run: uv run --no-project python ci/prepare_windows_null_device.py
+      - name: Run Windows sandbox acceptance as pure Standard User
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = 'C:\virgo-std-work'
+          $runnerScript = "$work\run_std.ps1"
+          $logFile = "$work\std.log"
+          @'
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONUTF8 = '1'
+          $env:VIRGO_REQUIRE_SANDBOX_TESTS = '1'
+          $env:UV_PYTHON_PREFERENCE = 'only-managed'
+          $uv = 'C:\virgo-std-work\bin\uv.exe'
+          Set-Location 'C:\virgo-std-work\repo'
+          & $uv sync --locked --dev --python 3.13 --python-preference only-managed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $uv run --no-sync python ci/run_as_standard_user.py --assert-standard-user
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=C:\virgo-std-work\windows-sandbox-stduser.xml
+          exit $LASTEXITCODE
+          '@ | Set-Content -LiteralPath $runnerScript -Encoding utf8
+
+          $pwshExe = (Get-Command pwsh.exe).Source
+          $cmd = 'try {{ & ''{0}'' *> ''{1}''; if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}; if (-not $?) {{ exit 1 }}; exit 0 }} catch {{ $_ | Out-File -FilePath ''{1}'' -Append -Encoding utf8; exit 1 }}' -f $runnerScript, $logFile
+          uv run --no-project python ci/run_as_standard_user.py `
+            --username virgo_std `
+            --password-env VIRGO_STD_PASSWORD `
+            --cwd "$work\repo" `
+            --log-file $logFile `
+            -- $pwshExe -NoLogo -NoProfile -NonInteractive -Command $cmd
+          exit $LASTEXITCODE
+      - name: Reject empty, failed or skipped Standard User native reports
+        if: ${{ !cancelled() }}
+        run: uv run --no-project python ci/check_native_report.py C:\virgo-std-work\windows-sandbox-stduser.xml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-sandbox-standard-user
+          path: C:\virgo-std-work\windows-sandbox-stduser.xml
+          if-no-files-found: error
+          retention-days: 14
+      - name: Clean up temporary Standard User account and workspace
+        if: always()
+        shell: pwsh
+        run: |
+          net user virgo_std /delete 2>$null | Out-Null
+          Remove-Item -LiteralPath 'C:\virgo-std-work' -Recurse -Force -ErrorAction SilentlyContinue

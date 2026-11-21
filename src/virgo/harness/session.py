@@ -31,14 +31,14 @@ from ..ai.types import (
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
-from ..execution_policy import is_native_windows
+from ..execution_policy import is_native_windows, is_windows_sandbox_supported
 from ..i18n import Translator, normalize_language
 from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
 from .commands import Commands, expand_template, load_templates, parse_frontmatter, register_builtins
 from .diagnostics import DiagnosticLog
-from .execution import _WINDOWS_EXPERIMENTAL_NOTE, install_execution
+from .execution import install_execution
 from .extensions import (
     EventBus,
     Handled,
@@ -197,18 +197,21 @@ class AgentSession:
 
     # -- diagnostics -----------------------------------------------------------
     def _warn_windows_sandbox(self) -> None:
-        """Show the native Windows WSL2 hint once in No-Limit, or mark experimental sandbox modes."""
-        if not is_native_windows():
+        """Show guidance once when native Windows defaults to No-Limit on an unsupported OS build."""
+        if not is_native_windows() or is_windows_sandbox_supported():
             return
         if self.settings.get("execution.mode") != "no-limit":
-            self.ui.print(_WINDOWS_EXPERIMENTAL_NOTE, "warn")
             return
-        marker = self.paths.user / "migrations" / "windows-wsl2-hint"
+        marker = self.paths.user / "migrations" / "windows-sandbox-unsupported-notice"
         if marker.exists():
             return
         self.ui.print(
-            "Native Windows defaults to No-Limit because the native Windows sandbox is experimental. "
-            "For full sandbox support on Windows, we recommend running Virgo inside WSL2.",
+            "Native Windows sandboxing is disabled by default on this Windows version because "
+            "\\Device\\Null does not grant ALL APPLICATION PACKAGES access (requires Windows 11 "
+            "with updated null.sys / Feature 60692039). Running in No-Limit mode. Options:\n"
+            "  1. WSL2: run Virgo inside WSL2 for full Linux sandbox isolation (recommended).\n"
+            "  2. No-Limit: continue with No-Limit (--permission no-limit / /permissions no-limit).\n"
+            "  3. Update Windows: update to Windows 11 with the null.sys AppContainer update (Feature 60692039).",
             "warn",
         )
         try:
@@ -216,7 +219,6 @@ class AgentSession:
             marker.touch(exist_ok=True)
         except OSError as error:
             self.report_error(error, phase="windows.notice", notify=False)
-
     def _warn_retired_data(self):
         """Only inspect existence; old files are neither parsed nor migrated."""
         retired = ("schedules.json", "tasks", "runs", "workflows", "memory", "MEMORY.md", "worktrees")

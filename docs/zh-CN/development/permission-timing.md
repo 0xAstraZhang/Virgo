@@ -1,6 +1,6 @@
 # 权限模式耗时
 
-`Permission mode performance` 工作流在 Linux、macOS 和 Windows 上分别对比当前 PR 提交和固定的主线提交 [`04e94ed`](https://github.com/0xAstraZhang/Virgo/commit/04e94ed45992d8e2cbf2178c8c6b562704092a83)。两个版本使用各自锁定的依赖，依次在同一台运行器上执行。脚本用本地模型驱动 Virgo 的实际工具。
+`Permission mode performance` 工作流在 Linux（`ubuntu-latest`）、macOS（`macos-latest`）和原生 Windows（`windows-latest`）上覆盖 `no-limit`、`read-only` 与 `workspace-edit` 三种模式。在 Linux 与 macOS 上，工作流依次在同一台运行器上对比当前 PR 提交和固定的主线提交 [`04e94ed`](https://github.com/0xAstraZhang/Virgo/commit/04e94ed45992d8e2cbf2178c8c6b562704092a83)；在原生 Windows 上则直接测量当前 PR 提交（跳过旧版 LPAC 主线基线对比）。在**全部三个平台**（含 Windows）上，工作流均通过 `--check-budgets` 强制校验真实规模下的冷启动与首次命令初始化（`<= 5 秒`）、重复命令 O(1) 开销（`<= 2 秒`且不随文件数线性增长）以及 `Read`（`<= 250 毫秒`且 O(1)）预算。脚本用本地模型驱动 Virgo 的实际工具。
 
 | 模式 | 主线对照配置 | 源文件修改者 |
 | --- | --- | --- |

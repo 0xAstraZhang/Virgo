@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..agent import Block
 from ..execution import HostContext, SandboxExecutor
-from ..execution_policy import DEFAULT_MODES, HOST_MODE, is_native_windows
+from ..execution_policy import DEFAULT_MODES, HOST_MODE
 from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
 from ..tools.output import make_read_output_tool
 from .high_risk import detect_high_risk_command
@@ -15,16 +15,11 @@ from .ui import UI
 
 _BACKEND_UNAVAILABLE_REASONS = frozenset({
     "backend_unavailable",
-    "windows_admin_required",
     "windows_network_isolation_unavailable",
-    "device_acl_unavailable",
+    "windows_null_device_unavailable",
+    "windows_runtime_inaccessible",
+    "windows_unsupported_os",
 })
-
-_WINDOWS_EXPERIMENTAL_NOTE = (
-    "Experimental native Windows sandbox: requires an Administrator account, "
-    "adds ~14s overhead per command, does not enforce private-directory read denial, "
-    "and does not support $HOME as a workspace. WSL2 is recommended on Windows."
-)
 
 
 class HostExecutionProvider:
@@ -247,6 +242,9 @@ class ModeExecutionProvider(HostExecutionProvider):
         if self.sandbox is not None:
             self.sandbox.revoke()
 
+    def close(self):
+        self.executor.close()
+
     def select_mode(self, identifier):
         with self.session._lock:
             self.session.assert_state_change_allowed()
@@ -262,8 +260,11 @@ class ModeExecutionProvider(HostExecutionProvider):
             if not runtime.execution_active and not self.session.runtime_is_busy(runtime):
                 runtime.execution_context = context
                 runtime.rebuild_system()
-            if is_native_windows() and identifier != HOST_MODE.id:
-                self.session.ui.print(_WINDOWS_EXPERIMENTAL_NOTE, "warn")
+                if identifier == HOST_MODE.id:
+                    try:
+                        self.executor.close_idle()
+                    except Exception as error:
+                        self.session.report_error(error, phase="execution.cleanup", notify=False)
             self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
 
     def status(self, session, args):
@@ -273,8 +274,6 @@ class ModeExecutionProvider(HostExecutionProvider):
             facts = {**context.describe(), "current_mode": current.name, "next_mode": self.selected_mode.name,
                      "web_allowed": current.web_allowed, "shell_network": current.flags()["network_allowed"]}
             label = f"{current.name} ({context.provider.title()})"
-            if is_native_windows() and current.experimental_on_windows:
-                label += " [experimental]"
             session.ui.command_result(f"{label}\n" + json.dumps(facts, ensure_ascii=False))
 
     def command(self, session, args):
@@ -282,12 +281,7 @@ class ModeExecutionProvider(HostExecutionProvider):
         if value in {"", "show", "status"}:
             self.status(session, args)
         elif value == "list":
-            rows = []
-            for mode in self.modes.values():
-                suffix = " [experimental on native Windows; WSL2 recommended]" if (
-                    is_native_windows() and mode.experimental_on_windows
-                ) else ""
-                rows.append(f"{mode.id}: {mode.name}{suffix}")
+            rows = [f"{mode.id}: {mode.name}" for mode in self.modes.values()]
             session.ui.command_result("\n".join(rows))
         elif value == "grants" or value.startswith("revoke "):
             from .resource_approvals import manage_grants
@@ -304,6 +298,9 @@ class ModeExecutionProvider(HostExecutionProvider):
 def install_execution(session):
     provider = ModeExecutionProvider(session)
     session.register_execution_provider(provider, owner="core")
+    # Registered before JobManager so LIFO shutdown drains background jobs first,
+    # then tears down session-scoped Windows AppContainer profiles and ACLs.
+    session.register_cleanup("core.execution", provider.close)
     if provider.selected_mode != HOST_MODE:
         provider.load_sandbox()
     for tool in (READ, GLOB, GREP, WRITE, EDIT):

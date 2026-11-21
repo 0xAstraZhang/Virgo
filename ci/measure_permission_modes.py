@@ -20,6 +20,7 @@ from pathlib import Path
 WORKER_TIMEOUT_SECONDS = 180
 DEFAULT_MAX_COLD_START_MS = 5000.0
 DEFAULT_MAX_READ_MS = 250.0
+DEFAULT_MAX_REPEAT_CMD_MS = 2000.0
 
 
 def populate_realistic_workspace(workspace: Path, file_count: int) -> list[str]:
@@ -294,14 +295,24 @@ def stop_worker(_signum, _frame):
     raise SystemExit(1)
 
 
+def _repeat_command_latencies(samples: list[dict]) -> list[float]:
+    return [
+        float(op["latency_ms"])
+        for sample_rec in samples
+        for op in (sample_rec.get("operations") or ())
+        if op.get("phase") == "repeat" and isinstance(op.get("latency_ms"), (int, float))
+    ]
+
+
 def evaluate_scale_budgets(
     small_samples: list[dict],
     large_samples: list[dict],
     *,
     max_cold_start_ms: float = DEFAULT_MAX_COLD_START_MS,
     max_read_ms: float = DEFAULT_MAX_READ_MS,
+    max_repeat_cmd_ms: float = DEFAULT_MAX_REPEAT_CMD_MS,
 ) -> dict:
-    """Enforce S5-04 performance budgets on Linux and macOS (cold start <= 5s, O(1) Read overhead)."""
+    """Enforce S5-04 performance budgets on Tier 1 platforms (cold start, first/repeat Shell, O(1) Read)."""
     violations: list[str] = []
     if not small_samples or not all(s.get("success") for s in small_samples):
         violations.append("Small-workspace samples did not all succeed")
@@ -327,6 +338,39 @@ def evaluate_scale_budgets(
             f"Per-Read latency scaled with workspace size: small={small_read:.1f}ms, "
             f"realistic={large_read:.1f}ms (ceiling {scaling_ceiling:.1f}ms)"
         )
+
+    extra: dict[str, float] = {}
+    small_first_vals = [float(s["first_command_ms"]) for s in small_samples if isinstance(s.get("first_command_ms"), (int, float))]
+    large_first_vals = [float(s["first_command_ms"]) for s in large_samples if isinstance(s.get("first_command_ms"), (int, float))]
+    if small_first_vals and large_first_vals:
+        small_first = statistics.median(small_first_vals)
+        large_first = statistics.median(large_first_vals)
+        extra["small_first_command_median_ms"] = round(small_first, 2)
+        extra["realistic_first_command_median_ms"] = round(large_first, 2)
+        if large_first > max_cold_start_ms:
+            violations.append(
+                f"Realistic workspace first_command_ms {large_first:.1f}ms exceeds {max_cold_start_ms:.1f}ms"
+            )
+
+    small_repeat_vals = _repeat_command_latencies(small_samples)
+    large_repeat_vals = _repeat_command_latencies(large_samples)
+    if small_repeat_vals and large_repeat_vals:
+        small_repeat = statistics.median(small_repeat_vals)
+        large_repeat = statistics.median(large_repeat_vals)
+        extra["small_repeat_command_median_ms"] = round(small_repeat, 2)
+        extra["realistic_repeat_command_median_ms"] = round(large_repeat, 2)
+        extra["max_repeat_cmd_ms"] = max_repeat_cmd_ms
+        if large_repeat > max_repeat_cmd_ms:
+            violations.append(
+                f"Realistic workspace repeat command latency {large_repeat:.1f}ms exceeds {max_repeat_cmd_ms:.1f}ms"
+            )
+        repeat_ceiling = max(small_repeat * 3.0, small_repeat + 300.0)
+        if large_repeat > repeat_ceiling:
+            violations.append(
+                f"Repeat command latency scaled with workspace size: small={small_repeat:.1f}ms, "
+                f"realistic={large_repeat:.1f}ms (ceiling {repeat_ceiling:.1f}ms)"
+            )
+
     return {
         "passed": not violations,
         "violations": violations,
@@ -336,6 +380,7 @@ def evaluate_scale_budgets(
         "realistic_read_median_ms": round(large_read, 2),
         "max_cold_start_ms": max_cold_start_ms,
         "max_read_ms": max_read_ms,
+        **extra,
     }
 
 
@@ -362,16 +407,6 @@ def main():
         print(json.dumps(sample(args)))
         return
     if args.check_budgets:
-        if sys.platform == 'win32':
-            skipped = {
-                'platform': platform.platform(), 'mode': args.mode,
-                'budget_skipped': True,
-                'reason': 'Native Windows is experimental (§6.2); S5-04 performance budgets apply to Linux and macOS.',
-            }
-            if args.output:
-                checkpoint(args.output, skipped)
-            print(json.dumps(skipped, indent=2))
-            return 0
         read_repeats = max(args.read_repeats, 10)
         base_cmd = [
             sys.executable, str(Path(__file__).resolve()), '--worker',

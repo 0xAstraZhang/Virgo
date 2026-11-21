@@ -8,8 +8,7 @@
 
 ## 默认模式与选择方式
 
-- **Linux、macOS 与 WSL2**：默认 **Workspace-Edit**。
-- **原生 Windows**：默认 **No-Limit**，因为原生 Windows LPAC 沙箱为实验性功能（详见 [WSL2 使用指南](../guides/wsl2.md) 与[原生 Windows 沙箱（实验性）](../guides/windows-sandbox.md)）。
+- **受支持的一级平台（Linux、macOS、已启用 `null.sys` Feature `60692039` 的新版 Windows 11 与 WSL2）**：默认 **Workspace-Edit**。受支持的新版 Windows 11 使用非提权标准 AppContainer 后端（`windows-appcontainer`，无需管理员权限）；`\Device\Null` 缺少 `S-1-15-2-1` 的旧版 Windows 默认以 **No-Limit** 启动并显示一次性提示（**1. WSL2**、**2. No-Limit**、**3. 更新 Windows**），显式选择沙箱模式时 fail-closed（详见[原生 Windows 沙箱](../guides/windows-sandbox.md)与 [WSL2 使用指南](../guides/wsl2.md)）。
 - 在用户设置中配置 `execution.mode`（`read-only`、`workspace-edit` 或 `no-limit`），或通过命令行 `--permission <mode>` 启动。已退役的配置项（`sandbox`、`execution.provider`、`permissions.preset`/`presets`/`mode`/`modes`/`allow`/`deny`）与旧参数（`--execution`、`--mode`、`--sandbox`）会直接报错并指引改用 `execution.mode` / `--permission`。
 - 会话内使用 `/permissions show`、`/permissions list`、`/permissions <id>` 或 TUI 的 Shift+Tab 查看和切换模式。切换模式作用于下一任务；运行中的任务及其排队子任务保持启动时固定的不可变执行上下文。
 

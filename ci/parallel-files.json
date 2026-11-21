@@ -42,6 +42,7 @@
       "tests/harness/test_diagnostic_history.py": 6
     },
     "win32": {
+      "tests/harness/test_windows_sandbox_e2e.py": 130,
       "tests/tools/test_shell_runtime.py": 78,
       "tests/cli/tui/test_sessions.py": 45,
       "tests/harness/test_shell_commands.py": 32,

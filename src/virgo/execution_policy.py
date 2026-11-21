@@ -22,9 +22,20 @@ def is_native_windows() -> bool:
     return sys.platform == "win32"
 
 
+def is_windows_sandbox_supported() -> bool:
+    """Return True when native Windows supports unelevated Standard AppContainer (Win11 null.sys Feature 60692039)."""
+    if not is_native_windows():
+        return False
+    from ._windows_probe import is_windows_appcontainer_supported
+
+    return bool(is_windows_appcontainer_supported())
+
+
 def default_execution_mode() -> str:
-    """Native Windows defaults to No-Limit while its LPAC backend is experimental."""
-    return "no-limit" if is_native_windows() else "workspace-edit"
+    """Default execution mode: Workspace-Edit on supported Tier 1 hosts, No-Limit on unsupported Windows."""
+    if is_native_windows() and not is_windows_sandbox_supported():
+        return "no-limit"
+    return "workspace-edit"
 
 
 def parse_network(value: object) -> bool:
@@ -148,7 +159,6 @@ class ExecutionMode:
     id: str
     name: str
     policy: PermissionPolicy
-    experimental_on_windows: bool = False
 
     @property
     def web_allowed(self) -> bool:
@@ -188,12 +198,10 @@ HOST_MODE = ExecutionMode(
 READ_ONLY_MODE = ExecutionMode(
     "read-only", "Read-Only",
     PermissionPolicy((PathRule(Path("."), "read"),), False),
-    experimental_on_windows=True,
 )
 WORKSPACE_EDIT_MODE = ExecutionMode(
     "workspace-edit", "Workspace-Edit",
     PermissionPolicy((PathRule(Path("."), "write"),), True),
-    experimental_on_windows=True,
 )
 DEFAULT_MODES = {mode.id: mode for mode in (READ_ONLY_MODE, WORKSPACE_EDIT_MODE, HOST_MODE)}
 

@@ -18,6 +18,7 @@ CI_FINGERPRINT_FILES = (
     "ci/run_suite.py",
     "ci/run_pytest.py",
     "ci/parallel-files.json",
+    "ci/prepare_windows_null_device.py",
 )
 
 

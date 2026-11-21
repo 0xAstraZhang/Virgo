@@ -126,7 +126,19 @@ class SandboxExecutor:
     def backend(self):
         # A description is not a capability probe. Discovery and trust checks
         # belong to launch, not prompt construction or displaying permissions.
-        return {"linux": "bubblewrap", "darwin": "seatbelt", "win32": "windows-lpac"}.get(sys.platform, "unsupported")
+        return {"linux": "bubblewrap", "darwin": "seatbelt", "win32": "windows-appcontainer"}.get(
+            sys.platform, "unsupported"
+        )
+
+    def close_idle(self):
+        native = self.__dict__.get("native")
+        if native is not None and hasattr(native, "close_idle"):
+            native.close_idle()
+
+    def close(self):
+        native = self.__dict__.get("native")
+        if native is not None and hasattr(native, "close"):
+            native.close()
 
     @property
     def identity(self):
@@ -424,9 +436,9 @@ class SandboxContext:
             if (self.workspace == home or home.is_relative_to(self.workspace)
                     or any(root.is_relative_to(self.workspace) for root in self.private_paths)):
                 raise ExecutionUnavailable(
-                    "Native experimental Windows sandbox does not support running with your home or "
-                    "Virgo private directory as the workspace. Use WSL2 for full Linux sandbox support "
-                    "or switch to No-Limit (--permission no-limit).",
+                    "Native Windows sandbox does not support running with your home or "
+                    "Virgo private directory as the workspace. Switch to a project directory "
+                    "or use No-Limit (--permission no-limit).",
                     reason="unsupported_workspace", target=self.workspace,
                 )
         try:
@@ -461,7 +473,6 @@ class SandboxContext:
             "revision": self.revision,
             "state": "launch_unverified",
             "native_support": "checked_at_launch",
-            "experimental": is_native_windows(),
             "windows_network": "AppContainer and host firewall policy apply" if os.name == "nt" else None,
             "runtime_read_dependencies": [str(p) for p in self.runtime_paths()],
             "unmanaged": ["broker", "trusted Python extensions", "hooks", "MCP services", "model transport"],

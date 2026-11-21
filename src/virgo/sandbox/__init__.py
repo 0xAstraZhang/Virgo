@@ -54,9 +54,9 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
 
     def context_for_mode(self, runtime, mode, revision):
         if is_native_windows():
-            from .windows_sandbox import precheck_experimental_sandbox
+            from .windows_sandbox import precheck_windows_sandbox
 
-            precheck_experimental_sandbox()
+            precheck_windows_sandbox()
         workspace = Path(runtime.accounting_store.cwd).resolve()
         user_dir = self.session.paths.user.resolve()
         # Ensure the private state directory exists when nested inside workspace
