@@ -130,9 +130,11 @@ def test_background_download_failure_does_not_read_old_file(make_session, projec
 
 def test_bash_exit_codes_timeout_and_truncation(project, python_command):
     interpreter = default_shell(discover_shells())
-    r = run(project, python_command("import sys; print('hi'); sys.exit(3)", shell=interpreter), interpreter=interpreter)
+    exit_cmd = "Write-Output hi; exit 3" if interpreter.tool_name == "powershell" else "echo hi; exit 3"
+    r = run(project, exit_cmd, interpreter=interpreter)
     assert r.is_error and "hi" in r.as_text() and "Exit code 3" in r.as_text()
-    assert run(project, python_command("import os; print(os.getcwd())", shell=interpreter), interpreter=interpreter).as_text().strip() == str(project)
+    cwd_out = run(project, python_command("import os; print(os.getcwd())", shell=interpreter), interpreter=interpreter)
+    assert not cwd_out.is_error and Path(cwd_out.as_text().strip()).resolve() == project.resolve()
     t = run(project, python_command("import time; time.sleep(5)", shell=interpreter), interpreter=interpreter, timeout=0.3)
     assert t.is_error and "timed out" in t.as_text()
     big_res = run(project, python_command(f"for i in range(1, {MAX_LINES + 101}): print(i)", shell=interpreter), interpreter=interpreter)
