@@ -276,6 +276,7 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
     """VER-13: Supported Win11 (Feature 60692039) defaults to Workspace-Edit with no experimental badge."""
     import types
 
+    import virgo._windows_probe as wp
     import virgo.execution_policy as ep
     import virgo.harness.session as hs
     import virgo.sandbox as sb
@@ -291,6 +292,7 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
         is_windows_sandbox_supported=lambda: True,
         precheck_windows_sandbox=ok_precheck,
     )
+    monkeypatch.setattr(wp, "is_windows_appcontainer_supported", lambda: True)
     monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
     monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
@@ -333,12 +335,27 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
 
 def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(project, monkeypatch):
     """Unsupported Windows (without Feature 60692039 / \\Device\\Null AAP) defaults to No-Limit with 3 options."""
+    import struct
     import types
 
+    import virgo._windows_probe as wp
     import virgo.execution_policy as ep
     import virgo.harness.session as hs
     import virgo.sandbox as sb
     from virgo.harness.session import AgentSession
+
+    # Pure-Python DACL check: stock Server 2025 (WD-only) fails, Win11 null.sys 0x1201BF (AC) passes,
+    # explicit DENY on AC fails, and NULL DACL passes.
+    def _ace(ace_type: int, mask: int, sid: bytes) -> bytes:
+        return struct.pack("<BBHI", ace_type, 0, 8 + len(sid), mask) + sid
+
+    wd_only = [_ace(0, 0x001201BF, wp.WORLD_SID_BYTES)]
+    win11_null = [*wd_only, _ace(0, 0x001201BF, wp.AAP_SID_BYTES)]
+    denied_aap = [_ace(1, 0x00000002, wp.AAP_SID_BYTES), *win11_null]
+    assert wp.dacl_allows_aap_null_access(wd_only) is False
+    assert wp.dacl_allows_aap_null_access(win11_null) is True
+    assert wp.dacl_allows_aap_null_access(denied_aap) is False
+    assert wp.dacl_allows_aap_null_access([], is_null=True) is True
 
     def fail_null_device():
         raise ExecutionUnavailable(
@@ -355,6 +372,7 @@ def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(pro
         is_windows_sandbox_supported=lambda: False,
         precheck_windows_sandbox=fail_null_device,
     )
+    monkeypatch.setattr(wp, "is_windows_appcontainer_supported", lambda: False)
     monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
     monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)

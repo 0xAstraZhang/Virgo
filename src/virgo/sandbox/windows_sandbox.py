@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .. import _windows_probe
 from ..execution_policy import PROTECTED_NAMES
 from .platform import SandboxCancelled, SandboxProcessError, SandboxUnavailable
 from .windows_acl import (
@@ -46,7 +47,6 @@ from .windows_acl import (
     has_aap_read_access,
     is_dacl_protected,
     is_protected_readonly_for_sid,
-    null_device_allows_appcontainer,
     protect_readonly_path,
     revoke_sid_from_root,
 )
@@ -607,7 +607,7 @@ def is_windows_sandbox_supported() -> bool:
         backend()
     except (SandboxUnavailable, OSError):
         return False
-    return null_device_allows_appcontainer()
+    return _windows_probe.null_device_allows_appcontainer()
 
 
 def precheck_windows_sandbox() -> None:
@@ -620,7 +620,7 @@ def precheck_windows_sandbox() -> None:
             reason="windows_unsupported_os",
             dimension="windows_appcontainer_sandbox",
         ) from error
-    if not null_device_allows_appcontainer():
+    if not _windows_probe.null_device_allows_appcontainer():
         raise SandboxUnavailable(
             UNSUPPORTED_WINDOWS_GUIDANCE,
             reason="windows_null_device_unavailable",

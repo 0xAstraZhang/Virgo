@@ -26,11 +26,9 @@ def is_windows_sandbox_supported() -> bool:
     """Return True when native Windows supports unelevated Standard AppContainer (Win11 null.sys Feature 60692039)."""
     if not is_native_windows():
         return False
-    try:
-        from .sandbox.windows_sandbox import is_windows_sandbox_supported as _probe
-    except ImportError:
-        return False
-    return bool(_probe())
+    from ._windows_probe import is_windows_appcontainer_supported
+
+    return bool(is_windows_appcontainer_supported())
 
 
 def default_execution_mode() -> str:

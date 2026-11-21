@@ -31,8 +31,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .._windows_probe import NULL_DEVICE_REQUIRED_ACCESS, null_device_allows_appcontainer
+
 if sys.platform != "win32":  # pragma: no cover - imported only on Windows
     raise ImportError("virgo.sandbox.windows_acl requires Windows")
+
+__all__ = [
+    "ALL_APPLICATION_PACKAGES_SID",
+    "NULL_DEVICE_REQUIRED_ACCESS",
+    "acl_state_lock",
+    "ancestor_lacks_aap",
+    "can_open_write_dac",
+    "capture_dacl_snapshot",
+    "grant_root_access",
+    "has_aap_read_access",
+    "inspect_dacl",
+    "is_appcontainer_package_sid",
+    "is_dacl_protected",
+    "is_protected_readonly_for_sid",
+    "null_device_allows_appcontainer",
+    "protect_readonly_path",
+    "revoke_sid_from_root",
+    "scan_residual_aces",
+]
 
 PSID = ctypes.c_void_p
 PACL = ctypes.c_void_p
@@ -43,7 +64,6 @@ WORD = ctypes.c_uint16
 BOOL = ctypes.c_int32
 
 ALL_APPLICATION_PACKAGES_SID = "S-1-15-2-1"
-WORLD_SID = "S-1-1-0"
 
 SE_FILE_OBJECT = 1
 DACL_SECURITY_INFORMATION = 0x00000004
@@ -104,20 +124,15 @@ WRITE_OWNER = 0x00080000
 SYNCHRONIZE = 0x00100000
 GENERIC_ALL = 0x10000000
 GENERIC_EXECUTE = 0x20000000
-GENERIC_WRITE = 0x40000000
 GENERIC_READ = 0x80000000
 
 FILE_GENERIC_READ = (
     READ_CONTROL | FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | SYNCHRONIZE
 )  # 0x00120089
-FILE_GENERIC_WRITE = (
-    READ_CONTROL | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
-)  # 0x00120116
 FILE_GENERIC_EXECUTE = (
     READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_EXECUTE | SYNCHRONIZE
 )  # 0x001200A0
 READ_EXECUTE_MASK = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE  # 0x001200A9
-NULL_DEVICE_REQUIRED_ACCESS = FILE_GENERIC_READ | FILE_GENERIC_WRITE  # 0x0012019F
 
 _WRITE_SPECIFIC_BITS = (
     FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
@@ -231,18 +246,6 @@ _GetSecurityDescriptorControl = _api(
     [PSECURITY_DESCRIPTOR, ctypes.POINTER(WORD), ctypes.POINTER(DWORD)],
     BOOL,
 )
-_GetKernelObjectSecurity = _api(
-    _advapi32,
-    "GetKernelObjectSecurity",
-    [HANDLE, DWORD, PSECURITY_DESCRIPTOR, DWORD, ctypes.POINTER(DWORD)],
-    BOOL,
-)
-_GetSecurityDescriptorDacl = _api(
-    _advapi32,
-    "GetSecurityDescriptorDacl",
-    [PSECURITY_DESCRIPTOR, ctypes.POINTER(BOOL), ctypes.POINTER(PACL), ctypes.POINTER(BOOL)],
-    BOOL,
-)
 _ConvertStringSidToSidW = _api(
     _advapi32, "ConvertStringSidToSidW", [w.LPCWSTR, ctypes.POINTER(PSID)], BOOL
 )
@@ -289,7 +292,6 @@ def _sid_bytes_to_str(sid_bytes: bytes) -> str:
 
 
 _AAP_SID_BYTES = _sid_str_to_bytes(ALL_APPLICATION_PACKAGES_SID)
-_WORLD_SID_BYTES = _sid_str_to_bytes(WORLD_SID)
 
 
 def _build_ace(ace_type: int, ace_flags: int, access_mask: int, sid_bytes: bytes) -> bytes:
@@ -624,74 +626,6 @@ def revoke_sid_from_root(
 
         if changed:
             _write_dacl_preserving_protection(win_path, previous, retained)
-
-
-def null_device_allows_appcontainer() -> bool:
-    """Read-only probe checking whether \\Device\\Null grants S-1-15-2-1 read/write access.
-
-    Windows 11 builds with updated null.sys (Feature 60692039 / 10.0.26100.8972+)
-    grant ALL APPLICATION PACKAGES (S-1-15-2-1) 0x1201BF on \\Device\\Null so
-    unelevated Standard AppContainer processes can open NUL / subprocess.DEVNULL.
-    Older Windows 10, older Windows 11, and stock Windows Server 2022/2025 lack
-    this ACE and fail closed.
-    """
-    handle = _CreateFileW(
-        r"\\?\GLOBALROOT\Device\Null",
-        READ_CONTROL,
-        0x7,  # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
-        None,
-        3,  # OPEN_EXISTING
-        0,
-        None,
-    )
-    if not handle or handle == _INVALID_HANDLE_VALUE:
-        return False
-    try:
-        needed = DWORD()
-        _GetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, None, 0, ctypes.byref(needed))
-        if not needed.value:
-            return False
-        buf = ctypes.create_string_buffer(needed.value)
-        if not _GetKernelObjectSecurity(
-            handle, DACL_SECURITY_INFORMATION, buf, len(buf), ctypes.byref(needed)
-        ):
-            return False
-        dacl_present = BOOL()
-        dacl_defaulted = BOOL()
-        dacl_ptr = PACL()
-        if not _GetSecurityDescriptorDacl(
-            buf, ctypes.byref(dacl_present), ctypes.byref(dacl_ptr), ctypes.byref(dacl_defaulted)
-        ):
-            return False
-        if not dacl_present.value or not dacl_ptr.value:
-            return True
-        _, aces = _parse_acl_ptr(dacl_ptr.value, r"\Device\Null")
-    except OSError:
-        return False
-    finally:
-        _CloseHandle(handle)
-
-    allowed = 0
-    denied = 0
-    for ace in aces:
-        if ace[1] & INHERIT_ONLY_ACE:
-            continue
-        sid = _ace_sid_bytes(ace)
-        if sid is None:
-            continue
-        raw_mask = _ace_mask(ace)
-        mask = raw_mask
-        if raw_mask & GENERIC_ALL:
-            mask |= NULL_DEVICE_REQUIRED_ACCESS
-        if raw_mask & GENERIC_READ:
-            mask |= FILE_GENERIC_READ
-        if raw_mask & GENERIC_WRITE:
-            mask |= FILE_GENERIC_WRITE
-        if ace[0] in _DENY_ACE_TYPES and sid in (_AAP_SID_BYTES, _WORLD_SID_BYTES):
-            denied |= mask & ~allowed
-        elif ace[0] == ACCESS_ALLOWED_ACE_TYPE and sid == _AAP_SID_BYTES:
-            allowed |= mask & ~denied
-    return (allowed & NULL_DEVICE_REQUIRED_ACCESS) == NULL_DEVICE_REQUIRED_ACCESS
 
 
 def has_aap_read_access(path: str | Path, *, require_execute: bool = True) -> bool:

@@ -1004,11 +1004,13 @@ def test_inaccessible_runtime_fails_closed(tmp_path, monkeypatch, make_session):
     assert str(fake_rt) in str(exc_info.value)
 
     # Verify assembled session fails closed on decline and allows explicit one-shot No-Limit (R6).
+    from virgo import _windows_probe
+
     if (
         os.environ.get("VIRGO_REQUIRE_SANDBOX_TESTS") != "1"
         and not windows_sandbox.is_windows_sandbox_supported()
     ):
-        monkeypatch.setattr(windows_sandbox, "null_device_allows_appcontainer", lambda: True)
+        monkeypatch.setattr(_windows_probe, "null_device_allows_appcontainer", lambda: True)
     session = make_session(
         settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False,
@@ -1068,6 +1070,7 @@ def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
 def test_null_device_support_probe_and_unsupported_fallback(project, monkeypatch):
     """Verify live \\Device\\Null AAP support probe and fail-closed fallback when absent."""
+    from virgo import _windows_probe
     from virgo.execution import ExecutionUnavailable
     from virgo.execution_policy import default_execution_mode, is_windows_sandbox_supported
     from virgo.harness.session import AgentSession
@@ -1085,7 +1088,7 @@ def test_null_device_support_probe_and_unsupported_fallback(project, monkeypatch
 
     # Unsupported Windows (\Device\Null without S-1-15-2-1) defaults to No-Limit with 3 options
     # and fails closed on explicit sandbox precheck.
-    monkeypatch.setattr(windows_sandbox, "null_device_allows_appcontainer", lambda: False)
+    monkeypatch.setattr(_windows_probe, "null_device_allows_appcontainer", lambda: False)
     assert windows_sandbox.is_windows_sandbox_supported() is False
     assert is_windows_sandbox_supported() is False
     assert default_execution_mode() == "no-limit"
