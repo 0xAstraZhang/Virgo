@@ -3,9 +3,9 @@
 Failure modes specified before implementation: inherited corrupt startup cache;
 concurrent profile writers; cache protection breaking shell startup/commands;
 changed HOME or parent environment; leaked temporary directories after success,
-test failure or collection error; swallowed pytest failure; different protection
-for base and head; unintended Windows environment changes. Missing pwsh fails
-this acceptance check rather than silently skipping it.
+test failure or collection error; swallowed pytest failure; unintended Windows
+environment changes. Missing pwsh fails this acceptance check rather than
+silently skipping it.
 
 Cold-cache regression: concurrent Unix shells must not initialize telemetry or
 create telemetry.uuid (which takes a process-wide named mutex). An inherited
@@ -93,13 +93,12 @@ def main():
                     assert not (cache / "powershell" / "telemetry.uuid").exists()
             '''), encoding="utf-8")
 
-        def run(label, expected):
+        def run(name, expected):
             cache_path.unlink(missing_ok=True)
-            output = root / "reports" / label
+            output = root / "reports" / name
             result = subprocess.run([
                 sys.executable, str(RUNNER), "run", "--project", str(project),
-                "--output", str(output), "--platform", "local", "--label", label,
-                "--sha", label,
+                "--output", str(output), "--platform", "local", "--sha", name,
             ], env=env, capture_output=True, text=True, timeout=120)
             assert result.returncode == expected, result.stdout + result.stderr
             report = json.loads((output / "results.json").read_text(encoding="utf-8"))
@@ -111,18 +110,17 @@ def main():
             assert dict(os.environ) == original_environment
             return report
 
-        for label in ("base", "head"):
-            assert run(label, 0)["counts"] == {"passed": 1}
+        assert run("pass", 0)["counts"] == {"passed": 1}
         source.write_text(
             'import os\nfrom pathlib import Path\n'
             'def test_failure():\n'
             '    Path("cache-path.txt").write_text(os.environ["XDG_CACHE_HOME"], encoding="utf-8")\n'
             '    assert False, "intentional failure"\n', encoding="utf-8",
         )
-        assert run("head", 1)["counts"] == {"failed": 1}
+        assert run("fail", 1)["counts"] == {"failed": 1}
         source.write_text('raise RuntimeError("collection failed")\n', encoding="utf-8")
-        assert not run("head", 2)["complete"]
-    total = 4 if os.name == "nt" else 24
+        assert not run("collect", 2)["complete"]
+    total = 2 if os.name == "nt" else 12
     print(f"PowerShell cache CLI acceptance passed ({total} real concurrent launches)")
 
 

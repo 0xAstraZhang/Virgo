@@ -188,7 +188,7 @@ class NativeExecutor:
 class NativeProcess:
     def __init__(self, process, context):
         self._scratch = process._virgo_sandbox_tmp
-        self._process = HostProcess(process) if sys.platform != "win32" else process
+        self._process = process if callable(getattr(process, "cleanup_tree", None)) else HostProcess(process)
         self.pid = process.pid
         self.stdin = getattr(process, "stdin", None)
         self.stdout = getattr(process, "stdout", None)

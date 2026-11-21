@@ -267,7 +267,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
         elif kind in ("compaction", "web_search_call"):
             block, event_kind = RawContent(model.api, copy.deepcopy(item)), None
             if kind == "web_search_call":
-                out.search_started = out.native_started = True
+                out.native_started = True
                 event_kind = "native_tool_start"
         else:
             return
@@ -326,7 +326,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             yield from start(index, event["item"])
         elif kind.startswith("response.web_search_call."):
             # A disconnect from this point must not silently repeat a potentially billed search.
-            out.search_started = out.native_started = True
+            out.native_started = True
             status = kind.removeprefix("response.web_search_call.")
             yield from start(index, {"type": "web_search_call", "id": event.get("item_id"), "status": status})
             ci = slots.get(index)
@@ -424,13 +424,13 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         client = _client(model)
         token = getattr(client, "api_key", "")
         response = client.responses.create(**build_params(model, ctx, opts))
-        for event in parse_events(response, model, out, opts, web_search=bool(ctx.web_search)):
+        for event in parse_events(response, model, out, opts, web_search=bool(ctx.web_tools)):
             if out.error_message:
                 attach_error(out, None, model, token=token, response=getattr(response, "response", None))
             yield event
     except Exception as exc:  # noqa: BLE001 - provider failures are data
         out.error_kind, out.error_message = classify_error(exc)
-        if ctx.web_search and is_search_unsupported(exc):
+        if ctx.web_tools and is_search_unsupported(exc):
             out.error_kind = "search_unsupported"
         out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
         attach_error(out, exc, model, token=token, response=getattr(response, "response", None))

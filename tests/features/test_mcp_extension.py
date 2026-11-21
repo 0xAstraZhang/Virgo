@@ -428,6 +428,54 @@ def test_ver09_s408_windows_host_path_and_cmd_bat_resolution():
     assert exe_argv == (r"C:\Python313\python.exe", "-V")
 
 
+def test_mcp_tool_crash_stderr_is_retained_in_diagnostic_get(make_session, project, tmp_path):
+    """Real MCP tool failure stderr is forwarded through Runtime into DiagnosticAccess section='stderr'."""
+    install_extension()
+    server = tmp_path / "crash_on_call_server.py"
+    server.write_text(
+        textwrap.dedent(
+            """
+            import json, sys
+            for line in sys.stdin:
+                request = json.loads(line)
+                if "id" not in request:
+                    continue
+                rid, method = request["id"], request.get("method")
+                if method == "initialize":
+                    result = {"protocolVersion": request["params"]["protocolVersion"],
+                              "capabilities": {"tools": {}},
+                              "serverInfo": {"name": "crash", "version": "1"}}
+                elif method == "tools/list":
+                    result = {"tools": [{"name": "boom", "description": "crash on call",
+                                         "inputSchema": {"type": "object", "properties": {}},
+                                         "annotations": {"readOnlyHint": True}}]}
+                else:
+                    sys.stderr.write("mcp-real-stderr-sentinel: fatal crash\\n")
+                    sys.stderr.flush()
+                    sys.exit(2)
+                print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}), flush=True)
+            """
+        ),
+        encoding="utf-8",
+    )
+    configure(Path(os.environ["VIRGO_HOME"]) / "mcp.json", args=[str(server)])
+    session = make_session(
+        faux.reply(tools=[("mcp__echo__boom", {})]),
+        faux.reply("done"),
+        extensions=True,
+    )
+    session.prompt("Trigger failing MCP tool")
+    failed = tool_results(session)[-1]
+    assert failed.is_error
+    error_id = failed.details["error"]["error_id"]
+    stderr_page = session.main.diagnostic_access.read(error_id, "stderr")
+    assert stderr_page["status"] == "ok"
+    assert "mcp-real-stderr-sentinel" in stderr_page["text"]
+    summary_page = json.loads(session.main.diagnostic_access.read(error_id, "summary")["text"])
+    assert summary_page["context"]["server"] == "echo"
+    assert "stderr" not in summary_page["context"]
+
+
 def test_mcp_bounded_startup_does_not_block_cold_start_and_cancels_cleanly(make_session, project, tmp_path):
     """A hanging MCP server must not block AgentSession startup past the bounded grace window."""
     install_extension()

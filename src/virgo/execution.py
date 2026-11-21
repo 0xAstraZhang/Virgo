@@ -183,17 +183,6 @@ class ExecutionContext(Protocol):
     def describe(self) -> dict: ...
 
 
-class ExecutionProvider(Protocol):
-    name: str
-
-    def capture_runtime(self, runtime) -> None: ...
-    def for_context(self, context) -> ExecutionContext: ...
-    def preflight(self, event): ...
-    def before_execute(self, event): ...
-    def instructions(self, runtime) -> str: ...
-    def status(self, session, args): ...
-
-
 class HostProcess:
     """Own a POSIX process group until its leader is reaped."""
 
@@ -311,10 +300,6 @@ class HostContext:
     def policy(self) -> PermissionPolicy:
         return self.resources.policy
 
-    @property
-    def network_allowed(self) -> bool:
-        return True
-
     @classmethod
     def unrestricted(cls, workspace: Path, executor: SandboxExecutor | None = None,
                      outputs: OutputStore | None = None) -> HostContext:
@@ -347,9 +332,6 @@ class HostContext:
         return walk_files(path, self.policy, ignore, max_depth=max_depth,
                           max_files=MAX_WALK_FILES if max_files is None else max_files)
 
-    def validate(self, cwd: Path) -> Path:
-        return Path(cwd).resolve()
-
     def open_output(self, cwd: Path, prefix: str):
         return self.outputs.create(prefix)
 
@@ -381,21 +363,11 @@ class SandboxContext:
     def revision(self) -> int:
         return self.permission_snapshot.revision if self.permission_snapshot is not None else 0
 
-    @property
-    def network_allowed(self) -> bool:
-        return self.policy.network_allowed
-
     def private_path(self, path: Path) -> bool:
         return any(path.is_relative_to(root) for root in self.private_paths)
 
     def runtime_paths(self) -> tuple[Path, ...]:
         return tuple(dict.fromkeys(Path(value).resolve() for value in (sys.prefix, sys.base_prefix)))
-
-    def read_roots(self) -> tuple[Path, ...]:
-        return self.policy.allow_roots("read")
-
-    def protected_paths(self) -> tuple[Path, ...]:
-        return self.policy.deny_roots("write")
 
     def check_read(self, path: Path) -> None:
         from .file_access import check_read

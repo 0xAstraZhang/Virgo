@@ -1,19 +1,15 @@
 # Permission mode timing
 
-The `Permission mode performance` workflow runs on Linux (`ubuntu-latest`), macOS (`macos-latest`), and native Windows (`windows-latest`) across `no-limit`, `read-only`, and `workspace-edit`. On Linux and macOS it compares each PR head with main commit [`04e94ed`](https://github.com/0xAstraZhang/Virgo/commit/04e94ed45992d8e2cbf2178c8c6b562704092a83) sequentially on one runner with locked dependencies; on native Windows it measures the PR head directly (skipping the pre-AppContainer baseline comparison). On **all three platforms** (including Windows), the workflow enforces realistic-scale cold-start and first-command (`<= 5s`), O(1) repeat-command (`<= 2s` and bounded scaling), and `Read` (`<= 250ms` and O(1) scaling) budgets via `--check-budgets`. A local scripted model calls Virgo's real tools.
+The `Permission mode performance` workflow runs on Linux (`ubuntu-latest`), macOS (`macos-latest`), and native Windows (`windows-latest`) across `no-limit`, `read-only`, and `workspace-edit`. On **all three platforms**, it enforces realistic-scale (`0` vs `1000` files) cold-start and first-command (`<= 5s`), O(1) repeat-command (`<= 2s` and bounded scaling), and `Read` (`<= 250ms` and O(1) scaling) budgets via `--check-budgets`. A local scripted model drives Virgo's real tools without any external network calls.
 
-| Mode | Configuration at the main baseline | Source edit |
-| --- | --- | --- |
-| No-Limit | Original No-Limit preset | Virgo's file tool |
-| Workspace-Edit | Original Workspace-Edit preset | Virgo's file tool |
-| Read-Only | Original Read-Only preset with networking disabled | External editor |
+Each sample starts a fresh interpreter with an isolated user directory and workspace, confirms zero approval prompts, and records import time, session construction time, `Read` latency, first Shell command latency, repeated short Shell command latency, and edit-to-test latency. Failures retain diagnostics; unconfirmed worker cleanup stops remaining samples immediately.
 
-Each revision runs three samples. Each starts a new interpreter with a fresh user directory and project. The report gives median cold start, first Shell command, five consecutive short commands, and elapsed time from editing a source file to running a test that imports the new value. Every completed sample must have zero approval prompts. Samples with failures retain their diagnostics. Unconfirmed cleanup stops further samples. The comparison checks source revisions, tracked changes, script digest, platform, Python version and workload before producing ratios.
-
-Run the workload from the checkout being measured after `uv sync --locked --dev`.
+Run the budget check locally after `uv sync --locked --dev`:
 
 ```sh
-uv run --no-sync python ci/measure_permission_modes.py --mode workspace-edit --samples 3 --repeat 5 --output timing.json
+uv run --no-sync python ci/measure_permission_modes.py \
+  --mode workspace-edit --samples 2 --repeat 2 --read-repeats 10 \
+  --realistic-files 1000 --check-budgets --output budget.json
 ```
 
-When measuring the pinned main checkout, invoke the same script from the PR checkout with `--contract original`. Each Read-Only job also uses the PR's web tool to retrieve a pinned HTTPS file and checks its content digest while the Shell network policy is disabled. The native acceptance workflows separately exercise actual Shell socket denial. The native acceptance workflows separately test the process boundary.
+Native process and network boundary guarantees are enforced separately by the native sandbox acceptance suites (`native-sandbox.yml`, `windows-sandbox.yml`, and `ci/wsl2_acceptance.sh`).

@@ -6,7 +6,6 @@ import copy
 
 from ...ai.providers.web import deepseek_endpoint as deepseek_endpoint
 from ...ai.providers.web import endpoint as endpoint
-from ...ai.providers.web import native_tool as native_tool  # compatibility export
 from ...harness.extensions import ROLES_ALL
 from ...tools.web import make_web_search
 from .access import WebAccess
@@ -79,16 +78,6 @@ class Search(WebAccess):
                 tool.parameters["properties"]["query"].update(
                     maxLength=limit, description=self.api.t("features.search.query", limit=limit)
                 )
-
-    def prepare(self, runtime, context, model) -> None:
-        from . import web_service
-
-        web_service(self.api).prepare(runtime, context, model)
-
-    def fallback(self, model, context, failed) -> bool:
-        from . import web_service
-
-        return web_service(self.api).fallback(model, context, failed)
 
 
 def setup(api) -> None:

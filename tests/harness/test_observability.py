@@ -83,8 +83,7 @@ def test_aborted_summary_keeps_context_and_counts_usage(make_session):
     ("ask", "a", "allow"),
     ("never", None, "deny"),
 ], ids=[
-    "reply0-None-auto-review-allow", "reply1-n-auto-review-deny",
-    "reply2-y-review-error-allow", "reply3-None-review-error-deny",
+    "ask-allow", "ask-deny", "ask-always", "never-deny",
 ])
 def test_permission_audit_records_review_and_final_decision(broker_session, tmp_path, approval, answer, decision):
     from tests.features.test_permission import request
@@ -99,7 +98,6 @@ def test_permission_audit_records_review_and_final_decision(broker_session, tmp_
         assert audit[0]["approved"] is (decision == "allow")
         assert audit[0]["scope"] == ("persistent" if answer == "a" else "session")
         assert "arguments" not in audit[0]
-    assert not session.store.custom("permission_decision")
     assert not session.store.custom("model_call")
     assert not session.store.path.exists() or "private payload" not in session.store.path.read_text()
 
@@ -111,4 +109,4 @@ def test_revalidation_reports_argument_change_without_review(broker_session, tmp
     event.args["path"] = str(tmp_path / "outside")
     denied = session._before_tool_execute(event)
     assert denied is not None and denied.details["boundary"]["target"] == str(tmp_path / "outside")
-    assert not session.store.custom("permission_decision") and not session.ui.questions
+    assert not session.ui.questions

@@ -331,10 +331,10 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
     """VER-13: Supported Win11 (Feature 60692039) defaults to Workspace-Edit with no experimental badge."""
     import types
 
-    import virgo._windows_probe as wp
     import virgo.execution_policy as ep
     import virgo.harness.session as hs
     import virgo.sandbox as sb
+    import virgo.sandbox.windows_acl as wa
     from virgo.harness.session import AgentSession
 
     precheck_calls = 0
@@ -344,10 +344,9 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
         precheck_calls += 1
 
     fake_ws = types.SimpleNamespace(
-        is_windows_sandbox_supported=lambda: True,
         precheck_windows_sandbox=ok_precheck,
     )
-    monkeypatch.setattr(wp, "is_windows_appcontainer_supported", lambda: True)
+    monkeypatch.setattr(wa, "is_windows_appcontainer_supported", lambda: True)
     monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
     monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
@@ -392,10 +391,10 @@ def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(pro
     import struct
     import types
 
-    import virgo._windows_probe as wp
     import virgo.execution_policy as ep
     import virgo.harness.session as hs
     import virgo.sandbox as sb
+    import virgo.sandbox.windows_acl as wa
     from virgo.harness.session import AgentSession
 
     # Pure-Python DACL check: stock Server 2025 (WD-only) fails, Win11 null.sys 0x1201BF (AC) passes,
@@ -403,13 +402,13 @@ def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(pro
     def _ace(ace_type: int, mask: int, sid: bytes) -> bytes:
         return struct.pack("<BBHI", ace_type, 0, 8 + len(sid), mask) + sid
 
-    wd_only = [_ace(0, 0x001201BF, wp.WORLD_SID_BYTES)]
-    win11_null = [*wd_only, _ace(0, 0x001201BF, wp.AAP_SID_BYTES)]
-    denied_aap = [_ace(1, 0x00000002, wp.AAP_SID_BYTES), *win11_null]
-    assert wp.dacl_allows_aap_null_access(wd_only) is False
-    assert wp.dacl_allows_aap_null_access(win11_null) is True
-    assert wp.dacl_allows_aap_null_access(denied_aap) is False
-    assert wp.dacl_allows_aap_null_access([], is_null=True) is True
+    wd_only = [_ace(0, 0x001201BF, wa.WORLD_SID_BYTES)]
+    win11_null = [*wd_only, _ace(0, 0x001201BF, wa.AAP_SID_BYTES)]
+    denied_aap = [_ace(1, 0x00000002, wa.AAP_SID_BYTES), *win11_null]
+    assert wa.dacl_allows_aap_null_access(wd_only) is False
+    assert wa.dacl_allows_aap_null_access(win11_null) is True
+    assert wa.dacl_allows_aap_null_access(denied_aap) is False
+    assert wa.dacl_allows_aap_null_access([], is_null=True) is True
 
     def fail_null_device():
         raise ExecutionUnavailable(
@@ -423,10 +422,9 @@ def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(pro
         )
 
     fake_ws = types.SimpleNamespace(
-        is_windows_sandbox_supported=lambda: False,
         precheck_windows_sandbox=fail_null_device,
     )
-    monkeypatch.setattr(wp, "is_windows_appcontainer_supported", lambda: False)
+    monkeypatch.setattr(wa, "is_windows_appcontainer_supported", lambda: False)
     monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
     monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
@@ -434,6 +432,28 @@ def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(pro
 
     assert ep.is_windows_sandbox_supported() is False
     assert ep.default_execution_mode() == "no-limit"
+
+    # Explicit No-Limit does not probe Windows AppContainer support or emit the default-downgrade notice.
+    explicit_ui = RecordingUI()
+    probe_calls = 0
+
+    def fail_probe():
+        nonlocal probe_calls
+        probe_calls += 1
+        return False
+
+    monkeypatch.setattr(wa, "is_windows_appcontainer_supported", fail_probe)
+    explicit = AgentSession(
+        project, ui=explicit_ui, model="faux/test", session=None,
+        settings={"execution": {"mode": "no-limit"}}, extensions=False, refresh_models=False,
+    )
+    try:
+        assert explicit.services["execution"].selected_mode_id == "no-limit"
+        assert probe_calls == 0
+        assert not any("WSL2" in line for line in explicit_ui.lines)
+    finally:
+        explicit.shutdown()
+    monkeypatch.setattr(wa, "is_windows_appcontainer_supported", lambda: False)
 
     ui = RecordingUI()
     session = AgentSession(

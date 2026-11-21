@@ -20,7 +20,7 @@ from ..execution_policy import (
 from ..file_access import resolve_read_path, resolve_write_path
 from .origin_context import source_for
 from .resource_rules import ResourceRules, external_tool_target
-from .ui import UI
+from .ui import confirm_callable
 
 
 class HostExecutionProvider:
@@ -172,22 +172,12 @@ class ResourceApprovals:
         return bool(event.tool is not None and event.tool.execution_scope == "external"
                     and not event.tool.read_only)
 
-    def _confirm_callable(self, *, prefer_persistent: bool = True):
-        ui = self.session.ui
-        confirm = getattr(ui, "confirm", None)
-        has_confirm = callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm
-        once = getattr(ui, "confirm_once", None)
-        has_once = callable(once) and getattr(once, "__func__", None) is not UI.confirm_once
-        if prefer_persistent:
-            return confirm if has_confirm else (once if has_once else None)
-        return once if has_once else (confirm if has_confirm else None)
-
     def _approval_admitted(self, event, base) -> bool:
         snapshot = getattr(base, "permission_snapshot", None)
         return (snapshot is not None and snapshot.approval != "never"
                 and self.session.approval_policy != "never"
                 and event.signal is not None and not event.signal.is_set()
-                and self._confirm_callable() is not None)
+                and confirm_callable(self.session.ui) is not None)
 
     def _record_session_grants(self, context, base, resources) -> None:
         om_key = self._origin_mode_key(context, base)
@@ -232,7 +222,7 @@ class ResourceApprovals:
                     f"Arguments: {json.dumps(event.args, ensure_ascii=False)}\n"
                     "This trusted extension runs outside the native sandbox and may modify host state."
                     + self.session.t("features.permission.external_suffix"))
-        caller = self._confirm_callable(prefer_persistent=bool(ext_target))
+        caller = confirm_callable(self.session.ui, prefer_persistent=bool(ext_target))
         answer = caller(question, event.agent)
         with self.session._lock:
             if (event.signal.is_set() or base is not runtime.execution_context
@@ -376,7 +366,7 @@ class ResourceApprovals:
         display_tool = tool_name or getattr(context_or_event, "tool_name", "request_permissions")
         display_args = tool_args if tool_args is not None else getattr(context_or_event, "args", {})
         if (signal is None or signal.is_set() or runtime is None or base is not runtime.execution_context
-                or self.session.approval_policy == "never" or self._confirm_callable() is None):
+                or self.session.approval_policy == "never" or confirm_callable(self.session.ui) is None):
             return ToolResult.error("Additional resources were not granted")
         with self.session._lock:
             rev_before = self.revision
@@ -385,7 +375,7 @@ class ResourceApprovals:
                     f"Project: {base.workspace}\n"
                     f"Additional resources: {json.dumps(missing, ensure_ascii=False)}\n"
                     f"Reason: {reason}" + self.session.t("features.permission.external_suffix"))
-        answer = self._confirm_callable()(question, agent_name)
+        answer = confirm_callable(self.session.ui)(question, agent_name)
         with self.session._lock:
             if (signal.is_set() or base is not runtime.execution_context
                     or self.revision != rev_before or self.session.approval_policy == "never"):
@@ -464,7 +454,7 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
             snapshot is not None
             and snapshot.approval != "never"
             and self.session.approval_policy != "never"
-            and self._confirm_callable() is not None
+            and confirm_callable(self.session.ui) is not None
         )
 
     def instructions(self, runtime):

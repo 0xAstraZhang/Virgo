@@ -9,8 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from ..execution_policy import DEFAULT_MODES, default_execution_mode
-from .permissions import normalize_approval_policy
+from ..execution_policy import DEFAULT_MODES, default_execution_mode, normalize_approval_policy
 
 PLUGIN_IDS = (
     "diagnostic_get", "skills", "ask_user", "subagent", "background", "web",
@@ -208,7 +207,7 @@ def _validate(data: dict) -> None:
         raise ValueError("budget.maxModelCalls must be null or a positive integer")
 
 
-def _same_directory(left: Path, right: Path) -> bool:
+def same_directory(left: Path, right: Path) -> bool:
     """Report whether two configuration directories are the same place.
 
     An unresolvable path cannot be proven shared, so it keeps the deny-only guard.
@@ -259,7 +258,7 @@ class Settings:
         notices: list[str] = []
         saved_user = _read_json(paths.user / "settings.json")
         user = saved_user or {}
-        shared_settings = _same_directory(paths.project, paths.user)
+        shared_settings = same_directory(paths.project, paths.user)
         project = {} if shared_settings else (_read_json(paths.project / "settings.json") or {})
         if shared_settings and saved_user is not None:
             notices.append("The working directory resolves to the Virgo state directory; user settings are not re-read as project settings.")
@@ -287,13 +286,21 @@ class Settings:
                 extension_config.pop("trustedProjects", None)
                 notices.append("Project/runtime extensions.trustedProjects is ignored. Trust must come from user settings or --trust-project-extensions.")
         user = _normalize_layer(user, notices)
-        defaults = deep_merge(DEFAULTS, {"execution": {"mode": default_execution_mode()}})
-        data = deep_merge(defaults, user)
         project = _normalize_layer(project, notices)
+        normalized_overrides = _normalize_layer(overrides or {}, notices)
+        explicit_mode = (
+            (isinstance(user.get("execution"), dict) and "mode" in user["execution"])
+            or (
+                isinstance(normalized_overrides.get("execution"), dict)
+                and "mode" in normalized_overrides["execution"]
+            )
+        )
+        default_mode = DEFAULTS["execution"]["mode"] if explicit_mode else default_execution_mode()
+        defaults = deep_merge(DEFAULTS, {"execution": {"mode": default_mode}})
+        data = deep_merge(defaults, user)
         data = deep_merge(data, project)
         if os.environ.get("VIRGO_MODEL"):
             data = deep_merge(data, {"model": os.environ["VIRGO_MODEL"]})
-        normalized_overrides = _normalize_layer(overrides or {}, notices)
         data = deep_merge(data, normalized_overrides)
         _validate(data)
         settings = cls(data, paths)
@@ -343,18 +350,6 @@ class Settings:
             enabled = enabled and (self.get("plugins.web.searchEnabled", True) or self.get("plugins.web.fetchEnabled", True))
         return bool(enabled)
 
-    def feature_enabled(self, name: str) -> bool:
-        """Compatibility read for extensions migrating from the old feature flags."""
-        if name in EXTENSION_ONLY:
-            return False
-        if name in {"permission", "auto_review"}:
-            raise ValueError("The legacy permission feature is retired; use execution.mode")
-        if name in REMOVED_FEATURES:
-            return False
-        if name in {"search", "fetch"}:
-            return self.plugin_enabled("web") and bool(self.get(f"plugins.web.{name}Enabled", True))
-        return self.plugin_enabled(_FEATURE_ALIASES.get(name, name))
-
     def save_user(self, patch: dict) -> None:
         """Persist only explicit changes, preserving unrelated user configuration."""
         notices: list[str] = []
@@ -381,7 +376,7 @@ class Settings:
     def check_provider_update(self, provider: str, config: dict) -> None:
         """Reject a login that would use a different endpoint on the next startup."""
         effective = copy.deepcopy(config)
-        if self.project_extensions_trusted and not _same_directory(self.paths.project, self.paths.user):
+        if self.project_extensions_trusted and not same_directory(self.paths.project, self.paths.user):
             project = _read_json(self.paths.project / "settings.json") or {}
             project_providers = project.get("providers")
             if isinstance(project_providers, dict):

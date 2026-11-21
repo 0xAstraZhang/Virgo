@@ -108,7 +108,7 @@ def test_permission_change_during_confirmation_expires_request(broker_session, m
     assert manager.selected_mode.write_paths
 
 
-def test_offline_profile_blocks_web_and_mcp_before_dispatch(broker_session):
+def test_read_only_preset_allows_web_fetch_while_keeping_shell_network_off(broker_session):
     from virgo.agent import ToolCallEvent
     session = broker_session(preset="read-only")
     tool = session.tool("web_fetch")
@@ -189,13 +189,6 @@ def test_explicit_no_limit_profile_is_host_without_resource_approval(project):
         assert "request_permissions" not in {t.name for t in session.main.tools}
     finally:
         session.shutdown()
-
-
-# Keep the historical test identity until the retirement comparison has a
-# baseline that contains the renamed test. It now exercises explicit No-Limit.
-test_default_profile_is_host_without_resource_approval = (
-    test_explicit_no_limit_profile_is_host_without_resource_approval
-)
 
 
 def test_no_limit_sandbox_switch_preserves_the_active_host_and_child(broker_session):
@@ -391,12 +384,13 @@ def test_execution_scope_validation_and_sandbox_layering():
     from pathlib import Path
 
     from virgo.agent.types import EXECUTION_SCOPES, AgentTool
-    from virgo.tools import BASH, EDIT, GLOB, GREP, READ, WRITE
+    from virgo.tools import EDIT, GLOB, GREP, READ, WRITE
+    from virgo.tools.shell import Shell, make_shell_tool
 
     assert "network" not in EXECUTION_SCOPES
     for file_tool in (READ, WRITE, EDIT, GLOB, GREP):
         assert file_tool.execution_scope == "file"
-    assert BASH.execution_scope == "process"
+    assert make_shell_tool(Shell("bash", "/bin/bash", "5.0")).execution_scope == "process"
     with pytest.raises(ValueError, match="execution_scope"):
         AgentTool("bad", "desc", {"type": "object"}, lambda *_: "ok", execution_scope="network")
 
@@ -426,7 +420,11 @@ def test_builtin_tool_localization_covers_read_output_and_request_permissions(br
     assert "output_id" in read_output.spec(zh).description
     assert req_perm.spec(zh).description != req_perm.spec(en).description
     assert "权限" in req_perm.spec(zh).description
-    assert "read_output" in en("tools.bash.description")
-    assert "read_output" in zh("tools.bash.description")
+    shell = session.services["shell"].current
+    assert shell is not None
+    shell_tool = session.tool(shell.tool_name)
+    assert shell_tool is not None
+    assert "read_output" in shell_tool.spec(en).description
+    assert "read_output" in shell_tool.spec(zh).description
     assert "sed -n" not in en("tools.fs.long_line", line=1, max_kb=50, path="a.txt")
     assert "sed -n" not in zh("tools.fs.long_line", line=1, max_kb=50, path="a.txt")

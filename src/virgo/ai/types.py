@@ -121,8 +121,7 @@ class AssistantMessage:
     error_kind: str | None = None  # "retryable" | "overflow" | "search_unsupported" | "fatal"
     timestamp: float = field(default_factory=time.time)
     role: Literal["assistant"] = "assistant"
-    native_started: bool = False  # any hosted web operation; old search_started remains readable
-    search_started: bool = False  # server-side work may have incurred costs; do not blindly replay
+    native_started: bool = False  # server-side web work may have incurred costs; do not blindly replay
     error_details: dict | None = None  # diagnostic metadata, never sent to the model
 
     def text(self) -> str:
@@ -162,6 +161,9 @@ def message_from_dict(d: dict) -> Message:
     if role == "user":
         return UserMessage(**d)
     if role == "assistant":
+        if "search_started" in d:
+            legacy_search_started = bool(d.pop("search_started"))
+            d["native_started"] = bool(d.get("native_started", False)) or legacy_search_started
         d["usage"] = Usage(**(d.get("usage") or {}))
         return AssistantMessage(**d)
     if role == "toolResult":
@@ -213,7 +215,6 @@ class Context:
     system: str
     messages: list
     tools: list[ToolSpec] = field(default_factory=list)
-    web_search: dict | None = None  # legacy search declaration
     web_tools: list[dict] = field(default_factory=list)
     web_offers: list = field(default_factory=list)  # request-local routing metadata, not sent
 

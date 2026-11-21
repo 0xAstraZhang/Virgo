@@ -54,6 +54,7 @@ from virgo.ai.types import ImageContent, TextContent
 from virgo.ai.validate import valid_schema
 from virgo.diagnostics import safe_text
 from virgo.execution import HostContext, ProcessRequest, cleanup_process
+from virgo.harness.settings import same_directory
 
 CALL_TIMEOUT = 300.0
 STARTUP_WAIT = 2.0
@@ -77,13 +78,6 @@ class MCPCallCancelled(Exception):
 
 def _expand(value: str) -> str:
     return re.sub(r"\$\{(\w+)\}", lambda match: os.environ.get(match.group(1), ""), value)
-
-
-def _same_directory(left: Path, right: Path) -> bool:
-    try:
-        return left.resolve() == right.resolve()
-    except (OSError, RuntimeError):
-        return False
 
 
 def _validate_tool_patterns(value, field: str) -> tuple[str, ...] | None:
@@ -777,7 +771,7 @@ class _Manager:
         # < trusted project settings.json < startup settings overrides.
         servers.update(self._read_servers_file(self.api.paths.user / "mcp.json"))
         servers.update(self._read_servers_file(self.api.paths.user / "settings.json", from_settings=True))
-        if not _same_directory(self.api.paths.project, self.api.paths.user):
+        if not same_directory(self.api.paths.project, self.api.paths.user):
             project_mcp = self.api.paths.project / "mcp.json"
             # S4-02 (R5): Project-level .virgo/mcp.json and settings.json require explicit project trust.
             if self._project_trusted():

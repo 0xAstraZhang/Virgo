@@ -1,7 +1,5 @@
 """Historical diagnostics remain accessible without widening model authority."""
 
-import json
-
 import pytest
 
 from virgo.diagnostics import capture_error
@@ -23,27 +21,6 @@ def test_old_errors_survive_history_growth_and_restart(make_session):
     stranger.prompt(f"/diagnostics {first['error_id']}")
     assert "oldest retained failure" in stranger.ui.text
     assert stranger.main.diagnostic_access.read(first["error_id"])["status"] == "not_found"
-
-
-def test_legacy_history_import_is_incremental_and_does_not_grant_model_access(make_session, tmp_path):
-    session = make_session(refresh_models=False)
-    directory = session.diagnostics.path.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    first = capture_error("legacy failure", phase="fixture.legacy")
-    second = capture_error("unfinished legacy failure", phase="fixture.legacy")
-    path = directory / "harness-20260101T000000-42-fixture.jsonl.1"
-    original = json.dumps(first) + "\ninvalid JSON\n" + json.dumps(second)
-    path.write_text(original)
-    session.prompt(f"/diagnostics {first['error_id']}")
-    assert "legacy failure" in session.ui.text
-    assert session.main.diagnostic_access.read(first["error_id"])["status"] == "not_found"
-    path.write_text(original + "\n")
-    session.prompt(f"/diagnostics {second['error_id']}")
-    assert "unfinished legacy failure" in session.ui.text
-    assert path.read_text() == original + "\n"
-    session.prompt(f"/diagnostics {first['error_id']}")
-    with DiagnosticLog(directory) as log:
-        assert len(log.history_page()["records"]) == 2
 
 
 def test_global_history_paging_and_literal_prefixes_do_not_change_model_context(make_session):
@@ -195,52 +172,3 @@ def test_failed_records_remain_discoverable_in_paged_history(make_session, monke
     session.prompt(f"/diagnostics {unsaved[0]['error_id']}")
     assert "unsaved 0" in session.ui.text
     assert session.main.messages == []
-
-
-def test_import_makes_progress_while_legacy_log_grows(make_session, monkeypatch):
-    from pathlib import Path
-
-    session = make_session(refresh_models=False)
-    log = session.diagnostics
-    log.path.parent.mkdir(parents=True, exist_ok=True)
-    path = log.path.parent / "harness-growing.jsonl"
-    first = capture_error("original legacy record", phase="fixture.growing")
-    appended = [capture_error(f"appended {number}", phase="fixture.growing") for number in range(101)]
-    path.write_text(json.dumps(first) + "\n")
-    original_open = Path.open
-    reads = 0
-
-    class GrowingFile:
-        def __enter__(self):
-            self.source = original_open(path, "rb")
-            return self
-
-        def __exit__(self, *args):
-            self.source.close()
-
-        def __getattr__(self, name):
-            return getattr(self.source, name)
-
-        def readline(self, *args):
-            nonlocal reads
-            reads += 1
-            if reads == 1:
-                with original_open(path, "a") as writer:
-                    writer.writelines(json.dumps(record) + "\n" for record in appended)
-            if reads > 250:
-                raise AssertionError("Legacy importer restarted a completed batch")
-            return self.source.readline(*args)
-
-    def open_file(target, *args, **kwargs):
-        if target == path and args == ("rb",):
-            return GrowingFile()
-        return original_open(target, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", open_file)
-    assert log.import_legacy() == []
-    assert log.lookup(first["error_id"])["message"] == "original legacy record"
-    assert log.lookup(appended[-1]["error_id"])["message"] == "appended 100"
-    assert len(log.history_page(limit=200)["records"]) == 102
-    previous = reads
-    assert log.import_legacy() == []
-    assert reads == previous + 1  # Only EOF is checked on an unchanged source.

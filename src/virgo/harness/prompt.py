@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import platform
-import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,32 +50,17 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
         parts = path.relative_to(workspace).parts
     except ValueError:
         return None
-    if not parts or ".." in parts:
+    if not parts or ".." in parts or access is None:
         return None
-    if access is not None:
-        from ..execution import ExecutionUnavailable
+    from ..execution import ExecutionUnavailable
 
-        try:
-            if any(workspace.joinpath(*parts[:i]).is_symlink() for i in range(1, len(parts) + 1)):
-                return None
-            data = access.read_bytes(path)
-            return data.decode("utf-8", errors=errors) if data is not None else None
-        except ExecutionUnavailable:
-            raise
-        except UnicodeDecodeError as error:
-            if on_warning is not None:
-                on_warning(f"Skipping {path}: invalid UTF-8 ({error})")
-            return None
-        except (OSError, RuntimeError):
-            return None
     try:
-        if any(workspace.joinpath(*parts[:index]).is_symlink() for index in range(1, len(parts) + 1)):
+        if any(workspace.joinpath(*parts[:i]).is_symlink() for i in range(1, len(parts) + 1)):
             return None
-        if not stat.S_ISREG(os.lstat(path).st_mode):
-            return None
-        if not path.resolve(strict=True).is_relative_to(workspace):
-            return None
-        return path.read_text(encoding="utf-8", errors=errors)
+        data = access.read_bytes(path)
+        return data.decode("utf-8", errors=errors) if data is not None else None
+    except ExecutionUnavailable:
+        raise
     except UnicodeDecodeError as error:
         if on_warning is not None:
             on_warning(f"Skipping {path}: invalid UTF-8 ({error})")

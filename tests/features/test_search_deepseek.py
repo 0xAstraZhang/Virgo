@@ -87,7 +87,7 @@ def test_deepseek_native_uses_official_search_and_saved_login(make_session, sear
         "connection": {"api": "openai", "baseUrl": "https://api.deepseek.com"},
     })
     context = session.main.request_context([])
-    assert context.web_search is None  # Standalone API, not a hosted model-tool declaration.
+    assert not context.web_tools  # Standalone API, not a hosted model-tool declaration.
     tool = next(tool for tool in context.tools if tool.name == "web_search")
     assert tool.parameters["properties"]["query"]["maxLength"] == 128
     result = execute_search(session)
@@ -107,7 +107,7 @@ def test_deepseek_provider_name_does_not_enable_native_on_proxies(make_session, 
     session = make_session(settings={"providers": {"deepseek": {"baseUrl": base_url, "apiKey": "proxy-secret"}}})
     session.set_model("deepseek/deepseek-flash")
     context = session.main.request_context([])
-    assert context.web_search is None
+    assert not context.web_tools
     assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
     with pytest.raises(ValueError, match="/login api deepseek"):
         session.services["search"].set_selection("deepseek")
@@ -126,18 +126,21 @@ def test_no_native_search_uses_free_backend_even_with_deepseek_key(make_session,
 
 
 def test_explicit_search_backend_overrides_hosted_native(make_session, search_http, monkeypatch):
+    def has_native_search(ctx):
+        return any(d.get("name") == "web_search" or d.get("type") == "web_search" for d in ctx.web_tools)
+
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
     session = make_session()
     session.model = session.main.model = Model("anthropic", "claude-sonnet-4-6", "anthropic")
-    assert session.main.request_context([]).web_search
+    assert has_native_search(session.main.request_context([]))
     session.services["search"].set_selection("deepseek")
-    assert session.main.request_context([]).web_search is None
+    assert not has_native_search(session.main.request_context([]))
     assert json.loads(execute_search(session).as_text())["backend"] == "deepseek"
     session.services["search"].set_selection("duckduckgo")
-    assert session.main.request_context([]).web_search is None
+    assert not has_native_search(session.main.request_context([]))
     assert json.loads(execute_search(session).as_text())["backend"] == "duckduckgo"
     session.services["search"].set_selection("auto")
-    assert session.main.request_context([]).web_search
+    assert has_native_search(session.main.request_context([]))
 
 
 def test_native_missing_credentials_and_auto_fallback(make_session, search_http):
@@ -259,7 +262,7 @@ def test_deepseek_tool_loop_keeps_results_or_error_without_other_backend(make_se
         AssistantMessage(content=[TextContent("Search handled")]),
     )
     session.prompt("Find public Python documentation")
-    assert all(context.web_search is None for _, context in seen)
+    assert all(not context.web_tools for _, context in seen)
     assert len(search_http["requests"]) == 1
     result = next(m for m in session.main.messages if isinstance(m, ToolResultMessage))
     assert result.is_error is (status != 200)
@@ -287,7 +290,7 @@ def test_restricted_subagent_and_custom_tool_keep_their_scope(make_session, monk
     ds = session.resolve("deepseek/deepseek-flash")
     restricted = Runtime(session, "restricted", "subagent", model=ds, tools=[session.tool("read")], compaction=False)
     context = restricted.request_context([UserMessage("Search")])
-    assert context.web_search is None and not any(t.name == "web_search" for t in context.tools)
+    assert not context.web_tools and not any(t.name == "web_search" for t in context.tools)
     custom = replace(session.tool("web_search"), description="Extension search", parameters={"type": "object"})
     worker = Runtime(session, "custom", "subagent", model=ds, tools=[custom], compaction=False)
     context = worker.request_context([])

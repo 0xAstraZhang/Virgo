@@ -74,17 +74,17 @@ def python_command(tmp_path):
 def make_session(project):
     made = []
 
-    def factory(*responses, ui=None, approval="ask", allow=True, persist=False, settings=None, **kw) -> AgentSession:
+    def factory(*responses, ui=None, approval="ask", persist=False, settings=None, **kw) -> AgentSession:
         faux.script("test", *responses)
         configured = dict(settings or {})
         # Most tests exercise Host command/process behavior directly. Keep the
         # fixture explicit so changing the product default cannot silently turn
         # them into native-sandbox tests; default-mode coverage uses AgentSession.
-        # Migration tests opt out by supplying sandbox/permission configuration.
+        # Migration tests opt out by supplying sandbox/execution configuration.
         cwd = kw.pop("cwd", project)
         home_override = kw.get("home")
         user_dir = Path(home_override) if home_override else Path(os.environ["VIRGO_HOME"])
-        if not {"execution", "sandbox", "permissions"}.intersection(configured):
+        if not {"execution", "sandbox"}.intersection(configured):
             configured["execution"] = {"mode": "no-limit"}
             marker = user_dir / "migrations" / "windows-sandbox-unsupported-notice"
             marker.parent.mkdir(parents=True, exist_ok=True)
@@ -104,7 +104,6 @@ def make_session(project):
             and choice == "auto"
             and exec_mode in {"no-limit", "read-only", "workspace-edit"}
             and "sandbox" not in configured
-            and "permissions" not in configured
             and not (user_dir / "settings.json").exists()
             and not (Path(cwd) / ".virgo" / "settings.json").exists()
             and _shell_commands.discover_shells is _ORIG_DISCOVER_SHELLS

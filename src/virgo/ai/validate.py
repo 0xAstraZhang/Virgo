@@ -180,23 +180,3 @@ def parse_tool_arguments(raw: str) -> dict:
     except ValueError:
         return {INVALID_ARGUMENTS: raw}
     return parsed if isinstance(parsed, dict) else {INVALID_ARGUMENTS: raw}
-
-
-def parse_json_loose(text: str) -> Any:
-    """Parse JSON from model output: strips code fences, falls back to the first {...} / [...]."""
-    s = text.strip()
-    if s.startswith("```"):
-        s = s.split("\n", 1)[1] if "\n" in s else ""
-        s = s.rsplit("```", 1)[0]
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        pass
-    decoder = json.JSONDecoder()
-    for i, ch in enumerate(s):
-        if ch in "{[":
-            try:
-                return decoder.raw_decode(s[i:])[0]
-            except json.JSONDecodeError:
-                continue
-    raise ValueError("no JSON value found in model output")

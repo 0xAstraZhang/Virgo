@@ -8,7 +8,7 @@ import pytest
 
 from virgo.agent.types import Block, ToolContext
 from virgo.ai.providers import faux
-from virgo.harness.permissions import APPROVAL_POLICIES, approval_policy_label, normalize_approval_policy
+from virgo.execution_policy import APPROVAL_POLICIES, normalize_approval_policy
 
 from tests.support.harness import RecordingUI, tool_call_event, tool_results
 
@@ -24,7 +24,7 @@ def request(session, tool, arguments, *, permissions=None, call_id="request"):
 
 def test_public_modes_and_legacy_config_aliases():
     assert APPROVAL_POLICIES == ("ask", "never")
-    assert all(approval_policy_label(value) for value in APPROVAL_POLICIES)
+    assert [normalize_approval_policy(value) for value in APPROVAL_POLICIES] == ["ask", "never"]
     for retired in ("default", "accept-edits", "yolo", "auto-review", "accept-all", "plan", "unknown"):
         with pytest.raises(ValueError, match="approval policy"):
             normalize_approval_policy(retired)
@@ -106,7 +106,7 @@ def test_unattended_review_fallback_is_denied(broker_session, tmp_path):
 
 
 def test_review_and_human_approval_recheck_changed_mode(broker_session, tmp_path, monkeypatch):
-    session = broker_session(allow=False)
+    session = broker_session()
     args = {"path": str(tmp_path / "outside"), "content": "x"}
 
     def confirm(*_):
@@ -121,7 +121,7 @@ def test_review_and_human_approval_recheck_changed_mode(broker_session, tmp_path
 
 
 def test_execution_rechecks_mode_arguments_and_symlink_boundary(broker_session, tmp_path):
-    session = broker_session(allow=False)
+    session = broker_session()
     manager = session.services["execution"]
     event = tool_call_event(session, "write", {"path": "new/file", "content": "x"})
     assert session._before_tool(event) is None
@@ -139,7 +139,7 @@ def test_execution_rechecks_mode_arguments_and_symlink_boundary(broker_session, 
 
 
 def test_search_review_matches_actual_ignored_and_filtered_files(broker_session, tmp_path):
-    session = broker_session(allow=False)
+    session = broker_session()
     hidden = session.cwd / ".venv"
     hidden.mkdir()
     (tmp_path / "outside").write_text("value OUTSIDE_SECRET")
@@ -164,7 +164,7 @@ def test_search_review_matches_actual_ignored_and_filtered_files(broker_session,
 
 
 def test_search_review_selects_the_same_files_as_the_glob_tools(broker_session, tmp_path):
-    session = broker_session(allow=False)
+    session = broker_session()
     (session.cwd / "src" / "pkg").mkdir(parents=True)
     (tmp_path / "outside").write_text("value OUTSIDE_SECRET")
     (session.cwd / "src" / "link.py").symlink_to(tmp_path / "outside")

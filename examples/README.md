@@ -28,8 +28,8 @@ cp examples/project/.virgo/prompts/inspect.md /path/to/project/.virgo/prompts/in
 
 Copy the code-review skill as well if you want the review template's named skill available. Restart Virgo after adding extensions, templates, skills or agent types.
 
-After reviewing the Python guard, enable it with `--trust-project-extensions`; project settings cannot grant themselves trust.
+After reviewing the Python guard, project `providers`, or `.virgo/mcp.json`, enable them by adding the project directory to user-level `extensions.trustedProjects` or passing `--trust-project-extensions`; untrusted projects cannot enable extensions, MCP servers, hooks, or custom providers.
 
-The settings example's `language` pins that project's language; use `zh-CN` for Chinese or omit the field to follow the user default. The optional `local` provider needs a real server and its installed model ID/context window. It does not change the selected model until you choose it. Obsolete `smallModel` overrides are intentionally absent because auxiliary models are selected by the runtime.
+The settings example's `language` pins that project's language; use `zh-CN` for Chinese or omit the field to follow the user default. The optional `local` provider needs a real server, its installed model ID/context window, and project trust (`extensions.trustedProjects` or `--trust-project-extensions`). It does not change the selected model until you choose it. Obsolete `smallModel` overrides are intentionally absent because auxiliary models are selected by the runtime.
 
 The MCP example is disabled and uses a placeholder path. MCP itself comes from the [extension](../extensions/README.md); install that and replace the placeholder with your own stdio server command and arguments before enabling it. Example instructions and prompts are authored resources; `/language` does not rewrite their content.

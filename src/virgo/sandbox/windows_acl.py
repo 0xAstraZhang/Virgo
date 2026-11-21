@@ -31,39 +31,53 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .._windows_probe import NULL_DEVICE_REQUIRED_ACCESS, null_device_allows_appcontainer
-
-if sys.platform != "win32":  # pragma: no cover - imported only on Windows
-    raise ImportError("virgo.sandbox.windows_acl requires Windows")
+from ._win32 import (
+    BOOL,
+    DWORD,
+    HANDLE,
+    PSID,
+    WORD,
+)
+from ._win32 import (
+    bind_api as _api,
+)
+from ._win32 import (
+    is_reparse_point as _is_reparse_point,
+)
 
 __all__ = [
+    "AAP_SID_BYTES",
     "ALL_APPLICATION_PACKAGES_SID",
     "NULL_DEVICE_REQUIRED_ACCESS",
+    "WORLD_SID_BYTES",
     "acl_state_lock",
     "ancestor_lacks_aap",
     "can_open_write_dac",
     "capture_dacl_snapshot",
+    "dacl_allows_aap_null_access",
     "grant_root_access",
     "has_aap_read_access",
-    "inspect_dacl",
     "is_appcontainer_package_sid",
     "is_dacl_protected",
+    "is_native_x64_win10_plus",
     "is_protected_readonly_for_sid",
+    "is_windows_appcontainer_supported",
     "null_device_allows_appcontainer",
     "protect_readonly_path",
     "revoke_sid_from_root",
     "scan_residual_aces",
 ]
 
-PSID = ctypes.c_void_p
 PACL = ctypes.c_void_p
 PSECURITY_DESCRIPTOR = ctypes.c_void_p
-HANDLE = ctypes.c_void_p
-DWORD = ctypes.c_uint32
-WORD = ctypes.c_uint16
-BOOL = ctypes.c_int32
 
 ALL_APPLICATION_PACKAGES_SID = "S-1-15-2-1"
+# Well-known binary SIDs (MS-DTYP 2.4.2.2):
+# S-1-15-2-1 (APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES)
+AAP_SID_BYTES = struct.pack("<BB6sII", 1, 2, b"\x00\x00\x00\x00\x00\x0f", 2, 1)
+# S-1-1-0 (Everyone / World)
+WORLD_SID_BYTES = struct.pack("<BB6sI", 1, 1, b"\x00\x00\x00\x00\x00\x01", 0)
+_AAP_SID_BYTES = AAP_SID_BYTES
 
 SE_FILE_OBJECT = 1
 DACL_SECURITY_INFORMATION = 0x00000004
@@ -79,33 +93,12 @@ _DENY_ACE_TYPES = frozenset({1, 6, 10, 12})
 _STANDARD_ACE_TYPES = frozenset({0, 1, 2, 3, 9, 10, 13, 14})
 _OBJECT_ACE_TYPES = frozenset({5, 6, 7, 8, 11, 12, 15, 16})
 
-_ACE_TYPE_NAMES = {
-    0: "ALLOW",
-    1: "DENY",
-    2: "AUDIT",
-    3: "ALARM",
-    5: "ALLOW_OBJECT",
-    6: "DENY_OBJECT",
-    9: "ALLOW_CALLBACK",
-    10: "DENY_CALLBACK",
-    11: "ALLOW_CALLBACK_OBJECT",
-    12: "DENY_CALLBACK_OBJECT",
-}
-
 # ACE flags
 OBJECT_INHERIT_ACE = 0x01
 CONTAINER_INHERIT_ACE = 0x02
 NO_PROPAGATE_INHERIT_ACE = 0x04
 INHERIT_ONLY_ACE = 0x08
 INHERITED_ACE = 0x10
-
-_ACE_FLAG_NAMES = (
-    (OBJECT_INHERIT_ACE, "OI"),
-    (CONTAINER_INHERIT_ACE, "CI"),
-    (NO_PROPAGATE_INHERIT_ACE, "NP"),
-    (INHERIT_ONLY_ACE, "IO"),
-    (INHERITED_ACE, "I"),
-)
 
 # NTFS file access masks
 FILE_READ_DATA = 0x00000001
@@ -124,6 +117,7 @@ WRITE_OWNER = 0x00080000
 SYNCHRONIZE = 0x00100000
 GENERIC_ALL = 0x10000000
 GENERIC_EXECUTE = 0x20000000
+GENERIC_WRITE = 0x40000000
 GENERIC_READ = 0x80000000
 
 FILE_GENERIC_READ = (
@@ -137,6 +131,8 @@ READ_EXECUTE_MASK = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE  # 0x001200A9
 _WRITE_SPECIFIC_BITS = (
     FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
 )  # 0x00000116
+FILE_GENERIC_WRITE = READ_CONTROL | _WRITE_SPECIFIC_BITS | SYNCHRONIZE  # 0x00120116
+NULL_DEVICE_REQUIRED_ACCESS = FILE_GENERIC_READ | FILE_GENERIC_WRITE  # 0x0012019F
 
 # Writable directory root mask: no DELETE on root itself, NEVER FILE_DELETE_CHILD (0x40).
 WRITE_NO_DELETE_MASK = READ_EXECUTE_MASK | _WRITE_SPECIFIC_BITS  # 0x001201BF
@@ -145,7 +141,6 @@ MODIFY_NO_DELETE_CHILD_MASK = WRITE_NO_DELETE_MASK | DELETE  # 0x001301BF
 
 _ERROR_FILE_NOT_FOUND = 2
 _ERROR_PATH_NOT_FOUND = 3
-_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _WAIT_OBJECT_0 = 0x00000000
@@ -153,30 +148,85 @@ _WAIT_ABANDONED = 0x00000080
 _WAIT_TIMEOUT = 0x00000102
 _ACL_STATE_MUTEX_NAME = "Local\\VirgoAppContainerStateLock"
 
-
-def _api(library: ctypes.WinDLL, name: str, args: list[Any], result: Any = BOOL):
-    fn = getattr(library, name)
-    fn.argtypes = args
-    fn.restype = result
-    return fn
-
-
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_GetSystemDirectoryW = _api(_kernel32, "GetSystemDirectoryW", [w.LPWSTR, DWORD], DWORD)
-_LocalFree = _api(_kernel32, "LocalFree", [ctypes.c_void_p], ctypes.c_void_p)
-_CloseHandle = _api(_kernel32, "CloseHandle", [HANDLE])
-_CreateFileW = _api(
-    _kernel32,
-    "CreateFileW",
-    [w.LPCWSTR, DWORD, DWORD, ctypes.c_void_p, DWORD, DWORD, HANDLE],
-    HANDLE,
-)
-_CreateMutexW = _api(_kernel32, "CreateMutexW", [ctypes.c_void_p, BOOL, w.LPCWSTR], HANDLE)
-_WaitForSingleObject = _api(_kernel32, "WaitForSingleObject", [HANDLE, DWORD], DWORD)
-_ReleaseMutex = _api(_kernel32, "ReleaseMutex", [HANDLE])
-
 _MUTEX_INIT_LOCK = threading.Lock()
 _ACL_STATE_MUTEX_HANDLE: HANDLE | None = None
+
+if sys.platform == "win32":
+    from ._win32 import (
+        CloseHandle as _CloseHandle,
+    )
+    from ._win32 import (
+        GetCurrentProcess as _GetCurrentProcess,
+    )
+    from ._win32 import (
+        IsWow64Process2 as _IsWow64Process2,
+    )
+    from ._win32 import (
+        LocalFree as _LocalFree,
+    )
+    from ._win32 import (
+        kernel32 as _kernel32,
+    )
+    from ._win32 import (
+        system_dll as _system_dll,
+    )
+
+    _CreateFileW = _api(
+        _kernel32,
+        "CreateFileW",
+        [w.LPCWSTR, DWORD, DWORD, ctypes.c_void_p, DWORD, DWORD, HANDLE],
+        HANDLE,
+    )
+    _CreateMutexW = _api(_kernel32, "CreateMutexW", [ctypes.c_void_p, BOOL, w.LPCWSTR], HANDLE)
+    _WaitForSingleObject = _api(_kernel32, "WaitForSingleObject", [HANDLE, DWORD], DWORD)
+    _ReleaseMutex = _api(_kernel32, "ReleaseMutex", [HANDLE])
+
+    _advapi32 = _system_dll("advapi32.dll")
+
+    _GetNamedSecurityInfoW = _api(
+        _advapi32,
+        "GetNamedSecurityInfoW",
+        [
+            w.LPCWSTR,
+            DWORD,
+            DWORD,
+            ctypes.POINTER(PSID),
+            ctypes.POINTER(PSID),
+            ctypes.POINTER(PACL),
+            ctypes.POINTER(PACL),
+            ctypes.POINTER(PSECURITY_DESCRIPTOR),
+        ],
+        DWORD,
+    )
+    _SetNamedSecurityInfoW = _api(
+        _advapi32,
+        "SetNamedSecurityInfoW",
+        [w.LPWSTR, DWORD, DWORD, PSID, PSID, PACL, PACL],
+        DWORD,
+    )
+    _GetKernelObjectSecurity = _api(
+        _advapi32,
+        "GetKernelObjectSecurity",
+        [HANDLE, DWORD, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD)],
+        BOOL,
+    )
+    _GetSecurityDescriptorDacl = _api(
+        _advapi32,
+        "GetSecurityDescriptorDacl",
+        [ctypes.c_void_p, ctypes.POINTER(BOOL), ctypes.POINTER(PACL), ctypes.POINTER(BOOL)],
+        BOOL,
+    )
+    _GetSecurityDescriptorControl = _api(
+        _advapi32,
+        "GetSecurityDescriptorControl",
+        [PSECURITY_DESCRIPTOR, ctypes.POINTER(WORD), ctypes.POINTER(DWORD)],
+        BOOL,
+    )
+    _ConvertStringSidToSidW = _api(
+        _advapi32, "ConvertStringSidToSidW", [w.LPCWSTR, ctypes.POINTER(PSID)], BOOL
+    )
+    _GetLengthSid = _api(_advapi32, "GetLengthSid", [PSID], DWORD)
+    _IsValidSid = _api(_advapi32, "IsValidSid", [PSID], BOOL)
 
 
 def _get_state_mutex() -> HANDLE:
@@ -209,53 +259,6 @@ def acl_state_lock(timeout_ms: int = 30000):
         _ReleaseMutex(handle)
 
 
-def _system_dir() -> Path:
-    buf = ctypes.create_unicode_buffer(32768)
-    count = _GetSystemDirectoryW(buf, len(buf))
-    if not count or count >= len(buf):
-        raise ctypes.WinError(ctypes.get_last_error())
-    return Path(buf.value)
-
-
-_advapi32 = ctypes.WinDLL(str(_system_dir() / "advapi32.dll"), use_last_error=True)
-
-_GetNamedSecurityInfoW = _api(
-    _advapi32,
-    "GetNamedSecurityInfoW",
-    [
-        w.LPCWSTR,
-        DWORD,
-        DWORD,
-        ctypes.POINTER(PSID),
-        ctypes.POINTER(PSID),
-        ctypes.POINTER(PACL),
-        ctypes.POINTER(PACL),
-        ctypes.POINTER(PSECURITY_DESCRIPTOR),
-    ],
-    DWORD,
-)
-_SetNamedSecurityInfoW = _api(
-    _advapi32,
-    "SetNamedSecurityInfoW",
-    [w.LPWSTR, DWORD, DWORD, PSID, PSID, PACL, PACL],
-    DWORD,
-)
-_GetSecurityDescriptorControl = _api(
-    _advapi32,
-    "GetSecurityDescriptorControl",
-    [PSECURITY_DESCRIPTOR, ctypes.POINTER(WORD), ctypes.POINTER(DWORD)],
-    BOOL,
-)
-_ConvertStringSidToSidW = _api(
-    _advapi32, "ConvertStringSidToSidW", [w.LPCWSTR, ctypes.POINTER(PSID)], BOOL
-)
-_ConvertSidToStringSidW = _api(
-    _advapi32, "ConvertSidToStringSidW", [PSID, ctypes.POINTER(w.LPWSTR)], BOOL
-)
-_GetLengthSid = _api(_advapi32, "GetLengthSid", [PSID], DWORD)
-_IsValidSid = _api(_advapi32, "IsValidSid", [PSID], BOOL)
-
-
 def _normalize_win_path(path: str | Path) -> str:
     raw = os.path.abspath(os.fspath(path))
     if len(raw) >= 248 and not raw.startswith("\\\\?\\"):
@@ -280,20 +283,6 @@ def _sid_str_to_bytes(sid_str: str) -> bytes:
         _LocalFree(sid_ptr)
 
 
-def _sid_bytes_to_str(sid_bytes: bytes) -> str:
-    buf = ctypes.create_string_buffer(sid_bytes)
-    out = w.LPWSTR()
-    if not _ConvertSidToStringSidW(buf, ctypes.byref(out)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return out.value
-    finally:
-        _LocalFree(out)
-
-
-_AAP_SID_BYTES = _sid_str_to_bytes(ALL_APPLICATION_PACKAGES_SID)
-
-
 def _build_ace(ace_type: int, ace_flags: int, access_mask: int, sid_bytes: bytes) -> bytes:
     return struct.pack("<BBHI", ace_type, ace_flags, 8 + len(sid_bytes), access_mask) + sid_bytes
 
@@ -313,6 +302,93 @@ def _ace_sid_bytes(ace: bytes) -> bytes | None:
         return None
     end = offset + 8 + 4 * ace[offset + 1]
     return ace[offset:end] if end <= len(ace) else None
+
+
+def dacl_allows_aap_null_access(aces: list[bytes], *, is_null: bool = False) -> bool:
+    """Return True if a parsed DACL grants S-1-15-2-1 read/write access (0x0012019F)."""
+    if is_null:
+        return True
+    allowed = 0
+    denied = 0
+    for ace in aces:
+        if len(ace) < 8 or (ace[1] & INHERIT_ONLY_ACE):
+            continue
+        sid = _ace_sid_bytes(ace)
+        if sid is None:
+            continue
+        raw_mask = struct.unpack_from("<I", ace, 4)[0]
+        mask = raw_mask
+        if raw_mask & GENERIC_ALL:
+            mask |= NULL_DEVICE_REQUIRED_ACCESS
+        if raw_mask & GENERIC_READ:
+            mask |= FILE_GENERIC_READ
+        if raw_mask & GENERIC_WRITE:
+            mask |= FILE_GENERIC_WRITE
+        if ace[0] in _DENY_ACE_TYPES and sid in (AAP_SID_BYTES, WORLD_SID_BYTES):
+            denied |= mask & ~allowed
+        elif ace[0] == ACCESS_ALLOWED_ACE_TYPE and sid == AAP_SID_BYTES:
+            allowed |= mask & ~denied
+    return (allowed & NULL_DEVICE_REQUIRED_ACCESS) == NULL_DEVICE_REQUIRED_ACCESS
+
+
+def is_native_x64_win10_plus() -> bool:
+    """Return True only for native x64 Python running on x64 Windows 10+."""
+    if sys.platform != "win32":
+        return False
+    if sys.getwindowsversion().major < 10 or ctypes.sizeof(ctypes.c_void_p) != 8:
+        return False
+    try:
+        process_machine, native_machine = WORD(), WORD()
+        if not _IsWow64Process2(
+            _GetCurrentProcess(), ctypes.byref(process_machine), ctypes.byref(native_machine)
+        ):
+            return False
+        return process_machine.value == 0 and native_machine.value == 0x8664
+    except (AttributeError, OSError):
+        return False
+
+
+def null_device_allows_appcontainer() -> bool:
+    """Read-only probe checking whether \\Device\\Null grants S-1-15-2-1 read/write access.
+
+    Windows 11 servicing builds with updated null.sys (10.0.26100.8972+, WIL Feature
+    60692039) natively grant ALL APPLICATION PACKAGES (S-1-15-2-1) 0x001201BF on
+    \\Device\\Null so unelevated Standard AppContainer children can open NUL and
+    subprocess.DEVNULL. Older Windows 10, older Windows 11, and stock Windows Server
+    2022/2025 lack this ACE and return False.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        handle = _CreateFileW(r"\\?\GLOBALROOT\Device\Null", READ_CONTROL, 0x7, None, 3, 0, None)
+        if not handle or handle == _INVALID_HANDLE_VALUE:
+            return False
+        try:
+            needed = DWORD()
+            _GetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, None, 0, ctypes.byref(needed))
+            if not needed.value:
+                return False
+            buf = ctypes.create_string_buffer(needed.value)
+            if not _GetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, buf, len(buf), ctypes.byref(needed)):
+                return False
+            present = BOOL()
+            defaulted = BOOL()
+            dacl_ptr = PACL()
+            if not _GetSecurityDescriptorDacl(buf, ctypes.byref(present), ctypes.byref(dacl_ptr), ctypes.byref(defaulted)):
+                return False
+            if not present.value or not dacl_ptr.value:
+                return dacl_allows_aap_null_access([], is_null=True)
+            _, aces = _parse_acl_ptr(dacl_ptr.value, r"\Device\Null")
+        finally:
+            _CloseHandle(handle)
+        return dacl_allows_aap_null_access(aces, is_null=False)
+    except OSError:
+        return False
+
+
+def is_windows_appcontainer_supported() -> bool:
+    """Return True when native x64 Windows 10+ grants S-1-15-2-1 on \\Device\\Null."""
+    return is_native_x64_win10_plus() and null_device_allows_appcontainer()
 
 
 def _ace_mask(ace: bytes) -> int:
@@ -685,40 +761,6 @@ def ancestor_lacks_aap(workspace: str | Path) -> bool:
         if parent == current:
             return False
         current = parent
-
-
-def inspect_dacl(path: str | Path) -> list[dict[str, Any]]:
-    """Inspect all ACEs (explicit and inherited) on ``path``."""
-    win_path = _normalize_win_path(path)
-    parsed = _read_dacl(win_path)
-    entries: list[dict[str, Any]] = []
-    for idx, ace in enumerate(parsed.aces):
-        ace_type = ace[0]
-        ace_flags = ace[1]
-        mask = _ace_mask(ace)
-        sid_raw = _ace_sid_bytes(ace)
-        sid_text = _sid_bytes_to_str(sid_raw) if sid_raw is not None else "<unknown>"
-        entries.append({
-            "index": idx,
-            "type": _ACE_TYPE_NAMES.get(ace_type, f"TYPE_{ace_type}"),
-            "type_code": ace_type,
-            "flags": ace_flags,
-            "flags_names": [label for bit, label in _ACE_FLAG_NAMES if ace_flags & bit],
-            "inherited": bool(ace_flags & INHERITED_ACE),
-            "mask": mask,
-            "mask_hex": f"0x{mask:08X}",
-            "sid": sid_text,
-            "is_aap": sid_text == ALL_APPLICATION_PACKAGES_SID,
-        })
-    return entries
-
-
-def _is_reparse_point(path: str) -> bool:
-    try:
-        st = os.lstat(path)
-    except OSError:
-        return False
-    return bool(getattr(st, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def scan_residual_aces(root: str | Path, sid_str: str) -> list[str]:

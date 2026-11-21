@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import math
 import random
 import threading
 import time
 import uuid
 from collections import deque
 from dataclasses import asdict
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,14 +27,13 @@ from ..ai.types import (
     message_to_dict,
 )
 from ..diagnostics import capture_error, safe_text
+from ..execution_policy import normalize_approval_policy
 from ..tools.shell import ShellTool
 from . import compaction
 from .diagnostic_view import project_tool_result
 from .origin_context import ExecutionOrigin
-from .permissions import normalize_approval_policy
 from .prompt import RuntimeContext, build_system
 from .recovery import RuntimeDiagnostics, message_diagnostics
-from .retry import retry_after_seconds
 from .runtime_limits import RequestBudget
 from .store import SessionSaveError, SessionStore
 from .telemetry import record_call
@@ -43,6 +45,27 @@ _TRANSCRIPT_STREAM_TYPES = {
     "text_start", "thinking_start", "toolcall_start",
     "native_tool_start", "native_tool_delta", "native_tool_end", "retry",
 }
+
+
+def retry_after_seconds(details: dict | None, *, now: float | None = None) -> float | None:
+    context = details.get("context", {}) if isinstance(details, dict) else {}
+    http = context.get("http", {}) if isinstance(context, dict) else {}
+    value = http.get("retry_after") if isinstance(http, dict) else None
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        if not isinstance(value, str):
+            return None
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=UTC)
+            seconds = max(0.0, date.timestamp() - (datetime.now(UTC).timestamp() if now is None else now))
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 class Runtime:
@@ -256,7 +279,7 @@ class Runtime:
             context = {
                 "tool_name": ev.tool_name, "tool_call_id": ev.tool_call_id,
                 **{key: details[key] for key in (
-                    "duration", "exit_code", "status", "timeout", "execution", "transport",
+                    "duration", "exit_code", "status", "timeout", "execution", "server", "stderr",
                 ) if key in details},
             }
             if isinstance(details.get("error"), dict):
@@ -503,7 +526,7 @@ class Runtime:
                             started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
                 yield StreamEvent("retry", failed)
                 continue
-            if failed.search_started or failed.native_started:
+            if failed.native_started:
                 # Hosted work may already have been billed. Preserve its evidence
                 # and let the user resume rather than silently replaying the turn.
                 yield StreamEvent("error", failed)

@@ -188,22 +188,11 @@ def _preserve_errors(res: ToolResult, previous: list[dict]) -> None:
         details["related_errors"] = related
 
 
-def _transport_facts(res: ToolResult) -> dict | None:
-    """Snapshot adapter facts before result hooks can replace or mutate them."""
-    value = res.details.get("transport") if isinstance(res.details, dict) else None
-    if not isinstance(value, dict):
-        return None
-    fields = ("protocol", "server", "generation", "dispatch", "outcome", "side_effects")
-    return {key: value[key] for key in fields if key in value and type(value[key]) in (str, int, bool)}
-
-
 def _execution_facts(res: ToolResult, *, started=False, outcome="not_started",
-                     result_hook="not_run", transport=None, boundary=None) -> ToolResult:
+                     result_hook="not_run", boundary=None) -> ToolResult:
     """Describe this tool invocation, without claiming idempotency or committed effects.
 
-    An adapter may know more about remote dispatch than the Python execute boundary.
-    Its separate transport facts survive result hooks; neither namespace is owned
-    by a result hook. Even a read-only tool can have remote costs or other effects.
+    Even a read-only tool can have remote costs or other effects.
     """
     if not res.is_error and res.details is not None and not isinstance(res.details, dict):
         # Successful extensions may expose an opaque UI/state payload. There is
@@ -220,10 +209,6 @@ def _execution_facts(res: ToolResult, *, started=False, outcome="not_started",
         "side_effects": "unknown" if started else "none",
         "result_hook": result_hook,
     }
-    if transport is None:
-        details.pop("transport", None)
-    else:
-        details["transport"] = dict(transport)
     return res
 
 
@@ -355,7 +340,6 @@ def _execute(
             res = _tool_error(calls[i], cfg, f"{type(e).__name__}: {safe_text(e)}", phase="tool.execute", error=e)
         if not signal.is_set():
             res = _annotate_error(res, calls[i], cfg, phase="tool.execute")
-        transport = _transport_facts(res)
         boundary = copy.deepcopy(res.details.get("boundary")) if isinstance(res.details, dict) else None
         result_hook = "not_run"
         if cfg.after_tool_call:
@@ -376,7 +360,7 @@ def _execute(
             if not signal.is_set():
                 res = _annotate_error(res, calls[i], cfg, phase="tool.result_hook")
             _preserve_errors(res, previous)
-        _execution_facts(res, started=True, outcome=outcome, result_hook=result_hook, transport=transport, boundary=boundary)
+        _execution_facts(res, started=True, outcome=outcome, result_hook=result_hook, boundary=boundary)
         res.details = res.details if res.details is not None else {}
         if isinstance(res.details, dict):
             res.details.setdefault("duration", round(time.monotonic() - start, 3))

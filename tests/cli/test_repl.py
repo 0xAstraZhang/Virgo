@@ -51,3 +51,12 @@ def test_failing_inline_command_does_not_end_the_repl(make_session, monkeypatch)
     broker.push("line", "/exit")
     runner.join(5)
     assert not runner.is_alive()
+
+
+def test_double_slash_input_is_steered_as_prompt_not_queued_as_command(make_session):
+    session = make_session()
+    steered = []
+    session.steer = lambda text: (steered.append(text), True)[1]
+    assert repl.classify_input(session, "//not-a-command", busy=True) == ("steer", None)
+    assert steered == ["//not-a-command"]
+    assert repl.classify_input(session, "/effort high", busy=True) == ("defer_command", None)

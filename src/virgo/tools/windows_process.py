@@ -18,8 +18,18 @@ import weakref
 from contextlib import ExitStack
 from ctypes import wintypes as w
 
-kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+from ..sandbox._win32 import (
+    CloseHandle,
+    GetCurrentProcess,
+    bind_api,
+)
+from ..sandbox._win32 import (
+    check_win32 as _check,
+)
+from ..sandbox._win32 import (
+    kernel32 as kernel,
+)
+
 SIZE_T = ctypes.c_size_t
 HANDLE = w.HANDLE
 _DRAIN_TIMEOUT = 5.0
@@ -69,19 +79,15 @@ class ProcessInfo(ctypes.Structure):
     _fields_ = [("hProcess", HANDLE), ("hThread", HANDLE), ("dwProcessId", w.DWORD), ("dwThreadId", w.DWORD)]
 
 
-def _api(name, args, result=w.BOOL, *, library=kernel):
-    fn = getattr(library, name)
-    fn.argtypes, fn.restype = args, result
-    return fn
+def _api(name, args, result=w.BOOL):
+    return bind_api(kernel, name, args, result)
 
 
 CreateJob = _api("CreateJobObjectW", [ctypes.c_void_p, w.LPCWSTR], HANDLE)
 SetJob = _api("SetInformationJobObject", [HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD])
 QueryJob = _api("QueryInformationJobObject", [HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
                                             ctypes.POINTER(w.DWORD)])
-CloseHandle = _api("CloseHandle", [HANDLE])
 TerminateJob = _api("TerminateJobObject", [HANDLE, w.UINT])
-GetCurrentProcess = _api("GetCurrentProcess", [], HANDLE)
 DuplicateHandle = _api("DuplicateHandle", [HANDLE, HANDLE, HANDLE, ctypes.POINTER(HANDLE), w.DWORD, w.BOOL, w.DWORD])
 InitializeAttributes = _api("InitializeProcThreadAttributeList", [ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(SIZE_T)])
 UpdateAttribute = _api("UpdateProcThreadAttribute", [ctypes.c_void_p, w.DWORD, SIZE_T, ctypes.c_void_p, SIZE_T,
@@ -89,15 +95,8 @@ UpdateAttribute = _api("UpdateProcThreadAttribute", [ctypes.c_void_p, w.DWORD, S
 DeleteAttributes = _api("DeleteProcThreadAttributeList", [ctypes.c_void_p], None)
 CreateProcess = _api("CreateProcessW", [w.LPCWSTR, w.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, w.BOOL, w.DWORD,
                                       ctypes.c_void_p, w.LPCWSTR, ctypes.POINTER(StartupInfoEx), ctypes.POINTER(ProcessInfo)])
-CreateProcessAsUser = _api("CreateProcessAsUserW", [HANDLE, *CreateProcess.argtypes], library=advapi)
 WaitForSingleObject = _api("WaitForSingleObject", [HANDLE, w.DWORD], w.DWORD)
 GetExitCode = _api("GetExitCodeProcess", [HANDLE, ctypes.POINTER(w.DWORD)])
-
-
-def _check(value):
-    if not value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    return value
 
 
 def _close_handles(job, process):
@@ -194,12 +193,8 @@ class WindowsProcess:
                 info = ProcessInfo()
                 flags = 0x08000000 | 0x00080000 | 0x00000400  # NO_WINDOW | EXTENDED_STARTUPINFO | UNICODE_ENVIRONMENT
                 self._check_cancelled()
-                arguments = (None, command_buffer, None, None, True, flags, environment, str(cwd),
-                             ctypes.byref(startup), ctypes.byref(info))
-                if sandbox is not None and sandbox.token is not None:
-                    _check(CreateProcessAsUser(sandbox.token, *arguments))
-                else:
-                    _check(CreateProcess(*arguments))
+                _check(CreateProcess(None, command_buffer, None, None, True, flags, environment, str(cwd),
+                                     ctypes.byref(startup), ctypes.byref(info)))
                 ownership.callback(CloseHandle, info.hProcess)
                 resources.callback(CloseHandle, info.hThread)
                 self.pid = info.dwProcessId

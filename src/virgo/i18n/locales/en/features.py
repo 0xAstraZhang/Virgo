@@ -11,7 +11,6 @@ MESSAGES = {
     "features.agent.incomplete": "Sub-agent stopped without a completed answer: {reason}. "
     "Check the failure and completed work before deciding how to continue.",
     "features.agent.no_answer": "The sub-agent produced no answer.",
-    "features.agent.no_text": "(no text in final answer)",
     "features.agent.progress": "\n"
     "The child returned {count} tool result(s) before stopping; earlier actions may "
     "already have taken effect. Recent results:\n",
@@ -31,20 +30,14 @@ MESSAGES = {
     "features.commands.fetch": "choose page reader (/fetch [auto|http|deepseek|off])",
     "features.commands.jobs": "list background jobs",
     "features.commands.permissions": "show or change permission presets, approval policy and remembered decisions",
-    "features.commands.mode_alias": "deprecated alias for /permissions",
-    "features.commands.mode_deprecated": 'virgo: /mode is deprecated; use /permissions',
-    "features.commands.sandbox_deprecated": 'virgo: /sandbox is deprecated; use /permissions sandbox',
-    "features.commands.sandbox_alias": "deprecated alias for /permissions show",
     "features.commands.search": "choose search backend (/search [auto|duckduckgo|deepseek|off])",
     "features.commands.skills": "list available skills (/skill:name to use one)",
     "features.diagnostics.failed": "Diagnostic lookup failed; the original result is unchanged.",
     "features.diagnostics.runtime": "Diagnostic lookup requires a trusted calling runtime.",
     "features.diagnostics.unavailable": "This runtime has no diagnostic evidence collection.",
     "features.fetch.backend": "fetch.backend must be http or deepseek",
-    "features.fetch.context": "Fetch requires the calling agent's model context.",
     "features.fetch.key": "DeepSeek fetch requires an official API key. Use /login api deepseek or "
     "DEEPSEEK_API_KEY.",
-    "features.fetch.limit": "Web fetch reached fetch.maxUses for this user request.",
     "features.fetch.max_tokens": "fetch.maxContentTokens must be an integer from 1 to 100000",
     "features.fetch.mode": "fetch.mode must be auto, native, builtin or off",
     "features.fetch.selection": "Fetch backend must be auto, http, deepseek or off.",
@@ -104,6 +97,4 @@ MESSAGES = {
     "features.web.budget_requires_client": "An explicit shared web call budget requires client tools.",
     "features.search.max_uses": "search.maxUses must be null or a positive integer.",
     "features.fetch.max_uses": "fetch.maxUses must be null or a positive integer.",
-    'features.permission.approval.ask': 'ask when needed',
-    'features.permission.approval.never': 'never ask',
 }

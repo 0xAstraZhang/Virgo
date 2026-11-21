@@ -294,7 +294,7 @@ class AssistantView(Vertical):
     def __init__(self, agent: str = "main", *, show_thinking: bool = False) -> None:
         super().__init__()
         self.agent, self.show_thinking = agent, show_thinking
-        self.text, self.thinking = "", ""
+        self.text = ""
         self.message: AssistantMessage | None = None
         self.activity: Text | None = None
         self.active_events: set[EventView] = set()
@@ -432,10 +432,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.show_tools = self.show_thinking = False
-        self.active: dict[str, AssistantView] = {}
         self.activity_card: AssistantView | None = None
-        self.tools: dict[tuple[str, str], ToolView] = {}
-        self.results: dict[tuple[str, str], ToolView] = {}
         self._current_calls: dict[tuple[str, str], ToolView] = {}
         self._current_results: dict[tuple[str, str], ToolView] = {}
         self._blocks: dict[str, dict[int, EventView]] = {}
@@ -556,9 +553,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         if self._run is None:
             self._run = AssistantView(show_thinking=self.show_thinking)
             self._run.translator = translator_for(self)
-            self.active[agent] = self.activity_card = self._run
+            self.activity_card = self._run
             await self._place(self._run)
-        self.active[agent] = self.activity_card = self._run
+        self.activity_card = self._run
         return self._run
 
     async def _place(self, widget: Widget, *, before: Widget | None = None) -> None:
@@ -579,7 +576,6 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self._streaming.clear()
         self.show_activity(None)
         self.activity_card = self._run = None
-        self.active.clear()
         self._blocks.clear()
         self._current_calls.clear()
         self._current_results.clear()
@@ -598,7 +594,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         card = self._current_calls.get(key)
         if card is None:
             card = ToolView(agent, call_id, name, args)
-            self.tools[key] = self._current_calls[key] = card
+            self._current_calls[key] = card
             await self._append(card)
         else:
             card.tool_name = name or card.tool_name
@@ -612,7 +608,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         row = self._current_results.get(key)
         if row is None:
             row = ToolView(agent, message.tool_call_id, message.tool_name, result=True)
-            self.results[key] = self._current_results[key] = row
+            self._current_results[key] = row
             await self._append(row)
         text = message.text()
         for block in message.content:
@@ -671,7 +667,6 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 )
             if row is not None:
                 blocks[index] = row
-        card.thinking = "\n\n".join(e.text for e in card.events if e.kind == "thinking")
         card.message = message
         if final:
             card.clear_event_activity(agent)
@@ -823,8 +818,6 @@ class Transcript(VerticalScroll, inherit_bindings=False):
     async def load_history(self, entries: list[dict]) -> None:
         self.workers.cancel_group(self, "older-history")
         self.finish_activity()
-        self.tools.clear()
-        self.results.clear()
         self._older, self._older_pending, self._older_tools, self._keep_in_view = [], False, False, None
         self._prepending = False
         has_run_boundaries = any(e.get("kind") == "transcript_run_start" for e in entries)
@@ -856,9 +849,6 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         replay._staged = []
         await replay._replay(entries, has_run_boundaries)
         replay.finish_activity()
-        # Older runs come first, as if the whole history had been replayed.
-        self.tools = replay.tools | self.tools
-        self.results = replay.results | self.results
         if self._older_tools:
             # Loaded history follows the last toggle, like the runs already shown.
             for card in replay._staged:

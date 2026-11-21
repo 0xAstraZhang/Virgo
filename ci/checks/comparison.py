@@ -1,4 +1,4 @@
-"""Exercise the comparison CLI using real pytest runs in temporary projects."""
+"""Exercise the summary CLI using real pytest runs in temporary projects."""
 
 from __future__ import annotations
 
@@ -14,107 +14,80 @@ RUNNER = Path(__file__).resolve().parents[1] / "compare_tests.py"
 def main():
     with tempfile.TemporaryDirectory(prefix="virgo-ci-check-") as directory:
         root = Path(directory)
+        project = root / "head"
+        project.mkdir()
 
-        def run(label, source, *, extra=None):
-            project = root / label
-            project.mkdir(exist_ok=True)
+        def run(source, *, extra=None, extra_name="test_other.py"):
             (project / "test_cases.py").write_text(source, encoding="utf-8")
-            if extra:
-                (project / "test_other.py").write_text(extra, encoding="utf-8")
+            for name in ("test_other.py", "other_test.py"):
+                (project / name).unlink(missing_ok=True)
+            if extra is not None:
+                (project / extra_name).write_text(extra, encoding="utf-8")
             subprocess.run([
                 sys.executable, str(RUNNER), "run", "--project", str(project),
-                "--output", str(root / "reports" / label), "--platform", "local",
-                "--label", label, "--sha", label,
+                "--output", str(root / "reports" / "local"), "--platform", "local",
+                "--sha", "head",
             ], check=False, stdout=subprocess.DEVNULL)
 
-        def compare(expected, *options):
+        def summarize(expected, *options, reports_dir=None):
             for suffix in (".md", ".json"):
-                (root / "comparison").with_suffix(suffix).unlink(missing_ok=True)
+                (root / "summary").with_suffix(suffix).unlink(missing_ok=True)
             result = subprocess.run([
-                sys.executable, str(RUNNER), "compare", "--reports", str(root / "reports"),
-                "--output", str(root / "comparison"), "--platforms", "local", *options,
+                sys.executable, str(RUNNER), "summarize",
+                "--reports", str(reports_dir or (root / "reports")),
+                "--output", str(root / "summary"), "--platforms", "local", *options,
             ], check=False, stdout=subprocess.DEVNULL)
-            assert (root / "comparison.md").exists(), "Missing readable failure summary"
-            assert result.returncode == expected, (root / "comparison.md").read_text()
-            return json.loads((root / "comparison.json").read_text())["platforms"].get("local", {})
+            assert (root / "summary.md").exists(), "Missing readable failure summary"
+            assert result.returncode == expected, (root / "summary.md").read_text()
+            return json.loads((root / "summary.json").read_text())["platforms"].get("local", {})
 
-        common = "import pytest\ndef test_same(): assert False\n"
-        run("base", common + "def test_fixed(): assert False\ndef test_moved(): pass\n")
-        run("head", common + "def test_fixed(): pass\n", extra="def test_moved(): pass\n")
-        report = compare(0)
-        assert report["existing_failures"] == ["test_same"]
-        assert report["fixed_failures"] == ["test_fixed"]
-        assert report["added"] == report["removed"] == []
+        # Passing suite succeeds cleanly.
+        run("def test_ok(): pass\n")
+        report = summarize(0)
+        assert not report["failures"] and not report["problems"]
+        assert report["counts"] == {"passed": 1}
 
-        run("base", common + "def test_new(): pass\n@pytest.mark.skip\ndef test_exposed(): pass\n")
-        run("head", common + "def test_new(): assert False\ndef test_exposed(): assert False\n"
-            "def test_added_failure(): assert False\n")
-        report = compare(1)
-        assert report["regressions"] == ["test_new"]
-        assert report["newly_exposed_failures"] == ["test_added_failure", "test_exposed"]
+        # Failing test fails the gate and is reported by classname::name.
+        run("def test_ok(): pass\ndef test_failure(): assert False\n")
+        report = summarize(1)
+        assert report["failures"] == ["test_cases::test_failure"]
 
-        # S6-01 (§6.1): Removed tests are listed visibly for PR review without SHA-bound
-        # retirement files, while new skips still fail CI.
-        run("base", "def test_removed(): pass\ndef test_skipped(): pass\n")
-        run("head", "import pytest\n@pytest.mark.skip\ndef test_skipped(): pass\n")
-        report = compare(1)
-        assert report["removed"] == ["test_removed"]
-        assert report["new_skips"] == ["test_skipped"]
-        assert "test_removed" in (root / "comparison.md").read_text()
+        # Platform/conditional skip passes cleanly.
+        run("import pytest\n@pytest.mark.skip(reason='platform')\ndef test_skip(): pass\n")
+        report = summarize(0)
+        assert not report["failures"] and report["counts"] == {"skipped": 1}
 
-        run("base", "def test_removed(): pass\ndef test_kept(): pass\n")
-        run("head", "def test_kept(): pass\n")
-        report = compare(0)
-        assert report["removed"] == ["test_removed"]
-        assert not report["problems"]
-        assert "declare retired tests" in (root / "comparison.md").read_text()
+        # Identical function names in separate test modules remain distinct and valid.
+        run("def test_shared(): pass\n", extra="def test_shared(): pass\n")
+        report = summarize(0)
+        assert not report["problems"] and report["counts"] == {"passed": 2}
 
-        for label, parameter in [("base", "virgo.ai.providers.responses"), ("head", "openai-responses")]:
-            (root / label / "test_other.py").unlink(missing_ok=True)
-            run(label, "import pytest\n" + f"@pytest.mark.parametrize('api', [{parameter!r}])\n"
-                "def test_compaction_does_not_enable_native_search(api): pass\n")
-        report = compare(0)
-        assert not report["added"] and not report["removed"]
+        # A module-level skip remains a separate outcome, not a missing case.
+        run(
+            "def test_ok(): pass\n",
+            extra="import pytest\npytest.skip('module', allow_module_level=True)\n",
+            extra_name="other_test.py",
+        )
+        report = summarize(0)
+        assert report["collection_skips"] == ["other_test"]
+        assert report["counts"] == {"passed": 1, "skipped": 1}
 
-        # Approved aliases remain comparable, including failing replacements and duplicate collisions.
-        replacements = {
-            "test_encrypted_thought_label_is_display_only_live_and_in_history":
-                "test_unreadable_thoughts_are_hidden_live_and_in_history",
-            "test_inline_activity_reuses_thought_header_and_keeps_prompt_before_reply":
-                "test_inline_activity_is_separate_from_thought_folding_and_follows_prompt",
-        }
-        run("base", "\n".join(f"def {name}(): pass" for name in replacements))
-        run("head", "\n".join(f"def {name}(): pass" for name in replacements.values())
-            + "\ndef test_live_messages_are_visible_and_folds_are_independent(): pass\n")
-        report = compare(0)
-        assert report["added"] == ["test_live_messages_are_visible_and_folds_are_independent"]
-        assert not report["removed"] and not report["problems"]
-        run("head", "\n".join(f"def {name}(): assert False" for name in replacements.values()))
-        report = compare(1)
-        assert report["regressions"] == sorted(replacements)
-        assert not report["removed"] and not report["newly_exposed_failures"]
-        run("head", "\n".join(f"def {name}(): pass" for name in
-                             [*replacements, *replacements.values()]))
-        assert any("Ambiguous test name" in problem for problem in compare(1)["problems"])
-
-        run("head", "def test_duplicate(): pass\n", extra="def test_duplicate(): pass\n")
-        assert compare(1)["problems"]
-        (root / "head" / "test_other.py").unlink()
-        run("head", "raise RuntimeError('collection failed')\n")
-        assert compare(1)["problems"]
-        (root / "reports" / "head" / "results.json").unlink()
-        assert compare(1)["problems"]
+        # Collection failure and missing reports both fail the gate.
+        run("raise RuntimeError('collection failed')\n")
+        assert summarize(1)["problems"]
+        report_path = root / "reports" / "local" / "results.json"
+        report_path.unlink()
+        assert summarize(1)["problems"]
 
         # Report integrity, target matching, upstream job results, and docs-only mode.
-        run("base", "def test_ok(): pass\n")
-        run("head", "def test_ok(): pass\n")
-        head_path = root / "reports" / "head" / "results.json"
-        valid = json.loads(head_path.read_text())
+        run("def test_ok(): pass\n")
+        valid = json.loads(report_path.read_text())
         target_path = root / "target.json"
         target = {"pr": 10, "url": "https://github.com/owner/project/pull/10",
-                  "base_sha": "base", "head_sha": "head", "mode": "comparison", "run_tests": True}
+                  "base_sha": "base", "head_sha": "head", "run_tests": True}
         target_path.write_text(json.dumps(target))
-        compare(0, "--target", str(target_path))
+        summarize(0, "--target", str(target_path))
+
         bad_reports = [
             {**valid, "complete": False, "exit_code": 2, "problems": []},
             {**valid, "complete": False},
@@ -127,58 +100,52 @@ def main():
             {**valid, "tests": {"test_ok": {"status": "unknown"}}},
             {**valid, "sha": "wrong"},
             {**valid, "platform": "unexpected"},
-            {**valid, "label": "unexpected"},
             {**valid, "duration": -1},
             {**valid, "collection_skips": "wrong"},
             {**valid, "problems": "wrong"},
             {}, [],
         ]
         for bad in bad_reports:
-            head_path.write_text(json.dumps(bad))
-            compare(1, "--target", str(target_path))
+            report_path.write_text(json.dumps(bad))
+            summarize(1, "--target", str(target_path))
         for invalid in ('{', '{"platform":"local","platform":"other"}'):
-            head_path.write_text(invalid)
-            compare(1, "--target", str(target_path))
-        head_path.write_text(json.dumps(valid))
+            report_path.write_text(invalid)
+            summarize(1, "--target", str(target_path))
+
+        report_path.write_text(json.dumps(valid))
         duplicate = root / "reports" / "duplicate" / "results.json"
         duplicate.parent.mkdir()
         duplicate.write_text(json.dumps(valid))
-        compare(1, "--target", str(target_path))
+        summarize(1, "--target", str(target_path))
         duplicate.unlink()
+
         for invalid in ('{', '{}', '[]'):
             target_path.write_text(invalid)
-            compare(1, "--target", str(target_path))
+            summarize(1, "--target", str(target_path))
         target_path.unlink()
-        compare(1, "--target", str(target_path))
+        summarize(1, "--target", str(target_path))
         for job in ("resolve", "checks", "test"):
             for status in ("failure", "cancelled", "skipped"):
-                compare(1, f"--{job}-result", status)
+                summarize(1, f"--{job}-result", status)
 
-        # A module-level skip remains a separate outcome, not a missing case.
-        run("head", "def test_ok(): pass\n", extra="import pytest\npytest.skip('module', allow_module_level=True)\n")
-        compare(0)
-        (root / "head" / "test_other.py").unlink()
-        (root / "reports" / "base" / "results.json").unlink()
-        compare(0, "--mode", "head")
-        run("head", "def test_failure(): assert False\n")
-        report = compare(1, "--mode", "head")
-        assert report["failures"] == ["test_failure"]
-        run("head", "import pytest\n@pytest.mark.skip(reason='platform')\ndef test_skip(): pass\n")
-        compare(0, "--mode", "head")
-
-        # Documentation skips still require a valid target and successful checks.
-        head_path.unlink()
+        # Documentation skips require a valid target, successful checks, and no unexpected reports.
         target.update(run_tests=False, skip_reason="Only documentation changed")
         target_path.write_text(json.dumps(target))
-        compare(0, "--target", str(target_path), "--resolve-result", "success",
-                "--checks-result", "success", "--test-result", "skipped")
-        summary = json.loads((root / "comparison.json").read_text())
+        # An unexpected test report when run_tests=False fails the gate.
+        summarize(1, "--target", str(target_path), "--resolve-result", "success",
+                  "--checks-result", "success", "--test-result", "skipped")
+        report_path.unlink()
+        # Works even when the reports directory was never created (download skipped).
+        summarize(0, "--target", str(target_path), "--resolve-result", "success",
+                  "--checks-result", "success", "--test-result", "skipped",
+                  reports_dir=root / "missing-reports")
+        summary = json.loads((root / "summary.json").read_text())
         assert summary["skipped"] and not summary["needs_attention"]
-        assert "Only documentation changed" in (root / "comparison.md").read_text()
-        compare(1, "--target", str(target_path), "--checks-result", "failure", "--test-result", "skipped")
+        assert "Only documentation changed" in (root / "summary.md").read_text()
+        summarize(1, "--target", str(target_path), "--checks-result", "failure", "--test-result", "skipped")
         target["run_tests"] = "false"
         target_path.write_text(json.dumps(target))
-        compare(1, "--target", str(target_path))
+        summarize(1, "--target", str(target_path))
     print("CLI end-to-end checks passed")
 
 

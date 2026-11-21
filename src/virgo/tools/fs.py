@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import difflib
 import fnmatch
-import os
 import re
 import threading
 from contextlib import ExitStack
@@ -44,10 +43,6 @@ IMAGE_TYPES = {
 
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
-
-
-def resolve(path: str, cwd: Path) -> Path:
-    return resolve_read_path(path, cwd)
 
 
 def file_lock(path: Path) -> threading.Lock:
@@ -406,17 +401,6 @@ def make_file_tool(tool: AgentTool, execution) -> AgentTool:
 # ---------------------------------------------------------------------------
 # glob / grep
 # ---------------------------------------------------------------------------
-
-
-def _walk(root: Path, *, max_files: int = MAX_WALK_FILES):
-    yielded = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
-        for f in sorted(filenames):
-            if yielded >= max_files:
-                return
-            yielded += 1
-            yield Path(dirpath) / f
 
 
 def _collapse_glob(pattern: str) -> tuple[str, ...]:

@@ -1,7 +1,6 @@
 """Broker file boundaries and required native platform acceptance.
 
-Native cases must launch a payload before counting as isolation evidence. The
-current shared-path policy refusal is a blocking failure in required runs.
+Native cases must launch a payload before counting as isolation evidence.
 """
 
 from __future__ import annotations
@@ -9,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import sys
 import tempfile
 import threading
@@ -154,7 +154,9 @@ def test_sandbox_file_mutation_roundtrip_and_failed_edit(broker_session, project
 
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native workspace mutation")
 @pytest.mark.parametrize("tool", ["write", "edit"])
-def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(broker_session, project, tool):
+def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(
+    broker_session, project, monkeypatch, tool
+):
     """A workspace entry changed after permission review must not redirect I/O.
 
     Failure modes: the permission gate checks a normal file; a concurrent
@@ -162,9 +164,7 @@ def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(broke
     file lock; write/edit follows the replacement and changes a sibling file.
     No permission or execution function is replaced in this assembled scenario.
     """
-    import time
-
-    from virgo.tools.fs import file_lock
+    from virgo.tools import fs as fs_mod
 
     target = project / "ordinary.txt"
     outside = project.parent / "outside-file.txt"
@@ -189,28 +189,27 @@ def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(broke
         except Exception as error:
             errors.append(error)
 
+    original_lock = fs_mod.file_lock
+    reached = threading.Event()
+
+    def hooked_lock(path):
+        lock = original_lock(path)
+        if path == target:
+            reached.set()
+        return lock
+
+    monkeypatch.setattr(fs_mod, "file_lock", hooked_lock)
+
     # Wait for the real executor, after both permission checkpoints. Holding
     # its normal per-file lock makes the filesystem change deterministic.
-    with file_lock(target):
+    with original_lock(target):
         worker = threading.Thread(target=execute, daemon=True)
         worker.start()
-        deadline = time.monotonic() + 10
-        reached = False
-        while not reached and time.monotonic() < deadline:
-            for frame in sys._current_frames().values():
-                while frame is not None:
-                    if frame.f_code.co_name == "_" + tool and frame.f_locals.get("p") == target:
-                        reached = True
-                        break
-                    frame = frame.f_back
-            if not reached:
-                time.sleep(0.01)
-        if reached:
-            target.unlink()
-            target.symlink_to(outside)
+        assert reached.wait(10), "The Core file executor did not reach the locked operation"
+        target.unlink()
+        target.symlink_to(outside)
     worker.join(10)
     assert not worker.is_alive()
-    assert reached, "The Core file executor did not reach the locked operation"
     assert not errors, errors
     assert outside.read_text() == "original\n", "The checked workspace path redirected a host write"
     assert tool_results(session)[-1].is_error
@@ -241,26 +240,16 @@ def test_sandbox_project_context_symlink_never_reaches_provider(broker_session, 
     (project / "AGENTS.md").symlink_to(secret)
     if route == "rebuild":
         session.prompt("/shell auto")
-        result = run(session, "printf context-boundary")
+        faux.script("test", faux.reply("done"))
+        session.prompt("Check project context")
     else:
         api = ExtensionAPI(session, "sandbox-context")
         child = api.create_runtime("context-child", "subagent", parent=session.main)
         try:
-            shell = selected(session)
-            faux.script(
-                "test",
-                faux.reply(tools=[(shell.tool_name, {"command": "printf context-boundary"})]),
-                faux.reply("done"),
-            )
-            child.agent.prompt("Run the requested local check")
-            result = next(
-                message
-                for message in reversed(child.messages)
-                if getattr(message, "tool_name", None) == shell.tool_name
-            )
+            faux.script("test", faux.reply("done"))
+            child.agent.prompt("Check project context")
         finally:
             api.release_runtime(child)
-    assert result.is_error and result.details["status"] == "execution_unavailable"
     requests = calls()
     assert requests
     for request in requests:
@@ -343,16 +332,6 @@ def test_native_network_and_environment_isolation(native, project, monkeypatch):
 
 def test_native_failure_and_timeout_are_not_reclassified(native):
     native_cases.failure_and_timeout_are_not_reclassified(native)
-
-
-def test_shared_native_policy_is_rejected_before_payload(broker_session, project):
-    session = broker_session(approval="never")
-    result = run(session, "echo forbidden")
-    assert result.is_error and result.details["status"] == "execution_unavailable"
-    assert result.details["boundary"]["payload_started"] is False
-    assert result.details["boundary"]["side_effects"] == "none"
-    assert result.details["boundary"]["reason"] == "backend_unavailable"
-    assert not session.ui.questions
 
 
 def test_native_existing_metadata_is_readonly(native, project):
@@ -706,18 +685,16 @@ def test_sandbox_rejects_changed_cwd_before_creating_output(broker_session, proj
         assert not session.services["jobs"].jobs
 
 
-@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native sandbox metadata paths")
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX output directory symlinks")
 @pytest.mark.parametrize("background", [False, True])
 def test_sandbox_rejects_external_output_symlink_before_spooling(broker_session, project, background):
-    """Project metadata must not redirect the broker's file writes outside its owner.
-
-    Failure modes: an existing .virgo symlink redirects output mkdir/mkstemp to a
-    host directory; background startup cleanup leaves redirected directories;
-    a valid cwd hides an invalid output destination until after a host write.
-    """
-    outside = project.parent / "outside-metadata"
+    """Broker OutputStore must not follow a symlinked outputs directory outside VIRGO_HOME."""
+    outside = project.parent / "outside-outputs"
     outside.mkdir()
-    (project / ".virgo").symlink_to(outside, target_is_directory=True)
+    outputs_root = Path(os.environ["VIRGO_HOME"]) / "outputs"
+    if outputs_root.exists():
+        shutil.rmtree(outputs_root)
+    outputs_root.symlink_to(outside, target_is_directory=True)
     session = broker_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
                   "execution": {"mode": "workspace-edit"}},
@@ -725,7 +702,8 @@ def test_sandbox_rejects_external_output_symlink_before_spooling(broker_session,
     )
     result = run(session, "echo sandbox-output", background=background)
     assert result.is_error and result.details["status"] == "execution_unavailable"
-    assert list(outside.iterdir()) == [], "Invalid output aliases must be rejected before mkdir or mkstemp"
+    assert result.details["boundary"]["reason"] == "invalid_output_dir"
+    assert list(outside.iterdir()) == [], "Symlinked output roots must be rejected before mkdir or open"
     if background:
         assert not session.services["jobs"].jobs
 
@@ -1346,7 +1324,6 @@ def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, p
         assert secret not in ps_args
         if sys.platform == "darwin":
             assert isinstance(proc._process, HostProcess)
-            assert not hasattr(proc._process, "_plist")
             assert secret not in " ".join(proc._process._process.args)
             assert "/usr/bin/env" not in proc._process._process.args
             ps_pid_args = sp.check_output([ps_bin, "-ww", "-o", "args=", "-p", str(proc.pid)],

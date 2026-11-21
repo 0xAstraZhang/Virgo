@@ -8,6 +8,7 @@ from dataclasses import replace
 from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import AssistantMessage, Context, Model, RawContent, StreamOptions
+from ..web import declarations
 from . import responses
 from ._errors import attach_error
 from ._http import ProviderError, cancelled, classify_error, json_events
@@ -30,8 +31,8 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
         params["prompt_cache_key"] = opts.prompt_cache_key
     if ctx.tools:
         params["tools"] = responses.convert_tools(ctx.tools)
-    if ctx.web_search:
-        params.setdefault("tools", []).append(copy.deepcopy(ctx.web_search))
+    for tool in declarations(ctx):
+        params.setdefault("tools", []).append(tool)
     if model.reasoning and opts.effort:
         params["reasoning"] = {
             "effort": responses_effort(model, opts.effort),
@@ -73,7 +74,7 @@ def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | Non
         if cancelled(opts.signal):
             raise ProviderError("Aborted by user.", "aborted")
         # Compaction is maintenance, never a request to run hosted search.
-        params = build_params(model, replace(ctx, web_search=None), opts)
+        params = build_params(model, replace(ctx, web_tools=[], web_offers=[]), opts)
         retained = [copy.deepcopy(item) for item in params["input"] if item.get("role") == "user"]
         params["input"].append({"type": "compaction_trigger"})
         out = EventStream(_events(model, ctx, opts, out, params=params), out).result()
@@ -124,7 +125,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         )
         for event in responses.parse_events(
             _normalize_events(events), model, out, opts,
-            web_search=bool(ctx.web_search) and params is None,
+            web_search=bool(ctx.web_tools) and params is None,
         ):
             if out.error_message:
                 attach_error(out, None, model, token=token)
@@ -135,7 +136,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         if events is not None:
             events.close()
         kind, message = classify_error(error, token)
-        if ctx.web_search and params is None and is_search_unsupported(error):
+        if ctx.web_tools and params is None and is_search_unsupported(error):
             kind = "search_unsupported"
         out.stop_reason = "aborted" if kind == "aborted" or cancelled(opts.signal) else "error"
         out.error_kind = kind

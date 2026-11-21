@@ -12,7 +12,7 @@ from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
 from ..tools.output import make_read_output_tool
 from .high_risk import detect_high_risk_command
 from .resource_approvals import HostExecutionProvider
-from .ui import UI
+from .ui import confirm_callable
 
 _BACKEND_UNAVAILABLE_REASONS = frozenset({
     "backend_unavailable",
@@ -110,23 +110,13 @@ class ModeExecutionProvider(HostExecutionProvider):
         base = super().for_context(event)
         return base if base.provider == "host" else self.sandbox.for_context(event)
 
-    def _confirm_callable(self):
-        ui = self.session.ui
-        once = getattr(ui, "confirm_once", None)
-        if callable(once) and getattr(once, "__func__", None) is not UI.confirm_once:
-            return once
-        confirm = getattr(ui, "confirm", None)
-        if callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm:
-            return confirm
-        return None
-
     def _approval_allowed(self, base, signal) -> bool:
         snapshot = getattr(base, "permission_snapshot", None)
         return (
             self.session.approval_policy != "never"
             and (snapshot is None or snapshot.approval != "never")
             and (signal is None or not signal.is_set())
-            and self._confirm_callable() is not None
+            and confirm_callable(self.session.ui, prefer_persistent=False) is not None
         )
 
     def _check_high_risk(self, event, base, *, confirm: bool):
@@ -165,7 +155,7 @@ class ModeExecutionProvider(HostExecutionProvider):
             f"Working directory: {Path(event.cwd).resolve()}\n"
             "Approve executing this command once? [y/n]"
         )
-        answer = self._confirm_callable()(question, event.agent)
+        answer = confirm_callable(self.session.ui, prefer_persistent=False)(question, event.agent)
         if answer != "y":
             return deny(f"High-risk command was not approved: {match.reason}")
         return None
@@ -199,7 +189,7 @@ class ModeExecutionProvider(HostExecutionProvider):
             f"Run this single command with No-Limit (Host) authority? "
             f"(Session remains in {mode_name}; switch permanently with /permissions no-limit.) [y/n]"
         )
-        if self._confirm_callable()(question, ctx.agent) != "y":
+        if confirm_callable(self.session.ui, prefer_persistent=False)(question, ctx.agent) != "y":
             return None
         return HostContext(
             base.workspace,
@@ -289,7 +279,8 @@ class ModeExecutionProvider(HostExecutionProvider):
 
 def install_execution(session):
     provider = ModeExecutionProvider(session)
-    session.register_execution_provider(provider, owner="core")
+    session.services["execution"] = provider
+    session._permission_boundary = session.bus.boundary(100)
     # Registered before JobManager so LIFO shutdown drains background jobs first,
     # then tears down session-scoped Windows AppContainer profiles and ACLs.
     session.register_cleanup("core.execution", provider.close)
@@ -301,4 +292,6 @@ def install_execution(session):
     session.replace_tools("tool:read_output", [(make_read_output_tool(provider.for_context), ("main", "subagent"))],
                           owner="core")
     session.commands.register("permissions", provider.command, "show execution boundary and resource permissions",
-                              source="core", concurrent=True, argument_hint="[show|list|read-only|workspace-edit|no-limit|grants|revoke ID]")
+                              source="core", concurrent=True,
+                              description_key="features.commands.permissions",
+                              argument_hint="[show|list|read-only|workspace-edit|no-limit|grants|revoke ID]")

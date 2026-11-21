@@ -51,14 +51,18 @@ def test_parallel_results_notifications_and_agents_share_arrival_order():
             ], stop_reason="tool_use")))
             for call_id in ("a", "b"):
                 await view.consume(AgentEvent("tool_execution_start", tool_call_id=call_id, tool_name="bash"))
+            def tool_map(kind: str) -> dict[tuple[str, str], ToolView]:
+                return {(t.agent, t.call_id): t for t in view.query(ToolView) if t.kind == kind}
+
             view.show_activity(Text("✻ Running 2 tools… (1s)"))
-            assert all("Running" in str(view.tools[("main", key)].header.content) for key in ("a", "b"))
+            calls = tool_map("tool_call")
+            assert all("Running" in str(calls[("main", key)].header.content) for key in ("a", "b"))
             assert not view.activity_card.thought_header.display
             await view.consume(AgentEvent(
                 "tool_execution_end", tool_call_id="b", tool_name="bash", result=ToolResult.text("B finished")
             ))
-            assert "Running" not in str(view.tools[("main", "b")].header.content)
-            assert "Running" in str(view.tools[("main", "a")].header.content)
+            assert "Running" not in str(calls[("main", "b")].header.content)
+            assert "Running" in str(calls[("main", "a")].header.content)
             await view.consume(AgentEvent(
                 "message_end", message=UserMessage("Background news", kind="notification")
             ))
@@ -86,9 +90,10 @@ def test_parallel_results_notifications_and_agents_share_arrival_order():
                 ("tool_result", "main"), ("text", "main"),
             ]
             assert [event.call_id for event in run.events if isinstance(event, ToolView)] == ["a", "b", "b", "a"]
-            assert run.events[4] is view.results[("main", "b")]
-            assert run.events[8] is view.results[("main", "a")]
-            assert view.tools[("main", "a")] is not view.results[("main", "a")]
+            results = tool_map("tool_result")
+            assert run.events[4] is results[("main", "b")]
+            assert run.events[8] is results[("main", "a")]
+            assert calls[("main", "a")] is not results[("main", "a")]
             assert all(event.parent is run.thought_body for event in run.events)
             assert run.thought_body.display
             assert all(not event.expanded and not event.output.display for event in run.events if event.kind != "text")
@@ -227,7 +232,7 @@ def test_web_search_result_header_toggles_and_body_keeps_details_open():
                 "search", "Release title\nhttps://example.com\nFull search snippet", "web_search"
             )))
             run = view.query_one(AssistantView)
-            result = view.results[("main", "search")]
+            result = next(t for t in view.query(ToolView) if t.kind == "tool_result" and t.call_id == "search")
             run.set_thinking(True)
             await pilot.pause()
             await pilot.click(result.header, offset=(5, 0))

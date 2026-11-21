@@ -24,12 +24,6 @@ MESSAGES = {
     "tools.ask_user.parameters.properties.options.items.properties.label.description": "Short choice text",
     "tools.ask_user.parameters.properties.question.description": "The complete question, understandable on its "
     "own",
-    "tools.bash.description": "Run a shell command in the working directory (non-interactive; stdin is closed). "
-    "Bash/Zsh stop on unhandled command or pipeline failures; handle expected nonzero "
-    "statuses explicitly. Output is limited to the last 2000 lines / 50KB; longer "
-    "output is saved with an output_id for read_output.",
-    "tools.bash.label": "Bash",
-    "tools.bash.parameters.properties.timeout.description": "Seconds (default 300, max 3600)",
     "tools.diagnostic_get.description": "Read retained diagnostic evidence by exact error_id already provided "
     "to this runtime. Sections: summary, causes, trace, stderr, attempts "
     "(retained failed attempts for the same model call), related "

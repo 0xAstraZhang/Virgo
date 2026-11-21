@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-CHOICES = {'Auto — prefer model-native search; otherwise use free DuckDuckGo': 'auto',
- 'DuckDuckGo — free, no API key required': 'duckduckgo',
- 'DeepSeek — official search, API key required': 'deepseek',
- 'Off — disable web search': 'off'}
-_CHOICE_KEYS = {'Auto — prefer model-native search; otherwise use free DuckDuckGo': 'harness.search.choice.auto',
- 'DeepSeek — official search, API key required': 'harness.search.choice.deepseek',
- 'DuckDuckGo — free, no API key required': 'harness.search.choice.duckduckgo',
- 'Off — disable web search': 'harness.search.choice.off'}
-USAGE = 'Usage: /search [auto|duckduckgo|deepseek|off] (aliases: ddg, ds)'
+_CHOICES = (
+    ("harness.search.choice.auto", "auto"),
+    ("harness.search.choice.duckduckgo", "duckduckgo"),
+    ("harness.search.choice.deepseek", "deepseek"),
+    ("harness.search.choice.off", "off"),
+)
+_VALUES = frozenset(value for _, value in _CHOICES)
 
 
 def configure_search(api, args: str) -> None:
@@ -18,7 +16,7 @@ def configure_search(api, args: str) -> None:
     if service is None:
         api.ui.print(api.t("harness.search.disabled"), "error")
         return
-    choices = {api.t(_CHOICE_KEYS[label]): value for label, value in CHOICES.items()}
+    choices = {api.t(key): value for key, value in _CHOICES}
     usage = api.t("harness.search.usage")
     choice = args.strip().lower()
     if not choice:
@@ -31,7 +29,7 @@ def configure_search(api, args: str) -> None:
             return
         choice = choices.get(selected, "")
     choice = {"ds": "deepseek", "ddg": "duckduckgo"}.get(choice, choice)
-    if choice not in CHOICES.values():
+    if choice not in _VALUES:
         api.ui.print(usage, "error")
         return
     try:

@@ -125,8 +125,6 @@ class Web:
                         declaration[param] = value
                 context.web_tools.append(declaration)
                 context.web_offers.append(offer)
-                if "search" in caps:
-                    context.web_search = declaration  # compatibility with existing integrations
                 context.tools = [t for t in context.tools if t.name not in {"web_" + c for c in caps}]
                 paths.update({c: f"native ({offer.id})" for c in caps})
                 backends.update({c: None for c in caps})
@@ -174,11 +172,11 @@ class Web:
 def setup(api):
     """Search and page reading share routing, permissions and the optional call budget."""
     web_service(api)
-    if api.settings.feature_enabled("search"):
+    if api.settings.get("plugins.web.searchEnabled", True):
         from .search import setup as setup_search
 
         setup_search(api)
-    if api.settings.feature_enabled("fetch"):
+    if api.settings.get("plugins.web.fetchEnabled", True):
         from .fetch import setup as setup_fetch
 
         setup_fetch(api)

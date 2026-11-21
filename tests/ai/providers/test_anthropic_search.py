@@ -39,7 +39,7 @@ def model(url="https://api.anthropic.com"):
 def context(*, search=True):
     return Context("Find sources.", [UserMessage("Find today's release.")],
                    [ToolSpec("read", "Read", {"type": "object"})],
-                   web_search=copy.deepcopy(SEARCH) if search else None)
+                   web_tools=[copy.deepcopy(SEARCH)] if search else [])
 
 
 def search_events(*, stop="end_turn", result=None):
@@ -74,7 +74,7 @@ def test_search_request_is_native_and_does_not_mutate_context():
     assert params["tools"][1] == SEARCH
     assert "input_schema" not in params["tools"][1]
     params["tools"][1]["max_uses"] = 1
-    assert ctx.web_search == SEARCH
+    assert ctx.web_tools == [SEARCH]
     assert [tool["name"] for tool in anth.build_params(model(), context(search=False), StreamOptions())["tools"]] == ["read"]
 
 
@@ -85,7 +85,7 @@ def test_native_search_roundtrip_preserves_results_citations_and_continuation(se
     message = events[-1].partial
     assert events[-1].type == "done"
     assert message.stop_reason == ("stop" if stop == "end_turn" else "pause_turn")
-    assert message.search_started
+    assert message.native_started
     assert message.tool_calls() == []
     assert not any(event.type.startswith("toolcall_") for event in events)
     assert message.content[0].data["input"] == {"query": "today release"}
@@ -118,7 +118,7 @@ def test_hosted_search_events_arrive_before_answer_and_keep_native_blocks(server
         ("native_tool_end", 1),
     ]
     assert len(native[0].partial.content) == 1
-    assert native[0].partial.search_started
+    assert native[0].partial.native_started
     assert native[1].delta == '{"query":"today'
     assert native[3].partial.content[0].data["input"] == {"query": "today release"}
     assert native[4].partial.content[1] == RawContent("anthropic", SEARCH_RESULT)
@@ -141,7 +141,7 @@ def test_only_explicit_native_capability_rejection_allows_fallback(server, statu
     result = anth.stream(model(server["url"]), context(search=native), StreamOptions()).result()
     assert result.stop_reason == "error"
     assert result.error_kind == expected
-    assert not result.search_started
+    assert not result.native_started
 
 
 def test_native_search_service_failure_is_not_a_capability_rejection(server):
@@ -159,12 +159,12 @@ def test_interrupted_native_search_exposes_started_state(server):
     result = anth.stream(model(server["url"]), context(), StreamOptions()).result()
     assert result.stop_reason == "error"
     assert result.error_kind == "retryable"
-    assert result.search_started
+    assert result.native_started
 
 
 def test_clean_eof_without_message_stop_is_not_a_success(server):
     server["body"] = sse(search_events()[:5], named=True)
     result = anth.stream(model(server["url"]), context(), StreamOptions()).result()
     assert result.stop_reason == "error"
-    assert result.search_started
+    assert result.native_started
     assert result.error_kind == "retryable"

@@ -142,11 +142,18 @@ def test_close_during_workspace_switch_stops_the_candidate(make_session, tmp_pat
 def test_browsing_pauses_wakeups_but_drains_deferred_commands(make_session):
     ui = FullscreenUI()
     session = make_session(faux.reply("notification handled"), ui=ui)
+    entered, release = threading.Event(), threading.Event()
+    session.commands.register("hold", lambda *_: (entered.set(), release.wait(3)))
     controller = RunController(session, ui)
     controller.start()
-    controller.browsing = True
-    session.notify("pending notification")
-    controller._deferred.append("/effort high")
+    try:
+        controller.submit("/hold")
+        assert entered.wait(3)
+        controller.browsing = True
+        session.notify("pending notification")
+        controller.submit("/effort high")
+    finally:
+        release.set()
     pump(controller, lambda c: not c.busy and not c.pending)
     assert controller.can_switch and session.wakeups and session.effort == "high"
     assert not faux.CALLS["test"]
@@ -186,12 +193,19 @@ def test_queued_commands_finish_before_session_can_be_opened(make_session, proje
     path = saved_session(project)
     ui = FullscreenUI()
     session = make_session(ui=ui)
+    entered, release = threading.Event(), threading.Event()
+    session.commands.register("hold", lambda *_: (entered.set(), release.wait(3)))
     controller = RunController(session, ui)
     controller.start()
-    controller._deferred.append("/effort high")
-    assert not controller.can_switch
-    assert not controller.open_session(path)
-    assert not controller.new_session()
+    try:
+        controller.submit("/hold")
+        assert entered.wait(3)
+        controller.submit("/effort high")
+        assert not controller.can_switch
+        assert not controller.open_session(path)
+        assert not controller.new_session()
+    finally:
+        release.set()
     pump(controller, lambda c: c.can_switch)
     assert session.effort == "high"
     assert controller.open_session(path)

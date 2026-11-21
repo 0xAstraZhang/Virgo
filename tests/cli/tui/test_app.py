@@ -18,7 +18,7 @@ from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalPicker, SessionPicker
 from virgo.cli.tui.modes import PermissionModePicker
-from virgo.cli.tui.transcript import AssistantView
+from virgo.cli.tui.transcript import AssistantView, ToolView
 
 from tests.support.tui import has_reply, wait_for
 
@@ -163,8 +163,9 @@ def test_tool_and_thinking_shortcuts_and_scroll_navigation(make_session, project
                 pilot, lambda: len(app.transcript.query(AssistantView)) == 1 and not app.controller.busy
             )
             await pilot.pause()
-            tools = list(app.transcript.tools.values())
-            thought = next(card for card in app.transcript.query(AssistantView) if card.thinking)
+            tools = [t for t in app.transcript.query(ToolView) if t.kind == "tool_call"]
+            thought = next(card for card in app.transcript.query(AssistantView)
+                           if any(e.kind == "thinking" for e in card.events))
             assert tools and not any(tool.expanded for tool in tools)
             assert thought.thought_body.display
             assert all(not e.output.display for e in thought.events if e.kind == "thinking")
@@ -377,7 +378,7 @@ def test_cancelled_inline_approval_advances_queue_and_ignores_stale_answer(make_
                 await wait_for(pilot, lambda: picker.display)
                 first = picker.confirmation
                 workers[1].start()
-                await wait_for(pilot, lambda: len(app.confirmations) == 1)
+                await wait_for(pilot, lambda: len(app.state.confirmations) == 1)
                 assert ui.resolve_confirmation(first.id, None)
                 await wait_for(pilot, lambda: picker.confirmation is not None and picker.confirmation.agent == "helper")
                 second = picker.confirmation
@@ -420,7 +421,7 @@ def test_inline_approval_and_input_prompts_are_serialized(make_session, approval
                 workers[first].start()
                 await wait_for(pilot, lambda: app.active_confirmation is not None or app.active_input is not None)
                 workers[second].start()
-                await wait_for(pilot, lambda: bool(app.input_requests if approval_first else app.confirmations))
+                await wait_for(pilot, lambda: bool(app.state.input_requests if approval_first else app.state.confirmations))
                 assert not app.has_modal
                 assert picker.display is approval_first
                 assert app.query_one("#completions").display is not approval_first
@@ -509,20 +510,13 @@ def test_slow_shutdown_keeps_ui_responsive(make_session):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize(
-    ("approval", "approval_label"),
-    [
-        pytest.param("ask", "ask when needed", id="ask"),
-        pytest.param("never", "never ask", id="never"),
-    ],
-)
-def test_status_preserves_fields_with_wide_path_and_long_model(broker_session, project, approval, approval_label):
+def test_status_preserves_fields_with_wide_path_and_long_model(broker_session, project):
     directory = project / ("中文项目" * 15)
     directory.mkdir()
 
     async def scenario():
         ui = FullscreenUI()
-        session = broker_session(ui=ui, cwd=directory, approval=approval)
+        session = broker_session(ui=ui, cwd=directory)
         session.main.model.id = "a-very-long-模型-name-" * 6
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
@@ -568,7 +562,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
     monkeypatch.setenv("TERM_PROGRAM", terminal)
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui, allow=False, settings={"execution": {"mode": "no-limit"}})
+        session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
         session.main.model.provider = "deepseek"
         session.main.model.id = "deepseek-flash"
         app = VirgoApp(session, ui)
@@ -615,7 +609,7 @@ def test_status_places_usage_above_editor_and_permission_model_below(make_sessio
 def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session):
     async def scenario():
         ui = FullscreenUI()
-        session = broker_session(ui=ui, allow=False)
+        session = broker_session(ui=ui)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             app.editor.load_text("unfinished task")

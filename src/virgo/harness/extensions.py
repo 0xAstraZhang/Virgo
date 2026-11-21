@@ -238,14 +238,6 @@ class ExtensionAPI:
                                        argument_hint=argument_hint, description_key=description_key,
                                        argument_hint_key=argument_hint_key)
 
-    def add_system_section(self, name: str, fn: Callable[[str], str | None], order: int = 50) -> None:
-        """fn(role) -> text for the system prompt."""
-        self._add_section(self._session.sections, name, fn, order)
-
-    def register_execution_provider(self, provider) -> None:
-        """Bind the explicitly selected provider once, before any runtime exists."""
-        self._session.register_execution_provider(provider, owner=self.name)
-
     def add_runtime_system_section(self, name: str, fn: Callable, order: int = 50) -> None:
         """fn(RuntimeContext) -> text; construction errors reject the candidate."""
         self._add_section(self._session.runtime_sections, name, fn, order)
@@ -282,9 +274,6 @@ class ExtensionAPI:
 
     def runtime_for_context(self, context):
         return self._session.runtime_for_context(context)
-
-    def runtime_for(self, event):
-        return self.runtime_for_context(event)
 
     def create_runtime(self, name: str, role: str, *, parent=None, **kwargs):
         if role == "main":
@@ -328,12 +317,6 @@ class ExtensionAPI:
     def notify(self, text: str, mode: str = "steer", source: str | None = None, *, store=None,
                diagnostics=()) -> None:
         self.session.notify(text, mode=mode, source=source or self.name, store=store, diagnostics=diagnostics)
-
-    def append_entry(self, kind: str, data: Any) -> None:
-        self.current_store().append("custom", kind=kind, data=data)
-
-    def entries(self, kind: str) -> list:
-        return self.current_store().custom(kind)
 
     def _rollback(self):
         self._session.cleanup_plugins(owner=self.name)

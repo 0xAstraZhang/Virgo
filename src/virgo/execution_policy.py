@@ -15,6 +15,15 @@ from typing import Literal
 Access = Literal["read", "write"]
 Effect = Literal["allow", "deny"]
 
+APPROVAL_POLICIES = ("ask", "never")
+
+
+def normalize_approval_policy(value: str) -> str:
+    if value not in APPROVAL_POLICIES:
+        raise ValueError("approval policy must be ask or never; legacy permission presets are retired")
+    return value
+
+
 PROTECTED_NAMES = (".virgo",)
 
 PRIVATE_HOME_RELATIVES = (
@@ -150,7 +159,7 @@ def is_windows_sandbox_supported() -> bool:
     """Return True when native Windows supports unelevated Standard AppContainer (Win11 null.sys Feature 60692039)."""
     if not is_native_windows():
         return False
-    from ._windows_probe import is_windows_appcontainer_supported
+    from .sandbox.windows_acl import is_windows_appcontainer_supported
 
     return bool(is_windows_appcontainer_supported())
 
@@ -221,9 +230,6 @@ class PathRule:
         return self.access == access or (self.effect, self.access) in {
             ("allow", "write"), ("deny", "read"),
         }
-
-    def as_dict(self) -> dict:
-        return {"path": str(self.path), "access": self.access, "effect": self.effect}
 
 
 @dataclass(frozen=True)
@@ -313,10 +319,6 @@ class PermissionPolicy:
             )
         ]
         return replace(self, filesystem=(*kept, *rules))
-
-    def as_dict(self) -> dict:
-        return {"filesystem": [rule.as_dict() for rule in self.filesystem],
-                "network_allowed": self.network_allowed, "unrestricted": self.unrestricted}
 
 
 @dataclass(frozen=True)

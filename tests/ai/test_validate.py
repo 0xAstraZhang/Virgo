@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from virgo.ai.validate import (
     INVALID_ARGUMENTS,
-    parse_json_loose,
     parse_tool_arguments,
     valid_schema,
     validate,
@@ -33,11 +32,6 @@ def test_tool_arguments_must_be_a_json_object():
     assert parse_tool_arguments("") == parse_tool_arguments("  ") == {}
     for raw in ("null", '"src"', "[1, 2]", "3", '{"path": '):
         assert parse_tool_arguments(raw) == {INVALID_ARGUMENTS: raw}
-
-
-def test_parse_json_loose():
-    assert parse_json_loose('```json\n{"a": 1}\n```') == {"a": 1}
-    assert parse_json_loose('Sure! {"ok": true} hope that helps') == {"ok": True}
 
 
 def test_valid_schema_and_tuple_items():

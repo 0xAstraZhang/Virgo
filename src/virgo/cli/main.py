@@ -10,9 +10,8 @@ from pathlib import Path
 from .. import __version__
 from ..ai.types import AssistantMessage
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
-from ..execution_policy import DEFAULT_MODES
+from ..execution_policy import APPROVAL_POLICIES, DEFAULT_MODES, normalize_approval_policy
 from ..harness.diagnostics import DiagnosticLog
-from ..harness.permissions import APPROVAL_POLICIES, normalize_approval_policy
 from ..harness.session import AgentSession
 from ..harness.settings import Paths, Settings
 from ..harness.store import SessionStore
