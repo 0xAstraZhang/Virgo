@@ -187,17 +187,22 @@ def test_print_text_ignores_fullscreen_option(entry, project):
 
 
 @pytest.mark.parametrize(
-    ("stdin_tty", "stdout_tty", "term", "expected"),
+    ("stdin_tty", "stdout_tty", "term", "platform", "wt_session", "expected"),
     [
-        (True, True, "xterm-256color", True),
-        (False, True, "xterm-256color", False),
-        (True, False, "xterm-256color", False),
-        (True, True, "dumb", False),
-        (True, True, "unknown", False),
-        (True, True, "", False),
+        (True, True, "xterm-256color", "linux", "", True),
+        (False, True, "xterm-256color", "linux", "", False),
+        (True, False, "xterm-256color", "linux", "", False),
+        (True, True, None, "win32", "session-id", True),
+        (True, True, "", "win32", "session-id", True),
+        (False, True, None, "win32", "session-id", False),
+        (True, False, None, "win32", "session-id", False),
+        (True, True, "dumb", "win32", "session-id", False),
+        (True, True, "unknown", "win32", "session-id", False),
+        (True, True, None, "win32", "", False),
+        (True, True, None, "linux", "session-id", False),
     ],
 )
-def test_fullscreen_terminal_detection(monkeypatch, stdin_tty, stdout_tty, term, expected):
+def test_fullscreen_terminal_detection(monkeypatch, stdin_tty, stdout_tty, term, platform, wt_session, expected):
     import io
 
     cli = import_module("virgo.cli.main")
@@ -212,7 +217,12 @@ def test_fullscreen_terminal_detection(monkeypatch, stdin_tty, stdout_tty, term,
 
     monkeypatch.setattr(sys, "stdin", Stream(stdin_tty))
     monkeypatch.setattr(sys, "stdout", Stream(stdout_tty))
-    monkeypatch.setenv("TERM", term)
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("WT_SESSION", wt_session)
+    if term is None:
+        monkeypatch.delenv("TERM", raising=False)
+    else:
+        monkeypatch.setenv("TERM", term)
     assert cli._fullscreen_available() is expected
 
 
