@@ -2,7 +2,7 @@
 
 > Virgo 的沙箱是防止误操作的**护栏**：它把模型偶发失误的影响限制在当前工作区内，保护 Virgo 的私有数据和项目控制文件，并在越界或高危操作前请求确认。它**不是**抵御恶意代码、主动绕过行为或提示词注入攻击链的安全边界。处理不可信的仓库或内容时，请在容器或虚拟机中运行 Virgo。
 
-Linux、macOS、原生 Windows 与 Windows + WSL2 均为**一级支持**平台，默认以 **Workspace-Edit** 启动。原生 Windows 使用标准 AppContainer（非提权运行，无需管理员权限）；WSL2 使用 Linux 沙箱后端，适合偏好 Linux 工具链或需要在沙箱命令中访问本机回环服务（`127.0.0.1`）的场景。详见[原生 Windows 沙箱](windows-sandbox.md)与 [WSL2 使用指南](wsl2.md)。
+Linux、macOS、受支持的新版 Windows 11（`null.sys` Feature `60692039`）与 Windows + WSL2 均为**一级支持**平台，默认以 **Workspace-Edit** 启动。受支持的 Windows 11 使用标准 AppContainer（非提权运行，无需管理员权限）；`\Device\Null` 缺少 `ALL APPLICATION PACKAGES`（`S-1-15-2-1`）的旧版 Windows 默认以 **No-Limit** 启动并提示 **1. WSL2**、**2. No-Limit** 或 **3. 更新 Windows**。WSL2 使用 Linux 沙箱后端，适合旧版 Windows、Linux 工具链或需要在沙箱命令中访问本机回环服务（`127.0.0.1`）的场景。详见[原生 Windows 沙箱](windows-sandbox.md)与 [WSL2 使用指南](wsl2.md)。
 
 ## 护栏覆盖的目标
 

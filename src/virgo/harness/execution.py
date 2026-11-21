@@ -16,7 +16,9 @@ from .ui import UI
 _BACKEND_UNAVAILABLE_REASONS = frozenset({
     "backend_unavailable",
     "windows_network_isolation_unavailable",
+    "windows_null_device_unavailable",
     "windows_runtime_inaccessible",
+    "windows_unsupported_os",
 })
 
 

@@ -1058,3 +1058,43 @@ def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
         assert not _is_dos_drive_mapped(drive), f"Drive {drive} remained mapped after switching to no-limit"
     nl_res = run(session, "Write-Output 'no-limit-ok'")
     assert not nl_res.is_error and "no-limit-ok" in nl_res.text(), nl_res.text()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
+def test_null_device_support_probe_and_unsupported_fallback(project, monkeypatch):
+    """Verify live \\Device\\Null AAP support probe and fail-closed fallback when absent."""
+    from virgo.execution import ExecutionUnavailable
+    from virgo.execution_policy import default_execution_mode, is_windows_sandbox_supported
+    from virgo.harness.session import AgentSession
+    from virgo.sandbox import windows_acl, windows_sandbox
+
+    from tests.support.harness import RecordingUI
+
+    # Live supported (Win11 Feature 60692039 / CI-aligned) host allows AppContainer on \Device\Null.
+    assert windows_acl.null_device_allows_appcontainer() is True
+    assert windows_sandbox.is_windows_sandbox_supported() is True
+    assert is_windows_sandbox_supported() is True
+    assert default_execution_mode() == "workspace-edit"
+
+    # Simulated unsupported Windows (\Device\Null without S-1-15-2-1) defaults to No-Limit with 3 options
+    # and fails closed on explicit sandbox precheck.
+    monkeypatch.setattr(windows_sandbox, "null_device_allows_appcontainer", lambda: False)
+    assert windows_sandbox.is_windows_sandbox_supported() is False
+    assert is_windows_sandbox_supported() is False
+    assert default_execution_mode() == "no-limit"
+
+    ui = RecordingUI()
+    session = AgentSession(
+        project, ui=ui, model="faux/test", session=None, extensions=False, refresh_models=False,
+    )
+    try:
+        assert session.services["execution"].selected_mode_id == "no-limit"
+        notice = "\n".join(ui.lines)
+        assert "WSL2" in notice and "No-Limit" in notice and "Update Windows" in notice
+        with pytest.raises(ExecutionUnavailable) as exc_info:
+            windows_sandbox.precheck_windows_sandbox()
+        assert exc_info.value.reason == "windows_null_device_unavailable"
+        msg = str(exc_info.value)
+        assert "WSL2" in msg and "No-Limit" in msg and "Update Windows" in msg
+    finally:
+        session.shutdown()

@@ -1,6 +1,6 @@
 # Native Windows command sandbox
 
-> **Status: Tier 1 (`windows-appcontainer`).** Native Windows defaults to **Workspace-Edit** (`execution.mode = "workspace-edit"`), runs **unelevated without Administrator privileges**, enforces cold-start (`<= 5s`) and O(1) per-command performance budgets, and runs blocking PR acceptance CI. [WSL2](wsl2.md) remains a Tier 1 alternative if you prefer Linux toolchains or need localhost/loopback (`127.0.0.1`) access inside sandboxed commands.
+> **Status: Tier 1 (`windows-appcontainer`) on updated Windows 11 (`null.sys` Feature `60692039`).** On Windows 11 builds where `\Device\Null` grants `ALL APPLICATION PACKAGES` (`S-1-15-2-1`) read/write access (`null.sys 10.0.26100.8972+` with WIL Feature `60692039` enabled), Virgo defaults to **Workspace-Edit** (`execution.mode = "workspace-edit"`), runs **unelevated without Administrator privileges**, enforces cold-start (`<= 5s`) and O(1) per-command performance budgets, and runs blocking PR acceptance CI. On older Windows 10, older Windows 11, and stock Windows Server 2022/2025 builds where `\Device\Null` lacks `S-1-15-2-1`, Virgo defaults to **No-Limit**, shows a one-time notice with three options (**1. WSL2**, **2. No-Limit**, **3. Update Windows**), and fails closed (`windows_null_device_unavailable`) if a sandbox mode is explicitly requested. [WSL2](wsl2.md) remains a Tier 1 alternative for older Windows builds, Linux toolchains, or localhost/loopback (`127.0.0.1`) access inside sandboxed commands.
 
 > Virgo's sandbox is a **guardrail** against occasional model mistakes—not a security boundary against malicious code, deliberate evasion, or prompt-injection attack chains. Use a container or VM for untrusted repositories. See [Execution boundaries](sandbox.md).
 
@@ -16,7 +16,7 @@ Virgo replaces the legacy Administrator-only LPAC implementation with **Standard
 
 ## Requirements
 
-- Windows 10/11 or Windows Server (x64) on a local **NTFS** volume with persistent ACLs (no Administrator privileges required)
+- Native x64 **Windows 11** with updated `null.sys` (`10.0.26100.8972+` / WIL Feature `60692039` enabled, granting `ALL APPLICATION PACKAGES` `S-1-15-2-1` read/write access on `\Device\Null`) on a local **NTFS** volume with persistent ACLs (no Administrator privileges required). On unsupported Windows builds (Windows 10, older Windows 11, stock Windows Server 2022/2025), Virgo defaults to **No-Limit** with guidance to choose **1. WSL2**, **2. No-Limit**, or **3. Update Windows**, and fails closed with `windows_null_device_unavailable` if `workspace-edit` or `read-only` is explicitly requested.
 - Windows Filtering Platform / Firewall services (`BFE` and `MpsSvc`) running for AppContainer network isolation (if stopped, Virgo fails closed with `windows_network_isolation_unavailable`)
 - Native x64 Python 3.11+ (user-owned such as `uv`-managed Python or `%LOCALAPPDATA%\Programs\Python`, or an AAP-inheriting `C:\Program Files` install—not the WindowsApps store stub) and PowerShell 7 (`pwsh`) or Windows PowerShell
 

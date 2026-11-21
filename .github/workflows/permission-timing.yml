@@ -7,6 +7,7 @@ on:
       - 'ci/measure_permission_modes.py'
       - 'ci/compare_permission_timing.py'
       - 'ci/checks/readonly_web.py'
+      - 'ci/prepare_windows_null_device.py'
       - 'tests/test_permission_timing.py'
       - '.github/workflows/permission-timing.yml'
       - 'pyproject.toml'
@@ -72,6 +73,10 @@ jobs:
       - name: Install the locked head environment
         shell: bash
         run: uv sync --directory head --locked --dev
+      - name: Align Windows Server runner null device with Win11 Feature 60692039
+        if: runner.os == 'Windows'
+        working-directory: head
+        run: uv run --no-sync python ci/prepare_windows_null_device.py
       - name: Measure, compare, and enforce budgets across all permission modes
         env:
           RUNNER_OS_NAME: ${{ runner.os }}

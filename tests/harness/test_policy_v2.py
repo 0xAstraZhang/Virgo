@@ -273,16 +273,13 @@ def test_s311_glob_match_no_exponential_backtracking_and_walk_limit(tmp_path):
 
 
 def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontainer(project, monkeypatch):
-    """VER-13: Native Windows Tier-1 Standard AppContainer defaults to Workspace-Edit with no experimental badge."""
+    """VER-13: Supported Win11 (Feature 60692039) defaults to Workspace-Edit with no experimental badge."""
     import types
 
     import virgo.execution_policy as ep
+    import virgo.harness.session as hs
     import virgo.sandbox as sb
     from virgo.harness.session import AgentSession
-
-    monkeypatch.setattr(ep, "is_native_windows", lambda: True)
-    monkeypatch.setattr(sb, "is_native_windows", lambda: True)
-    assert ep.default_execution_mode() == "workspace-edit"
 
     precheck_calls = 0
 
@@ -290,9 +287,17 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
         nonlocal precheck_calls
         precheck_calls += 1
 
-    fake_ws = types.SimpleNamespace(precheck_windows_sandbox=ok_precheck)
+    fake_ws = types.SimpleNamespace(
+        is_windows_sandbox_supported=lambda: True,
+        precheck_windows_sandbox=ok_precheck,
+    )
     monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
     monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
+    monkeypatch.setattr(ep, "is_native_windows", lambda: True)
+    monkeypatch.setattr(hs, "is_native_windows", lambda: True)
+    monkeypatch.setattr(sb, "is_native_windows", lambda: True)
+    assert ep.is_windows_sandbox_supported() is True
+    assert ep.default_execution_mode() == "workspace-edit"
 
     ui = RecordingUI()
     session = AgentSession(
@@ -301,7 +306,7 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
     try:
         assert session.services["execution"].selected_mode_id == "workspace-edit"
         assert precheck_calls >= 1
-        # No startup No-Limit / WSL2 / experimental warning on Tier-1 Windows
+        # No startup No-Limit / WSL2 / experimental warning on supported Win11
         assert not any("experimental" in line.lower() or "no-limit" in line.lower() for line in ui.lines)
 
         session.prompt("/permissions list")
@@ -322,5 +327,71 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
             session.services["execution"].select_mode("read-only")
         assert exc_info.value.reason == "windows_network_isolation_unavailable"
         assert session.services["execution"].selected_mode_id == "workspace-edit"
+    finally:
+        session.shutdown()
+
+
+def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(project, monkeypatch):
+    """Unsupported Windows (without Feature 60692039 / \\Device\\Null AAP) defaults to No-Limit with 3 options."""
+    import types
+
+    import virgo.execution_policy as ep
+    import virgo.harness.session as hs
+    import virgo.sandbox as sb
+    from virgo.harness.session import AgentSession
+
+    def fail_null_device():
+        raise ExecutionUnavailable(
+            "Native Windows AppContainer sandboxing requires Windows 11 with updated null.sys "
+            "(Feature 60692039). Options:\n"
+            "  1. WSL2\n"
+            "  2. No-Limit (--permission no-limit)\n"
+            "  3. Update Windows",
+            reason="windows_null_device_unavailable",
+            dimension="windows_null_device",
+        )
+
+    fake_ws = types.SimpleNamespace(
+        is_windows_sandbox_supported=lambda: False,
+        precheck_windows_sandbox=fail_null_device,
+    )
+    monkeypatch.setitem(sys.modules, "virgo.sandbox.windows_sandbox", fake_ws)
+    monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
+    monkeypatch.setattr(ep, "is_native_windows", lambda: True)
+    monkeypatch.setattr(hs, "is_native_windows", lambda: True)
+    monkeypatch.setattr(sb, "is_native_windows", lambda: True)
+
+    assert ep.is_windows_sandbox_supported() is False
+    assert ep.default_execution_mode() == "no-limit"
+
+    ui = RecordingUI()
+    session = AgentSession(
+        project, ui=ui, model="faux/test", session=None, extensions=False, refresh_models=False,
+    )
+    try:
+        assert session.services["execution"].selected_mode_id == "no-limit"
+        notice = "\n".join(ui.lines)
+        assert "WSL2" in notice
+        assert "No-Limit" in notice
+        assert "Update Windows" in notice
+        assert "60692039" in notice
+
+        # Second startup in the same VIRGO_HOME must not repeat the one-time notice.
+        ui2 = RecordingUI()
+        second = AgentSession(
+            project, ui=ui2, model="faux/test", session=None, extensions=False, refresh_models=False,
+        )
+        try:
+            assert not any("WSL2" in line for line in ui2.lines)
+        finally:
+            second.shutdown()
+
+        # Explicit sandbox selection fails closed with the 3 options rather than falling back silently.
+        with pytest.raises(ExecutionUnavailable) as exc_info:
+            session.services["execution"].select_mode("workspace-edit")
+        assert exc_info.value.reason == "windows_null_device_unavailable"
+        msg = str(exc_info.value)
+        assert "WSL2" in msg and "No-Limit" in msg and "Update Windows" in msg
+        assert session.services["execution"].selected_mode_id == "no-limit"
     finally:
         session.shutdown()

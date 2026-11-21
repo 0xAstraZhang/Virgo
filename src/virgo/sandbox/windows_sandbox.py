@@ -46,6 +46,7 @@ from .windows_acl import (
     has_aap_read_access,
     is_dacl_protected,
     is_protected_readonly_for_sid,
+    null_device_allows_appcontainer,
     protect_readonly_path,
     revoke_sid_from_root,
 )
@@ -590,9 +591,41 @@ def _require_network_isolation() -> None:
                 )
 
 
+UNSUPPORTED_WINDOWS_GUIDANCE = (
+    "Native Windows AppContainer sandboxing requires Windows 11 with updated null.sys "
+    "(Feature 60692039, granting ALL APPLICATION PACKAGES access on \\Device\\Null). "
+    "Options on this Windows system:\n"
+    "  1. WSL2: run Virgo inside WSL2 for full Linux sandbox isolation (recommended).\n"
+    "  2. No-Limit: use --permission no-limit or /permissions no-limit.\n"
+    "  3. Update Windows: update to Windows 11 with the null.sys AppContainer update (Feature 60692039)."
+)
+
+
+def is_windows_sandbox_supported() -> bool:
+    """Return True when x64 Windows 10+ and \\Device\\Null grants S-1-15-2-1 read/write."""
+    try:
+        backend()
+    except (SandboxUnavailable, OSError):
+        return False
+    return null_device_allows_appcontainer()
+
+
 def precheck_windows_sandbox() -> None:
-    """Verify Standard AppContainer prerequisites (x64 Win10+ and BFE/MpsSvc; no Admin required)."""
-    backend()
+    """Verify Standard AppContainer prerequisites (x64 Win11 null.sys Feature 60692039 and BFE/MpsSvc)."""
+    try:
+        backend()
+    except SandboxUnavailable as error:
+        raise SandboxUnavailable(
+            f"{error}. {UNSUPPORTED_WINDOWS_GUIDANCE}",
+            reason="windows_unsupported_os",
+            dimension="windows_appcontainer_sandbox",
+        ) from error
+    if not null_device_allows_appcontainer():
+        raise SandboxUnavailable(
+            UNSUPPORTED_WINDOWS_GUIDANCE,
+            reason="windows_null_device_unavailable",
+            dimension="windows_null_device",
+        )
     try:
         _require_network_isolation()
     except SandboxUnavailable as error:

@@ -9,6 +9,7 @@ on:
       - 'tests/support/**'
       - 'tests/harness/test_windows_sandbox_e2e.py'
       - 'ci/check_native_report.py'
+      - 'ci/prepare_windows_null_device.py'
       - 'ci/run_as_standard_user.py'
       - '.github/workflows/windows-sandbox.yml'
       - 'pyproject.toml'
@@ -54,6 +55,10 @@ jobs:
           Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture | Format-List
           $PSVersionTable | Format-List
           uv run --no-sync python -c "import platform,struct,sys; print(platform.platform()); print(sys.version); print(sys.executable); assert struct.calcsize('P') == 8"
+      - name: Verify stock unsupported Windows Server fallback before CI null-device alignment
+        run: uv run --no-sync python ci/prepare_windows_null_device.py --verify-unsupported
+      - name: Align Windows Server runner null device with Win11 Feature 60692039
+        run: uv run --no-sync python ci/prepare_windows_null_device.py
       - name: Exercise actual Windows security boundaries
         run: uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
       - name: Reject empty, failed or skipped native reports
@@ -112,6 +117,8 @@ jobs:
 
           icacls $work /grant 'virgo_std:(OI)(CI)F' /T /Q
           if ($LASTEXITCODE -ne 0) { throw "icacls grant failed: $LASTEXITCODE" }
+      - name: Align Windows Server runner null device with Win11 Feature 60692039
+        run: uv run --no-project python ci/prepare_windows_null_device.py
       - name: Run Windows sandbox acceptance as pure Standard User
         shell: pwsh
         run: |

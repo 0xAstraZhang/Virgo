@@ -1,6 +1,6 @@
 # 在 Windows 上通过 WSL2 运行 Virgo
 
-在 Windows 上，[原生 Windows（标准 AppContainer）](windows-sandbox.md)与 **WSL2（Windows Subsystem for Linux 2）** 均为**一级支持**环境，默认启用 **Workspace-Edit** 且无需管理员权限。如果你更偏好 Linux 工具链、POSIX 文件系统语义，或需要在沙箱命令中访问**本机回环服务（`127.0.0.1`）**（非管理员 Windows AppContainer 默认阻止回环连接），推荐选择 WSL2。在 WSL2 内，Virgo 直接使用完整的 Linux 沙箱（`bubblewrap` + `libseccomp2`）。
+在 Windows 上，[受支持的新版原生 Windows 11（标准 AppContainer，`null.sys` Feature `60692039`）](windows-sandbox.md)与 **WSL2（Windows Subsystem for Linux 2）** 均为**一级支持**环境，默认启用 **Workspace-Edit** 且无需管理员权限。如果你使用未启用 Feature `60692039` 的 Windows 10 / 旧版 Windows 11 / Windows Server，或偏好 Linux 工具链、POSIX 文件系统语义，或需要在沙箱命令中访问**本机回环服务（`127.0.0.1`）**（非管理员 Windows AppContainer 默认阻止回环连接），推荐选择 WSL2。在 WSL2 内，Virgo 直接使用完整的 Linux 沙箱（`bubblewrap` + `libseccomp2`）。
 
 ## 1. 安装 WSL2 与 Ubuntu
 

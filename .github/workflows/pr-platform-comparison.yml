@@ -209,6 +209,10 @@ jobs:
         if: matrix.entry.revision == 'head'
         working-directory: candidate
         run: uv run --no-sync python ../ci-config/ci/checks/powershell_cache.py
+      - name: Align Windows Server runner null device with Win11 Feature 60692039
+        if: runner.os == 'Windows' && matrix.entry.revision == 'head'
+        working-directory: candidate
+        run: uv run --no-sync python ../ci-config/ci/prepare_windows_null_device.py
       - name: Run complete pytest suite
         # Only test failures are deferred; the final job validates reports AND job results.
         continue-on-error: true

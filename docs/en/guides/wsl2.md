@@ -1,6 +1,6 @@
 # Running Virgo on Windows with WSL2
 
-On Windows, both [native Windows (Standard AppContainer)](windows-sandbox.md) and **WSL2 (Windows Subsystem for Linux 2)** are **Tier 1** supported environments defaulting to **Workspace-Edit** without requiring Administrator privileges. Choose WSL2 when you prefer Linux toolchains, POSIX filesystem semantics, or need **localhost/loopback (`127.0.0.1`)** access inside sandboxed commands (which Windows blocks inside non-admin AppContainer). Inside WSL2, Virgo uses the full Linux sandbox (`bubblewrap` + `libseccomp2`).
+On Windows, both [native Windows 11 (Standard AppContainer with `null.sys` Feature `60692039`)](windows-sandbox.md) and **WSL2 (Windows Subsystem for Linux 2)** are **Tier 1** supported environments defaulting to **Workspace-Edit** without requiring Administrator privileges. Choose WSL2 when you are on Windows 10 / older Windows 11 / Windows Server builds without Feature `60692039`, prefer Linux toolchains and POSIX filesystem semantics, or need **localhost/loopback (`127.0.0.1`)** access inside sandboxed commands (which Windows blocks inside non-admin AppContainer). Inside WSL2, Virgo uses the full Linux sandbox (`bubblewrap` + `libseccomp2`).
 
 ## 1. Install WSL2 and Ubuntu
 

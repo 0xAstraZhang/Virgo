@@ -31,6 +31,7 @@ from ..ai.types import (
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
+from ..execution_policy import is_native_windows, is_windows_sandbox_supported
 from ..i18n import Translator, normalize_language
 from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget
@@ -183,6 +184,7 @@ class AgentSession:
                 "previously saved approvals must be granted again.",
                 "warn",
             )
+        self._warn_windows_sandbox()
         for warning in self.settings.migration_warnings:
             self.ui.print(warning, "warn")
         self._warn_retired_data()
@@ -194,6 +196,29 @@ class AgentSession:
             self._catalog_refresh_done.set()
 
     # -- diagnostics -----------------------------------------------------------
+    def _warn_windows_sandbox(self) -> None:
+        """Show guidance once when native Windows defaults to No-Limit on an unsupported OS build."""
+        if not is_native_windows() or is_windows_sandbox_supported():
+            return
+        if self.settings.get("execution.mode") != "no-limit":
+            return
+        marker = self.paths.user / "migrations" / "windows-sandbox-unsupported-notice"
+        if marker.exists():
+            return
+        self.ui.print(
+            "Native Windows sandboxing is disabled by default on this Windows version because "
+            "\\Device\\Null does not grant ALL APPLICATION PACKAGES access (requires Windows 11 "
+            "with updated null.sys / Feature 60692039). Running in No-Limit mode. Options:\n"
+            "  1. WSL2: run Virgo inside WSL2 for full Linux sandbox isolation (recommended).\n"
+            "  2. No-Limit: continue with No-Limit (--permission no-limit / /permissions no-limit).\n"
+            "  3. Update Windows: update to Windows 11 with the null.sys AppContainer update (Feature 60692039).",
+            "warn",
+        )
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch(exist_ok=True)
+        except OSError as error:
+            self.report_error(error, phase="windows.notice", notify=False)
     def _warn_retired_data(self):
         """Only inspect existence; old files are neither parsed nor migrated."""
         retired = ("schedules.json", "tasks", "runs", "workflows", "memory", "MEMORY.md", "worktrees")

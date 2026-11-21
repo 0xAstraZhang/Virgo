@@ -81,11 +81,14 @@ def make_session(project):
         # fixture explicit so changing the product default cannot silently turn
         # them into native-sandbox tests; default-mode coverage uses AgentSession.
         # Migration tests opt out by supplying sandbox/permission configuration.
-        if not {"execution", "sandbox", "permissions"}.intersection(configured):
-            configured["execution"] = {"mode": "no-limit"}
         cwd = kw.pop("cwd", project)
         home_override = kw.get("home")
         user_dir = Path(home_override) if home_override else Path(os.environ["VIRGO_HOME"])
+        if not {"execution", "sandbox", "permissions"}.intersection(configured):
+            configured["execution"] = {"mode": "no-limit"}
+            marker = user_dir / "migrations" / "windows-sandbox-unsupported-notice"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch(exist_ok=True)
         shell_cfg = configured.get("shell")
         exec_cfg = configured.get("execution")
         exec_mode = exec_cfg.get("mode") if isinstance(exec_cfg, dict) else None

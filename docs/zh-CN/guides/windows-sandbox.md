@@ -1,6 +1,6 @@
 # 原生 Windows 命令沙箱
 
-> **状态：一级支持（`windows-appcontainer`）。** 原生 Windows 默认启用 **Workspace-Edit**（`execution.mode = "workspace-edit"`），**无需管理员权限**即可非提权运行，适用冷启动（`<= 5 秒`）与 O(1) 单条命令性能门槛，并纳入 PR 阻塞验收 CI。如果你偏好 Linux 工具链或需要在沙箱命令中访问本机回环服务（`127.0.0.1`），[WSL2](wsl2.md) 同样是一级支持方案。
+> **状态：在已更新的新版 Windows 11（`null.sys` Feature `60692039`）上为一级支持（`windows-appcontainer`）。** 当系统 `\Device\Null` 已原生授予 `ALL APPLICATION PACKAGES`（`S-1-15-2-1`）读写权限（`null.sys 10.0.26100.8972+` 且启用 WIL Feature `60692039`）时，Virgo 默认启用 **Workspace-Edit**（`execution.mode = "workspace-edit"`），**无需管理员权限**即可非提权运行，适用冷启动（`<= 5 秒`）与 O(1) 单条命令性能门槛，并纳入 PR 阻塞验收 CI。在 `\Device\Null` 缺少 `S-1-15-2-1` 的旧版 Windows 10、旧版 Windows 11 与默认 Windows Server 2022/2025 上，Virgo 默认以 **No-Limit** 启动并给出一次性提示（**1. WSL2**、**2. No-Limit**、**3. 更新 Windows**）；若显式指定沙箱模式会 fail-closed 返回 `windows_null_device_unavailable`。如果你使用旧版 Windows、偏好 Linux 工具链或需要在沙箱命令中访问本机回环服务（`127.0.0.1`），[WSL2](wsl2.md) 同样是一级支持方案。
 
 > Virgo 的沙箱是防止模型偶发误操作的**护栏**，不是抵御恶意代码、主动绕过行为或提示词注入攻击链的安全边界。处理不可信的仓库或内容时，请在容器或虚拟机中运行。详见[执行边界与沙箱](sandbox.md)。
 
@@ -16,7 +16,7 @@ Virgo 已移除旧版仅限管理员的 LPAC 后端，全面切换为**标准 Ap
 
 ## 运行条件
 
-- 本地 **NTFS** 卷（支持持久 ACL）上的 x64 Windows 10/11 或 Windows Server（无需管理员权限）
+- 本地 **NTFS** 卷（支持持久 ACL）上的原生 x64 **Windows 11**，且 `null.sys` 已更新并启用 WIL Feature `60692039`（`10.0.26100.8972+`，使 `\Device\Null` 原生授予 `ALL APPLICATION PACKAGES` `S-1-15-2-1` 读写权限；无需管理员权限）。在不受支持的 Windows 版本（Windows 10、旧版 Windows 11、默认 Windows Server 2022/2025）上，Virgo 默认以 **No-Limit** 启动并提示选择 **1. WSL2**、**2. No-Limit** 或 **3. 更新 Windows**；显式请求 `workspace-edit` 或 `read-only` 时会 fail-closed 返回 `windows_null_device_unavailable`。
 - Windows 筛选平台与防火墙服务（`BFE`、`MpsSvc`）处于运行状态（若未运行，Virgo 会显式失败关闭并返回 `windows_network_isolation_unavailable`）
 - 原生 x64 Python 3.11+（用户自有安装如 `uv` 管理的 Python 或 `%LOCALAPPDATA%\Programs\Python`，或继承 AAP 的 `C:\Program Files` 安装——不能使用 WindowsApps 商店存根）以及 PowerShell 7（`pwsh`）或 Windows PowerShell
 

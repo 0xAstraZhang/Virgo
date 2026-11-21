@@ -22,8 +22,21 @@ def is_native_windows() -> bool:
     return sys.platform == "win32"
 
 
+def is_windows_sandbox_supported() -> bool:
+    """Return True when native Windows supports unelevated Standard AppContainer (Win11 null.sys Feature 60692039)."""
+    if not is_native_windows():
+        return False
+    try:
+        from .sandbox.windows_sandbox import is_windows_sandbox_supported as _probe
+    except ImportError:
+        return False
+    return bool(_probe())
+
+
 def default_execution_mode() -> str:
-    """Default execution mode across all Tier 1 platforms (Linux, macOS, Windows)."""
+    """Default execution mode: Workspace-Edit on supported Tier 1 hosts, No-Limit on unsupported Windows."""
+    if is_native_windows() and not is_windows_sandbox_supported():
+        return "no-limit"
     return "workspace-edit"
 
 

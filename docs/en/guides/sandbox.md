@@ -2,7 +2,7 @@
 
 > Virgo's sandbox is a **guardrail** against occasional model mistakes. It keeps their effects inside the current workspace, protects Virgo's private data and project control files, and asks before out-of-scope or high-risk operations. It is **not** a security boundary against malicious code, deliberate evasion, or prompt-injection attack chains. Run Virgo in a container or VM when working with untrusted repositories or content.
 
-Linux, macOS, native Windows, and Windows + WSL2 are all **Tier 1** platforms defaulting to **Workspace-Edit**. Native Windows uses Standard AppContainer (unelevated, no Administrator privileges required); WSL2 uses the Linux sandbox backend and remains a great option if you prefer Linux toolchains or need localhost/loopback (`127.0.0.1`) access inside sandboxed commands. See [native Windows sandbox](windows-sandbox.md) and [WSL2 setup](wsl2.md).
+Linux, macOS, supported Windows 11 (`null.sys` Feature `60692039`), and Windows + WSL2 are all **Tier 1** platforms defaulting to **Workspace-Edit**. Supported Windows 11 uses Standard AppContainer (unelevated, no Administrator privileges required); older Windows builds without `ALL APPLICATION PACKAGES` (`S-1-15-2-1`) on `\Device\Null` default to **No-Limit** and prompt you to use **1. WSL2**, **2. No-Limit**, or **3. Update Windows**. WSL2 uses the Linux sandbox backend and remains a Tier 1 option for older Windows builds, Linux toolchains, or localhost/loopback (`127.0.0.1`) access inside sandboxed commands. See [native Windows sandbox](windows-sandbox.md) and [WSL2 setup](wsl2.md).
 
 ## What the guardrail covers
 
