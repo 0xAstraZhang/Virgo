@@ -191,9 +191,9 @@ def test_compaction_never_enables_hosted_search(native_server):
     search = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
     context = Context(
         "Find sources.", [UserMessage("Find today's release.")], [ToolSpec("read", "Read", {"type": "object"})],
-        web_search=search,
+        web_tools=[search],
     )
     result = anth.compact(model(native_server), context, StreamOptions())
     assert result.stop_reason == "compaction"
     assert [tool["name"] for tool in native_server["requests"][0]["json"]["tools"]] == ["read"]
-    assert context.web_search == search
+    assert context.web_tools == [search]

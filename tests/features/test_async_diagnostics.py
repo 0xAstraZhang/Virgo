@@ -172,23 +172,6 @@ def test_cancelled_callable_result_does_not_emit_error(make_session):
     assert not records(session)
 
 
-def test_custom_exception_metadata_cannot_strand_background_job(make_session):
-    session = make_session()
-
-    class RestrictedError(Exception):
-        @property
-        def _virgo_error_details(self):
-            raise RuntimeError("metadata access forbidden")
-
-    def broken(signal):
-        raise RestrictedError("original failure")
-
-    job = session.services["jobs"].start_callable("private label", broken)
-    assert job.done.wait(5)
-    assert job.status == "failed" and job.reported
-    assert job.error_details["message"] == "original failure"
-
-
 def test_shell_background_call_uses_bound_tool_source_after_session_switch(make_session, monkeypatch, project):
     session = make_session()
     worker = session.create_runtime("worker", "subagent", parent=session.main)

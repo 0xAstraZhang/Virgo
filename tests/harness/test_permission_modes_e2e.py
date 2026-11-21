@@ -108,7 +108,7 @@ def test_permission_change_during_confirmation_expires_request(broker_session, m
     assert manager.selected_mode.write_paths
 
 
-def test_offline_profile_blocks_web_and_mcp_before_dispatch(broker_session):
+def test_read_only_preset_allows_web_fetch_while_keeping_shell_network_off(broker_session):
     from virgo.agent import ToolCallEvent
     session = broker_session(preset="read-only")
     tool = session.tool("web_fetch")
@@ -189,13 +189,6 @@ def test_explicit_no_limit_profile_is_host_without_resource_approval(project):
         assert "request_permissions" not in {t.name for t in session.main.tools}
     finally:
         session.shutdown()
-
-
-# Keep the historical test identity until the retirement comparison has a
-# baseline that contains the renamed test. It now exercises explicit No-Limit.
-test_default_profile_is_host_without_resource_approval = (
-    test_explicit_no_limit_profile_is_host_without_resource_approval
-)
 
 
 def test_no_limit_sandbox_switch_preserves_the_active_host_and_child(broker_session):

@@ -13,7 +13,7 @@ from virgo.agent import AgentTool
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, TextContent
 from virgo.diagnostics import capture_error
-from virgo.harness.retry import retry_after_seconds
+from virgo.harness.runtime import retry_after_seconds
 
 from tests.support.harness import calls, install_responses, tool_results
 from tests.support.persistence import fail_session_write

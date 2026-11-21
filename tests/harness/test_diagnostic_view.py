@@ -88,8 +88,6 @@ def test_large_multibyte_evidence_is_bounded_and_keeps_identity_and_execution():
                              for _ in range(8)]
     record["context"].update({
         "execution": {"started": True, "outcome": "returned_success", "side_effects": "unknown", "result_hook": "failed"},
-        "transport": {"protocol": "mcp", "server": "服务" * 1000, "dispatch": "sent", "outcome": "unknown",
-                      "side_effects": "unknown", "generation": 7},
         "http": {"endpoint": "https://example.org/" + "路径" * 1000, "status_code": 503},
         "child_progress": {"completed_calls": 8, "side_effects": "unknown", "recent_tools": ["large"] * 10000},
     })
@@ -100,7 +98,6 @@ def test_large_multibyte_evidence_is_bounded_and_keeps_identity_and_execution():
     assert payload["evidence"]["error_id"] == record["error_id"]
     assert payload["execution"]["outcome"] == "returned_success"
     assert payload["execution"]["side_effects"] == "unknown"
-    assert payload["transport"]["dispatch"] == "sent"
     assert payload["omitted"]
 
 

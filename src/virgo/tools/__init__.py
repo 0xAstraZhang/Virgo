@@ -1,15 +1,15 @@
-"""Built-in tools, loaded on first registry access."""
+"""Built-in file tools, loaded on first access."""
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ._registry import BASE_TOOLS, BASH, EDIT, GLOB, GREP, READ, READ_ONLY_TOOLS, WRITE
+    from .fs import EDIT, GLOB, GREP, READ, WRITE
 
-__all__ = ["BASE_TOOLS", "BASH", "EDIT", "GLOB", "GREP", "READ", "READ_ONLY_TOOLS", "WRITE"]
+__all__ = ["EDIT", "GLOB", "GREP", "READ", "WRITE"]
 
 
 def __getattr__(name):
     if name not in __all__:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from . import _registry
+    from . import fs
 
-    return getattr(_registry, name)
+    return getattr(fs, name)

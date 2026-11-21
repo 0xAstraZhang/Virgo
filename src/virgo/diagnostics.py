@@ -130,9 +130,9 @@ def sanitize(value, *, secrets: Iterable[str] = ()):
             return item
         if isinstance(item, int):
             # json.dumps rejects integers with enormous decimal expansions.
-            return int.__int__(item) if int.bit_length(item) <= 2048 else "[integer too large]"
+            return int(item) if item.bit_length() <= 2048 else "[integer too large]"
         if isinstance(item, float):
-            return float.__float__(item) if math.isfinite(item) else _text(item)
+            return float(item) if math.isfinite(item) else _text(item)
         if isinstance(item, (str, Path)):
             text = _redact(_text(item), sensitive)
             limit = min(32_768 if depth == 1 else _MAX_TEXT, remaining_characters)
@@ -183,19 +183,11 @@ def sanitize(value, *, secrets: Iterable[str] = ()):
 
 def _exception_type(error: BaseException) -> str:
     cls = type(error)
-    module = type.__getattribute__(cls, "__module__")
-    name = type.__getattribute__(cls, "__qualname__")
-    return type.__getattribute__(cls, "__name__") if module == "builtins" else f"{module}.{name}"
+    return cls.__name__ if cls.__module__ == "builtins" else f"{cls.__module__}.{cls.__qualname__}"
 
 
 def _exception_attr(error: BaseException, name: str, default=None):
-    """Read native exception fields without invoking a subclass's properties."""
     try:
-        descriptor = BaseException.__dict__.get(name)
-        if descriptor is None and issubclass(type(error), BaseExceptionGroup):
-            descriptor = BaseExceptionGroup.__dict__.get(name)
-        if descriptor is not None:
-            return descriptor.__get__(error, type(error))
         return getattr(error, name, default)
     except Exception:
         return default
@@ -219,7 +211,7 @@ def capture_error(
     sensitive = _secrets(secrets)
     chain = []
     seen: set[int] = set()
-    is_exception = issubclass(type(error), BaseException)
+    is_exception = isinstance(error, BaseException)
     current = error if is_exception else None
     relation = "error"
     while current is not None and id(current) not in seen and len(chain) < _MAX_CHAIN:
@@ -241,7 +233,7 @@ def capture_error(
         }
         if len(frames) > _MAX_FRAMES:
             node["omitted_frames"] = len(frames) - _MAX_FRAMES
-        if issubclass(type(current), BaseExceptionGroup):
+        if isinstance(current, BaseExceptionGroup):
             node["exceptions"] = [
                 {"exception_type": _exception_type(child), "message": safe_text(child, secrets=sensitive)}
                 for child in _exception_attr(current, "exceptions", ())[:16]

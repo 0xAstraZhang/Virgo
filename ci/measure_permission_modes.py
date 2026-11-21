@@ -43,13 +43,8 @@ def populate_realistic_workspace(workspace: Path, file_count: int) -> list[str]:
     return created
 
 
-def session_settings(contract, mode):
-    if contract == "current":
-        return {"execution": {"mode": mode}}
-    settings = {"permissions": {"preset": mode}}
-    if mode == "read-only":
-        settings["permissions"]["presets"] = {mode: {"networkAllowed": False}}
-    return settings
+def session_settings(mode):
+    return {"execution": {"mode": mode}}
 
 
 class MeasurementFailure(RuntimeError):
@@ -87,7 +82,7 @@ def sample(args):
     workspace_files = getattr(args, "workspace_files", 0) or 0
     read_repeats = getattr(args, "read_repeats", 0) or 0
     result = {
-        "mode": args.mode, "contract": args.contract, "workspace_files": workspace_files,
+        "mode": args.mode, "workspace_files": workspace_files,
         "read_repeats": read_repeats, "success": False, "operations": [],
     }
     with tempfile.TemporaryDirectory(prefix="virgo-measure-") as directory:
@@ -123,18 +118,15 @@ def sample(args):
                 raise ValueError(f"Measured interpreter imported Virgo from {package}, outside its checkout")
             ui = OfflineUI()
             session = AgentSession(workspace, home=root / "home", session=None, model="faux/measure",
-                                   ui=ui, settings=session_settings(args.contract, args.mode),
+                                   ui=ui, settings=session_settings(args.mode),
                                    extensions=False, refresh_models=False)
             ready = time.perf_counter()
             result.update(import_ms=(imported - start) * 1000, construct_ms=(ready - imported) * 1000,
                           cold_start_ms=interpreter_ms + (ready - start) * 1000)
-            owner = session.services["sandbox" if args.contract == "original" else "execution"]
+            owner = session.services["execution"]
             if owner.selected_mode_id != args.mode:
                 raise ValueError(f"Wrong mode selected: {owner.selected_mode_id}")
-            if args.contract == "original":
-                observed_network = owner.mode_for(session.main).network_allowed
-            else:
-                observed_network = owner.mode_for(session.main).flags()["network_allowed"]
+            observed_network = owner.mode_for(session.main).flags()["network_allowed"]
             if observed_network is not (args.mode != "read-only"):
                 raise ValueError(f"Wrong Shell network policy: {observed_network}")
             result["shell_network_allowed"] = observed_network
@@ -384,10 +376,26 @@ def evaluate_scale_budgets(
     }
 
 
+def _collect_budget_samples(command, count, expected_operations):
+    samples = []
+    stopped = False
+    for idx in range(count):
+        record = run_worker(command, expected_operations)
+        samples.append({**record, 'sample': idx})
+        if record.get('cleanup') == 'unknown':
+            stopped = True
+            samples.extend(
+                {'sample': remaining, 'status': 'not_run', 'success': None,
+                 'reason': 'Previous worker cleanup unconfirmed'}
+                for remaining in range(idx + 1, count)
+            )
+            break
+    return samples, stopped
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['no-limit', 'read-only', 'workspace-edit'], default='no-limit')
-    parser.add_argument('--contract', choices=['current', 'original'], default='current')
     parser.add_argument('--samples', type=int, default=3)
     parser.add_argument('--repeat', type=int, default=3)
     parser.add_argument('--workspace-files', type=int, default=0)
@@ -410,17 +418,22 @@ def main():
         read_repeats = max(args.read_repeats, 10)
         base_cmd = [
             sys.executable, str(Path(__file__).resolve()), '--worker',
-            '--mode', args.mode, '--contract', args.contract,
+            '--mode', args.mode,
             '--repeat', str(args.repeat), '--read-repeats', str(read_repeats),
         ]
-        small_samples = [
-            {**run_worker([*base_cmd, '--workspace-files', '0'], args.repeat + 1), 'sample': idx}
-            for idx in range(args.samples)
-        ]
-        large_samples = [
-            {**run_worker([*base_cmd, '--workspace-files', str(args.realistic_files)], args.repeat + 1), 'sample': idx}
-            for idx in range(args.samples)
-        ]
+        small_samples, stopped = _collect_budget_samples(
+            [*base_cmd, '--workspace-files', '0'], args.samples, args.repeat + 1
+        )
+        if stopped:
+            large_samples = [
+                {'sample': idx, 'status': 'not_run', 'success': None,
+                 'reason': 'Previous worker cleanup unconfirmed'}
+                for idx in range(args.samples)
+            ]
+        else:
+            large_samples, stopped = _collect_budget_samples(
+                [*base_cmd, '--workspace-files', str(args.realistic_files)], args.samples, args.repeat + 1
+            )
         budget = evaluate_scale_budgets(
             small_samples, large_samples,
             max_cold_start_ms=args.max_cold_start_ms,
@@ -429,13 +442,14 @@ def main():
         summary = {
             'platform': platform.platform(), 'python': sys.version, 'mode': args.mode,
             'realistic_files': args.realistic_files, 'read_repeats': read_repeats,
+            'status': 'stopped' if stopped else 'finished',
             'budget': budget, 'small_samples': small_samples, 'realistic_samples': large_samples,
         }
         if args.output:
             checkpoint(args.output, summary)
         print(json.dumps(summary, indent=2))
-        return 0 if budget['passed'] else 1
-    command = [sys.executable, str(Path(__file__).resolve()), '--worker', '--mode', args.mode, '--contract', args.contract,
+        return 0 if (not stopped and budget['passed']) else 1
+    command = [sys.executable, str(Path(__file__).resolve()), '--worker', '--mode', args.mode,
                '--repeat', str(args.repeat), '--workspace-files', str(args.workspace_files),
                '--read-repeats', str(args.read_repeats)]
     head = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
@@ -443,7 +457,7 @@ def main():
     report = {'revision': head, 'tracked_diff_sha256': hashlib.sha256(diff).hexdigest(),
               'script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'lock_sha256': hashlib.sha256(Path('uv.lock').read_bytes()).hexdigest(),
-              'platform': platform.platform(), 'python': sys.version, 'mode': args.mode, 'contract': args.contract,
+              'platform': platform.platform(), 'python': sys.version, 'mode': args.mode,
               'workload': 'cold session, repeated shell echo, edit answer.py and run check_answer.py',
               'repeats': args.repeat, 'planned_samples': args.samples,
               'status': 'running', 'samples': []}

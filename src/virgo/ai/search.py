@@ -86,8 +86,22 @@ def add_source_links(message) -> None:
         )
         if not any(isinstance(b, TextContent) and b.text == links for b in message.content):
             message.content.append(TextContent(links))
-    if (message.search_started or message.native_started) and message.stop_reason in {"error", "aborted"}:
-        operation = "Web search" if message.search_started else "Web retrieval"
+    if message.native_started and message.stop_reason in {"error", "aborted"}:
+        has_search = any(
+            isinstance(b, RawContent) and (
+                b.data.get("type") in {"web_search_call", "web_search_tool_result"}
+                or b.data.get("type") == "server_tool_use" and b.data.get("name") == "web_search"
+            )
+            for b in message.content
+        )
+        has_fetch = any(
+            isinstance(b, RawContent) and (
+                b.data.get("type") == "web_fetch_tool_result"
+                or b.data.get("type") == "server_tool_use" and b.data.get("name") == "web_fetch"
+            )
+            for b in message.content
+        )
+        operation = "Web search" if has_search or not has_fetch else "Web retrieval"
         note = f"\n\n[{operation} was interrupted after it started; any sources above are partial results."
         if queries:
             note += " Queries: " + json.dumps(list(dict.fromkeys(queries)), ensure_ascii=False)[:4000]

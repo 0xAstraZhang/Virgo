@@ -31,10 +31,6 @@ class FetchError(ValueError):
         self.cancelled = cancelled
 
 
-def _client(**kwargs):
-    return httpx.Client(**kwargs)
-
-
 def _check(ctx, deadline):
     if ctx.signal.is_set():
         raise FetchError(ctx.t("tools.fetch.cancelled"), cancelled=True)
@@ -149,20 +145,17 @@ def _body(response, maximum, ctx, deadline):
         raise FetchError(ctx.t("tools.fetch.encoding"))
     data = bytearray()
     raw_size = 0
-    # MockTransport responses may already be consumed; real requests always stream raw bytes.
-    consumed = response.is_stream_consumed
-    chunks = [response.content] if consumed else response.iter_raw()
-    for chunk in chunks:
+    for chunk in response.iter_raw():
         _check(ctx, deadline)
         raw_size += len(chunk)
         if raw_size > maximum:
             raise FetchError(ctx.t("tools.fetch.large"))
-        if decoder and not consumed:
+        if decoder:
             chunk = decoder.decompress(chunk, maximum - len(data) + 1)
         data.extend(chunk)
         if len(data) > maximum:
             raise FetchError(ctx.t("tools.fetch.large_decoded"))
-    if decoder and not consumed and (not decoder.eof or decoder.unused_data):
+    if decoder and (not decoder.eof or decoder.unused_data):
         raise FetchError(ctx.t("tools.fetch.incomplete"))
     _check(ctx, deadline)
     return bytes(data)
@@ -248,7 +241,7 @@ def _http(url, maximum, timeout, ctx, deadline, review):
             "User-Agent": "Virgo/0.2 (web fetch)",
             "Accept-Encoding": "gzip",
         }
-        with _client(
+        with httpx.Client(
             timeout=min(timeout, max(0.001, deadline - time.monotonic())),
             follow_redirects=False,
             trust_env=False,
@@ -307,7 +300,7 @@ def make_web_fetch(settings, *, resolve_backend, resolve_api_key, before_fetch=N
                     key = resolve_api_key(ctx)
                     if not key:
                         raise FetchError(ctx.t("tools.fetch.key"))
-                    with _client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+                    with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
                         with client.stream(
                             "POST",
                             DEEPSEEK_URL,

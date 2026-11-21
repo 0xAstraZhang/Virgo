@@ -15,6 +15,23 @@ from .i18n import tr
 EXIT = {"/exit", "/quit", "exit", "quit", ":q"}
 
 
+def classify_input(session: AgentSession, text: str, *, busy: bool):
+    """Classify one trimmed interactive input line for REPL and fullscreen clients."""
+    if text in EXIT:
+        return "exit", None
+    is_command = text.startswith("/") and not text.startswith("//")
+    cmd = session.commands.get(text[1:].split(" ", 1)[0]) if is_command else None
+    if cmd is not None and cmd.concurrent:
+        return "concurrent", cmd
+    if busy:
+        if is_command:
+            return "defer_command", None
+        if session.steer(text):
+            return "steer", None
+        return "defer_prompt", None
+    return "prompt", cmd
+
+
 def _setup_readline(history: Path, session: AgentSession) -> None:
     try:
         import readline
@@ -119,12 +136,12 @@ def run_repl(
                 else:
                     broker.resume_reading()
                 continue
-            if line in EXIT:
+            action, cmd = classify_input(session, line, busy=busy())
+            if action == "exit":
                 if busy():
                     session.abort()
                 break
-            cmd = session.commands.get(line[1:].split(" ", 1)[0]) if line.startswith("/") else None
-            if cmd is not None and cmd.concurrent:
+            if action == "concurrent":
                 try:
                     with session.ui.command_scope():
                         cmd.fn(session, line.partition(" ")[2])  # concurrent commands enforce their own admission
@@ -135,17 +152,20 @@ def run_repl(
                 else:
                     broker.resume_reading()
                 continue
-            if busy():
-                if line.startswith("/"):
-                    deferred.append(line)
-                    ui.print(tr(session, "ui.repl.queued_command"), "dim")
-                elif session.steer(line):
-                    ui.print(tr(session, "ui.repl.steered"), "dim")
-                else:
-                    # The worker is running a command, or the agent is already past its last queue
-                    # check: nothing would drain a steering message, so send it as the next prompt.
-                    deferred.append(line)
-                    ui.print(tr(session, "ui.repl.queued_prompt"), "dim")
+            if action == "defer_command":
+                deferred.append(line)
+                ui.print(tr(session, "ui.repl.queued_command"), "dim")
+                broker.resume_reading()
+                continue
+            if action == "steer":
+                ui.print(tr(session, "ui.repl.steered"), "dim")
+                broker.resume_reading()
+                continue
+            if action == "defer_prompt":
+                # The worker is running a command, or the agent is already past its last queue
+                # check: nothing would drain a steering message, so send it as the next prompt.
+                deferred.append(line)
+                ui.print(tr(session, "ui.repl.queued_prompt"), "dim")
                 broker.resume_reading()
                 continue
             start(lambda line=line: session.prompt(line))

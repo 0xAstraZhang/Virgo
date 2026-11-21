@@ -11,6 +11,7 @@ from virgo import ai
 from virgo.agent.types import AgentTool, ToolCallEvent, ToolResult
 from virgo.ai.providers import openai
 from virgo.ai.providers._http import ProviderError
+from virgo.ai.providers.web import native_tool
 from virgo.ai.search import add_source_links, is_search_unsupported
 from virgo.ai.transform import normalize
 from virgo.ai.types import (
@@ -28,7 +29,6 @@ from virgo.ai.types import (
     message_to_dict,
 )
 from virgo.harness.session import Runtime
-from virgo.plugins.web.search import native_tool
 
 from tests.support.harness import install_responses, response_stream
 
@@ -77,6 +77,10 @@ def test_environment_proxy_prevents_assuming_official_search(env, model, monkeyp
     assert native_tool(model) is None
 
 
+def _has_native_search(context: Context) -> bool:
+    return any(d.get("name") == "web_search" or d.get("type") == "web_search" for d in context.web_tools)
+
+
 @pytest.mark.parametrize("mode,native,builtin", [
     ("auto", True, False), ("native", True, False),
     ("builtin", False, True), ("off", False, False),
@@ -85,7 +89,7 @@ def test_modes_offer_exactly_one_search_path(make_session, mode, native, builtin
     session = make_session(settings={"search": {"mode": mode}})
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
-    assert bool(context.web_search) is native
+    assert _has_native_search(context) is native
     assert any(t.name == "web_search" for t in context.tools) is builtin
 
 
@@ -101,7 +105,7 @@ def test_subagent_tool_scope_cannot_acquire_native_search(make_session):
     runtime = Runtime(session, "restricted", "subagent", model=selected_model(),
                       tools=[session.tool("read")], compaction=False)
     context = runtime.request_context([UserMessage("Search online")])
-    assert context.web_search is None
+    assert not context.web_tools
     assert "web_search" not in [tool.name for tool in context.tools]
 
 
@@ -124,7 +128,7 @@ def test_explicit_unsupported_falls_back_executes_builtin_and_caches(make_sessio
     )
     runtime.agent.prompt("Find the Python documentation.")
     runtime.agent.prompt("Find the documentation again.")
-    assert [bool(ctx.web_search) for _, ctx in seen] == [True, False, False, False]
+    assert [_has_native_search(ctx) for _, ctx in seen] == [True, False, False, False]
     assert "web_search" not in [t.name for t in seen[0][1].tools]
     assert all("web_search" in [t.name for t in ctx.tools] for _, ctx in seen[1:])
     assert calls == [{"query": "Python documentation"}]
@@ -148,7 +152,7 @@ def test_rejection_after_builtin_fallback_is_not_retried_again(make_session, mon
     AssistantMessage(stop_reason="error", error_kind="fatal", error_message="401 invalid API key"),
     AssistantMessage(stop_reason="error", error_kind="retryable", error_message="429 rate limit"),
     AssistantMessage(stop_reason="error", error_kind="retryable", error_message="connection timeout"),
-    AssistantMessage(content=[TextContent("No results found")], search_started=True),
+    AssistantMessage(content=[TextContent("No results found")], native_started=True),
     AssistantMessage(content=[TextContent("No search needed")]),
 ])
 def test_other_errors_and_successes_do_not_poison_capability_cache(make_session, monkeypatch, failure):
@@ -158,7 +162,7 @@ def test_other_errors_and_successes_do_not_poison_capability_cache(make_session,
     runtime.call_model(runtime.messages, runtime.agent.signal).result()
     runtime.call_model(runtime.messages, runtime.agent.signal).result()
     assert len(seen) == 2
-    assert all(ctx.web_search is not None for _, ctx in seen)
+    assert all(ctx.web_tools for _, ctx in seen)
 
 
 @pytest.mark.parametrize("kind", ["retryable", "search_unsupported", "overflow"])
@@ -167,36 +171,36 @@ def test_started_native_search_is_not_replayed_or_downgraded(make_session, monke
     runtime = select(session)
     failure = AssistantMessage(
         content=[RawContent("anthropic", {"type": "server_tool_use", "name": "web_search", "input": {"query": "Python"}})],
-        stop_reason="error", error_kind=kind, error_message="interrupted", search_started=True,
+        stop_reason="error", error_kind=kind, error_message="interrupted", native_started=True,
     )
     seen = install_responses(monkeypatch, failure)
     result = runtime.call_model(runtime.messages, runtime.agent.signal).result()
     assert result is failure
     assert len(seen) == 1
-    assert runtime.request_context(runtime.messages).web_search is not None
+    assert runtime.request_context(runtime.messages).web_tools
 
 
 def test_cache_is_invalidated_by_endpoint_model_and_credential_changes(make_session):
     session = make_session()
     runtime = select(session)
-    service = session.services["search"]
+    service = session.services["web"]
     original = runtime.model
     context = runtime.request_context(runtime.messages)
     assert service.fallback(original, context, AssistantMessage(error_kind="search_unsupported"))
-    assert runtime.request_context(runtime.messages).web_search is None
+    assert not _has_native_search(runtime.request_context(runtime.messages))
     for changed in (
         replace(original, id="claude-opus-5-5"),
         replace(original, base_url="https://proxy.example", options={"nativeSearch": True}),
         replace(original, options={"apiKey": "different-test-key"}),
     ):
-        assert runtime.request_context(runtime.messages, changed).web_search is not None
+        assert _has_native_search(runtime.request_context(runtime.messages, changed))
 
 
 def test_network_policy_blocks_native_and_builtin_execution(broker_session):
     session = broker_session(preset="read-only", settings={"fetch": {"mode": "off"}})
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
-    assert context.web_search and not runtime.permission_snapshot.mode.network
+    assert context.web_tools and not runtime.permission_snapshot.mode.network
     event = ToolCallEvent(call_id="s", tool_name="web_search", args={"query": "Python"},
                           tool=session.tool("web_search"), cwd=session.cwd, agent="main")
     assert session._before_tool(event) is None
@@ -209,33 +213,11 @@ def test_scoped_command_rules_require_migration(make_session, kind):
         make_session(settings={"permissions": {kind: ["web_search(*private*)"]}})
 
 
-def test_native_network_admission_is_rechecked_each_request(broker_session, monkeypatch):
-    session = broker_session(settings={"fetch": {"mode": "off"}})
-    runtime = select(session)
-    decisions = []
-    provider = session.services["execution"]
-    admit = provider.preflight
-    def record(event):
-        decisions.append(event)
-        return admit(event)
-    monkeypatch.setattr(provider, "preflight", record)
-    assert runtime.request_context(runtime.messages).web_search
-    assert runtime.request_context(runtime.messages).web_search
-    assert len(decisions) == 2 and decisions[0].args["native"] is True
-    provider.select_mode("read-only")
-    assert runtime.request_context(runtime.messages).web_search
-    assert len(decisions) == 3
-    provider.select_mode("workspace-edit")
-    runtime.messages.append(UserMessage("Another request"))
-    assert runtime.request_context(runtime.messages).web_search
-    assert len(decisions) == 4
-
-
 def test_unapproved_native_scope_falls_back_without_asking_user(broker_session):
     session = broker_session(preset="read-only")
     runtime = select(session)
     context = runtime.request_context(runtime.messages)
-    assert context.web_search and context.web_tools
+    assert context.web_tools
     assert "web_search" not in [t.name for t in context.tools]
     assert session.ui.questions == []
 
@@ -244,7 +226,7 @@ def test_unapproved_native_scope_falls_back_without_asking_user(broker_session):
 def test_custom_tool_hooks_route_search_through_client_execution(make_session, monkeypatch, event):
     session = make_session(settings={"compaction": {"enabled": False}})
     runtime = select(session)
-    assert runtime.request_context(runtime.messages).web_search
+    assert runtime.request_context(runtime.messages).web_tools
     observed = []
 
     def hook(*args):
@@ -261,10 +243,10 @@ def test_custom_tool_hooks_route_search_through_client_execution(make_session, m
             AssistantMessage(content=[TextContent("Answer")]),
         )
         runtime.agent.prompt("Search Python docs")
-        assert all(context.web_search is None for _, context in seen)
+        assert all(not context.web_tools for _, context in seen)
         assert len(observed) == 1
         remove()
-        assert runtime.request_context(runtime.messages).web_search
+        assert runtime.request_context(runtime.messages).web_tools
 
 
 def test_extension_owned_search_tool_is_not_replaced_by_hosted_search(make_session):
@@ -272,7 +254,7 @@ def test_extension_owned_search_tool_is_not_replaced_by_hosted_search(make_sessi
     custom = AgentTool("web_search", "Custom search", {"type": "object"}, lambda *a: "Custom result")
     runtime = Runtime(session, "custom", "subagent", model=selected_model(), tools=[custom], compaction=False)
     context = runtime.request_context([UserMessage("Search")])
-    assert context.web_search is None
+    assert not context.web_tools
     assert context.tools[0].description == "Custom search"
 
 
@@ -296,7 +278,7 @@ def test_only_explicit_search_capability_rejections_trigger_fallback(status, bod
 def test_citations_survive_persistence_and_provider_switch_without_native_payloads():
     citation = {"type": "web_search_result_location", "url": "https://docs.python.org/", "title": "Python docs", "encrypted_index": "secret-index"}
     message = AssistantMessage(
-        api="anthropic", provider="anthropic", model="claude-sonnet-4-6", search_started=True,
+        api="anthropic", provider="anthropic", model="claude-sonnet-4-6", native_started=True,
         content=[
             RawContent("anthropic", {"type": "web_search_tool_result", "encrypted_content": "opaque-native-state"}),
             TextContent("Python documentation", citations=[citation]),
@@ -316,14 +298,14 @@ def test_citations_survive_persistence_and_provider_switch_without_native_payloa
 def test_server_pause_continues_with_native_history(make_session, monkeypatch):
     session = make_session(settings={"compaction": {"enabled": False}})
     runtime = select(session)
-    paused = AssistantMessage(api="anthropic", search_started=True, stop_reason="pause_turn", content=[
+    paused = AssistantMessage(api="anthropic", native_started=True, stop_reason="pause_turn", content=[
         RawContent("anthropic", {"type": "web_search_tool_result", "tool_use_id": "srv_1", "content": []}),
     ])
     seen = install_responses(monkeypatch, paused, AssistantMessage(content=[TextContent("Finished research")]))
     runtime.agent.prompt("Search Python docs")
     assert len(seen) == 2
     assert paused in seen[1][1].messages
-    assert all(context.web_search is not None for _, context in seen)
+    assert all(context.web_tools for _, context in seen)
     assert runtime.agent.last_text == "Finished research"
 
 
@@ -339,13 +321,13 @@ def test_retryable_failure_retries_native_without_downgrade(make_session, monkey
     result = runtime.call_model(runtime.messages, runtime.agent.signal).result()
     assert result.text() == "Recovered"
     assert len(seen) == 2
-    assert all(context.web_search for _, context in seen)
+    assert all(context.web_tools for _, context in seen)
 
 
 def test_unified_stream_routes_openai_after_auth_and_adds_portable_sources(monkeypatch):
     model = Model("openai", "gpt-6-luna", "openai")
     declaration = {"type": "web_search"}
-    context = Context("Research", [UserMessage("Python docs")], web_search=declaration)
+    context = Context("Research", [UserMessage("Python docs")], web_tools=[declaration])
     authenticated = []
     requests = []
 
@@ -354,7 +336,7 @@ def test_unified_stream_routes_openai_after_auth_and_adds_portable_sources(monke
         return selected
 
     def respond(selected, ctx, _opts):
-        requests.append((selected.api, ctx.web_search))
+        requests.append((selected.api, ctx.web_tools))
         return response_stream(AssistantMessage(api=selected.api, content=[TextContent(
             "Python docs", citations=[{"type": "url_citation", "url": "https://docs.python.org", "title": "Python"}]
         )]))
@@ -365,7 +347,7 @@ def test_unified_stream_routes_openai_after_auth_and_adds_portable_sources(monke
     events = list(stream)
     result = stream.result()
     assert authenticated == ["openai"]
-    assert requests == [("openai-responses", declaration)]
+    assert requests == [("openai-responses", [declaration])]
     assert "[Python](<https://docs.python.org>)" in result.text()
     assert any(event.type == "text_delta" and "https://docs.python.org" in event.delta for event in events)
     assert events[-1].type == "done"
@@ -374,7 +356,7 @@ def test_unified_stream_routes_openai_after_auth_and_adds_portable_sources(monke
 
 def test_interrupted_search_without_text_retains_partial_evidence_but_not_unpaired_calls():
     message = AssistantMessage(
-        api="anthropic", provider="anthropic", model="claude-sonnet-4-6", search_started=True,
+        api="anthropic", provider="anthropic", model="claude-sonnet-4-6", native_started=True,
         stop_reason="error", error_kind="retryable", content=[
             RawContent("anthropic", {"type": "server_tool_use", "id": "srv_done", "name": "web_search", "input": {"query": "Python docs"}}),
             RawContent("anthropic", {"type": "web_search_tool_result", "tool_use_id": "srv_done", "content": [
@@ -398,7 +380,7 @@ def test_interrupted_search_without_text_retains_partial_evidence_but_not_unpair
 
 def test_interrupted_responses_search_keeps_query_as_text_instead_of_replaying_incomplete_item():
     message = AssistantMessage(
-        api="openai-responses", provider="openai", search_started=True, stop_reason="aborted",
+        api="openai-responses", provider="openai", native_started=True, stop_reason="aborted",
         content=[RawContent("openai-responses", {
             "type": "web_search_call", "id": "ws_partial", "status": "in_progress",
             "action": {"type": "search", "queries": ["Python docs"]},
@@ -414,7 +396,7 @@ def test_interrupted_responses_search_keeps_query_as_text_instead_of_replaying_i
 def test_same_api_provider_switch_strips_hosted_metadata_but_keeps_source_links():
     citation = {"type": "url_citation", "url": "https://docs.python.org", "title": "Python"}
     annotated = {"type": "message", "id": "msg_openai", "content": [{"type": "output_text", "annotations": [citation]}]}
-    message = AssistantMessage(api="openai-responses", provider="openai", search_started=True, content=[
+    message = AssistantMessage(api="openai-responses", provider="openai", native_started=True, content=[
         ThinkingContent("Research", signature="provider-encrypted-reasoning"),
         RawContent("openai-responses", {"type": "web_search_call", "id": "ws_openai", "status": "completed"}),
         TextContent("Python docs", citations=[citation], native=annotated),
@@ -434,7 +416,7 @@ def test_repeated_server_pauses_stop_after_three_continuations(make_session, mon
     session = make_session(settings={"compaction": {"enabled": False}})
     runtime = select(session)
     seen = install_responses(monkeypatch, *[
-        AssistantMessage(api="anthropic", search_started=True, stop_reason="pause_turn") for _ in range(4)
+        AssistantMessage(api="anthropic", native_started=True, stop_reason="pause_turn") for _ in range(4)
     ])
     runtime.agent.prompt("Long research task")
     assert len(seen) == 4

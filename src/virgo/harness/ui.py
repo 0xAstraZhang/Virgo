@@ -100,27 +100,6 @@ class UI:
         """Choose model/effort settings, or cancel when this client has no picker."""
         return None
 
-    def select_details(self, question: str, options: list[str], details: str) -> str | None:
-        """Choose an action alongside complete, scrollable reference text."""
-        self.print(details)
-        return self.select(question, options)
-
-    def input_multiline(self, question: str, *, default: str = "") -> str | None:
-        """Read task content without putting it in conversation/input history."""
-        if not self.interactive:
-            return None
-        if default:
-            self.print(default)
-        self.print(question + "\n" + self.t("ui.base.multiline_help"))
-        lines = []
-        while True:
-            line = self.input("│")
-            if line is None or line == "/cancel":
-                return None
-            if line == ".":
-                return "\n".join(lines) if lines else default
-            lines.append(line)
-
     def cancel_input_timeouts(self) -> None:
         """Keep currently displayed questions open after the user joins an unattended run."""
         pass
@@ -128,3 +107,14 @@ class UI:
     def wake(self) -> None:
         """Called when a notification arrives while the session is idle."""
         pass
+
+
+def confirm_callable(ui, *, prefer_persistent: bool = True):
+    """Return the active confirmation callable if ``ui`` overrides confirm/confirm_once."""
+    confirm = getattr(ui, "confirm", None)
+    has_confirm = callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm
+    once = getattr(ui, "confirm_once", None)
+    has_once = callable(once) and getattr(once, "__func__", None) is not UI.confirm_once
+    if prefer_persistent:
+        return confirm if has_confirm else (once if has_once else None)
+    return once if has_once else (confirm if has_confirm else None)

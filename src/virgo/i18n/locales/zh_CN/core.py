@@ -9,8 +9,5 @@ MESSAGES = {
     "language.busy": "智能体正在运行，完成后才能切换语言。",
     "language.save_failed": "无法保存偏好设置，语言未更改：{error}",
     "common.unavailable": "不可用",
-    "common.cancelled": "已取消。",
-    "ui.base.back": "返回",
-    "ui.base.multiline_help": "单独输入 . 结束；/cancel 取消；直接输入 . 保留现有内容。",
     "sandbox.host_execution": "Host · 宿主操作系统权限",
 }

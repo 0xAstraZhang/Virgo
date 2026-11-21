@@ -63,7 +63,7 @@ def normalize(messages: list, model: Model) -> list:
     for m in messages:
         if isinstance(m, AssistantMessage):
             close_open()
-            if (m.search_started or m.native_started) and m.stop_reason in {"error", "aborted"}:
+            if m.native_started and m.stop_reason in {"error", "aborted"}:
                 from .search import add_source_links
 
                 m = copy.deepcopy(m)

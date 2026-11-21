@@ -34,8 +34,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .. import _windows_probe
 from ..execution_policy import filter_sandbox_environment
+from . import _win32, windows_acl
 from .platform import SandboxCancelled, SandboxProcessError, SandboxUnavailable
 from .windows_acl import (
     acl_state_lock,
@@ -58,11 +58,11 @@ BACKEND_NAME = "windows-appcontainer"
 READ_ONLY_CAPABILITIES: tuple[str, ...] = ()
 WORKSPACE_EDIT_CAPABILITIES: tuple[str, ...] = ("internetClient", "privateNetworkClientServer")
 
-HANDLE = ctypes.c_void_p
-PSID = ctypes.c_void_p
-DWORD = ctypes.c_uint32
-BOOL = ctypes.c_int32
-HRESULT = ctypes.c_int32
+HANDLE = _win32.HANDLE
+PSID = _win32.PSID
+DWORD = _win32.DWORD
+BOOL = _win32.BOOL
+HRESULT = _win32.HRESULT
 
 PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
 SE_GROUP_ENABLED = 0x00000004
@@ -83,31 +83,14 @@ _HRESULT_MISSING_PROFILE = frozenset({
     0x80070490,  # ERROR_NOT_FOUND
 })
 
-
-def _api(library: ctypes.WinDLL, name: str, args: list[Any], result: Any = BOOL):
-    fn = getattr(library, name)
-    fn.argtypes = args
-    fn.restype = result
-    return fn
-
-
-def _check(value: Any) -> Any:
-    if not value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    return value
-
-
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-_GetSystemDirectoryW = _api(_kernel32, "GetSystemDirectoryW", [w.LPWSTR, DWORD], DWORD)
-_GetWindowsDirectoryW = _api(_kernel32, "GetWindowsDirectoryW", [w.LPWSTR, DWORD], DWORD)
-_CloseHandle = _api(_kernel32, "CloseHandle", [HANDLE])
-_LocalFree = _api(_kernel32, "LocalFree", [ctypes.c_void_p], ctypes.c_void_p)
-_GetCurrentProcess = _api(_kernel32, "GetCurrentProcess", [], HANDLE)
+_api = _win32.bind_api
+_check = _win32.check_win32
+_kernel32 = _win32.kernel32
+_CloseHandle = _win32.CloseHandle
+_LocalFree = _win32.LocalFree
+_GetCurrentProcess = _win32.GetCurrentProcess
+_IsWow64Process2 = _win32.IsWow64Process2
 _GetCurrentThreadId = _api(_kernel32, "GetCurrentThreadId", [], DWORD)
-_IsWow64Process2 = _api(
-    _kernel32, "IsWow64Process2", [HANDLE, ctypes.POINTER(w.WORD), ctypes.POINTER(w.WORD)]
-)
 _OpenProcess = _api(_kernel32, "OpenProcess", [DWORD, BOOL, DWORD], HANDLE)
 _GetExitCodeProcess = _api(_kernel32, "GetExitCodeProcess", [HANDLE, ctypes.POINTER(DWORD)])
 _GetLogicalDrives = _api(_kernel32, "GetLogicalDrives", [], DWORD)
@@ -131,23 +114,14 @@ _GetProcessTimes = _api(
     ],
 )
 
+SYSTEM_DIRECTORY = Path(normalize_path(_win32.system_directory()))
+WINDOWS_DIRECTORY = Path(normalize_path(_win32.windows_directory()))
 
-def _directory(api) -> Path:
-    buf = ctypes.create_unicode_buffer(32768)
-    count = _check(api(buf, len(buf)))
-    if count >= len(buf):
-        raise SandboxUnavailable("Windows system directory exceeds the native path limit")
-    return Path(normalize_path(buf.value))
-
-
-SYSTEM_DIRECTORY = _directory(_GetSystemDirectoryW)
-WINDOWS_DIRECTORY = _directory(_GetWindowsDirectoryW)
-
-_advapi32 = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "advapi32.dll"), use_last_error=True)
-_userenv = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "userenv.dll"), use_last_error=True)
-_kernelbase = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "kernelbase.dll"), use_last_error=True)
-_ole32 = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "ole32.dll"), use_last_error=True)
-_user32 = ctypes.WinDLL(str(SYSTEM_DIRECTORY / "user32.dll"), use_last_error=True)
+_advapi32 = _win32.system_dll("advapi32.dll")
+_userenv = _win32.system_dll("userenv.dll")
+_kernelbase = _win32.system_dll("kernelbase.dll")
+_ole32 = _win32.system_dll("ole32.dll")
+_user32 = _win32.system_dll("user32.dll")
 
 
 class SidAndAttributes(ctypes.Structure):
@@ -533,15 +507,6 @@ UNSUPPORTED_WINDOWS_GUIDANCE = (
 )
 
 
-def is_windows_sandbox_supported() -> bool:
-    """Return True when x64 Windows 10+ and \\Device\\Null grants S-1-15-2-1 read/write."""
-    try:
-        backend()
-    except (SandboxUnavailable, OSError):
-        return False
-    return _windows_probe.null_device_allows_appcontainer()
-
-
 def precheck_windows_sandbox() -> None:
     """Verify Standard AppContainer prerequisites (x64 Win11 null.sys Feature 60692039 and BFE/MpsSvc)."""
     try:
@@ -552,7 +517,7 @@ def precheck_windows_sandbox() -> None:
             reason="windows_unsupported_os",
             dimension="windows_appcontainer_sandbox",
         ) from error
-    if not _windows_probe.null_device_allows_appcontainer():
+    if not windows_acl.null_device_allows_appcontainer():
         raise SandboxUnavailable(
             UNSUPPORTED_WINDOWS_GUIDANCE,
             reason="windows_null_device_unavailable",
@@ -1482,8 +1447,6 @@ class WindowsSandboxSession:
 class _CommandEnvelope:
     """Lightweight per-command adapter passed to WindowsProcess and NativeProcess."""
 
-    token = None  # Signals WindowsProcess to use CreateProcessW (no CreateProcessAsUserW).
-
     def __init__(
         self,
         session: WindowsSandboxSession,
@@ -1696,16 +1659,6 @@ class WindowsSessionPool:
 
 
 _LIVE_POOLS: weakref.WeakSet[WindowsSessionPool] = weakref.WeakSet()
-_DEFAULT_POOL_LOCK = threading.Lock()
-_DEFAULT_POOL: WindowsSessionPool | None = None
-
-
-def _get_default_pool() -> WindowsSessionPool:
-    global _DEFAULT_POOL
-    with _DEFAULT_POOL_LOCK:
-        if _DEFAULT_POOL is None:
-            _DEFAULT_POOL = WindowsSessionPool()
-        return _DEFAULT_POOL
 
 
 def _atexit_cleanup() -> None:
@@ -1755,8 +1708,9 @@ def spawn(
         runtime_to_grant = _check_runtime_accessibility(runtime_candidates, workspace, executable)
         optional_toolchains = _discover_optional_user_toolchains(policy, workspace, env)
 
-        pool = session_pool if session_pool is not None else _get_default_pool()
-        session = pool.get_or_create(
+        if session_pool is None:
+            raise ValueError("Windows sandbox spawn requires an explicit WindowsSessionPool")
+        session = session_pool.get_or_create(
             workspace,
             read_only=policy.read_only,
             network_allowed=policy.network_allowed,

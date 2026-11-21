@@ -1,19 +1,15 @@
 # 权限模式耗时
 
-`Permission mode performance` 工作流在 Linux（`ubuntu-latest`）、macOS（`macos-latest`）和原生 Windows（`windows-latest`）上覆盖 `no-limit`、`read-only` 与 `workspace-edit` 三种模式。在 Linux 与 macOS 上，工作流依次在同一台运行器上对比当前 PR 提交和固定的主线提交 [`04e94ed`](https://github.com/0xAstraZhang/Virgo/commit/04e94ed45992d8e2cbf2178c8c6b562704092a83)；在原生 Windows 上则直接测量当前 PR 提交（跳过旧版 LPAC 主线基线对比）。在**全部三个平台**（含 Windows）上，工作流均通过 `--check-budgets` 强制校验真实规模下的冷启动与首次命令初始化（`<= 5 秒`）、重复命令 O(1) 开销（`<= 2 秒`且不随文件数线性增长）以及 `Read`（`<= 250 毫秒`且 O(1)）预算。脚本用本地模型驱动 Virgo 的实际工具。
+`Permission mode performance` 工作流在 Linux（`ubuntu-latest`）、macOS（`macos-latest`）和原生 Windows（`windows-latest`）上覆盖 `no-limit`、`read-only` 与 `workspace-edit` 三种模式。在**全部三个平台**上，工作流通过 `--check-budgets` 强制校验真实规模（`0` 对比 `1000` 文件）下的冷启动与首次命令初始化（`<= 5 秒`）、重复命令 O(1) 开销（`<= 2 秒`且不随文件数线性增长）以及 `Read`（`<= 250 毫秒`且 O(1)）预算。脚本使用本地模拟模型驱动 Virgo 的真实工具，不依赖外部网络。
 
-| 模式 | 主线对照配置 | 源文件修改者 |
-| --- | --- | --- |
-| No-Limit | 原版 No-Limit 预设 | Virgo 文件工具 |
-| Workspace-Edit | 原版 Workspace-Edit 预设 | Virgo 文件工具 |
-| Read-Only | 原版 Read-Only 预设，显式关闭网络 | 外部编辑器 |
+每个样本都在全新的 Python 解释器、独立用户目录与工作区中运行，要求零审批弹窗，并记录导入耗时、会话初始化耗时、`Read` 耗时、首次 Shell 命令耗时、连续短命令耗时及编辑到测试总耗时。失败样本会保留诊断信息；若子进程清理未确认，会立即中止后续采样。
 
-每个版本运行三个样本，各自使用新的解释器、用户目录和项目。报告给出冷启动、第一条 Shell 命令、连续五条短命令，以及从编辑源文件到测试读到新值的总耗时四项中位数。每个成功样本须为零审批。脚本保留失败样本的诊断，无法确认清理时停止后续采样。比较前核对提交、已跟踪文件的差异、脚本摘要、平台、Python 版本和工作负载。
-
-在被测版本安装锁定环境 `uv sync --locked --dev` 后运行工作负载。
+在完成 `uv sync --locked --dev` 后，可在本地运行同一预算检查：
 
 ```sh
-uv run --no-sync python ci/measure_permission_modes.py --mode workspace-edit --samples 3 --repeat 5 --output timing.json
+uv run --no-sync python ci/measure_permission_modes.py \
+  --mode workspace-edit --samples 2 --repeat 2 --read-repeats 10 \
+  --realistic-files 1000 --check-budgets --output budget.json
 ```
 
-测量固定主线时，使用同一份 PR 脚本并传入 `--contract original`。Read-Only 任务还会使用 PR 版本的网页工具读取固定的 HTTPS 文件，核对内容摘要，并确认 Shell 网络策略处于关闭状态。实际的 Shell socket 拒绝由专门的验收工作流验证。
+原生进程与网络隔离边界由专门的原生沙箱验收工作流与脚本（`native-sandbox.yml`、`windows-sandbox.yml`、`ci/wsl2_acceptance.sh`）独立验证。

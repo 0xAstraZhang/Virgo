@@ -272,7 +272,7 @@ def test_fullscreen_app_answers_mid_run_and_withdraws_unattended_questions(make_
                 await wait_for(pilot, lambda: s.main.agent.last_text == "checked", timeout=10)
                 assert ask_results(s)[1].details["timed_out"] is True
                 await wait_for(pilot, lambda: app.input_request is None and app.focused is app.editor)
-                assert not app.input_requests
+                assert not app.state.input_requests
         finally:
             ui.close()
 

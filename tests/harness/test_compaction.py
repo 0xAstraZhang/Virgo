@@ -72,7 +72,7 @@ def test_runtime_estimate_counts_project_instructions_and_tools_without_request_
     session = make_session()
     runtime = session.main
     monkeypatch.setattr(session.bus, "chain", lambda *a: pytest.fail("status invoked a context hook"))
-    monkeypatch.setattr(session.services["search"], "prepare", lambda *a: pytest.fail("status prepared a request"))
+    monkeypatch.setattr(session.services["web"], "prepare", lambda *a: pytest.fail("status prepared a request"))
     assert ("project rules " * 100).strip() in runtime.system
     baseline = runtime.context_tokens()
     assert baseline > len(runtime.system) // 4 > 0

@@ -6,9 +6,7 @@ import hashlib
 import json
 import os
 
-from ...agent.types import ToolCallEvent
 from ...ai.providers.web import deepseek_endpoint, endpoint
-from ...ai.types import UserMessage
 from ...ai.web import offers_for
 
 
@@ -76,20 +74,7 @@ class WebAccess:
 
     def _permitted(self, runtime, model) -> bool:
         provider = self.api.services.get("execution")
-        if provider is None or self.api.has_tool_hooks():
-            return False
-        request = next((m for m in reversed(runtime.messages) if isinstance(m, UserMessage) and m.kind is None), None)
-        ev = ToolCallEvent(
-            call_id=f"native-{self.operation}-{runtime.name}-{id(request)}", tool_name=f"web_{self.operation}",
-            args={"native": True, "provider": model.provider, "request": request.text() if request else "",
-             "scope": f"Allow the provider to perform public web {self.operation} operations for this user request."},
-            tool=self.tool, cwd=runtime.cwd, agent=runtime.name, signal=runtime.agent.signal,
-            origin=runtime.origin,
-        )
-        # Reevaluate the current deterministic policy for every model request.
-        # If the provider's broad scope is not already authorized, expose the
-        # client tool so the user can approve its actual query or URL.
-        return provider.preflight(ev) is None
+        return provider is not None and not self.api.has_tool_hooks()
 
     def execution_backend(self, ctx):
         runtime = self._runtime(ctx)

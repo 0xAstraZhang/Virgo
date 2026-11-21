@@ -5,7 +5,6 @@ the extension stays unloaded in the opened workspace.
 """
 
 import asyncio
-import json
 
 from textual.widgets import OptionList
 
@@ -50,18 +49,6 @@ def test_tui_busy_cross_workspace(make_session, tmp_path):
             )
             await pilot.press("enter")
             await wait_for(pilot, lambda: app.session.cwd == other)
-            print(
-                "TUI_RESULT",
-                json.dumps(
-                    {
-                        "workspace": str(app.session.cwd),
-                        "inherited_trust": app.session.trust_project_extensions,
-                        "extension_executed": marker.exists(),
-                        "panes": len(app._panes),
-                        "old_still_running": session.main.agent.running,
-                    }
-                ),
-            )
             assert not marker.exists()
             assert not app.session.trust_project_extensions
             assert session.main.agent.running

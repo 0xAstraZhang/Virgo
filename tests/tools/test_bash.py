@@ -1,12 +1,9 @@
-"""The bash tool: exit codes, timeouts, truncation, environment, and failed downloads."""
+"""Managed shell execution: exit codes, timeouts, truncation, environment, and failed downloads."""
 
 from __future__ import annotations
 
-import os
 import shlex
 import shutil
-import subprocess
-import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler
@@ -15,20 +12,19 @@ from pathlib import Path
 import pytest
 
 from virgo.agent.types import ToolContext
-from virgo.tools import BASH
-from virgo.tools import bash as bash_module
+from virgo.execution import HostContext
 from virgo.tools.output import MAX_LINES
+from virgo.tools.shell import default_shell, discover_shells, make_shell_tool, probe_shell
 
 from tests.support.http import serve
 
 
 @pytest.fixture(params=["bash", "zsh"])
-def shell(request, monkeypatch):
+def shell(request):
     executable = shutil.which(request.param)
     if not executable:
         pytest.skip(f"{request.param} is not installed")
-    monkeypatch.setattr(bash_module, "SHELL", executable)
-    return executable
+    return probe_shell(executable)
 
 
 @pytest.fixture
@@ -60,33 +56,20 @@ def ctx(cwd: Path) -> ToolContext:
     return ToolContext("c1", cwd, threading.Event())
 
 
-def run(project, command):
-    return BASH.execute({"command": command}, ctx(project))
-
-
-@pytest.mark.parametrize("executable", ["bash", "bash.exe", "BASH.EXE", "zsh.exe", "python.exe"])
-def test_compatibility_spawn_preserves_failure_flags(project, monkeypatch, executable):
-    seen = {}
-
-    def capture(argv, **kwargs):
-        seen["argv"] = argv
-        return object()
-
-    monkeypatch.setattr(bash_module, "SHELL", str(project / "shell directory" / executable))
-    if os.name == "nt":
-        monkeypatch.setattr("virgo.tools.windows_process.WindowsProcess", capture)
-    else:
-        monkeypatch.setattr(subprocess, "Popen", capture)
-    bash_module.spawn("false | cat; echo must-not-run", project)
-    options = [] if executable == "python.exe" else ["-e", "-o", "pipefail"]
-    assert seen["argv"] == [bash_module.SHELL, *options, "-c", "false | cat; echo must-not-run"]
+def run(project: Path, command: str, *, interpreter=None, timeout: float | None = None):
+    chosen = interpreter or default_shell(discover_shells())
+    tool = make_shell_tool(chosen, execution=lambda c: HostContext(c.cwd))
+    args = {"command": command}
+    if timeout is not None:
+        args["timeout"] = timeout
+    return tool.execute(args, ctx(project))
 
 
 @pytest.mark.parametrize(("endpoint", "code"), [("timeout", 28), ("error", 22)])
 def test_failed_download_does_not_read_existing_file(project, shell, download, endpoint, code):
     old = project / "kv.xml"
     old.write_text("stale-search-result")
-    result = run(project, f"{download}/{endpoint} -o kv.xml; cat kv.xml; touch consumed")
+    result = run(project, f"{download}/{endpoint} -o kv.xml; cat kv.xml; touch consumed", interpreter=shell)
     assert result.is_error
     assert result.details["exit_code"] == code
     assert "stale-search-result" not in result.as_text()
@@ -95,7 +78,7 @@ def test_failed_download_does_not_read_existing_file(project, shell, download, e
 
 
 def test_failed_download_in_pipeline_is_not_reported_as_success(project, shell, download):
-    result = run(project, f"{download}/error | cat; touch consumed")
+    result = run(project, f"{download}/error | cat; touch consumed", interpreter=shell)
     assert result.is_error and result.details["exit_code"] == 22
     assert not (project / "consumed").exists()
 
@@ -112,6 +95,7 @@ def test_download_publishes_only_after_success(project, shell, download, endpoin
         'test -s "$tmp"\n'
         'mv "$tmp" kv.xml\n'
         'cat kv.xml',
+        interpreter=shell,
     )
     assert result.details["exit_code"] == code
     assert result.is_error == bool(code)
@@ -127,6 +111,7 @@ def test_explicit_failure_handling_still_works(project, shell, download):
         project,
         f"if {download}/error -o kv.xml; then cat kv.xml; else printf 'download failed\\n'; fi; "
         "printf 'handled\\n'",
+        interpreter=shell,
     )
     assert not result.is_error
     assert "download failed\nhandled" in result.as_text()
@@ -134,8 +119,7 @@ def test_explicit_failure_handling_still_works(project, shell, download):
 
 def test_background_download_failure_does_not_read_old_file(make_session, project, shell, download):
     (project / "kv.xml").write_text("stale-search-result")
-    # Background commands use the session selection, not the legacy module's SHELL.
-    session = make_session(settings={"shell": {"executable": shell}})
+    session = make_session(settings={"shell": {"executable": shell.executable}})
     jobs = session.services["jobs"]
     job = jobs.start_command(f"{download}/timeout -o kv.xml; cat kv.xml; touch consumed", project)
     assert session.ui.woken.wait(5)
@@ -145,12 +129,13 @@ def test_background_download_failure_does_not_read_old_file(make_session, projec
 
 
 def test_bash_exit_codes_timeout_and_truncation(project, python_command):
-    r = run(project, python_command("import sys; print('hi'); sys.exit(3)"))
+    interpreter = default_shell(discover_shells())
+    r = run(project, python_command("import sys; print('hi'); sys.exit(3)", shell=interpreter), interpreter=interpreter)
     assert r.is_error and "hi" in r.as_text() and "Exit code 3" in r.as_text()
-    assert run(project, python_command("import os; print(os.getcwd())")).as_text().strip() == str(project)
-    t = BASH.execute({"command": python_command("import time; time.sleep(5)"), "timeout": 0.3}, ctx(project))
+    assert run(project, python_command("import os; print(os.getcwd())", shell=interpreter), interpreter=interpreter).as_text().strip() == str(project)
+    t = run(project, python_command("import time; time.sleep(5)", shell=interpreter), interpreter=interpreter, timeout=0.3)
     assert t.is_error and "timed out" in t.as_text()
-    big_res = run(project, python_command(f"for i in range(1, {MAX_LINES + 101}): print(i)"))
+    big_res = run(project, python_command(f"for i in range(1, {MAX_LINES + 101}): print(i)", shell=interpreter), interpreter=interpreter)
     big = big_res.as_text()
     assert "Output truncated" in big and big.rstrip().endswith(str(MAX_LINES + 100))
     output_id = big_res.details["output_id"]
@@ -159,24 +144,6 @@ def test_bash_exit_codes_timeout_and_truncation(project, python_command):
 
 
 def test_bash_marks_child_processes(project, python_command):
-    result = run(project, python_command("import os; print(os.environ['VIRGO'])"))
+    interpreter = default_shell(discover_shells())
+    result = run(project, python_command("import os; print(os.environ['VIRGO'])", shell=interpreter), interpreter=interpreter)
     assert not result.is_error and result.as_text() == "1"
-
-
-def test_shell_environment_override(project):
-    code = (
-        "from pathlib import Path; from virgo.tools.bash import spawn; "
-        "proc = spawn(\"import os; print(os.environ['VIRGO'])\", Path.cwd()); "
-        "out, _ = proc.communicate(timeout=5); print(out.decode(), end=''); "
-        "raise SystemExit(proc.returncode)"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=project,
-        env={**os.environ, "VIRGO_SHELL": sys.executable},
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=10,
-    )
-    assert result.stdout.strip() == "1"

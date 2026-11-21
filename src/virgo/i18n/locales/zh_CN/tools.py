@@ -14,10 +14,6 @@ MESSAGES = {
     "tools.ask_user.parameters.properties.options.items.properties.description.description": "选择此项的含义",
     "tools.ask_user.parameters.properties.options.items.properties.label.description": "简短的选项文字",
     "tools.ask_user.parameters.properties.question.description": "完整的问题，无需其他上下文即可理解",
-    "tools.bash.description": "在工作目录中运行 Shell 命令（非交互模式，标准输入已关闭）。Bash/Zsh "
-    "遇到未处理的命令或管道失败会停止；请显式处理预期的非零退出状态。输出最多保留末尾 2000 行 / 50KB，更长的输出会保存到文件。",
-    "tools.bash.label": "Bash",
-    "tools.bash.parameters.properties.timeout.description": "秒数（默认 300，最大 3600）",
     "tools.diagnostic_get.description": "使用已提供给当前运行实例的完整 error_id 读取保留的诊断证据。支持 "
     "summary、causes、trace、stderr、attempts（同一次模型调用保留的失败尝试）、related（明确共享的诊断引用）。结果包含文本片段和可选的 "
     "next_cursor；继续读取时使用相同的 error_id 和 "

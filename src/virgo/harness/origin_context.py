@@ -77,16 +77,6 @@ def source_for(session, event) -> ExecutionOrigin | None:
     return source
 
 
-def origin_store(session, event):
-    source = source_for(session, event)
-    return source.root if source is not None else session.store
-
-
-def origin_workspace(session, event):
-    source = source_for(session, event)
-    return source.workspace if source is not None else session.cwd
-
-
 def origin_key(session, event) -> str:
     """Invalidate cached authorization only when its explicit policy changes."""
     source = source_for(session, event)

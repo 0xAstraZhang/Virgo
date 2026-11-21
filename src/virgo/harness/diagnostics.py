@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 import threading
@@ -17,7 +16,6 @@ from .diagnostic_store import connect
 
 _ERROR_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _UNSAVED_SEQUENCE = 2**63 - 1
-_LEGACY = re.compile(r"harness-[\w-]+\.jsonl(?:\.\d+)?\Z")
 
 
 def _json(record: dict) -> str:
@@ -34,21 +32,18 @@ def _occurred(record, fallback_time=None):
 
 
 def _fallback_record(details, error) -> dict:
-    raw = details if issubclass(type(details), dict) else {}
-    record = capture_error(safe_text(dict.get(raw, "message", "Diagnostic metadata could not be read.")),
-                           phase=safe_text(dict.get(raw, "phase", "diagnostics.record")))
-    error_id = dict.get(raw, "error_id")
+    raw = details if isinstance(details, dict) else {}
+    try:
+        message = safe_text(raw.get("message", "Diagnostic metadata could not be read."))
+        phase = safe_text(raw.get("phase", "diagnostics.record"))
+        error_id = raw.get("error_id")
+    except Exception:
+        message, phase, error_id = "Diagnostic metadata could not be read.", "diagnostics.record", None
+    record = capture_error(message, phase=phase)
     if isinstance(error_id, str) and _ERROR_ID.fullmatch(error_id):
         record["error_id"] = error_id
     record["logging_error"] = safe_text(error)
     return record
-
-
-def _warn(warnings, message):
-    if len(warnings) < 10:
-        warnings.append(message)
-    elif len(warnings) == 10:
-        warnings.append("Additional import warnings omitted.")
 
 
 class DiagnosticLog:
@@ -72,9 +67,6 @@ class DiagnosticLog:
                     );
                     CREATE INDEX IF NOT EXISTS errors_time ON errors(occurred DESC, seq DESC);
                     CREATE INDEX IF NOT EXISTS errors_instance ON errors(instance, seq);
-                    CREATE TABLE IF NOT EXISTS imports (
-                        path TEXT PRIMARY KEY, identity TEXT NOT NULL, offset INTEGER NOT NULL
-                    );
                 """)
             except BaseException:
                 db.close()
@@ -100,8 +92,6 @@ class DiagnosticLog:
 
     def _insert(self, db, record, *, instance, fallback_time=None):
         record = dict(record)
-        record.pop("log_pattern", None)
-        record.pop("log_expired", None)
         record["log_path"] = str(self.path)
         db.execute("INSERT OR IGNORE INTO errors(error_id, occurred, instance, payload) VALUES (?, ?, ?, ?)",
                    (record["error_id"], _occurred(record, fallback_time), instance, _json(record)))
@@ -135,7 +125,6 @@ class DiagnosticLog:
                 if previous is not None:
                     return previous
                 record.pop("log_path", None)
-                record.pop("log_pattern", None)
                 record["logging_error"] = safe_text(error)
                 record["timestamp"] = _occurred(record)
                 emergency_write(record, error)
@@ -243,59 +232,3 @@ class DiagnosticLog:
             return {"records": [item[2] for item in items[:limit]],
                     "next_cursor": items[limit - 1][1] if len(items) > limit else None,
                     "storage_unavailable": storage_unavailable}
-
-    def import_legacy(self) -> list[str]:
-        """Import complete lines in resumable batches, without editing the source files."""
-        if not self.path.parent.exists():
-            return []
-        warnings = []
-        for path in sorted(self.path.parent.iterdir()):
-            if not _LEGACY.fullmatch(path.name) or path.is_symlink() or not path.is_file():
-                continue
-            try:
-                self._import_file(path, warnings)
-            except Exception as error:
-                _warn(warnings, f"{path.name}: {safe_text(error)}")
-        return warnings
-
-    def _import_file(self, path, warnings):
-        with path.open("rb") as source:
-            info = os.fstat(source.fileno())
-            identity = f"{info.st_dev}:{info.st_ino}"
-            fallback_time = datetime.fromtimestamp(info.st_mtime, UTC)
-            while True:
-                with self._lock:
-                    db = self._db()
-                    db.execute("BEGIN IMMEDIATE")
-                    try:
-                        saved = db.execute("SELECT identity, offset FROM imports WHERE path=?", (path.name,)).fetchone()
-                        offset = saved[1] if saved and saved[0] == identity and saved[1] <= os.fstat(source.fileno()).st_size else 0
-                        source.seek(offset)
-                        finished = False
-                        for _ in range(100):
-                            line = source.readline(4 * 1024 * 1024)
-                            if not line or not line.endswith(b"\n"):
-                                if len(line) == 4 * 1024 * 1024:
-                                    while line and not line.endswith(b"\n"):
-                                        line = source.readline(4 * 1024 * 1024)
-                                    if line:
-                                        offset = source.tell()
-                                        _warn(warnings, f"{path.name}: oversized record skipped")
-                                        continue
-                                finished = True
-                                break
-                            offset = source.tell()
-                            try:
-                                record = sanitize(json.loads(line))
-                                if not isinstance(record, dict) or not isinstance(record.get("error_id"), str) or not _ERROR_ID.fullmatch(record["error_id"]):
-                                    raise ValueError("invalid diagnostic record")
-                                self._insert(db, record, instance="legacy", fallback_time=fallback_time)
-                            except (ValueError, TypeError, UnicodeError) as error:
-                                _warn(warnings, f"{path.name} at byte {offset}: {safe_text(error)}")
-                        db.execute("INSERT OR REPLACE INTO imports VALUES (?, ?, ?)", (path.name, identity, offset))
-                        db.execute("COMMIT")
-                    except BaseException:
-                        db.execute("ROLLBACK")
-                        raise
-                if finished:
-                    break

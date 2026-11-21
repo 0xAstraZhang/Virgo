@@ -13,40 +13,41 @@ import errno
 import ntpath
 import os
 import re
-import stat
 from ctypes import wintypes as w
 from pathlib import Path
 
-DWORD = ctypes.c_uint32
-UINT = ctypes.c_uint
-BOOL = ctypes.c_int32
+from ._win32 import (
+    BOOL,
+    DWORD,
+    UINT,
+    bind_api,
+)
+from ._win32 import (
+    is_reparse_point as _is_reparse_point,
+)
+from ._win32 import (
+    kernel32 as _kernel32,
+)
+
 DRIVE_FIXED = 3
-FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 FILE_PERSISTENT_ACLS = 0x00000008
 
-_LINK_REPARSE_TAGS = frozenset({
-    getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
-    getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003),
-})
-
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-_GetDriveTypeW = _kernel32.GetDriveTypeW
-_GetDriveTypeW.argtypes = [w.LPCWSTR]
-_GetDriveTypeW.restype = UINT
-
-_GetVolumeInformationW = _kernel32.GetVolumeInformationW
-_GetVolumeInformationW.argtypes = [
-    w.LPCWSTR,
-    w.LPWSTR,
-    DWORD,
-    ctypes.POINTER(DWORD),
-    ctypes.POINTER(DWORD),
-    ctypes.POINTER(DWORD),
-    w.LPWSTR,
-    DWORD,
-]
-_GetVolumeInformationW.restype = BOOL
+_GetDriveTypeW = bind_api(_kernel32, "GetDriveTypeW", [w.LPCWSTR], UINT)
+_GetVolumeInformationW = bind_api(
+    _kernel32,
+    "GetVolumeInformationW",
+    [
+        w.LPCWSTR,
+        w.LPWSTR,
+        DWORD,
+        ctypes.POINTER(DWORD),
+        ctypes.POINTER(DWORD),
+        ctypes.POINTER(DWORD),
+        w.LPWSTR,
+        DWORD,
+    ],
+    BOOL,
+)
 
 _RESERVED_DEVICE_RE = re.compile(
     r"(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])",
@@ -88,14 +89,7 @@ def normalize_path(path: str | os.PathLike[str]) -> str:
 
 def is_reparse_point(path: str | os.PathLike[str]) -> bool:
     """Return True if ``path`` itself is a symlink or directory junction (ignoring OneDrive cloud tags)."""
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return False
-    if not (getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
-        return False
-    tag = getattr(info, "st_reparse_tag", 0)
-    return tag in _LINK_REPARSE_TAGS if tag else True
+    return _is_reparse_point(path, link_only=True)
 
 
 def verify_local_ntfs(

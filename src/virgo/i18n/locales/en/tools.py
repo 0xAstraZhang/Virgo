@@ -3,8 +3,8 @@
 MESSAGES = {
     "tools.agent.description": "Delegate a self-contained task to a sub-agent with a fresh context. It cannot "
     "see this conversation, so include the needed context; only its final answer "
-    "comes back. Several calls in one response run in parallel. Set background=true "
-    "to keep working while it runs. Children inherit the originating task resource boundary.",
+    "comes back. Several calls in one response run in parallel. Children inherit the originating task execution "
+    "boundary. Set background=true to keep working while it runs.",
     "tools.agent.label": "Agent",
     "tools.agent.parameters.properties.description.description": "Short task label",
     "tools.agent.parameters.properties.prompt.description": "Complete instructions for the sub-agent",
@@ -21,12 +21,6 @@ MESSAGES = {
     "tools.ask_user.parameters.properties.options.items.properties.label.description": "Short choice text",
     "tools.ask_user.parameters.properties.question.description": "The complete question, understandable on its "
     "own",
-    "tools.bash.description": "Run a shell command in the working directory (non-interactive; stdin is closed). "
-    "Bash/Zsh stop on unhandled command or pipeline failures; handle expected nonzero "
-    "statuses explicitly. Output is limited to the last 2000 lines / 50KB; longer "
-    "output is saved to a file.",
-    "tools.bash.label": "Bash",
-    "tools.bash.parameters.properties.timeout.description": "Seconds (default 300, max 3600)",
     "tools.diagnostic_get.description": "Read retained diagnostic evidence by exact error_id already provided "
     "to this runtime. Sections: summary, causes, trace, stderr, attempts "
     "(retained failed attempts for the same model call), related "

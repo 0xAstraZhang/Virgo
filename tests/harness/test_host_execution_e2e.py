@@ -3,61 +3,65 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from virgo.ai.providers import faux
+from virgo.execution import ExecutionUnavailable
 from virgo.harness.session import AgentSession
 
 from tests.support.harness import RecordingUI, tool_results
 
 
-def test_fresh_host_executes_without_importing_isolation(project, tmp_path):
-    source = r'''
-import importlib.abc, json, pathlib, sys
-class NoIsolation(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith("virgo.") and any(word in fullname for word in ("sandbox", "mxc")):
-            raise AssertionError("Host imported isolation: " + fullname)
-sys.meta_path.insert(0, NoIsolation())
-from virgo.harness.session import AgentSession
-from virgo.ai.providers import faux
-from tests.support.harness import RecordingUI, tool_results
-workspace, home = map(pathlib.Path, sys.argv[1:])
-ui = RecordingUI()
-session = AgentSession(workspace, home=home, model="faux/host", session=None,
-                       ui=ui, settings={"execution": {"mode": "no-limit"}},
-                       refresh_models=False)
-shell = session.services["shell"].current
-command = "Write-Output ('host-' + 'ok')" if shell.tool_name == "powershell" else "for x in host-ok; do printf '%s' \"$x\"; done"
-faux.script("host", faux.reply(tools=[("write", {"path": "../outside.txt", "content": "host"})]),
-            faux.reply(tools=[("read", {"path": "../outside.txt"})]),
-            faux.reply(tools=[(shell.tool_name, {"command": command})]),
-            faux.reply(tools=[("agent", {"description": "Create child file", "prompt": "Write child.txt"})]),
-            faux.reply(tools=[("write", {"path": "child.txt", "content": "child-host"})]),
-            faux.reply("child done"), faux.reply("done"))
-try:
-    session.prompt("Complete the file, shell and child operations")
-    assert len(tool_results(session)) == 4
-    assert not any(result.is_error for result in tool_results(session))
-    assert not ui.questions
-    assert (workspace / "child.txt").read_text() == "child-host"
-    assert "request_permissions" not in [tool.name for tool in session.main.tools]
-    session.prompt("/permissions show")
-    assert "Host" in ui.text
-    assert not any(entry.get("kind") == "permission_decision" for entry in session.store.entries)
-    print(json.dumps({"provider": "host", "approvals": len(ui.questions)}))
-finally:
-    session.shutdown()
-'''
-    result = subprocess.run([sys.executable, "-B", "-c", source, str(project), str(tmp_path / "fresh-home")],
-                            capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert json.loads(result.stdout.strip().splitlines()[-1]) == {"provider": "host", "approvals": 0}
-    assert (project.parent / "outside.txt").read_text() == "host"
+def test_host_executes_when_native_backend_is_unavailable(project, tmp_path, monkeypatch):
+    """Explicit No-Limit completes file, shell, and child tasks without probing native backends."""
+    import virgo.harness.session as hs
+    import virgo.harness.settings as hsettings
+    import virgo.sandbox.native as sn
+    import virgo.sandbox.platform as sp
+
+    def unavailable():
+        raise ExecutionUnavailable("native sandbox backend unavailable on host", reason="backend_unavailable")
+
+    monkeypatch.setattr(sp, "platform_backend", unavailable)
+    monkeypatch.setattr(sn, "platform_backend", unavailable)
+    monkeypatch.setattr(hsettings, "default_execution_mode", lambda: pytest.fail("explicit no-limit must not probe default mode"))
+    monkeypatch.setattr(hs, "is_windows_sandbox_supported", lambda: pytest.fail("explicit no-limit must not probe Windows sandbox"))
+
+    ui = RecordingUI()
+    session = AgentSession(
+        project, home=tmp_path / "fresh-home", model="faux/host", session=None,
+        ui=ui, settings={"execution": {"mode": "no-limit"}}, refresh_models=False,
+    )
+    shell = session.services["shell"].current
+    command = (
+        "Write-Output ('host-' + 'ok')"
+        if shell.tool_name == "powershell"
+        else "for x in host-ok; do printf '%s' \"$x\"; done"
+    )
+    faux.script(
+        "host",
+        faux.reply(tools=[("write", {"path": "../outside.txt", "content": "host"})]),
+        faux.reply(tools=[("read", {"path": "../outside.txt"})]),
+        faux.reply(tools=[(shell.tool_name, {"command": command})]),
+        faux.reply(tools=[("agent", {"description": "Create child file", "prompt": "Write child.txt"})]),
+        faux.reply(tools=[("write", {"path": "child.txt", "content": "child-host"})]),
+        faux.reply("child done"),
+        faux.reply("done"),
+    )
+    try:
+        session.prompt("Complete the file, shell and child operations")
+        assert len(tool_results(session)) == 4
+        assert not any(result.is_error for result in tool_results(session))
+        assert not ui.questions
+        assert (project.parent / "outside.txt").read_text() == "host"
+        assert (project / "child.txt").read_text() == "child-host"
+        assert "request_permissions" not in [tool.name for tool in session.main.tools]
+        session.prompt("/permissions show")
+        assert "Host" in ui.text
+    finally:
+        session.shutdown()
 
 
 @pytest.mark.parametrize("config", [

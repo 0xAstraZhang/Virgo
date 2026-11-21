@@ -11,28 +11,34 @@ RUNNER = Path(__file__).resolve().parents[1] / "compare_tests.py"
 def main():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        for name in ('tests/ai/test_auth.py', 'tests/ai/test_models.py', 'test_serial.py', 'tests/test_ignored.py'):
+        serial_file = "tests/harness/test_diagnostic_history.py"
+        for name in ("tests/ai/test_auth.py", "tests/ai/test_models.py", serial_file):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('def test_' + path.stem + '(): assert True\n')
-        def run(mode, expected, *extra):
+            path.write_text("def test_" + path.stem + "(): assert True\n")
+
+        def run(mode, expected):
             output = root / mode
-            result = subprocess.run([sys.executable, str(RUNNER), 'run', '--project', str(root),
-                '--output', str(output), '--platform', 'local', '--label', 'head', '--sha', 'test',
-                '--execution', mode, *extra], capture_output=True, text=True)
+            result = subprocess.run([
+                sys.executable, str(RUNNER), "run", "--project", str(root),
+                "--output", str(output), "--platform", "local", "--sha", "test",
+                "--execution", mode,
+            ], capture_output=True, text=True)
             assert result.returncode == expected, result.stdout + result.stderr
-            return json.loads((output / 'results.json').read_text())
-        before = run('serial', 0, '--ignore', 'tests/test_ignored.py')
-        after = run('parallel', 0, '--ignore', 'tests/test_ignored.py')
-        assert before['tests'] == after['tests'] and len(after['tests']) == 3
-        assert 'test_test_ignored' not in after['tests']
-        (root / 'tests/ai/test_auth.py').write_text('def test_failure():\n    assert False, "diagnostic sentinel"\n')
-        assert run('parallel', 1, '--ignore', 'tests/test_ignored.py')['counts']['failed'] == 1
-        details = (root / 'parallel/failures.md').read_text()
-        assert 'diagnostic sentinel' in details and 'test_auth.py' in details and 'test_failure' in details
-        (root / 'test_serial.py').write_text('raise RuntimeError("collection sentinel")\n')
-        assert not run('parallel', 2, '--ignore', 'tests/test_ignored.py')['complete']
-    print('Parallel CLI acceptance passed')
+            return json.loads((output / "results.json").read_text())
+
+        before = run("serial", 0)
+        after = run("parallel", 0)
+        assert before["tests"] == after["tests"] and len(after["tests"]) == 3
+        assert (root / "parallel" / "serial.xml").exists(), "manifest serial file must run in serial shard"
+        assert (root / "parallel" / "parallel-0.xml").exists()
+        (root / "tests/ai/test_auth.py").write_text('def test_failure():\n    assert False, "diagnostic sentinel"\n')
+        assert run("parallel", 1)["counts"]["failed"] == 1
+        details = (root / "parallel/failures.md").read_text()
+        assert "diagnostic sentinel" in details and "test_auth.py" in details and "test_failure" in details
+        (root / serial_file).write_text('raise RuntimeError("collection sentinel")\n')
+        assert not run("parallel", 2)["complete"]
+    print("Parallel CLI acceptance passed")
 
 
 if __name__ == '__main__':

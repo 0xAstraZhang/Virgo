@@ -9,8 +9,5 @@ MESSAGES = {
     "language.busy": "Cannot switch languages while the agent is running. Try again when it finishes.",
     "language.save_failed": "Language was not changed because the preference could not be saved: {error}",
     "common.unavailable": "unavailable",
-    "common.cancelled": "Cancelled.",
-    "ui.base.back": "Back",
-    "ui.base.multiline_help": "Finish with a line containing .; /cancel cancels; . alone keeps existing content.",
     "sandbox.host_execution": "Host · OS permissions",
 }

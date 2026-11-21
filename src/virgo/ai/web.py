@@ -53,15 +53,12 @@ def offers_for(model: Model) -> list[WebOffer]:
 
 
 def declarations(context) -> list[dict]:
-    """Legacy Context.web_search remains accepted, with no duplicate wire declaration."""
-    result = copy.deepcopy(context.web_tools)
-    if context.web_search and context.web_search not in result:
-        result.append(copy.deepcopy(context.web_search))
-    return result
+    """Return detached copies of hosted web tool declarations."""
+    return copy.deepcopy(context.web_tools)
 
 
 def started(message) -> bool:
-    return message.native_started or message.search_started
+    return bool(message.native_started)
 
 
 def native_event(data: dict) -> dict | None:

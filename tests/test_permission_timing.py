@@ -54,7 +54,7 @@ def test_only_prelaunch_denials_allow_remaining_measurements(tmp_path, monkeypat
     monkeypatch.setattr(measure_permission_modes, 'issue_operation', fail)
 
     def worker(command, expected_operations):
-        args = SimpleNamespace(mode='no-limit', contract='current', repeat=expected_operations - 1)
+        args = SimpleNamespace(mode='no-limit', repeat=expected_operations - 1)
         return measure_permission_modes.read_worker_record(json.dumps(measure_permission_modes.sample(args)), expected_operations)
 
     monkeypatch.setattr(measure_permission_modes, 'run_worker', worker)
@@ -71,26 +71,26 @@ def test_only_prelaunch_denials_allow_remaining_measurements(tmp_path, monkeypat
         assert [r['status'] for r in remaining] == ['not_run', 'not_run']
 
 
-def test_paired_comparison_requires_clean_complete_same_workload():
-    import hashlib
+def test_budget_mode_stops_sampling_when_worker_cleanup_is_unknown(tmp_path, monkeypatch):
+    calls = []
 
-    from ci.compare_permission_timing import BASELINE, comparison
+    def worker(command, expected_operations):
+        calls.append(command)
+        return {'success': False, 'status': 'timeout', 'cleanup': 'unknown', 'operations': []}
 
-    mode = 'workspace-edit'
-    sample = {'success': True, 'shell_network_allowed': True, 'edit_actor': 'virgo_file_tool', 'approval_questions': [],
-              'operations': [{'success': True}, {'success': True}], 'cold_start_ms': 4.0,
-              'first_command_ms': 1.0, 'short_sequence_ms': 3.0, 'edit_to_test_ms': 2.0}
-    base = {'platform': 'test', 'python': 'test', 'script_sha256': 'script', 'workload': 'test',
-            'planned_samples': 1, 'samples': [sample], 'repeats': 1, 'status': 'finished',
-            'mode': mode, 'contract': 'original', 'revision': BASELINE,
-            'tracked_diff_sha256': hashlib.sha256(b'').hexdigest()}
-    head = {**base, 'revision': 'head', 'contract': 'current', 'samples': [{**sample, 'cold_start_ms': 2.0}]}
-    compare = comparison(head, base, 'head', mode)
-    assert compare['metrics']['cold_start_ms']['head_over_baseline'] == 0.5
-    for change in ({'revision': 'old'}, {'script_sha256': 'other'}, {'samples': []},
-                   {'tracked_diff_sha256': 'dirty'}, {'samples': [{**sample, 'approval_questions': ['allow?']}]}):
-        with pytest.raises(ValueError):
-            comparison({**head, **change}, base, 'head', mode)
+    output = tmp_path / 'budget.json'
+    monkeypatch.setattr(measure_permission_modes, 'run_worker', worker)
+    monkeypatch.setattr(
+        sys, 'argv',
+        ['measure_permission_modes', '--mode', 'no-limit', '--samples', '2', '--repeat', '1',
+         '--realistic-files', '10', '--check-budgets', '--output', str(output)],
+    )
+    assert measure_permission_modes.main() == 1
+    assert len(calls) == 1
+    report = json.loads(output.read_bytes())
+    assert report['status'] == 'stopped'
+    assert report['small_samples'][1]['status'] == 'not_run'
+    assert all(sample['status'] == 'not_run' for sample in report['realistic_samples'])
 
 
 def test_realistic_workspace_fixture_and_scale_budgets(tmp_path):

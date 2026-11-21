@@ -31,4 +31,4 @@ Virgo uses **Standard AppContainer** (`src/virgo/sandbox/windows_sandbox.py`, `w
    - **`git init` / outside-repo `git` under `C:\Users`**: Git's `strbuf_realpath()` resolves the virtual drive back to `C:\Users\...`, where ancestor `stat()` fails with `EACCES`. Inside an existing Git repository, `git status`, `git diff`, `git log`, `git add`, `git commit`, `git checkout`, and `git ls-remote` work normally.
    - **`SE_DACL_PROTECTED` workspace subdirectories**: Subdirectories with inheritance disabled before session setup are skipped by root grant (inaccessible inside AppContainer); subdirectories whose inheritance is disabled *after* setup retain an explicit SID until explicitly revoked (though profile deletion invalidates that SID for future sessions).
 
-See also: [Execution boundaries](sandbox.md) · [WSL2 setup](wsl2.md) · [Native execution acceptance](../development/execution-acceptance.md) · [Stage 1 prototype validation report](../development/windows-appcontainer-prototype.md)
+See also: [Execution boundaries](sandbox.md) · [WSL2 setup](wsl2.md) · [Native execution acceptance](../development/execution-acceptance.md)
