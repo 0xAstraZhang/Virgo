@@ -19,6 +19,27 @@ COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" 
 ENTRY_POINTS = [[str(COMMAND)], [sys.executable, "-m", "virgo"]]
 
 
+def test_windows_home_workspace_selection(tmp_path, monkeypatch):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(sys, "platform", "win32")
+    seen = []
+    monkeypatch.setattr(cli, "AgentSession", lambda cwd, **kwargs: seen.append(Path(cwd).resolve()))
+    monkeypatch.setattr("virgo.cli.repl.run_repl", lambda *args: None)
+    workspace = tmp_path / "VirgoWorkspace"
+    with pytest.raises(SystemExit) as result:
+        cli.main(["--help"])
+    assert result.value.code == 0 and not workspace.exists()
+    assert cli.main(["--ui", "plain"]) == 0
+    assert workspace.is_dir()
+    assert cli.main(["--ui", "plain"]) == 0
+    assert cli.main(["--ui", "plain", "-C", "."]) == 0
+    monkeypatch.chdir(workspace)
+    assert cli.main(["--ui", "plain"]) == 0
+    assert seen == [workspace, workspace, tmp_path, workspace]
+
+
 @pytest.mark.parametrize(
     "value",
     [

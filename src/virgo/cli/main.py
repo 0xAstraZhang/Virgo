@@ -136,15 +136,26 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     bootstrap.add_argument("--language")
-    bootstrap.add_argument("-C", "--cwd", default=".")
+    bootstrap.add_argument("-C", "--cwd")
     early, _ = bootstrap.parse_known_args(argv)
+    cwd = early.cwd if early.cwd is not None else "."
+    use_home_workspace = False
     try:
-        language = early.language or Settings.startup_language(Paths(Path(early.cwd)))
+        if early.cwd is None and sys.platform == "win32":
+            home = Path.home().resolve()
+            if Path.cwd().resolve() == home:
+                workspace = home / "VirgoWorkspace"
+                if workspace.resolve() != workspace:
+                    raise ValueError(f"Default workspace points to another location: {workspace}. Use -C to select it explicitly.")
+                cwd = str(workspace)
+                use_home_workspace = True
+        language = early.language or Settings.startup_language(Paths(Path(cwd)))
         t = Translator(language)
     except (OSError, ValueError) as error:
-        _startup_error(error, early.cwd)
+        _startup_error(error, cwd)
         return 2
     parser = build_parser(t.language)
+    parser.set_defaults(cwd=cwd)
     args = parser.parse_args(argv)
     fullscreen = False
     if not args.print and args.ui != "plain":
@@ -165,6 +176,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     session_arg: str | Path | None = "new"
+    if use_home_workspace:
+        try:
+            Path(cwd).mkdir(exist_ok=True)
+        except OSError as error:
+            _startup_error(error, cwd, t=t)
+            return 2
     pick_session = False
     if args.no_session:
         session_arg = None
