@@ -105,3 +105,19 @@ def test_message_diagnostics_round_trip_and_old_messages_remain_readable():
     legacy = message_to_dict(original)
     del legacy["error_details"]
     assert message_from_dict(legacy).error_details is None
+
+
+def test_legacy_search_started_deserializes_into_native_started():
+    base = message_to_dict(AssistantMessage(content=[TextContent("ok")]))
+    assert "search_started" not in base
+
+    # Pre-refactor sessions persisted search_started=False on every assistant message.
+    restored_false = message_from_dict({**base, "search_started": False})
+    assert restored_false.native_started is False
+
+    # True search_started is preserved in native_started, even when native_started was absent or False.
+    without_native = {k: v for k, v in base.items() if k != "native_started"}
+    assert message_from_dict({**without_native, "search_started": True}).native_started is True
+    assert message_from_dict({**base, "native_started": False, "search_started": True}).native_started is True
+    assert message_from_dict({**base, "native_started": True, "search_started": False}).native_started is True
+    assert "search_started" not in message_to_dict(restored_false)

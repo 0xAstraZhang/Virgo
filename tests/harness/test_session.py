@@ -371,3 +371,29 @@ def test_post_tool_hook_feedback_keeps_terminate(make_session, python_command):
     result = next(m for m in session.main.messages if isinstance(m, ToolResultMessage))
     assert result.text().endswith("\n\n[hook feedback] noted")
     assert len(CALLS["test"]) == 1  # terminate survived the hook: no follow-up model call
+
+
+def test_reopening_legacy_session_with_search_started_succeeds(make_session, project):
+    session = make_session(faux.reply("first"), faux.reply("second"), persist=True)
+    session.prompt("hello")
+    session.prompt("search")
+    path = session.store.path
+    assert path is not None
+    # Simulate pre-refactor JSONL history where every assistant record contained `search_started`.
+    rewritten = []
+    assistant_index = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if record.get("type") == "message" and record["message"].get("role") == "assistant":
+            record["message"]["search_started"] = assistant_index == 1
+            if assistant_index == 1:
+                record["message"].pop("native_started", None)
+            assistant_index += 1
+        rewritten.append(json.dumps(record))
+    path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+    restored = SessionStore.load(path)
+    messages, _ = restored.build_context()
+    assistants = [m for m in messages if isinstance(m, AssistantMessage)]
+    assert [m.text() for m in assistants] == ["first", "second"]
+    assert [m.native_started for m in assistants] == [False, True]

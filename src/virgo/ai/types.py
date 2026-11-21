@@ -161,6 +161,9 @@ def message_from_dict(d: dict) -> Message:
     if role == "user":
         return UserMessage(**d)
     if role == "assistant":
+        if "search_started" in d:
+            legacy_search_started = bool(d.pop("search_started"))
+            d["native_started"] = bool(d.get("native_started", False)) or legacy_search_started
         d["usage"] = Usage(**(d.get("usage") or {}))
         return AssistantMessage(**d)
     if role == "toolResult":
