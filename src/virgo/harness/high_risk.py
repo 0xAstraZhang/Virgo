@@ -102,11 +102,19 @@ def _split_segments(command: str, *, split_pipes: bool = True) -> list[str]:
     return segments
 
 
+def _strip_outer_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        return token[1:-1]
+    return token
+
+
 def _tokenize(segment: str) -> list[str]:
     try:
         tokens = shlex.split(segment, posix=os.name != "nt")
     except ValueError:
         tokens = segment.split()
+    if os.name == "nt":
+        tokens = [_strip_outer_quotes(tok) for tok in tokens]
     # Strip leading env assignments (FOO=bar) and sudo/env/command wrappers.
     idx = 0
     while idx < len(tokens):
@@ -166,7 +174,7 @@ def _check_git(tokens: list[str], segment: str) -> HighRiskMatch | None:
 
 
 def _outside_workspace(raw_target: str, cwd: Path, workspace: Path) -> bool:
-    text = raw_target.strip()
+    text = _strip_outer_quotes(raw_target.strip()).strip()
     if not text:
         return False
     if text in {"/", "/*", "~", "~/", "$HOME", "${HOME}", "%USERPROFILE%"} or text.startswith(("$HOME/", "${HOME}/", "~/")):
