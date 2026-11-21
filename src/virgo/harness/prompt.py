@@ -70,39 +70,20 @@ def _project_text(path: Path, workspace: Path, *, errors: str = "strict", access
             return None
         except (OSError, RuntimeError):
             return None
-    directory = descriptor = None
     try:
-        if os.name == "nt":
-            # Automatic context reads run in the broker. Retain their
-            # application-level path boundary without requiring POSIX flags.
-            if any(workspace.joinpath(*parts[:index]).is_symlink() for index in range(1, len(parts) + 1)):
-                return None
-            if not path.resolve(strict=True).is_relative_to(workspace) or not path.is_file():
-                return None
-            return path.read_text(encoding="utf-8", errors=errors)
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        directory = os.open(workspace, flags)
-        for part in parts[:-1]:
-            child = os.open(part, flags, dir_fd=directory)
-            os.close(directory)
-            directory = child
-        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        if any(workspace.joinpath(*parts[:index]).is_symlink() for index in range(1, len(parts) + 1)):
             return None
-        with os.fdopen(descriptor, "r", encoding="utf-8", errors=errors) as stream:
-            descriptor = None
-            return stream.read()
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        if not path.resolve(strict=True).is_relative_to(workspace):
+            return None
+        return path.read_text(encoding="utf-8", errors=errors)
     except UnicodeDecodeError as error:
         if on_warning is not None:
             on_warning(f"Skipping {path}: invalid UTF-8 ({error})")
         return None
     except (OSError, RuntimeError):
         return None
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        if directory is not None:
-            os.close(directory)
 
 
 def context_files(cwd: Path, user_dir: Path, *, workspace: Path | None = None, access=None,

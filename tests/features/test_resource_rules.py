@@ -1,4 +1,4 @@
-"""Exercise persistent operation grants through the session and the permission dialog."""
+"""Exercise persistent resource grants through the session and the permission dialog."""
 from __future__ import annotations
 
 import json
@@ -6,18 +6,23 @@ import threading
 
 from virgo.agent.types import ToolContext
 from virgo.ai.providers import faux
-from virgo.harness.resource_rules import ResourceRules, operation_id
+from virgo.harness.resource_rules import ResourceRules
 
-from tests.support.harness import RecordingUI, tool_call_event, tool_results
+from tests.support.harness import RecordingUI, tool_results
 
 
-def ask(session, tool, arguments, permissions, runtime=None):
+def ask(session, tool=None, arguments=None, permissions=None, runtime=None):
     runtime = runtime or session.main
     context = ToolContext("permission", runtime.cwd, threading.Event(), runtime.name, origin=runtime.origin)
-    return session.tool("request_permissions").execute({
-        "tool": tool, "arguments": arguments, "permissions": permissions,
+    payload = {
+        "permissions": permissions or {},
         "reason": "Read the selected dataset and write the requested results",
-    }, context)
+    }
+    if tool is not None:
+        payload["tool"] = tool
+    if arguments is not None:
+        payload["arguments"] = arguments
+    return session.tool("request_permissions").execute(payload, context)
 
 
 def test_always_allow_survives_restart_and_can_be_revoked_from_no_limit(broker_session, project, tmp_path):
@@ -28,13 +33,18 @@ def test_always_allow_survives_restart_and_can_be_revoked_from_no_limit(broker_s
     assert not target.exists()
     assert str(project) in first.ui.questions[0]
 
-    restored = broker_session(faux.reply(tools=[("write", args)]), faux.reply("done"), preset="read-only")
-    restored.prompt("Write the exact result")
-    assert not tool_results(restored)[-1].is_error and target.read_text() == "result"
+    # Different content on the same granted path succeeds across restarts without re-prompting.
+    restored = broker_session(
+        faux.reply(tools=[("write", {"path": str(target), "content": "updated-result"})]),
+        faux.reply("done"),
+        preset="read-only",
+    )
+    restored.prompt("Write the updated result")
+    assert not tool_results(restored)[-1].is_error and target.read_text() == "updated-result"
     assert not restored.ui.questions
     restored.prompt("/permissions no-limit")
     restored.prompt("/permissions grants")
-    assert str(target) in restored.ui.lines[-1] and "read-only" in restored.ui.lines[-1]
+    assert str(target.resolve()) in restored.ui.lines[-1] and "read-only" in restored.ui.lines[-1]
     identifier = restored.ui.lines[-1].split()[0]
     restored.prompt(f"/permissions revoke {identifier}")
     assert not ResourceRules(first.paths.user).list(str(project))
@@ -43,7 +53,9 @@ def test_always_allow_survives_restart_and_can_be_revoked_from_no_limit(broker_s
     assert len(later.ui.questions) == 1
 
 
-def test_saved_command_scope_and_incremental_resource_prompt(broker_session, project, tmp_path):
+def test_saved_resource_scope_reuses_across_commands_and_isolates_projects_and_modes(
+    broker_session, project, tmp_path,
+):
     directory = tmp_path / "testdata"
     directory.mkdir()
     session = broker_session(preset="read-only", ui=RecordingUI(["a", "y"]))
@@ -52,14 +64,20 @@ def test_saved_command_scope_and_incremental_resource_prompt(broker_session, pro
     reads = {"read_paths": [str(directory)]}
     assert not ask(session, shell.name, command, reads).is_error
     assert not ask(session, shell.name, command, reads).is_error
+    # Incremental write_paths request only prompts for write_paths, not already-granted read_paths.
     assert not ask(session, shell.name, command, reads | {"write_paths": [str(directory)]}).is_error
     assert len(session.ui.questions) == 2
     assert "read_paths" in session.ui.questions[0]
     assert "write_paths" in session.ui.questions[1] and "read_paths" not in session.ui.questions[1]
     assert str(project) in session.ui.questions[1]
 
+    # Different command arguments targeting the same granted path reuse the resource grant without prompting.
     for changed in ("pytest -q -x", "pytest -q && pytest"):
-        assert ask(session, shell.name, {"command": changed}, reads).is_error
+        assert not ask(session, shell.name, {"command": changed}, reads).is_error
+    # Omitting tool/arguments on request_permissions is also supported.
+    assert not ask(session, None, None, reads).is_error
+    assert len(session.ui.questions) == 2
+
     child = session.create_runtime("worker", "subagent", parent=session.main, approval_policy="never")
     try:
         assert ask(session, shell.name, command, reads, runtime=child).is_error
@@ -80,12 +98,10 @@ def test_project_settings_cannot_supply_user_grants(broker_session, project, tmp
     directory.mkdir()
     (directory / "settings.json").write_text(json.dumps({"resourceGrants": ["allow"]}))
     fake_store = ResourceRules(directory)
+    fake_store.allow(str(project), "read-only", [("read_paths", str(resource.resolve()))])
     session = broker_session(preset="read-only")
-    event = tool_call_event(session, "read", {"path": str(resource)})
-    fake_store.allow((str(project), "read-only", str(project), operation_id(event)), [("read_paths", str(resource))])
     assert ask(session, "read", {"path": str(resource)}, {"read_paths": [str(resource)]}).is_error
     assert len(session.ui.questions) == 1
-
 
 
 def test_read_only_broker_output_leaves_the_project_untouched(broker_session, project):

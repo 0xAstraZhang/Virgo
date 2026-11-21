@@ -6,6 +6,7 @@ precedence with a boolean network toggle.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -14,7 +15,130 @@ from typing import Literal
 Access = Literal["read", "write"]
 Effect = Literal["allow", "deny"]
 
-PROTECTED_NAMES = (".git", ".virgo", "AGENTS.md", "CLAUDE.md")
+PROTECTED_NAMES = (".virgo",)
+
+PRIVATE_HOME_RELATIVES = (
+    ".virgo",
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".kube",
+    ".azure",
+    ".config/gcloud",
+    ".config/gh",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".docker/config.json",
+)
+
+_BLOCKED_ENV_EXACT = frozenset({
+    "VIRGO_HOME",
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+    "GPG_AGENT_INFO",
+    "BASH_ENV",
+    "ENV",
+    "PROMPT_COMMAND",
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "NETRC",
+    "NPM_TOKEN",
+    "NODE_AUTH_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITLAB_TOKEN",
+    "GLAB_TOKEN",
+    "HF_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "PYPI_API_TOKEN",
+    "UV_PUBLISH_TOKEN",
+    "POETRY_PYPI_TOKEN_PYPI",
+    "CARGO_REGISTRY_TOKEN",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "KUBECONFIG",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+})
+
+_BLOCKED_ENV_PREFIXES = (
+    "VIRGO_",
+    "OPENAI_",
+    "ANTHROPIC_",
+    "GEMINI_",
+    "GOOGLE_API_",
+    "VERTEX_",
+    "AZURE_",
+    "AWS_",
+    "CLOUDFLARE_",
+    "DEEPSEEK_",
+    "DASHSCOPE_",
+    "MOONSHOT_",
+    "ZHIPUAI_",
+    "MISTRAL_",
+    "COHERE_",
+    "GROQ_",
+    "XAI_",
+    "TOGETHER_",
+    "FIREWORKS_",
+    "OPENROUTER_",
+    "REPLICATE_",
+    "SUPABASE_",
+    "STRIPE_",
+    "SLACK_",
+    "DISCORD_",
+    "TELEGRAM_",
+    "TWILIO_",
+    "SENDGRID_",
+    "DATADOG_",
+    "SENTRY_AUTH_",
+    "BASH_FUNC_",
+)
+
+_SECRET_ENV_RE = re.compile(
+    r"(?:^|_)(?:API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE_?KEY|"
+    r"CREDENTIAL|CREDENTIALS|ACCESS_?KEY|AUTH_?TOKEN|SESSION_?KEY)(?:$|_)"
+)
+
+
+def default_private_paths(user_dir: Path, *, home: Path | None = None) -> tuple[Path, ...]:
+    """Return high-sensitivity credential directories and files to shield in sandbox modes."""
+    paths: list[Path] = [Path(user_dir).resolve()]
+    try:
+        resolved_home = (Path(home) if home is not None else Path.home()).resolve()
+    except OSError:
+        return tuple(dict.fromkeys(paths))
+    for rel in PRIVATE_HOME_RELATIVES:
+        candidate = _normalize_path(resolved_home / rel)
+        paths.append(candidate)
+        if candidate.is_symlink():
+            try:
+                paths.append(candidate.resolve(strict=True))
+            except OSError:
+                pass
+    return tuple(dict.fromkeys(paths))
+
+
+def filter_sandbox_environment(env: dict[str, str]) -> dict[str, str]:
+    """Strip ambient credentials and loader-injection variables while keeping proxies and tool vars."""
+    filtered: dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str) or "\x00" in key or "\x00" in value:
+            continue
+        if value.startswith("()"):
+            continue
+        upper = key.upper()
+        if upper in _BLOCKED_ENV_EXACT or upper.startswith(_BLOCKED_ENV_PREFIXES):
+            continue
+        if _SECRET_ENV_RE.search(upper):
+            continue
+        filtered[key] = value
+    return filtered
 
 
 def is_native_windows() -> bool:
@@ -122,19 +246,47 @@ class PermissionPolicy:
             replace(rule, path=lexical_path(rule.path, workspace)) for rule in self.filesystem
         ))
 
+    def hard_denied(self, target: Path) -> bool:
+        """Return True if ``target`` falls under an unoverridable read-deny (private credential) rule."""
+        if self.unrestricted:
+            return False
+        normalized = _normalize_path(target)
+        return any(
+            rule.effect == "deny" and rule.access == "read" and rule.covers(normalized, "read")
+            for rule in self.filesystem
+        )
+
+    def _matching_write_rules(self, normalized: Path) -> list[PathRule]:
+        return [rule for rule in self.filesystem if rule.covers(normalized, "write")]
+
     def denied(self, target: Path, access: Access) -> bool:
         if self.unrestricted:
             return False
         normalized = _normalize_path(target)
-        return any(rule.effect == "deny" and rule.covers(normalized, access) for rule in self.filesystem)
+        if self.hard_denied(normalized):
+            return True
+        if access == "read":
+            return False
+        matches = self._matching_write_rules(normalized)
+        if not matches:
+            return False
+        max_depth = max(len(rule.path.parts) for rule in matches)
+        return any(rule.effect == "deny" and len(rule.path.parts) == max_depth for rule in matches)
 
     def allows(self, target: Path, access: Access) -> bool:
         if self.unrestricted:
             return True
         normalized = _normalize_path(target)
-        return not self.denied(normalized, access) and any(
-            rule.effect == "allow" and rule.covers(normalized, access) for rule in self.filesystem
-        )
+        if self.hard_denied(normalized):
+            return False
+        if access == "read":
+            return any(rule.effect == "allow" and rule.covers(normalized, "read") for rule in self.filesystem)
+        matches = self._matching_write_rules(normalized)
+        if not matches:
+            return False
+        max_depth = max(len(rule.path.parts) for rule in matches)
+        top = [rule for rule in matches if len(rule.path.parts) == max_depth]
+        return any(rule.effect == "allow" for rule in top) and not any(rule.effect == "deny" for rule in top)
 
     def allow_roots(self, access: Access) -> tuple[Path, ...]:
         return tuple(dict.fromkeys(rule.path for rule in self.filesystem
@@ -148,6 +300,19 @@ class PermissionPolicy:
 
     def with_rules(self, *rules: PathRule) -> PermissionPolicy:
         return replace(self, filesystem=(*self.filesystem, *rules))
+
+    def grant(self, *rules: PathRule) -> PermissionPolicy:
+        """Apply user-approved grants, overriding confirmable write-denies while preserving hard read-denies."""
+        write_allows = [r.path for r in rules if r.effect == "allow" and r.access == "write"]
+        kept = [
+            existing for existing in self.filesystem
+            if not (
+                existing.effect == "deny"
+                and existing.access == "write"
+                and any(existing.path.is_relative_to(granted) for granted in write_allows)
+            )
+        ]
+        return replace(self, filesystem=(*kept, *rules))
 
     def as_dict(self) -> dict:
         return {"filesystem": [rule.as_dict() for rule in self.filesystem],

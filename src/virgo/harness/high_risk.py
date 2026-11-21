@@ -34,6 +34,13 @@ _SQL_DELETE_ALL = re.compile(
     re.IGNORECASE,
 )
 
+_DB_CLIS = frozenset({
+    "psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "cockroach",
+    "clickhouse-client", "duckdb", "snowsql", "bq", "cqlsh",
+    "mongosh", "mongo", "redis-cli", "valkey-cli", "iredis",
+    "pgcli", "mycli", "litecli", "usql",
+})
+
 
 @dataclass(frozen=True)
 class HighRiskMatch:
@@ -42,7 +49,7 @@ class HighRiskMatch:
     snippet: str
 
 
-def _split_segments(command: str) -> list[str]:
+def _split_segments(command: str, *, split_pipes: bool = True) -> list[str]:
     """Split a shell command on top-level control operators without crashing on shell syntax."""
     segments: list[str] = []
     current: list[str] = []
@@ -80,7 +87,7 @@ def _split_segments(command: str) -> list[str]:
             current = []
             i += 2 if ch in {"&", "|"} else 1
             continue
-        if ch == "|":
+        if ch == "|" and split_pipes:
             seg = "".join(current).strip()
             if seg:
                 segments.append(seg)
@@ -264,6 +271,24 @@ def _check_deploy_or_remote(tokens: list[str], segment: str) -> HighRiskMatch | 
     return None
 
 
+def _invokes_db_cli(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    cmd = Path(tokens[0]).name.lower().removesuffix(".exe")
+    if cmd in _DB_CLIS:
+        return True
+    if cmd in {"docker", "podman", "kubectl"}:
+        lowered = [t.lower() for t in tokens[1:]]
+        if "exec" in lowered:
+            exec_idx = lowered.index("exec")
+            for tok in tokens[1 + exec_idx + 1 :]:
+                if tok.startswith("-"):
+                    continue
+                if Path(tok).name.lower().removesuffix(".exe") in _DB_CLIS:
+                    return True
+    return False
+
+
 def detect_high_risk_command(command: str, cwd: Path, workspace: Path) -> HighRiskMatch | None:
     """Inspect a shell command and return a HighRiskMatch if it needs explicit confirmation."""
     if not isinstance(command, str) or not command.strip():
@@ -274,24 +299,28 @@ def detect_high_risk_command(command: str, cwd: Path, workspace: Path) -> HighRi
             "Piping remote downloaded content directly into a shell/interpreter.",
             command.strip()[:200],
         )
-    if _SQL_DESTRUCTIVE.search(command) or _SQL_DELETE_ALL.search(command):
-        return HighRiskMatch(
-            "database_destruction",
-            "Command contains a destructive database/cache statement (DROP/TRUNCATE/FLUSH/unfiltered DELETE).",
-            command.strip()[:200],
-        )
     resolved_cwd = Path(cwd).resolve()
     resolved_ws = Path(workspace).resolve()
-    for segment in _split_segments(command):
-        tokens = _tokenize(segment)
-        if not tokens:
-            continue
-        cmd = Path(tokens[0]).name.lower().removesuffix(".exe")
-        if cmd == "git":
-            if match := _check_git(tokens, segment):
+    for pipeline in _split_segments(command, split_pipes=False):
+        segments = _split_segments(pipeline, split_pipes=True)
+        tokenized = [(seg, _tokenize(seg)) for seg in segments]
+        if any(_invokes_db_cli(toks) for _, toks in tokenized) and (
+            _SQL_DESTRUCTIVE.search(pipeline) or _SQL_DELETE_ALL.search(pipeline)
+        ):
+            return HighRiskMatch(
+                "database_destruction",
+                "Command invokes a database/cache CLI with a destructive statement (DROP/TRUNCATE/FLUSH/unfiltered DELETE).",
+                pipeline.strip()[:200],
+            )
+        for segment, tokens in tokenized:
+            if not tokens:
+                continue
+            cmd = Path(tokens[0]).name.lower().removesuffix(".exe")
+            if cmd == "git":
+                if match := _check_git(tokens, segment):
+                    return match
+            if match := _check_recursive_delete(tokens, segment, resolved_cwd, resolved_ws):
                 return match
-        if match := _check_recursive_delete(tokens, segment, resolved_cwd, resolved_ws):
-            return match
-        if match := _check_deploy_or_remote(tokens, segment):
-            return match
+            if match := _check_deploy_or_remote(tokens, segment):
+                return match
     return None

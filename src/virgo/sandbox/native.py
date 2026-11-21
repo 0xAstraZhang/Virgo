@@ -1,12 +1,28 @@
 """Translate an operation's PermissionPolicy to the native process boundary."""
 from __future__ import annotations
 
+import atexit
+import subprocess
 import sys
 import threading
+import weakref
 from pathlib import Path
 
 from ..execution import ExecutionFailed, ExecutionUnavailable, HostProcess
-from .platform import NativePolicy, platform_backend
+from .platform import NativePolicy, _CommandScratch, platform_backend
+
+_LIVE_POSIX_SCRATCHES: weakref.WeakSet[_CommandScratch] = weakref.WeakSet()
+
+
+def _cleanup_posix_scratches() -> None:
+    for scratch in list(_LIVE_POSIX_SCRATCHES):
+        try:
+            scratch.cleanup()
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_posix_scratches)
 
 
 class NativeExecutor:
@@ -15,6 +31,8 @@ class NativeExecutor:
         self.identity = (self.backend, str(self.path))
         self._pool_lock = threading.Lock()
         self._windows_pool = None
+        self._posix_session_scratch: _CommandScratch | None = None
+        self._probed_launcher: Path | None = None
 
     def _get_windows_pool(self):
         if self.backend != "windows-appcontainer":
@@ -26,6 +44,46 @@ class NativeExecutor:
                 self._windows_pool = WindowsSessionPool()
             return self._windows_pool
 
+    def _get_posix_session_dir(self) -> Path | None:
+        if sys.platform == "win32":
+            return None
+        with self._pool_lock:
+            if self._posix_session_scratch is None:
+                scratch = _CommandScratch(prefix="virgo-session-")
+                _LIVE_POSIX_SCRATCHES.add(scratch)
+                self._posix_session_scratch = scratch
+            return Path(self._posix_session_scratch.name)
+
+    def _ensure_seatbelt_probed(self, launcher: Path) -> None:
+        with self._pool_lock:
+            if self._probed_launcher == launcher:
+                return
+        probe_bin = "/usr/bin/true" if Path("/usr/bin/true").is_file() else "/bin/sh"
+        probe_args = [probe_bin] if probe_bin == "/usr/bin/true" else [probe_bin, "-c", "true"]
+        try:
+            probe = subprocess.run(
+                [str(launcher), "-p", "(version 1)\n(allow default)", *probe_args],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=5,
+                start_new_session=True,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ExecutionUnavailable(
+                f"seatbelt could not establish isolation: {error}",
+                reason="backend_unavailable",
+            ) from error
+        if probe.returncode:
+            reason = probe.stdout.decode("utf-8", errors="replace")[-1500:].strip()
+            raise ExecutionUnavailable(
+                f"seatbelt could not establish isolation (exit {probe.returncode}): {reason}",
+                reason="backend_unavailable",
+            )
+        with self._pool_lock:
+            self._probed_launcher = launcher
+
     def close_idle(self):
         with self._pool_lock:
             pool = self._windows_pool
@@ -36,8 +94,12 @@ class NativeExecutor:
         with self._pool_lock:
             pool = self._windows_pool
             self._windows_pool = None
+            posix_scratch = self._posix_session_scratch
+            self._posix_session_scratch = None
         if pool is not None:
             pool.close()
+        if posix_scratch is not None:
+            posix_scratch.cleanup()
 
     def policy(self, context):
         permissions = context.policy
@@ -58,16 +120,20 @@ class NativeExecutor:
             writable = permissions.allows(path, "write")
             if permissions.denied(path, "read"):
                 continue
-            if path == workspace or (path.is_relative_to(workspace)
-                                     and (not writable or permissions.allows(workspace, "write"))):
+            if path == workspace or (
+                path.is_relative_to(workspace)
+                and (not writable or (permissions.allows(workspace, "write")
+                                      and not any(path.is_relative_to(ro) for ro in readonly)))
+            ):
                 continue
             if workspace.is_relative_to(path):
                 raise ExecutionUnavailable(
                     f"A native grant cannot contain its originating workspace: {path}",
                     reason="unsupported_path", target=path,
                 )
-            self._existing_grant(path)
-            grants[path] = writable
+            resolved = self._resolve_existing_grant(path)
+            if resolved is not None:
+                grants[resolved] = grants.get(resolved, False) or writable
         return NativePolicy(
             workspace,
             not permissions.allows(workspace, "write"),
@@ -78,24 +144,43 @@ class NativeExecutor:
         )
 
     @staticmethod
-    def _existing_grant(path: Path) -> None:
-        try:
-            valid = path.is_absolute() and path.resolve(strict=True) == path and (path.is_dir() or path.is_file())
-        except (OSError, RuntimeError):
-            valid = False
-        if not valid:
+    def _resolve_existing_grant(path: Path) -> Path | None:
+        """Return canonical existing file/dir for native mount/ACL, skipping absent paths."""
+        if not path.is_absolute():
             raise ExecutionUnavailable(
-                f"Native grant requires the exact existing file or directory: {path}",
+                f"Native grant requires an absolute path: {path}",
                 reason="unsupported_path", target=path,
             )
+        if not path.exists() and not path.is_symlink():
+            return None
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise ExecutionUnavailable(
+                f"Native grant path cannot be resolved: {path} ({error})",
+                reason="unsupported_path", target=path,
+            ) from error
+        if not (resolved.is_dir() or resolved.is_file()):
+            raise ExecutionUnavailable(
+                f"Native grant requires a regular file or directory: {path}",
+                reason="unsupported_path", target=path,
+            )
+        return resolved
 
     def run_process(self, request, context, cancellation=None):
         envelope = self.policy(context)
         proc = envelope.spawn(
-            request.argv, request.cwd, request.env, request.stdout,
-            cancellation, stdin=request.stdin,
-            stderr=request.stderr, env_overrides=request.env_overrides,
+            request.argv,
+            request.cwd,
+            request.env,
+            request.stdout,
+            cancellation,
+            stdin=request.stdin,
+            stderr=request.stderr,
+            env_overrides=request.env_overrides,
             session_pool=self._get_windows_pool(),
+            posix_session_dir=self._get_posix_session_dir(),
+            ensure_probed=self._ensure_seatbelt_probed if self.backend == "seatbelt" else None,
         )
         return NativeProcess(proc, context)
 

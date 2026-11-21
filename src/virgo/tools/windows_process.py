@@ -3,7 +3,7 @@
 The JOB_LIST startup attribute assigns the process before any user code can run.
 Only duplicated standard-stream handles are inherited; the job handle never is.
 The job owns process lifetime; an optional sandbox supplies the security token
-and startup attributes. Its process is verified while suspended before release.
+and startup attributes.
 This module is imported only on Windows. There is no uncontained fallback.
 """
 from __future__ import annotations
@@ -79,10 +79,8 @@ CreateJob = _api("CreateJobObjectW", [ctypes.c_void_p, w.LPCWSTR], HANDLE)
 SetJob = _api("SetInformationJobObject", [HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD])
 QueryJob = _api("QueryInformationJobObject", [HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
                                             ctypes.POINTER(w.DWORD)])
-IsProcessInJob = _api("IsProcessInJob", [HANDLE, HANDLE, ctypes.POINTER(w.BOOL)])
 CloseHandle = _api("CloseHandle", [HANDLE])
 TerminateJob = _api("TerminateJobObject", [HANDLE, w.UINT])
-TerminateProcess = _api("TerminateProcess", [HANDLE, w.UINT])
 GetCurrentProcess = _api("GetCurrentProcess", [], HANDLE)
 DuplicateHandle = _api("DuplicateHandle", [HANDLE, HANDLE, HANDLE, ctypes.POINTER(HANDLE), w.DWORD, w.BOOL, w.DWORD])
 InitializeAttributes = _api("InitializeProcThreadAttributeList", [ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(SIZE_T)])
@@ -92,7 +90,6 @@ DeleteAttributes = _api("DeleteProcThreadAttributeList", [ctypes.c_void_p], None
 CreateProcess = _api("CreateProcessW", [w.LPCWSTR, w.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, w.BOOL, w.DWORD,
                                       ctypes.c_void_p, w.LPCWSTR, ctypes.POINTER(StartupInfoEx), ctypes.POINTER(ProcessInfo)])
 CreateProcessAsUser = _api("CreateProcessAsUserW", [HANDLE, *CreateProcess.argtypes], library=advapi)
-ResumeThread = _api("ResumeThread", [HANDLE], w.DWORD)
 WaitForSingleObject = _api("WaitForSingleObject", [HANDLE, w.DWORD], w.DWORD)
 GetExitCode = _api("GetExitCodeProcess", [HANDLE, ctypes.POINTER(w.DWORD)])
 
@@ -196,8 +193,6 @@ class WindowsProcess:
                 )
                 info = ProcessInfo()
                 flags = 0x08000000 | 0x00080000 | 0x00000400  # NO_WINDOW | EXTENDED_STARTUPINFO | UNICODE_ENVIRONMENT
-                if sandbox is not None:
-                    flags |= 0x00000004  # CREATE_SUSPENDED
                 self._check_cancelled()
                 arguments = (None, command_buffer, None, None, True, flags, environment, str(cwd),
                              ctypes.byref(startup), ctypes.byref(info))
@@ -209,6 +204,7 @@ class WindowsProcess:
                 resources.callback(CloseHandle, info.hThread)
                 self.pid = info.dwProcessId
                 self._process, self._job = info.hProcess, job
+                self._released = True
                 if sandbox is not None:
                     # Keep the native owner reachable even if interruption
                     # occurs between returning from this constructor and the
@@ -216,26 +212,6 @@ class WindowsProcess:
                     sandbox.process = self
                 self._finalizer = weakref.finalize(self, _close_handles, job, info.hProcess)
                 ownership.pop_all()
-                if sandbox is not None:
-                    contained = w.BOOL()
-                    _check(IsProcessInJob(info.hProcess, job, ctypes.byref(contained)))
-                    if not contained.value:
-                        # Retain control of a suspended root even if its job
-                        # membership does not match the creation contract.
-                        _check(TerminateProcess(info.hProcess, 1))
-                        raise self._failure("Windows did not assign the sandbox process to its job")
-                    sandbox.verify_process(info.hProcess)
-                    self._check_cancelled()
-                    previous = ResumeThread(info.hThread)
-                    if previous == 0xFFFFFFFF:
-                        raise ctypes.WinError(ctypes.get_last_error())
-                    # A freshly CREATE_SUSPENDED thread must have exactly one
-                    # suspension. Never retry a resume with an unexpected count.
-                    self._released = True
-                    if previous != 1:
-                        raise self._failure("Windows returned an unexpected sandbox thread suspension count")
-                else:
-                    self._released = True
         except BaseException as error:
             try:
                 if sandbox is not None and self._finalizer is not None:

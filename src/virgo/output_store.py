@@ -149,7 +149,7 @@ class OutputStore:
         if not isinstance(raw, list):
             return
         for identifier in raw:
-            if not isinstance(identifier, str) or not re.fullmatch(r"out_[0-9a-f]{48}", identifier):
+            if not isinstance(identifier, str) or not re.fullmatch(r"out_[0-9a-f]{8,48}", identifier):
                 continue
             path = self.directory / f"{identifier}.log"
             if path.is_file() and not path.is_symlink():
@@ -188,7 +188,7 @@ class OutputStore:
         # prefix is descriptive only and never participates in a filesystem path.
         _harden_dir(self.directory.parent)
         _harden_dir(self.directory)
-        identifier = "out_" + secrets.token_hex(24)
+        identifier = "out_" + secrets.token_hex(6)
         path = self.directory / (identifier + ".log")
         descriptor = os.open(
             path,

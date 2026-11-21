@@ -252,7 +252,7 @@ def test_resource_approval_controls_one_file_write(broker_session, project, keys
 
                 assert ResourceRules(session.paths.user).list(str(session.cwd))
             assert not picker.display and app.focused is app.editor
-            assert not session.services["execution"].sandbox._pending
+            assert bool(session.services["execution"].sandbox._session_grants) is (answer in {"y", "a"})
     asyncio.run(scenario())
 
 

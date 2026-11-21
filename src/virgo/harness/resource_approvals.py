@@ -1,53 +1,35 @@
-"""Core authorization for an exact resource-bound tool operation."""
+"""Resource-scoped session and persistent approvals for managed and external tools."""
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
-import os
-import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
-from ..agent import Block, ToolCallEvent, ToolResult
+from ..agent import Block, ToolResult
 from ..ai.validate import validate
-from ..execution import ExecutionContext, ExecutionUnavailable, FileAccessDenied
-from ..execution_policy import PathRule, lexical_path, parse_network
+from ..execution import ExecutionUnavailable, FileAccessDenied
+from ..execution_policy import PathRule, parse_network
 from ..file_access import resolve_read_path, resolve_write_path
-from .origin_context import origin_key, source_for
-from .resource_rules import ResourceRules, external_operation_id, operation_id
+from .origin_context import source_for
+from .resource_rules import ResourceRules, external_tool_target
 from .ui import UI
 
 
-@dataclass(frozen=True)
-class Grant:
-    key: str
-    policy: ExecutionContext
-    expires: float
-    runtime: object
-    run_id: str | None
-    targets: tuple
-    saved: tuple = ()
-
-
-def _target_identity(path):
-    """Bind the canonical resource and its nearest existing object, not display text."""
-    path = Path(path)
-    canonical = path.resolve()
-    existing = canonical
-    while not existing.exists() and existing.parent != existing:
-        existing = existing.parent
-    info = existing.stat()
-    return (str(path), str(canonical), str(existing), info.st_dev, info.st_ino)
-
-
-def _targets(paths):
-    return tuple(_target_identity(p) for p in paths)
-
-
-def _resolve_grant_root(value: str | Path, cwd: Path) -> Path:
-    """Resolve a requested grant root so approval dialogs and native rules use real paths (S3-02)."""
-    return lexical_path(value, cwd).resolve()
+def _resolve_grant_root(value: str | Path, cwd: Path, *, access: str, workspace: Path | None = None,
+                        for_process: bool = False) -> Path:
+    """Resolve a requested grant path so approval dialogs and native rules use real paths."""
+    if access == "read":
+        return resolve_read_path(value, cwd)
+    target = resolve_write_path(value, cwd)
+    if for_process and not target.exists():
+        existing = target
+        while not existing.exists() and existing.parent != existing:
+            existing = existing.parent
+        existing = existing.resolve()
+        if workspace is None or not workspace.is_relative_to(existing):
+            return existing
+    return target
 
 
 def manage_grants(session, command):
@@ -56,8 +38,8 @@ def manage_grants(session, command):
     if command == "grants":
         rows = rules.list(project)
         session.ui.command_result("\n".join(
-            f"{identifier}  {mode}  {cwd}  {op}  {resource}={target}"
-            for identifier, mode, cwd, op, resource, target in rows
+            f"{identifier}  {mode}  {resource}={target}"
+            for identifier, mode, resource, target in rows
         ) or "No saved grants for this project.")
         return
     _, _, identifier = command.partition(" ")
@@ -69,6 +51,8 @@ def manage_grants(session, command):
 
 
 def _extend(base, grants):
+    if not grants:
+        return base
     rules = []
     network = base.policy.network_allowed
     for kind, target in grants:
@@ -78,162 +62,172 @@ def _extend(base, grants):
             rules.append(PathRule(Path(target), "read", "allow"))
         elif kind == "write_paths":
             rules.append(PathRule(Path(target), "write", "allow"))
-    policy = replace(base.policy.with_rules(*rules), network_allowed=network)
+    if not rules and network == base.policy.network_allowed:
+        return base
+    policy = replace(base.policy.grant(*rules), network_allowed=network)
     return replace(base, resources=replace(base.resources, policy=policy))
 
 
 def _covered(context, kind, target):
     if kind == "network_allowed":
         return context.policy.network_allowed
+    if kind == "external_tool":
+        return False
     access = "read" if kind == "read_paths" else "write"
     return context.policy.allows(Path(target), access)
 
 
 class ResourceApprovals:
+    def _origin_mode_key(self, context, base) -> tuple[str, str] | None:
+        snapshot = getattr(base, "permission_snapshot", None)
+        if snapshot is None:
+            return None
+        source = source_for(self.session, context)
+        if source is None:
+            return None
+        return (source.identity, snapshot.mode.id)
+
+    def _effective_grants(self, context, base) -> tuple[tuple[str, str], ...]:
+        snapshot = getattr(base, "permission_snapshot", None)
+        if (snapshot is None or snapshot.approval == "never"
+                or self.session.approval_policy == "never"):
+            return ()
+        project = str(base.workspace)
+        mode_id = snapshot.mode.id
+        saved: list[tuple[str, str]] = []
+        rules = ResourceRules(self.session.paths.user)
+        if rules.path.exists():
+            saved.extend(rules.match(project, mode_id))
+        om_key = self._origin_mode_key(context, base)
+        with self.session._lock:
+            session_items = list(self._session_grants.get(om_key, ())) if om_key is not None else []
+        return tuple(dict.fromkeys([*saved, *session_items]))
+
     def for_context(self, context):
         base = super().for_context(context)
-        runtime = self.session.runtime_for_context(context)
-        dispatch = context if isinstance(context, ToolCallEvent) else getattr(context, "dispatch_event", None)
-        if dispatch is None:
+        if getattr(base, "provider", None) == "host":
             return base
-        active = self._active.get((id(runtime), id(dispatch)))
-        if active is not None:
-            grant, event = active
-            if event is not dispatch or event.origin is not context.origin or grant.run_id != runtime.run_id:
-                raise ExecutionUnavailable("Operation grant no longer belongs to this caller")
-            return grant.policy
-        return base
+        grants = self._effective_grants(context, base)
+        return _extend(base, grants) if grants else base
 
-    def _key(self, event):
-        runtime = self.session.runtime_for_context(event)
-        if runtime is None:
-            raise ValueError("Permission requests require the originating runtime")
-        shell = getattr(event.tool, "shell", None)
-        path = event.args.get("path")
-        target = None
-        if isinstance(path, str):
-            try:
-                resolver = resolve_read_path if (event.tool and event.tool.read_only) else resolve_write_path
-                target = str(resolver(path, event.cwd))
-            except ValueError:
-                target = path
-        # Bind the exact effective environment without retaining credential values.
-        environment = hashlib.sha256(json.dumps(dict(os.environ), sort_keys=True).encode()).hexdigest()
-        return json.dumps([environment, origin_key(self.session, event), runtime.diagnostic_id, runtime.run_id,
-                           id(event.tool), event.tool_name, event.args, str(event.cwd.resolve()), target,
-                           shell.environment() if shell else None, self.executor.identity], sort_keys=True, ensure_ascii=False)
-
-    def _valid(self, grant, event):
-        return (grant.expires > time.monotonic() and grant.key == self._key(event)
-                and _targets(t[0] for t in grant.targets) == grant.targets
-                and (event.signal is None or not event.signal.is_set()))
-
-    def _denial(self, policy, reason, dimension=None, target=None):
+    def _denial(self, policy, reason, dimension=None, target=None, *, escalatable=True):
         return Block(str(reason), details={"status": "resource_denied", "boundary": {
-            **policy.describe(), "kind": "resource_denied", "dimension": dimension, "target": str(target) if target else None,
-            "payload_started": False, "side_effects": "none", "escalation_available": True,
+            **policy.describe(), "kind": "resource_denied", "dimension": dimension,
+            "target": str(target) if target else None,
+            "payload_started": False, "side_effects": "none", "escalation_available": escalatable,
         }})
 
     def _check(self, event, policy):
         scope = event.tool.execution_scope if event.tool else "external"
         if scope == "network" and not policy.network_allowed:
-            return self._denial(policy, "Task networking is disabled; request permission for this exact operation.",
+            return self._denial(policy, "Task networking is disabled; approve network access for this session.",
                                 "network_allowed", event.args.get("url", event.tool_name))
         if scope == "external":
             if event.tool is not None and event.tool.read_only:
                 return None
-            return self._denial(policy, "This external operation can modify host state; approve this exact call.",
+            return self._denial(policy, "This external operation can modify host state; approve this tool.",
                                 "unmanaged_tool", event.tool_name)
         if scope == "file":
             path = event.args.get("path", ".")
             if not isinstance(path, str):
-                return self._denial(policy, "File operations require a path", "filesystem")
+                return self._denial(policy, "File operations require a path", "filesystem", escalatable=False)
             try:
                 target = (resolve_read_path(path, event.cwd) if event.tool.read_only
                           else resolve_write_path(path, event.cwd))
             except ValueError as error:
-                return self._denial(policy, str(error), "filesystem", path)
+                return self._denial(policy, str(error), "filesystem", path, escalatable=False)
             try:
                 (policy.check_read if event.tool.read_only else policy.check_write)(target)
             except FileAccessDenied as error:
-                return self._denial(policy, error, error.dimension, error.target)
+                return self._denial(
+                    policy,
+                    error,
+                    error.dimension,
+                    error.target,
+                    escalatable=error.dimension != "protected_path",
+                )
         return None
-
-    def _scope(self, event, base):
-        return (str(base.workspace), base.permission_snapshot.mode.id, str(event.cwd.resolve()), operation_id(event))
-
-    def _saved(self, event, base):
-        if (base.permission_snapshot.approval == "never" or self.session.approval_policy == "never"
-                or not event.tool or event.tool.execution_scope not in {"file", "process", "network"}):
-            return ()
-        rules = ResourceRules(self.session.paths.user)
-        if not rules.path.exists():
-            return ()
-        return tuple(rules.match(self._scope(event, base)))
 
     def _external_write(self, event) -> bool:
         return bool(event.tool is not None and event.tool.execution_scope == "external"
                     and not event.tool.read_only)
 
-    def _confirm_callable(self):
+    def _confirm_callable(self, *, prefer_persistent: bool = True):
         ui = self.session.ui
-        once = getattr(ui, "confirm_once", None)
-        if callable(once) and getattr(once, "__func__", None) is not UI.confirm_once:
-            return once
         confirm = getattr(ui, "confirm", None)
-        if callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm:
-            return confirm
-        return None
+        has_confirm = callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm
+        once = getattr(ui, "confirm_once", None)
+        has_once = callable(once) and getattr(once, "__func__", None) is not UI.confirm_once
+        if prefer_persistent:
+            return confirm if has_confirm else (once if has_once else None)
+        return once if has_once else (confirm if has_confirm else None)
 
-    def _external_admitted(self, event, base) -> bool:
-        snapshot = base.permission_snapshot
+    def _approval_admitted(self, event, base) -> bool:
+        snapshot = getattr(base, "permission_snapshot", None)
         return (snapshot is not None and snapshot.approval != "never"
                 and self.session.approval_policy != "never"
                 and event.signal is not None and not event.signal.is_set()
                 and self._confirm_callable() is not None)
 
-    def _external_scope(self, event, base):
-        return (str(base.workspace), base.permission_snapshot.mode.id,
-                str(event.cwd.resolve()), external_operation_id(event))
+    def _record_session_grants(self, context, base, resources) -> None:
+        om_key = self._origin_mode_key(context, base)
+        if om_key is None:
+            return
+        bucket = self._session_grants.setdefault(om_key, [])
+        for item in resources:
+            if item not in bucket:
+                bucket.append(item)
 
-    def _external_saved_match(self, event, base) -> bool:
-        fingerprint = getattr(event.tool, "config_fingerprint", None)
-        if not fingerprint:
+    def _run_denied(self, context, resources) -> bool:
+        runtime = self.session.runtime_for_context(context)
+        run_id = getattr(runtime, "run_id", None) if runtime is not None else None
+        if not run_id:
             return False
-        if base.permission_snapshot.approval == "never" or self.session.approval_policy == "never":
-            return False
-        rules = ResourceRules(self.session.paths.user)
-        if not rules.path.exists():
-            return False
-        return ("external_tool", fingerprint) in rules.match(self._external_scope(event, base))
+        with self.session._lock:
+            denied = self._run_denials.get(run_id)
+            return bool(denied and any(item in denied for item in resources))
+
+    def _record_run_denials(self, runtime, resources) -> None:
+        run_id = getattr(runtime, "run_id", None) if runtime is not None else None
+        if not run_id:
+            return
+        if len(self._run_denials) >= 32 and run_id not in self._run_denials:
+            self._run_denials.pop(next(iter(self._run_denials)), None)
+        self._run_denials.setdefault(run_id, set()).update(resources)
 
     def _confirm_external(self, event, base, block):
-        fingerprint = getattr(event.tool, "config_fingerprint", None)
-        if fingerprint and self._external_saved_match(event, base):
+        ext_target = external_tool_target(event)
+        session_target = ext_target or f"{event.tool_name}:session"
+        active_grants = self._effective_grants(event, base)
+        if ("external_tool", session_target) in active_grants or (
+            ext_target and ("external_tool", ext_target) in active_grants
+        ):
             return None
-        if not self._external_admitted(event, base):
+        if not self._approval_admitted(event, base):
             return block
+        runtime = self.session.runtime_for_context(event)
+        with self.session._lock:
+            rev_before = self.revision
         question = (f"External tool: {event.tool_name}\n"
                     f"Arguments: {json.dumps(event.args, ensure_ascii=False)}\n"
                     "This trusted extension runs outside the native sandbox and may modify host state."
                     + self.session.t("features.permission.external_suffix"))
-        if fingerprint:
-            confirm = getattr(self.session.ui, "confirm", None)
-            if callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm:
-                answer = confirm(question, event.agent)
-            else:
-                answer = self._confirm_callable()(question, event.agent)
-            if answer == "a":
+        caller = self._confirm_callable(prefer_persistent=bool(ext_target))
+        answer = caller(question, event.agent)
+        with self.session._lock:
+            if (event.signal.is_set() or base is not runtime.execution_context
+                    or self.revision != rev_before or self.session.approval_policy == "never"):
+                return self._denial(base, "Permission request cancelled or expired because its context changed",
+                                    "unmanaged_tool", event.tool_name)
+            if answer == "a" and ext_target:
                 ResourceRules(self.session.paths.user).allow(
-                    self._external_scope(event, base),
-                    (("external_tool", fingerprint),),
+                    str(base.workspace), base.permission_snapshot.mode.id,
+                    (("external_tool", ext_target),),
                 )
+                self._record_session_grants(event, base, (("external_tool", ext_target),))
                 return None
-            if answer == "y":
-                return None
-        else:
-            answer = self._confirm_callable()(question, event.agent)
-            if answer == "y":
+            if answer in {"y", "a"}:
+                self._record_session_grants(event, base, (("external_tool", session_target),))
                 return None
         return self._denial(base, "External tool operation was not approved",
                             "unmanaged_tool", event.tool_name)
@@ -244,174 +238,152 @@ class ResourceApprovals:
             block = self._check(event, base)
             if block is None:
                 return None
-            if self._external_saved_match(event, base):
+            ext_target = external_tool_target(event)
+            session_target = ext_target or f"{event.tool_name}:session"
+            active_grants = self._effective_grants(event, base)
+            if ("external_tool", session_target) in active_grants or (
+                ext_target and ("external_tool", ext_target) in active_grants
+            ):
                 return None
             if not consume:
-                return None if self._external_admitted(event, base) else block
+                return None if self._approval_admitted(event, base) else block
             return self._confirm_external(event, base, block)
-        with self.session._lock:
-            grant = None
-            if self._pending:
-                key = self._key(event)
-                grant = self._pending.pop(key, None) if consume else self._pending.get(key)
-            block = self._check(event, base)
-            process = event.tool and event.tool.execution_scope == "process"
-            if grant is None and not block and not process:
-                return None
-            saved = self._saved(event, base)
-            if grant and (not self._valid(grant, event) or not set(grant.saved).issubset(saved)):
-                self._pending.pop(key, None)
-                grant = None
-            policy = grant.policy if grant else _extend(base, saved) if saved else base
-            block = self._check(event, policy)
-            if not block:
-                if consume and policy is not base:
-                    if process:
-                        policy.validate_native(event.cwd)
-                    runtime = self.session.runtime_for_context(event)
-                    self._active[(id(runtime), id(event))] = (
-                        grant or Grant("", policy, 0, runtime, runtime.run_id, ()), event)
-                return None
-            boundary = block.details["boundary"]
-            dimension = boundary["dimension"]
-            confirm = getattr(self.session.ui, "confirm", None)
-            if (not event.tool or event.tool.execution_scope != "file" or dimension not in {"read_paths", "write_paths"}
-                    or event.signal is None or event.signal.is_set()
-                    or base.permission_snapshot.approval == "never" or self.session.approval_policy == "never"
-                    or not callable(confirm) or getattr(confirm, "__func__", None) is UI.confirm):
-                return block
-            if not consume:
-                # Hooks may still change arguments. Ask after their final form is known.
-                return None
-            _, errors = validate(copy.deepcopy(event.args), event.tool.parameters)
-            if errors:
-                return self._denial(base, "; ".join(errors), dimension, boundary["target"])
-            # S3-02 & S3-03: Grant the single real target directly without requiring parent access.
-            missing = ((dimension, boundary["target"]),)
-            policy = _extend(policy, missing)
-        # Waiting for a user must not hold the session lock.
-        result = self._confirm(event, base, saved, policy, missing, block.reason, dispatch=True)
+
+        policy = self.for_context(event)
+        block = self._check(event, policy)
+        process = bool(event.tool and event.tool.execution_scope == "process")
+        if not block:
+            if consume and policy is not base and process:
+                policy.validate_native(event.cwd)
+            return None
+
+        boundary = block.details["boundary"]
+        dimension = boundary["dimension"]
+        if (dimension not in {"read_paths", "write_paths", "network_allowed"}
+                or not self._approval_admitted(event, base)):
+            return block
+        missing = (
+            (("network_allowed", "true"),)
+            if dimension == "network_allowed"
+            else ((dimension, boundary["target"]),)
+        )
+        if self._run_denied(event, missing):
+            return self._denial(base, "Resource request was already denied in this turn", dimension, boundary["target"])
+        if not consume:
+            # Hooks may still inspect or rewrite arguments; prompt immediately before execution.
+            return None
+        _, errors = validate(copy.deepcopy(event.args), event.tool.parameters)
+        if errors:
+            return self._denial(base, "; ".join(errors), dimension, boundary["target"], escalatable=False)
+        result = self._confirm(event, base, missing, block.reason)
         return self._denial(base, result.as_text(), dimension, boundary["target"]) if result.is_error else None
 
     def preflight(self, event):
         return self._admit(event, consume=False)
 
     def before_execute(self, event):
-        # Only the dispatch of the final, validated arguments consumes the grant.
         return self._admit(event, consume=True)
-
-    def _result(self, result, event, session):
-        with self.session._lock:
-            runtime = self.session.runtime_for_context(event)
-            self._active.pop((id(runtime), id(event)), None)
-        return result
-
-    def _discard(self, runtime):
-        with self.session._lock:
-            self._pending = {k: g for k, g in self._pending.items() if g.runtime is not runtime}
-            self._active = {k: g for k, g in self._active.items() if k[0] != id(runtime)}
-            self._denied = {key: owner for key, owner in self._denied.items() if owner is not runtime}
-
-    def _event(self, event, runtime):
-        if event.type == "agent_end":
-            self._discard(runtime)
 
     def revoke(self):
         with self.session._lock:
             self.revision += 1
-            self._pending.clear()
-            self._active.clear()
-            self._denied.clear()
+            self._session_grants.clear()
+            self._run_denials.clear()
 
     def request_permissions(self, args, context):
         runtime = self.session.runtime_for_context(context)
         if runtime is None or context.signal is None or context.signal.is_set():
             return ToolResult.error("Missing or cancelled originating runtime")
         snapshot = runtime.permission_snapshot
-        # The captured approval ceiling is independent of later visible settings.
         if snapshot is None or snapshot.approval == "never" or self.session.approval_policy == "never":
             return ToolResult.error("New resource permission requests are disabled")
-        tool = next((t for t in runtime.tools if t.name == args["tool"]), None)
-        if tool is None or tool.execution_scope not in {"file", "process", "network"}:
-            return ToolResult.error("Request one managed file, process or network operation, not a child task or external service")
-        arguments = copy.deepcopy(args["arguments"])
-        if tool.prepare_arguments:
-            arguments = tool.prepare_arguments(arguments)
-        arguments, errors = validate(arguments, tool.parameters)
-        if errors:
-            return ToolResult.error("Invalid requested operation: " + "; ".join(errors))
-        event = ToolCallEvent(context.call_id + ":request", tool.name, arguments, tool, context.agent,
-                              context.cwd, signal=context.signal, origin=context.origin)
-        source_for(self.session, event)
+
+        tool = None
+        raw_tool = args.get("tool")
+        if raw_tool is not None:
+            tool = next((t for t in runtime.tools if t.name == raw_tool), None)
+            if tool is None or tool.execution_scope not in {"file", "process", "network"}:
+                return ToolResult.error(
+                    "Request one managed file, process or network operation, not a child task or external service"
+                )
+            if args.get("arguments") is not None:
+                arguments = copy.deepcopy(args["arguments"])
+                if tool.prepare_arguments:
+                    arguments = tool.prepare_arguments(arguments)
+                _, errors = validate(arguments, tool.parameters)
+                if errors:
+                    return ToolResult.error("Invalid requested operation: " + "; ".join(errors))
+
+        source_for(self.session, context)
         base = runtime.execution_context
+        for_process = tool is None or tool.execution_scope == "process"
         delta = args["permissions"]
-        requested = []
+        requested: list[tuple[str, str]] = []
         try:
             for kind in ("read_paths", "write_paths"):
                 access = "read" if kind == "read_paths" else "write"
                 for value in delta.get(kind, []):
-                    # S3-02: Broker resolves grant roots so symlinks like /tmp -> /private/tmp
-                    # display and compile using their real path.
-                    real = _resolve_grant_root(value, event.cwd)
-                    if base.policy.denied(real, access):
+                    real = _resolve_grant_root(
+                        value, context.cwd, access=access, workspace=base.workspace, for_process=for_process,
+                    )
+                    if base.policy.hard_denied(real):
                         return ToolResult.error(f"Protected resources cannot be granted: {real}")
                     requested.append((kind, str(real)))
             if parse_network(delta.get("network_allowed", False)):
                 requested.append(("network_allowed", "true"))
         except ValueError as error:
             return ToolResult.error(str(error))
-        saved = self._saved(event, base)
-        current = _extend(base, saved)
+
+        current = _extend(base, self._effective_grants(context, base))
         missing = tuple(dict.fromkeys(item for item in requested if not _covered(current, *item)))
-        policy = _extend(current, missing)
-        if tool.execution_scope == "process":
+        candidate = _extend(current, missing)
+        if for_process:
             try:
-                policy.validate_native(context.cwd)
+                candidate.validate_native(context.cwd)
             except (ExecutionUnavailable, FileAccessDenied) as error:
                 return ToolResult.error(str(error))
-        if block := self._check(event, policy):
-            return ToolResult.error(block.reason, block.details)
         if not missing:
-            return ToolResult.text("The current mode and saved grants already cover the requested resources.")
-        return self._confirm(event, base, saved, policy, missing, args["reason"], dispatch=False)
+            return ToolResult.text("The current mode and active grants already cover the requested resources.")
+        if self._run_denied(context, missing):
+            return ToolResult.error("Resource request was already denied in this turn.")
+        return self._confirm(context, base, missing, args["reason"], tool_name=raw_tool, tool_args=args.get("arguments"))
 
-    def _confirm(self, event, base, saved, policy, missing, reason, *, dispatch):
-        runtime = self.session.runtime_for_context(event)
-        scope = self._scope(event, base)
-        if (event.signal is None or event.signal.is_set() or base is not runtime.execution_context
-                or self.session.approval_policy == "never"):
-            return ToolResult.error("The operation's permission context is no longer active")
-        targets = _targets(path for kind, path in missing if kind != "network_allowed")
+    def _confirm(self, context_or_event, base, missing, reason, *, tool_name=None, tool_args=None):
+        runtime = self.session.runtime_for_context(context_or_event)
+        signal = getattr(context_or_event, "signal", None)
+        agent_name = getattr(context_or_event, "agent", runtime.name if runtime else "main")
+        cwd = getattr(context_or_event, "cwd", base.workspace)
+        display_tool = tool_name or getattr(context_or_event, "tool_name", "request_permissions")
+        display_args = tool_args if tool_args is not None else getattr(context_or_event, "args", {})
+        if (signal is None or signal.is_set() or runtime is None or base is not runtime.execution_context
+                or self.session.approval_policy == "never" or self._confirm_callable() is None):
+            return ToolResult.error("Additional resources were not granted")
         with self.session._lock:
-            key = self._key(event)
-            if key in self._denied:
-                return ToolResult.error("This operation was denied; do not repeat or bypass it")
-        question = (f"Operation: {event.tool_name} {json.dumps(event.args, ensure_ascii=False)}\n"
-                    f"Working directory: {event.cwd.resolve()}\n"
+            rev_before = self.revision
+        question = (f"Operation: {display_tool} {json.dumps(display_args, ensure_ascii=False)}\n"
+                    f"Working directory: {Path(cwd).resolve()}\n"
+                    f"Project: {base.workspace}\n"
                     f"Additional resources: {json.dumps(missing, ensure_ascii=False)}\n"
                     f"Reason: {reason}" + self.session.t("features.permission.external_suffix"))
-        answer = self.session.ui.confirm(question, event.agent)
+        answer = self._confirm_callable()(question, agent_name)
         with self.session._lock:
-            if (event.signal.is_set() or base is not runtime.execution_context or key != self._key(event) or self.session.approval_policy == "never"
-                    or _targets(t[0] for t in targets) != targets or saved != self._saved(event, base)):
+            if (signal.is_set() or base is not runtime.execution_context
+                    or self.revision != rev_before or self.session.approval_policy == "never"):
                 return ToolResult.error("Permission request cancelled or expired because its context changed")
             runtime.origin.root.append("custom", kind="permission_request", data={
-                "tool": event.tool_name, "arguments_sha256": hashlib.sha256(scope[-1].encode()).hexdigest(),
-                "permissions": missing, "approved": answer in {"y", "a"},
-                "scope": "persistent" if answer == "a" else "operation",
-                "expires_after_seconds": 300 if answer == "y" and not dispatch else None,
+                "tool": display_tool,
+                "permissions": missing,
+                "approved": answer in {"y", "a"},
+                "scope": "persistent" if answer == "a" else "session",
             })
             if answer not in {"y", "a"}:
-                self._denied[key] = runtime
+                self._record_run_denials(runtime, missing)
                 return ToolResult.error("Additional resources were not granted")
             if answer == "a":
-                ResourceRules(self.session.paths.user).allow(scope, missing)
-            grant = Grant(key, policy, time.monotonic() + 300, runtime, runtime.run_id, targets, saved)
-            if dispatch:
-                self._active[(id(runtime), id(event))] = grant, event
-                return ToolResult.text("Authorized for dispatch")
-            if answer == "a":
-                return ToolResult.text("Saved for this exact operation. No operation has executed.")
-            self._pending[key] = grant
-        return ToolResult.text("Approved once for 5 minutes in this run. Call the exact tool and arguments. "
-                               "No operation has executed; the task boundary is unchanged.")
+                ResourceRules(self.session.paths.user).allow(
+                    str(base.workspace), base.permission_snapshot.mode.id, missing,
+                )
+            self._record_session_grants(context_or_event, base, missing)
+        if answer == "a":
+            return ToolResult.text("Saved for this project and active in this session.")
+        return ToolResult.text("Approved for this session.")

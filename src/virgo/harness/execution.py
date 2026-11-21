@@ -71,8 +71,6 @@ class ModeExecutionProvider(HostExecutionProvider):
             provider = SandboxExecutionProvider(self.session, self.executor)
             api = ExtensionAPI(self.session, "core:execution")
             try:
-                api.on("tool_result", provider._result)
-                api.on("agent_event", provider._event)
                 self.resource_tool = install_resource_tool(api, provider)
             except BaseException:
                 api._rollback()
@@ -107,8 +105,6 @@ class ModeExecutionProvider(HostExecutionProvider):
                 origin = getattr(runtime, "origin", None)
                 context = self._context(runtime, mode, origin.root.preset_revision if origin else 0)
                 runtime.permission_mode_id = mode.id
-                if self.sandbox is not None:
-                    self.sandbox._discard(runtime)
             previous = getattr(runtime, "execution_context", None)
             runtime.execution_context = context
             if previous is not None and previous.provider != context.provider and hasattr(runtime, "agent"):

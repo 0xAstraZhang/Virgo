@@ -8,24 +8,22 @@ diagnostic log files are opened here.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
+import bisect
 import json
 import os
 import re
-import tempfile
 import threading
 import uuid
+import zlib
 from pathlib import Path
 
 from ..diagnostics import capture_error, emergency_write, sanitize
-from .diagnostic_store import connect
 
 SECTIONS = ("summary", "causes", "trace", "stderr", "attempts", "related")
 MAX_RESPONSE_BYTES = 8192
 MAX_RECORD_BYTES = 64 * 1024
 _ERROR_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
-_CURSOR = re.compile(r"([a-f0-9]{24}):([0-9]{1,19}):([0-9]{1,8})\Z")
+_CURSOR = re.compile(r"([a-f0-9]{8}):([0-9]{1,19}):([0-9]{1,8})\Z")
 _END = 2**63 - 1
 _CALL_KEYS = ("model_call_id", "runtime_id", "session_id", "run_id", "agent", "purpose")
 _RECORD_FIELDS = (
@@ -122,14 +120,12 @@ def _record_view(record) -> dict | None:
         result = _clip_strings(result, limit)
         result["error_id"] = error_id
         result["record_truncated"] = True
-    # Fixed schemas and bounded lists fit the limit above. Retain a safe reference
-    # if a future schema expansion accidentally exceeds that invariant.
     return {"error_id": error_id, "message": "Diagnostic evidence exceeded its retention budget.",
             "record_truncated": True, "context": {}}
 
 
 class DiagnosticAccess:
-    """Disk-backed private snapshots. Only remember grants access; no global fallback."""
+    """In-memory runtime-scoped diagnostic snapshots. Only remember grants access."""
 
     def __init__(self, *, directory: Path | None = None, page_bytes: int = MAX_RESPONSE_BYTES):
         if type(page_bytes) is not int or not 512 <= page_bytes <= MAX_RESPONSE_BYTES:
@@ -137,118 +133,126 @@ class DiagnosticAccess:
         self.page_bytes = page_bytes
         self.directory = directory or Path(os.environ.get("VIRGO_HOME", Path.home() / ".virgo")) / "logs"
         self._lock = threading.RLock()
-        self._connection = None
-        self._temporary = None
         self._closed = False
         self._version = 0
+        self._next_seq = 0
         self._pending_sequence = 0
-        self._cursor_key = uuid.uuid4().bytes
+        self._instance_id = uuid.uuid4().hex[:8]
+        # error_id -> (seq, call_key, payload_json)
+        self._by_id: dict[str, tuple[int, str, str]] = {}
+        # seq -> error_id
+        self._by_seq: dict[int, str] = {}
+        # call_key -> sorted list of seq
+        self._by_call_key: dict[str, list[int]] = {}
+        # error_id -> {"recorded": bool, "presented": bool, "pending": int | None}
+        self._delivery: dict[str, dict[str, int | bool | None]] = {}
 
-    def _db(self):
+    def _ensure_open(self) -> None:
         if self._closed:
             raise OSError("Runtime diagnostic evidence has been closed")
-        if self._connection is None:
-            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            temporary = tempfile.TemporaryDirectory(prefix="runtime-", dir=self.directory)
-            db = None
-            try:
-                db = connect(Path(temporary.name) / "evidence.sqlite3", durable=False)
-                db.executescript("""
-                    CREATE TABLE evidence (
-                        seq INTEGER PRIMARY KEY, error_id TEXT NOT NULL UNIQUE,
-                        call_key TEXT NOT NULL, payload TEXT NOT NULL
-                    );
-                    CREATE INDEX evidence_call ON evidence(call_key, seq);
-                    CREATE TABLE delivery (
-                        error_id TEXT PRIMARY KEY, recorded INTEGER NOT NULL DEFAULT 0,
-                        presented INTEGER NOT NULL DEFAULT 0, pending INTEGER
-                    );
-                    CREATE INDEX delivery_pending ON delivery(pending) WHERE pending IS NOT NULL;
-                """)
-            except BaseException:
-                if db is not None:
-                    db.close()
-                temporary.cleanup()
-                raise
-            self._connection, self._temporary = db, temporary
-        return self._connection
 
-    def close(self):
+    def _clear(self) -> None:
+        self._by_id.clear()
+        self._by_seq.clear()
+        self._by_call_key.clear()
+        self._delivery.clear()
+
+    def close(self) -> None:
         try:
             with self._lock:
                 self._closed = True
-                if self._connection is not None:
-                    self._connection.close()
-                    self._connection = None
-                if self._temporary is not None:
-                    temporary, self._temporary = self._temporary, None
-                    temporary.cleanup()
+                self._clear()
         except Exception as error:
             # Cleanup is diagnostic bookkeeping, not the child operation's outcome.
             emergency_write(capture_error(error, phase="diagnostics.cleanup"))
 
-    def __del__(self):
-        if getattr(self, "_connection", None) is not None:
-            self._connection.close()
-
     def remember(self, record: dict) -> dict | None:
-        """Persist a detached, filtered snapshot in this runtime's private database."""
+        """Store a detached, filtered snapshot in this runtime's memory."""
         view = _record_view(record)
         if view is None:
             return None
+        error_id = view["error_id"]
         payload = _json(view)
         call_key = _json([view["context"].get(key) for key in _CALL_KEYS])
         with self._lock:
-            changed = self._db().execute("""
-                INSERT INTO evidence(error_id, call_key, payload) VALUES (?, ?, ?)
-                ON CONFLICT(error_id) DO UPDATE SET call_key=excluded.call_key, payload=excluded.payload
-                WHERE evidence.payload != excluded.payload
-            """, (view["error_id"], call_key, payload)).rowcount
-            self._version += bool(changed)
+            self._ensure_open()
+            existing = self._by_id.get(error_id)
+            if existing is None:
+                self._next_seq += 1
+                seq = self._next_seq
+                self._by_id[error_id] = (seq, call_key, payload)
+                self._by_seq[seq] = error_id
+                self._by_call_key.setdefault(call_key, []).append(seq)
+                self._version += 1
+            else:
+                seq, old_call_key, old_payload = existing
+                if old_payload != payload or old_call_key != call_key:
+                    if old_call_key != call_key:
+                        old_list = self._by_call_key.get(old_call_key)
+                        if old_list is not None:
+                            idx = bisect.bisect_left(old_list, seq)
+                            if idx < len(old_list) and old_list[idx] == seq:
+                                old_list.pop(idx)
+                        new_list = self._by_call_key.setdefault(call_key, [])
+                        bisect.insort(new_list, seq)
+                    self._by_id[error_id] = (seq, call_key, payload)
+                    self._version += 1
         return view
 
     def get(self, error_id: str) -> dict | None:
         if not isinstance(error_id, str) or not _ERROR_ID.fullmatch(error_id):
             return None
         with self._lock:
-            if self._connection is None and not self._closed:
-                return None
-            row = self._db().execute("SELECT payload FROM evidence WHERE error_id=?", (error_id,)).fetchone()
-            return json.loads(row[0]) if row else None
+            self._ensure_open()
+            entry = self._by_id.get(error_id)
+            return json.loads(entry[2]) if entry is not None else None
 
     def recent(self, limit: int = 100) -> list[dict]:
         with self._lock:
-            if self._connection is None and not self._closed:
+            self._ensure_open()
+            if not self._by_seq or limit <= 0:
                 return []
-            rows = self._db().execute("SELECT payload FROM evidence ORDER BY seq DESC LIMIT ?", (limit,)).fetchall()
-            return [json.loads(row[0]) for row in reversed(rows)]
+            seqs = list(self._by_seq.keys())[-limit:]
+            return [json.loads(self._by_id[self._by_seq[seq]][2]) for seq in seqs]
 
     def mark(self, error_id: str, action: str) -> bool:
-        """Delivery bookkeeping is disk-backed too; it cannot create evidence grants."""
+        """Delivery bookkeeping; cannot create evidence grants."""
         if not isinstance(error_id, str) or not _ERROR_ID.fullmatch(error_id):
             return False
         with self._lock:
-            db = self._db()
-            db.execute("INSERT OR IGNORE INTO delivery(error_id) VALUES (?)", (error_id,))
+            self._ensure_open()
+            state = self._delivery.setdefault(
+                error_id, {"recorded": False, "presented": False, "pending": None},
+            )
             if action == "record":
-                return bool(db.execute("UPDATE delivery SET recorded=1 WHERE error_id=? AND recorded=0",
-                                       (error_id,)).rowcount)
+                if state["recorded"]:
+                    return False
+                state["recorded"] = True
+                return True
             if action == "presented":
-                return bool(db.execute("UPDATE delivery SET presented=1, pending=NULL WHERE error_id=? AND presented=0",
-                                       (error_id,)).rowcount)
+                if state["presented"]:
+                    return False
+                state["presented"] = True
+                state["pending"] = None
+                return True
             if action == "pending":
+                if state["presented"] or state["pending"] is not None:
+                    return False
                 self._pending_sequence += 1
-                return bool(db.execute("""UPDATE delivery SET pending=?
-                    WHERE error_id=? AND presented=0 AND pending IS NULL""",
-                                       (self._pending_sequence, error_id)).rowcount)
+                state["pending"] = self._pending_sequence
+                return True
             raise ValueError("Unknown diagnostic delivery action")
 
     def pending(self, limit: int = 3) -> list[str]:
         with self._lock:
-            if self._connection is None and not self._closed:
-                return []
-            return [row[0] for row in self._db().execute(
-                "SELECT error_id FROM delivery WHERE pending IS NOT NULL ORDER BY pending LIMIT ?", (limit,))]
+            self._ensure_open()
+            items = [
+                (int(state["pending"]), err_id)
+                for err_id, state in self._delivery.items()
+                if state["pending"] is not None
+            ]
+            items.sort(key=lambda pair: pair[0])
+            return [err_id for _, err_id in items[: max(0, limit)]]
 
     @staticmethod
     def _summary(record: dict) -> dict:
@@ -258,7 +262,7 @@ class DiagnosticAccess:
         return result
 
     def _segments(self, record, section, position):
-        """Resume at a row key, never serialize or scan all previous result rows."""
+        """Resume at a sequence position without scanning all earlier rows."""
         if section in ("summary", "causes", "trace", "stderr"):
             value = {"summary": lambda: _json(self._summary(record)),
                      "causes": lambda: _json(record["cause_chain"]) if record.get("cause_chain") else None,
@@ -272,12 +276,15 @@ class DiagnosticAccess:
             if not context.get("model_call_id"):
                 return
             key = _json([context.get(name) for name in _CALL_KEYS])
-            db = self._db()
-            first = db.execute("SELECT seq FROM evidence WHERE call_key=? ORDER BY seq LIMIT 1", (key,)).fetchone()[0]
+            seq_list = self._by_call_key.get(key, [])
+            if not seq_list:
+                return
+            first = seq_list[0]
             if position == 0:
                 yield 0, '{"scope":"retained_authorized_failures","records":['
-            for seq, payload in db.execute(
-                "SELECT seq, payload FROM evidence WHERE call_key=? AND seq>=? ORDER BY seq", (key, max(1, position))):
+            start_idx = bisect.bisect_left(seq_list, max(1, position))
+            for seq in seq_list[start_idx:]:
+                payload = self._by_id[self._by_seq[seq]][2]
                 yield seq, ("" if seq == first else ",") + _json(self._summary(json.loads(payload)))
         else:
             if position == 0:
@@ -291,10 +298,10 @@ class DiagnosticAccess:
                     seen = True
         yield _END, "]}"
 
-    def _token(self, error_id, section, position, offset):
-        data = f"{self._version}\0{error_id}\0{section}\0{position}\0{offset}"
-        signature = hmac.new(self._cursor_key, data.encode(), hashlib.sha256).hexdigest()[:24]
-        return f"{signature}:{position}:{offset}"
+    def _token(self, error_id: str, section: str, position: int, offset: int) -> str:
+        scope = f"{self._instance_id}\0{self._version}\0{error_id}\0{section}".encode()
+        tag = zlib.crc32(scope) & 0xFFFFFFFF
+        return f"{tag:08x}:{position}:{offset}"
 
     def read(self, error_id: str, section: str = "summary", cursor: str | None = None) -> dict:
         """Return an 8 KiB envelope; concatenate text pages to reconstruct a section."""
@@ -313,7 +320,7 @@ class DiagnosticAccess:
                 if match is None:
                     return invalid
                 position, offset = int(match[2]), int(match[3])
-                if not hmac.compare_digest(cursor, self._token(error_id, section, position, offset)):
+                if cursor != self._token(error_id, section, position, offset):
                     return invalid
             segments = iter(self._segments(record, section, position))
             segment = next(segments, None)

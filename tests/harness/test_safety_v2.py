@@ -125,6 +125,8 @@ def test_ver07_retired_execution_and_permission_settings_rejected(project, retir
     "npm publish",
     "aws s3 rm s3://prod-bucket --recursive",
     "psql -c 'DROP DATABASE prod;'",
+    "echo 'DROP TABLE users;' | psql mydb",
+    "docker exec -i pg-container psql -U postgres -c 'TRUNCATE TABLE orders;'",
     "redis-cli FLUSHALL",
 ])
 def test_high_risk_detector_flags_dangerous_commands(tmp_path, command):
@@ -136,7 +138,10 @@ def test_high_risk_detector_flags_dangerous_commands(tmp_path, command):
 
 @pytest.mark.parametrize("command", [
     "git status",
+    "git commit -m 'fix: DROP TABLE legacy_sessions in migration'",
     "git push origin feature-branch",
+    "rg 'TRUNCATE TABLE' migrations/",
+    "python -c \"sql = 'DELETE FROM cache;'\"",
     "rm -rf ./build",
     "rm -rf dist/output",
     "pytest -q",
@@ -179,11 +184,16 @@ def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session,
         settings={"execution": {"mode": "no-limit"}, "permissions": {"confirmHighRisk": False}},
     )
     host_shell = selected(host_session).tool_name
-    cmd = python_command(host_session, f"from pathlib import Path; Path({str(marker)!r}).write_text('DROP TABLE demo;')")
+    write_ok = python_command(host_session, f"from pathlib import Path; Path({str(marker)!r}).write_text('ok')")
+    cmd = (
+        f"{write_ok} ; sqlite3 :memory: 'DROP TABLE IF EXISTS demo;'"
+        if host_shell != "powershell"
+        else f"{write_ok} ; git reset --hard"
+    )
     faux.script("test", faux.reply(tools=[(host_shell, {"command": cmd})]), faux.reply("done"))
     host_session.prompt("Run with confirmation disabled")
     assert not ui_host.questions
-    assert marker.read_text().strip() == "DROP TABLE demo;"
+    assert marker.read_text().strip() == "ok"
 
     # In workspace-edit, confirmHighRisk=False does NOT disable high-risk confirmation!
     ui_sandbox = RecordingUI(["n"])
@@ -210,8 +220,18 @@ def test_ver10_high_risk_approved_once_executes_and_second_call_prompts_again(ma
     marker = project / "marker.txt"
     session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
     shell = selected(session).tool_name
-    cmd1 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('DROP DATABASE x')")
-    cmd2 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('DROP DATABASE y')")
+    cmd1 = (
+        f"sqlite3 '{project / 't.db'}' 'DROP TABLE IF EXISTS x;' ; "
+        + python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('first-ok')")
+        if shell != "powershell"
+        else "git clean -f ; " + python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('first-ok')")
+    )
+    cmd2 = (
+        f"sqlite3 '{project / 't.db'}' 'DROP TABLE IF EXISTS y;' ; "
+        + python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('second-blocked')")
+        if shell != "powershell"
+        else "git clean -f ; " + python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('second-blocked')")
+    )
     faux.script(
         "test",
         faux.reply(tools=[(shell, {"command": cmd1})]),
@@ -222,7 +242,7 @@ def test_ver10_high_risk_approved_once_executes_and_second_call_prompts_again(ma
     results = tool_results(session)
     assert len(results) == 2
     assert not results[0].is_error
-    assert marker.read_text().strip() == "DROP DATABASE x"
+    assert marker.read_text().strip() == "first-ok"
     assert results[1].is_error and results[1].details["status"] == "high_risk_denied"
     assert len(ui.questions) == 2
 

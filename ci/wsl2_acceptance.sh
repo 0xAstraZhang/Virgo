@@ -15,7 +15,7 @@ case "$(pwd -P)" in
     ;;
 esac
 
-command -v bwrap >/dev/null || { echo "ERROR: bubblewrap (bwrap) is required: sudo apt-get install -y bubblewrap libseccomp2" >&2; exit 2; }
+command -v bwrap >/dev/null || { echo "ERROR: bubblewrap (bwrap) is required: sudo apt-get install -y bubblewrap" >&2; exit 2; }
 command -v uv >/dev/null || { echo "ERROR: uv is required in PATH" >&2; exit 2; }
 
 echo "==> Installing locked dev dependencies"

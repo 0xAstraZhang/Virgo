@@ -14,7 +14,7 @@ def _request(path):
                                     "reason": "Write the exact requested output"})
 
 
-def test_explicit_denial_blocks_without_confirmation_and_cannot_be_rerolled(broker_session, tmp_path):
+def test_explicit_denial_blocks_reroll_in_same_turn_but_prompts_on_next_user_turn(broker_session, tmp_path):
     ui = RecordingUI(answers=["n", "y"])
     operation = _request(tmp_path / "outside")
     session = broker_session(faux.reply(tools=[operation]), faux.reply(tools=[operation]), faux.reply("done"),
@@ -22,10 +22,10 @@ def test_explicit_denial_blocks_without_confirmation_and_cannot_be_rerolled(brok
     session.prompt("Request one operation")
     first, second = tool_results(session)
     assert first.is_error and second.is_error
-    assert "was denied" in second.text() and len(ui.questions) == 1
-    session.services["execution"].revoke()
+    assert "denied" in second.text() and len(ui.questions) == 1
+    # Starting a new user prompt turn allows asking again cleanly without needing /permissions revoke.
     faux.script("test", faux.reply(tools=[operation]), faux.reply("done"))
-    session.prompt("I revoked the previous decision; ask again")
+    session.prompt("Please try again now")
     assert not tool_results(session)[-1].is_error
     assert len(ui.questions) == 2
 

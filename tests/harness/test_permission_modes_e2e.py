@@ -14,18 +14,21 @@ def request(tool="write", arguments=None, **flags):
                                     "permissions": flags, "reason": "Finish the requested operation"})
 
 
-def test_explicit_permission_request_is_exact_once_and_does_not_change_mode(broker_session):
+def test_explicit_permission_request_persists_in_session_and_does_not_change_mode(broker_session):
     args = {"path": "result.txt", "content": "ok"}
+    updated = {"path": "result.txt", "content": "updated"}
     session = broker_session(
-        faux.reply(tools=[request(write_paths=["result.txt"])]),
-        faux.reply(tools=[("write", args)]),
-        faux.reply(tools=[("write", args)]), faux.reply("done"),
-        ui=RecordingUI(["y"]), preset="read-only",
+        faux.reply(tools=[request(write_paths=["result.txt"]), ("write", args)]),
+        faux.reply(tools=[("write", updated)]),
+        faux.reply(tools=[("write", {"path": "unapproved.txt", "content": "no"})]),
+        faux.reply("done"),
+        ui=RecordingUI(["y", "n"]), preset="read-only",
     )
     session.prompt("Write the requested file after my permission")
     results = tool_results(session)
-    assert [result.is_error for result in results] == [False, False, True]
-    assert (session.cwd / "result.txt").read_text() == "ok"
+    assert [result.is_error for result in results] == [False, False, False, True]
+    assert (session.cwd / "result.txt").read_text() == "updated"
+    assert not (session.cwd / "unapproved.txt").exists()
     assert not session.services["execution"].mode_for(session.main).write_paths
     assert len(session.ui.questions) == 2
     assert results[-1].details["boundary"]["dimension"] == "write_paths"
@@ -33,26 +36,33 @@ def test_explicit_permission_request_is_exact_once_and_does_not_change_mode(brok
     assert "write" in calls()[0]["tools"]
 
 
-def test_direct_file_approval_dispatches_once_and_preserves_the_mode(broker_session, tmp_path):
+def test_direct_file_approval_persists_in_session_and_preserves_the_mode(broker_session, tmp_path):
     target = tmp_path / "result.txt"
-    args = {"path": str(target), "content": "one"}
-    session = broker_session(faux.reply(tools=[("write", args)]), faux.reply(tools=[("write", args)]),
-                             faux.reply("done"), preset="read-only", ui=RecordingUI(["y", "n"]))
+    other = tmp_path / "other.txt"
+    session = broker_session(
+        faux.reply(tools=[("write", {"path": str(target), "content": "one"})]),
+        faux.reply(tools=[("write", {"path": str(target), "content": "two"})]),
+        faux.reply(tools=[("write", {"path": str(other), "content": "blocked"})]),
+        faux.reply("done"),
+        preset="read-only",
+        ui=RecordingUI(["y", "n"]),
+    )
     session.prompt("Write the requested result")
-    assert [result.is_error for result in tool_results(session)] == [False, True]
-    assert target.read_text() == "one"
+    assert [result.is_error for result in tool_results(session)] == [False, False, True]
+    assert target.read_text() == "two"
+    assert not other.exists()
     assert len(session.ui.questions) == 2
     assert all(str(session.cwd) in question and "write_paths" in question and "Reason:" in question
                for question in session.ui.questions)
     assert session.main.permission_snapshot.mode.id == "read-only"
 
 
-def test_changed_arguments_cannot_consume_another_operation_permission(broker_session):
+def test_changed_arguments_cannot_consume_another_path_permission(broker_session):
     session = broker_session(
         faux.reply(tools=[request(write_paths=["result.txt"])]),
         faux.reply(tools=[("write", {"path": "other.txt", "content": "ok"})]),
         faux.reply(tools=[("write", {"path": "result.txt", "content": "ok"})]), faux.reply("done"),
-        ui=RecordingUI(["y"]), preset="read-only",
+        ui=RecordingUI(["y", "n"]), preset="read-only",
     )
     session.prompt("Write only the requested file")
     assert [result.is_error for result in tool_results(session)] == [False, True, False]
@@ -71,7 +81,7 @@ def test_permission_request_cannot_grant_a_whole_child_runtime(broker_session):
     assert result.is_error
     assert "not a child task" in result.text()
     assert not session.ui.questions
-    assert not session.services["execution"].sandbox._pending
+    assert not session.services["execution"].sandbox._session_grants
 
 
 def test_deny_and_noninteractive_policy_prevent_escalation(broker_session):

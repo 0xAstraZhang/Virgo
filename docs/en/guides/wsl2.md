@@ -1,6 +1,6 @@
 # Running Virgo on Windows with WSL2
 
-On Windows, both [native Windows 11 (Standard AppContainer with `null.sys` Feature `60692039`)](windows-sandbox.md) and **WSL2 (Windows Subsystem for Linux 2)** are **Tier 1** supported environments defaulting to **Workspace-Edit** without requiring Administrator privileges. Choose WSL2 when you are on Windows 10 / older Windows 11 / Windows Server builds without Feature `60692039`, prefer Linux toolchains and POSIX filesystem semantics, or need **localhost/loopback (`127.0.0.1`)** access inside sandboxed commands (which Windows blocks inside non-admin AppContainer). Inside WSL2, Virgo uses the full Linux sandbox (`bubblewrap` + `libseccomp2`).
+On Windows, both [native Windows 11 (Standard AppContainer with `null.sys` Feature `60692039`)](windows-sandbox.md) and **WSL2 (Windows Subsystem for Linux 2)** are **Tier 1** supported environments defaulting to **Workspace-Edit** without requiring Administrator privileges. Choose WSL2 when you are on Windows 10 / older Windows 11 / Windows Server builds without Feature `60692039`, prefer Linux toolchains and POSIX filesystem semantics, or need **localhost/loopback (`127.0.0.1`)** access inside sandboxed commands (which Windows blocks inside non-admin AppContainer). Inside WSL2, Virgo uses the full Linux sandbox (`bubblewrap`).
 
 ## 1. Install WSL2 and Ubuntu
 
@@ -24,7 +24,7 @@ Inside your WSL2 Ubuntu terminal:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y bubblewrap libseccomp2 git curl
+sudo apt-get install -y bubblewrap git curl
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
@@ -59,6 +59,6 @@ From your WSL2 checkout inside the Linux filesystem, run the bundled acceptance 
 ./ci/wsl2_acceptance.sh
 ```
 
-This verifies `bubblewrap` + `libseccomp2`, runs the required Linux native sandbox tests (`VIRGO_REQUIRE_SANDBOX_TESTS=1`), and checks the cold-start and `Read` performance budgets in **Workspace-Edit**.
+This verifies `bubblewrap`, runs the required Linux native sandbox tests (`VIRGO_REQUIRE_SANDBOX_TESTS=1`), and checks the cold-start and `Read` performance budgets in **Workspace-Edit**.
 
 See also: [Execution boundaries](sandbox.md) · [Native Windows sandbox](windows-sandbox.md)
