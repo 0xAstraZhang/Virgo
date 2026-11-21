@@ -1171,6 +1171,10 @@ def test_linux_bwrap_envelope_mounts_resolv_target_and_masks_private_paths(proje
     assert ["--ro-bind", str(empty_file), str(priv_file.resolve())] in ro_mounts
     tmpfs_mounts = [args[idx : idx + 2] for idx, val in enumerate(args) if val == "--tmpfs"]
     assert ["--tmpfs", str(priv_dir.resolve())] in tmpfs_mounts
+    valid_perms_targets = {"--tmpfs", "--dir", "--file", "--bind-data", "--ro-bind-data"}
+    for idx, val in enumerate(args):
+        if val == "--perms":
+            assert args[idx + 2] in valid_perms_targets, f"bwrap rejects --perms before {args[idx + 2]}"
 
 
 def test_native_environment_denylist_strips_secrets_and_reuses_session_cache(native, project, monkeypatch):

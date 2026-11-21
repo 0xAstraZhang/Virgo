@@ -179,6 +179,8 @@ def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session,
     # In no-limit with confirmHighRisk=False, high-risk confirmation is skipped.
     ui_host = RecordingUI()
     marker = project / "ran.txt"
+    disposable = project.parent / "disposable-no-confirm"
+    disposable.mkdir(exist_ok=True)
     host_session = make_session(
         ui=ui_host,
         settings={"execution": {"mode": "no-limit"}, "permissions": {"confirmHighRisk": False}},
@@ -186,9 +188,9 @@ def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session,
     host_shell = selected(host_session).tool_name
     write_ok = python_command(host_session, f"from pathlib import Path; Path({str(marker)!r}).write_text('ok')")
     cmd = (
-        f"{write_ok} ; sqlite3 :memory: 'DROP TABLE IF EXISTS demo;'"
+        f"rm -rf '{disposable}' ; {write_ok}"
         if host_shell != "powershell"
-        else f"{write_ok} ; git reset --hard"
+        else f"Remove-Item -Recurse -Force '{disposable}' ; {write_ok}"
     )
     faux.script("test", faux.reply(tools=[(host_shell, {"command": cmd})]), faux.reply("done"))
     host_session.prompt("Run with confirmation disabled")
@@ -218,19 +220,23 @@ def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session,
 def test_ver10_high_risk_approved_once_executes_and_second_call_prompts_again(make_session, project):
     ui = RecordingUI(["y", "n"])
     marker = project / "marker.txt"
+    disp1 = project.parent / "disposable-hr-1"
+    disp2 = project.parent / "disposable-hr-2"
+    disp1.mkdir(exist_ok=True)
+    disp2.mkdir(exist_ok=True)
     session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
     shell = selected(session).tool_name
+    write1 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('first-ok')")
+    write2 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('second-blocked')")
     cmd1 = (
-        f"sqlite3 '{project / 't.db'}' 'DROP TABLE IF EXISTS x;' ; "
-        + python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('first-ok')")
+        f"rm -rf '{disp1}' ; {write1}"
         if shell != "powershell"
-        else "git clean -f ; " + python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('first-ok')")
+        else f"Remove-Item -Recurse -Force '{disp1}' ; {write1}"
     )
     cmd2 = (
-        f"sqlite3 '{project / 't.db'}' 'DROP TABLE IF EXISTS y;' ; "
-        + python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('second-blocked')")
+        f"rm -rf '{disp2}' ; {write2}"
         if shell != "powershell"
-        else "git clean -f ; " + python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('second-blocked')")
+        else f"Remove-Item -Recurse -Force '{disp2}' ; {write2}"
     )
     faux.script(
         "test",

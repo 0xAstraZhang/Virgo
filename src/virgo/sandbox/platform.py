@@ -225,8 +225,10 @@ class NativePolicy:
         expanded_private: list[Path] = []
         for raw in self.private_paths:
             try:
-                target = raw.resolve(strict=True) if raw.is_symlink() else raw
-                if target.exists():
+                if not raw.exists() and not raw.is_symlink():
+                    continue
+                target = raw.resolve(strict=True)
+                if not target.is_relative_to(Path("/run")):
                     expanded_private.append(target)
             except OSError:
                 continue
@@ -238,7 +240,7 @@ class NativePolicy:
                 args += ["--perms", "000", "--tmpfs", str(path), "--remount-ro", str(path)]
                 covered.append(path)
             elif path.is_file() and empty_mask_file is not None:
-                args += ["--perms", "000", "--ro-bind", str(empty_mask_file), str(path)]
+                args += ["--ro-bind", str(empty_mask_file), str(path)]
                 covered.append(path)
 
         if session_cache is not None:
@@ -365,11 +367,11 @@ class NativePolicy:
                 empty_mask_file = resolved_session / ".empty"
                 if not empty_mask_file.exists():
                     empty_mask_file.write_bytes(b"")
-                    os.chmod(empty_mask_file, 0o444)
+                    os.chmod(empty_mask_file, 0o000)
             else:
                 empty_mask_file = scratch_path / ".empty"
                 empty_mask_file.write_bytes(b"")
-                os.chmod(empty_mask_file, 0o444)
+                os.chmod(empty_mask_file, 0o000)
 
             clean_env = filter_sandbox_environment(env)
             try:
