@@ -586,3 +586,90 @@ def test_mcp_config_precedence_and_reconnect_reloads_settings_and_call_timeout(m
     # Subsequent call on dead connection also guides /mcp reconnect.
     dead_res = sleep_tool.execute({}, ToolContext("dead", project, threading.Event()))
     assert dead_res.is_error and "/mcp reconnect" in dead_res.as_text()
+
+
+def test_mcp_colliding_server_names_are_order_independent_across_startup_and_reconnect(
+    make_session, project, tmp_path
+):
+    """Servers normalizing identically (e.g. prod.api and prod_api) keep stable tool names regardless of arrival order."""
+    install_extension()
+    server = tmp_path / "tagged_server.py"
+    server.write_text(
+        textwrap.dedent(
+            """
+            import json, os, sys, time
+            delay = float(os.environ.get("HANDSHAKE_DELAY", "0"))
+            tag = os.environ.get("SERVER_TAG", "unknown")
+            for line in sys.stdin:
+                req = json.loads(line)
+                if "id" not in req:
+                    continue
+                rid, method = req["id"], req.get("method")
+                if method == "initialize":
+                    if delay > 0:
+                        time.sleep(delay)
+                    res = {"protocolVersion": req["params"]["protocolVersion"],
+                           "capabilities": {"tools": {}},
+                           "serverInfo": {"name": tag, "version": "1"}}
+                elif method == "tools/list":
+                    res = {"tools": [
+                        {"name": "update", "description": f"update {tag}",
+                         "inputSchema": {"type": "object", "properties": {}}},
+                    ]}
+                else:
+                    res = {"content": [{"type": "text", "text": tag}]}
+                print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": res}), flush=True)
+            """
+        ),
+        encoding="utf-8",
+    )
+    cfg = Path(os.environ["VIRGO_HOME"]) / "mcp.json"
+    # prod.api is configured first but finishes handshake AFTER prod_api.
+    cfg.write_text(
+        json.dumps({
+            "mcpServers": {
+                "prod.api": {
+                    "command": sys.executable,
+                    "args": [str(server)],
+                    "env": {"SERVER_TAG": "dot", "HANDSHAKE_DELAY": "0.3"},
+                },
+                "prod_api": {
+                    "command": sys.executable,
+                    "args": [str(server)],
+                    "env": {"SERVER_TAG": "under", "HANDSHAKE_DELAY": "0"},
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+    session = make_session(settings={"execution": {"mode": "no-limit"}})
+    ctx = ToolContext("c", project, threading.Event())
+    # Neither colliding server claims the unsuffixed ambiguous name.
+    assert session.tool("mcp__prod_api__update") is None
+    before_tools = [t for t in session.tools_for("main") if t.name.startswith("mcp__prod_api__update_")]
+    assert len(before_tools) == 2
+    before_map = {t.name: t.execute({}, ctx).as_text() for t in before_tools}
+    assert set(before_map.values()) == {"dot", "under"}
+
+    # Reconnecting (config order, reversed delays) must preserve the exact name -> server mapping.
+    cfg.write_text(
+        json.dumps({
+            "mcpServers": {
+                "prod.api": {
+                    "command": sys.executable,
+                    "args": [str(server)],
+                    "env": {"SERVER_TAG": "dot", "HANDSHAKE_DELAY": "0"},
+                },
+                "prod_api": {
+                    "command": sys.executable,
+                    "args": [str(server)],
+                    "env": {"SERVER_TAG": "under", "HANDSHAKE_DELAY": "0.3"},
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+    session.prompt("/mcp reconnect")
+    after_tools = [t for t in session.tools_for("main") if t.name.startswith("mcp__prod_api__update_")]
+    after_map = {t.name: t.execute({}, ctx).as_text() for t in after_tools}
+    assert after_map == before_map

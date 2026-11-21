@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
@@ -683,11 +684,16 @@ def _short_hash(server: str, tool: str) -> str:
     return hashlib.sha256(f"{server}\0{tool}".encode()).hexdigest()[:8]
 
 
+def _disambiguated_tool_name(server: str, tool: str) -> str:
+    raw = f"mcp__{_norm(server)}__{_norm(tool)}"
+    return f"{raw[:55]}_{_short_hash(server, tool)}"
+
+
 def tool_name(server: str, tool: str) -> str:
     raw = f"mcp__{_norm(server)}__{_norm(tool)}"
     if len(raw) <= 64:
         return raw
-    return f"{raw[:55]}_{_short_hash(server, tool)}"
+    return _disambiguated_tool_name(server, tool)
 
 
 def _tool_allowed(connection: _Connection, raw_name: str) -> bool:
@@ -731,6 +737,8 @@ class _Manager:
         self.retired: list[_Connection] = []
         self._connecting: set[str] = set()
         self._published_counts: dict[str, int] = {}
+        self._warned_collisions: set[tuple[str, str, str]] = set()
+        self._warned_generation = -1
         self._generation = 0
         self._closed = False
         self._startup_cancel: threading.Event | None = None
@@ -841,12 +849,20 @@ class _Manager:
             with self._lock:
                 if self._closed:
                     return
-                snapshot = list(self.connections.values())
-            entries = []
-            seen: set[str] = set()
-            counts: dict[str, int] = {}
+                generation = self._generation
+                configured = list(self.configured)
+                ordered_names = list(dict.fromkeys([*configured, *sorted(self.connections)]))
+                snapshot = [self.connections[name] for name in ordered_names if name in self.connections]
+            if generation != self._warned_generation:
+                self._warned_collisions.clear()
+                self._warned_generation = generation
+            # Pre-detect normalized server collisions from all configured servers so
+            # handshake completion order or incremental startup never rebinds a name.
+            server_norm_counts = Counter(_norm(name) for name in dict.fromkeys([*configured, *(c.name for c in snapshot)]))
+            colliding_servers = {norm for norm, count in server_norm_counts.items() if count > 1}
+
+            candidates: list[tuple[_Connection, object, str]] = []
             for connection in snapshot:
-                published = 0
                 for spec in connection.tools:
                     if not spec.name or not _tool_allowed(connection, spec.name):
                         continue
@@ -859,83 +875,95 @@ class _Manager:
                             "warn",
                         )
                         continue
-                    name = tool_name(connection.name, spec.name)
-                    if name in seen:
-                        alt = f"{name[:55]}_{_short_hash(connection.name, spec.name)}"
-                        if alt not in seen:
+                    candidates.append((connection, spec, tool_name(connection.name, spec.name)))
+
+            base_counts = Counter(base for _, _, base in candidates)
+            entries = []
+            seen: set[str] = set()
+            counts: dict[str, int] = {connection.name: 0 for connection in snapshot}
+            for connection, spec, base_name in candidates:
+                name = base_name
+                if _norm(connection.name) in colliding_servers or base_counts[base_name] > 1:
+                    alt = _disambiguated_tool_name(connection.name, spec.name)
+                    if alt != name:
+                        key = (connection.name, spec.name, alt)
+                        if key not in self._warned_collisions:
+                            self._warned_collisions.add(key)
                             self.api.ui.print(
                                 f"[mcp: renamed colliding tool {connection.name}/{spec.name} "
                                 f"from {name!r} to {alt!r}]",
                                 "warn",
                             )
-                            name = alt
-                        else:
-                            self.api.ui.print(
-                                f"[mcp: skipped duplicate tool {connection.name}/{spec.name} ({name!r})]",
-                                "warn",
-                            )
-                            continue
-                    seen.add(name)
-                    published += 1
-                    schema = deepcopy(spec.input_schema or {"type": "object", "properties": {}})
+                        name = alt
+                if name in seen:
+                    key = (connection.name, spec.name, f"skip:{name}")
+                    if key not in self._warned_collisions:
+                        self._warned_collisions.add(key)
+                        self.api.ui.print(
+                            f"[mcp: skipped duplicate tool {connection.name}/{spec.name} ({name!r})]",
+                            "warn",
+                        )
+                    continue
+                seen.add(name)
+                counts[connection.name] = counts.get(connection.name, 0) + 1
+                schema = deepcopy(spec.input_schema or {"type": "object", "properties": {}})
 
-                    def execute(args, ctx, _connection=connection, _tool=spec.name, _name=name):
-                        try:
-                            result = _connection.call(_tool, args, ctx.signal)
-                        except MCPCallCancelled as error:
-                            return ToolResult.error(
-                                str(error),
-                                details={
-                                    "mcp": True,
-                                    "server": _connection.name,
-                                    "tool": _name,
-                                    "status": "aborted",
-                                    "cancelled": True,
-                                    "boundary": _connection.boundary,
-                                },
-                            )
-                        except Exception as error:
-                            detail = f"{_connection.name}: {safe_text(error, secrets=_connection._secrets)}"
-                            stderr = _connection.stderr_tail() if not _connection.ready else ""
-                            if stderr and stderr not in detail:
-                                detail += f"\n{stderr}"
-                            extra = {
-                                "mcp": True,
-                                "server": _connection.name,
-                                "tool": _name,
-                                "boundary": _connection.boundary,
-                            }
-                            if stderr:
-                                extra["stderr"] = stderr
-                            return ToolResult.error(detail, details=extra)
-                        return ToolResult(
-                            _content(result),
+                def execute(args, ctx, _connection=connection, _tool=spec.name, _name=name):
+                    try:
+                        result = _connection.call(_tool, args, ctx.signal)
+                    except MCPCallCancelled as error:
+                        return ToolResult.error(
+                            str(error),
                             details={
                                 "mcp": True,
                                 "server": _connection.name,
                                 "tool": _name,
+                                "status": "aborted",
+                                "cancelled": True,
                                 "boundary": _connection.boundary,
                             },
-                            is_error=bool(result.is_error),
                         )
-
-                    description = (spec.description or spec.name).strip()
-                    annotations = getattr(spec, "annotations", None)
-                    read_only = getattr(annotations, "read_only_hint", None) is True
-                    entries.append(
-                        (
-                            AgentTool(
-                                name,
-                                f"[MCP {connection.name}] {description}",
-                                schema,
-                                execute,
-                                side_effect="read" if read_only else "write",
-                                config_fingerprint=connection.fingerprint,
-                            ),
-                            ("main", "subagent"),
-                        )
+                    except Exception as error:
+                        detail = f"{_connection.name}: {safe_text(error, secrets=_connection._secrets)}"
+                        stderr = _connection.stderr_tail() if not _connection.ready else ""
+                        if stderr and stderr not in detail:
+                            detail += f"\n{stderr}"
+                        extra = {
+                            "mcp": True,
+                            "server": _connection.name,
+                            "tool": _name,
+                            "boundary": _connection.boundary,
+                        }
+                        if stderr:
+                            extra["stderr"] = stderr
+                        return ToolResult.error(detail, details=extra)
+                    return ToolResult(
+                        _content(result),
+                        details={
+                            "mcp": True,
+                            "server": _connection.name,
+                            "tool": _name,
+                            "boundary": _connection.boundary,
+                        },
+                        is_error=bool(result.is_error),
                     )
-                counts[connection.name] = published
+
+                description = (spec.description or spec.name).strip()
+                annotations = getattr(spec, "annotations", None)
+                read_only = getattr(annotations, "read_only_hint", None) is True
+                entries.append(
+                    (
+                        AgentTool(
+                            name,
+                            f"[MCP {connection.name}] {description}",
+                            schema,
+                            execute,
+                            side_effect="read" if read_only else "write",
+                            config_fingerprint=connection.fingerprint,
+                        ),
+                        ("main", "subagent"),
+                    )
+                )
             with self._lock:
                 if self._closed:
                     return
