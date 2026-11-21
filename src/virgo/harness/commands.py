@@ -163,10 +163,36 @@ def expand_template(body: str, args: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def configure_language(session: AgentSession, args: str) -> None:
+    from ..i18n import available_languages, normalize_language
+
+    names = "|".join(pack.name for pack in available_languages())
+    usage = session.t("language.usage", languages=names)
+    value = args.strip()
+    if not value:
+        session.ui.command_result(
+            session.t("language.current", language=session.translator.name, usage=usage)
+        )
+        return
+    try:
+        code = normalize_language(value)
+    except ValueError:
+        session.ui.print(session.t("language.invalid", value=value, usage=usage), "error")
+        return
+    if session.busy:
+        session.ui.print(session.t("language.busy"), "error")
+        return
+    try:
+        session.set_language(code)
+    except (OSError, ValueError) as error:
+        session.ui.print(session.t("language.save_failed", error=error), "error")
+        return
+    session.ui.command_result(session.t("language.changed", language=session.translator.name))
+
+
 def register_builtins(session: AgentSession) -> None:
     from ..diagnostics import error_summary
     from .auth_commands import login, logout
-    from .language_commands import configure_language
     from .preferences import configure_preference
     from .shell_commands import configure_shell
 
@@ -232,8 +258,7 @@ def register_builtins(session: AgentSession) -> None:
             elif arguments:
                 s.ui.command_result(s.t("harness.diagnostics.help"))
                 return
-            warnings = s.diagnostics.import_legacy()
-            lines = [s.t("harness.diagnostics.import_warning", message=warning) for warning in warnings]
+            lines = []
             if query:
                 record = s.diagnostics.lookup(query)
                 lines.append(json.dumps(record, ensure_ascii=False, indent=2) if record is not None

@@ -126,29 +126,23 @@ def test_permission_block_cannot_supply_forged_execution_or_dispatch():
     agent, _ = make_agent([echo_tool()], faux.reply(tools=[("echo", {})]), faux.reply("next"),
                           before_tool_execute=lambda _: Block("denied", details={
                               "execution": {"started": True, "outcome": "returned_success"},
-                              "transport": {"dispatch": "sent"},
                           }))
     agent.prompt("go")
     result = _result(agent)
     assert result.details["execution"]["outcome"] == "not_started"
-    assert "transport" not in result.details
+    assert result.details["execution"]["started"] is False
 
 
 def test_hooks_cannot_erase_or_override_execution_and_adapter_facts():
-    transport = {"protocol": "mcp", "server": "local", "generation": 3, "dispatch": "sent",
-                 "outcome": "unknown", "side_effects": "unknown"}
-
     boundary = {"provider": "sandbox", "payload_started": True, "side_effects": "possible", "cleanup": "unknown"}
 
     def run(*_):
-        return ToolResult.error("connection lost", details={"transport": dict(transport), "boundary": dict(boundary)})
+        return ToolResult.error("connection lost", details={"boundary": dict(boundary)})
 
     def recover(event, result):
-        result.details["transport"]["dispatch"] = "not_started"
         result.details["boundary"]["side_effects"] = "none"
         return ToolResult.text("recovered", details={
             "execution": {"started": False, "side_effects": "none"},
-            "transport": {"dispatch": "not_started", "side_effects": "none"},
             "boundary": {"payload_started": False},
         })
 
@@ -161,7 +155,6 @@ def test_hooks_cannot_erase_or_override_execution_and_adapter_facts():
     assert result.details["execution"] == {
         "started": True, "outcome": "returned_error", "side_effects": "unknown", "result_hook": "returned",
     }
-    assert result.details["transport"] == transport
     assert result.details["boundary"] == boundary
     assert result.details["related_errors"]
 

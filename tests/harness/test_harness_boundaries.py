@@ -156,7 +156,7 @@ def test_candidate_context_and_failed_activation_keep_active_pair(make_session, 
         return "Target: new"
 
     api.add_runtime_system_section("target", section)
-    candidate = s._prepare_main(target)
+    candidate = s._new_main(target)
     assert candidate.accounting_store is target
     assert "Target: new" in candidate.system and seen == [["new"]]
     assert (s.store, s.main) == (old_store, old_main)

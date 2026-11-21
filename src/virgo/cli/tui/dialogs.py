@@ -77,7 +77,7 @@ class ApprovalPicker(Vertical):
         )
         question = confirmation.question.removesuffix(
             tr(self, "features.permission.allow_suffix")
-        ).removesuffix("  Allow? [y]es / [n]o / [a]lways this session")
+        ).removesuffix(tr(self, "features.permission.external_suffix")).rstrip()
         self.query_one("#approval-question-text", Static).update(Text(question))
         self.query_one("#approval-question").scroll_home(animate=False)
         options = self.query_one("#approval-options", ChoiceList)

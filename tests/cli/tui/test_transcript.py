@@ -50,7 +50,7 @@ def test_stream_and_final_share_one_card_with_folded_thinking():
             card = cards[0]
             assert card.text == message.text()
             assert card.body._markdown == message.text()
-            assert card.thinking == "Check carefully"
+            assert next(e for e in card.events if e.kind == "thinking").text == "Check carefully"
             assert card.thought_body.display
             assert not card.thought_header.display
             view.toggle_thinking()
@@ -72,7 +72,7 @@ def test_retry_discards_partial_and_final_error_remains_visible():
             failed = AssistantMessage([TextContent("Partial from failed attempt")])
             await view.consume(AgentEvent("message_start", message=failed))
             await view.consume(AgentEvent("message_update", stream_event=StreamEvent("retry", failed)))
-            card = view.active["main"]
+            card = view.query_one(AssistantView)
             assert card.text == ""
             message = AssistantMessage(
                 [TextContent("Fresh answer")], stop_reason="error", error_message="offline"
@@ -147,7 +147,8 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
             )
             await pilot.pause()
             assert len(view.query(ToolView)) == 3
-            main = view.results[("main", "shared-id")]
+            calls = {(t.agent, t.call_id): t for t in view.query(ToolView) if t.kind == "tool_call"}
+            main = next(t for t in view.query(ToolView) if t.kind == "tool_result" and (t.agent, t.call_id) == ("main", "shared-id"))
             assert main.status == "error"
             assert not main.output.display
             view.toggle_thinking()
@@ -155,12 +156,12 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
             await pilot.press("enter")
             assert main.expanded
             assert "four" in str(main.output.content)
-            assert "[explorer]" in str(view.tools[("explorer", "shared-id")].header.content)
-            assert "pwd" in str(view.tools[("main", "shared-id")].header.content)
-            assert '"command"' not in str(view.tools[("main", "shared-id")].header.content)
+            assert "[explorer]" in str(calls[("explorer", "shared-id")].header.content)
+            assert "pwd" in str(calls[("main", "shared-id")].header.content)
+            assert '"command"' not in str(calls[("main", "shared-id")].header.content)
             assert "failed" in str(main.header.content)
             view.toggle_tools()
-            assert all(t.expanded for t in view.tools.values())
+            assert all(t.expanded for t in calls.values())
 
     asyncio.run(scenario())
 
@@ -183,7 +184,7 @@ def test_sandbox_failure_shows_boundary_and_preserves_raw_evidence():
                 }),
             ))
             await pilot.pause()
-            row = view.results[("main", "write-1")]
+            row = next(t for t in view.query(ToolView) if t.kind == "tool_result" and t.call_id == "write-1")
             assert row.status == "blocked" and not row.expanded
             assert all(value in str(row.header.content) for value in ("blocked", "Write paths", "settings.json"))
             row.header.focus()
@@ -220,8 +221,8 @@ def test_complete_branch_restores_pre_compaction_messages_and_new_resets():
             assert list(view.query(AssistantView))[0].text == "old answer"
             await view.load_history([])
             assert not view.children
-            assert not view.active
-            assert not view.tools
+            assert not list(view.query(AssistantView))
+            assert not list(view.query(ToolView))
 
     asyncio.run(scenario())
 

@@ -28,8 +28,8 @@ cp examples/project/.virgo/prompts/inspect.md /path/to/project/.virgo/prompts/in
 
 如果希望审查模板提到的技能可用，还需要复制 code-review 技能。新增扩展、模板、技能或 Agent 类型后，重启 Virgo。
 
-审查 Python 保护扩展后，用 `--trust-project-extensions` 启用；项目配置不能自行授予信任。
+审查 Python 保护扩展、项目级 `providers` 或 `.virgo/mcp.json` 后，将其所在目录加入用户级 `extensions.trustedProjects` 或启动时传入 `--trust-project-extensions` 启用；未授信项目的扩展、MCP 服务器、钩子与自定义 provider 都会被忽略。
 
-配置示例中的 `language` 会固定该项目的语言；中文使用 `zh-CN`，省略该字段则遵循用户默认值。可选的 `local` provider 需要真实服务及其安装的模型 ID／上下文窗口，只有选择后才会更换当前模型。示例不再包含过时的 `smallModel` 覆盖项，辅助模型由运行时选择。
+配置示例中的 `language` 会固定该项目的语言；中文使用 `zh-CN`，省略该字段则遵循用户默认值。可选的 `local` provider 需要真实服务、其安装的模型 ID／上下文窗口以及项目信任（`extensions.trustedProjects` 或 `--trust-project-extensions`），只有选择后才会更换当前模型。示例不再包含过时的 `smallModel` 覆盖项，辅助模型由运行时选择。
 
 MCP 示例默认禁用，路径为占位内容。MCP 本身由[扩展](../extensions/README.zh-CN.md)提供；安装扩展、替换为自己的 stdio 服务命令和参数后再启用。项目指令和提示文本属于作者提供的资源，`/language` 不会改写这些内容。

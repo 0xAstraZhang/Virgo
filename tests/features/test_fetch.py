@@ -18,13 +18,19 @@ def http(monkeypatch):
              "<main><h1>Evidence</h1><p>Only the page knows: 42.</p><a href='/details'>More</a>"
              "<script>steal()</script><pre>x = 1\nprint(x)</pre></main></html>", "headers": {"content-type": "text/html"}}
 
+    real_client = httpx.Client
+
     def handler(request):
         state["requests"].append(request)
         if request.url.host == "api.deepseek.com":
-            return httpx.Response(state["status"], json={"title": "论文", "content": "# Evidence\nOnly the page knows: 42."})
-        return httpx.Response(state["status"], text=state["body"], headers=state["headers"])
+            payload = json.dumps({"title": "论文", "content": "# Evidence\nOnly the page knows: 42."}).encode()
+            return httpx.Response(state["status"], stream=httpx.ByteStream(payload),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(state["status"], stream=httpx.ByteStream(state["body"].encode()),
+                              headers=state["headers"])
 
-    monkeypatch.setattr(web_fetch, "_client", lambda **kw: httpx.Client(**kw, transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(web_fetch.httpx, "Client",
+                        lambda **kw: real_client(**kw, transport=httpx.MockTransport(handler)))
     monkeypatch.setattr(web_fetch, "_addresses", lambda host, port, ctx, deadline: ["93.184.216.34"])
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     return state

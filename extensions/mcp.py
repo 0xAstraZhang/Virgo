@@ -51,6 +51,7 @@ from virgo.agent import AgentTool, ToolResult
 from virgo.ai.types import ImageContent, TextContent
 from virgo.diagnostics import safe_text
 from virgo.execution import HostContext, ProcessRequest, SandboxExecutor, cleanup_process
+from virgo.harness.settings import same_directory
 
 CALL_TIMEOUT = 300.0
 MAX_TOOL_PAGES = 100
@@ -73,13 +74,6 @@ class MCPCallCancelled(Exception):
 
 def _expand(value: str) -> str:
     return re.sub(r"\$\{(\w+)\}", lambda match: os.environ.get(match.group(1), ""), value)
-
-
-def _same_directory(left: Path, right: Path) -> bool:
-    try:
-        return left.resolve() == right.resolve()
-    except (OSError, RuntimeError):
-        return False
 
 
 def _validate_config(config: dict) -> tuple[str, list[str], dict[str, str], float]:
@@ -737,7 +731,7 @@ class _Manager:
         candidates: list[Path] = []
         if user_file.is_file():
             candidates.append(user_file)
-        if project_file.is_file() and not _same_directory(self.api.paths.project, self.api.paths.user):
+        if project_file.is_file() and not same_directory(self.api.paths.project, self.api.paths.user):
             # S4-02 (R5): Project-level .virgo/mcp.json requires explicit project trust.
             if self._project_trusted():
                 candidates.append(project_file)

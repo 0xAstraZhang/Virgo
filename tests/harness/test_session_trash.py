@@ -70,7 +70,7 @@ def test_replacement_runtime_failure_keeps_current_session_out_of_trash(make_ses
     def fail_prepare(_replacement):
         raise RuntimeError("replacement runtime initialization failed")
 
-    monkeypatch.setattr(session, "_prepare_main", fail_prepare)
+    monkeypatch.setattr(session, "_new_main", fail_prepare)
 
     with pytest.raises(RuntimeError, match="replacement runtime initialization failed"):
         session.trash_session(path)

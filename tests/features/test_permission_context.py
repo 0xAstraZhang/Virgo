@@ -8,7 +8,7 @@ from virgo.agent.types import AgentTool, Block, ToolCallEvent, ToolContext, Tool
 from virgo.ai.providers import faux
 from virgo.ai.types import UserMessage
 from virgo.harness.extensions import ExtensionAPI
-from virgo.harness.origin_context import origin_key, origin_store, origin_workspace, source_for
+from virgo.harness.origin_context import origin_key, source_for
 from virgo.harness.session import Runtime
 from virgo.harness.store import SessionStore
 
@@ -52,7 +52,7 @@ def test_direct_main_event_binds_once_across_chat_switch(make_session):
     add(session.main, UserMessage("Unrelated new chat."))
     assert api.authorize_tool(ev) is None
     assert source_for(session, ev) is original
-    assert origin_store(session, ev) is original.root
+    assert source_for(session, ev).root is original.root
     assert origin_key(session, ev) == key
     assert source_for(session, tool_call_event(session, "read", {"path": "README.md"})) is not original
 
@@ -75,8 +75,8 @@ def test_subagent_keeps_parent_task_and_marks_delegation(make_session):
     child = session.create_runtime("worker", "subagent", parent=old_main)
     try:
         ev = event(session, child)
-        assert origin_store(session, ev) is source.root
-        assert origin_workspace(session, ev) == old_main.cwd
+        assert source_for(session, ev).root is source.root
+        assert source_for(session, ev).workspace == old_main.cwd
         assert child.origin.identity == source.identity
         assert child.origin.identity != session.main.origin.identity
         assert child.execution_context is old_main.execution_context

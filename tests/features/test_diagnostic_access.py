@@ -89,14 +89,13 @@ def test_allowlist_redacts_evidence_and_preserves_execution_constraints(monkeypa
     access = DiagnosticAccess()
     source = record(
         "safe-error", "failed with a-known-private-key-12345",
-        runtime_id="worker-1", server="backend", generation=4, candidate_generation=5, dispatch="sent",
-        stderr_tail="Authorization: Bearer private-auth-98765\nModuleNotFoundError: adapter",
+        runtime_id="worker-1", server="backend",
+        stderr="Authorization: Bearer private-auth-98765\nModuleNotFoundError: adapter",
         arbitrary_private_object={"password": "never-send", "business_record": "customer-private-data"},
         arguments={"private": "tool-input"},
         http={"status_code": 429, "endpoint": "https://user:pass@example.test/api?key=private-query",
               "headers": {"private": "request-header"}},
         execution={"started": True, "outcome": "unknown", "side_effects": "unknown", "private": "execution-secret"},
-        transport={"server": "backend", "generation": 4, "dispatch": "sent", "private": "transport-secret"},
     )
     source["unrecognized_business_data"] = "unrecognized-private-data"
     source["log_path"] = "/private/diagnostics-secret-file.jsonl"
@@ -104,16 +103,14 @@ def test_allowlist_redacts_evidence_and_preserves_execution_constraints(monkeypa
     retained = access.get("safe-error")
     data = json.dumps(retained)
     for private in ("a-known-private-key-12345", "private-auth-98765", "customer-private-data", "tool-input",
-                    "private-query", "request-header", "execution-secret", "transport-secret",
+                    "private-query", "request-header", "execution-secret",
                     "unrecognized-private-data", "diagnostics-secret-file"):
         assert private not in data
     assert "[redacted]" in data
     assert retained["context"]["execution"] == {"started": True, "outcome": "unknown", "side_effects": "unknown"}
-    assert retained["context"]["transport"]["dispatch"] == "sent"
-    assert retained["context"]["generation"] == 4
-    assert retained["context"]["candidate_generation"] == 5
+    assert retained["context"]["server"] == "backend"
     assert "ModuleNotFoundError" in access.read("safe-error", "stderr")["text"]
-    assert "stderr_tail" not in json.loads(access.read("safe-error")["text"])["context"]
+    assert "stderr" not in json.loads(access.read("safe-error")["text"])["context"]
 
 
 def test_pages_respect_encoded_utf8_budget_and_reassemble_evidence():
@@ -212,16 +209,14 @@ def test_broken_lookup_returns_unavailable_without_recursive_failure(make_sessio
     assert len(emergency) == 1 and emergency[0]["phase"] == "diagnostics.lookup"
 
 
-def test_many_attempts_page_from_index_and_cursors_are_runtime_bound(tmp_path):
-    log_dir = tmp_path / "diag-logs"
-    access = DiagnosticAccess(directory=log_dir, page_bytes=512)
-    other = DiagnosticAccess(directory=log_dir, page_bytes=512)
+def test_many_attempts_page_from_index_and_cursors_are_runtime_bound():
+    access = DiagnosticAccess(page_bytes=512)
+    other = DiagnosticAccess(page_bytes=512)
     common = {"runtime_id": "runtime", "model_call_id": "call", "purpose": "agent"}
     for index in range(1050):
         source = record(f"attempt-{index}", **common)
         access.remember(source)
     other.remember(source)
-    assert not log_dir.exists()
     pieces, cursor = [], None
     while True:
         page = access.read("attempt-1049", "attempts", cursor)

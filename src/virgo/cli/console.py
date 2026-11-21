@@ -245,7 +245,7 @@ class ConsoleBroker:
 
 def _brief(args: dict | None) -> str:
     args = args or {}
-    for key in ("command", "path", "pattern", "description", "name", "to", "action", "question"):
+    for key in ("command", "path", "pattern", "description", "name", "query", "url", "question"):
         if key in args and isinstance(args[key], str):
             v = args[key].replace("\n", " ")
             return v if len(v) < 100 else v[:97] + "..."

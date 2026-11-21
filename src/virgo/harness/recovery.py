@@ -35,7 +35,7 @@ def message_diagnostics(message) -> list[dict]:
 class RuntimeDiagnostics:
     def __init__(self, runtime, messages=()):
         self.runtime = runtime
-        self.access = DiagnosticAccess(directory=runtime.session.paths.user / "logs")
+        self.access = DiagnosticAccess()
         self.scope = f"{runtime.role}:{runtime.name}"
         self._checkpoint = False
         self._lock = threading.RLock()

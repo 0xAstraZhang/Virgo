@@ -23,6 +23,13 @@ _REGISTRY_FILE = "registry.json"
 
 
 def _harden_dir(path: Path) -> None:
+    if path.is_symlink():
+        from .execution import ExecutionUnavailable
+
+        raise ExecutionUnavailable(
+            f"Output directory must not be a symlink: {path}",
+            reason="invalid_output_dir",
+        )
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name == "posix":
         try:

@@ -50,8 +50,6 @@ class InputRequest:
     password: bool = False
     default: str = ""
     preferences: PreferenceRequest | None = None
-    details: str | None = None
-    multiline: bool = False
 
 
 @dataclass
@@ -203,12 +201,6 @@ class FullscreenUI(UI):
             preferences=request,
         )
 
-    def select_details(self, question: str, options: list[str], details: str) -> str | None:
-        return self._ask_input(question, options=tuple(options), details=details)
-
-    def input_multiline(self, question: str, *, default: str = "") -> str | None:
-        return self._ask_input(question, default=default, multiline=True)
-
     def _ask_input(
         self, question: str, timeout: float | None = None, **kwargs
     ) -> str | PreferenceChoice | None:
@@ -283,24 +275,54 @@ class FullscreenUI(UI):
             self.cancel_inputs()
 
 
-class StagedFullscreenUI(FullscreenUI):
+class StagedFullscreenUI(UI):
     """Share a live terminal's transport while a candidate owns its language.
 
     Construction hooks may still print or ask questions through the active
     queue. A failed workspace switch cannot change the current UI's translator.
-    Operational state, including cancellation and closure, belongs to the
-    underlying bridge; only the candidate translator is held separately.
     """
 
+    interactive = True
+    supports_preferences = True
+
     def __init__(self, bridge: FullscreenUI) -> None:
-        object.__setattr__(self, "_bridge", bridge)
-        object.__setattr__(self, "translator", getattr(bridge, "translator", None))
+        self._bridge = bridge
+        self.translator = getattr(bridge, "translator", None)
 
-    def __getattr__(self, name):
-        return getattr(self._bridge, name)
+    def language_changed(self) -> None:
+        self._bridge.language_changed()
 
-    def __setattr__(self, name, value) -> None:
-        if name in {"_bridge", "translator"}:
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._bridge, name, value)
+    def on_event(self, ev: AgentEvent) -> None:
+        self._bridge.on_event(ev)
+
+    def print(self, text: str, style: str | None = None) -> None:
+        self._bridge.print(text, style)
+
+    def wake(self) -> None:
+        self._bridge.wake()
+
+    def bind_signal(self, agent: str, signal: threading.Event) -> None:
+        self._bridge.bind_signal(agent, signal)
+
+    def unbind_signal(self, agent: str, signal: threading.Event) -> None:
+        self._bridge.unbind_signal(agent, signal)
+
+    def confirm(self, question: str, agent: str = "main") -> str | None:
+        return self._bridge.confirm(question, agent)
+
+    def confirm_once(self, question: str, agent: str = "main") -> str | None:
+        return self._bridge.confirm_once(question, agent)
+
+    def select(self, question: str, options: list[str], *, timeout: float | None = None) -> str | None:
+        return self._bridge.select(question, options, timeout=timeout)
+
+    def input(
+        self, question: str, *, password: bool = False, default: str = "", timeout: float | None = None
+    ) -> str | None:
+        return self._bridge.input(question, password=password, default=default, timeout=timeout)
+
+    def choose_preferences(self, request: PreferenceRequest) -> PreferenceChoice | None:
+        return self._bridge.choose_preferences(request)
+
+    def cancel_input_timeouts(self) -> None:
+        self._bridge.cancel_input_timeouts()

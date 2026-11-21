@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import bisect
 import json
-import os
 import re
 import threading
 import uuid
 import zlib
-from pathlib import Path
 
 from ..diagnostics import capture_error, emergency_write, sanitize
 
@@ -33,16 +31,10 @@ _RECORD_FIELDS = (
 _CONTEXT_FIELDS = (
     "runtime_id", "session_id", "accounting_session_id", "run_id", "agent", "role", "tool_call_id",
     "tool_name", "model_call_id", "model", "api", "purpose", "attempt", "max_retries", "duration",
-    "server", "generation", "candidate_generation", "dispatch", "method", "mcp_tool", "request_id",
-    "rpc_code", "exit_code", "status", "timeout", "errno", "outcome", "side_effects", "protocol_error",
-    "stderr_tail", "stderr_truncated",
+    "server", "exit_code", "status", "timeout", "errno", "stderr",
 )
 _HTTP_FIELDS = ("status_code", "request_id", "retry_after", "endpoint")
 _EXECUTION_FIELDS = ("started", "outcome", "side_effects", "result_hook")
-_TRANSPORT_FIELDS = (
-    "protocol", "server", "generation", "candidate_generation", "dispatch", "outcome", "side_effects",
-    "method", "mcp_tool", "request_id",
-)
 _SUMMARY_FIELDS = tuple(key for key in _RECORD_FIELDS if key != "traceback")
 
 
@@ -78,8 +70,7 @@ def _record_view(record) -> dict | None:
     context = clean.get("context")
     result["context"] = _fields(context, _CONTEXT_FIELDS)
     if isinstance(context, dict):
-        for key, names in (("http", _HTTP_FIELDS), ("execution", _EXECUTION_FIELDS),
-                           ("transport", _TRANSPORT_FIELDS)):
+        for key, names in (("http", _HTTP_FIELDS), ("execution", _EXECUTION_FIELDS)):
             if isinstance(context.get(key), dict):
                 result["context"][key] = _fields(context[key], names)
     chain = clean.get("cause_chain")
@@ -127,11 +118,10 @@ def _record_view(record) -> dict | None:
 class DiagnosticAccess:
     """In-memory runtime-scoped diagnostic snapshots. Only remember grants access."""
 
-    def __init__(self, *, directory: Path | None = None, page_bytes: int = MAX_RESPONSE_BYTES):
+    def __init__(self, *, page_bytes: int = MAX_RESPONSE_BYTES):
         if type(page_bytes) is not int or not 512 <= page_bytes <= MAX_RESPONSE_BYTES:
             raise ValueError(f"page_bytes must be between 512 and {MAX_RESPONSE_BYTES}")
         self.page_bytes = page_bytes
-        self.directory = directory or Path(os.environ.get("VIRGO_HOME", Path.home() / ".virgo")) / "logs"
         self._lock = threading.RLock()
         self._closed = False
         self._version = 0
@@ -257,7 +247,7 @@ class DiagnosticAccess:
     @staticmethod
     def _summary(record: dict) -> dict:
         result = {key: record[key] for key in _SUMMARY_FIELDS if key in record}
-        result["context"] = {key: value for key, value in record.get("context", {}).items() if key != "stderr_tail"}
+        result["context"] = {key: value for key, value in record.get("context", {}).items() if key != "stderr"}
         result["cause_count"] = len(record.get("cause_chain", []))
         return result
 
@@ -267,7 +257,7 @@ class DiagnosticAccess:
             value = {"summary": lambda: _json(self._summary(record)),
                      "causes": lambda: _json(record["cause_chain"]) if record.get("cause_chain") else None,
                      "trace": lambda: record.get("traceback"),
-                     "stderr": lambda: record.get("context", {}).get("stderr_tail")}[section]()
+                     "stderr": lambda: record.get("context", {}).get("stderr")}[section]()
             if isinstance(value, str) and value and position == 0:
                 yield 0, value
             return
@@ -329,8 +319,7 @@ class DiagnosticAccess:
                                                "message": "This section was not captured in the retained diagnostic."}
             if cursor and (segment[0] != position or offset >= len(segment[1])):
                 return invalid
-            truncated = bool(record.get("record_truncated") or record.get("chain_truncated")
-                             or section == "stderr" and record.get("context", {}).get("stderr_truncated"))
+            truncated = bool(record.get("record_truncated") or record.get("chain_truncated"))
             text = ""
 
             def page(value, token):

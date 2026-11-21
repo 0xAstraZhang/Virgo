@@ -31,4 +31,4 @@ Virgo 使用非提权**标准 AppContainer**（`src/virgo/sandbox/windows_sandbo
    - **`C:\Users` 下的 `git init` 与仓库外 `git` 命令**：Git 的 `strbuf_realpath()` 会将虚拟盘符还原为 `C:\Users\...`，进而因祖先目录 `stat()` 返回 `EACCES`。在已有 Git 仓库内，`git status`、`git diff`、`git log`、`git add`、`git commit`、`git checkout` 与 `git ls-remote` 均可正常运行。
    - **断开继承（`SE_DACL_PROTECTED`）的工作区子目录**：在会话建立前已断开继承的子目录会被根目录授权跳过（沙箱内不可访问）；在会话建立后才断开继承的子目录在仅撤销根目录后会残留显式 SID，需显式撤销清理（但删除 AppContainer 配置后该 SID 不会对后续会话生效）。
 
-另见：[执行边界与沙箱](sandbox.md) · [WSL2 使用指南](wsl2.md) · [原生执行验收](../development/execution-acceptance.md) · [第一阶段原型验证报告（英文）](../../en/development/windows-appcontainer-prototype.md)
+另见：[执行边界与沙箱](sandbox.md) · [WSL2 使用指南](wsl2.md) · [原生执行验收](../development/execution-acceptance.md)

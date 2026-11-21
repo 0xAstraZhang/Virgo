@@ -9,7 +9,7 @@ from ..diagnostics import safe_text, sanitize
 
 
 def record_call(store, model, message, *, purpose, started, effort=None, agent="main", tool_call_id=None,
-                duration=None, request_metadata=None, call_metadata=None):
+                duration=None, request_metadata=None):
     data = {
         "purpose": purpose,
         "agent": agent,
@@ -32,6 +32,4 @@ def record_call(store, model, message, *, purpose, started, effort=None, agent="
             for key in ("run_id", "model_call_id", "attempt", "max_retries"):
                 if context.get(key) is not None:
                     data[key] = context[key]
-    if call_metadata is not None:
-        data["review_context"] = call_metadata
     return store.append("custom", kind="model_call", data=data)["id"]

@@ -37,7 +37,7 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
 
         model = authenticated_model(model, options.signal)
         model = context_model(model, context.messages)
-        if (context.web_tools or context.web_search) and model.api == "openai":
+        if context.web_tools and model.api == "openai":
             model = replace(model, api="openai-responses")
         context = replace(context, messages=normalize(context.messages, model))
         if model.api == "anthropic":
@@ -89,14 +89,8 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
 REASONING_HEADROOM = 4096
 
 
-def completion_token_limit(model: Model, max_tokens: int | None, total_max_tokens: int | None) -> int | None:
-    """Resolve a visible-answer allowance or an explicit total output ceiling."""
-    if total_max_tokens is not None:
-        if max_tokens is not None:
-            raise ValueError("max_tokens and total_max_tokens are mutually exclusive")
-        if type(total_max_tokens) is not int or total_max_tokens <= 0:
-            raise ValueError("total_max_tokens must be a positive integer")
-        return min(total_max_tokens, model.max_tokens)
+def completion_token_limit(model: Model, max_tokens: int | None) -> int | None:
+    """Resolve a visible-answer allowance with reasoning headroom."""
     if max_tokens is not None:
         return max(max_tokens, min(max_tokens + REASONING_HEADROOM, model.max_tokens))
     return None
@@ -130,25 +124,20 @@ def complete(
     prompt: str,
     *,
     max_tokens: int | None = None,
-    total_max_tokens: int | None = None,
     effort: str | None = "low",
     signal=None,
 ) -> AssistantMessage:
-    """One-shot, tool-free completion (used for summaries, evaluators, workflows).
+    """One-shot, tool-free completion (used for compaction summaries).
 
     ``max_tokens`` budgets the visible answer. Providers count hidden reasoning against the same
     limit, so the request allows ``REASONING_HEADROOM`` more (within the model's own maximum);
     otherwise a small budget can be spent entirely on thinking and return no answer.
-    ``total_max_tokens`` instead supplies the total limit, with no added reasoning allowance.
-    The two budget forms are mutually exclusive.
     """
-    limit = completion_token_limit(model, max_tokens, total_max_tokens)
+    limit = completion_token_limit(model, max_tokens)
     ctx = Context(system=system, messages=[UserMessage(prompt)], tools=[])
     message = stream(model, ctx, StreamOptions(signal=signal, max_tokens=limit, effort=effort)).result()
     # Internal request metadata is deliberately not a dataclass field or model-visible content.
     message.request_metadata = completion_request_metadata(model, effort, limit)
-    if total_max_tokens is not None:
-        message.request_metadata["requested_max_tokens"] = total_max_tokens
     return message
 
 

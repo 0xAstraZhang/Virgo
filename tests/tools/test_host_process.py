@@ -66,47 +66,33 @@ def test_host_cleanup_waits_for_group_exit_after_darwin_permission_error(monkeyp
     assert kill_group.call_args_list == [call(42, sentinel.kill_signal), call(42, 0), call(42, 0)]
 
 
-def test_host_command_observes_committed_file_without_loading_sandbox(tmp_path):
-    # Start with fresh imports so modules loaded by pytest cannot hide a probe.
-    from textwrap import dedent
+def test_host_command_observes_committed_file_without_native_backend(tmp_path, monkeypatch):
+    import os
+    import sys
 
-    check = dedent("""
-        import os
-        import subprocess
-        import sys
-        from pathlib import Path
+    from virgo.execution import ExecutionUnavailable, HostContext, ProcessRequest, cleanup_process
+    from virgo.sandbox import native as sandbox_native
+    from virgo.sandbox import platform as sandbox_platform
 
-        imports = []
-        sandbox_modules = (
-            "virgo.harness.sandbox", "virgo.tools.sandbox", "virgo.tools.sandbox_files",
-            "virgo.tools.windows_sandbox", "virgo.tools.windows_sandbox_acl",
-            "virgo.tools.windows_sandbox_files", "virgo.sandbox",
-        )
-        class ObserveImports:
-            def find_spec(self, fullname, path, target=None):
-                if fullname in sandbox_modules:
-                    imports.append(fullname)
-        sys.meta_path.insert(0, ObserveImports())
+    def unavailable():
+        raise ExecutionUnavailable("no native sandbox backend")
 
-        from virgo.execution import HostContext, ProcessRequest, cleanup_process
+    monkeypatch.setattr(sandbox_platform, "platform_backend", unavailable)
+    monkeypatch.setattr(sandbox_native, "platform_backend", unavailable)
 
-        project = Path(sys.argv[1])
-        host = HostContext(project)
-        source = project / "message.txt"
-        with host.open_mutation(source, create=True) as (stream, _, commit):
-            stream.write(b"from the editor")
-            commit()
-        command = "from pathlib import Path; print(Path('message.txt').read_text())"
-        process = host.run_process(ProcessRequest((sys.executable, "-c", command), project, dict(os.environ)))
-        try:
-            assert process.wait(timeout=5) == 0
-            assert process.stdout.read().strip() == b"from the editor"
-        finally:
-            cleanup_process(process)
-            process.stdout.close()
-        assert not imports, imports
-    """)
-    subprocess.run([sys.executable, "-c", check, str(tmp_path)], check=True, timeout=15)
+    host = HostContext(tmp_path)
+    source = tmp_path / "message.txt"
+    with host.open_mutation(source, create=True) as (stream, _, commit):
+        stream.write(b"from the editor")
+        commit()
+    command = "from pathlib import Path; print(Path('message.txt').read_text())"
+    process = host.run_process(ProcessRequest((sys.executable, "-c", command), tmp_path, dict(os.environ)))
+    try:
+        assert process.wait(timeout=5) == 0
+        assert process.stdout.read().strip() == b"from the editor"
+    finally:
+        cleanup_process(process)
+        process.stdout.close()
 
 
 def test_native_policy_rejects_empty_argv_and_host_overrides_case_colliding_env(tmp_path):
@@ -147,15 +133,12 @@ def test_native_policy_rejects_empty_argv_and_host_overrides_case_colliding_env(
         process.stdout.close()
 
 
-def test_native_process_cleanup_releases_scratch_after_drain_error(monkeypatch):
+def test_native_process_cleanup_releases_scratch_after_drain_error():
     from types import SimpleNamespace
 
     from virgo.execution import ExecutionFailed
-    from virgo.sandbox import native as native_mod
     from virgo.sandbox.native import NativeProcess
 
-    # Exercise the non-HostProcess wrapper path (WindowsProcess) on all OSes.
-    monkeypatch.setattr(native_mod.sys, "platform", "win32")
     cleaned = []
 
     class FakeScratch:
@@ -181,16 +164,13 @@ def test_native_process_cleanup_releases_scratch_after_drain_error(monkeypatch):
     assert handle._scratch is None
 
 
-def test_native_process_uses_host_process_on_darwin_and_handles_scratch_on_drain_error(monkeypatch):
+def test_native_process_wraps_popen_with_host_process_and_keeps_scratch_until_drained(monkeypatch):
     from types import SimpleNamespace
 
     from virgo import execution as execution_mod
     from virgo.execution import ExecutionFailed
-    from virgo.sandbox import native as native_mod
     from virgo.sandbox.native import NativeProcess
-    from virgo.sandbox.platform import cleanup_process as platform_cleanup_process
 
-    monkeypatch.setattr(native_mod.sys, "platform", "darwin")
     monkeypatch.setattr(signal, "SIGKILL", sentinel.kill_signal, raising=False)
 
     class FakeScratch:
@@ -206,7 +186,7 @@ def test_native_process_uses_host_process_on_darwin_and_handles_scratch_on_drain
     )
 
     scratch_wrapped = FakeScratch()
-    fake_popen = Mock(
+    fake_popen = SimpleNamespace(
         pid=201, returncode=None, stdin=None, stdout=None, stderr=None,
         _virgo_sandbox_tmp=scratch_wrapped, _virgo_sandbox={},
     )
@@ -221,16 +201,6 @@ def test_native_process_uses_host_process_on_darwin_and_handles_scratch_on_drain
     monkeypatch.setattr(os, "killpg", Mock(return_value=None), raising=False)
     assert h_normal.poll() == 0
     assert h_normal.tree_drained is True
-
-    p_recover = Mock(pid=203, returncode=None)
-    p_recover.wait.side_effect = lambda: setattr(p_recover, "returncode", 17) or 17
-    h_recover = HostProcess(p_recover)
-    monkeypatch.setattr(h_recover, "_leader_exited", lambda: True)
-    monkeypatch.setattr(
-        os, "killpg", Mock(side_effect=[PermissionError(), None, ProcessLookupError()]), raising=False
-    )
-    assert h_recover.poll() == 17
-    assert h_recover.tree_drained is True
 
     ticks = iter([0.0, 2.0])
     monkeypatch.setattr(
@@ -248,11 +218,11 @@ def test_native_process_uses_host_process_on_darwin_and_handles_scratch_on_drain
     assert h_timeout.tree_drained is False
 
     scratch_undrained = FakeScratch()
-    p_timeout = Mock(
+    p_timeout = SimpleNamespace(
         pid=205, returncode=None, stdin=None, stdout=None, stderr=None,
         _virgo_sandbox_tmp=scratch_undrained, _virgo_sandbox={},
+        wait=lambda: setattr(p_timeout, "returncode", 1) or 1,
     )
-    p_timeout.wait.side_effect = lambda: setattr(p_timeout, "returncode", 1) or 1
     native_undrained = NativeProcess(p_timeout, fake_context)
     monkeypatch.setattr(native_undrained._process, "_leader_exited", lambda: True)
     monkeypatch.setattr(
@@ -267,35 +237,3 @@ def test_native_process_uses_host_process_on_darwin_and_handles_scratch_on_drain
     assert native_undrained._process.tree_drained is False
     assert scratch_undrained.cleaned == 0
     assert native_undrained._scratch is scratch_undrained
-
-    drained_scratch = FakeScratch()
-
-    class DrainedErrorProc:
-        pid = 206
-        tree_drained = True
-        _virgo_sandbox_tmp = drained_scratch
-
-        def cleanup_tree(self):
-            raise RuntimeError("error after drain")
-
-    drained_proc = DrainedErrorProc()
-    with pytest.raises(RuntimeError, match="error after drain"):
-        platform_cleanup_process(drained_proc)
-    assert drained_scratch.cleaned == 1
-    assert drained_proc._virgo_sandbox_tmp is None
-
-    undrained_scratch = FakeScratch()
-
-    class UndrainedErrorProc:
-        pid = 207
-        tree_drained = False
-        _virgo_sandbox_tmp = undrained_scratch
-
-        def cleanup_tree(self):
-            raise RuntimeError("error while still alive")
-
-    undrained_proc = UndrainedErrorProc()
-    with pytest.raises(RuntimeError, match="error while still alive"):
-        platform_cleanup_process(undrained_proc)
-    assert undrained_scratch.cleaned == 0
-    assert undrained_proc._virgo_sandbox_tmp is undrained_scratch

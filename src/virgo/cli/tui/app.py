@@ -13,7 +13,7 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Vertical
 from textual.events import Click
 from textual.theme import Theme
 from textual.widgets import Input, OptionList, Static, TextArea
@@ -26,13 +26,12 @@ from ...harness.session import AgentSession
 from ...harness.store import SessionStore
 from ..i18n import tr
 from .activity import RunActivity
-from .bridge import Confirmation, FullscreenUI, InputRequest
+from .bridge import FullscreenUI, InputRequest
 from .choices import ChoiceList, CommandChoice
 from .controller import RunController
 from .conversation import ConversationState
 from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
-from .forms import MultilineInput
 from .modes import PermissionModePicker, permission_flags
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
@@ -132,11 +131,8 @@ class ConversationPane(Vertical):
             yield ApprovalPicker(id="approval")
             yield PreferencePicker(id="preferences")
             yield Static("", id="auth-question", markup=False)
-            with VerticalScroll(id="input-detail-scroll"):
-                yield Static("", id="input-details", markup=False)
             yield ChoiceList(id="completions")
             yield Input(id="auth-value")
-            yield MultilineInput(id="input-multiline")
             yield Static("", id="metrics", markup=False)
             yield ChatEditor(self.state.history)
             yield Static("", id="status", markup=False)
@@ -166,12 +162,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #auth-value { height: 3; border: solid #7C3AED; padding: 0;
         background: $background; color: $foreground; }
     #auth-value:focus { border: solid #7C3AED; }
-    #input-detail-scroll { display: none; height: 30vh; min-height: 3; max-height: 12;
-        border: solid #7C3AED; padding: 0 1; scrollbar-size-vertical: 1; }
-    #input-details { height: auto; }
-    #input-multiline { display: none; height: 7; max-height: 35vh; min-height: 3;
-        border: solid #7C3AED; padding: 0; background: $background; color: $foreground;
-        scrollbar-size-vertical: 1; }
     #editor { height: 3; min-height: 3; border: none; border-top: solid #7C3AED;
         border-bottom: solid #7C3AED; padding: 0; background: $background; color: $foreground; }
     #editor:focus { border: none; border-top: solid #7C3AED; border-bottom: solid #7C3AED; }
@@ -253,60 +243,20 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         return self.state.history
 
     @property
-    def confirmations(self) -> deque[Confirmation]:
-        return self.state.confirmations
-
-    @confirmations.setter
-    def confirmations(self, confirmations: deque[Confirmation]) -> None:
-        self.state.confirmations = confirmations
-
-    @property
     def active_confirmation(self) -> int | None:
         return self.state.active_confirmation
-
-    @active_confirmation.setter
-    def active_confirmation(self, confirmation: int | None) -> None:
-        self.state.active_confirmation = confirmation
-
-    @property
-    def input_requests(self) -> deque[InputRequest]:
-        return self.state.input_requests
-
-    @input_requests.setter
-    def input_requests(self, requests: deque[InputRequest]) -> None:
-        self.state.input_requests = requests
 
     @property
     def active_input(self) -> int | None:
         return self.state.active_input
 
-    @active_input.setter
-    def active_input(self, request: int | None) -> None:
-        self.state.active_input = request
-
     @property
     def input_request(self) -> InputRequest | None:
         return self.state.input_request
 
-    @input_request.setter
-    def input_request(self, request: InputRequest | None) -> None:
-        self.state.input_request = request
-
     @property
     def completion_names(self) -> list[str]:
         return self.state.completion_names
-
-    @completion_names.setter
-    def completion_names(self, names: list[str]) -> None:
-        self.state.completion_names = names
-
-    @property
-    def completion_query(self) -> str | None:
-        return self.state.completion_query
-
-    @completion_query.setter
-    def completion_query(self, query: str | None) -> None:
-        self.state.completion_query = query
 
     @property
     def completion_suppressed(self) -> str | None:
@@ -315,14 +265,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     @completion_suppressed.setter
     def completion_suppressed(self, text: str | None) -> None:
         self.state.completion_suppressed = text
-
-    @property
-    def last_interrupt(self) -> float:
-        return self.state.last_interrupt
-
-    @last_interrupt.setter
-    def last_interrupt(self, at: float) -> None:
-        self.state.last_interrupt = at
 
     @property
     def editor(self) -> ChatEditor:
@@ -403,8 +345,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             and not self.ui.has_pending_requests
             and self.active_input is None
             and self.active_confirmation is None
-            and not self.input_requests
-            and not self.confirmations
+            and not self.state.input_requests
+            and not self.state.confirmations
             and not self.session.has_save_failure
             and not any(self.session.bus.emit("pending_work", self.session))
         )
@@ -415,8 +357,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if (
             self.active_input is not None
             or self.active_confirmation is not None
-            or self.input_requests
-            or self.confirmations
+            or self.state.input_requests
+            or self.state.confirmations
         ):
             return tr(self, "ui.state.waiting")
         return tr(self, "ui.state.ready") if self.controller.can_switch else tr(self, "ui.state.running")
@@ -601,14 +543,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 elif update.kind == "print":
                     await self.transcript.add_notice(*update.payload)
                 elif update.kind == "confirmation":
-                    self.confirmations.append(update.payload)
+                    self.state.confirmations.append(update.payload)
                 elif update.kind == "confirmation_cancelled":
-                    self.confirmations = deque(c for c in self.confirmations if c.id != update.payload)
+                    self.state.confirmations = deque(c for c in self.state.confirmations if c.id != update.payload)
                     self.finish_confirmation(None, update.payload)
                 elif update.kind == "input":
-                    self.input_requests.append(update.payload)
+                    self.state.input_requests.append(update.payload)
                 elif update.kind == "input_cancelled":
-                    self.input_requests = deque(c for c in self.input_requests if c.id != update.payload)
+                    self.state.input_requests = deque(c for c in self.state.input_requests if c.id != update.payload)
                     if self.active_input == update.payload:
                         self.finish_input(None)
                 elif update.kind == "closed":
@@ -672,13 +614,13 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             or self.active_input is not None
         ):
             return
-        while self.confirmations:
-            confirmation = self.confirmations.popleft()
+        while self.state.confirmations:
+            confirmation = self.state.confirmations.popleft()
             if self.ui.is_confirmation_pending(confirmation.id):
                 break
         else:
             return
-        self.active_confirmation = confirmation.id
+        self.state.active_confirmation = confirmation.id
         self.hide_completions()
         root = self._pane
         for selector in ("#editor", "#metrics", "#hints", "#jump"):
@@ -690,7 +632,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         request_id = self.active_confirmation
         if request_id is None or (confirmation_id is not None and request_id != confirmation_id):
             return
-        self.active_confirmation = None
+        self.state.active_confirmation = None
         root = self._pane
         root.query_one(ApprovalPicker).close()
         for selector in ("#editor", "#metrics", "#status", "#hints"):
@@ -713,15 +655,15 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             or self.active_confirmation is not None
         ):
             return
-        while self.input_requests:
-            request = self.input_requests.popleft()
+        while self.state.input_requests:
+            request = self.state.input_requests.popleft()
             if self.ui.is_input_pending(request.id):
                 break
         else:
             return
         self.hide_completions()
-        self.active_input = request.id
-        self.input_request = request
+        self.state.active_input = request.id
+        self.state.input_request = request
         root = self._pane
         if request.preferences is not None:
             self.editor.display = False
@@ -736,11 +678,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         question.update(request.question)
         question.display = True
         self.editor.display = False
-        details = root.query_one("#input-detail-scroll", VerticalScroll)
-        details.display = request.details is not None
-        if request.details is not None:
-            root.query_one("#input-details", Static).update(Text(request.details))
-            details.scroll_home(animate=False)
         options = root.query_one("#completions", ChoiceList)
         field = root.query_one("#auth-value", Input)
         if request.options is not None:
@@ -749,10 +686,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             options.highlighted = 0
             options.display = True
             options.styles.max_height = max(3, min(6, self.size.height // 4))
-        elif request.multiline:
-            multiline = root.query_one("#input-multiline", MultilineInput)
-            multiline.load_text(request.default)
-            multiline.display = True
         else:
             field.password = request.password
             field.value = request.default
@@ -771,8 +704,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self._pane.query_one(PreferencePicker).focus_control()
         elif self.input_request.options is not None:
             self._pane.query_one("#completions").focus()
-        elif self.input_request.multiline:
-            self._pane.query_one("#input-multiline", MultilineInput).focus()
         else:
             self._pane.query_one("#auth-value").focus()
 
@@ -780,15 +711,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         request_id = self.active_input
         if request_id is None:
             return
-        self.active_input = None
-        self.input_request = None
+        self.state.active_input = None
+        self.state.input_request = None
         root = self._pane
         root.query_one(PreferencePicker).close()
-        root.query_one("#input-detail-scroll").display = False
-        root.query_one("#input-details", Static).update("")
-        multiline = root.query_one("#input-multiline", MultilineInput)
-        multiline.clear()
-        multiline.display = False
         field = root.query_one("#auth-value", Input)
         field.value = ""
         field.password = False
@@ -809,12 +735,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         if self.input_request is not None and self.input_request.options is None:
-            self.finish_input(event.value)
-
-    @on(MultilineInput.Submitted)
-    def multiline_submitted(self, event: MultilineInput.Submitted) -> None:
-        event.stop()
-        if self.input_request is not None and self.input_request.multiline:
             self.finish_input(event.value)
 
     @on(PreferencePicker.Answered)
@@ -842,10 +762,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     )
                 else:
                     hint = tr(self, "ui.hints.effort")
-            elif self.input_request.multiline:
-                hint = tr(self, "ui.hints.multiline")
-            elif self.input_request.details is not None:
-                hint = tr(self, "ui.hints.details")
             else:
                 hint = (
                     tr(self, "ui.hints.select")
@@ -853,7 +769,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     else tr(self, "ui.hints.confirm")
                 )
             hints = shortcut_hints(hint)
-        elif not self.controller.busy and 0 < time.monotonic() - self.last_interrupt < 2:
+        elif not self.controller.busy and 0 < time.monotonic() - self.state.last_interrupt < 2:
             hints = shortcut_hints(tr(self, "ui.hints.exit"))
         else:
             hints = input_hints(self)
@@ -920,7 +836,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         update_static(self._pane.query_one("#jump", Static), tr(self, "ui.latest"))
         for event in self.transcript.query(EventView):
             event.render_header()
-        self.completion_query = None
+        self.state.completion_query = None
         self.update_completions()
         self.editor.refresh()
         self.update_status()
@@ -957,19 +873,19 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self._pane.query_one("#completions").styles.max_height = max(3, min(6, self.size.height // 4))
 
     def hide_completions(self) -> None:
-        self.completion_names = []
+        self.state.completion_names = []
         self._pane.query_one("#completions").display = False
 
     def sync_completions(self) -> None:
         # TextArea.Changed is queued; a quick Enter/Tab/arrow can arrive first.
-        if self.completion_query != self.editor.text:
+        if self.state.completion_query != self.editor.text:
             self.update_completions()
 
     def update_completions(self) -> None:
         if self.active_input is not None or self.active_confirmation is not None:
             return
         text = self.editor.text
-        self.completion_query = text
+        self.state.completion_query = text
         if text != self.completion_suppressed:
             self.completion_suppressed = None
         if not text.startswith("/") or any(c.isspace() for c in text) or text == self.completion_suppressed:
@@ -981,7 +897,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         )
         commands["/exit"] = tr(self, "ui.command.exit")
         names = sorted(name for name in commands if name.startswith(text))
-        self.completion_names = names
+        self.state.completion_names = names
         options = self._pane.query_one("#completions", ChoiceList)
         options.clear_options()
         options.add_options(Option(CommandChoice(name, commands[name]), id=name) for name in names)
@@ -1030,13 +946,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if (
-            not self.has_modal
-            and self.input_request is not None
-            and self.input_request.details is not None
-            and action in {"page", "top"}
-        ):
-            return True
-        if (
             self.has_modal or self.active_input is not None or self.active_confirmation is not None
         ) and action in {"page", "top", "tools", "thinking", "permission_modes", "cancel_pending"}:
             return False
@@ -1053,11 +962,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         elif self.editor.text:
             self.editor.clear()
             self.history.reset()
-            self.last_interrupt = 0
-        elif time.monotonic() - self.last_interrupt < 2:
+            self.state.last_interrupt = 0
+        elif time.monotonic() - self.state.last_interrupt < 2:
             self.request_close()
         else:
-            self.last_interrupt = time.monotonic()
+            self.state.last_interrupt = time.monotonic()
             update_static(
                 self._pane.query_one("#hints", Static),
                 shortcut_hints(tr(self, "ui.hints.exit")),
@@ -1102,24 +1011,13 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_page(self, direction: int) -> None:
         if self.has_modal:
             return
-        if self.input_request is not None and self.input_request.details is not None:
-            selector = "#input-detail-scroll"
-            details = self._pane.query_one(selector, VerticalScroll)
-            if direction < 0:
-                details.action_page_up()
-            else:
-                details.action_page_down()
-            return
         if direction < 0:
             self.transcript.action_page_up()
         else:
             self.transcript.action_page_down()
 
     def action_top(self) -> None:
-        if not self.has_modal and self.input_request is not None and self.input_request.details is not None:
-            selector = "#input-detail-scroll"
-            self._pane.query_one(selector, VerticalScroll).scroll_home(animate=False)
-        elif not self.has_modal:
+        if not self.has_modal:
             self.transcript.action_scroll_home()
 
     @on(Click, "#jump")

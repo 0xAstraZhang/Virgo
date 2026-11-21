@@ -72,7 +72,6 @@ MESSAGES = {
     "harness.diagnostics.help": "Use /diagnostics <error-id> for full historical details, or /diagnostics --before <cursor> for older errors.",
     "harness.diagnostics.path": "Diagnostics: {path}",
     "harness.diagnostics.next": "Older errors: /diagnostics --before {cursor}",
-    "harness.diagnostics.import_warning": "Diagnostic import warning: {message}",
     "harness.diagnostics.invalid_cursor": "Invalid history cursor. Restart with /diagnostics.",
     "harness.diagnostics.lookup_failed": "Diagnostic history could not be read; the original errors are unchanged.",
     "harness.diagnostics.unavailable": "[ERROR] Diagnostic metadata is unavailable.",
@@ -87,7 +86,7 @@ MESSAGES = {
     "harness.fetch.choice.http": "HTTP — read public pages directly, no API key required",
     "harness.fetch.choice.off": "Off — disable page reading",
     "harness.fetch.current": "fetch: {selection}{detail}\n{usage}",
-    "harness.fetch.disabled": "Fetch is disabled by features.fetch; enable it in settings first.",
+    "harness.fetch.disabled": "Fetch is disabled by plugins.web.fetchEnabled; enable it in settings first.",
     "harness.fetch.failed": "Fetch selection failed: {error}",
     "harness.fetch.kept": "Kept fetch as {selection}",
     "harness.fetch.paths": "Last request paths: {paths}",
@@ -148,7 +147,7 @@ MESSAGES = {
     "harness.search.choice.duckduckgo": "DuckDuckGo — free, no API key required",
     "harness.search.choice.off": "Off — disable web search",
     "harness.search.current": "search: {selection}\n{usage}",
-    "harness.search.disabled": "Search is disabled by features.search; enable it in settings to choose a "
+    "harness.search.disabled": "Search is disabled by plugins.web.searchEnabled; enable it in settings to choose a "
     "backend.",
     "harness.search.failed": "Search selection failed: {error}",
     "harness.search.kept": "Kept search as {selection}",
@@ -184,6 +183,6 @@ MESSAGES = {
     "harness.shell.usage": "Usage: /shell [name|absolute path|auto] (quote paths containing spaces)",
     "harness.plugins.degraded": "Plugin {name!r} is unavailable; the session is running with reduced capabilities.",
     "harness.extensions.untrusted_project": "Project Python extensions were not loaded. Trust this workspace with --trust-project-extensions or a user-level extensions.trustedProjects entry.",
-    "harness.migration.retired_data": "Legacy automation or memory data was found and left untouched. Schedules no longer run. See docs/en/guides/migrating-to-core-plugins.md before migrating or exporting it.",
+    "harness.migration.retired_data": "Legacy automation or memory data was found and left untouched. Schedules no longer run; inspect or export the files under .virgo/ manually if needed.",
     "harness.commands.retired": "/{name} was removed. Historical data is unchanged.",
 }

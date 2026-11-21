@@ -521,7 +521,7 @@ class NativePolicy:
 def cleanup_process(proc) -> None:
     scratch = getattr(proc, "_virgo_sandbox_tmp", None)
     if scratch is not None:
-        target = proc if getattr(proc, "cleanup_tree", None) is not None else HostProcess(proc)
+        target = HostProcess(proc)
         try:
             target.cleanup_tree()
         except BaseException:

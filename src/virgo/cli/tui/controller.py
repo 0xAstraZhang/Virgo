@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import itertools
 import threading
-from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,7 +14,7 @@ from ...harness.session import AgentSession
 from ...harness.store import SessionStore
 from ...harness.ui import UI
 from ..i18n import tr
-from ..repl import EXIT
+from ..repl import classify_input
 from .activity import RunActivity
 from .bridge import FullscreenUI, RunFinished, StagedFullscreenUI, Update
 from .conversation import ConversationState
@@ -73,11 +72,6 @@ class RunController:
     @browsing.setter
     def browsing(self, browsing: bool) -> None:
         self.state.browsing = browsing
-
-    @property
-    def _deferred(self) -> deque[str]:
-        """Prompts queued while a run was busy, kept as a read-only view."""
-        return self.state.deferred
 
     @property
     def can_switch(self) -> bool:
@@ -270,27 +264,19 @@ class RunController:
         text = text.strip()
         if not text or self.closing:
             return
-        if text in EXIT:
+        action, cmd = classify_input(self.session, text, busy=self.busy)
+        if action == "exit":
             self.request_close()
-            return
-        cmd = self.session.commands.get(text[1:].split(" ", 1)[0]) if text.startswith("/") else None
-        if cmd is not None and cmd.concurrent:
+        elif action == "concurrent":
             def invoke():
                 with self.session.ui.command_scope():
                     cmd.fn(self.session, text.partition(" ")[2])
 
             self._launch(invoke, concurrent=True, command=cmd.name)
-        elif self.busy:
-            if text.startswith("/") and not text.startswith("//"):
-                self.state.deferred.append(text)
-            elif self.session.steer(text):
-                self.state.steering.append(text)
-            else:
-                # The worker may be starting, executing a slash command, or
-                # already finished with its done event still waiting for poll.
-                # Queue a normal prompt in those windows instead of stranding
-                # it in an agent queue that nobody will drain.
-                self.state.deferred.append(text)
+        elif action == "steer":
+            self.state.steering.append(text)
+        elif action in {"defer_command", "defer_prompt"}:
+            self.state.deferred.append(text)
         else:
             self._launch(lambda: self.session.prompt(text))
 

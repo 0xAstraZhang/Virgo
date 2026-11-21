@@ -2,6 +2,9 @@
 import asyncio
 import json
 
+import pytest
+from rich.color import Color
+
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 
@@ -108,7 +111,10 @@ def setup(api):
             app.editor.move_cursor(app.editor.document.end)
             await pilot.pause()
             assert '[中文参数' in rendered(app)
-            assert any(seg.style and str(seg.style.color) == "Color('bright_black', ColorType.STANDARD, number=8)" for seg in app.editor.render_line(0))
+            assert any(
+                seg.style and seg.style.color == Color.parse("bright_black")
+                for seg in app.editor.render_line(0)
+            )
             app.set_focus(None)
             await pilot.pause()
             assert '[' not in rendered(app)
@@ -182,9 +188,8 @@ def test_hint_undo_redo_and_soft_wrap(make_session):
     asyncio.run(scenario())
 
 
+@pytest.mark.pty
 def test_real_terminal_argument_hint(project, tmp_path):
-    import pytest
-
     from tests.support.terminal import HAS_PTY, PtyClient, plain
 
     if not HAS_PTY:

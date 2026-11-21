@@ -31,7 +31,7 @@ from ..ai.types import (
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
-from ..execution_policy import is_native_windows, is_windows_sandbox_supported
+from ..execution_policy import is_native_windows, is_windows_sandbox_supported, normalize_approval_policy
 from ..i18n import Translator, normalize_language
 from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget
@@ -48,11 +48,9 @@ from .extensions import (
 )
 from .jobs import JobManager
 from .origin_context import ExecutionOrigin, source_for
-from .permissions import normalize_approval_policy
 from .resource_rules import ResourceRules
 from .runtime import Runtime
 from .runtime_limits import ChildCancellation
-from .services import Services
 from .settings import Paths, Settings
 from .shell_commands import ShellSelection
 from .store import SessionSaveError, SessionStore
@@ -104,7 +102,7 @@ class AgentSession:
         self.templates: dict = {}
         self._template_paths: dict[str, Path] = {}
         self.commands = Commands(self.translator)
-        self.services: Services = Services()
+        self.services: dict = {}
         self.sections: list = []
         self.runtime_sections: list = []
         self.request_sections: list = []
@@ -198,9 +196,13 @@ class AgentSession:
     # -- diagnostics -----------------------------------------------------------
     def _warn_windows_sandbox(self) -> None:
         """Show guidance once when native Windows defaults to No-Limit on an unsupported OS build."""
-        if not is_native_windows() or is_windows_sandbox_supported():
+        if not is_native_windows():
+            return
+        if self.settings.sources.get("execution.mode") != "default":
             return
         if self.settings.get("execution.mode") != "no-limit":
+            return
+        if is_windows_sandbox_supported():
             return
         marker = self.paths.user / "migrations" / "windows-sandbox-unsupported-notice"
         if marker.exists():
@@ -455,8 +457,8 @@ class AgentSession:
         return "low is unavailable and no valid model default is declared; using the server default"
 
     def complete(self, purpose: str, system: str, prompt: str, *, model=None,
-                 effort=_DEFAULT_EFFORT, max_tokens=None, total_max_tokens=None, signal=None, agent="main", tool_call_id=None,
-                 accounting_store=None, call_metadata=None):
+                 effort=_DEFAULT_EFFORT, max_tokens=None, signal=None, agent="main", tool_call_id=None,
+                 accounting_store=None):
         """Account for a tool-free request separately from the conversation context."""
         if effort is _DEFAULT_EFFORT:
             effort = self.small_model_effort if model is None else None
@@ -478,8 +480,7 @@ class AgentSession:
             "model": model.spec, "api": model.api, "model_call_id": uuid.uuid4().hex, "attempt": 1,
         }
         try:
-            message = ai.complete(model, system, prompt, max_tokens=max_tokens, total_max_tokens=total_max_tokens,
-                                  effort=effort, signal=signal)
+            message = ai.complete(model, system, prompt, max_tokens=max_tokens, effort=effort, signal=signal)
         except Exception as error:
             self.report_error(error, phase="model.auxiliary", store=store, context=diagnostic_context)
             raise
@@ -494,18 +495,15 @@ class AgentSession:
                 context={**diagnostic_context, "duration": round(time.monotonic() - started, 6)},
             )
         metadata = getattr(message, "request_metadata", None) or ai.completion_request_metadata(
-            model, effort, ai.completion_token_limit(model, max_tokens, total_max_tokens)
+            model, effort, ai.completion_token_limit(model, max_tokens)
         )
         metadata = {**metadata, "requested_effort": requested_effort, "effort_fallback_reason": fallback_reason}
-        if total_max_tokens is not None:
-            metadata["requested_max_tokens"] = total_max_tokens
         if effort is not None and metadata["effective_effort"] != effort:
             metadata["effort_fallback_reason"] = (
                 f"adapter maps {effort!r} to {metadata['effective_effort']!r}"
             )
         record_call(store, model, message, purpose=purpose, started=started, effort=effort,
-                    agent=agent, tool_call_id=tool_call_id, request_metadata=metadata,
-                    call_metadata=call_metadata)
+                    agent=agent, tool_call_id=tool_call_id, request_metadata=metadata)
         return message
 
     def output_store_for(self, store) -> OutputStore:
@@ -534,8 +532,6 @@ class AgentSession:
         return SessionStore.load(Path(session))
 
     def create_runtime(self, name: str, role: str, *, parent=None, **kwargs) -> Runtime:
-        if "read_only" in kwargs:
-            raise ValueError("read_only is retired; child runtimes inherit the originating resource boundary")
         with self._lock:
             self.assert_state_change_allowed()
             origin_parent = kwargs.get("origin_parent")
@@ -600,9 +596,6 @@ class AgentSession:
         messages, ids = store.build_context()
         return self.create_runtime("main", "main", store=store, cwd=store.cwd, messages=messages, ids=ids)
 
-    def _prepare_main(self, store: SessionStore) -> Runtime:
-        return self._new_main(store)
-
     def live_store(self, path: str | Path) -> SessionStore | None:
         """Resolve an owned conversation before consulting its possibly damaged file."""
         path = Path(path).absolute()
@@ -658,7 +651,7 @@ class AgentSession:
             current = self.store in stores
             if current:
                 replacement = SessionStore.new(self.paths.sessions, self.cwd)
-                runtime = self._prepare_main(replacement)
+                runtime = self._new_main(replacement)
             # A conversation may have been reopened more than once. Stop all
             # retained stores from recreating it, including late extension writes.
             try:
@@ -694,7 +687,7 @@ class AgentSession:
             # Apply the startup selection before session_start observers can
             # inspect tools or begin the initial request.
             if runtime is None:
-                runtime = self._prepare_main(store)
+                runtime = self._new_main(store)
             if self._shutdown_started:
                 return
             old = self.main
@@ -786,15 +779,6 @@ class AgentSession:
             self._tool_groups = {key: values for key, values in self._tool_groups.items() if key[0] != owner}
             self._tool_version += 1
 
-    def unregister_tool(self, name: str) -> None:
-        """Host compatibility API. Plugins replace only their owned namespaces."""
-        with self._lock:
-            self._tool_groups = {
-                key: tuple((tool, roles) for tool, roles in values if tool.name != name)
-                for key, values in self._tool_groups.items()
-            }
-            self._tool_version += 1
-
     def tool_snapshot(self, role: str) -> tuple[int, list[AgentTool]]:
         with self._lock:
             return self._tool_version, [tool for values in self._tool_groups.values()
@@ -805,16 +789,6 @@ class AgentSession:
 
     def tool(self, name: str, role: str = "main") -> AgentTool | None:
         return next((t for t in self.tools_for(role) if t.name == name), None)
-
-    def register_execution_provider(self, provider, *, owner: str) -> None:
-        if "execution" in self.services or hasattr(self, "main"):
-            raise ValueError("Execution provider already bound; it cannot be replaced during a session")
-        expected = "host" if self.settings.get("execution.mode") == "no-limit" else "sandbox"
-        if provider.name != expected:
-            raise ValueError("Execution provider does not match the explicitly requested provider")
-        self.services["execution"] = provider
-        self._execution_owner = owner
-        self._permission_boundary = self.bus.boundary(100)
 
     def _persistence_block(self, ev):
         runtime = ev.origin.runtime if ev.origin is not None else self.main

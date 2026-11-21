@@ -58,10 +58,10 @@ def test_repeated_arrows_select_rows_without_changing_editor_or_lagging_scroll(m
                 app.post_message(events.Key("down", None))
             await wait_for(pilot, lambda: choices.highlighted == count - 1)
             assert choices.scroll_y == choices.scroll_target_y
-            selected_top = choices._index_to_line[count - 1]
-            selected_bottom = selected_top + choices._heights[count - 1]
-            assert choices.scroll_offset.y <= selected_top
-            assert selected_bottom <= choices.scroll_offset.y + choices.scrollable_content_region.height
+            visible = "\n".join(
+                choices.render_line(y).text for y in range(choices.scrollable_content_region.height)
+            )
+            assert app.completion_names[-1] in visible
             assert app.editor.text == "/" and app.history.index == len(app.history.entries)
             for _ in range(count - 1):
                 app.post_message(events.Key("up", None))
@@ -89,7 +89,10 @@ def test_filter_resets_selection_after_a_long_wrapped_command(make_session):
                 app.post_message(events.Key("down", None))
             await wait_for(pilot, lambda: app.completion_names[choices.highlighted] == "/zlong")
             assert choices.virtual_size.height > choices.option_count
-            assert choices._heights[choices.highlighted] > 1
+            visible_lines = [
+                choices.render_line(y).text for y in range(choices.scrollable_content_region.height)
+            ]
+            assert sum("very long description" in line for line in visible_lines) > 1
             app.editor.load_text("/model")
             app.editor.move_cursor(app.editor.document.end)
             await wait_for(pilot, lambda: app.completion_names == ["/model"])
@@ -151,10 +154,11 @@ def test_long_command_and_chinese_description_keep_separate_columns(make_session
             for width in (80, 40, 120):
                 await pilot.resize_terminal(width, 30)
                 await pilot.pause()
-                option = choices.get_option_at_index(0)
-                strips = choices._get_option_render(
-                    option, choices.get_visual_style("option-list--option-highlighted")
-                )
+                strips = [
+                    strip
+                    for y in range(choices.scrollable_content_region.height)
+                    if (strip := choices.render_line(y)).text.strip()
+                ]
                 lines = [strip.text for strip in strips]
                 column = lines[0].index("说明")
                 assert "".join(line[:column].strip() for line in lines) == f"/{command}"

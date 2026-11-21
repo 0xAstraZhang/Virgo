@@ -10,6 +10,6 @@ description: Review code changes for bugs, security issues and missing tests. Us
 3. For every finding give `path:line`, what is wrong, why it matters, and a concrete fix.
 4. Separate **must fix** from **nice to have**. Do not pad the review with style nits.
 5. If you are unsure whether something is a bug, say so and explain how to verify it.
-6. If delegating the review, call `agent` with `read_only=true` and provide the full review scope and context. Do not ask it to change files.
+6. If delegating the review, call `agent` with the full review scope and context, and explicitly instruct it not to change files.
 
 See `checklist.md` in this folder for language-specific checks.

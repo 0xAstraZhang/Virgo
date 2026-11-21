@@ -48,7 +48,7 @@ def _context():
     return Context(
         "System", [UserMessage("Search for the release")],
         [ToolSpec("read", "Read a file", {"type": "object"})],
-        web_search={"type": "web_search"},
+        web_tools=[{"type": "web_search"}],
     )
 
 
@@ -83,7 +83,7 @@ def test_native_search_http_roundtrip_keeps_sources_and_history(server, provider
     selected = _model(provider, server["url"])
     out = provider.stream(selected, _context(), StreamOptions()).result()
     assert out.stop_reason == "stop", out.error_message
-    assert out.search_started and not out.tool_calls()
+    assert out.native_started and not out.tool_calls()
     assert out.content[0] == RawContent(selected.api, SEARCH)
     assert out.content[1].citations == [CITATION]
     assert out.text() == "Release"
@@ -106,7 +106,7 @@ def test_terminal_response_can_supply_search_and_late_citations():
     assert out.content[1].citations == [CITATION]
     only_final = AssistantMessage(api="openai-responses")
     list(responses.parse_events([_completed([SEARCH, MESSAGE])], _model(responses), only_final, StreamOptions()))
-    assert only_final.search_started and only_final.content == out.content
+    assert only_final.native_started and only_final.content == out.content
 
 
 @pytest.mark.parametrize("include_added", [False, True])
@@ -162,7 +162,7 @@ def test_streaming_annotations_survive_truncation():
         {"type": "response.output_text.delta", "output_index": 1, "delta": "Release"},
         {"type": "response.output_text.annotation.added", "output_index": 1, "annotation": CITATION},
     ], _model(responses), out, StreamOptions()))
-    assert out.search_started and out.error_kind == "retryable"
+    assert out.native_started and out.error_kind == "retryable"
     assert out.content[0] == RawContent("openai-responses", {
         "type": "web_search_call", "id": "ws_1", "status": "in_progress",
     })
@@ -183,7 +183,7 @@ def test_only_explicit_search_capability_rejection_allows_fallback(server, provi
     server["body"] = json.dumps({"error": {"type": "invalid_request_error", "message": message}}).encode()
     out = provider.stream(_model(provider, server["url"]), _context(), StreamOptions()).result()
     assert out.error_kind == kind, out.error_message
-    assert not out.search_started
+    assert not out.native_started
 
 
 @pytest.mark.parametrize("provider", [responses, codex])

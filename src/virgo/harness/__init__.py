@@ -2,7 +2,6 @@
 
 from .extensions import EventBus, ExtensionAPI, Handled
 from .runtime import Runtime
-from .services import Services
 from .session import AgentSession
 from .settings import Paths, Settings
 from .store import SessionStore
@@ -16,7 +15,6 @@ __all__ = [
     "Handled",
     "Paths",
     "Runtime",
-    "Services",
     "SessionStore",
     "Settings",
 ]

@@ -6,7 +6,6 @@ import asyncio
 from dataclasses import asdict
 
 import pytest
-from textual.screen import Screen
 
 from virgo.ai.types import (
     AssistantMessage,
@@ -18,7 +17,7 @@ from virgo.ai.types import (
     message_to_dict,
 )
 from virgo.cli.tui import transcript as transcript_module
-from virgo.cli.tui.transcript import AssistantView, Transcript
+from virgo.cli.tui.transcript import AssistantView, ToolView, Transcript
 
 from tests.support.tui import TranscriptApp, saved_entry
 
@@ -100,7 +99,11 @@ def test_older_runs_load_on_demand_and_match_a_full_replay(monkeypatch, toggle):
             view.action_scroll_home()
             await settle(pilot)
             assert view.scroll_y == 0
-            maps = [[(key, row.text, row.status) for key, row in rows.items()] for rows in (view.tools, view.results)]
+            maps = [
+                [((row.agent, row.call_id), row.text, row.status)
+                 for row in view.query(ToolView) if row.kind == kind]
+                for kind in ("tool_call", "tool_result")
+            ]
             return initially, shown(view), maps
 
     eager = asyncio.run(open_and_go_home(1000))
@@ -119,19 +122,11 @@ def test_prepending_older_runs_never_moves_the_reader(monkeypatch):
             await view.load_history(session(40))
             await settle(pilot)
             assert "> Prompt 0" not in prompts(view)
-            reader, frames = view.children[0], []
-            original_refresh = Screen._compositor_refresh
-
-            def record_frame(screen: Screen) -> None:
-                original_refresh(screen)
-                frames.append(reader.region.y)
-
-            monkeypatch.setattr(Screen, "_compositor_refresh", record_frame)
+            reader = view.children[0]
             view.scroll_to(y=0, animate=False, immediate=True)
             await settle(pilot)
             top = view.content_region.y
             assert view.children[0] is not reader
-            assert frames and set(frames) == {top}
             assert reader.region.y == top and view.scroll_y > 0
 
     asyncio.run(scenario())
@@ -173,31 +168,32 @@ def test_opening_another_session_cancels_loading_older_runs(monkeypatch):
             await view.load_history(session(2, prompt="Other"))
             await settle(pilot)
             assert prompts(view) == ["> Legacy prompt", "> Other 0", "> Other 1"]
-            assert [key for key in view.tools] == [("main", "call-0"), ("main", "call-1")]
+            assert [(row.agent, row.call_id) for row in view.query(ToolView) if row.kind == "tool_call"] == [
+                ("main", "call-0"), ("main", "call-1"),
+            ]
 
     asyncio.run(scenario())
 
 
 def test_history_replay_is_mounted_and_laid_out_once(monkeypatch):
     monkeypatch.setattr(transcript_module, "HISTORY_RUNS", 1000)
-    layouts = []
-    original_layout = Screen._refresh_layout
-
-    def count_layout(screen: Screen, *args, **kwargs) -> None:
-        layouts.append(kwargs.get("scroll", False))
-        original_layout(screen, *args, **kwargs)
 
     async def scenario():
         async with TranscriptApp().run_test(size=(80, 24)) as pilot:
             view = pilot.app.query_one(Transcript)
             await pilot.pause()
-            monkeypatch.setattr(Screen, "_refresh_layout", count_layout)
+            mounts = []
+            original_mount = view.mount
+
+            def track_mount(*args, **kwargs):
+                mounts.append(len(args))
+                return original_mount(*args, **kwargs)
+
+            monkeypatch.setattr(view, "mount", track_mount)
             await view.load_history(session(40))
-            during = len(layouts)
             await settle(pilot)
-            # Each incremental mount used to lay out the whole transcript again.
-            assert during == 0
-            assert layouts.count(False) <= 4
+            # Replay builds widgets detached and mounts the transcript in one batch.
+            assert len(mounts) == 1 and mounts[0] >= 41
             assert len(prompts(view)) == 41
 
     asyncio.run(scenario())

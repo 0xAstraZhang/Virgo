@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-CHOICES = {'Auto — prefer native page reading; otherwise use HTTP': 'auto',
- 'HTTP — read public pages directly, no API key required': 'http',
- 'DeepSeek — official Fetch API, API key required': 'deepseek',
- 'Off — disable page reading': 'off'}
-_CHOICE_KEYS = {'Auto — prefer native page reading; otherwise use HTTP': 'harness.fetch.choice.auto',
- 'DeepSeek — official Fetch API, API key required': 'harness.fetch.choice.deepseek',
- 'HTTP — read public pages directly, no API key required': 'harness.fetch.choice.http',
- 'Off — disable page reading': 'harness.fetch.choice.off'}
-USAGE = 'Usage: /fetch [auto|http|deepseek|off]'
+_CHOICES = (
+    ("harness.fetch.choice.auto", "auto"),
+    ("harness.fetch.choice.http", "http"),
+    ("harness.fetch.choice.deepseek", "deepseek"),
+    ("harness.fetch.choice.off", "off"),
+)
+_VALUES = frozenset(value for _, value in _CHOICES)
 
 
 def configure_fetch(api, args):
@@ -18,7 +16,7 @@ def configure_fetch(api, args):
     if service is None:
         api.ui.print(api.t("harness.fetch.disabled"), "error")
         return
-    choices = {api.t(_CHOICE_KEYS[label]): value for label, value in CHOICES.items()}
+    choices = {api.t(key): value for key, value in _CHOICES}
     usage = api.t("harness.fetch.usage")
     choice = args.strip().lower()
     if not choice:
@@ -34,7 +32,7 @@ def configure_fetch(api, args):
             return
         choice = choices.get(selected, "")
     choice = {"ds": "deepseek"}.get(choice, choice)
-    if choice not in CHOICES.values():
+    if choice not in _VALUES:
         api.ui.print(usage, "error")
         return
     try:

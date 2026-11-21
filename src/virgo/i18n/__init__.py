@@ -171,10 +171,9 @@ def localize_tool(tool: AgentTool, translator: Translator) -> AgentTool:
     default_values = source.i18n_values(english) if callable(source.i18n_values) else source.i18n_values
     for field in ("label", "description"):
         key = f"{prefix}.{field}"
-        # An extension may use dataclasses.replace on a builtin and override its
-        # prose while retaining i18n_key. Preserve that explicitly authored text.
+        current = getattr(source, field)
         if translator.has(key) and (
-            not english.has(key) or getattr(source, field) == english(key, **default_values)
+            not current or not english.has(key) or current == english(key, **default_values)
         ):
             setattr(result, field, translator(key, **values))
 
@@ -190,42 +189,17 @@ def localize_tool(tool: AgentTool, translator: Translator) -> AgentTool:
                 and (not english.has(key) or item == english(key))
             ):
                 out[name] = translator(key)
-        # Traverse schemas, never example/default/enum payloads that happen to
-        # contain properties called "description" or "title".
-        for name in (
-            "properties",
-            "patternProperties",
-            "$defs",
-            "definitions",
-            "dependentSchemas",
-            "dependencies",
-        ):
-            if isinstance(value.get(name), dict):
-                out[name] = {key: schema(item, f"{path}.{name}.{key}") for key, item in value[name].items()}
-        for name in (
-            "items",
-            "additionalItems",
-            "additionalProperties",
-            "unevaluatedItems",
-            "unevaluatedProperties",
-            "contains",
-            "propertyNames",
-            "not",
-            "if",
-            "then",
-            "else",
-            "contentSchema",
-        ):
-            if name in value:
-                item = value[name]
-                out[name] = (
-                    [schema(child, f"{path}.{name}.{index}") for index, child in enumerate(item)]
-                    if name == "items" and isinstance(item, list)
-                    else schema(item, f"{path}.{name}")
-                )
-        for name in ("allOf", "anyOf", "oneOf", "prefixItems"):
-            if isinstance(value.get(name), list):
-                out[name] = [schema(item, f"{path}.{name}.{index}") for index, item in enumerate(value[name])]
+        if isinstance(value.get("properties"), dict):
+            out["properties"] = {
+                key: schema(item, f"{path}.properties.{key}") for key, item in value["properties"].items()
+            }
+        if "items" in value:
+            item = value["items"]
+            out["items"] = (
+                [schema(child, f"{path}.items.{index}") for index, child in enumerate(item)]
+                if isinstance(item, list)
+                else schema(item, f"{path}.items")
+            )
         return out
 
     result.parameters = schema(source.parameters, f"{prefix}.parameters")

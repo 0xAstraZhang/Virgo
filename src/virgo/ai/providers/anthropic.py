@@ -233,7 +233,7 @@ def compact(
     response = None
     key = _api_key(model)
     try:
-        params = build_params(model, replace(ctx, web_search=None, web_tools=[], web_offers=[]), opts)
+        params = build_params(model, replace(ctx, web_tools=[], web_offers=[]), opts)
         params["max_tokens"] = opts.max_tokens or min(model.max_tokens, 8000)
         betas = params.setdefault("betas", [])
         if BETA_COMPACTION not in betas:
@@ -368,11 +368,8 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
                         json_bufs[ev.index] = ""
                         kind = "native_tool_start"
                         out.native_started = True
-                        if b.name == "web_search":
-                            out.search_started = True
                     elif b.type in {"web_search_tool_result", "web_fetch_tool_result"}:
                         out.native_started = True
-                        out.search_started |= b.type == "web_search_tool_result"
                         kind = "native_tool_start"
                 index_map[ev.index] = len(out.content) - 1
                 if kind:
@@ -449,9 +446,10 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             yield StreamEvent("done", out)
     except Exception as e:  # noqa: BLE001
         kind, text = classify_error(e)
-        if ctx.web_search and is_search_unsupported(e):
+        web_decls = declarations(ctx)
+        if any(d.get("name") == "web_search" for d in web_decls) and is_search_unsupported(e):
             kind = "search_unsupported"
-        if any(d.get("name") == "web_fetch" for d in declarations(ctx)) and is_web_unsupported(e, "fetch"):
+        if any(d.get("name") == "web_fetch" for d in web_decls) and is_web_unsupported(e, "fetch"):
             kind = "fetch_unsupported"
         out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
         out.error_kind = kind

@@ -13,7 +13,6 @@ from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.harness.settings import Settings
 from virgo.harness.ui import UI
-from virgo.plugins.web.search_commands import CHOICES
 
 from tests.support.tui import wait_for
 
@@ -28,7 +27,9 @@ class SearchUI(UI):
 
     def select(self, question, options):
         self.offered = options
-        return next((label for label, value in CHOICES.items() if value == self.choice), None)
+        if self.choice is None:
+            return None
+        return next((label for label in options if label.lower().startswith(self.choice)), None)
 
     def print(self, text, style=None):
         self.lines.append(text)
@@ -80,7 +81,7 @@ def test_interactive_selection_and_cancellation(make_session):
     ui = SearchUI("duckduckgo")
     session = make_session(ui=ui)
     session.prompt("/search")
-    assert ui.offered == list(CHOICES)
+    assert [label.split(" — ", 1)[0].lower() for label in ui.offered] == ["auto", "duckduckgo", "deepseek", "off"]
     assert session.services["search"].selection == "duckduckgo"
     path = session.paths.user / "settings.json"
     saved = path.read_bytes()

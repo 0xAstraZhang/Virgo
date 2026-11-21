@@ -24,12 +24,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native:
-    name: Windows native isolation / ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2022, windows-2025]
-    runs-on: ${{ matrix.os }}
+    name: Windows native isolation / windows-2022
+    runs-on: windows-2022
     timeout-minutes: 20
     env:
       PYTHONUTF8: '1'
@@ -67,7 +63,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
-          name: windows-sandbox-${{ matrix.os }}
+          name: windows-sandbox-windows-2022
           path: windows-sandbox.xml
           if-no-files-found: error
           retention-days: 14
@@ -89,6 +85,19 @@ jobs:
         with:
           version: '0.13.8'
           python-version: '3.13'
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - run: uv sync --locked --dev
+      - name: Record exact revision and native environment
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture | Format-List
+          $PSVersionTable | Format-List
+          uv run --no-sync python -c "import platform,struct,sys; print(platform.platform()); print(sys.version); print(sys.executable); assert struct.calcsize('P') == 8"
+      - name: Verify stock unsupported Windows Server fallback before CI null-device alignment
+        run: uv run --no-sync python ci/prepare_windows_null_device.py --verify-unsupported
       - name: Create pure non-Administrators Standard User and isolated workspace
         id: stduser
         shell: pwsh
@@ -118,7 +127,7 @@ jobs:
           icacls $work /grant 'virgo_std:(OI)(CI)F' /T /Q
           if ($LASTEXITCODE -ne 0) { throw "icacls grant failed: $LASTEXITCODE" }
       - name: Align Windows Server runner null device with Win11 Feature 60692039
-        run: uv run --no-project python ci/prepare_windows_null_device.py
+        run: uv run --no-sync python ci/prepare_windows_null_device.py
       - name: Run Windows sandbox acceptance as pure Standard User
         shell: pwsh
         run: |
@@ -143,7 +152,7 @@ jobs:
 
           $pwshExe = (Get-Command pwsh.exe).Source
           $cmd = 'try {{ & ''{0}'' *> ''{1}''; if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}; if (-not $?) {{ exit 1 }}; exit 0 }} catch {{ $_ | Out-File -FilePath ''{1}'' -Append -Encoding utf8; exit 1 }}' -f $runnerScript, $logFile
-          uv run --no-project python ci/run_as_standard_user.py `
+          uv run --no-sync python ci/run_as_standard_user.py `
             --username virgo_std `
             --password-env VIRGO_STD_PASSWORD `
             --cwd "$work\repo" `
@@ -152,7 +161,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Reject empty, failed or skipped Standard User native reports
         if: ${{ !cancelled() }}
-        run: uv run --no-project python ci/check_native_report.py C:\virgo-std-work\windows-sandbox-stduser.xml
+        run: uv run --no-sync python ci/check_native_report.py C:\virgo-std-work\windows-sandbox-stduser.xml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
