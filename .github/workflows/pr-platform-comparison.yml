@@ -210,7 +210,7 @@ jobs:
         working-directory: candidate
         run: uv run --no-sync python ../ci-config/ci/checks/powershell_cache.py
       - name: Align Windows Server runner null device with Win11 Feature 60692039
-        if: runner.os == 'Windows' && matrix.entry.revision == 'head'
+        if: runner.os == 'Windows'
         working-directory: candidate
         run: uv run --no-sync python ../ci-config/ci/prepare_windows_null_device.py
       - name: Run complete pytest suite

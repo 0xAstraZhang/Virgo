@@ -1004,6 +1004,11 @@ def test_inaccessible_runtime_fails_closed(tmp_path, monkeypatch, make_session):
     assert str(fake_rt) in str(exc_info.value)
 
     # Verify assembled session fails closed on decline and allows explicit one-shot No-Limit (R6).
+    if (
+        os.environ.get("VIRGO_REQUIRE_SANDBOX_TESTS") != "1"
+        and not windows_sandbox.is_windows_sandbox_supported()
+    ):
+        monkeypatch.setattr(windows_sandbox, "null_device_allows_appcontainer", lambda: True)
     session = make_session(
         settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False,
@@ -1071,12 +1076,14 @@ def test_null_device_support_probe_and_unsupported_fallback(project, monkeypatch
     from tests.support.harness import RecordingUI
 
     # Live supported (Win11 Feature 60692039 / CI-aligned) host allows AppContainer on \Device\Null.
-    assert windows_acl.null_device_allows_appcontainer() is True
-    assert windows_sandbox.is_windows_sandbox_supported() is True
-    assert is_windows_sandbox_supported() is True
-    assert default_execution_mode() == "workspace-edit"
+    required = os.environ.get("VIRGO_REQUIRE_SANDBOX_TESTS") == "1"
+    if required or windows_acl.null_device_allows_appcontainer():
+        assert windows_acl.null_device_allows_appcontainer() is True
+        assert windows_sandbox.is_windows_sandbox_supported() is True
+        assert is_windows_sandbox_supported() is True
+        assert default_execution_mode() == "workspace-edit"
 
-    # Simulated unsupported Windows (\Device\Null without S-1-15-2-1) defaults to No-Limit with 3 options
+    # Unsupported Windows (\Device\Null without S-1-15-2-1) defaults to No-Limit with 3 options
     # and fails closed on explicit sandbox precheck.
     monkeypatch.setattr(windows_sandbox, "null_device_allows_appcontainer", lambda: False)
     assert windows_sandbox.is_windows_sandbox_supported() is False

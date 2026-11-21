@@ -30,7 +30,7 @@ uv run --no-sync python ci/measure_permission_modes.py \
 原生 Windows 在已更新的新版 Windows 11（`null.sys 10.0.26100.8972+` / WIL Feature `60692039`，`\Device\Null` 原生授予 `S-1-15-2-1` `0x001201BF`）上运行非提权标准 AppContainer 后端（`windows-appcontainer`，无需管理员权限），并作为 **PR 阻塞的一级支持门槛**：
 - GitHub Actions 托管的 Windows Server 2022/2025 runner 默认搭载未启用 Feature `60692039` 的旧版 `null.sys`。Virgo 生产代码**绝不**修改 `\Device\Null`（不受支持的 Windows 默认以 **No-Limit** 启动并提示 WSL2 / No-Limit / 更新 Windows，显式请求沙箱模式时 fail-closed）。
 - `windows-sandbox.yml`（`Windows sandbox boundaries`）在 `pull_request`、向 `main` 推送、每日定时任务和手动触发时运行 `windows-2022`、`windows-2025` 以及 `windows-2025` 上的 `standard-user` 任务。在 `windows-2022` 与 `windows-2025` 上，CI 先运行 `ci/prepare_windows_null_device.py --verify-unsupported` 实证原生旧 Server 的默认降级与 fail-closed 行为，再用 `ci/prepare_windows_null_device.py` 将 CI Server runner 的 `\Device\Null` DACL 对齐到微软 `null.sys 10.0.26100.9818` 的同款 ACE，随后端到端运行完整标准 AppContainer 隔离套件（含 `NUL`/`subprocess.DEVNULL` 与纯 `*Users` 非管理员账号 `virgo_std` 的 `ci/run_as_standard_user.py --assert-standard-user` 验收），并由 `ci/check_native_report.py` 校验零跳过报告。
-- `pr-platform-comparison.yml` 在 Windows `head` 上对齐 Server runner 的 `\Device\Null` 后运行完整 pytest 套件，不再跳过原生沙箱测试。
+- `pr-platform-comparison.yml` 在 Windows 上对齐 Server runner 的 `\Device\Null` 后运行完整 pytest 套件，不再跳过原生沙箱测试。
 - `permission-timing.yml` 在 `windows-latest` 上对齐 `\Device\Null` 后，针对 `no-limit`、`read-only`、`workspace-edit` 执行 `ci/measure_permission_modes.py --check-budgets`。
 
 如需在非提权 PowerShell 会话中手动运行原生 Windows 验收（使用用户自有或 AAP 可读的原生 x64 Python 3.11+）：
