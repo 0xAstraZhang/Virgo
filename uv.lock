@@ -1,11 +1,11 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten'",
-    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
+    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
 ]
 
 [[package]]
@@ -1219,6 +1219,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "httpx" },
     { name = "openai" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "send2trash" },
     { name = "textual" },
@@ -1242,6 +1243,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3.0,<3" },
     { name = "openai", specifier = ">=3.48.0" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=312" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "send2trash", specifier = ">=1.8.3" },
     { name = "textual", specifier = ">=8.2.8,<9" },

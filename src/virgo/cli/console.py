@@ -62,7 +62,7 @@ class ConsoleBroker:
         self.events.put(item)
 
     def start_reader(self) -> None:
-        if sys.stdin.isatty():
+        if os.name == "posix" and sys.stdin.isatty():
             import termios
 
             self._terminal_state = (sys.stdin.fileno(), termios.tcgetattr(sys.stdin.fileno()))
@@ -143,6 +143,11 @@ class ConsoleBroker:
 
     def _read_terminal_answer(self, waiting: threading.Event, password: bool) -> str | None:
         """Read forms on the single reader thread, with cancellable hidden input."""
+        if os.name == "nt":
+            from .windows_console import read_answer
+
+            return read_answer(waiting, self._prompt_ready, password=password)
+
         import termios
 
         fd = sys.stdin.fileno()
@@ -346,7 +351,9 @@ class TerminalUI(UI):
     def prompt(self) -> None:
         with self._lock:
             self._newline()
-            self.write(self._style(PROMPT, "bold"))
+            # Redirected Windows output may use a legacy code page without the prompt glyph.
+            prompt = "> " if os.name == "nt" and not sys.stdout.isatty() else PROMPT
+            self.write(self._style(prompt, "bold"))
         self.broker.resume_reading()
 
     # -- events -------------------------------------------------------------------
