@@ -24,7 +24,8 @@ def test_text_typed_while_a_command_runs_becomes_the_next_prompt(make_session, m
     broker.push("line", "what is up")
     release.set()
     # It used to be placed in the agent's steering queue, which only a run drains: never answered.
-    wait_until(lambda: calls())
+    # /exit aborts active work, so wait for the deferred prompt's reply before exiting.
+    wait_until(lambda: session.main.agent.last_text == "answer")
     broker.push("line", "/exit")
     runner.join(5)
 
