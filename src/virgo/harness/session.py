@@ -158,6 +158,9 @@ class AgentSession:
             if jobs.background_enabled and "background" not in self.loaded_plugins:
                 jobs.background_enabled = False
                 self.services["shell"].install_tools()
+                subagents = self.services.get("subagents")
+                if subagents is not None and callable(getattr(subagents, "install_tools", None)):
+                    subagents.install_tools()
             install_command_hooks(self)
             def warn(message: str) -> None:
                 self.ui.print(message, "warn")

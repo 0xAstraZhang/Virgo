@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from virgo.ai.validate import INVALID_ARGUMENTS, parse_tool_arguments, validate
+from virgo.ai.validate import (
+    INVALID_ARGUMENTS,
+    parse_tool_arguments,
+    valid_schema,
+    validate,
+)
 
 
 def test_validate_coercions():
@@ -27,3 +32,18 @@ def test_tool_arguments_must_be_a_json_object():
     assert parse_tool_arguments("") == parse_tool_arguments("  ") == {}
     for raw in ("null", '"src"', "[1, 2]", "3", '{"path": '):
         assert parse_tool_arguments(raw) == {INVALID_ARGUMENTS: raw}
+
+
+def test_valid_schema_and_tuple_items():
+    tuple_schema = {
+        "type": "object",
+        "properties": {
+            "pair": {"type": "array", "items": [{"type": "string"}, {"type": "integer"}]},
+        },
+        "required": ["pair"],
+    }
+    assert valid_schema(tuple_schema)
+    val, errs = validate({"pair": ["age", "42"]}, tuple_schema)
+    assert errs == [] and val == {"pair": ["age", 42]}
+    assert not valid_schema({"type": "object", "properties": {"x": {"type": 42}}})
+    assert not valid_schema({"type": "object", "properties": {"x": {"type": "string", "minLength": "1"}}})

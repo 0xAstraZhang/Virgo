@@ -3,6 +3,7 @@
 MESSAGES = {
     "features.agent.aborted": "子代理已中止。",
     "features.agent.background": "已启动后台子代理 {id}（{description}）。完成后会通知你；用 job_output 读取结果。",
+    "features.agent.background_disabled": "当前会话已禁用后台执行。",
     "features.agent.failed": "子代理失败: {error}",
     "features.agent.turn_limit": "子代理达到 {turns} 轮上限，任务尚未完成。"
     "先检查已经完成的工作，再缩小任务范围或调整 subagents.maxTurns。",

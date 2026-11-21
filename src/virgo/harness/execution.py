@@ -11,6 +11,7 @@ from ..execution_policy import DEFAULT_MODES, HOST_MODE
 from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
 from ..tools.output import make_read_output_tool
 from .high_risk import detect_high_risk_command
+from .resource_approvals import HostExecutionProvider
 from .ui import confirm_callable
 
 _BACKEND_UNAVAILABLE_REASONS = frozenset({
@@ -20,19 +21,6 @@ _BACKEND_UNAVAILABLE_REASONS = frozenset({
     "windows_runtime_inaccessible",
     "windows_unsupported_os",
 })
-
-
-class HostExecutionProvider:
-    name = "host"
-
-    def __init__(self, session):
-        self.session = session
-
-    def for_context(self, context):
-        runtime = self.session.runtime_for_context(context)
-        if runtime is None:
-            raise ValueError("Execution requires the originating runtime context")
-        return runtime.execution_context
 
 
 class ModeExecutionProvider(HostExecutionProvider):
@@ -65,8 +53,8 @@ class ModeExecutionProvider(HostExecutionProvider):
 
     def load_sandbox(self):
         if self.sandbox is None:
-            from ..sandbox import SandboxExecutionProvider, install_resource_tool
             from .extensions import ExtensionAPI
+            from .resource_approvals import SandboxExecutionProvider, install_resource_tool
 
             provider = SandboxExecutionProvider(self.session, self.executor)
             api = ExtensionAPI(self.session, "core:execution")
@@ -77,6 +65,14 @@ class ModeExecutionProvider(HostExecutionProvider):
                 raise
             self.sandbox = provider
         return self.sandbox
+
+    def can_request_permissions(self, runtime) -> bool:
+        return self.sandbox is not None and self.sandbox.can_request_permissions(runtime)
+
+    def filter_tools(self, runtime, tools):
+        if self.resource_tool is None or self.can_request_permissions(runtime):
+            return tools
+        return [tool for tool in tools if tool is not self.resource_tool]
 
     def mode_for(self, runtime):
         return runtime.execution_context.resources if runtime.permission_snapshot else HOST_MODE

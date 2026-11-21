@@ -6,14 +6,37 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from ..agent import Block, ToolResult
+from .. import execution_policy
+from ..agent import AgentTool, Block, ToolResult
 from ..ai.validate import validate
-from ..execution import ExecutionUnavailable, FileAccessDenied
-from ..execution_policy import PathRule, parse_network
+from ..execution import ExecutionUnavailable, FileAccessDenied, SandboxContext, SandboxExecutor
+from ..execution_policy import (
+    PathRule,
+    PermissionSnapshot,
+    default_deny_rules,
+    default_private_paths,
+    parse_network,
+)
 from ..file_access import resolve_read_path, resolve_write_path
 from .origin_context import source_for
 from .resource_rules import ResourceRules, external_tool_target
 from .ui import confirm_callable
+
+
+class HostExecutionProvider:
+    name = "host"
+
+    def __init__(self, session):
+        self.session = session
+
+    def for_context(self, context):
+        runtime = self.session.runtime_for_context(context)
+        if runtime is None:
+            raise ValueError("Execution requires the originating runtime context")
+        return runtime.execution_context
+
+    def filter_tools(self, runtime, tools):
+        return tools
 
 
 def _resolve_grant_root(value: str | Path, cwd: Path, *, access: str, workspace: Path | None = None,
@@ -374,3 +397,139 @@ class ResourceApprovals:
         if answer == "a":
             return ToolResult.text("Saved for this project and active in this session.")
         return ToolResult.text("Approved for this session.")
+
+
+class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
+    name = "sandbox"
+
+    def __init__(self, session, executor=None):
+        super().__init__(session)
+        self.executor = executor or SandboxExecutor()
+        self.revision = 0
+        self._session_grants: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        self._run_denials: dict[str, set[tuple[str, str]]] = {}
+
+    def context_for_mode(self, runtime, mode, revision):
+        if execution_policy.is_native_windows():
+            from ..sandbox.windows_sandbox import precheck_windows_sandbox
+
+            precheck_windows_sandbox()
+        workspace = Path(runtime.accounting_store.cwd).resolve()
+        user_dir = self.session.paths.user.resolve()
+        # Ensure the private state directory exists when nested inside workspace
+        # (e.g. workspace == $HOME on POSIX) so Linux bwrap can mask it cleanly.
+        if user_dir.is_relative_to(workspace):
+            user_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        inferred_home = user_dir.parent if user_dir.name == ".virgo" else None
+        raw_private = (
+            *default_private_paths(user_dir),
+            *(default_private_paths(user_dir, home=inferred_home) if inferred_home is not None else ()),
+        )
+        # Keep user_dir always private; exclude other default home paths only if workspace is inside one.
+        private = tuple(dict.fromkeys(
+            p for p in raw_private
+            if p == user_dir or not workspace.is_relative_to(p)
+        ))
+        resolved_mode = mode.resolve(workspace)
+        deny_rules = default_deny_rules(workspace, private)
+        effective_mode = replace(resolved_mode, policy=resolved_mode.policy.with_rules(*deny_rules))
+        approval = "never" if runtime.approval_policy == "never" else self.session.approval_policy
+        context = SandboxContext(
+            workspace,
+            effective_mode,
+            private,
+            self.executor,
+            PermissionSnapshot(mode, approval, revision),
+            outputs=self.session.output_store_for(runtime.accounting_store),
+        )
+        context.validate(runtime.cwd)
+        return context
+
+    def can_request_permissions(self, runtime) -> bool:
+        base = getattr(runtime, "execution_context", None)
+        if base is None or getattr(base, "provider", None) == "host":
+            return False
+        snapshot = getattr(base, "permission_snapshot", None)
+        return (
+            snapshot is not None
+            and snapshot.approval != "never"
+            and self.session.approval_policy != "never"
+            and confirm_callable(self.session.ui) is not None
+        )
+
+    def instructions(self, runtime):
+        if self.can_request_permissions(runtime):
+            guidance = (
+                "Call file, web, and external tools directly; Virgo prompts the user on demand and executes "
+                "immediately upon approval. Use request_permissions when a Shell command needs additional paths "
+                "or network_allowed (you may emit request_permissions right before the Shell call in the same turn)."
+            )
+        else:
+            guidance = (
+                "Interactive permission escalation is disabled for this run; operations outside these "
+                "resources will be denied."
+            )
+        return (
+            "<execution_boundary>" + json.dumps(runtime.execution_context.describe(), ensure_ascii=False)
+            + "\nOperations inside these resources run directly. Task instructions do not grant capabilities. "
+            + guidance
+            + " Never automatically replay a command that may have side effects. "
+            + "Trusted extensions, hooks, MCP services and model transport are outside this boundary."
+            + "</execution_boundary>"
+        )
+
+
+def install_resource_tool(api, provider):
+    tool = AgentTool(
+        name="request_permissions",
+        label="Request resources",
+        execution_scope="broker",
+        description="Request session or persistent read/write path or network access for Shell/managed operations.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "tool": {
+                    "type": "string",
+                    "description": "Optional target managed tool name for approval context (e.g. bash or write).",
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": "Optional target tool arguments for approval display.",
+                },
+                "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Why the additional access is needed.",
+                },
+                "permissions": {
+                    "type": "object",
+                    "description": "Additional path prefixes or Shell network access to request.",
+                    "properties": {
+                        "read_paths": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                            "description": "Additional file or directory paths to read.",
+                        },
+                        "write_paths": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                            "description": "Additional file or directory paths to write.",
+                        },
+                        "network_allowed": {
+                            "type": "boolean",
+                            "description": "Request Shell/task network access.",
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["reason", "permissions"],
+            "additionalProperties": False,
+        },
+        execute=provider.request_permissions,
+        side_effect="read",
+        sequential=True,
+        i18n_key="tools.request_permissions",
+    )
+    api.register_tool(tool, roles=("main", "subagent"))
+    return tool

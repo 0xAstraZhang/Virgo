@@ -113,7 +113,7 @@ def setup(api: ExtensionAPI) -> None:
             "Stop a background job.",
             {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
             kill,
-            side_effect="read",
+            side_effect="write",
             execution_scope="broker",
             i18n_key="tools.job_kill",
         ),

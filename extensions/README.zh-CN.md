@@ -34,15 +34,16 @@ Todos 不再是内置插件，旧 `plugins.todo`、`features.todo` 配置被忽�
 }
 ```
 
-每次调用完整替换列表。每项必填 `step`、`content`、`status`；`explanation` 说明整个更新，
-省略时清除旧说明。阶段按 `StepA` 到 `StepZ`，再到 `StepAA`、`StepAB` 等顺序推进。
-同阶段可并行，工具不强制调度；允许多项同时处于 `in_progress`，空列表清空清单。
+每次调用完整替换列表。每项必填 `content`、`status`；`step` 为可选阶段标签（按
+`StepA` 到 `StepZ`，再到 `StepAA`、`StepAB` 等顺序推进），`explanation` 说明整个更新，
+省略或为 `null` 时清除旧说明。同阶段可并行，工具不强制调度；允许多项同时处于
+`in_progress`，空列表清空清单。
 
-成功时只向模型返回“Todos 状态更新成功”。完整状态保存在结果 `details`，归属原始会话和
-当前分支。若压缩移除了最新完整调用及成功结果，且仍有事项未完成，请求中会完整保留最新
-状态，包括已完成项和说明。摘要压缩、原生压缩和恢复会话均保留状态，不向历史反复追加快照。
-全部完成或清空后不再固定保留，未完成事项不会强制触发下一轮模型调用。旧结果缺少 Step 时
-仍可读取，不推断分组；后续写入必须提供新字段。
+成功时只向模型返回简短确认（英文模式为“Todos updated.”，中文模式为“Todos 状态更新成功”）。
+完整状态保存在结果 `details`，归属原始会话和当前分支。若压缩移除了最新完整调用及成功结果，
+且仍有事项未完成，请求中会完整保留最新状态，包括已完成项和说明。摘要压缩、原生压缩和恢复
+会话均保留状态，不向历史反复追加快照。全部完成或清空后不再固定保留，未完成事项不会强制触发
+下一轮模型调用。旧结果缺少 Step 时仍可正常读取，不推断分组。
 
 ## MCP
 
@@ -70,12 +71,17 @@ uv sync --extra mcp             # 源码检出
 }
 ```
 
-也接受 `mcpServers` 配置项（项目级的 `mcpServers` 与 `.virgo/mcp.json` 需通过
-`extensions.trustedProjects` 或 `--trust-project-extensions` 显式信任）。服务器参数和环境值支持
-`${VARIABLE}` 展开；禁用条目会被跳过。MCP 服务器通过 `SandboxExecutor` 在 Host 启动，主会话与所有子
-Agent 共享同一个连接（原生 Windows 支持通过 `PATH` 查找命令与 `.cmd`/`.bat`，如 `npx`）。工具名为
-`mcp__<server>__<tool>`：只读工具直接执行，可能修改宿主状态的工具在 Read-Only 与 Workspace-Edit
-下需经审批（“始终允许”绑定服务器展开后的 `command`、`args`、`env` 的 SHA-256 指纹），在 No-Limit 下直接执行。
+也接受 `mcpServers` 配置项（优先级：`~/.virgo/mcp.json` < `~/.virgo/settings.json` <
+受信任 `.virgo/mcp.json` < 受信任 `.virgo/settings.json`；项目级的 `mcpServers` 与
+`.virgo/mcp.json` 需通过 `extensions.trustedProjects` 或 `--trust-project-extensions`
+显式信任）。服务器参数和环境值支持 `${VARIABLE}` 展开；禁用条目会被跳过。每个服务器支持
+可选的 `callTimeout`（覆盖默认 300s 单次调用超时）及 `includeTools` / `excludeTools`
+（按 glob 模式过滤暴露的工具）。MCP 服务器通过 `SandboxExecutor` 在 Host 启动，启动期
+采用有界等待以避免阻塞冷启动，主会话与所有子 Agent 共享同一个连接（原生 Windows 支持通过
+`PATH` 查找命令与 `.cmd`/`.bat`，如 `npx`）。工具名为 `mcp__<server>__<tool>`（超长或
+冲突名称会自动追加确定性哈希后缀）：只读工具直接执行，可能修改宿主状态的工具在 Read-Only
+与 Workspace-Edit 下需经审批（“始终允许”绑定服务器展开后的 `command`、`args`、`env`
+的 SHA-256 指纹），在 No-Limit 下直接执行。
 
-`/mcp` 列出已配置服务器和工具数量；`/mcp reconnect` 重新加载配置，失败时保留原有连接和工具。
-`mcp_status` 向模型暴露同样的本地状态，不联系服务器。
+`/mcp` 列出已配置服务器和工具数量；`/mcp reconnect` 重新加载 `mcp.json` 与 `settings.json`，
+失败时保留原有连接和工具。`mcp_status` 向模型暴露同样的本地状态，不联系服务器。

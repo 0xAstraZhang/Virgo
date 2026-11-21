@@ -20,6 +20,7 @@ STEP = r"Step[A-Z]+"
 
 def snapshot(args, *, legacy=False):
     """Validate an entire replacement before publishing any state."""
+    del legacy  # Retained for compatibility; step is now optional everywhere.
     if not isinstance(args, dict) or not isinstance(args.get("todos"), list):
         raise ValueError("todos must be an array")
     out = {"todos": []}
@@ -32,12 +33,12 @@ def snapshot(args, *, legacy=False):
         if status not in STATUSES:
             raise ValueError(f"item {index}: status must be one of {STATUSES}")
         todo = {"content": content, "status": status}
-        if not legacy or "step" in item:
+        if step is not None:
             if not isinstance(step, str) or re.fullmatch(STEP, step) is None:
                 raise ValueError(f"item {index}: step must be StepA, StepB, ..., StepZ, StepAA, ...")
             todo["step"] = step
         out["todos"].append(todo)
-    if "explanation" in args:
+    if args.get("explanation") is not None:
         if not isinstance(args["explanation"], str):
             raise ValueError("explanation must be a string")
         out["explanation"] = args["explanation"]
@@ -51,6 +52,11 @@ def saved_snapshot(message):
         except ValueError:
             pass  # Malformed historical results are not successful state updates.
     return None
+
+
+def _ack(translator) -> str:
+    language = getattr(translator, "language", "en") or "en"
+    return "Todos 状态更新成功" if str(language).lower().startswith("zh") else "Todos updated."
 
 
 def setup(api):
@@ -68,7 +74,7 @@ def setup(api):
             return ToolResult.error(f"Todos not updated: {error}")
         # Publication happens on message_end in journal order, even when a batch
         # contains several concurrent calls. Only this acknowledgement is sent back.
-        return ToolResult.text("Todos 状态更新成功", details=value)
+        return ToolResult.text(_ack(ctx.translator or api.translator), details=value)
 
     api.register_tool(
         AgentTool(
@@ -76,9 +82,9 @@ def setup(api):
             label="Todos",
             description=(
                 "Replace the conversation's checklist with the complete todos list; an empty list clears it. "
-                "Use step labels in execution order: StepA, StepB, ..., StepZ, StepAA, StepAB, ... . "
+                "Optional step labels indicate execution order: StepA, StepB, ..., StepZ, StepAA, StepAB, ... . "
                 "Items with the same step may run in parallel; multiple items may be in_progress. "
-                "Follow the step order yourself; this tool records progress and does not schedule work. "
+                "Follow any step order yourself; this tool records progress and does not schedule work. "
                 "The optional explanation describes the entire update and is cleared when omitted."
             ),
             parameters={
@@ -90,18 +96,21 @@ def setup(api):
                         "items": {
                             "type": "object",
                             "properties": {
-                                "step": {"type": "string", "pattern": "^" + STEP + "$"},
+                                "step": {
+                                    "type": "string",
+                                    "pattern": "^" + STEP + "$",
+                                    "description": "Optional execution phase label (StepA, StepB, ..., StepAA).",
+                                },
                                 "content": {"type": "string", "minLength": 1},
                                 "status": {"type": "string", "enum": list(STATUSES)},
                             },
-                            "required": ["step", "content", "status"],
+                            "required": ["content", "status"],
                         },
                     },
                 },
                 "required": ["todos"],
             },
             execute=execute,
-            prepare_arguments=snapshot,
             side_effect="read",
             execution_scope="broker",
         ),

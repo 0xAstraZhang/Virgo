@@ -351,7 +351,6 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
     monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
     monkeypatch.setattr(hs, "is_native_windows", lambda: True)
-    monkeypatch.setattr(sb, "is_native_windows", lambda: True)
     assert ep.is_windows_sandbox_supported() is True
     assert ep.default_execution_mode() == "workspace-edit"
 
@@ -430,7 +429,6 @@ def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(pro
     monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
     monkeypatch.setattr(hs, "is_native_windows", lambda: True)
-    monkeypatch.setattr(sb, "is_native_windows", lambda: True)
 
     assert ep.is_windows_sandbox_supported() is False
     assert ep.default_execution_mode() == "no-limit"

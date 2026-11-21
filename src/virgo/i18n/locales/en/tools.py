@@ -1,11 +1,14 @@
 """English tools messages."""
 
 MESSAGES = {
+    "tools.agent.background": " Set background=true to keep working while it runs.",
     "tools.agent.description": "Delegate a self-contained task to a sub-agent with a fresh context. It cannot "
     "see this conversation, so include the needed context; only its final answer "
-    "comes back. Several calls in one response run in parallel. Children inherit the originating task execution "
-    "boundary. Set background=true to keep working while it runs.",
+    "comes back. Several calls in one response run in parallel. Children inherit "
+    "the originating task execution boundary.{background}",
     "tools.agent.label": "Agent",
+    "tools.agent.parameters.properties.background.description": "Run in the background; job_output/job_kill "
+    "manage the job.",
     "tools.agent.parameters.properties.description.description": "Short task label",
     "tools.agent.parameters.properties.prompt.description": "Complete instructions for the sub-agent",
     "tools.ask_user.description": "Ask one question and wait for the user. Offer up to 3 options (the first is "
@@ -73,7 +76,8 @@ MESSAGES = {
     "tools.fs.image": "Image: {name}",
     "tools.fs.is_directory": "{path} is a directory. Use glob to list files.",
     "tools.fs.large_image": "Image is larger than 5MB.",
-    "tools.fs.long_line": "Line {line} exceeds {max_kb}KB. Use bash: sed -n '{line}p' {path} | head -c 20000",
+    "tools.fs.long_line": "Line {line} exceeds {max_kb}KB. Inspect a slice of {path} with your shell tool "
+    "(for example, printing the first 20000 bytes of line {line}).",
     "tools.fs.match_limit": "... stopped after {limit} matches; refine the pattern or raise limit",
     "tools.fs.more_matches": "... {count} more; narrow the pattern",
     "tools.fs.no_matches": "(no matches)",
@@ -119,6 +123,29 @@ MESSAGES = {
     "tools.read.parameters.properties.offset.description": "1-based line to start from",
     "tools.read.parameters.properties.path.description": "File path, relative to the working directory or "
     "absolute",
+    "tools.read_output.description": "Read a private command/tool output using its output_id. offset and limit "
+    "are byte counts.",
+    "tools.read_output.label": "Read output",
+    "tools.read_output.parameters.properties.limit.description": "Maximum number of bytes to read.",
+    "tools.read_output.parameters.properties.offset.description": "0-based byte offset to start reading from.",
+    "tools.read_output.parameters.properties.output_id.description": "Opaque output_id from a truncated "
+    "command or tool result.",
+    "tools.request_permissions.description": "Request session or persistent read/write path or network access "
+    "for Shell/managed operations.",
+    "tools.request_permissions.label": "Request resources",
+    "tools.request_permissions.parameters.properties.arguments.description": "Optional target tool arguments "
+    "for approval display.",
+    "tools.request_permissions.parameters.properties.permissions.description": "Additional path prefixes or "
+    "Shell network access to request.",
+    "tools.request_permissions.parameters.properties.permissions.properties.network_allowed.description": "Request "
+    "Shell/task network access.",
+    "tools.request_permissions.parameters.properties.permissions.properties.read_paths.description": "Additional "
+    "file or directory paths to read.",
+    "tools.request_permissions.parameters.properties.permissions.properties.write_paths.description": "Additional "
+    "file or directory paths to write.",
+    "tools.request_permissions.parameters.properties.reason.description": "Why the additional access is needed.",
+    "tools.request_permissions.parameters.properties.tool.description": "Optional target managed tool name for "
+    "approval context (e.g. bash or write).",
     "tools.search.backend": "search.backend must be 'duckduckgo' or 'deepseek'.",
     "tools.search.balance": "Search service account has insufficient balance. Top up the account before "
     "retrying.",
@@ -146,7 +173,7 @@ MESSAGES = {
     "tools.shell.background": " background=true returns a job ID before the command finishes.",
     "tools.shell.description": "Run {syntax} code in the working directory. {environment}\n"
     "{errors} Output is limited to the last {max_lines} lines / {max_kb}KB; longer "
-    "output is saved to a file.{background}",
+    "output is saved with an output_id for read_output.{background}",
     "tools.shell.environment": "Command tool: {tool}\n"
     "Shell: {kind} {version}\n"
     "Executable: {executable}\n"
