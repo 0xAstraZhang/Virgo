@@ -205,7 +205,8 @@ def discover_shells(extra: str | None = None, *, execute: bool = True) -> list[S
     for name in SUPPORTED:
         for folder in dict.fromkeys(folders):
             candidate = Path(folder) / (name + ".exe" if os.name == "nt" else name)
-            if candidate.is_file():
+            # WSL can inherit PATH entries that the current user cannot traverse.
+            if os.path.isfile(candidate):
                 candidates.append(str(candidate))
     candidates = list(dict.fromkeys(candidates))
 

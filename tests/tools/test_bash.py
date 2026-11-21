@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import threading
@@ -17,6 +18,23 @@ from virgo.tools.output import MAX_LINES
 from virgo.tools.shell import default_shell, discover_shells, make_shell_tool, probe_shell
 
 from tests.support.http import serve
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX directory permissions")
+def test_discovery_continues_past_inaccessible_path_entry(tmp_path, monkeypatch):
+    blocked = tmp_path / "blocked"
+    blocked.mkdir(mode=0o000)
+    try:
+        if os.access(blocked, os.X_OK):
+            pytest.skip("current user can traverse mode-000 directories")
+        candidate = tmp_path / "bash"
+        candidate.touch(mode=0o755)
+        monkeypatch.setenv("PATH", os.pathsep.join((str(blocked), str(tmp_path))))
+
+        shells = discover_shells(execute=False)
+        assert str(candidate) in {shell.executable for shell in shells}
+    finally:
+        blocked.chmod(0o700)
 
 
 @pytest.fixture(params=["bash", "zsh"])
