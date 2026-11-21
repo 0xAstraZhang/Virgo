@@ -353,18 +353,22 @@ def test_credentials_and_unlisted_handles_are_not_inherited(native, project, mon
 
     secret = project.parent / "handle-secret.txt"
     secret.write_bytes(b"private-handle-canary")
-    keys = [
+    stripped = [
         "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
-        "HTTP_PROXY", "HTTPS_PROXY", "SSH_AUTH_SOCK", "VIRGO_HOME", "PYTHONPATH", "BASH_ENV", "ENV",
+        "SSH_AUTH_SOCK", "VIRGO_HOME", "PYTHONPATH", "BASH_ENV", "ENV",
     ]
-    for key in keys:
+    for key in stripped:
         monkeypatch.setenv(key, "must-not-reach-payload")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8080")
     with secret.open("rb") as stream:
         handle = msvcrt.get_osfhandle(stream.fileno())
         os.set_handle_inheritable(handle, True)
         source = f"""import ctypes, json, os
 from ctypes import wintypes
-assert [os.environ.get(key) for key in {keys!r}] == [None] * {len(keys)}
+assert [os.environ.get(key) for key in {stripped!r}] == [None] * {len(stripped)}
+assert os.environ.get('HTTP_PROXY') == 'http://127.0.0.1:8080'
+assert os.environ.get('HTTPS_PROXY') == 'http://127.0.0.1:8080'
 assert os.environ.get('USERPROFILE')
 kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 kernel.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
@@ -640,8 +644,11 @@ print(json.dumps(out))
 
 
 def test_existing_metadata_and_runtime_acls_cannot_be_replaced(native, project):
-    """VER-01 protected metadata & runtime roots stay read-only while host atomic saves succeed."""
-    paths = [project / name for name in (".git/config", ".virgo/protected.txt", "AGENTS.md", "CLAUDE.md")]
+    """VER-01 protected .virgo & runtime roots stay read-only while .git/AGENTS.md and host atomic saves work."""
+    paths = [project / ".virgo/protected.txt"]
+    (project / ".git").mkdir(exist_ok=True)
+    (project / ".git/config").write_text("git-ok")
+    (project / "AGENTS.md").write_text("agents-ok")
     # Use default mode (0o777) rather than tempfile.TemporaryDirectory (0o700 sets SE_DACL_PROTECTED
     # in CPython 3.13, blocking inheritance of the session SID's read-only ACE from sys.prefix).
     runtime_dir = Path(sys.prefix) / f"virgo-native-readonly-{uuid.uuid4().hex[:8]}"
@@ -660,6 +667,8 @@ a.SetNamedSecurityInfoW.argtypes = [w.LPWSTR, w.DWORD, w.DWORD, ctypes.c_void_p,
 a.SetNamedSecurityInfoW.restype = w.DWORD
 results = []
 Path('ordinary-control.txt').write_text('allowed')
+Path('.git/config').write_text('git-updated')
+Path('AGENTS.md').write_text('agents-updated')
 Path('ordinary-directory').mkdir()
 Path('ordinary-directory').rmdir()
 for name in {[str(path) for path in paths]!r}:
@@ -680,7 +689,7 @@ k.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, ctypes.c_void_p, w.DWORD,
 k.CreateFileW.restype = w.HANDLE
 k.CloseHandle.argtypes = [w.HANDLE]
 directories = []
-for name in ['.git', '.virgo']:
+for name in ['.virgo']:
     handle = k.CreateFileW(name, 0x10000, 7, None, 3, 0x02000000, None)
     denied = [handle == ctypes.c_void_p(-1).value and ctypes.get_last_error() == 5]
     if handle != ctypes.c_void_p(-1).value:
@@ -697,22 +706,24 @@ print(json.dumps({{'files': results, 'directories': directories}}))
 """
         assert data(run(native, command(source))) == {
             "files": [[True] * 4 for _ in paths],
-            "directories": [[True] * 3, [True] * 3],
+            "directories": [[True] * 3],
         }
         assert all(path.read_text() == "protected" for path in paths)
         assert (project / "ordinary-control.txt").read_text() == "allowed"
+        assert (project / ".git/config").read_text() == "git-updated"
+        assert (project / "AGENTS.md").read_text() == "agents-updated"
 
         # Ecosystem compatibility: while session ACEs remain active, host atomic os.replace
-        # over normal files and protected metadata must succeed with zero WinError 5.
+        # over normal files and protected .virgo metadata must succeed with zero WinError 5.
         tmp_normal = project / ".ordinary-control.tmp"
         tmp_normal.write_text("host-updated")
         os.replace(tmp_normal, project / "ordinary-control.txt")
         assert (project / "ordinary-control.txt").read_text() == "host-updated"
 
-        tmp_agents = project / ".AGENTS.tmp"
-        tmp_agents.write_text("host-agents-updated")
-        os.replace(tmp_agents, project / "AGENTS.md")
-        assert (project / "AGENTS.md").read_text() == "host-agents-updated"
+        tmp_virgo = project / ".virgo-protected.tmp"
+        tmp_virgo.write_text("host-virgo-updated")
+        os.replace(tmp_virgo, project / ".virgo/protected.txt")
+        assert (project / ".virgo/protected.txt").read_text() == "host-virgo-updated"
     finally:
         shutil.rmtree(runtime_dir, ignore_errors=True)
 
@@ -1033,6 +1044,8 @@ def test_inaccessible_runtime_fails_closed(tmp_path, monkeypatch, make_session):
 def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
     """Verify no-limit/read-only/workspace-edit modes, protected reads across mode switch, and pwsh CWD."""
     (project / "AGENTS.md").write_text("# agents policy\n", encoding="utf-8")
+    (project / ".virgo").mkdir(exist_ok=True)
+    (project / ".virgo" / "config.json").write_text('{"protected": true}\n', encoding="utf-8")
     session = native_session(make_session, {"win32"})
     from virgo.sandbox.windows_acl import is_dacl_protected
 
@@ -1049,10 +1062,10 @@ def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
     assert "LOC=C:\\\n" not in pwsh_res.text() and "LOC=C:\\ " not in pwsh_res.text(), pwsh_res.text()
     assert (project / "pwsh_cwd_check.txt").read_text(encoding="utf-8").strip() == "ok"
 
-    # Read-Only (switched from Workspace-Edit): relative read + protected AGENTS.md read work, write denied
+    # Read-Only (switched from Workspace-Edit): relative read + protected .virgo read work, write denied
     provider.select_mode("read-only")
-    ro_res = run(session, "Get-Content -Path 'pwsh_cwd_check.txt'; Get-Content -Path 'AGENTS.md'")
-    assert not ro_res.is_error and "ok" in ro_res.text() and "agents policy" in ro_res.text(), ro_res.text()
+    ro_res = run(session, "Get-Content -Path 'pwsh_cwd_check.txt'; Get-Content -Path '.virgo/config.json'")
+    assert not ro_res.is_error and "ok" in ro_res.text() and "protected" in ro_res.text(), ro_res.text()
     ro_denied = run(session, "Set-Content -Path 'pwsh_ro_blocked.txt' -Value 'no'")
     assert ro_denied.is_error and not (project / "pwsh_ro_blocked.txt").exists()
 
@@ -1060,7 +1073,7 @@ def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
     pool = provider.executor.native._windows_pool
     drives_before_nl = [drive for drive, _ in pool._workspace_drives.values()] if pool is not None else []
     provider.select_mode("no-limit")
-    assert is_dacl_protected(project / "AGENTS.md") is False
+    assert is_dacl_protected(project / ".virgo") is False
     for drive in drives_before_nl:
         assert not _is_dos_drive_mapped(drive), f"Drive {drive} remained mapped after switching to no-limit"
     nl_res = run(session, "Write-Output 'no-limit-ok'")

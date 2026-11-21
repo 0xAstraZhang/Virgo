@@ -55,14 +55,19 @@ def check_read(path: Path, policy: PermissionPolicy) -> None:
 def check_write(path: Path, policy: PermissionPolicy) -> None:
     if policy.unrestricted:
         return
-    if policy.denied(path, "write"):
+    if policy.hard_denied(path):
         raise FileAccessDenied(
             f"Protected resource is not writable: {path}",
             dimension="protected_path", target=path,
         )
     if not policy.allows(path, "write"):
+        reason = (
+            f"Write confirmation required for control directory: {path}"
+            if policy.denied(path, "write")
+            else f"No write grant for {path}"
+        )
         raise FileAccessDenied(
-            f"No write grant for {path}",
+            reason,
             dimension="write_paths", target=path,
         )
 

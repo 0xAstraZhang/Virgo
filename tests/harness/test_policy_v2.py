@@ -25,31 +25,66 @@ def native(make_session):
     return native_session(make_session, {"linux", "darwin"})
 
 
-def test_ver01_empty_project_protects_nonexistent_control_files(native, project):
-    """VER-01: Write (all OS) and Shell (macOS) cannot create protected names in an empty project."""
-    targets = [".virgo/settings.json", "AGENTS.md", "CLAUDE.md", ".git/config"]
+def test_ver01_workspace_edit_allows_git_and_docs_while_confirming_virgo_and_shielding_credentials(native, project):
+    """VER-01: Workspace-Edit opens .git/AGENTS.md/CLAUDE.md, confirms .virgo writes, and hard-denies credentials."""
+    private_secret = native.paths.user / "auth.json"
+    private_secret.parent.mkdir(parents=True, exist_ok=True)
+    private_secret.write_text('{"token": "secret"}')
+
+    # Default RecordingUI denies prompts ('n'): .git, AGENTS.md, CLAUDE.md succeed without prompting;
+    # .virgo/settings.json prompts and is denied; private auth.json is hard-denied without prompting.
     faux.script(
         "test",
-        faux.reply(tools=[("write", {"path": path, "content": "tampered"}) for path in targets]),
+        faux.reply(tools=[
+            ("write", {"path": "AGENTS.md", "content": "# Repo guide\n"}),
+            ("write", {"path": "CLAUDE.md", "content": "# Claude guide\n"}),
+            ("write", {"path": ".git/config", "content": "[core]\n"}),
+            ("write", {"path": ".virgo/settings.json", "content": "{}"}),
+            ("read", {"path": str(private_secret)}),
+            ("request_permissions", {
+                "permissions": {"read_paths": [str(private_secret)]},
+                "reason": "Attempt to escalate private Virgo credentials",
+            }),
+        ]),
         faux.reply("done"),
     )
-    native.prompt("Attempt to create protected control files in an empty workspace")
-    results = tool_results(native)[-len(targets):]
-    assert all(result.is_error and result.details["status"] == "resource_denied" for result in results)
-    for path in targets:
-        assert not (project / path).exists()
+    native.prompt("Update docs and git metadata, test .virgo confirmation, and verify credential hard-deny")
+    agents_res, claude_res, git_res, virgo_res, priv_read, priv_req = tool_results(native)[-6:]
+    assert not agents_res.is_error and (project / "AGENTS.md").read_text() == "# Repo guide\n"
+    assert not claude_res.is_error and (project / "CLAUDE.md").read_text() == "# Claude guide\n"
+    assert not git_res.is_error and (project / ".git/config").read_text() == "[core]\n"
+    assert virgo_res.is_error and virgo_res.details["status"] == "resource_denied"
+    assert virgo_res.details["boundary"]["dimension"] == "write_paths"
+    assert not (project / ".virgo/settings.json").exists()
+    assert priv_read.is_error and priv_read.details["boundary"]["dimension"] == "protected_path"
+    assert priv_read.details["boundary"]["escalation_available"] is False
+    assert priv_req.is_error and "Protected resources cannot be granted" in priv_req.text()
+    # Only .virgo/settings.json triggered a confirmation prompt!
+    assert len(native.ui.questions) == 1 and ".virgo" in native.ui.questions[0]
 
+    # On macOS Seatbelt, unapproved Shell creation of .virgo/settings.json is also blocked.
     if sys.platform == "darwin":
-        for path in targets:
-            script = (
-                f"from pathlib import Path\n"
-                f"p = Path({path!r})\n"
-                f"p.parent.mkdir(parents=True, exist_ok=True)\n"
-                f"p.write_text('tampered')\n"
-            )
-            result = run(native, python_command(native, script))
-            assert result.is_error, f"macOS Seatbelt must reject creating {path}: {result.text()}"
-            assert not (project / path).exists()
+        script = (
+            "from pathlib import Path\n"
+            "p = Path('.virgo/settings.json')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('tampered')\n"
+        )
+        result = run(native, python_command(native, script))
+        assert result.is_error, f"macOS Seatbelt must reject creating .virgo/settings.json: {result.text()}"
+        assert not (project / ".virgo/settings.json").exists()
+
+    # Approving 'y' on a subsequent turn allows writing .virgo/settings.json cleanly.
+    native.ui.answers.append("y")
+    faux.script(
+        "test",
+        faux.reply(tools=[("write", {"path": ".virgo/settings.json", "content": '{"theme": "dark"}\n'})]),
+        faux.reply("done"),
+    )
+    native.prompt("Approve updating .virgo/settings.json")
+    approved_virgo = tool_results(native)[-1]
+    assert not approved_virgo.is_error, approved_virgo.text()
+    assert (project / ".virgo/settings.json").read_text() == '{"theme": "dark"}\n'
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS /tmp -> /private/tmp symlink resolution")
@@ -88,7 +123,7 @@ def test_ver04_macos_tmp_symlink_grant_and_real_path_dialog(native, project):
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX metadata symlink")
 def test_ver04_claude_md_symlink_to_agents_md_and_single_file_edit(broker_session, project, tmp_path):
-    """VER-04 (parts 2 & 3): CLAUDE.md -> AGENTS.md starts cleanly and protects both; single-file Edit works."""
+    """VER-04 (parts 2 & 3): CLAUDE.md -> AGENTS.md works seamlessly; single external file Edit reuses session grant."""
     agents = project / "AGENTS.md"
     agents.write_text("project instructions")
     claude = project / "CLAUDE.md"
@@ -97,57 +132,74 @@ def test_ver04_claude_md_symlink_to_agents_md_and_single_file_edit(broker_sessio
     external_rc = tmp_path / ".zshrc"
     external_rc.write_text("export FOO=1\n")
 
-    session = broker_session(ui=RecordingUI(["y"]))
+    session = broker_session(ui=RecordingUI(["y", "n"]))
     faux.script(
         "test",
+        faux.reply(tools=[("read", {"path": "CLAUDE.md"})]),
         faux.reply(tools=[
-            ("read", {"path": "CLAUDE.md"}),
-            ("write", {"path": "CLAUDE.md", "content": "bad"}),
-            ("write", {"path": "AGENTS.md", "content": "bad"}),
+            ("write", {"path": "AGENTS.md", "content": "updated instructions"}),
             ("edit", {"path": str(external_rc), "edits": [{"old_text": "FOO=1", "new_text": "FOO=2"}]}),
+        ]),
+        faux.reply(tools=[
+            ("edit", {"path": str(external_rc), "edits": [{"old_text": "FOO=2", "new_text": "FOO=3"}]}),
+            ("write", {"path": ".virgo/settings.json", "content": "{}"}),
         ]),
         faux.reply("done"),
     )
-    session.prompt("Read CLAUDE.md, attempt protected writes, and edit an approved single external file")
-    read_res, claude_write, agents_write, edit_res = tool_results(session)
+    session.prompt("Read CLAUDE.md, update AGENTS.md, edit approved external file twice, and decline .virgo write")
+    read_res, agents_write, edit1_res, edit2_res, virgo_write = tool_results(session)
     assert not read_res.is_error and "project instructions" in read_res.text()
-    assert claude_write.is_error and claude_write.details["status"] == "resource_denied"
-    assert agents_write.is_error and agents_write.details["status"] == "resource_denied"
-    assert agents.read_text() == "project instructions"
-    assert not edit_res.is_error, edit_res.text()
-    assert external_rc.read_text() == "export FOO=2\n"
-    # Approval prompt must show only the single resolved file, not its parent directory.
-    assert len(session.ui.questions) == 1
+    assert not agents_write.is_error and agents.read_text() == "updated instructions"
+    assert not edit1_res.is_error, edit1_res.text()
+    assert not edit2_res.is_error, edit2_res.text()
+    assert external_rc.read_text() == "export FOO=3\n"
+    assert virgo_write.is_error and virgo_write.details["status"] == "resource_denied"
+    # Approval prompt #0 shows only the resolved external file (reused for edit2); prompt #1 is .virgo.
+    assert len(session.ui.questions) == 2
     assert str(external_rc.resolve()) in session.ui.questions[0]
+    assert ".virgo" in session.ui.questions[1]
 
 
-def test_ver05_oneshot_shell_write_grant_applies_once(native, project, tmp_path):
-    """VER-05: One-shot Shell grant writes once to an external dir; second identical call is denied."""
+def test_ver05_session_shell_write_grant_persists_in_session_until_revoked(native, project, tmp_path):
+    """VER-05: Session Shell grant ('y') allows multiple commands in the same session until revoked."""
     outside = tmp_path / "external-out"
     outside.mkdir()
     shell = selected(native).tool_name
-    operation = {"command": python_command(
+    op1 = {"command": python_command(
         native,
-        f"from pathlib import Path; Path({str(outside / 'stamp.txt')!r}).write_text('written')",
+        f"from pathlib import Path; Path({str(outside / 'stamp.txt')!r}).write_text('first')",
+    )}
+    op2 = {"command": python_command(
+        native,
+        f"from pathlib import Path; Path({str(outside / 'stamp.txt')!r}).write_text('second')",
     )}
     native.ui.answers.append("y")
+    # request_permissions works without requiring tool/arguments and can be batched in the same turn!
     faux.script(
         "test",
-        faux.reply(tools=[("request_permissions", {
-            "tool": shell, "arguments": operation,
-            "permissions": {"write_paths": [str(outside)]},
-            "reason": "Write one external output file",
-        })]),
-        faux.reply(tools=[(shell, operation)]),
-        faux.reply(tools=[(shell, operation)]),
+        faux.reply(tools=[
+            ("request_permissions", {
+                "permissions": {"write_paths": [str(outside)]},
+                "reason": "Write external output files in this session",
+            }),
+            (shell, op1),
+        ]),
+        faux.reply(tools=[(shell, op2)]),
         faux.reply("done"),
     )
-    native.prompt("Write once with one-shot grant, then repeat without a new grant")
+    native.prompt("Grant session write access and run two shell writes")
     req_res, first_run, second_run = tool_results(native)[-3:]
     assert not req_res.is_error, req_res.text()
     assert not first_run.is_error, first_run.text()
-    assert (outside / "stamp.txt").read_text() == "written"
-    assert second_run.is_error, "Second execution must not reuse a consumed one-shot grant"
+    assert not second_run.is_error, second_run.text()
+    assert (outside / "stamp.txt").read_text() == "second"
+    assert len(native.ui.questions) == 1
+
+    # Revoking clears session grants; a subsequent Shell write to outside fails.
+    native.services["execution"].revoke()
+    third_run = run(native, op1["command"])
+    assert third_run.is_error
+    assert (outside / "stamp.txt").read_text() == "second"
 
 
 def test_ver07_legacy_grants_db_purged_on_startup(make_session, project):
@@ -206,34 +258,37 @@ def test_s305_posix_home_as_workspace_carves_out_private_dir(make_session, tmp_p
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Linux bwrap argument generation requires POSIX paths")
-def test_s308_linux_bwrap_only_remounts_tmp_ro_when_not_writable(tmp_path):
-    """S3-08: Linux bwrap must not lock /tmp read-only when /tmp is granted writable."""
+def test_s308_linux_bwrap_wide_ro_and_explicit_tmp_grant(tmp_path):
+    """S3-08: Linux bwrap mounts / read-only by default and binds /tmp rw only when explicitly granted."""
     ws = tmp_path / "ws"
     ws.mkdir()
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
-    ro_tmp_policy = NativePolicy(ws, False, False, (), ())
-    args_ro = ro_tmp_policy._linux(Path("/usr/bin/bwrap"), scratch, ws, 3, ())
-    assert "--remount-ro" in args_ro and "/tmp" in args_ro
-    idx = [i for i, a in enumerate(args_ro) if a == "--remount-ro"]
-    assert any(args_ro[i + 1] == "/tmp" for i in idx)
+    ro_tmp_policy = NativePolicy(ws, False, False, (), (), read_only_paths=(ws / ".virgo",))
+    args_ro = ro_tmp_policy._linux(Path("/usr/bin/bwrap"), scratch, ws, 3)
+    mounts_ro = [args_ro[i : i + 3] for i, a in enumerate(args_ro) if a in {"--bind", "--ro-bind"}]
+    assert ["--ro-bind", "/", "/"] in mounts_ro
+    assert ["--bind", "/tmp", "/tmp"] not in mounts_ro
 
     rw_tmp_policy = NativePolicy(ws, False, False, (), ((Path("/tmp"), True),))
-    args_rw = rw_tmp_policy._linux(Path("/usr/bin/bwrap"), scratch, ws, 3, ())
-    idx_rw = [i for i, a in enumerate(args_rw) if a == "--remount-ro"]
-    assert not any(args_rw[i + 1] == "/tmp" for i in idx_rw)
+    args_rw = rw_tmp_policy._linux(Path("/usr/bin/bwrap"), scratch, ws, 3)
+    mounts_rw = [args_rw[i : i + 3] for i, a in enumerate(args_rw) if a in {"--bind", "--ro-bind"}]
+    assert ["--bind", "/tmp", "/tmp"] in mounts_rw
 
-    # S3-02: Symlinked control metadata protects in-scope targets but never adds outside host read mounts.
-    outside = tmp_path / "outside-secret.txt"
-    outside.write_text("secret")
-    inside = ws / "instructions.txt"
-    inside.write_text("rules")
-    (ws / "AGENTS.md").symlink_to(outside)
-    (ws / "CLAUDE.md").symlink_to(inside)
-    protected = ro_tmp_policy.protected_paths()
-    assert outside.resolve() not in protected
-    assert inside.resolve() in protected
+    # S3-02: Symlinked .virgo protects non-private target without exposing private roots.
+    private_dir = tmp_path / "priv"
+    private_dir.mkdir()
+    private_file = private_dir / "secret.json"
+    private_file.write_text("{}")
+    inside_meta = ws / "virgo-meta"
+    inside_meta.mkdir()
+    (ws / ".virgo").symlink_to(inside_meta, target_is_directory=True)
+    pol_with_sym = NativePolicy(ws, False, False, (private_dir.resolve(),), (), read_only_paths=(ws / ".virgo",))
+    assert inside_meta.resolve() in pol_with_sym.protected_paths()
+    (ws / ".virgo").unlink()
+    (ws / ".virgo").symlink_to(private_file)
+    assert private_file.resolve() not in pol_with_sym.protected_paths()
 
 
 def test_s310_invalid_utf8_prompts_and_system_md_warn_without_crashing(make_session, project):

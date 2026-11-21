@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import stat
 import sys
 import tempfile
 import threading
@@ -357,25 +356,27 @@ def test_shared_native_policy_is_rejected_before_payload(broker_session, project
 
 
 def test_native_existing_metadata_is_readonly(native, project):
+    """Unapproved .virgo stays read-only in Shell while .git and AGENTS.md are open for normal workflow."""
+    (project / ".virgo").mkdir()
+    (project / ".virgo" / "settings.json").write_text("original")
     (project / ".git").mkdir()
     (project / ".git" / "config").write_text("original")
     (project / "AGENTS.md").write_text("original")
+
+    virgo_res = run(native, python_command(native, "from pathlib import Path; Path('.virgo/settings.json').write_text('bad')"))
+    assert virgo_res.is_error and (project / ".virgo" / "settings.json").read_text() == "original"
+
     for name in (".git/config", "AGENTS.md"):
-        result = run(native, python_command(native, f"from pathlib import Path; Path({name!r}).write_text('bad')"))
-        assert result.is_error and (project / name).read_text() == "original"
+        ok_res = run(native, python_command(native, f"from pathlib import Path; Path({name!r}).write_text('updated')"))
+        assert not ok_res.is_error and (project / name).read_text() == "updated"
 
 
 @pytest.mark.parametrize("location", ["outside", "metadata"])
 def test_native_cannot_create_hardlink_from_readonly_source(native, project, location):
-    """A clean launch cannot acquire an outside inode through link creation.
-
-    Failure modes: a readable runtime or metadata file can be hardlinked into
-    the workspace after launch validation, then changed through the new alias.
-    The outside source is visible in the existing interpreter read-only mount.
-    """
+    """A clean launch cannot mutate a read-only runtime or .virgo file through hardlink creation."""
     with tempfile.TemporaryDirectory(prefix="virgo-link-source-", dir=sys.prefix) as directory:
         source = (Path(directory) / "outside.txt" if location == "outside" else
-                  project / ".git" / "config")
+                  project / ".virgo" / "config")
         source.parent.mkdir(exist_ok=True)
         source.write_text("original")
         result = run(native, python_command(native,
@@ -730,50 +731,45 @@ def test_sandbox_rejects_external_output_symlink_before_spooling(broker_session,
 
 
 def test_native_protected_symlink_cannot_add_a_host_read_mount(native, project):
-    """A payload-created metadata link must not reveal a host secret next launch."""
-    secret = project.parent / "outside-sandbox-secret.txt"
+    """A workspace or .virgo symlink pointing into private credential storage remains unreadable."""
+    secret = native.paths.user / "outside-sandbox-secret.txt"
+    secret.parent.mkdir(parents=True, exist_ok=True)
     secret.write_text("credential-that-must-stay-outside")
-    link = project / "AGENTS.md"
-    if sys.platform == "linux":
-        # Linux permits creation of an absent metadata name. The next launch
-        # must not turn its resolved target into an additional readable mount.
-        result = run(native, python_command(native,
-            f"from pathlib import Path; Path('AGENTS.md').symlink_to({str(secret)!r})"
-        ))
-        assert not result.is_error, result.text()
-    else:
-        # macOS forbids creation of absent metadata names inside its envelope;
-        # an existing project symlink must still not grant its target a read.
-        link.symlink_to(secret)
-    result = run(native, python_command(native, "from pathlib import Path; print(Path('AGENTS.md').read_text())"))
-    assert result.is_error, result.text()
-    assert "credential-that-must-stay-outside" not in result.text()
+    (project / "secret-link.txt").symlink_to(secret)
+    (project / ".virgo").symlink_to(secret)
+    for rel in ("secret-link.txt", ".virgo"):
+        result = run(native, python_command(native, f"from pathlib import Path; print(Path({rel!r}).read_text())"))
+        assert result.is_error, result.text()
+        assert "credential-that-must-stay-outside" not in result.text()
     assert secret.read_text() == "credential-that-must-stay-outside"
 
 
 def test_native_existing_metadata_symlink_cannot_be_replaced(native, project):
-    """S3-02: Symlinked control metadata protects its real target (and directory entry on macOS) without breaking sessions."""
-    target = project / "instructions.txt"
-    target.write_text("original instructions")
-    link = project / "AGENTS.md"
-    link.symlink_to(target)
+    """S3-02: Symlinked .virgo protects its real target without breaking sessions."""
+    target = project / "virgo-meta"
+    target.mkdir()
+    settings_file = target / "settings.json"
+    settings_file.write_text('{"theme": "light"}')
+    link = project / ".virgo"
+    link.symlink_to(target, target_is_directory=True)
     if sys.platform == "darwin":
         result = run(native, python_command(native,
-            "from pathlib import Path; p=Path('AGENTS.md'); p.unlink(); p.write_text('replaced')"
+            "from pathlib import Path; p=Path('.virgo'); p.unlink(); p.mkdir()"
         ))
         assert result.is_error, result.text()
         assert link.is_symlink()
-        assert link.read_text() == target.read_text() == "original instructions"
+        assert settings_file.read_text() == '{"theme": "light"}'
     else:
-        # On Linux bwrap, symlinked control files (e.g. CLAUDE.md -> AGENTS.md)
-        # bind-mount their readable target read-only so sessions work without false
-        # positives while writes through the symlink fail with EROFS.
-        read_res = run(native, python_command(native, "from pathlib import Path; print(Path('AGENTS.md').read_text())"))
-        assert not read_res.is_error and "original instructions" in read_res.text(), read_res.text()
-        write_res = run(native, python_command(native, "from pathlib import Path; Path('AGENTS.md').write_text('replaced')"))
-        assert write_res.is_error, write_res.text()
-        assert link.is_symlink()
-        assert link.read_text() == target.read_text() == "original instructions"
+        read_res = run(native, python_command(native,
+            "from pathlib import Path; print(Path('.virgo/settings.json').read_text())"
+        ))
+        assert not read_res.is_error and '"light"' in read_res.text(), read_res.text()
+    write_res = run(native, python_command(native,
+        "from pathlib import Path; Path('.virgo/settings.json').write_text('replaced')"
+    ))
+    assert write_res.is_error, write_res.text()
+    assert link.is_symlink()
+    assert settings_file.read_text() == '{"theme": "light"}'
 
 
 def test_missing_backend_is_fail_closed_in_real_session(make_session, project, monkeypatch):
@@ -909,7 +905,7 @@ def test_native_background_and_child_preserve_workspace(native, project):
         api.release_runtime(child)
 
 
-@pytest.mark.parametrize('mode,relative', [('read-only', 'ordinary.txt'), ('workspace-write', '.git/config')])
+@pytest.mark.parametrize('mode,relative', [('read-only', 'ordinary.txt'), ('workspace-write', '.virgo/config')])
 def test_native_readonly_hardlinks_remain_usable(native, project, mode, relative):
     source = project.parent / 'readonly-shared.txt'
     source.write_text('original')
@@ -937,9 +933,8 @@ def test_native_network_permission_supports_system_name_resolution(native):
 
 
 @pytest.mark.parametrize('read_only', [False, True])
-@pytest.mark.parametrize('workspace_only', [False, True])
 @pytest.mark.parametrize('network_allowed', [False, True])
-def test_native_independent_permission_combinations(native, project, short_workspace, read_only, workspace_only, network_allowed):
+def test_native_independent_permission_combinations(native, project, short_workspace, read_only, network_allowed):
     import socket
 
     extra = project.parent / 'extra-resource'
@@ -952,76 +947,82 @@ def test_native_independent_permission_combinations(native, project, short_works
     secret = native.paths.user / 'private-secret.txt'
     secret.parent.mkdir(parents=True, exist_ok=True)
     secret.write_text('secret')
+    private_sock_dir = short_workspace / 'priv-sock'
+    private_sock_dir.mkdir()
     before = {path: (path.stat().st_dev, path.stat().st_ino, path.read_text()) for path in (inside, outside)}
-    # Exercise the effective-policy boundary below the fixed user mode selector.
+
     from dataclasses import replace
     from threading import Event
 
     from virgo.execution_policy import PathRule, PermissionPolicy
     from virgo.tools.bash import run_command
 
-    roots = (project,) if workspace_only else (project, extra)
     context = native.main.execution_context
     policy = PermissionPolicy((
         *(rule for rule in context.policy.filesystem if rule.effect == "deny"),
-        *(PathRule(path, "read" if read_only else "write") for path in roots),
-        PathRule(short_workspace, "read"),
+        PathRule(private_sock_dir, "read", "deny"),
+        PathRule(project, "read" if read_only else "write"),
     ), network_allowed)
     context = replace(context, resources=replace(context.resources, policy=policy))
     with socket.socket() as listener, socket.socket(socket.AF_UNIX) as host_socket:
         listener.bind(('127.0.0.1', 0))
         listener.listen()
-        host_socket.bind(str(short_workspace / 'host.sock'))
+        host_socket.bind(str(private_sock_dir / 'host.sock'))
         host_socket.listen()
         with socket.socket(socket.AF_UNIX) as control:
-            control.connect(str(short_workspace / 'host.sock'))
+            control.connect(str(private_sock_dir / 'host.sock'))
             connected, _ = host_socket.accept()
             connected.close()
-        source = f'''import socket
+        source = f'''import os, socket
 from pathlib import Path
 def attempt(fn):
     try: fn(); return True
     except OSError: return False
 assert attempt(lambda: Path('created').write_text('yes')) is {not read_only!r}
-assert attempt(lambda: Path({str(extra / 'readable')!r}).read_text()) is {not workspace_only!r}
-assert attempt(lambda: Path({str(extra / 'created')!r}).write_text('yes')) is {not read_only and not workspace_only!r}
+assert Path({str(extra / 'readable')!r}).read_text() == 'extra'
+assert attempt(lambda: Path({str(extra / 'created')!r}).write_text('yes')) is False
 assert attempt(lambda: Path({str(inside)!r}).write_text('changed')) is {not read_only!r}
-assert attempt(lambda: Path({str(outside)!r}).write_text('changed')) is {not read_only and not workspace_only!r}
+assert attempt(lambda: Path({str(outside)!r}).write_text('changed')) is False
 assert attempt(lambda: Path({str(secret)!r}).read_text()) is False
+assert attempt(lambda: Path({str(secret)!r}).write_text('bad')) is False
 assert attempt(lambda: socket.create_connection({listener.getsockname()!r}, 2).close()) is {network_allowed!r}
-assert attempt(lambda: socket.socket(socket.AF_UNIX).connect({str(short_workspace / 'host.sock')!r})) is False
+assert attempt(lambda: socket.socket(socket.AF_UNIX).connect({str(private_sock_dir / 'host.sock')!r})) is False
+# Local AF_UNIX sockets inside writable $TMPDIR work in all modes.
+local_sock = Path(os.environ['TMPDIR']) / 'local.sock'
+with socket.socket(socket.AF_UNIX) as srv:
+    srv.bind(str(local_sock))
+    srv.listen(1)
+    with socket.socket(socket.AF_UNIX) as cli:
+        cli.connect(str(local_sock))
+        conn, _ = srv.accept()
+        conn.close()
 print('independent dimensions checked')
 '''
-        if sys.platform == "linux":
-            probe = Path(__file__).parents[1] / "support" / "socketpair_probe.py"
-            source += probe.read_text() + f"\nverify_socketpairs({str(short_workspace / 'host.sock')!r})\n"
         output, code, status = run_command(python_command(native, source), project, 15, Event(),
                                            interpreter=selected(native), execution_context=context)
         host_socket.setblocking(False)
         with pytest.raises(BlockingIOError):
             host_socket.accept()
     assert code == 0 and status == "ok" and "independent dimensions checked" in output.text, output.text
-    for path, allowed in ((inside, not read_only),
-                          (outside, not read_only and not workspace_only)):
+    for path, allowed in ((inside, not read_only), (outside, False)):
         current = path.stat()
         original_device, original_inode, original_text = before[path]
         assert (current.st_dev, current.st_ino) == (original_device, original_inode)
         assert path.read_text() == ("changed" if allowed else original_text), path
 
 
-def test_native_workspace_local_virtualenv_runs_but_stays_readonly(native, project):
-    """A normal broker venv must run without becoming writable by its own tools."""
+def test_native_workspace_local_virtualenv_runs_and_protects_virgo(native, project):
+    """A workspace-local .venv runs cleanly, allows package/venv writes in Workspace-Edit, and protects .virgo."""
     import subprocess
 
     environment = project / ".venv"
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(environment)],
                    check=True, capture_output=True, text=True, timeout=30)
-    marker = environment / "runtime-canary.txt"
-    marker.write_text("trusted runtime")
+    (project / ".virgo").mkdir(exist_ok=True)
+    virgo_cfg = project / ".virgo" / "settings.json"
+    virgo_cfg.write_text('{"protected": true}')
     executable = environment / "bin" / "python"
     repository = Path(__file__).resolve().parents[2]
-    # Reuse the already locked test dependencies for this assembled broker. The
-    # sandbox still strips PYTHONPATH before starting its user command payload.
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([
         str(repository), str(repository / "src"),
@@ -1048,27 +1049,31 @@ try:
         faux.script("test", faux.reply(tools=[(name, args)]), faux.reply("done"))
         session.prompt("Exercise the workspace-local virtual environment")
         return tool_results(session)[-1]
-    command = shlex.join([sys.executable, "-c",
-        "from pathlib import Path; Path('ordinary.txt').write_text('allowed'); print('venv-ready')"])
+    command = shlex.join([sys.executable, "-I", "-S", "-c",
+        "import os; from pathlib import Path; assert 'PYTHONPATH' not in os.environ; "
+        "Path('ordinary.txt').write_text('allowed'); "
+        "Path('.venv/installed_pkg.py').write_text('X = 1\\n'); print('venv-ready')"])
     result = call(shell.tool_name, {"command": command})
     assert not result.is_error, result.text()
     assert "venv-ready" in result.text()
     assert Path("ordinary.txt").read_text() == "allowed"
-    command = shlex.join([sys.executable, "-c",
-        "from pathlib import Path; Path('.venv/runtime-canary.txt').write_text('tampered')"])
+    assert Path(".venv/installed_pkg.py").read_text() == "X = 1\n"
+    # .virgo remains protected when approval_policy='never'.
+    command = shlex.join([sys.executable, "-I", "-S", "-c",
+        "from pathlib import Path; Path('.virgo/settings.json').write_text('tampered')"])
     result = call(shell.tool_name, {"command": command})
     assert result.is_error, result.text()
-    assert Path(".venv/runtime-canary.txt").read_text() == "trusted runtime"
-    result = call("write", {"path": ".venv/runtime-canary.txt", "content": "tampered"})
+    assert Path(".virgo/settings.json").read_text() == '{"protected": true}'
+    result = call("write", {"path": ".virgo/settings.json", "content": "tampered"})
     assert result.is_error, result.text()
-    assert Path(".venv/runtime-canary.txt").read_text() == "trusted runtime"
+    assert Path(".virgo/settings.json").read_text() == '{"protected": true}'
 finally:
     session.shutdown()
 '''
     completed = subprocess.run([str(executable), "-c", source], cwd=project, env=env,
                                text=True, capture_output=True, timeout=45)
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert marker.read_text() == "trusted runtime"
+    assert virgo_cfg.read_text() == '{"protected": true}'
 
 
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX executable shell discovery")
@@ -1124,125 +1129,134 @@ def test_sandbox_status_reports_effective_read_only(broker_session):
     assert state['state'] != 'established'
 
 
-@pytest.mark.skipif(os.name != "posix", reason="Linux resolver metadata and POSIX account lookup")
-def test_linux_resolver_configuration_accepts_only_trusted_service_metadata(project, monkeypatch):
-    """Systemd-owned DNS data is not an executable runtime.
-
-    Ubuntu CI reproduced rejection of its actual service-owned stub-resolv.conf.
-    This focused envelope check substitutes only fixed system-path metadata; the
-    separate native test still has to establish actual name resolution and TCP.
-    """
-    import pwd
-
+@pytest.mark.skipif(os.name != "posix", reason="Linux bwrap envelope generation")
+def test_linux_bwrap_envelope_mounts_resolv_target_and_masks_private_paths(project, tmp_path, monkeypatch):
+    """Linux bwrap mounts / read-only, binds /run/systemd/resolve target, and masks private dirs/files."""
     from virgo.sandbox import platform as sandbox
 
     entry = Path("/etc/resolv.conf")
     target = Path("/run/systemd/resolve/stub-resolv.conf")
-    service_uid = 42424
-    metadata = {"entry_uid": 0, "target_uid": service_uid, "target_mode": stat.S_IFREG | 0o644,
-                "directory_uid": service_uid}
-    root_paths = {*entry.parents, *target.parents}
-    root_files = {Path("/etc/hosts"), Path("/etc/nsswitch.conf")}
-    original_stat, original_resolve, original_account = Path.stat, Path.resolve, pwd.getpwnam
+    priv_dir = tmp_path / "fake-ssh"
+    priv_dir.mkdir()
+    priv_file = tmp_path / "fake-netrc"
+    priv_file.write_text("machine example.com password secret")
+    empty_file = tmp_path / "empty"
+    empty_file.write_bytes(b"")
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
 
-    def info(mode, uid):
-        return os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+    original_exists, original_resolve = Path.exists, Path.resolve
+    monkeypatch.setattr(Path, "exists", lambda p: True if p == entry else original_exists(p))
+    monkeypatch.setattr(
+        Path,
+        "resolve",
+        lambda p, *a, **kw: target if p == entry else original_resolve(p, *a, **kw),
+    )
 
-    def system_stat(path, *, follow_symlinks=True):
-        if path == entry and not follow_symlinks:
-            return info(stat.S_IFLNK | 0o777, metadata["entry_uid"])
-        if path in {entry, target}:
-            return info(metadata["target_mode"], metadata["target_uid"])
-        if path == target.parent:
-            return info(stat.S_IFDIR | 0o755, metadata["directory_uid"])
-        if path in root_paths:
-            return info(stat.S_IFDIR | 0o755, 0)
-        if path in root_files:
-            return info(stat.S_IFREG | 0o644, 0)
-        return original_stat(path, follow_symlinks=follow_symlinks)
+    policy = sandbox.NativePolicy(
+        project, False, True, (priv_dir.resolve(), priv_file.resolve()), (),
+        read_only_paths=(project / ".virgo",),
+    )
+    args = policy._linux(
+        Path("/usr/bin/bwrap"), scratch_dir, project, 99,
+        session_cache=cache_dir, empty_mask_file=empty_file,
+    )
+    assert "--ro-bind" in args and "--info-fd" in args and "99" in args
+    assert "--share-net" in args
+    ro_mounts = [args[idx : idx + 3] for idx, val in enumerate(args) if val == "--ro-bind"]
+    assert ["--ro-bind", "/", "/"] in ro_mounts
+    assert ["--ro-bind", str(target), str(target)] in ro_mounts
+    assert ["--ro-bind", str(empty_file), str(priv_file.resolve())] in ro_mounts
+    tmpfs_mounts = [args[idx : idx + 2] for idx, val in enumerate(args) if val == "--tmpfs"]
+    assert ["--tmpfs", str(priv_dir.resolve())] in tmpfs_mounts
+    valid_perms_targets = {"--tmpfs", "--dir", "--file", "--bind-data", "--ro-bind-data"}
+    for idx, val in enumerate(args):
+        if val == "--perms":
+            assert args[idx + 2] in valid_perms_targets, f"bwrap rejects --perms before {args[idx + 2]}"
 
-    def system_resolve(path, *args, **kwargs):
-        if path == entry:
-            return target
-        if path in root_files:
-            return path
-        return original_resolve(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "stat", system_stat)
-    monkeypatch.setattr(Path, "resolve", system_resolve)
-    monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=service_uid)
-                        if name == "systemd-resolve" else original_account(name))
-    policy = sandbox.NativePolicy(project, True, True, (), ())
+def test_native_environment_denylist_strips_secrets_and_reuses_session_cache(native, project, monkeypatch):
+    """Credential/injection env vars are stripped while proxy/toolchain vars and session cache persist."""
+    stripped = [
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
+        "MY_CUSTOM_SECRET", "DB_PASSWORD", "SSH_AUTH_SOCK", "VIRGO_HOME", "LD_PRELOAD",
+        "PYTHONPATH", "BASH_ENV",
+    ]
+    for key in stripped:
+        monkeypatch.setenv(key, "must-not-leak")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
+    monkeypatch.setenv("CARGO_NET_GIT_FETCH_WITH_CLI", "true")
 
-    def envelope():
-        return policy._linux(Path("/usr/bin/bwrap"), project.parent / "scratch", project, 99, ())
+    source1 = f"""import json, os
+from pathlib import Path
+assert [os.environ.get(k) for k in {stripped!r}] == [None] * {len(stripped)}
+assert os.environ.get('HTTP_PROXY') == 'http://127.0.0.1:8888'
+assert os.environ.get('HTTPS_PROXY') == 'http://127.0.0.1:8888'
+assert os.environ.get('NO_PROXY') == 'localhost,127.0.0.1'
+assert os.environ.get('CARGO_NET_GIT_FETCH_WITH_CLI') == 'true'
+cache = Path(os.environ['XDG_CACHE_HOME'])
+cache.mkdir(parents=True, exist_ok=True)
+(cache / 'wheel-marker.txt').write_text('cached-across-commands')
+print(json.dumps({{'cache': str(cache), 'tmp': os.environ['TMPDIR']}}))
+"""
+    res1 = run(native, python_command(native, source1))
+    assert not res1.is_error, res1.text()
+    info1 = json.loads(res1.text().strip().splitlines()[-1])
+    assert not Path(info1["tmp"]).exists()
 
-    args = envelope()
-    mounts = [args[index:index + 3] for index, value in enumerate(args) if value == "--ro-bind"]
-    assert ["--ro-bind", str(target), str(target)] in mounts
-    assert ["--ro-bind", str(target.parent), str(target.parent)] not in mounts
-    with pytest.raises(sandbox.SandboxUnavailable, match="not system-owned"):
-        sandbox._system_file(entry)  # Executable/library trust must stay strict.
-    for key, value in (("entry_uid", service_uid), ("target_uid", service_uid + 1),
-                       ("directory_uid", service_uid + 1), ("target_mode", stat.S_IFREG | 0o666),
-                       ("target_mode", stat.S_IFLNK | 0o444)):
-        previous, metadata[key] = metadata[key], value
-        with pytest.raises(sandbox.SandboxUnavailable):
-            envelope()
-        metadata[key] = previous
+    source2 = """import json, os
+from pathlib import Path
+cache = Path(os.environ['XDG_CACHE_HOME'])
+assert (cache / 'wheel-marker.txt').read_text() == 'cached-across-commands'
+print(json.dumps({'cache': str(cache), 'tmp': os.environ['TMPDIR']}))
+"""
+    res2 = run(native, python_command(native, source2))
+    assert not res2.is_error, res2.text()
+    info2 = json.loads(res2.text().strip().splitlines()[-1])
+    assert info2["cache"] == info1["cache"]
+    assert info2["tmp"] != info1["tmp"]
 
 
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native launch protocol")
 @pytest.mark.parametrize("background", [False, True])
-def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project, monkeypatch, background):
-    """A successful capability probe does not prove the actual envelope started.
-
-    Failure modes: the real wrapper fails after a successful probe but is reported
-    as an ordinary command exit; a background job reports successful startup;
-    the payload is replayed on the host; failed startup leaves a pending job.
-    This launches a real synthetic wrapper that never executes the payload. It
-    validates the launch protocol, not OS isolation (covered by native tests).
-    """
+def test_wrapper_failure_before_ack_is_execution_unavailable_and_not_replayed(
+    make_session, project, monkeypatch, background,
+):
+    """bwrap failing before writing --info-fd (or Seatbelt failing its probe) reports execution_unavailable."""
     from virgo.sandbox import native as dispatcher
     from virgo.sandbox import platform as sandbox
 
-    launcher = project.parent / "reject_after_probe.py"
+    launcher = project.parent / "reject_bwrap.py"
     attempts = project.parent / "launch-attempts.txt"
     launcher.write_text(
-        "from pathlib import Path\n"
-        "import sys\n"
-        f"attempts = Path({str(attempts)!r})\n"
-        "probe = len(sys.argv) == 2 and Path(sys.argv[1]).name == 'true'\n"
-        "with attempts.open('a') as log:\n"
-        "    log.write('probe\\n' if probe else 'launch\\n')\n"
-        "if probe:\n"
-        "    raise SystemExit(0)\n"
-        "sys.stderr.write('synthetic sandbox: isolation setup rejected before exec\\n')\n"
-        "raise SystemExit(42)\n",
+        "import sys\nfrom pathlib import Path\n"
+        f"with Path({str(attempts)!r}).open('a') as log:\n"
+        "    log.write('launch\\n')\n"
+        "sys.stderr.write('bwrap: setting up uid map: Permission denied\\n')\n"
+        "raise SystemExit(1)\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("seatbelt", Path(sys.executable)))
-    # The synthetic wrapper never executes this probe path. Keep this protocol
-    # check independent of host file ownership; native cases check real trust.
+    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("bubblewrap", Path(sys.executable)))
     monkeypatch.setattr(dispatcher, "platform_backend", sandbox.platform_backend)
-    system_file = sandbox._system_file
     monkeypatch.setattr(
-        sandbox, "_system_file",
-        lambda path: path if path == Path("/usr/bin/true") else system_file(path),
-    )
-    monkeypatch.setattr(
-        sandbox.NativePolicy, "_macos",
-        lambda _self, executable, _scratch: [str(executable), str(launcher)],
+        sandbox.NativePolicy, "_linux",
+        lambda _self, executable, _scratch, _cwd, info_fd, **_kw: [str(executable), str(launcher), str(info_fd)],
     )
     session = make_session(
         settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
                   "execution": {"mode": "workspace-edit"}},
+        approval="never",
         refresh_models=False, extensions=False,
     )
     result = run(session, "echo bad > payload-ran.txt", background=background)
     assert result.is_error and result.details["status"] == "execution_unavailable", result.text()
+    assert result.details["boundary"]["payload_started"] is False
     assert not (project / "payload-ran.txt").exists()
-    assert attempts.read_text().splitlines() == ["probe", "launch"], "Never retry a rejected payload"
+    assert attempts.read_text().splitlines() == ["launch"], "Never retry a rejected payload"
     if background:
         assert not session.services["jobs"].jobs
 
@@ -1250,30 +1264,24 @@ def test_wrapper_failure_after_probe_is_not_a_payload_exit(make_session, project
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX native launch protocol")
 @pytest.mark.parametrize("background", [False, True])
 def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, project, monkeypatch, background):
-    """A delayed broker can miss an acknowledgement after the payload ran.
-
-    The synthetic wrapper exercises real exec/pipe/lifecycle behavior, not OS
-    isolation. Only acknowledgement observation and the broker deadline clock
-    are controlled; the payload writes a disposable marker exactly once.
-    """
+    """A timed-out --info-fd acknowledgement reports execution_failed with side_effects='possible' and no replay."""
     from virgo.sandbox import native as dispatcher
     from virgo.sandbox import platform as sandbox
 
     launcher = project.parent / "forward_payload.py"
     marker = project / "payload-ran.txt"
     launcher.write_text(
-        "import os, sys\nfrom pathlib import Path\n"
-        "if len(sys.argv) == 2 and Path(sys.argv[1]).name == 'true':\n"
-        "    raise SystemExit(0)\n"
-        "os.execv(sys.argv[1], sys.argv[1:])\n"
+        "import os, sys\n"
+        "# Close info_fd passed as argv[1] only after exec or keep pipe open while running payload\n"
+        "os.execv(sys.argv[2], sys.argv[2:])\n",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("protocol-test", Path(sys.executable)))
+    monkeypatch.setattr(sandbox, "platform_backend", lambda: ("bubblewrap", Path(sys.executable)))
     monkeypatch.setattr(dispatcher, "platform_backend", sandbox.platform_backend)
-    system_file = sandbox._system_file
-    monkeypatch.setattr(sandbox, "_system_file",
-                        lambda path: path if path == Path("/usr/bin/true") else system_file(path))
-    monkeypatch.setattr(sandbox.NativePolicy, "_macos",
-                        lambda _self, executable, _scratch: [str(executable), str(launcher)])
+    monkeypatch.setattr(
+        sandbox.NativePolicy, "_linux",
+        lambda _self, executable, _scratch, _cwd, info_fd, **_kw: [str(executable), str(launcher), str(info_fd)],
+    )
     delayed = False
 
     def lose_ack(*_args):
@@ -1285,8 +1293,12 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     monkeypatch.setattr(sandbox, "select", SimpleNamespace(select=lose_ack))
     monkeypatch.setattr(sandbox, "time", SimpleNamespace(
         monotonic=lambda: time.monotonic() + (10 if delayed else 0), sleep=time.sleep))
-    session = make_session(settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
-                                     "execution": {"mode": "workspace-edit"}}, refresh_models=False, extensions=False)
+    session = make_session(
+        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+                  "execution": {"mode": "workspace-edit"}},
+        approval="never",
+        refresh_models=False, extensions=False,
+    )
     source = "from pathlib import Path\nwith Path('payload-ran.txt').open('a') as stream: stream.write('once')"
     result = run(session, python_command(session, source), background=background)
     assert marker.read_text() == "once"

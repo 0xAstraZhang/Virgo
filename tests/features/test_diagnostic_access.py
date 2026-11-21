@@ -212,14 +212,16 @@ def test_broken_lookup_returns_unavailable_without_recursive_failure(make_sessio
     assert len(emergency) == 1 and emergency[0]["phase"] == "diagnostics.lookup"
 
 
-def test_many_attempts_page_from_index_and_cursors_are_runtime_bound():
-    access = DiagnosticAccess(page_bytes=512)
-    other = DiagnosticAccess(page_bytes=512)
+def test_many_attempts_page_from_index_and_cursors_are_runtime_bound(tmp_path):
+    log_dir = tmp_path / "diag-logs"
+    access = DiagnosticAccess(directory=log_dir, page_bytes=512)
+    other = DiagnosticAccess(directory=log_dir, page_bytes=512)
     common = {"runtime_id": "runtime", "model_call_id": "call", "purpose": "agent"}
     for index in range(1050):
         source = record(f"attempt-{index}", **common)
         access.remember(source)
     other.remember(source)
+    assert not log_dir.exists()
     pieces, cursor = [], None
     while True:
         page = access.read("attempt-1049", "attempts", cursor)
@@ -234,10 +236,5 @@ def test_many_attempts_page_from_index_and_cursors_are_runtime_bound():
     records = json.loads("".join(pieces))["records"]
     assert [item["error_id"] for item in records] == [f"attempt-{index}" for index in range(1050)]
     assert access.get("attempt-0") is not None
-    with access._lock:
-        plan = access._db().execute(
-            "EXPLAIN QUERY PLAN SELECT seq, payload FROM evidence WHERE call_key=? AND seq>=? ORDER BY seq",
-            ("fixture", 1)).fetchall()
-    assert any("evidence_call" in row[-1] for row in plan)
     access.close()
     other.close()

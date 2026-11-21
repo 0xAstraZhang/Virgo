@@ -58,6 +58,7 @@ jobs:
         run: |
           missing=()
           command -v bwrap >/dev/null 2>&1 || missing+=(bubblewrap)
+          # Pinned historical BASELINE (04e94ed) still loads libseccomp.so.2; head does not.
           dpkg -s libseccomp2 >/dev/null 2>&1 || missing+=(libseccomp2)
           if [ "${#missing[@]}" -gt 0 ]; then
             sudo apt-get update -qq

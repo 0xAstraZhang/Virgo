@@ -1,8 +1,9 @@
-"""Local NTFS path normalization and validation for the Windows AppContainer sandbox.
+"""Local persistent-ACL volume path normalization and validation for Windows AppContainer.
 
-Only direct local NTFS drive paths with persistent ACLs are accepted as
-canonical Broker paths. Child commands may receive a session-local virtual
-drive letter mapped from an already-validated canonical workspace root.
+Supports local NTFS and Windows 11 ReFS Dev Drives (any fixed local volume with
+FILE_PERSISTENT_ACLS). Ancestor directory junctions and OneDrive cloud reparse
+tags are resolved cleanly; link reparse points are rejected only when
+``allow_reparse=False`` (e.g. protected control targets inside a workspace).
 This module is imported only on Windows.
 """
 from __future__ import annotations
@@ -12,19 +13,27 @@ import errno
 import ntpath
 import os
 import re
+import stat
 from ctypes import wintypes as w
 from pathlib import Path
 
 DWORD = ctypes.c_uint32
+UINT = ctypes.c_uint
 BOOL = ctypes.c_int32
+DRIVE_FIXED = 3
 FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 FILE_PERSISTENT_ACLS = 0x00000008
 
+_LINK_REPARSE_TAGS = frozenset({
+    getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
+    getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003),
+})
+
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-_QueryDosDeviceW = _kernel32.QueryDosDeviceW
-_QueryDosDeviceW.argtypes = [w.LPCWSTR, w.LPWSTR, DWORD]
-_QueryDosDeviceW.restype = DWORD
+_GetDriveTypeW = _kernel32.GetDriveTypeW
+_GetDriveTypeW.argtypes = [w.LPCWSTR]
+_GetDriveTypeW.restype = UINT
 
 _GetVolumeInformationW = _kernel32.GetVolumeInformationW
 _GetVolumeInformationW.argtypes = [
@@ -43,7 +52,6 @@ _RESERVED_DEVICE_RE = re.compile(
     r"(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])",
     re.IGNORECASE,
 )
-_HARDDISK_VOLUME_RE = re.compile(r"\\Device\\HarddiskVolume[0-9]+", re.IGNORECASE)
 
 
 def _invalid(path, reason: str) -> OSError:
@@ -64,7 +72,11 @@ def _validate_component(name: str) -> None:
 def normalize_path(path: str | os.PathLike[str]) -> str:
     """Normalize DOS dot components without following filesystem links."""
     value = os.fspath(path)
-    if not isinstance(value, str) or not re.match(r"^[A-Za-z]:[\\/]", value):
+    if not isinstance(value, str):
+        raise _invalid(path, "a string path is required")
+    if value.startswith("\\\\?\\") and len(value) > 6 and value[5] == ":":
+        value = value[4:]
+    if not re.match(r"^[A-Za-z]:[\\/]", value):
         raise _invalid(path, "an absolute local drive path is required")
     value = value.replace("/", "\\")
     for name in value[3:].split("\\"):
@@ -75,33 +87,44 @@ def normalize_path(path: str | os.PathLike[str]) -> str:
 
 
 def is_reparse_point(path: str | os.PathLike[str]) -> bool:
-    """Return True if ``path`` itself is a Windows reparse point (symlink/junction)."""
+    """Return True if ``path`` itself is a symlink or directory junction (ignoring OneDrive cloud tags)."""
     try:
         info = os.lstat(path)
     except OSError:
         return False
-    return bool(getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+    if not (getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
+        return False
+    tag = getattr(info, "st_reparse_tag", 0)
+    return tag in _LINK_REPARSE_TAGS if tag else True
 
 
 def verify_local_ntfs(
     path: str | os.PathLike[str],
     *,
-    allow_reparse: bool = False,
+    allow_reparse: bool = True,
     expect_directory: bool | None = None,
 ) -> Path:
-    """Validate that ``path`` exists on a direct local NTFS volume with persistent ACLs."""
+    """Validate that ``path`` resolves to a fixed local volume supporting persistent ACLs (NTFS or ReFS)."""
     normalized = normalize_path(path)
-    drive = normalized[:2]
-    device = ctypes.create_unicode_buffer(32768)
-    if not _QueryDosDeviceW(drive, device, len(device)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    if not _HARDDISK_VOLUME_RE.fullmatch(device.value):
-        raise _invalid(path, "mapped, substituted and non-disk drives are not supported")
+    target = Path(normalized)
+    if not os.path.lexists(target):
+        raise FileNotFoundError(errno.ENOENT, "Path does not exist", normalized)
+
+    if not allow_reparse and is_reparse_point(target):
+        raise OSError(errno.ELOOP, "Protected Windows sandbox path must not be a link reparse point", str(target))
+
+    resolved = Path(normalize_path(target.resolve(strict=True)))
+    if not allow_reparse and ntpath.normcase(str(resolved)) != ntpath.normcase(normalized):
+        raise OSError(errno.ELOOP, "Protected Windows sandbox path resolved outside its lexical path", normalized)
+
+    drive_root = resolved.anchor
+    if _GetDriveTypeW(drive_root) != DRIVE_FIXED:
+        raise _invalid(resolved, "a fixed local volume is required")
 
     fs_name = ctypes.create_unicode_buffer(64)
     fs_flags = DWORD()
     if not _GetVolumeInformationW(
-        drive + "\\",
+        drive_root,
         None,
         0,
         None,
@@ -111,31 +134,11 @@ def verify_local_ntfs(
         len(fs_name),
     ):
         raise ctypes.WinError(ctypes.get_last_error())
-    if fs_name.value.upper() != "NTFS" or not (fs_flags.value & FILE_PERSISTENT_ACLS):
-        raise _invalid(path, "a local NTFS volume with persistent ACLs is required")
+    if not (fs_flags.value & FILE_PERSISTENT_ACLS):
+        raise _invalid(resolved, "a volume with persistent ACLs (NTFS or ReFS Dev Drive) is required")
 
-    target = Path(normalized)
-    if not os.path.lexists(target):
-        raise FileNotFoundError(errno.ENOENT, "Path does not exist", normalized)
-
-    if not allow_reparse:
-        # Reject reparse points on the target itself or any parent component.
-        current = target
-        while True:
-            if is_reparse_point(current):
-                raise OSError(errno.ELOOP, "Windows sandbox paths must not contain reparse points", str(current))
-            parent = current.parent
-            if parent == current:
-                break
-            current = parent
-        # Canonicalize casing on disk while verifying no link indirection occurred.
-        resolved = target.resolve(strict=True)
-        if ntpath.normcase(str(resolved)) != ntpath.normcase(normalized):
-            raise OSError(errno.ELOOP, "Windows sandbox path resolved outside its lexical path", normalized)
-        target = resolved
-
-    if expect_directory is True and not target.is_dir():
-        raise NotADirectoryError(errno.ENOTDIR, "Directory path required", str(target))
-    if expect_directory is False and not target.is_file():
-        raise IsADirectoryError(errno.EISDIR, "Regular file path required", str(target))
-    return target
+    if expect_directory is True and not resolved.is_dir():
+        raise NotADirectoryError(errno.ENOTDIR, "Directory path required", str(resolved))
+    if expect_directory is False and not resolved.is_file():
+        raise IsADirectoryError(errno.EISDIR, "Regular file path required", str(resolved))
+    return resolved

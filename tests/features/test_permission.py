@@ -45,24 +45,34 @@ def test_auto_review_executes_internal_changes_without_asking(broker_session, pr
     assert not session.store.custom("model_call") or all(row["purpose"] != "permission" for row in session.store.custom("model_call"))
 
 
-def test_risky_review_respects_allow_once_and_exact_session_approval(broker_session, tmp_path):
+def test_session_approval_persists_across_edits_until_revoked_and_isolates_siblings(broker_session, tmp_path):
     ui = RecordingUI(answers=["y", "n", "a"])
     session = broker_session(ui=ui)
-    args = {"path": str(tmp_path / "outside.txt"), "content": "one"}
-    changed = args | {"content": "two"}
-    def ask(arguments):
-        return ("request_permissions", {
-            "tool": "write", "arguments": arguments, "permissions": {"write_paths": [arguments["path"]]},
-            "reason": "Write the explicitly selected external file once",
-        })
-    operations = [ask(args), ("write", args), ("write", args), ask(args),
-                  ("write", changed), ("write", changed), ask(changed), ("write", args)]
-    faux.script("test", *(faux.reply(tools=[operation]) for operation in operations), faux.reply("done"))
-    session.prompt("Exercise exact single-operation permissions")
+    outside = tmp_path / "outside.txt"
+    sibling = tmp_path / "sibling.txt"
+    args = {"path": str(outside), "content": "one"}
+    changed = {"path": str(outside), "content": "two"}
+    sibling_args = {"path": str(sibling), "content": "blocked"}
+    operations = [
+        ("write", args),          # Prompts #1 -> 'y' (session grant for outside.txt)
+        ("write", changed),       # Reuses session grant without prompting!
+        ("write", sibling_args),  # Unapproved sibling prompts #2 -> 'n' (denied)
+    ]
+    faux.script("test", *(faux.reply(tools=[op]) for op in operations), faux.reply("done"))
+    session.prompt("Exercise session-scoped path prefix permissions")
     results = tool_results(session)
-    assert [result.is_error for result in results] == [False, False, True, True, False, False, False, True]
+    assert [result.is_error for result in results] == [False, False, True]
+    assert len(ui.questions) == 2
+    assert outside.read_text() == "two"
+    assert not sibling.exists()
+
+    # Revoking clears session grants; next write prompts #3 -> 'a' (persistent grant).
+    session.services["execution"].revoke()
+    faux.script("test", faux.reply(tools=[("write", {"path": str(outside), "content": "three"})]), faux.reply("done"))
+    session.prompt("Write after revoke")
+    assert not tool_results(session)[-1].is_error
     assert len(ui.questions) == 3
-    assert (tmp_path / "outside.txt").read_text() == "two"
+    assert outside.read_text() == "three"
     assert session.services["execution"].mode_for(session.main).write_paths == (str(session.cwd),)
 
 
@@ -202,7 +212,7 @@ def test_read_only_external_tools_need_no_approval_in_sandbox_modes(broker_sessi
     assert not ui.questions
 
 
-def test_mutating_external_tools_require_one_operation_approval(broker_session):
+def test_mutating_external_tools_require_session_approval(broker_session):
     ui = RecordingUI(answers=["y"])
     session = broker_session(ui=ui)
     _external_tool(session, "external_write", read_only=False)
@@ -210,8 +220,9 @@ def test_mutating_external_tools_require_one_operation_approval(broker_session):
     event.signal = session.main.agent.signal
     assert session._before_tool(event) is None
     assert session._before_tool_execute(event) is None
+    # Subsequent call in the same session reuses the session grant without re-prompting.
+    assert session._before_tool_execute(event) is None
     assert len(ui.questions) == 1 and "External tool" in ui.questions[0]
-    assert session.services["execution"].sandbox._pending == {}
 
 
 def test_denied_external_tool_is_blocked_before_dispatch(broker_session):

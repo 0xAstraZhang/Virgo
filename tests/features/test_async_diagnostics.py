@@ -284,13 +284,13 @@ def test_diagnostic_cleanup_failure_cannot_replace_successful_delegation(make_se
         access.remember(capture_error("retained observation", phase="fixture.cleanup"))
 
         def fail():
-            raise OSError("temporary evidence cleanup unavailable")
+            raise OSError("diagnostic evidence cleanup unavailable")
 
-        monkeypatch.setattr(access._temporary, "cleanup", fail)
+        monkeypatch.setattr(access, "_clear", fail)
 
     session.bus.on("runtime_created", prepare_cleanup_failure)
     session.prompt("delegate inspection")
     result = tool_results(session)[0]
     assert not result.is_error
     assert "child completed successfully" in result.text()
-    assert "temporary evidence cleanup unavailable" in capsys.readouterr().err
+    assert "diagnostic evidence cleanup unavailable" in capsys.readouterr().err
