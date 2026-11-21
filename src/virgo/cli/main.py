@@ -101,11 +101,12 @@ def _pick_session(sessions_dir: Path, t: Translator | None = None) -> Path | Non
 
 
 def _fullscreen_available() -> bool:
-    return (
-        sys.stdin.isatty()
-        and sys.stdout.isatty()
-        and os.environ.get("TERM", "").lower() not in {"", "dumb", "unknown"}
-    )
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    term = os.environ.get("TERM", "").lower()
+    if term:
+        return term not in {"dumb", "unknown"}
+    return sys.platform == "win32" and bool(os.environ.get("WT_SESSION"))
 
 
 def _startup_error(error: Exception, cwd: str, *, t: Translator | None = None) -> None:

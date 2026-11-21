@@ -59,7 +59,7 @@ MESSAGES = {
     "ui.cli.description": "Virgo — 轻量、可扩展的编程智能体。",
     "ui.cli.effort": "推理强度",
     "ui.cli.error": "{prog}：错误：{message}\n",
-    "ui.cli.fullscreen_error": "virgo：全屏界面需要交互式输入输出和支持的 TERM；请使用 --ui plain 或 -p。",
+    "ui.cli.fullscreen_error": "virgo：全屏界面需要在受支持的终端中进行交互式输入输出。请使用 --ui plain 或 -p。",
     "ui.cli.help": "显示帮助并退出",
     "ui.cli.language": "界面语言：中文或 English（也可使用 zh-CN 或 en）",
     "ui.cli.format": "非交互输出格式（json 为事件流）",

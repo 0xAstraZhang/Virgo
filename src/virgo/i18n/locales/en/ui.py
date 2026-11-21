@@ -59,7 +59,7 @@ MESSAGES = {
     "ui.cli.description": "Virgo — a lightweight, extensible coding agent.",
     "ui.cli.effort": "reasoning effort",
     "ui.cli.error": "{prog}: error: {message}\n",
-    "ui.cli.fullscreen_error": "virgo: fullscreen needs an interactive stdin/stdout and a supported TERM; use "
+    "ui.cli.fullscreen_error": "virgo: fullscreen needs interactive input and output in a supported terminal. Use "
     "--ui plain or -p.",
     "ui.cli.help": "show this help message and exit",
     "ui.cli.language": "interface language: English or 中文 (also en or zh-CN)",
