@@ -258,6 +258,100 @@ def test_fullscreen_terminal_detection(monkeypatch, stdin_tty, stdout_tty, term,
     assert cli._fullscreen_available() is expected
 
 
+@pytest.mark.parametrize(
+    ("platform", "term", "indicators", "vt_supported", "expected"),
+    [
+        ("win32", None, {}, True, True),
+        ("win32", "", {}, True, True),
+        ("win32", None, {}, False, False),
+        ("win32", "dumb", {}, True, False),
+        ("win32", None, {"TERM_PROGRAM": "dumb"}, True, False),
+        ("win32", None, {"TERM_PROGRAM": "unknown"}, True, False),
+        ("linux", None, {}, True, False),
+    ],
+)
+def test_fullscreen_windows_vt_console_fallback(monkeypatch, platform, term, indicators, vt_supported, expected):
+    import io
+
+    cli = import_module("virgo.cli.main")
+
+    class Stream(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", Stream())
+    monkeypatch.setattr(sys, "stdout", Stream())
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(cli, "_windows_console_supports_vt", lambda: vt_supported)
+    for name in ("WT_SESSION", "TERM_PROGRAM", "TERMINAL_EMULATOR", "ConEmuANSI", "ANSICON"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in indicators.items():
+        monkeypatch.setenv(name, value)
+    if term is None:
+        monkeypatch.delenv("TERM", raising=False)
+    else:
+        monkeypatch.setenv("TERM", term)
+    assert cli._fullscreen_available() is expected
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 console mode probe")
+@pytest.mark.parametrize(
+    ("in_init", "out_init", "fail_on", "expected", "expected_sets"),
+    [
+        (0x0207, 0x0007, None, True, []),
+        (0x0007, 0x0003, None, True, [(200, 0x0007), (100, 0x0207), (100, 0x0007), (200, 0x0003)]),
+        (0x0007, 0x0003, 100, False, [(200, 0x0007), (100, 0x0207), (200, 0x0003)]),
+        (0x0007, 0x0003, 200, False, [(200, 0x0007)]),
+        (None, 0x0003, None, False, []),
+    ],
+    ids=["already-vt", "enable-and-restore", "stdin-vt-fails-restores-stdout", "stdout-vt-fails", "not-console"],
+)
+def test_windows_console_vt_probe_restores_modes(monkeypatch, in_init, out_init, fail_on, expected, expected_sets):
+    import ctypes
+    import msvcrt
+
+    cli = import_module("virgo.cli.main")
+    sets: list[tuple[int, int]] = []
+    modes = {100: in_init, 200: out_init}
+
+    class FakeStream:
+        def __init__(self, fd):
+            self._fd = fd
+
+        def fileno(self):
+            return self._fd
+
+    class FakeFn:
+        def __init__(self, fn):
+            self._fn = fn
+
+        def __call__(self, *args):
+            return self._fn(*args)
+
+    def fake_get_mode(handle, out_ptr):
+        value = modes.get(handle)
+        if value is None:
+            return 0
+        out_ptr._obj.value = value
+        return 1
+
+    def fake_set_mode(handle, mode):
+        sets.append((handle, mode))
+        return 0 if handle == fail_on else 1
+
+    fake_kernel32 = SimpleNamespace(
+        GetConsoleMode=FakeFn(fake_get_mode),
+        SetConsoleMode=FakeFn(fake_set_mode),
+    )
+
+    monkeypatch.setattr(sys, "stdin", FakeStream(10))
+    monkeypatch.setattr(sys, "stdout", FakeStream(20))
+    monkeypatch.setattr(msvcrt, "get_osfhandle", lambda fd: 100 if fd == 10 else 200)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_kw: fake_kernel32)
+    assert cli._windows_console_supports_vt() is expected
+    assert sets == expected_sets
+
+
 @pytest.mark.parametrize("ui", ["auto", "fullscreen"])
 @pytest.mark.parametrize(
     ("session_args", "expected_session", "pick_session"),
