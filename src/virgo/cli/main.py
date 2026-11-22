@@ -284,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             settings=overrides,
             extensions=not args.no_extensions,
             trust_project_extensions=args.trust_project_extensions,
+            refresh_models=not args.print,
         )
     except KeyboardInterrupt:
         return 130

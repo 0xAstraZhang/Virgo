@@ -12,8 +12,16 @@ from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+
+from virgo.ai import resolve_model
+from virgo.ai.catalog import CatalogError, CatalogModel
+from virgo.ai.model_metadata import cache_path, write_metadata
+from virgo.harness import preferences
+
+from tests.support.persistence import diagnostic_records
 
 COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" else "virgo")
 ENTRY_POINTS = [[str(COMMAND)], [sys.executable, "-m", "virgo"]]
@@ -207,6 +215,29 @@ def test_print_text_ignores_fullscreen_option(entry, project):
     assert result.stdout.strip() == "(faux) You said: hello"
 
 
+@pytest.mark.parametrize(("flag", "fmt"), [("-p", "text"), ("--print", "json")])
+def test_print_uses_cached_model_catalog_without_refresh(flag, fmt, project, monkeypatch, capsys):
+    cli = import_module("virgo.cli.main")
+    model = resolve_model("deepseek/deepseek-flash")
+    home = cli.Paths(project).user
+    write_metadata(cache_path(home, model), [CatalogModel(model.id, {"context_window": 234567})])
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-test-key")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    refresh = Mock(wraps=preferences.start_model_refresh)
+    fetch = Mock(side_effect=CatalogError("Model directory returned HTTP 401.", 401))
+    monkeypatch.setattr(preferences, "start_model_refresh", refresh)
+    monkeypatch.setattr(preferences, "fetch_model_catalog", fetch)
+
+    assert cli.main([flag, "--format", fmt, "-C", str(project), "-m", model.spec,
+                     "--permission", "no-limit", "/status"]) == 0
+    output = capsys.readouterr()
+    assert "234,567" in output.out
+    assert output.err == ""
+    assert diagnostic_records(home / "logs" / "diagnostics.sqlite3") == []
+    refresh.assert_not_called()
+    fetch.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("stdin_tty", "stdout_tty", "term", "platform", "indicators", "expected"),
     [
@@ -388,4 +419,5 @@ def test_fullscreen_route_and_resume_picker(monkeypatch, ui, session_args, expec
 
     assert cli.main(["--ui", ui, "initial prompt", *session_args]) == 17
     assert calls["kwargs"]["session"] == expected_session
+    assert calls["kwargs"]["refresh_models"] is True
     assert calls["run"] == (session, calls["kwargs"]["ui"], "initial prompt", pick_session)
