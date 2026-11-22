@@ -139,7 +139,7 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--no-session', 
         terminal.wait_for(lambda data: "Thinking…" in plain(data))
         output = terminal.wait_for(lambda data: "Worked for" in plain(data))
         text = plain(output)
-        assert "thinking with high effort" in text
+        assert "thinking with " not in text
         assert "(1s" in text
         assert len(set(text) & set("✢✳✶✻✽")) >= 2
         assert "Finished waiting." in text
