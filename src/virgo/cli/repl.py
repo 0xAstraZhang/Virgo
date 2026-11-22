@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from .. import __version__
+from ..harness.preferences import effort_label
 from ..harness.session import AgentSession
 from .console import ConsoleBroker, TerminalUI
 from .i18n import tr
@@ -69,7 +70,7 @@ def run_repl(
             "ui.repl.welcome",
             version=__version__,
             model=session.model.spec,
-            effort=session.effort,
+            effort=effort_label(session.model, session.effort, session.t),
             sandbox=session.services["execution"].effective_mode(session.main),
             cwd=session.cwd,
         ),

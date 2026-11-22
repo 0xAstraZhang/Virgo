@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from ..ai import resolved_effort
 from ..ai.auth_presets import API_PRESETS, AUTH_PRESETS
 from ..ai.catalog import CatalogCancelled, CatalogError, fetch_model_catalog
 from ..ai.models import BUILTIN_PROVIDERS, base_url
@@ -23,12 +24,35 @@ if TYPE_CHECKING:
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
+def effort_levels(model: Model) -> tuple[str, ...]:
+    if not model.reasoning or model.supported_reasoning_levels is None:
+        return EFFORT_LEVELS
+    return model.supported_reasoning_levels
+
+
+def effort_label(model: Model, requested: str | None, t, *, show_requested: bool = True) -> str:
+    effective = resolved_effort(model, requested).effective
+    label = effective or t("harness.effort.default" if model.reasoning else "ui.modes.off")
+    return f"{requested}→{label}" if show_requested and requested and requested != label else label
+
+
 @dataclass(frozen=True)
 class ModelChoice:
     spec: str
     label: str
     description: str
     released_at: float | None = None
+    effort_levels: tuple[str, ...] = EFFORT_LEVELS
+    preferred_effort: str = "medium"
+    reasoning: bool = False
+
+    @classmethod
+    def from_model(cls, model: Model, description: str, requested: str, released_at: float | None = None) -> ModelChoice:
+        levels = effort_levels(model)
+        effective = resolved_effort(model, requested).effective
+        candidates = (effective, requested, model.default_reasoning_level, "medium")
+        preferred = next((level for level in candidates if level in levels), levels[0] if levels else requested)
+        return cls(model.spec, model.id, description, released_at, levels, preferred, model.reasoning)
 
 
 @dataclass(frozen=True)
@@ -37,6 +61,15 @@ class PreferenceRequest:
     models: tuple[ModelChoice, ...]
     model: str
     effort: str
+
+    def offers(self, choice: PreferenceChoice) -> bool:
+        model = next((item for item in self.models if item.spec == choice.model), None)
+        if model is None or (self.kind == "effort" and choice.model != self.model):
+            return False
+        if not model.effort_levels:
+            # Selecting the model alone must preserve the saved preference.
+            return self.kind == "model" and choice.effort == self.effort
+        return choice.effort in model.effort_levels
 
 
 @dataclass(frozen=True)
@@ -85,13 +118,18 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
                 local = session.resolve(f"{provider}/{model_id}")
             except (TypeError, ValueError):
                 continue
-            choices[local.spec] = ModelChoice(local.spec, local.id, session.t("harness.models.context", provider=provider, tokens=local.context_window))
+            description = session.t("harness.models.context", provider=provider, tokens=local.context_window)
+            choices[local.spec] = ModelChoice.from_model(local, description, session.effort)
     for connection in _connected_remote_models(session):
         for item in session.cached_model_catalog(connection):
             context = item.metadata.get("context_window")
             description = session.t("harness.models.context", provider=connection.provider, tokens=context) if context else connection.provider
             spec = f"{connection.provider}/{item.id}"
-            choices[spec] = ModelChoice(spec, item.id, description, item.released_at)
+            try:
+                model = session.resolve(spec)
+            except (TypeError, ValueError):
+                continue
+            choices[spec] = ModelChoice.from_model(model, description, session.effort, item.released_at)
     # Keep each connection's server order independent of parallel fetch completion.
     ordered = sorted(choices.values(), key=lambda choice: choice.spec.split("/", 1)[0])
     # Stable ties preserve server order; undated models follow dated models.
@@ -267,12 +305,11 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     """Apply an explicit picker result; cancellation and previews do not mutate state."""
     if kind not in ("model", "effort"):
         raise ValueError(f"unknown preference kind: {kind}")
-    effort = session.effort if session.effort in EFFORT_LEVELS else "medium"
     # A missing provider can publish during model_choices, so check cache coverage first.
     refreshing = kind == "model" and not session._catalog_refresh_done.is_set()
     uncached = refreshing and _has_uncached_remote_provider(session)
     models = model_choices(session) if kind == "model" else (
-        ModelChoice(session.model.spec, session.model.id, session.model.provider),
+        ModelChoice.from_model(session.model, session.model.provider, session.effort),
     )
     if refreshing and (not models or uncached):
         deadline = time.monotonic() + 5
@@ -291,18 +328,24 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if kind == "model" and not models:
         session.ui.print(session.t("harness.preferences.none"), "warn")
         return
+    if kind == "effort" and not models[0].effort_levels:
+        session.ui.print(session.t("harness.effort.no_levels"), "warn")
+        return
+    effort = models[0].preferred_effort if kind == "effort" else session.effort
     request = PreferenceRequest(kind, models, session.model.spec, effort)
     choice = session.ui.choose_preferences(request)
     if choice is None:
-        kept = session.model.id if kind == "model" else session.effort
+        kept = session.model.id if kind == "model" else effort_label(session.model, session.effort, session.t)
         session.ui.print(session.t("harness.models.kept", kind=session.t("harness.preferences." + kind), value=kept))
         return
-    if not isinstance(choice, PreferenceChoice) or choice.effort not in EFFORT_LEVELS:
+    if not isinstance(choice, PreferenceChoice):
         raise ValueError(session.t("harness.preferences.invalid"))
     if kind == "model" and choice.model not in {model.spec for model in request.models}:
         raise ValueError(session.t("harness.preferences.not_offered"))
     if kind == "effort" and choice.model != request.model:
         raise ValueError(session.t("harness.preferences.effort_only"))
+    if not request.offers(choice):
+        raise ValueError(session.t("harness.preferences.invalid"))
     if kind == "model":
         # Validate before saving defaults so a bad model cannot corrupt settings.
         session.resolve(choice.model)
@@ -315,7 +358,8 @@ def configure_preference(session: AgentSession, kind: str) -> None:
         session.set_model(choice.model)
     session.effort = choice.effort
     scope = session.t("harness.preferences.persisted") if choice.persist else session.t("harness.preferences.session_only")
+    label = effort_label(session.model, session.effort, session.t)
     if kind == "model":
-        session.ui.print(session.t("harness.models.selected", model=session.model.id, effort=session.effort, scope=scope), "ok")
+        session.ui.print(session.t("harness.models.selected", model=session.model.id, effort=label, scope=scope), "ok")
     else:
-        session.ui.print(session.t("harness.models.effort", effort=session.effort, scope=scope), "ok")
+        session.ui.print(session.t("harness.models.effort", effort=label, scope=scope), "ok")

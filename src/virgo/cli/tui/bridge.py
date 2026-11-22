@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...agent.types import AgentEvent
-from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest
+from ...harness.preferences import PreferenceChoice, PreferenceRequest
 from ...harness.ui import TIMED_OUT, UI
 from ..i18n import tr
 
@@ -247,11 +247,7 @@ class FullscreenUI(UI):
                 raise ValueError(tr(self, "ui.bridge.invalid_option"))
             preferences = waiting.request.preferences
             if answer is not None and preferences is not None:
-                if (
-                    not isinstance(answer, PreferenceChoice)
-                    or answer.model not in {model.spec for model in preferences.models}
-                    or answer.effort not in EFFORT_LEVELS
-                ):
+                if not isinstance(answer, PreferenceChoice) or not preferences.offers(answer):
                     raise ValueError(tr(self, "ui.bridge.invalid_model"))
             self._inputs.pop(request_id)
             signal = self._signals.get("main")

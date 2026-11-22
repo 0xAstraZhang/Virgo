@@ -21,7 +21,7 @@ from textual.widgets.option_list import Option
 
 from ... import __version__
 from ...ai.types import Usage
-from ...harness.preferences import PreferenceChoice
+from ...harness.preferences import PreferenceChoice, effort_label
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
 from ..i18n import tr
@@ -552,7 +552,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 elif update.kind == "state_changed":
                     self.update_status()
                 elif update.kind == "run_start":
-                    self.activity.begin(update.created_at, self.session.effort)
+                    model = self.session.main.model
+                    effort = (
+                        effort_label(model, self.session.effort, self.session.t, show_requested=False)
+                        if model.reasoning else None
+                    )
+                    self.activity.begin(update.created_at, effort)
                     self.update_status()
                 elif update.kind == "done":
                     summary = self.activity.finish(update.payload, update.created_at)
@@ -836,10 +841,17 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if live:
             footer.append(" · ")
             footer.append(live, style=f"bold {PURPLE}")
-        effort = f" · {self.session.effort}"
         available = width - footer.cell_len - 2
+        active_model = self.session.main.model
+        effort = ""
+        if active_model.reasoning:
+            requested = self.session.effort
+            label = effort_label(active_model, requested, self.session.t)
+            if cell_len(f"{active_model.id} · {label}") > available:
+                label = effort_label(active_model, requested, self.session.t, show_requested=False)
+            effort = f" · {label}"
         if available >= cell_len(effort) + 1:
-            model = Text(self.session.main.model.id, style="dim", no_wrap=True, overflow="ellipsis")
+            model = Text(active_model.id, style="dim", no_wrap=True, overflow="ellipsis")
             model.truncate(available - cell_len(effort), overflow="ellipsis")
             model.append(effort)
             footer.append(" " * max(2, width - footer.cell_len - model.cell_len))

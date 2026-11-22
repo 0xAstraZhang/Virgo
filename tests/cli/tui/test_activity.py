@@ -7,6 +7,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from textual.widgets import Static
 
 from virgo.agent.types import AgentEvent
 from virgo.ai.providers import faux
@@ -320,5 +321,34 @@ def test_draft_marker_stays_static_when_event_header_scrolls_away(make_session, 
             app.controller.busy = False
             app.activity.reset()
             await wait_for(pilot, lambda: app.editor.render_line(0).text.startswith("› 下一条消息"))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("spec,suffix,effort", [
+    ("deepseek/deepseek-flash", "deepseek-flash · medium→high", "high"),
+    ("kimi/kimi-k3.1-pro", "kimi-k3.1-pro · medium→default", "default"),
+    ("faux/test", "  test", None),
+])
+def test_footer_and_thinking_banner_follow_model_effort(make_session, spec, suffix, effort):
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui)
+        session.set_model(spec)
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            ui.push("run_start", 1)
+            ui.on_event(AgentEvent("agent_start"))
+            await wait_for(pilot, lambda: "Thinking…" in str(app.activity.content))
+            content = str(app.activity.content)
+            if effort is None:
+                assert "effort" not in content
+            else:
+                assert f"thinking with {effort} effort" in content
+            assert str(app.query_one("#status", Static).content).endswith(suffix)
+            if spec == "deepseek/deepseek-flash":
+                await pilot.resize_terminal(35, 16)
+                await pilot.pause()
+                assert str(app.query_one("#status", Static).content).endswith("deepseek-flash · high")
 
     asyncio.run(scenario())

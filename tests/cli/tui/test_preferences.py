@@ -123,7 +123,7 @@ def test_model_panel_switches_custom_model_and_effort_for_session_only(make_sess
             assert not (session.paths.user / "settings.json").exists()
             assert not faux.CALLS["test"]
             assert app.editor.display and not panel.display
-            await wait_for(pilot, lambda: "custom · high" in str(app.query_one("#status", Static).content))
+            await wait_for(pilot, lambda: str(app.query_one("#status", Static).content).endswith("  custom"))
 
     asyncio.run(scenario())
 
@@ -351,3 +351,42 @@ def test_pty_fast_arrow_and_confirm_selects_new_model_and_effort(project, tmp_pa
         terminal.send(b"\x04")
         assert terminal.finish() == 0
         terminal.assert_restored()
+
+
+@pytest.mark.parametrize("kind", ["effort", "model"])
+def test_deepseek_picker_uses_high_and_only_catalog_levels(make_session, monkeypatch, kind):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(preferences, "fetch_model_catalog", lambda *_: [
+        CatalogModel("deepseek-flash"), CatalogModel("another", {"supported_reasoning_levels": ["low"]}),
+    ])
+
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui)
+        session.set_model("deepseek/deepseek-flash")
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(40, 16)) as pilot:
+            app.controller.submit(f"/{kind}")
+            panel = app.query_one(PreferencePicker)
+            await wait_for(pilot, lambda: panel.display and app.active_input is not None)
+            if kind == "model":
+                await pilot.press("enter")
+            else:
+                slider = panel.query_one("#preference-effort", Static)
+                assert str(slider.content).splitlines()[-1].split() == ["low", "high", "max"]
+            assert panel.effort == "high"
+            with pytest.raises(ValueError):
+                ui.resolve_input(app.active_input, PreferenceChoice(session.model.spec, "medium", True))
+            await pilot.press("left")
+            assert panel.effort == "low"
+            await pilot.press("right", "right")
+            assert panel.effort == "max"
+            if kind == "model":
+                await pilot.press("down", "right")
+                assert panel.effort == "low"
+            await pilot.press("escape")
+            await wait_for(pilot, lambda: not app.controller.busy)
+            assert session.effort == "medium"
+            assert not (session.paths.user / "settings.json").exists()
+
+    asyncio.run(scenario())

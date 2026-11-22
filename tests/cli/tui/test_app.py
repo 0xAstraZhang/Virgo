@@ -611,6 +611,7 @@ def test_status_preserves_fields_with_wide_path_and_long_model(broker_session, p
     async def scenario():
         ui = FullscreenUI()
         session = broker_session(ui=ui, cwd=directory)
+        session.set_model("anthropic/claude-opus-5-5")
         session.main.model.id = "a-very-long-模型-name-" * 6
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
@@ -758,8 +759,7 @@ def test_footer_places_mode_and_usage_below_editor(make_session):
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
-        session.main.model.provider = "deepseek"
-        session.main.model.id = "deepseek-flash"
+        session.set_model("deepseek/deepseek-flash")
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
@@ -786,7 +786,7 @@ def test_footer_places_mode_and_usage_below_editor(make_session):
             assert status.styles.text_align == "left"
             status_line = status.render_line(0).text
             assert status_line.startswith("No-Limit  ")
-            assert status_line.endswith(f"deepseek-flash · {session.effort}")
+            assert status_line.endswith("deepseek-flash · medium→high")
             assert app.query_one_optional("#flags") is None
             assert cell_len(status_line) == app.editor.region.width
             assert metrics.region.y == status.region.bottom

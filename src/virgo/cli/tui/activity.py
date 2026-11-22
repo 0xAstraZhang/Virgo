@@ -32,7 +32,7 @@ class RunActivity:
         self.started_at: float | None = None
         self.phase = tr(self, "ui.activity.working")
         self.waiting: str | None = None
-        self.effort = ""
+        self.effort: str | None = None
         self.saw_agent = False
         self.stop_reason = "stop"
         self.running_tools: dict[str, str] = {}
@@ -46,7 +46,7 @@ class RunActivity:
         self.running_tools.clear()
         self.display = False
 
-    def begin(self, started_at: float, effort: str) -> None:
+    def begin(self, started_at: float, effort: str | None) -> None:
         self.reset()
         self.started_at = started_at
         self.effort = effort

@@ -77,12 +77,14 @@ def test_direct_model_command_updates_small_model_and_keeps_main_effort(make_ses
     assert session.effort == "max"
 
 
-@pytest.mark.parametrize("spec", ["deepseek/deepseek-flash", "kimi/kimi-k3.1-pro", "glm/glm-5.3"])
-def test_compatible_provider_without_medium_or_default_uses_low(make_session, spec):
+@pytest.mark.parametrize("spec,default", [
+    ("deepseek/deepseek-flash", "high"), ("kimi/kimi-k3.1-pro", None), ("glm/glm-5.3", None),
+])
+def test_compatible_provider_uses_low_for_auxiliary_requests(make_session, spec, default):
     session = make_session()
     session.set_model(spec)
     assert session.small_model.supported_reasoning_levels == ("low", "high", "max")
-    assert session.small_model.default_reasoning_level is None
+    assert session.small_model.default_reasoning_level == default
     assert session.small_model_effort == "low"
     assert session.small_model_effort_fallback_reason is None
 
