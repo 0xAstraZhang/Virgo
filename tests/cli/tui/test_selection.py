@@ -12,19 +12,24 @@ from unittest.mock import Mock, call
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.events import MouseDown, MouseMove, MouseUp
+from textual.geometry import Offset
 from textual.widgets import Input
 from textual.widgets._toast import Toast
 
 from virgo.agent.types import AgentEvent, ToolResult
+from virgo.ai.stream import StreamEvent
 from virgo.ai.types import AssistantMessage, TextContent, ThinkingContent, UserMessage
 from virgo.cli.tui import selection as selection_module
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.editor import ChatEditor, InputHistory
-from virgo.cli.tui.selection import SelectionCopyMixin
+from virgo.cli.tui.selection import SelectionCopyMixin, SelectionScreen, SelectionScreenMixin
+from virgo.cli.tui.sessions import SessionPicker
 from virgo.cli.tui.transcript import AssistantView, ToolView, Transcript
 
 from tests.support.terminal import PtyClient, plain
+from tests.support.tui import wait_for
 
 
 class CopyApp(SelectionCopyMixin, App):
@@ -363,6 +368,285 @@ def test_successful_copy_shows_brief_copied_notice_but_failure_does_not(monkeypa
             app.copy_to_clipboard("")
             await pilot.pause()
             assert not app.query(Toast)
+
+    asyncio.run(scenario())
+
+
+def _mouse_event(event_type, x: int, y: int, *, button: int = 1, delta_x: int = 0, delta_y: int = 0):
+    return event_type(
+        None,
+        x=x,
+        y=y,
+        delta_x=delta_x,
+        delta_y=delta_y,
+        button=button,
+        shift=False,
+        meta=False,
+        ctrl=False,
+        screen_x=x,
+        screen_y=y,
+    )
+
+
+def _heading_span(heading) -> tuple[int, int]:
+    """Return local x-coordinates spanning centered MarkdownH1 text."""
+    text_len = len(str(heading.content))
+    start = max(0, (heading.size.width - text_len) // 2)
+    return start, min(heading.size.width - 1, start + max(0, text_len - 1))
+
+
+def test_mouse_down_on_detached_markdown_heading_does_not_crash(monkeypatch, tmp_path):
+    copied = mock_mac_clipboard(monkeypatch)
+
+    async def scenario():
+        app = CopyApp(tmp_path)
+        async with app.run_test(size=(120, 30)) as pilot:
+            transcript = app.query_one(Transcript)
+            await transcript.consume(
+                AgentEvent("message_end", message=AssistantMessage([TextContent("# Gold Standard\n\nBody")]))
+            )
+            await pilot.pause()
+            card = transcript.query_one(AssistantView)
+            old_h1 = card.body.query_one("MarkdownH1")
+            reg = old_h1.region
+            hit_x, hit_y = reg.x + reg.width // 2, reg.y
+
+            # Reproduce the exact Textual 8.2.8 race: remove() detaches the block inside
+            # batch_update() before the compositor reflows, so raw hit-testing still finds
+            # old_h1 with parent=None and returns (old_h1, Offset(0, 0)).
+            with app.batch_update():
+                await old_h1.remove()
+                assert old_h1.parent is None
+                assert app.screen._compositor.get_widget_and_offset_at(hit_x, hit_y) == (
+                    old_h1,
+                    Offset(0, 0),
+                )
+                old_h1.refresh()
+                app.post_message(_mouse_event(MouseDown, hit_x, hit_y))
+                app.post_message(_mouse_event(MouseUp, hit_x, hit_y))
+                await pilot.pause()
+            assert app.screen._select_state is None
+            assert not copied
+
+            # Also verify an explicit stale compositor hit outside batch_update().
+            await card.body.update("# Fresh Heading\n\nBody")
+            await pilot.pause()
+            fresh_h1 = card.body.query_one("MarkdownH1")
+            fresh_reg = fresh_h1.region
+            # Use a distinct coordinate so Textual does not chain with the prior click above.
+            stale_x = fresh_reg.x + fresh_reg.width // 2 + 2
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    app.screen._compositor,
+                    "get_widget_and_offset_at",
+                    lambda _x, _y: (old_h1, Offset(0, 0)),
+                )
+                app.post_message(_mouse_event(MouseDown, stale_x, fresh_reg.y))
+                app.post_message(_mouse_event(MouseUp, stale_x, fresh_reg.y))
+                await pilot.pause()
+            assert app.screen._select_state is None
+            assert not copied
+
+            # Subsequent normal drag selection on the replacement heading still copies.
+            start_x, end_x = _heading_span(fresh_h1)
+            await pilot.mouse_down(fresh_h1, offset=(start_x, 0))
+            await pilot.mouse_up(fresh_h1, offset=(end_x, 0))
+            await pilot.pause()
+            assert copied and "Fresh Heading" in copied[-1]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["stale_move_target", "start_block_replaced", "detached_before_mouse_up", "detached_during_auto_scroll"],
+)
+def test_drag_selection_cancels_when_widgets_detach_mid_gesture(monkeypatch, tmp_path, case):
+    copied = mock_mac_clipboard(monkeypatch)
+
+    async def scenario():
+        app = CopyApp(tmp_path)
+        async with app.run_test(size=(100, 30)) as pilot:
+            transcript = app.query_one(Transcript)
+            await transcript.consume(AgentEvent("message_end", message=UserMessage("prompt words")))
+            await transcript.consume(
+                AgentEvent("message_end", message=AssistantMessage([TextContent("# Gold Standard\n\nBody")]))
+            )
+            await pilot.pause()
+            user_row = transcript.query_one(".user-message")
+            card = transcript.query_one(AssistantView)
+            old_h1 = card.body.query_one("MarkdownH1")
+            h1_reg = old_h1.region
+            start_off, end_off = _heading_span(old_h1)
+            h1_start, h1_end = h1_reg.x + start_off, h1_reg.x + end_off
+
+            if case == "stale_move_target":
+                user_reg = user_row.region
+                app.post_message(_mouse_event(MouseDown, user_reg.x, user_reg.y))
+                await pilot.pause()
+                with app.batch_update():
+                    await old_h1.remove()
+                    app.post_message(_mouse_event(MouseMove, h1_end, h1_reg.y, delta_x=4, delta_y=1))
+                    app.post_message(_mouse_event(MouseUp, h1_end, h1_reg.y))
+                    await pilot.pause()
+            elif case == "start_block_replaced":
+                app.post_message(_mouse_event(MouseDown, h1_start, h1_reg.y))
+                await pilot.pause()
+                assert app.screen._select_state is not None
+                assert card.body.is_attached
+                await card.body.update("# Updated Heading\n\nBody")
+                await pilot.pause()
+                assert card.body.is_attached and not old_h1.is_attached
+                new_h1 = card.body.query_one("MarkdownH1")
+                new_reg = new_h1.region
+                _, new_end_off = _heading_span(new_h1)
+                app.post_message(
+                    _mouse_event(MouseMove, new_reg.x + new_end_off, new_reg.y, delta_x=8)
+                )
+                app.post_message(_mouse_event(MouseUp, new_reg.x + new_end_off, new_reg.y))
+                await pilot.pause()
+            elif case == "detached_before_mouse_up":
+                app.post_message(_mouse_event(MouseDown, h1_start, h1_reg.y))
+                app.post_message(_mouse_event(MouseMove, h1_end, h1_reg.y, delta_x=h1_end - h1_start))
+                await pilot.pause()
+                assert app.screen.get_selected_text()
+                await card.body.update("# Replaced Before Up\n\nBody")
+                await pilot.pause()
+                app.post_message(_mouse_event(MouseUp, h1_end, h1_reg.y))
+                await pilot.pause()
+            else:
+                app.post_message(_mouse_event(MouseDown, h1_start, h1_reg.y))
+                app.post_message(_mouse_event(MouseMove, h1_end, h1_reg.y, delta_x=h1_end - h1_start))
+                await pilot.pause()
+                assert app.screen.get_selected_text()
+                app.screen._start_auto_scroll(transcript, 1)
+                assert app.screen._auto_select_scroll_timer is not None
+                await card.body.update("# Replaced During Scroll\n\nBody")
+                await pilot.pause()
+                app.screen._update_select()
+                await pilot.pause()
+
+            assert app.screen._auto_select_scroll_timer is None
+            assert not app.screen.selections
+            assert not app.screen._selecting
+            assert not copied
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("same_final_text", [False, True])
+def test_streaming_markdown_replacement_during_drag_does_not_crash_or_copy_stale_text(
+    monkeypatch, tmp_path, same_final_text
+):
+    copied = mock_mac_clipboard(monkeypatch)
+
+    async def scenario():
+        app = CopyApp(tmp_path)
+        async with app.run_test(size=(100, 30)) as pilot:
+            transcript = app.query_one(Transcript)
+            initial_text = "# Gold Standard\n\nFirst chunk"
+            first = AssistantMessage([TextContent(initial_text)])
+            await transcript.consume(AgentEvent("message_start", message=AssistantMessage()))
+            await transcript.consume(
+                AgentEvent("message_update", stream_event=StreamEvent("text_delta", first))
+            )
+            await pilot.pause()
+            card = transcript.query_one(AssistantView)
+            stream_row = card.events[0]
+            await stream_row.flush_markdown()
+            await pilot.pause()
+            stream_h1 = stream_row.output.query_one("MarkdownH1")
+            reg = stream_h1.region
+            start_off, _ = _heading_span(stream_h1)
+
+            app.post_message(_mouse_event(MouseDown, reg.x + start_off, reg.y))
+            await pilot.pause()
+            final_text = initial_text if same_final_text else initial_text + "\n\nFinal chunk"
+            final = AssistantMessage([TextContent(final_text)])
+            await transcript.consume(AgentEvent("message_end", message=final))
+            await pilot.pause()
+            assert not stream_row.display
+            if not same_final_text:
+                assert not stream_h1.is_attached
+
+            final_h1 = card.body.query_one("MarkdownH1")
+            final_reg = final_h1.region
+            final_start, final_end = _heading_span(final_h1)
+            app.post_message(
+                _mouse_event(MouseMove, final_reg.x + final_end, final_reg.y, delta_x=12)
+            )
+            app.post_message(_mouse_event(MouseUp, final_reg.x + final_end, final_reg.y))
+            await pilot.pause()
+            assert not copied
+            assert not app.screen.selections
+
+            await pilot.mouse_down(final_h1, offset=(final_start, 0))
+            await pilot.mouse_up(final_h1, offset=(final_end, 0))
+            await pilot.pause()
+            assert copied and "Gold Standard" in copied[-1]
+
+    asyncio.run(scenario())
+
+
+def test_drag_across_session_picker_open_and_close_cancels_gesture(monkeypatch, make_session):
+    copied = mock_mac_clipboard(monkeypatch)
+
+    async def scenario():
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            default_screen = app.screen
+            assert isinstance(default_screen, SelectionScreen)
+            assert default_screen.id == "_default"
+
+            await app.transcript.consume(
+                AgentEvent("message_end", message=AssistantMessage([TextContent("# Gold Standard\n\nBody")]))
+            )
+            await pilot.pause()
+            h1 = app.transcript.query_one(AssistantView).body.query_one("MarkdownH1")
+            reg = h1.region
+            start_off, end_off = _heading_span(h1)
+
+            app.post_message(_mouse_event(MouseDown, reg.x + start_off, reg.y))
+            app.post_message(_mouse_event(MouseMove, reg.x + end_off, reg.y, delta_x=end_off - start_off))
+            await pilot.pause()
+            assert default_screen.get_selected_text()
+            default_screen._start_auto_scroll(app.transcript, 1)
+            assert default_screen._selecting
+            assert default_screen._auto_select_scroll_timer is not None
+
+            app.action_sessions()
+            await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
+            picker = app.screen
+            assert isinstance(picker, SelectionScreenMixin)
+            await pilot.pause()
+            assert not default_screen._selecting
+            assert default_screen._select_state is None
+            assert default_screen._auto_select_scroll_timer is None
+            assert not default_screen.selections
+
+            # SessionPicker itself also guards stale detached hits.
+            header = picker.query_one("#session-columns")
+            header_reg = header.region
+            with app.batch_update():
+                await header.remove()
+                app.post_message(_mouse_event(MouseDown, header_reg.x + 1, header_reg.y))
+                app.post_message(_mouse_event(MouseUp, header_reg.x + 1, header_reg.y))
+                await pilot.pause()
+            assert picker._select_state is None
+
+            await pilot.press("escape")
+            await wait_for(pilot, lambda: app.screen is default_screen)
+            app.post_message(_mouse_event(MouseMove, reg.x + end_off, reg.y, delta_x=2))
+            app.post_message(_mouse_event(MouseUp, reg.x + end_off, reg.y))
+            await pilot.pause()
+            assert not copied
+
+            await pilot.mouse_down(h1, offset=(start_off, 0))
+            await pilot.mouse_up(h1, offset=(end_off, 0))
+            await pilot.pause()
+            assert copied and "Gold Standard" in copied[-1]
 
     asyncio.run(scenario())
 
