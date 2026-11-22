@@ -1,11 +1,10 @@
-"""Model checklists are optional, conversation-owned state retained across compaction."""
+"""Model checklists are a built-in extension (``todo_write``) retained across compaction."""
 
 from __future__ import annotations
 
 import copy
 import json
 import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -18,15 +17,6 @@ from virgo.harness import compaction
 from virgo.harness.extensions import ExtensionAPI
 
 from tests.support.harness import calls, tool_results
-
-
-@pytest.fixture
-def todo_extension():
-    directory = Path(os.environ["VIRGO_HOME"]) / "extensions"
-    directory.mkdir(parents=True, exist_ok=True)
-    source = Path(__file__).resolve().parents[2] / "extensions" / "todo.py"
-    shutil.copy(source, directory / "todo.py")
-    return source
 
 
 def item(content, status="pending", step="StepA"):
@@ -47,7 +37,7 @@ def summarize(session):
 
 
 @pytest.mark.parametrize("persist", [False, True])
-def test_incomplete_todos_survive_compaction_and_resume(make_session, todo_extension, persist):
+def test_incomplete_todos_survive_compaction_and_resume(make_session, persist):
     current = {"todos": [item("already finished", "completed"), item("retain this exact pending task", step="StepB")],
                "explanation": "Keep the entire replacement, including finished work."}
     session = make_session(
@@ -72,7 +62,7 @@ def test_incomplete_todos_survive_compaction_and_resume(make_session, todo_exten
     assert retained(session.main) == current
 
 
-def test_parallel_todos_have_no_size_cap_or_stop_continuation(make_session, todo_extension):
+def test_parallel_todos_have_no_size_cap_or_stop_continuation(make_session):
     todos = [item(f"task {i}", "in_progress", "StepA" if i < 30 else "StepAA") for i in range(60)]
     session = make_session(
         faux.reply(tools=[("todo_write", {"todos": todos})]), faux.reply("waiting for results"),
@@ -94,7 +84,7 @@ def test_parallel_todos_have_no_size_cap_or_stop_continuation(make_session, todo
     [item("bad step", step="Step1")],
     [item("bad step", step="StepA\n")],
 ])
-def test_invalid_todos_leave_previous_state_intact(make_session, todo_extension, invalid):
+def test_invalid_todos_leave_previous_state_intact(make_session, invalid):
     original = {"todos": [item("keep")], "explanation": "original reason"}
     session = make_session(
         faux.reply(tools=[("todo_write", original)]),
@@ -107,7 +97,7 @@ def test_invalid_todos_leave_previous_state_intact(make_session, todo_extension,
     assert retained(session.main) == original
 
 
-def test_todos_replace_restore_and_display(make_session, todo_extension):
+def test_todos_replace_restore_and_display(make_session):
     """Keep the historical scenario identity; display is the ordinary tool transcript."""
     old = {"todos": [item("obsolete")], "explanation": "old reason"}
     current = {"todos": [item("keep", "completed"), item("next", "in_progress", "StepB")]}
@@ -132,19 +122,66 @@ def test_todos_replace_restore_and_display(make_session, todo_extension):
         assert retained(restored.main) is None
 
 
-def test_todo_extension_loading_and_permissions(make_session, broker_session, todo_extension, project):
-    disabled = make_session(extensions=False, settings={"plugins": {"todo": {"enabled": True}}, "features": {"todo": True}})
-    assert disabled.tool("todo_write") is None
-    assert any("todo extension" in notice for notice in disabled.settings.migration_warnings)
-    user_extension = Path(os.environ["VIRGO_HOME"]) / "extensions" / "todo.py"
-    user_extension.unlink()
-    absent = make_session()
-    assert absent.tool("todo_write") is None
-    directory = project / ".virgo" / "extensions"
-    directory.mkdir(parents=True)
-    shutil.copy(todo_extension, directory / "todo.py")
+def test_todo_extension_loading_and_permissions(make_session, broker_session, project):
+    # Built-in by default with no manual copy required.
+    default_session = make_session()
+    assert default_session.tool("todo_write") is not None
+    assert "builtin:todo" in default_session.loaded_plugins
+
+    # Disabled via --no-extensions or extensions.disabled.
+    assert make_session(extensions=False).tool("todo_write") is None
+    assert make_session(settings={"extensions": {"disabled": ["todo"]}}).tool("todo_write") is None
+
+    # Retired plugin/feature toggles fail clearly instead of silently migrating.
+    with pytest.raises(ValueError, match="Unknown plugin 'todo'"):
+        make_session(settings={"plugins": {"todo": {"enabled": True}}})
+    with pytest.raises(ValueError, match="Unknown legacy feature 'todo'"):
+        make_session(settings={"features": {"todo": True}})
+
+    # Untrusted project cannot override or disable built-in todo.
+    project_ext = project / ".virgo" / "extensions"
+    project_ext.mkdir(parents=True)
+    (project_ext / "todo.py").write_text(
+        "from virgo.agent import AgentTool, ToolResult\n"
+        "def setup(api):\n"
+        "    api.register_tool(AgentTool('todo_write', 'custom', {'type': 'object'}, "
+        "lambda a, c: ToolResult.text('project-override'), side_effect='read', execution_scope='broker'))\n",
+        encoding="utf-8",
+    )
+    (project / ".virgo" / "settings.json").write_text(
+        json.dumps({"extensions": {"disabled": ["todo"]}}),
+        encoding="utf-8",
+    )
     untrusted = make_session(trust_project_extensions=False)
-    assert untrusted.tool("todo_write") is None
+    assert untrusted.tool("todo_write") is not None
+    assert "builtin:todo" in untrusted.loaded_plugins
+    assert "project:todo" not in untrusted.loaded_plugins
+
+    # User override cleanly replaces built-in todo without collision.
+    (project / ".virgo" / "settings.json").unlink()
+    user_ext = Path(os.environ["VIRGO_HOME"]) / "extensions"
+    user_ext.mkdir(parents=True, exist_ok=True)
+    (user_ext / "todo.py").write_text(
+        "from virgo.agent import AgentTool, ToolResult\n"
+        "def setup(api):\n"
+        "    api.register_tool(AgentTool('todo_write', 'user custom', {'type': 'object'}, "
+        "lambda a, c: ToolResult.text('user-override'), side_effect='read', execution_scope='broker'))\n",
+        encoding="utf-8",
+    )
+    overridden = make_session(trust_project_extensions=False)
+    assert "user:todo" in overridden.loaded_plugins
+    assert "builtin:todo" not in overridden.loaded_plugins
+    assert overridden.tool("todo_write").description == "user custom"
+
+    # Trusted project override replaces both built-in and user todo.
+    trusted_overridden = make_session(trust_project_extensions=True)
+    assert "project:todo" in trusted_overridden.loaded_plugins
+    assert "user:todo" not in trusted_overridden.loaded_plugins
+    assert trusted_overridden.tool("todo_write").description == "custom"
+
+    # Clean up overrides and verify built-in read-only permissions & subagent scope.
+    (user_ext / "todo.py").unlink()
+    (project_ext / "todo.py").unlink()
     session = broker_session(
         faux.reply(tools=[("todo_write", {"todos": [item("read-only checklist")]})]), faux.reply("done"),
         preset="read-only",
@@ -158,7 +195,9 @@ def test_todo_extension_loading_and_permissions(make_session, broker_session, to
 
 
 def test_retired_todo_name_does_not_exempt_write_tools(broker_session):
-    session = broker_session(faux.reply(tools=[("todo_write", {})]), faux.reply("done"), preset="read-only")
+    session = broker_session(
+        faux.reply(tools=[("todo_write", {})]), faux.reply("done"), preset="read-only", extensions=False,
+    )
     executed = []
     ExtensionAPI(session, "test").register_tool(AgentTool(
         "todo_write", "An unrelated write tool", {"type": "object"}, lambda *_: (executed.append(True), ToolResult.text("executed"))[1],
@@ -169,7 +208,7 @@ def test_retired_todo_name_does_not_exempt_write_tools(broker_session):
 
 
 @pytest.mark.parametrize("reason", ["auto", "overflow"])
-def test_todos_survive_automatic_and_overflow_compaction(make_session, todo_extension, reason):
+def test_todos_survive_automatic_and_overflow_compaction(make_session, reason):
     current = {"todos": [item("preserve me")]}
     session = make_session(
         faux.reply(tools=[("todo_write", current)]), faux.reply("work " * 1000),
@@ -188,7 +227,7 @@ def test_todos_survive_automatic_and_overflow_compaction(make_session, todo_exte
 
 
 @pytest.mark.parametrize("spec", ["openai/test", "openai-codex/test", "anthropic/claude-opus-5-5"])
-def test_todos_survive_native_compaction_and_provider_switch(make_session, todo_extension, monkeypatch, spec):
+def test_todos_survive_native_compaction_and_provider_switch(make_session, monkeypatch, spec):
     current = {"todos": [item("native state survives")], "explanation": "exact explanation"}
     session = make_session(
         faux.reply(tools=[("todo_write", current)]), faux.reply("work " * 1000),
@@ -220,7 +259,7 @@ def test_todos_survive_native_compaction_and_provider_switch(make_session, todo_
     assert any(m.details.get("todos") == current["todos"] for m in tool_results(restored))
 
 
-def test_todos_follow_conversation_and_active_branch(make_session, todo_extension):
+def test_todos_follow_conversation_and_active_branch(make_session):
     original = {"todos": [item("first conversation")]}
     session = make_session(
         faux.reply(tools=[("todo_write", original)]), faux.reply("work " * 1000),
@@ -255,7 +294,7 @@ def test_todos_follow_conversation_and_active_branch(make_session, todo_extensio
     assert retained(restored.main) == original
 
 
-def test_legacy_todos_restore_without_inventing_steps(make_session, todo_extension):
+def test_legacy_todos_restore_without_inventing_steps(make_session):
     session = make_session(persist=True)
     legacy = {"todos": [{"content": "legacy task", "status": "pending"}]}
     session.store.append_message(ToolResultMessage("old", "todo_write", [TextContent("old list")], details=legacy))
@@ -264,7 +303,7 @@ def test_legacy_todos_restore_without_inventing_steps(make_session, todo_extensi
     assert retained(restored.main) == legacy
 
 
-def test_retained_tool_pair_avoids_duplicate_snapshot(make_session, todo_extension):
+def test_retained_tool_pair_avoids_duplicate_snapshot(make_session):
     session = make_session(persist=True)
     value = {"todos": [item("already visible")]}
     session.store.append("compaction", summary="Older conversation", kept_ids=[])
@@ -274,7 +313,7 @@ def test_retained_tool_pair_avoids_duplicate_snapshot(make_session, todo_extensi
     assert retained(restored.main) is None
 
 
-def test_invalid_explanation_and_failed_compaction_preserve_state(make_session, todo_extension):
+def test_invalid_explanation_and_failed_compaction_preserve_state(make_session):
     value = {"todos": [item("keep this")], "explanation": "keep this reason"}
     session = make_session(
         faux.reply(tools=[("todo_write", value)]),
@@ -291,7 +330,7 @@ def test_invalid_explanation_and_failed_compaction_preserve_state(make_session, 
     assert retained(session.main) == value
 
 
-def test_optional_step_null_explanation_coercion_and_language_ack(make_session, todo_extension):
+def test_optional_step_null_explanation_coercion_and_language_ack(make_session):
     # Optional step, explicit null explanation, and JSON-stringified todos all work via validate().
     raw_todos = json.dumps([{"content": "linear task", "status": "pending"}])
     session = make_session(

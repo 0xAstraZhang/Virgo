@@ -44,7 +44,7 @@ from .extensions import (
     Handled,
     install_command_hooks,
     load_builtin_features,
-    load_user_extensions,
+    load_extensions,
 )
 from .jobs import JobManager
 from .origin_context import ExecutionOrigin, source_for
@@ -151,7 +151,7 @@ class AgentSession:
         try:
             load_builtin_features(self)
             if extensions:
-                load_user_extensions(self)
+                load_extensions(self)
             # A plugin that failed setup is not loaded. Background supervision
             # must not outlive the capability that exposes its tools.
             jobs = self.services["jobs"]

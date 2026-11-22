@@ -1,27 +1,45 @@
 # Virgo 扩展
 
-[项目首页](../README.zh-CN.md) · [English](README.md)
+[项目首页](../../../README.zh-CN.md) · [English](../../en/guides/extensions.md)
 
-位于已安装包之外的可选能力。把文件复制到 `~/.virgo/extensions/`（或受信任项目的
-`.virgo/extensions/`）；Virgo 在会话启动时加载其中的每个 `*.py` 文件。
+Virgo 在会话启动时通过统一的 `setup(api)` 接口加载 Python 扩展。内置扩展随包分发（位于
+`virgo.extensions`），无需单独安装或复制；你也可以在 `~/.virgo/extensions/*.py`（或受信任项目的
+`.virgo/extensions/*.py`）中新增自定义扩展，或使用同名文件覆盖内置扩展。
 
-| 扩展 | 安装 | 用途 |
+| 内置扩展 | 源码 | 用途 |
 | --- | --- | --- |
-| [mcp.py](mcp.py) | 复制到 `~/.virgo/extensions/mcp.py`，并安装 SDK 附加依赖 | 连接已配置的 stdio MCP 服务器并暴露其工具 |
-| [todo.py](todo.py) | 复制到 `~/.virgo/extensions/todo.py`，无需额外依赖 | 模型维护的清单，支持执行阶段和压缩保留 |
+| `mcp` | [src/virgo/extensions/mcp.py](../../../src/virgo/extensions/mcp.py) | 在 Host 上连接已配置的 stdio MCP 服务器并暴露其工具 |
+| `todo` | [src/virgo/extensions/todo.py](../../../src/virgo/extensions/todo.py) | 模型维护的清单（`todo_write`），支持可选执行阶段与压缩保留 |
 
-## Todos
+## 优先级与禁用方式
 
-```bash
-mkdir -p ~/.virgo/extensions
-cp extensions/todo.py ~/.virgo/extensions/todo.py
+扩展按文件主名（stem）解析，优先级为：
+
+`内置扩展` < `~/.virgo/extensions/<name>.py` < 受信任 `.virgo/extensions/<name>.py`
+
+- **覆盖内置扩展**：将自定义 `todo.py` 或 `mcp.py` 放到 `~/.virgo/extensions/`（或受信任项目的
+  `.virgo/extensions/`）即可覆盖对应的内置扩展。
+- **按名称禁用扩展**：在 `~/.virgo/settings.json`（或受信任 `.virgo/settings.json`）中配置
+  `extensions.disabled`：
+
+```json
+{
+  "extensions": {
+    "disabled": ["todo", "mcp"]
+  }
+}
 ```
 
-升级已安装的旧版时，再次运行复制命令。当前扩展可在 Read-Only 和 Workspace-Edit
-中直接更新会话清单。安装后重启 Virgo。项目目录中的副本需要扩展信任；`--no-extensions` 禁用两个位置。
-Todos 不再是内置插件，旧 `plugins.todo`、`features.todo` 配置被忽略并给出迁移提示。
+- **单次会话禁用全部扩展**：启动时传入 `--no-extensions`（同时跳过内置、用户及项目 Python 扩展；
+  官方插件仍由 `plugins.<id>.enabled` 控制）。
+- **项目信任边界**：项目级 `.virgo/extensions/`、`.virgo/mcp.json`、`mcpServers` 与
+  `extensions` 配置在显式信任项目前（用户级 `extensions.trustedProjects` 或
+  `--trust-project-extensions`）都会被忽略。
 
-主模型获得 `todo_write` 工具，无 `/todos` 或 `/plan` 命令：
+## Todos（`todo`）
+
+作为内置扩展默认启用，可在 Read-Only 和 Workspace-Edit 中直接更新会话清单。主模型获得
+`todo_write` 工具，无 `/todos` 或 `/plan` 命令：
 
 ```json
 {
@@ -45,17 +63,11 @@ Todos 不再是内置插件，旧 `plugins.todo`、`features.todo` 配置被忽�
 会话均保留状态，不向历史反复追加快照。全部完成或清空后不再固定保留，未完成事项不会强制触发
 下一轮模型调用。旧结果缺少 Step 时仍可正常读取，不推断分组。
 
-## MCP
+## MCP（`mcp`）
 
-MCP 由 `mcp.py` 扩展提供，使用官方
-[Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk)，
-不是 Virgo 内置能力。
-
-```bash
-cp extensions/mcp.py ~/.virgo/extensions/mcp.py
-uv tool install 'virgo[mcp]'    # 安装发行版
-uv sync --extra mcp             # 源码检出
-```
+作为内置扩展默认启用，使用官方
+[Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+（已包含在 Virgo 核心依赖中，仅在配置了至少一个服务器时延迟导入，未配置 MCP 的会话零 SDK 冷启动开销）。
 
 在 `~/.virgo/mcp.json`（或受信任项目的 `.virgo/mcp.json`）中按通用格式配置服务器：
 
@@ -83,5 +95,6 @@ uv sync --extra mcp             # 源码检出
 与 Workspace-Edit 下需经审批（“始终允许”绑定服务器展开后的 `command`、`args`、`env`
 的 SHA-256 指纹），在 No-Limit 下直接执行。
 
-`/mcp` 列出已配置服务器和工具数量；`/mcp reconnect` 重新加载 `mcp.json` 与 `settings.json`，
-失败时保留原有连接和工具。`mcp_status` 向模型暴露同样的本地状态，不联系服务器。
+`/mcp` 命令始终可用，用于列出已配置服务器与工具数量；`/mcp reconnect` 重新加载 `mcp.json`
+与 `settings.json`，失败时保留原有连接和工具。`mcp_status` 工具仅在配置了服务器时动态向模型
+暴露（未配置时隐藏以节省工具上下文），读取本地状态而不联系服务器。

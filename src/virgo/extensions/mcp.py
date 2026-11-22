@@ -1,10 +1,8 @@
-"""MCP extension: connect configured stdio servers on Host and expose their tools.
+"""Built-in MCP extension: connect configured stdio servers on Host and expose their tools.
 
-Install this file as ``~/.virgo/extensions/mcp.py`` (or ``.virgo/extensions/mcp.py``
-in a trusted project) and install the optional SDK dependency::
-
-    uv tool install 'virgo[mcp]'      # installed distribution
-    uv sync --extra mcp               # source checkout
+Loaded automatically as a built-in extension. Disable with
+``extensions.disabled: ["mcp"]`` or ``--no-extensions``, or override with
+``~/.virgo/extensions/mcp.py`` (or a trusted ``.virgo/extensions/mcp.py``).
 
 Servers are configured in ``~/.virgo/mcp.json`` (or ``.virgo/mcp.json`` in a
 trusted project), or under the ``mcpServers`` setting, using the common format::
@@ -13,12 +11,16 @@ trusted project), or under the ``mcpServers`` setting, using the common format::
                                "args": ["-y", "@modelcontextprotocol/server-github"],
                                "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}}}}
 
+The official MCP Python SDK is imported lazily only when at least one server is
+configured, so sessions without MCP servers incur zero SDK import overhead.
+
 MCP servers are trusted local Host integrations (Principle R4): they run on
 Host via ``HostContext.unrestricted`` + ``SandboxExecutor`` with one shared
 connection per server across main and subagent runtimes, while mutating MCP
 tools remain subject to permission approvals bound to the server's config
 fingerprint. Tools become ``mcp__<server>__<tool>``. ``/mcp`` shows connection
-state and ``/mcp reconnect`` reloads the configuration.
+state and ``/mcp reconnect`` reloads the configuration; ``mcp_status`` is
+exposed dynamically whenever servers are configured.
 """
 
 from __future__ import annotations
@@ -39,14 +41,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
-
-import anyio
-from mcp import ClientSession, types
-from mcp.shared.exceptions import MCPError
-from mcp.shared.message import SessionMessage
-from mcp.types import Implementation
-from pydantic import TypeAdapter
+from typing import TYPE_CHECKING, Any
 
 from virgo import __version__
 from virgo.agent import AgentTool, ToolResult
@@ -56,13 +53,56 @@ from virgo.diagnostics import safe_text
 from virgo.execution import HostContext, ProcessRequest, cleanup_process
 from virgo.harness.settings import same_directory
 
+if TYPE_CHECKING:
+    from mcp import ClientSession, types
+
 CALL_TIMEOUT = 300.0
 STARTUP_WAIT = 2.0
 MAX_TOOL_PAGES = 100
 _STDERR_LIMIT = 8192
 _MESSAGE_LIMIT = 8 * 1024 * 1024
-_JSONRPC = TypeAdapter(types.JSONRPCMessage)
 _SECRET_NAME = re.compile(r"token|password|secret|credential|api[-_]?key|authorization", re.I)
+
+
+@dataclass(frozen=True)
+class _MCPSDK:
+    anyio: Any
+    client_session: Any
+    types: Any
+    mcp_error: Any
+    session_message: Any
+    implementation: Any
+    jsonrpc: Any
+
+
+_SDK_LOCK = threading.Lock()
+_SDK: _MCPSDK | None = None
+
+
+def _sdk() -> _MCPSDK:
+    """Import the MCP SDK on first actual server connection to keep cold starts fast."""
+    global _SDK
+    if _SDK is not None:
+        return _SDK
+    with _SDK_LOCK:
+        if _SDK is None:
+            import anyio
+            from mcp import ClientSession, types
+            from mcp.shared.exceptions import MCPError
+            from mcp.shared.message import SessionMessage
+            from mcp.types import Implementation
+            from pydantic import TypeAdapter
+
+            _SDK = _MCPSDK(
+                anyio=anyio,
+                client_session=ClientSession,
+                types=types,
+                mcp_error=MCPError,
+                session_message=SessionMessage,
+                implementation=Implementation,
+                jsonrpc=TypeAdapter(types.JSONRPCMessage),
+            )
+    return _SDK
 
 
 class MCPConnectionError(Exception):
@@ -321,8 +361,9 @@ class _Connection:
     @asynccontextmanager
     async def _transport(self):
         """Bounded newline JSON-RPC framing bridged over SandboxExecutor pipes."""
-        received, read = anyio.create_memory_object_stream(0)
-        write, outgoing = anyio.create_memory_object_stream(0)
+        sdk = _sdk()
+        received, read = sdk.anyio.create_memory_object_stream(0)
+        write, outgoing = sdk.anyio.create_memory_object_stream(0)
         process = self._process
         assert process is not None and process.stdin is not None and process.stdout is not None
         stop_event = self._stop
@@ -341,7 +382,7 @@ class _Connection:
                             line = bytes(pending[:end]).rstrip(b"\r")
                             del pending[: end + 1]
                             if line:
-                                await received.send(SessionMessage(_JSONRPC.validate_json(line)))
+                                await received.send(sdk.session_message(sdk.jsonrpc.validate_json(line)))
                         if len(pending) > _MESSAGE_LIMIT:
                             raise MCPConnectionError("MCP response exceeded the message limit")
                     if pending:
@@ -407,9 +448,10 @@ class _Connection:
                 self._process = process
             if self._cancel.is_set() or self._closed:
                 raise MCPCallCancelled(f"{self.name}: connection cancelled during startup")
+            sdk = _sdk()
             async with self._transport() as (read, write):
-                session = ClientSession(
-                    read, write, client_info=Implementation(name="virgo", version=__version__)
+                session = sdk.client_session(
+                    read, write, client_info=sdk.implementation(name="virgo", version=__version__)
                 )
                 async with session:
                     await session.initialize()
@@ -433,10 +475,11 @@ class _Connection:
 
     @staticmethod
     async def _list_tools(session: ClientSession) -> list:
+        sdk = _sdk()
         tools: list = []
         cursor = None
         for _ in range(MAX_TOOL_PAGES):
-            params = types.PaginatedRequestParams(cursor=cursor) if cursor else None
+            params = sdk.types.PaginatedRequestParams(cursor=cursor) if cursor else None
             page = await session.list_tools(params=params)
             tools.extend(page.tools)
             cursor = page.next_cursor
@@ -537,10 +580,11 @@ class _Connection:
                     return True
             except Exception:
                 return True
-        if isinstance(error, MCPError):
+        sdk = _sdk()
+        if isinstance(error, sdk.mcp_error):
             err_data = getattr(error, "error", None)
             code = getattr(err_data, "code", None)
-            return code == types.CONNECTION_CLOSED
+            return code == sdk.types.CONNECTION_CLOSED
         return isinstance(
             error,
             (
@@ -550,9 +594,9 @@ class _Connection:
                 ConnectionError,
                 EOFError,
                 OSError,
-                anyio.ClosedResourceError,
-                anyio.BrokenResourceError,
-                anyio.EndOfStream,
+                sdk.anyio.ClosedResourceError,
+                sdk.anyio.BrokenResourceError,
+                sdk.anyio.EndOfStream,
             ),
         )
 
@@ -739,6 +783,19 @@ class _Manager:
         self._startup_done = threading.Event()
         self._startup_done.set()
         self._startup_thread: threading.Thread | None = None
+        self._status_published = False
+        self._status_tool = AgentTool(
+            "mcp_status",
+            "Read local MCP connection state and tool counts. Does not contact servers.",
+            {
+                "type": "object",
+                "properties": {"server": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            self.status_tool,
+            side_effect="read",
+            execution_scope="broker",
+        )
 
     def _project_trusted(self) -> bool:
         return bool(self.api.project_trusted)
@@ -963,6 +1020,22 @@ class _Manager:
                     return
                 self._published_counts = counts
             self.api.replace_tools("mcp", entries)
+            self._sync_status_tool_locked()
+
+    def _sync_status_tool_locked(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            should_publish = bool(self.configured or self.connections or self.failures)
+        if should_publish == self._status_published:
+            return
+        entries = [(self._status_tool, ("main", "subagent"))] if should_publish else []
+        self.api.replace_tools("mcp_status", entries)
+        self._status_published = should_publish
+
+    def _sync_status_tool(self) -> None:
+        with self._publish_lock:
+            self._sync_status_tool_locked()
 
     def _cancel_startup(self) -> None:
         with self._lock:
@@ -1056,6 +1129,7 @@ class _Manager:
                 self.failures = failures
             for connection in candidates.values():
                 connection.close()
+            self._sync_status_tool()
             return False
         with self._lock:
             self._generation += 1
@@ -1175,21 +1249,6 @@ def setup(api) -> None:
     manager = _Manager(api)
     api.on_cleanup(manager.close)
     manager.start()
-    api.register_tool(
-        AgentTool(
-            "mcp_status",
-            "Read local MCP connection state and tool counts. Does not contact servers.",
-            {
-                "type": "object",
-                "properties": {"server": {"type": "string"}},
-                "additionalProperties": False,
-            },
-            manager.status_tool,
-            side_effect="read",
-            execution_scope="broker",
-        ),
-        roles=("main", "subagent"),
-    )
     api.register_command(
         "mcp",
         manager.command,
