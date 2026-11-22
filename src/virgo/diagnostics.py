@@ -293,10 +293,10 @@ def error_summary(details: dict, *, t=None) -> str:
         text = f"{exception_type}: {text}"
     if len(text) > 500:
         text = text[:500] + "…"
-    summary = f"{label} {details.get('phase', 'unknown')}"
+    summary = f"{text} — {details.get('phase', 'unknown')}"
     if location:
         summary += f" ({location})"
-    summary += f": {text}"
+    summary += f" {label}"
     if details.get("log_path"):
         summary += "\n" + t("harness.diagnostics.path", path=details["log_path"])
     elif details.get("logging_error"):

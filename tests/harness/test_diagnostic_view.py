@@ -56,6 +56,37 @@ def test_recovered_result_and_cancellation_do_not_gain_failure_capsules():
         assert project_tool_result(ToolCall("call", "work", {}), result) == result.content
 
 
+def test_completed_sandbox_needs_no_capsule_for_a_command_error():
+    result = ToolResult.error("exit 52", details={"boundary": {
+        "state": "established", "payload_started": True, "cleanup": "executor_completed",
+    }})
+    assert project_tool_result(ToolCall("call", "bash", {}), result) == result.content
+
+
+@pytest.mark.parametrize("dimension", ["network_allowed", "protected_path"])
+def test_boundary_projection_selects_and_redacts_effective_policy(dimension):
+    flags = {"network_allowed": False, "read_deny_paths": ["private-read"], "write_deny_paths": ["private-write"],
+             "read_paths": ["https://user:secret@example.org/file?token=hidden"]}
+    boundary = {
+        "kind": "resource_denied", "dimension": dimension, "payload_started": False, "side_effects": "none",
+        "reason": "policy refused", "category": "test", "requested": flags,
+        "effective": {"file_tools": flags, "native_process": flags},
+    }
+    result = ToolResult.error("blocked", details={"boundary": boundary})
+    content = project_tool_result(ToolCall("call", "read", {}), result)
+    projected = _payload(content[-1].text)["boundary"]
+    assert (projected["reason"], projected["category"]) == ("policy refused", "test")
+    assert "requested" not in projected
+    for policy in projected["effective"].values():
+        assert policy["read_paths"] == ["https://example.org/file?[redacted]"]
+        for key in ("read_deny_paths", "write_deny_paths"):
+            if dimension == "protected_path":
+                assert policy[key] == flags[key]
+            else:
+                assert key not in policy
+    assert result.details["boundary"]["effective"]["file_tools"] == flags
+
+
 def test_restricted_runtime_keeps_reference_without_advertising_unavailable_tool():
     record = _failure()
     result = ToolResult.error("failed", details={"error": record})

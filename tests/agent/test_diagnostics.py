@@ -49,20 +49,22 @@ def test_tool_failures_capture_stage_cause_and_call_identity(stage):
     assert [ev.tool_call_id for ev in events if ev.type == "tool_execution_end"] == ["call-7"]
 
 
-def test_returned_tool_error_keeps_existing_metadata_and_adds_diagnostic():
+def test_routine_tool_error_keeps_text_and_metadata_without_a_diagnostic():
     tool = AgentTool("failure", "", {"type": "object"},
                      lambda *args: ToolResult.error("command exited 7", details={"exit_code": 7}))
     agent, _ = make_agent([tool], faux.reply(tools=[("failure", {}, "call-9")]), faux.reply("done"))
     agent.prompt("go")
     result = next(m for m in agent.messages if isinstance(m, ToolResultMessage))
     assert result.details["exit_code"] == 7
-    assert result.details["error"]["message"] == "command exited 7"
-    assert not result.details["error"]["traceback"]
+    assert result.is_error and result.text() == "command exited 7"
+    assert result.details["execution"]["outcome"] == "returned_error"
+    assert "error" not in result.details
 
 
 def test_diagnostic_size_limit_does_not_truncate_tool_result_content():
     output = "large failing command output\n" * 2000
-    tool = AgentTool("failure", "", {"type": "object"}, lambda *args: ToolResult.error(output))
+    tool = AgentTool("failure", "", {"type": "object"},
+                     lambda *args: ToolResult.error(output, details={"status": "execution_failed"}))
     agent, _ = make_agent([tool], faux.reply(tools=[("failure", {})]), faux.reply("done"))
     agent.prompt("go")
     result = next(m for m in agent.messages if isinstance(m, ToolResultMessage))

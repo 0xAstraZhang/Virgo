@@ -30,6 +30,7 @@ from ...ai.types import (
     message_from_dict,
 )
 from ...ai.web import native_event
+from ...diagnostics import safe_text
 from ..i18n import tr, translator_for
 from .folding import Foldable, FoldHeader
 
@@ -309,6 +310,8 @@ class ToolView(EventView):
                 text += "\n" + tr(self, "ui.tool.not_started")
             if sandbox.get("escalation_available") is True:
                 text += "\n" + tr(self, "ui.tool.escalation_available")
+        if is_error and isinstance(error, dict) and error.get("error_id"):
+            text += "\n" + tr(self, "harness.error.id", id=safe_text(error["error_id"]))
         self.set_text(text)
 
 

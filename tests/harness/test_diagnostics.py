@@ -13,11 +13,16 @@ from virgo.agent import AgentTool, ToolResult
 from virgo.ai import catalog
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage, UserMessage
+from virgo.ai.validate import INVALID_ARGUMENTS
 from virgo.diagnostics import capture_error, error_summary, safe_text, sanitize
+from virgo.execution import ExecutionFailed, ExecutionUnavailable
 from virgo.harness.diagnostics import DiagnosticLog
 from virgo.harness.store import SessionStore
 
+from tests.support.harness import tool_results
 from tests.support.persistence import diagnostic_records, fail_session_write
+from tests.support.sandbox import python_command
+from tests.support.shell import selected
 
 
 def records(session):
@@ -47,6 +52,129 @@ def test_capture_preserves_chain_and_locations_without_locals_or_source():
     assert private_local not in json.dumps(details)
     assert 'raise ValueError(' not in details["traceback"]
     assert "RuntimeError: outer failure" in error_summary(details)
+
+
+def test_error_summary_shows_message_before_reference_and_redacts_all_fields(monkeypatch):
+    secret = "private-placeholder"
+    monkeypatch.setenv("VIRGO_TEST_TOKEN", secret)
+    error_id = "1" * 32
+    details = {
+        "code": f"CODE_{secret}", "error_id": error_id, "phase": f"tool.{secret}",
+        "exception_type": f"Failure_{secret}", "message": f"Lost connection {secret}",
+        "context": {"agent": "main", "model": "model-" * 20 + secret, "tool_name": "bash"},
+        "log_path": f"/logs/{secret}",
+    }
+    summary = error_summary(details)
+    assert "Lost connection" in summary[:100]
+    assert summary.index("Lost connection") < summary.index(error_id)
+    assert all(field in summary for field in (
+        "tool.[redacted]", "main / " + "model-" * 20 + "[redacted] / bash", "Failure_[redacted]",
+        "Lost connection [redacted]", "CODE_[redacted]", "/logs/[redacted]",
+    ))
+    assert secret not in summary
+
+
+def test_routine_shell_and_file_errors_only_surface_as_tool_results(make_session, monkeypatch, project):
+    session = make_session(persist=True, refresh_models=False)
+    notices = []
+    monkeypatch.setattr(session.ui, "print", lambda text, style=None: notices.append((text, style)))
+    shell = selected(session).tool_name
+    (project / "example.txt").write_text("original")
+    faux.script("test", faux.reply(tools=[
+        (shell, {"command": "exit 52"}),
+        (shell, {"command": python_command(session, "import time; time.sleep(5)"), "timeout": 0.1}),
+        ("read", {"path": "missing.txt"}),
+        ("edit", {"path": "example.txt", "edits": [{"old_text": "absent", "new_text": "change"}]}),
+    ]), faux.reply("done"))
+    session.prompt("Run the checks")
+
+    command, timeout, missing, mismatch = tool_results(session)
+    assert command.details["exit_code"] == 52
+    assert command.details["boundary"]["payload_started"] is True
+    assert timeout.details["status"] == "timeout"
+    assert "missing.txt" in missing.text()
+    assert "example.txt" in mismatch.text() and (project / "example.txt").read_text() == "original"
+    ends = [ev for ev in session.ui.events if ev.type == "tool_execution_end"]
+    assert len(ends) == 4
+    for message in (command, timeout, missing, mismatch):
+        event = next(ev for ev in ends if ev.tool_call_id == message.tool_call_id)
+        assert event.is_error and message.is_error
+        assert message.content == event.result.content
+        assert "[Diagnostic evidence;" not in message.text()
+        assert message.details["execution"]["outcome"] == "returned_error"
+        assert "error" not in message.details
+    assert not records(session)
+    assert not SessionStore.load(session.store.path).custom("runtime_diagnostic")
+    assert not [text for text, style in notices if style == "error"]
+
+
+@pytest.mark.parametrize(("name", "args", "stop_reason"), [
+    ("missing-tool", {}, "tool_use"), ("read", {INVALID_ARGUMENTS: "null"}, "tool_use"),
+    ("read", {}, "tool_use"), ("read", {"path": "partial"}, "length"),
+])
+def test_invalid_calls_return_an_inline_error_without_crash_reporting(make_session, name, args, stop_reason):
+    session = make_session(faux.reply(tools=[(name, args)], stop_reason=stop_reason), faux.reply("done"),
+                           persist=True, refresh_models=False)
+    session.prompt("inspect")
+    result, = tool_results(session)
+    assert result.is_error and result.text()
+    assert result.details["execution"]["started"] is False
+    assert not records(session) and not session.store.custom("runtime_diagnostic")
+
+
+@pytest.mark.parametrize(("fault", "status", "started", "effects"), [
+    (ExecutionUnavailable, "execution_unavailable", False, "none"),
+    (ExecutionFailed, "execution_failed", "unknown", "possible"),
+])
+def test_shell_fault_evidence_is_queryable_without_replay(broker_session, monkeypatch, fault, status, started, effects):
+    from virgo.sandbox.native import NativeExecutor
+
+    launches = []
+
+    def fail(*args, **kwargs):
+        launches.append(1)
+        raise fault("backend fault")
+
+    def lookup(context):
+        summary = json.loads(context.messages[-1].content[-1].text.splitlines()[1])
+        return faux.reply(tools=[("diagnostic_get", {"error_id": summary["error_id"]})])
+
+    session = broker_session(persist=True, refresh_models=False, approval="never")
+    monkeypatch.setattr(NativeExecutor, "run_process", fail)
+    faux.script("test", faux.reply(tools=[(selected(session).tool_name, {"command": "echo test"})]),
+                lookup, faux.reply("done"))
+    session.prompt("run")
+    result, evidence = tool_results(session)
+    assert len(launches) == 1 and result.details["status"] == status
+    assert result.text().count("[Diagnostic evidence;") == 2
+    boundary = json.loads(result.content[-2].text.splitlines()[1])["boundary"]
+    assert boundary["payload_started"] == started and boundary["side_effects"] == effects
+    error = result.details["error"]
+    assert error["kind"] == "fatal" and error["error_id"] in session.ui.text
+    assert records(session)[0]["error_id"] == error["error_id"]
+    page = json.loads(evidence.text())
+    assert page["status"] == "ok" and page["error_id"] == error["error_id"]
+
+
+@pytest.mark.parametrize(("status", "cleanup", "kind"), [
+    ("ok", "failed", "fatal"), ("resource_denied", None, "blocked"), ("high_risk_denied", None, "blocked"),
+])
+def test_returned_execution_faults_and_denials_keep_scoped_evidence(make_session, status, cleanup, kind):
+    session = make_session(faux.reply(tools=[("probe", {})]), faux.reply("done"), persist=True, refresh_models=False)
+    boundary = ({"payload_started": True, "side_effects": "possible", "cleanup": cleanup} if cleanup else
+                {"payload_started": False, "side_effects": "none", "kind": status})
+    tool = AgentTool("probe", "", {"type": "object"}, lambda *_: ToolResult.error(
+        "Aborted" if cleanup else "Denied", details={"status": status, "boundary": boundary}))
+    session.register_tool(tool)
+    session.prompt("probe")
+    result, = tool_results(session)
+    assert result.details["boundary"] == boundary
+    assert json.loads(result.content[-2].text.splitlines()[1])["boundary"] == boundary
+    error = result.details["error"]
+    assert error["kind"] == kind
+    assert (error["error_id"] in session.ui.text) == (kind == "fatal")
+    assert records(session)[0]["error_id"] == error["error_id"]
+    assert session.main.diagnostic_access.read(error["error_id"], "summary")["status"] == "ok"
 
 
 def test_redaction_covers_credentials_payloads_urls_and_exception_override(monkeypatch):

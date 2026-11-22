@@ -38,12 +38,15 @@ def test_sandbox_boundary_is_visible_to_model_even_without_exception_record():
     assert '"payload_started":false' in text
     assert '"network_allowed":false' in text
     assert '"escalation_available":true' in text
-    result.details['boundary']['requested'] = {'read_paths': ['directory/' * 200] * 300}
+    paths = ["目录/" * 200] * 300
+    result.details["boundary"]["requested"] = {"write_paths": ["requested-only"]}
+    result.details["boundary"]["effective"]["read_paths"] = paths
     content = project_tool_result(ToolCall('blocked', 'write', {}), result)
     capsule = content[-1].text
     assert len(capsule.encode()) <= 2048
     assert '"payload_started":false' in capsule and '"omitted":true' in capsule
-    assert len(result.details['boundary']['requested']['read_paths']) == 300
+    assert '"requested"' not in capsule and '"network_allowed":false' in capsule
+    assert result.details["boundary"]["effective"]["read_paths"] == paths
 
 
 def test_projection_sees_final_hooks_and_recorded_evidence_once_in_provider_content():
@@ -137,7 +140,7 @@ def test_hooks_cannot_erase_or_override_execution_and_adapter_facts():
     boundary = {"provider": "sandbox", "payload_started": True, "side_effects": "possible", "cleanup": "unknown"}
 
     def run(*_):
-        return ToolResult.error("connection lost", details={"boundary": dict(boundary)})
+        return ToolResult.error("connection lost", details={"status": "execution_failed", "boundary": dict(boundary)})
 
     def recover(event, result):
         result.details["boundary"]["side_effects"] = "none"

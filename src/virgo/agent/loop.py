@@ -150,28 +150,42 @@ def _tool_details(res: ToolResult) -> dict:
 
 
 def _annotate_error(res: ToolResult, call: ToolCall, cfg: AgentConfig, *, phase: str,
-                    error: Exception | str | None = None, kind: str = "fatal", code=None) -> ToolResult:
-    cancelled = isinstance(res.details, dict) and res.details.get("cancelled") is True
-    if res.is_error and not cancelled and res.as_text().strip().lower() not in {
+                    error: Exception | None = None, kind: str | None = None) -> ToolResult:
+    if not res.is_error:
+        return res
+    details = _tool_details(res)
+    if isinstance(details.get("error"), dict) or details.get("cancelled") is True:
+        return res
+    status, boundary = details.get("status"), details.get("boundary")
+    if (error is not None or status in ("execution_unavailable", "execution_failed")
+            or isinstance(boundary, dict) and boundary.get("cleanup") == "failed"):
+        kind = "fatal"
+    elif status in ("resource_denied", "high_risk_denied"):
+        kind = "blocked"
+    elif details.get("related_errors") and kind is None:
+        kind = "fatal"
+    if kind is None:  # Ordinary tool output or invalid model input is already visible inline.
+        return res
+    text = res.as_text()
+    if kind == "blocked" and text.strip().lower() in {
         "operation aborted.", "aborted by user", "aborted", "sub-agent was aborted.",
     }:
-        details = _tool_details(res)
-        if not details.get("error"):
-            try:
-                existing = getattr(error, "_virgo_error_details", None) if isinstance(error, Exception) else None
-            except Exception:
-                existing = None
-            details["error"] = existing if isinstance(existing, dict) else capture_error(
-                error if error is not None else res.as_text(), phase=phase, kind=kind, code=code,
-                context={"agent": cfg.name, "tool_name": call.name, "tool_call_id": call.id},
-            )
+        return res
+    try:
+        existing = getattr(error, "_virgo_error_details", None)
+    except Exception:
+        existing = None
+    details["error"] = existing if isinstance(existing, dict) else capture_error(
+        error if error is not None else text, phase=phase, kind=kind,
+        context={"agent": cfg.name, "tool_name": call.name, "tool_call_id": call.id},
+    )
     return res
 
 
 def _tool_error(call: ToolCall, cfg: AgentConfig, text: str, *, phase: str,
-                error: Exception | str | None = None, details=None, kind="fatal", code=None) -> ToolResult:
+                error: Exception | None = None, details=None, kind=None) -> ToolResult:
     return _annotate_error(ToolResult.error(safe_text(text), details=details), call, cfg,
-                           phase=phase, error=error, kind=kind, code=code)
+                           phase=phase, error=error, kind=kind)
 
 
 def _preserve_errors(res: ToolResult, previous: list[dict]) -> None:
@@ -247,10 +261,8 @@ def _execute(
     results: list[ToolResult | None] = [None] * len(calls)
     events: list[ToolCallEvent | None] = [None] * len(calls)
 
-    def reject(i: int, reason: str, *, phase="tool.preflight", error=None, details=None, kind="fatal",
-               code=None) -> None:
-        results[i] = _tool_error(calls[i], cfg, reason, phase=phase, error=error, details=details,
-                                 kind=kind, code=code)
+    def reject(i: int, reason: str, *, phase="tool.preflight", error=None, details=None, kind=None) -> None:
+        results[i] = _tool_error(calls[i], cfg, reason, phase=phase, error=error, details=details, kind=kind)
         _execution_facts(results[i])
         _end(cfg, emit, calls[i], results[i])
 
@@ -357,9 +369,9 @@ def _execute(
                 result_hook = "failed"
                 res = _tool_error(calls[i], cfg, cfg.t("harness.agent.result_hook_failed", error=safe_text(e)),
                                   phase="tool.result_hook", error=e)
+            _preserve_errors(res, previous)
             if not signal.is_set():
                 res = _annotate_error(res, calls[i], cfg, phase="tool.result_hook")
-            _preserve_errors(res, previous)
         _execution_facts(res, started=True, outcome=outcome, result_hook=result_hook, boundary=boundary)
         res.details = res.details if res.details is not None else {}
         if isinstance(res.details, dict):

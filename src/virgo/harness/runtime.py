@@ -276,6 +276,8 @@ class Runtime:
             self.record_model_error(ev.message, notify=True)
         elif ev.type == "tool_execution_end" and ev.result is not None and isinstance(ev.result.details, dict):
             details = ev.result.details
+            if not isinstance(details.get("error"), dict) and not details.get("related_errors"):
+                return
             context = {
                 "tool_name": ev.tool_name, "tool_call_id": ev.tool_call_id,
                 **{key: details[key] for key in (

@@ -257,7 +257,7 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
             main.header.focus()
             await pilot.press("enter")
             assert main.expanded
-            assert "four" in str(main.output.content)
+            assert main.output.content == result.as_text()
             assert "[explorer]" in str(calls[("explorer", "shared-id")].header.content)
             assert "pwd" in str(calls[("main", "shared-id")].header.content)
             assert '"command"' not in str(calls[("main", "shared-id")].header.content)
@@ -281,6 +281,7 @@ def test_sandbox_failure_shows_boundary_and_preserves_raw_evidence():
                 "tool_execution_end", tool_call_id="write-1", tool_name="write", is_error=True,
                 result=ToolResult.error("Host file writes are disabled.", details={
                     "status": "resource_denied",
+                    "error": {"error_id": "write-denial-id", "kind": "blocked"},
                     "boundary": {"dimension": "write_paths", "target": "settings.json",
                                 "payload_started": False, "escalation_available": True},
                 }),
@@ -297,6 +298,8 @@ def test_sandbox_failure_shows_boundary_and_preserves_raw_evidence():
             assert "Host file writes are disabled." in str(row.output.content)
             assert "Operation did not start." in str(row.output.content)
             assert "Additional permission" in str(row.output.content)
+            assert str(row.output.content).endswith("Error ID: write-denial-id")
+            assert "write-denial-id" not in row.header.content.plain
 
     asyncio.run(scenario())
 

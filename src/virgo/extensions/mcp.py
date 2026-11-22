@@ -49,7 +49,7 @@ from virgo import __version__
 from virgo.agent import AgentTool, ToolResult
 from virgo.ai.types import ImageContent, TextContent
 from virgo.ai.validate import valid_schema
-from virgo.diagnostics import safe_text
+from virgo.diagnostics import capture_error, safe_text
 from virgo.execution import HostContext, ProcessRequest, cleanup_process
 from virgo.harness.settings import same_directory
 
@@ -984,6 +984,18 @@ class _Manager:
                             "server": _connection.name,
                             "tool": _name,
                             "boundary": _connection.boundary,
+                            "error": capture_error(
+                                error,
+                                phase="tool.execute",
+                                context={
+                                    "agent": ctx.agent,
+                                    "tool_name": _name,
+                                    "tool_call_id": ctx.call_id,
+                                    "server": _connection.name,
+                                },
+                                secrets=_connection._secrets,
+                                message=detail,
+                            ),
                         }
                         if stderr:
                             extra["stderr"] = stderr
