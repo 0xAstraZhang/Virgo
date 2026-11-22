@@ -138,18 +138,20 @@ def test_empty_editor_placeholder_preserves_cursor_text_and_history(make_session
         async with app.run_test(size=(80, 24)) as pilot:
             editor = app.editor
             line = editor.render_line(0)
-            assert line.text.rstrip() == " " + placeholder
+            assert editor.styles.border_top == editor.styles.border_bottom
+            assert editor.styles.border_top[1].ansi == 8
+            assert line.text.rstrip() == "›  " + placeholder
             assert all(segment.style is not None for segment in line)  # Required by Textual's monochrome filter.
-            assert list(line.crop(0, 1)) == list(TextArea.render_line(editor, 0).crop(0, 1))
+            assert list(line.crop(2, 3)) == list(TextArea.render_line(editor, 0).crop(0, 1))
             assert any(seg.style and seg.style.color.name == "bright_black" for seg in line if seg.text == placeholder)
             await pilot.press("enter")
             app.set_focus(None)
             await pilot.pause()
-            assert editor.render_line(0).text.rstrip() == placeholder
+            assert editor.render_line(0).text.rstrip() == "› " + placeholder
             await pilot.resize_terminal(16, 24)
             line = editor.render_line(0)
             assert line.cell_length == editor.content_size.width
-            assert line.text.rstrip() and placeholder.startswith(line.text.rstrip())
+            assert line.text.startswith("› ") and placeholder.startswith(line.text[2:].rstrip())
             assert editor.text == "" and app.history.entries == [] and not app.history.path.exists()
             assert not app.session.main.messages
 
@@ -363,6 +365,7 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 assert app.transcript.display and has_reply(app, "Earlier response.")
                 assert not app.editor.display
                 assert app.query_one("#status").display
+                assert app.editor.prompt_marker == "›"
                 assert "No-Limit · Waiting for approval" in app.query_one("#status").render_line(0).text
                 assert not app.query_one("#footer-meta").display and not app.query_one("#hints").display
                 assert choices.highlighted == 1 and question.max_scroll_y > 0
@@ -429,6 +432,7 @@ def test_single_operation_approval_keeps_permissions_visible_without_session_cho
                 assert choices.highlighted == 1
                 status = app.query_one("#status", Static)
                 assert status.display and status.region.bottom <= app.size.height
+                assert app.editor.prompt_marker == "›"
                 assert "No-Limit · Waiting for approval" in status.render_line(0).text
                 await pilot.press("a", "3")
                 assert not answers and picker.display

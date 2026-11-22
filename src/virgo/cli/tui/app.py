@@ -173,9 +173,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #auth-value { height: 3; border: solid #7C3AED; padding: 0;
         background: $background; color: $foreground; }
     #auth-value:focus { border: solid #7C3AED; }
-    #editor { height: 3; min-height: 3; border: none; border-top: solid #7C3AED;
-        border-bottom: solid #7C3AED; padding: 0; background: $background; color: $foreground; }
-    #editor:focus { border: none; border-top: solid #7C3AED; border-bottom: solid #7C3AED; }
+    #editor { height: 3; min-height: 3; border: none; border-top: solid ansi_bright_black;
+        border-bottom: solid ansi_bright_black; padding: 0; background: $background; color: $foreground; }
+    #editor:focus { border: none; border-top: solid ansi_bright_black; border-bottom: solid ansi_bright_black; }
     TextArea > .text-area--cursor { text-style: reverse; background: $background; color: $foreground; }
     TextArea > .text-area--selection { text-style: reverse; background: $background; color: $foreground; }
     #status, #footer-meta, #flags, #metrics, #hints { height: 1; }
@@ -597,6 +597,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 else None
             )
             self.activity.tick()
+            self._update_prompt_marker()
             self.transcript.show_activity(
                 self.activity.content if self.activity.display else None, waiting=self.activity.waiting
             )
@@ -626,7 +627,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 self._pane.query_one(PreferencePicker).resize_panel()
             if time.monotonic() - self.last_status >= 0.5:
                 self.update_status()
-            elif self.activity.display or previous_waiting != self.activity.waiting:
+            elif previous_waiting != self.activity.waiting:
                 self._update_status_line()
         finally:
             self._polling = False
@@ -830,6 +831,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         update_static(metrics_widget, metrics, layout=False)
         update_static(root.query_one("#flags", Static), flags, layout=False)
         self._update_status_line()
+        self._update_prompt_marker()
+
+    def _update_prompt_marker(self) -> None:
+        marker = "›"
+        if (self.controller.busy and not self.controller.closing
+                and self.active_confirmation is None and self.active_input is None):
+            marker = self.activity.frame if self.activity.display else "·"
+        self.editor.set_prompt_marker(marker)
 
     def _active_mode(self):
         manager = self.session.services["execution"]
@@ -847,11 +856,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if active != selected:
             footer.append(" · " + tr(self, "ui.modes.next", name=selected.name), style="dim")
         live = self.activity.waiting
-        if not live and self.activity.display:
-            if not self.transcript.follow_latest or self.transcript.activity_card is None:
-                live = self.activity.compact_label
-        elif not live and self.controller.busy:
-            live = "✻ " + tr(self, "ui.activity.working") + "…"
         if live:
             footer.append(" · ")
             footer.append(live, style=f"bold {PURPLE}")

@@ -70,7 +70,7 @@ uv run virgo --continue
 uv run virgo -p --format json "总结 README"
 ```
 
-在全屏界面，Enter 发送消息，Ctrl+J 换行。输入 `/` 浏览命令，Ctrl+T 展开思考，Ctrl+O 展开工具详情，Esc 中断当前回复。向上翻阅历史时，可以在底栏查看进度，直到回到最新消息。
+在全屏界面，Enter 发送消息，Ctrl+J 换行。输入 `/` 浏览命令，Ctrl+T 展开思考，Ctrl+O 展开工具详情，Esc 中断当前回复。任务运行时，输入框左侧的紫色字符循环展开、收回；向上翻阅历史时也能看到。输入框的灰色边线保持静止。
 
 使用 `/permissions show` 查看当前任务和下一任务的模式，使用 `/permissions` 或 `--permission <read-only|workspace-edit|no-limit>` 在三种模式间切换。见[权限模式与审批](docs/zh-CN/development/permission-profiles.md)。
 
