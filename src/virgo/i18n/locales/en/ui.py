@@ -128,12 +128,7 @@ MESSAGES = {
     "ui.hints.confirm": "Enter confirm · Esc cancel",
     "ui.hints.effort": "←→ adjust · Enter default · s session · Esc cancel",
     "ui.hints.exit": "Ctrl+C again to exit · /exit also closes Virgo",
-    "ui.hints.input": "Enter send · {newline} newline · Esc interrupt · / commands · Ctrl+O tools · "
-    "Ctrl+T thought · Shift+Tab mode",
-    "ui.hints.input_compact": "Enter send · {newline} newline · / cmds · Ctrl+O/T · Shift+Tab",
-    "ui.hints.input_narrow": "Enter send · / cmds · Ctrl+O/T · Shift+Tab",
-    "ui.hints.busy": "Esc interrupt · Ctrl+O toggle tools · Ctrl+T toggle thought · /help",
-    "ui.hints.busy_compact": "Esc stop · Ctrl+O/T · /help",
+    "ui.hints.busy": "Esc interrupt",
     "ui.hints.models": "↑↓ model · ←→ effort · Enter default · s session · Backspace providers · Esc cancel",
     "ui.hints.providers": "↑↓ provider · Enter open · Esc cancel",
     "ui.hints.select": "↑↓ select · Enter confirm · Esc cancel",

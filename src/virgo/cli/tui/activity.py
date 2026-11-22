@@ -11,7 +11,7 @@ from ...ai.types import AssistantMessage
 from ..i18n import tr, translator_for
 from .bridge import RunFinished
 
-FRAMES = ("·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢")
+FRAMES = tuple("·✢✳✶✻✽✽✻✶✳✢·")
 FRAME_SECONDS = 0.12
 
 
@@ -37,7 +37,7 @@ class RunActivity:
         self.stop_reason = "stop"
         self.running_tools: dict[str, str] = {}
         self.content = Text()
-        self.compact_label = ""
+        self.frame = FRAMES[0]
         self.display = False
 
     def reset(self) -> None:
@@ -94,11 +94,10 @@ class RunActivity:
         if self.started_at is None:
             return
         elapsed = max(0.0, time.monotonic() - self.started_at)
-        frame = FRAMES[int(elapsed / FRAME_SECONDS) % len(FRAMES)]
+        self.frame = FRAMES[int(elapsed / FRAME_SECONDS) % len(FRAMES)]
         phase = self.waiting or self.phase
-        label = Text(f"{frame} {phase}…", no_wrap=True, overflow="ellipsis")
+        label = Text(f"{self.frame} {phase}…", no_wrap=True, overflow="ellipsis")
         detail = elapsed_text(elapsed, self)
-        self.compact_label = f"{label.plain} ({detail})"
         if phase == tr(self, "ui.activity.thinking") and self.effort:
             detail += tr(self, "ui.activity.effort", effort=self.effort)
         label.append(f" ({detail})", style="dim")

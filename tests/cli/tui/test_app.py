@@ -138,18 +138,20 @@ def test_empty_editor_placeholder_preserves_cursor_text_and_history(make_session
         async with app.run_test(size=(80, 24)) as pilot:
             editor = app.editor
             line = editor.render_line(0)
-            assert line.text.rstrip() == " " + placeholder
+            assert editor.styles.border_top == editor.styles.border_bottom
+            assert editor.styles.border_top[1].ansi == 8
+            assert line.text.rstrip() == "›  " + placeholder
             assert all(segment.style is not None for segment in line)  # Required by Textual's monochrome filter.
-            assert list(line.crop(0, 1)) == list(TextArea.render_line(editor, 0).crop(0, 1))
+            assert list(line.crop(2, 3)) == list(TextArea.render_line(editor, 0).crop(0, 1))
             assert any(seg.style and seg.style.color.name == "bright_black" for seg in line if seg.text == placeholder)
             await pilot.press("enter")
             app.set_focus(None)
             await pilot.pause()
-            assert editor.render_line(0).text.rstrip() == placeholder
+            assert editor.render_line(0).text.rstrip() == "› " + placeholder
             await pilot.resize_terminal(16, 24)
             line = editor.render_line(0)
             assert line.cell_length == editor.content_size.width
-            assert line.text.rstrip() and placeholder.startswith(line.text.rstrip())
+            assert line.text.startswith("› ") and placeholder.startswith(line.text[2:].rstrip())
             assert editor.text == "" and app.history.entries == [] and not app.history.path.exists()
             assert not app.session.main.messages
 
@@ -293,10 +295,10 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
                 assert app.transcript.region.bottom <= app.editor.region.y
                 status = app.query_one("#status").region
                 meta = app.query_one("#footer-meta").region
-                hints = app.query_one("#hints").region
-                assert status.height == meta.height == hints.height == 1
+                assert not app.query_one("#hints").display
+                assert status.height == meta.height == 1
                 assert app.editor.region.bottom == status.y
-                assert status.bottom == meta.y and meta.bottom == hints.y and hints.bottom == height
+                assert status.bottom == meta.y and meta.bottom == height
                 assert app.editor.region.width <= width
             assert app.editor.text.count("\n") == 29
             assert app.editor.styles.background.ansi == -1
@@ -363,6 +365,7 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 assert app.transcript.display and has_reply(app, "Earlier response.")
                 assert not app.editor.display
                 assert app.query_one("#status").display
+                assert app.editor.prompt_marker == "›"
                 assert "No-Limit · Waiting for approval" in app.query_one("#status").render_line(0).text
                 assert not app.query_one("#footer-meta").display and not app.query_one("#hints").display
                 assert choices.highlighted == 1 and question.max_scroll_y > 0
@@ -429,6 +432,7 @@ def test_single_operation_approval_keeps_permissions_visible_without_session_cho
                 assert choices.highlighted == 1
                 status = app.query_one("#status", Static)
                 assert status.display and status.region.bottom <= app.size.height
+                assert app.editor.prompt_marker == "›"
                 assert "No-Limit · Waiting for approval" in status.render_line(0).text
                 await pilot.press("a", "3")
                 assert not answers and picker.display
@@ -723,16 +727,12 @@ def test_narrow_footer_renders_complete_idle_and_busy_shortcuts(make_session, mo
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             hints = app.query_one("#hints", Static)
-            idle = messages["ui.hints.input_narrow"]
-            if size == (40, 16):
-                idle = idle.replace(" · ", " ")
-            assert hints.render_line(0).text.rstrip() == idle
+            assert not hints.display
 
             app.controller.busy = True
             app.update_status()
             await pilot.pause()
-            busy_key = "ui.hints.busy" if language == "zh-CN" and size == (60, 18) else "ui.hints.busy_compact"
-            assert hints.render_line(0).text.rstrip() == messages[busy_key]
+            assert hints.display and hints.render_line(0).text.rstrip() == messages["ui.hints.busy"]
 
     asyncio.run(scenario())
 
@@ -749,18 +749,12 @@ def test_chinese_footer_fits_both_flags_and_usage_at_64_columns(broker_session):
             hints = app.query_one("#hints")
             assert flags.render_line(0).text.rstrip() == "读:1 写:1 网页开 Shell:开"
             assert metrics.render_line(0).text == str(metrics.content) and "缓存" in str(metrics.content)
-            assert hints.render_line(0).text.rstrip() == str(hints.content)
-            assert "Enter 发送" in str(hints.content) and "Ctrl+O/T" in str(hints.content)
-            await pilot.resize_terminal(120, 24)
-            await pilot.pause()
-            assert "Ctrl+T 思考 · Shift+Tab 模式" in hints.render_line(0).text
+            assert not hints.display
 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("terminal,newline", [("Apple_Terminal", "Ctrl+J"), ("xterm", "Shift+Enter")])
-def test_footer_places_permissions_and_usage_below_editor(make_session, monkeypatch, terminal, newline):
-    monkeypatch.setenv("TERM_PROGRAM", terminal)
+def test_footer_places_permissions_and_usage_below_editor(make_session):
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
@@ -797,17 +791,7 @@ def test_footer_places_permissions_and_usage_below_editor(make_session, monkeypa
             assert cell_len(status_line) == app.editor.region.width
             assert metrics.region.y == status.region.bottom
             assert app.editor.region.bottom == status.region.y
-            hints = app.query_one("#hints", Static)
-            assert hints.render_line(0).text.rstrip() == str(hints.content)
-            assert "Ctrl+O/T" in str(hints.content)
-            await pilot.resize_terminal(120, 24)
-            await pilot.pause()
-            hint = hints.content
-            assert f"{newline} newline" in str(hint) and hints.render_line(0).text.rstrip() == str(hint)
-            for key in ("Enter", newline, "Esc", "/", "Ctrl+O", "Ctrl+T", "Shift+Tab"):
-                assert hint.get_style_at_offset(app.console, hint.plain.index(key)).bold
-            for word in ("send", "newline", "interrupt", "commands", "mode"):
-                assert not hint.get_style_at_offset(app.console, hint.plain.index(word)).bold
+            assert not app.query_one("#hints").display
             assert not app.query_one("#jump").display
 
     asyncio.run(scenario())

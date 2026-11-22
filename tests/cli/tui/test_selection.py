@@ -137,12 +137,14 @@ def test_editor_selection_copies_only_nonempty_mouse_selection(monkeypatch, tmp_
             editor = app.query_one(ChatEditor)
             editor.load_text("editor words")
             await pilot.pause()
-            await pilot.mouse_down(editor, offset=(0, 0))
-            await pilot.mouse_up(editor, offset=(8, 0))
+            word_start = editor.cursor_screen_offset - editor.region.offset
+            await pilot.mouse_down(editor, offset=word_start)
+            await pilot.mouse_up(editor, offset=(word_start.x + len("editor"), word_start.y))
             assert copied == ["editor"]
-            await pilot.click(editor, offset=(3, 0))
-            await pilot.double_click(editor, offset=(3, 0))
-            await pilot.triple_click(editor, offset=(3, 0))
+            inside_word = (word_start.x + 1, word_start.y)
+            await pilot.click(editor, offset=inside_word)
+            await pilot.double_click(editor, offset=inside_word)
+            await pilot.triple_click(editor, offset=inside_word)
             assert copied == ["editor"]
 
     asyncio.run(scenario())

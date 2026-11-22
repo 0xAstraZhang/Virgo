@@ -141,6 +141,7 @@ class ChatEditor(TextArea):
             theme="css",
         )
         self.input_history = history
+        self.prompt_marker = "›"
 
     def on_key(self, event: Key) -> None:
         # Handle these in the editor queue, after preceding typed characters.
@@ -212,10 +213,22 @@ class ChatEditor(TextArea):
         else:
             super().action_cursor_down(select)
 
+    @property
+    def gutter_width(self) -> int:
+        # TextArea uses this width for wrapping, hit testing and cursor placement.
+        return 2
+
+    def set_prompt_marker(self, marker: str) -> None:
+        if self.prompt_marker != marker:
+            self.prompt_marker = marker
+            self.refresh_line(self.scroll_offset.y)
+
     def render_line(self, y: int) -> Strip:
-        strip = super().render_line(y)
+        style = self.rich_style + Style(color=self.app.theme_variables["accent"])
+        prefix = self.prompt_marker + " " if y == 0 else "  "
+        strip = Strip.join([Strip([Segment(prefix, style)]), super().render_line(y)]).crop(0, self.content_size.width)
         if y == 0 and self.document.end == (0, 0) and self.selection.is_empty:
-            return self._overlay_hint(strip, tr(self, "ui.editor.placeholder"), 1 if self.has_focus else 0)
+            return self._overlay_hint(strip, tr(self, "ui.editor.placeholder"), self.gutter_width + int(self.has_focus))
         # Overlay only; never populate TextArea.suggestion (Right accepts it).
         if (
             y != 0

@@ -57,7 +57,7 @@ def test_activity_label_refresh_does_not_relayout(make_session, monkeypatch):
                 app._update_status_line()
                 app.transcript.show_activity(app.activity.content)
                 assert len(updates) == before
-            assert {widget for widget, _ in updates} == {card.thought_header, app.query_one("#status")}
+            assert {widget for widget, _ in updates} == {card.thought_header}
             assert not any(layout for _, layout in updates)
             assert "Working" in card.thought_header.content.plain
 

@@ -70,6 +70,8 @@ uv run virgo --continue
 uv run virgo -p --format json "Summarize the README"
 ```
 
+In the full-screen UI, Enter sends a message and Ctrl+J inserts a newline. Type `/` to browse commands. Ctrl+T expands reasoning, Ctrl+O expands tool details, and Esc interrupts a running reply. A purple spinner beside the input cursor shows that the task is running, even while you read earlier messages. The gray input borders stay still.
+
 Use `/permissions show` to inspect the active task and next-task mode. Select one of the three modes with `/permissions` or `--permission <read-only|workspace-edit|no-limit>`. See [permission modes and grants](docs/en/development/permission-profiles.md).
 
 ## Inspect errors

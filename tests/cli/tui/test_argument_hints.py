@@ -195,7 +195,7 @@ def test_real_terminal_argument_hint(project, tmp_path):
     if not HAS_PTY:
         pytest.skip('requires POSIX PTY')
     with PtyClient(project, tmp_path / 'hint-home') as terminal:
-        terminal.wait_for(lambda data: 'Enter send' in plain(data))
+        terminal.wait_for(lambda data: 'type / for commands' in plain(data))
         terminal.send(b'/model ')
         terminal.wait_for(lambda data: '[provider/id]' in plain(data))
         terminal.resize(24, 24)

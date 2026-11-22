@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import time
 from collections import deque
@@ -99,20 +98,6 @@ def shortcut_hints(text: str) -> Text:
     return hint
 
 
-def input_hints(owner=None, width: int | None = None) -> Text:
-    newline = "Ctrl+J" if os.environ.get("TERM_PROGRAM") == "Apple_Terminal" else "Shift+Enter"
-    hint = tr(owner, "ui.hints.input", newline=newline)
-    if width is not None:
-        available = max(1, width - 2)
-        if width < 76 or cell_len(hint) > available:
-            hint = tr(owner, "ui.hints.input_compact", newline=newline)
-        if cell_len(hint) > available:
-            hint = tr(owner, "ui.hints.input_narrow")
-            if cell_len(hint) > available:
-                hint = hint.replace(" · ", " ")
-    return shortcut_hints(hint)
-
-
 def display_cwd(cwd: PurePath, home: PurePath, width: int) -> Text:
     if cwd.is_relative_to(home):
         cwd = type(cwd)("~") / cwd.relative_to(home)
@@ -160,7 +145,7 @@ class ConversationPane(Vertical):
             with Horizontal(id="footer-meta"):
                 yield Static("", id="flags", markup=False)
                 yield Static("", id="metrics", markup=False)
-            yield Static(input_hints(self), id="hints", markup=False)
+            yield Static("", id="hints", markup=False)
 
 
 class VirgoApp(SelectionCopyMixin, App[int]):
@@ -188,9 +173,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #auth-value { height: 3; border: solid #7C3AED; padding: 0;
         background: $background; color: $foreground; }
     #auth-value:focus { border: solid #7C3AED; }
-    #editor { height: 3; min-height: 3; border: none; border-top: solid #7C3AED;
-        border-bottom: solid #7C3AED; padding: 0; background: $background; color: $foreground; }
-    #editor:focus { border: none; border-top: solid #7C3AED; border-bottom: solid #7C3AED; }
+    #editor { height: 3; min-height: 3; border: none; border-top: solid ansi_bright_black;
+        border-bottom: solid ansi_bright_black; padding: 0; background: $background; color: $foreground; }
+    #editor:focus { border: none; border-top: solid ansi_bright_black; border-bottom: solid ansi_bright_black; }
     TextArea > .text-area--cursor { text-style: reverse; background: $background; color: $foreground; }
     TextArea > .text-area--selection { text-style: reverse; background: $background; color: $foreground; }
     #status, #footer-meta, #flags, #metrics, #hints { height: 1; }
@@ -612,6 +597,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 else None
             )
             self.activity.tick()
+            self._update_prompt_marker()
             self.transcript.show_activity(
                 self.activity.content if self.activity.display else None, waiting=self.activity.waiting
             )
@@ -641,7 +627,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 self._pane.query_one(PreferencePicker).resize_panel()
             if time.monotonic() - self.last_status >= 0.5:
                 self.update_status()
-            elif self.activity.display or previous_waiting != self.activity.waiting:
+            elif previous_waiting != self.activity.waiting:
                 self._update_status_line()
         finally:
             self._polling = False
@@ -800,15 +786,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             hints = shortcut_hints(tr(self, key))
         elif (self.controller.busy and not self.has_modal
               and self.active_confirmation is None and self.active_input is None):
-            busy_hint = tr(self, "ui.hints.busy")
-            if cell_len(busy_hint) > width:
-                busy_hint = tr(self, "ui.hints.busy_compact")
-            hints = shortcut_hints(busy_hint)
+            hints = shortcut_hints(tr(self, "ui.hints.busy"))
         elif not self.controller.busy and 0 < time.monotonic() - self.state.last_interrupt < 2:
             hints = shortcut_hints(tr(self, "ui.hints.exit"))
         else:
-            hints = input_hints(self, self.size.width)
-        update_static(root.query_one("#hints", Static), hints, layout=False)
+            hints = Text()
+        hint_row = root.query_one("#hints", Static)
+        hint_row.display = bool(hints) and root.query_one("#footer-meta").display
+        update_static(hint_row, hints, layout=False)
         cwd = self.screen_stack[0].query_one("#cwd", Static)
         brand_width = self.screen_stack[0].query_one("#brand", Static).content.cell_len
         cwd_width = max(1, self.size.width - 2 - brand_width - 1)
@@ -846,6 +831,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         update_static(metrics_widget, metrics, layout=False)
         update_static(root.query_one("#flags", Static), flags, layout=False)
         self._update_status_line()
+        self._update_prompt_marker()
+
+    def _update_prompt_marker(self) -> None:
+        marker = "›"
+        if (self.controller.busy and not self.controller.closing
+                and self.active_confirmation is None and self.active_input is None):
+            marker = self.activity.frame if self.activity.display else "·"
+        self.editor.set_prompt_marker(marker)
 
     def _active_mode(self):
         manager = self.session.services["execution"]
@@ -863,10 +856,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if active != selected:
             footer.append(" · " + tr(self, "ui.modes.next", name=selected.name), style="dim")
         live = self.activity.waiting
-        if not live and self.activity.display:
-            live = self.activity.compact_label
-        if not live and self.controller.busy:
-            live = "✻ " + tr(self, "ui.activity.working") + "…"
         if live:
             footer.append(" · ")
             footer.append(live, style=f"bold {PURPLE}")
@@ -1025,11 +1014,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.request_close()
         else:
             self.state.last_interrupt = time.monotonic()
-            update_static(
-                self._pane.query_one("#hints", Static),
-                shortcut_hints(tr(self, "ui.hints.exit")),
-                layout=False,
-            )
+            self.update_status()
 
     def action_permission_modes(self) -> None:
         if (

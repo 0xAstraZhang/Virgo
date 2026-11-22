@@ -213,6 +213,7 @@ def test_failure_and_interruption_end_animation_and_next_run_starts_cleanly(make
             await pilot.press("escape")
             await wait_for(pilot, lambda: len(summaries(app)) == 2)
             assert summaries(app)[1].startswith("✻ Interrupted after ")
+            assert app.editor.prompt_marker == "›"
             assert not app.activity.display
             app.controller.submit("try again")
             await wait_for(pilot, lambda: len(summaries(app)) == 3)
@@ -245,8 +246,8 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                 app.editor.load_text("next answer")
                 await pilot.press("enter")
                 assert app.controller.busy and not app.activity.display
-                assert "Working…" in app.query_one("#status").render_line(0).text
-                assert "/help" in app.query_one("#hints").render_line(0).text
+                assert app.editor.render_line(0).text.startswith("· ")
+                assert "Esc interrupt" in app.query_one("#hints").render_line(0).text
                 app._poll_timer.resume()
                 await wait_for(pilot, lambda: entered.is_set() and app.activity.display)
                 for width, height in ((40, 16), (80, 24)):
@@ -258,12 +259,17 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                     assert header.region.width <= width
                     assert app.query_one("#status").region.bottom <= height
                     status = app.query_one("#status")
-                    assert "Thinking… (" in status.render_line(0).text
-                    first = status.render_line(0).text
-                    await wait_for(pilot, lambda status=status, first=first: status.render_line(0).text != first)
+                    assert "Thinking" not in status.render_line(0).text
+                    first = app.editor.render_line(0).text[0]
+                    await wait_for(pilot, lambda first=first: app.editor.render_line(0).text[0] != first)
                     assert not app.query("#activity")
                     assert app.transcript.scroll_y == 0
                     assert not app.transcript.follow_latest
+                await pilot.click("#jump")
+                await wait_for(pilot, lambda: app.transcript.follow_latest and
+                               "Thinking" not in str(status.content))
+                assert header.display and "Thinking" in str(header.content)
+                await pilot.press("ctrl+home")
                 release.set()
                 await wait_for(pilot, lambda: len(summaries(app)) == 2)
                 await pilot.pause()
@@ -272,5 +278,44 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                 assert "Thinking" not in str(app.query_one("#status").content)
         finally:
             release.set()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("reasoning", [False, True], ids=["long-reply", "expanded-reasoning"])
+def test_working_marker_stays_beside_draft_when_event_header_scrolls_away(make_session, reasoning):
+    from virgo.ai.types import TextContent, ThinkingContent
+
+    async def scenario():
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        async with app.run_test(size=(50, 16)) as pilot:
+            await pilot.pause()
+            app.activity.begin(activity_module.time.monotonic(), "high")
+            app.controller.busy = True
+            text = "\n\n".join(f"Paragraph {i}" for i in range(35))
+            message = AssistantMessage([ThinkingContent(text) if reasoning else TextContent(text)])
+            await app.transcript.consume(AgentEvent("message_start", message=message))
+            kind = "thinking_delta" if reasoning else "text_delta"
+            await app.transcript.consume(AgentEvent("message_update", stream_event=StreamEvent(kind, message, index=0)))
+            if reasoning:
+                await pilot.press("ctrl+t")
+            app.editor.load_text("下一条消息")
+            await pilot.pause()
+            row = app.transcript.activity_card.events[0]
+            assert row.header.region.bottom <= app.transcript.region.y
+            def visible_marker():
+                region = app.editor.content_region
+                return app.screen._compositor.render_strips()[region.y].crop(region.x, region.x + 1).text
+
+            first = visible_marker()
+            assert tuple("·✢✳✶✻✽✽✻✶✳✢·") == activity_module.FRAMES
+            assert first in activity_module.FRAMES
+            assert next(iter(app.editor.render_line(0))).style.color.name == "#7c3aed"
+            await wait_for(pilot, lambda: visible_marker() in activity_module.FRAMES and visible_marker() != first)
+            assert app.editor.render_line(0).text[2:].rstrip() == app.editor.text == "下一条消息"
+            app.controller.busy = False
+            app.activity.reset()
+            await wait_for(pilot, lambda: app.editor.render_line(0).text.startswith("› 下一条消息"))
 
     asyncio.run(scenario())
