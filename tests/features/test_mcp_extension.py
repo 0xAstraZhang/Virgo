@@ -19,7 +19,7 @@ from virgo.ai.types import ToolResultMessage
 from virgo.extensions import mcp as mcp_ext
 
 from tests.support import SUPPORT
-from tests.support.harness import RecordingUI, calls, tool_results
+from tests.support.harness import RecordingUI, calls, tool_results, wait_until
 
 SERVER = SUPPORT / "mcp_echo_server.py"
 
@@ -119,7 +119,11 @@ def test_mcp_builtin_disable_override_and_untrusted_project_isolation(make_sessi
     )
     untrusted = make_session(trust_project_extensions=False, settings={"execution": {"mode": "no-limit"}})
     assert untrusted.commands.get("mcp") is not None
-    assert untrusted.tool("mcp__echo__echo") is not None
+    try:
+        wait_until(lambda: untrusted.tool("mcp__echo__echo") is not None)
+    except AssertionError:
+        untrusted.prompt("/mcp")
+        pytest.fail(f"The echo tool was not published. MCP status:\n{untrusted.ui.text}")
 
     # User override ~/.virgo/extensions/mcp.py replaces built-in mcp cleanly without collision.
     (project / ".virgo" / "settings.json").unlink()
