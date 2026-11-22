@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from ..ai.auth_presets import API_PRESETS, AUTH_PRESETS
 from ..ai.models import BUILTIN_PROVIDERS
 from .preferences import provider_name, refresh_provider_catalog
+from .settings import UserSettingsPatch
 
 _ALIASES = {"openai": "openai-codex", "anthropic": "anthropic"}
 
@@ -43,6 +44,24 @@ def _endpoint(value, t=None):
     if url.scheme not in ("https", "http") or not url.hostname or url.username or url.password or url.query or url.fragment:
         raise ValueError(t("harness.auth.endpoint"))
     return value.rstrip("/")
+
+
+def _login_patch(provider, spec, config, connection):
+    if provider not in BUILTIN_PROVIDERS:
+        return {"model": spec, "providers": {provider: config}}
+
+    builtin = BUILTIN_PROVIDERS[provider]
+    overrides = {}
+    if connection["api"] != builtin.get("api"):
+        overrides["api"] = connection["api"]
+    if connection["baseUrl"].rstrip("/") != (builtin.get("baseUrl") or "").rstrip("/"):
+        overrides["baseUrl"] = connection["baseUrl"]
+
+    patch = {"model": spec}
+    if overrides:
+        patch["providers"] = {provider: overrides}
+    reset = tuple(key for key in connection if key not in overrides)
+    return UserSettingsPatch(patch, remove_provider_keys={provider: reset} if reset else {})
 
 
 def login(session, args):
@@ -114,10 +133,8 @@ def login(session, args):
             raise _Cancelled
         spec = f"{provider}/{model_id}"
         credential["connection"] = {"api": config["api"], "baseUrl": config.get("baseUrl", "")}
-        session.auth.save_login(
-            provider, credential,
-            lambda: session.settings.save_user({"providers": {provider: config}, "model": spec}),
-        )
+        patch = _login_patch(provider, spec, config, credential["connection"])
+        session.auth.save_login(provider, credential, lambda: session.settings.save_user(patch))
         session.set_model(spec)
         ui.print(session.t("harness.auth.success", provider=provider, model=spec), "ok")
         # Discover this provider's model directory once so /model is usable immediately.

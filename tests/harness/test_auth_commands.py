@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
@@ -10,6 +11,9 @@ import pytest
 
 from virgo.ai.auth import authenticated_model
 from virgo.ai.auth_presets import API_PRESETS, AUTH_PRESETS
+from virgo.ai.catalog import CatalogModel
+from virgo.ai.models import BUILTIN_PROVIDERS
+from virgo.execution_policy import default_execution_mode
 from virgo.harness.preferences import model_choices
 from virgo.harness.session import AgentSession
 from virgo.harness.ui import UI
@@ -44,6 +48,20 @@ def _no_live_provider_directory(request, monkeypatch):
         monkeypatch.setattr("virgo.harness.auth_commands.refresh_provider_catalog", lambda session, provider: None)
 
 
+def _assert_authenticated_after_restart(session, endpoint, key):
+    again = AgentSession(session.cwd, session=None, extensions=False, refresh_models=False,
+                         trust_project_extensions=session.trust_project_extensions,
+                         shell_catalog=session.services["shell"].catalog)
+    try:
+        assert again.model.spec == session.model.spec
+        for current in (session, again):
+            request = authenticated_model(current.model)
+            assert request.base_url == endpoint
+            assert request.options["apiKey"] == key
+    finally:
+        again.shutdown()
+
+
 @pytest.mark.parametrize("provider", API_PRESETS)
 def test_api_login_persists_switches_and_logout_removes_only_credential(project, provider):
     ui = LoginUI("", "", "private-api-key")
@@ -56,15 +74,14 @@ def test_api_login_persists_switches_and_logout_removes_only_credential(project,
         assert s.auth.all()[provider]["key"] == "private-api-key"
         assert s.main.messages == []
         assert "private-api-key" not in "\n".join(ui.lines)
-        assert "private-api-key" not in (s.paths.user / "settings.json").read_text()
         assert "private-api-key" not in repr(s.model)
-        again = AgentSession(project, session=None, extensions=False, refresh_models=False,
-                             shell_catalog=s.services["shell"].catalog)
-        try:
-            assert again.model.spec == s.model.spec
-            assert authenticated_model(again.model).options["apiKey"] == "private-api-key"
-        finally:
-            again.shutdown()
+        s.remember_model_metadata(s.model, [CatalogModel(s.model.id, {"context_window": 120_000, "max_tokens": 4096})])
+        assert (s.model.context_window, s.model.max_tokens) == (120_000, 4096)
+        assert json.loads((s.paths.user / "settings.json").read_text()) == {
+            "execution": {"mode": default_execution_mode()},
+            "model": s.model.spec,
+        }
+        _assert_authenticated_after_restart(s, API_PRESETS[provider]["config"]["baseUrl"], "private-api-key")
         s.prompt(f"/logout {provider}")
         assert s.auth.all() == {}
         assert "apiKey" not in authenticated_model(s.model).options
@@ -72,8 +89,8 @@ def test_api_login_persists_switches_and_logout_removes_only_credential(project,
         s.shutdown()
 
 
-@pytest.mark.parametrize("provider", AUTH_PRESETS)
-def test_account_login_dispatches_provider_and_uses_request_only_token(project, provider, monkeypatch):
+@pytest.fixture
+def account_login(monkeypatch):
     from virgo.ai import oauth
 
     seen = []
@@ -83,11 +100,17 @@ def test_account_login_dispatches_provider_and_uses_request_only_token(project, 
         return {"type": "oauth", "access": "account-secret", "refresh": "refresh-secret", "expires": time.time() + 3600}
 
     monkeypatch.setattr(oauth, "login", login)
+    return seen
+
+
+@pytest.mark.parametrize("provider", AUTH_PRESETS)
+def test_account_login_dispatches_provider_and_uses_request_only_token(project, provider, account_login, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://environment.invalid")
     ui = LoginUI()
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         s.prompt(f"/login auth {provider}")
-        assert seen == [provider]
+        assert account_login == [provider]
         assert s.model.spec == f"{provider}/{AUTH_PRESETS[provider]['model']}"
         small_id = {"openai-codex": "gpt-6-luna", "anthropic": "claude-haiku-5-5"}.get(provider)
         expected_small = f"{provider}/{small_id}" if small_id else s.model.spec
@@ -98,6 +121,11 @@ def test_account_login_dispatches_provider_and_uses_request_only_token(project, 
         assert authenticated_model(s.small_model).options["apiKey"] == "account-secret"
         assert "account-secret" not in repr(s.model)
         assert "refresh-secret" not in repr(request)
+        expected = {"execution": {"mode": default_execution_mode()}, "model": s.model.spec}
+        if provider == "anthropic":
+            expected["providers"] = {"anthropic": {"baseUrl": "https://api.anthropic.com"}}
+        assert json.loads((s.paths.user / "settings.json").read_text()) == expected
+        _assert_authenticated_after_restart(s, AUTH_PRESETS[provider]["config"]["baseUrl"], "account-secret")
     finally:
         s.shutdown()
 
@@ -112,6 +140,10 @@ def test_custom_api_wizard_preserves_other_settings(project):
         assert s.model.base_url == "http://localhost:1234/v1"
         saved = json.loads((s.paths.user / "settings.json").read_text())
         assert saved["effort"] == "high" and "other" in saved["providers"]
+        assert saved["model"] == "local/model/name"
+        assert saved["providers"]["local"] == {
+            "api": "openai", "baseUrl": "http://localhost:1234/v1", "apiKeyEnv": "VIRGO_LOCAL_API_KEY",
+        }
     finally:
         s.shutdown()
 
@@ -158,7 +190,95 @@ def test_failed_settings_save_rolls_back_existing_login(project, monkeypatch):
         s.prompt("/login api deepseek")
         assert s.auth.all()["deepseek"] == previous
         assert s.model.spec == previous_model
-        assert any("Login failed" in line for line in ui.lines)
+        assert any("Cannot save settings" in line for line in ui.lines)
+    finally:
+        s.shutdown()
+
+
+def test_api_login_resets_custom_endpoint_and_rolls_back_a_failed_reset(project, monkeypatch):
+    custom = "http://localhost:1234/v1"
+    official = "https://api.deepseek.com"
+    ui = LoginUI(custom, "", "original", official + "/", "", "replacement", official, "", "replacement")
+    s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
+    try:
+        s.prompt("/login api deepseek")
+        path = s.paths.user / "settings.json"
+        assert json.loads(path.read_text()) == {
+            "execution": {"mode": default_execution_mode()},
+            "model": s.model.spec,
+            "providers": {"deepseek": {"baseUrl": custom}},
+        }
+        _assert_authenticated_after_restart(s, custom, "original")
+        previous_auth = s.auth.all()
+        previous_settings = path.read_bytes()
+        previous_data = copy.deepcopy(s.settings.data)
+        replace = os.replace
+
+        def fail_settings_write(src, dst):
+            if dst == path:
+                raise OSError("Cannot replace settings")
+            return replace(src, dst)
+
+        with monkeypatch.context() as m:
+            m.setattr(os, "replace", fail_settings_write)
+            s.prompt("/login api deepseek")
+        assert any("Cannot replace settings" in line for line in ui.lines)
+        assert s.auth.all() == previous_auth
+        assert path.read_bytes() == previous_settings
+        assert s.settings.data == previous_data
+        assert authenticated_model(s.model).base_url == custom
+
+        s.prompt("/login api deepseek")
+        assert json.loads(path.read_text()) == {
+            "execution": {"mode": default_execution_mode()},
+            "model": s.model.spec,
+        }
+        assert "deepseek" not in s.settings.get("providers", {})
+        _assert_authenticated_after_restart(s, official, "replacement")
+    finally:
+        s.shutdown()
+
+
+def test_login_compares_protocol_and_normalized_endpoint_to_builtin(project, monkeypatch):
+    config = API_PRESETS["deepseek"]["config"]
+    monkeypatch.setitem(BUILTIN_PROVIDERS, "deepseek", {
+        **config, "api": "openai-responses", "baseUrl": config["baseUrl"] + "/",
+    })
+    ui = LoginUI("", "", "secret")
+    s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
+    try:
+        # A user edit made since startup must also be cleared when choosing the default.
+        path = s.paths.user / "settings.json"
+        path.write_text(json.dumps({"providers": {"deepseek": {"baseUrl": "https://old.invalid"}}}))
+        s.prompt("/login api deepseek")
+        assert json.loads(path.read_text())["providers"] == {"deepseek": {"api": "openai"}}
+        assert s.auth.all()["deepseek"]["connection"] == {"api": "openai", "baseUrl": config["baseUrl"]}
+        _assert_authenticated_after_restart(s, config["baseUrl"] + "/", "secret")
+    finally:
+        s.shutdown()
+
+
+@pytest.mark.parametrize("mode,provider", [("api", "deepseek"), ("auth", "xai")])
+def test_relogin_preserves_manual_settings_and_resets_conflicting_connection(project, mode, provider, account_login):
+    preset = (API_PRESETS if mode == "api" else AUTH_PRESETS)[provider]
+    endpoint = preset["config"]["baseUrl"]
+    ui = LoginUI("", "", "original", endpoint, "", "replacement")
+    s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
+    try:
+        s.prompt(f"/login {mode} {provider}")
+        manual = {
+            "models": {preset["model"]: {"contextWindow": 55_555}},
+            "reasoningEffortMap": {"medium": "medium"},
+            "headers": {"X-Example": "preserve"},
+            "apiKeyEnv": "MANUAL_API_KEY",
+            "sendReasoning": False,
+        }
+        s.settings.save_user({"providers": {provider: {**manual, "api": "anthropic", "baseUrl": "https://old.invalid"}}})
+        s.prompt(f"/login {mode} {provider}")
+        assert json.loads((s.paths.user / "settings.json").read_text())["providers"] == {provider: manual}
+        assert s.settings.get(f"providers.{provider}") == manual
+        assert s.model.context_window == 55_555
+        _assert_authenticated_after_restart(s, endpoint, "replacement" if mode == "api" else "account-secret")
     finally:
         s.shutdown()
 
@@ -166,20 +286,17 @@ def test_failed_settings_save_rolls_back_existing_login(project, monkeypatch):
 def test_project_endpoint_login_stays_consistent_after_restart(project):
     (project / ".virgo").mkdir()
     (project / ".virgo" / "settings.json").write_text(json.dumps({
-        "providers": {"deepseek": {"baseUrl": "http://localhost:1234/v1"}},
+        "providers": {"deepseek": {"baseUrl": "http://localhost:1234/v1", "apiKeyEnv": "PROJECT_API_KEY"}},
     }))
     ui = LoginUI("", "", "secret")
     s = AgentSession(project, ui=ui, session=None, extensions=False, trust_project_extensions=True, refresh_models=False)
     try:
         s.prompt("/login api deepseek")
-        assert s.model.base_url == "http://localhost:1234/v1"
-        again = AgentSession(project, session=None, extensions=False, trust_project_extensions=True,
-                             refresh_models=False, shell_catalog=s.services["shell"].catalog)
-        try:
-            assert again.model.base_url == s.model.base_url
-            assert authenticated_model(again.model).options["apiKey"] == "secret"
-        finally:
-            again.shutdown()
+        assert s.model.api_key_env == "PROJECT_API_KEY"
+        assert json.loads((s.paths.user / "settings.json").read_text())["providers"] == {
+            "deepseek": {"baseUrl": "http://localhost:1234/v1"},
+        }
+        _assert_authenticated_after_restart(s, "http://localhost:1234/v1", "secret")
         # Explicitly selecting a conflicting endpoint fails before asking for a key.
         s.ui = ui = LoginUI("https://api.deepseek.com", "")
         s.commands.get("login").fn(s, "api deepseek")
