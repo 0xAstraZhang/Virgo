@@ -142,7 +142,7 @@ MESSAGES = {
     "harness.preferences.not_offered": "所选模型不在可选列表中",
     "harness.preferences.persisted": "已保存为默认设置",
     "harness.preferences.session_only": "仅限当前会话",
-    "harness.response_language": "除非用户明确要求其他语言，否则使用中文回答。保留代码、标识符和引用内容的原文。",
+    "harness.response_language": "使用用户当前消息的语言回答。如果用户指定了回复语言，就使用指定的语言。保留代码、标识符和引用内容的原文。",
     "harness.retry.budget": "[服务商要求的重试等待时间超过 retry.maxWaitSeconds 的剩余额度。]",
     "harness.retry.fallback": "[正在切换至备用模型 {model}]",
     "harness.retry.wait": "[{error} — {delay:.1f} 秒后重试（{retries}/{maximum}）]",

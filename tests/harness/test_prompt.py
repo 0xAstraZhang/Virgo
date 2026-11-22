@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+import pytest
+
 from virgo.ai.providers import faux
 from virgo.harness.session import Runtime
 
@@ -33,6 +35,18 @@ def test_default_request_keeps_tool_definitions_without_duplicate_or_empty_secti
     for tag in ("tools", "asking", "memory", "skills", "workflows"):
         assert f"<{tag}>" not in first.system
     assert str(session.cwd) in first.system and "<environment>" in first.system
+
+
+@pytest.mark.parametrize(("ui_language", "guidance"), [
+    ("en", "language of the user's message"),
+    ("zh-CN", "用户当前消息的语言"),
+], ids=["en", "zh-CN"])
+def test_response_language_follows_user_message_in_each_ui_locale(make_session, ui_language, guidance):
+    session = make_session(faux.reply("ok"), settings={"language": ui_language})
+    session.prompt("¿Qué hace este proyecto?")
+    request = faux.CALLS["test"][-1]
+    language = request["system"].split("<language>")[1].split("</language>")[0]
+    assert guidance in language
 
 
 def test_user_system_and_project_context_survive_for_their_roles(make_session, project, tmp_path):
