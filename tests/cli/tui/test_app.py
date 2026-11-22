@@ -12,7 +12,7 @@ from rich.cells import cell_len
 from textual import events
 from textual.color import Color
 from textual.geometry import Size
-from textual.widgets import Button, OptionList, Static, TextArea
+from textual.widgets import OptionList, Static, TextArea
 
 from virgo.agent.types import AgentEvent
 from virgo.ai.providers import faux
@@ -21,7 +21,6 @@ from virgo.ai.types import AssistantMessage, TextContent, UserMessage
 from virgo.cli.tui.app import VirgoApp, shortcut_hints
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import ApprovalPicker, SessionPicker
-from virgo.cli.tui.modes import PermissionModePicker
 from virgo.cli.tui.transcript import AssistantView, ToolView
 from virgo.i18n.locales.en.ui import MESSAGES as EN_UI
 from virgo.i18n.locales.zh_CN.ui import MESSAGES as ZH_UI
@@ -355,7 +354,7 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 await wait_for(pilot, lambda: has_reply(app, "Earlier response.") and not app.controller.busy)
                 draft = "Keep this draft\n第二行"
                 app.editor.load_text(draft)
-                original_mode = session.approval_policy
+                original_mode = session.services["execution"].selected_mode_id
                 worker.start()
                 picker = app.query_one(ApprovalPicker)
                 await wait_for(pilot, lambda: picker.display)
@@ -389,7 +388,9 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 await pilot.pause()
                 assert question.scroll_y > 0
                 await pilot.press("ctrl+r", "shift+tab")
-                assert isinstance(app.screen, SessionPicker) and session.approval_policy == original_mode
+                assert isinstance(app.screen, SessionPicker)
+                assert session.services["execution"].selected_mode_id == original_mode
+                assert session.approval_policy == "ask"
                 assert not answers and app.screen.current_status == "Waiting"
                 await pilot.press("escape")
                 assert not app.has_modal and picker.display and not answers
@@ -507,15 +508,11 @@ def test_inline_approval_and_input_prompts_are_serialized(make_session, approval
             async with app.run_test(size=(80, 24)) as pilot:
                 picker = app.query_one(ApprovalPicker)
                 first, second = ("approval", "input") if approval_first else ("input", "approval")
-                modes = app.query_one(PermissionModePicker)
-                await pilot.press("shift+tab", "down")
-                assert modes.display
                 original_mode = app.session.services["execution"].selected_mode_id
                 workers[first].start()
                 await wait_for(pilot, lambda: app.active_confirmation is not None or app.active_input is not None)
-                assert not modes.display
-                app.action_permission_modes()
-                assert not modes.display
+                await pilot.press("shift+tab", "tab")
+                assert app.session.services["execution"].selected_mode_id == original_mode
                 workers[second].start()
                 await wait_for(pilot, lambda: bool(app.state.input_requests if approval_first else app.state.confirmations))
                 assert not app.has_modal
@@ -800,97 +797,28 @@ def test_footer_places_mode_and_usage_below_editor(make_session):
     asyncio.run(scenario())
 
 
-def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session):
+@pytest.mark.parametrize("language", ["en", "zh-CN"])
+def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session, language):
     async def scenario():
         ui = FullscreenUI()
-        session = broker_session(ui=ui)
+        session = broker_session(ui=ui, settings={"language": language})
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             app.editor.load_text("/mo")
             app.editor.move_cursor((0, 2))
             await wait_for(pilot, lambda: bool(app.completion_names))
             manager = session.services["execution"]
-            panel = app.query_one(PermissionModePicker)
-            picker = panel.query_one("#modes-list", OptionList)
-            modes = list(manager.modes)
-            await app.transcript.add_notice("Earlier conversation")
-            for number, mode in enumerate(modes, 1):
-                original = manager.selected_mode_id
+            status = app.query_one("#status", Static)
+            for mode, size in (("no-limit", (80, 24)), ("read-only", (40, 16)), ("workspace-edit", (80, 24))):
+                await pilot.resize_terminal(*size)
                 await pilot.press("shift+tab")
-                assert panel.display and len(app.screen_stack) == 1 and not panel.query(Button)
-                assert app.focused is picker and picker.highlighted == modes.index(original)
-                assert picker.get_option(original).prompt.plain.startswith("› ")
-                assert " ✓" in picker.get_option(original).prompt.plain
-                assert "Host" in picker.get_option("no-limit").prompt.plain
-                assert picker.size.height == picker.option_count == 3
-                assert app.transcript.region.height > 0 and app.transcript.region.bottom <= panel.region.y
-                assert app.query_one("#status").display
-                hidden = ("#editor", "#metrics", "#hints", "#jump", "#completions")
-                assert all(not app.query_one(selector).display for selector in hidden)
-                for _ in modes:
-                    last = picker.highlighted
-                    await pilot.press("shift+tab")
-                    assert picker.highlighted == (last + 1) % len(modes)
-                    assert picker.get_option_at_index(picker.highlighted).prompt.plain.startswith("› ")
-                    assert manager.selected_mode_id == original
-                await pilot.press(str(number))
-                await wait_for(pilot, lambda mode=mode: manager.selected_mode_id == mode and not panel.display)
-                assert session.approval_policy == "ask"
-                text = app.query_one("#status", Static).content
-                assert text.plain.startswith(manager.selected_mode.name)
+                assert manager.selected_mode_id == mode
+                await wait_for(pilot, lambda: status.render_line(0).text.startswith(manager.selected_mode.name))
+                assert app.editor.display and app.focused is app.editor
                 assert app.editor.text == "/mo" and app.editor.cursor_location == (0, 2)
-                assert app.focused is app.editor
                 assert app.query_one("#completions").display
-
-            await pilot.press("shift+tab", "right", "enter")
-            await wait_for(pilot, lambda: manager.selected_mode_id == modes[0] and not panel.display)
-            for cancel in ("escape", "ctrl+c"):
-                await pilot.press("shift+tab", "tab", cancel)
-                assert not panel.display and app.focused is app.editor
-                assert manager.selected_mode_id == modes[0]
-                assert app.editor.text == "/mo" and app.editor.cursor_location == (0, 2)
-
-            await pilot.press("shift+tab", "g")
-            await wait_for(pilot, lambda: any(
-                "No saved grants" in str(row.content) for row in app.transcript.query(".notice")
-            ))
-            assert not panel.display and manager.selected_mode_id == modes[0]
-            await pilot.press("shift+tab", "ctrl+r")
-            assert isinstance(app.screen, SessionPicker) and not panel.display
-            await pilot.press("escape")
-            assert app.focused is app.editor and app.editor.text == "/mo"
+                assert session.approval_policy == "ask"
             assert not faux.CALLS["test"]
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("language,wide_help,short_help", [
-    ("en", "g saved approvals", "↑↓/1-3 · Enter · g grants · Esc"),
-    ("zh-CN", "g 已保存授权", "↑↓/1-3 · Enter · g 授权 · Esc"),
-])
-def test_mode_picker_rows_and_keyboard_hints_fit_after_resize(make_session, language, wide_help, short_help):
-    async def scenario():
-        ui = FullscreenUI()
-        app = VirgoApp(make_session(ui=ui, settings={"language": language}), ui)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.press("shift+tab")
-            panel = app.query_one(PermissionModePicker)
-            choices = panel.query_one(OptionList)
-            help_line = panel.query_one("#modes-help", Static)
-            for width, height in ((80, 24), (40, 16), (80, 24)):
-                await pilot.resize_terminal(width, height)
-                await pilot.pause()
-                assert choices.size.height == choices.option_count == 3
-                assert "Host" in choices.render_line(choices.get_option_index("no-limit")).text
-                assert (wide_help if width == 80 else short_help) in help_line.render_line(0).text
-                assert help_line.size.height == 1
-                assert app.transcript.region.height > 0 and app.query_one("#status").region.bottom <= height
-            highlight = choices.get_component_styles("option-list--option-highlighted")
-            assert highlight.color == Color.parse("#7C3AED") and highlight.text_style.bold
-            assert not highlight.text_style.reverse
-            assert app.check_action("permission_modes", ())
-            disabled = ("page", "top", "tools", "thinking", "cancel_pending")
-            assert all(not app.check_action(action, ()) for action in disabled)
 
     asyncio.run(scenario())
 
@@ -1066,7 +994,7 @@ def test_status_shows_active_preset_while_only_a_child_is_queued(broker_session)
             release = session.reserve_child_work(session.main.origin.root)
             try:
                 assert not app.controller.busy
-                await pilot.press("shift+tab", "1")
+                await pilot.press("shift+tab", "shift+tab")
                 await wait_for(pilot, lambda: "Next: Read-Only" in str(app.query_one("#status", Static).content))
                 text = str(app.query_one("#status", Static).content).splitlines()[0]
                 assert text.startswith("Workspace-Edit") and "Next: Read-Only" in text
