@@ -29,6 +29,9 @@ MESSAGES = {
     "tools.fetch.deepseek_http": "DeepSeek 网页读取返回 HTTP {status}；未尝试切换服务。",
     "tools.fetch.deepseek_invalid": "DeepSeek 返回了无效的网页读取响应。",
     "tools.fetch.dns": "无法解析页面的主机名。",
+    "tools.fetch.dns_nonpublic": "DNS 将主机名解析到了非公网地址。私有网络或使用 Fake-IP DNS 的 VPN 可能返回这类地址。"
+    "HTTP 直连仅支持公网地址。换用其他公开网址也可能遇到相同的 DNS 限制。请尝试 /fetch auto 或 /fetch deepseek。"
+    "如果已启用 Fake-IP DNS，也可以将其关闭。",
     "tools.fetch.empty": "未获取到可读取的页面内容。",
     "tools.fetch.encoding": "不支持此 HTTP 内容编码。",
     "tools.fetch.http": "网页返回 HTTP {status}。",

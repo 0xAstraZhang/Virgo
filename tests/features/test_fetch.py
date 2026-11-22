@@ -1,6 +1,7 @@
 """Fetch tools run through Session permissions, tools, model continuation and storage."""
 
 import json
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -91,10 +92,44 @@ def test_unsafe_urls_never_connect(make_session, monkeypatch, http, url):
     assert not http["requests"]
 
 
-def test_private_dns_answer_never_connects(make_session, monkeypatch, http):
-    monkeypatch.setattr(web_fetch, "_addresses", lambda *args: ["93.184.216.34", "127.0.0.1"])
-    result, _ = fetch(make_session(), monkeypatch)
+@pytest.mark.parametrize("language", ["en", "zh-CN"])
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:8080/secret", "http://10.0.0.1/", "http://192.168.1.1/",
+    "http://[::1]/", "http://198.18.2.29/", "http://localhost/admin",
+    "http://app.localhost/", "http://app.localhost./",
+])
+def test_private_ip_or_localhost_rejected_before_dns(make_session, monkeypatch, http, language, url):
+    resolve = Mock(return_value=[])
+    monkeypatch.setattr(web_fetch, "_addresses", resolve)
+    session = make_session(settings={"language": language})
+    result, _ = fetch(session, monkeypatch, url)
+    resolve.assert_not_called()
+    assert not http["requests"]
+    assert result.is_error and result.text() == session.t("tools.fetch.public_only")
+
+
+@pytest.mark.parametrize(("language", "description"), [("en", "non-public address"), ("zh-CN", "非公网地址")])
+@pytest.mark.parametrize("addresses", [["198.18.2.29"], ["10.0.0.5"], ["93.184.216.34", "127.0.0.1"]])
+def test_private_dns_answer_never_connects(make_session, monkeypatch, http, language, description, addresses):
+    monkeypatch.setattr(web_fetch, "_addresses", lambda *args: addresses)
+    session = make_session(settings={"language": language})
+    result, _ = fetch(session, monkeypatch)
     assert result.is_error and not http["requests"]
+    message = result.text()
+    assert all(address not in message for address in addresses)
+    assert description in message and "DNS" in message and "/fetch deepseek" in message
+    assert message == session.t("tools.fetch.dns_nonpublic")
+
+
+def test_redirect_to_hostname_with_private_dns_answer_stops_at_first_request(make_session, monkeypatch, http):
+    addresses = {"example.com": ["93.184.216.34"], "redirect.example": ["10.0.0.5"]}
+    monkeypatch.setattr(web_fetch, "_addresses", lambda host, *_: addresses[host])
+    http.update(status=302, headers={"location": "https://redirect.example/page"})
+    session = make_session()
+    result, _ = fetch(session, monkeypatch)
+    assert [request.headers["host"] for request in http["requests"]] == ["example.com"]
+    assert result.is_error and result.text() == session.t("tools.fetch.dns_nonpublic")
+    assert "10.0.0.5" not in result.text()
 
 
 def test_network_permission_blocks_before_network(broker_session, monkeypatch, http):

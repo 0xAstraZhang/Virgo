@@ -70,7 +70,7 @@ def _wait(call, ctx, deadline):
         stopped.set()
 
 
-def _public(address, t=None):
+def _public(address, t=None, *, error_key="tools.fetch.public_only"):
     t = t or Translator()
     ip = ipaddress.ip_address(address)
     if (
@@ -79,7 +79,7 @@ def _public(address, t=None):
         or getattr(ip, "ipv4_mapped", None)
         and not ip.ipv4_mapped.is_global
     ):
-        raise FetchError(t("tools.fetch.public_only"))
+        raise FetchError(t(error_key))
 
 
 def validate_url(url, t=None):
@@ -102,9 +102,8 @@ def validate_url(url, t=None):
         try:
             ipaddress.ip_address(host)
         except ValueError:
-            if host.lower().rstrip(".") in {"localhost", "localhost.localdomain"} or host.lower().endswith(
-                ".localhost"
-            ):
+            hostname = host.lower().rstrip(".")
+            if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".localhost"):
                 raise FetchError(t("tools.fetch.public_only")) from None
         else:
             _public(host, t)
@@ -232,7 +231,7 @@ def _http(url, maximum, timeout, ctx, deadline, review):
         if not addresses:
             raise FetchError(ctx.t("tools.fetch.no_address"))
         for address in addresses:
-            _public(address, ctx.t)
+            _public(address, ctx.t, error_key="tools.fetch.dns_nonpublic")
         # Connect to exactly the validated address. HTTP Host and TLS SNI/certificate
         # verification retain the original hostname; no second DNS resolution or proxy.
         pinned = parsed.copy_with(host=addresses[0])
