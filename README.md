@@ -40,7 +40,9 @@ uv sync --locked
 uv run virgo
 ```
 
-In Virgo, enter `/login` to connect a supported account or configure an API. Then ask for something concrete:
+In Virgo, enter `/login` to connect a supported account or configure an API. The full-width prompt shows its keyboard shortcuts inside the border. A blank line separates the box from the session status.
+
+Once connected, try a concrete task.
 
 ```text
 Explain how this project starts and where I should add a new command.

@@ -27,7 +27,7 @@ from ...harness.store import SessionStore
 from ..i18n import tr
 from .activity import RunActivity
 from .bridge import FullscreenUI, InputRequest
-from .choices import ChoiceList, CommandChoice
+from .choices import ChoiceList, CommandChoice, MarkedChoiceList, PromptPanel
 from .controller import RunController
 from .conversation import ConversationState
 from .dialogs import ApprovalPicker, SessionPicker
@@ -136,10 +136,12 @@ class ConversationPane(Vertical):
             yield Static("", id="pending", markup=False)
             yield ApprovalPicker(id="approval")
             yield self.modes
-            yield PreferencePicker(id="preferences")
-            yield Static("", id="auth-question", markup=False)
-            yield ChoiceList(id="completions")
-            yield Input(id="auth-value")
+            yield PreferencePicker(id="preferences", classes="framed-prompt")
+            with PromptPanel(id="command-prompt"):
+                yield Static("", classes="prompt-title", markup=False)
+                yield MarkedChoiceList(id="completions")
+                yield Input(id="auth-value")
+                yield Static("", id="prompt-hints", markup=False)
             yield ChatEditor(self.state.history)
             yield Static("", id="status", markup=False)
             yield Static("", id="metrics", markup=False)
@@ -158,7 +160,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     ConversationPane { width: 100%; height: 1fr; }
     #body { height: 1fr; }
     Transcript { height: 1fr; }
-    #dock { height: auto; padding: 0 1; background: $background; }
+    #dock { height: auto; background: $background; }
+    #dock > * { margin: 0 1; }
+    #command-prompt { height: auto; }
+    #dock > .framed-prompt { margin: 0 0 1 0; padding: 0 1; border: round #9377BE;
+        border-title-color: #7C3AED; border-title-style: bold; }
+    #command-prompt.framed-prompt > #completions { border: none; }
+    #prompt-hints { display: none; height: auto; text-style: dim; margin-top: 1; }
+    #command-prompt.framed-prompt > #prompt-hints { display: block; }
     #pending { height: auto; max-height: 3; text-style: dim; }
     #jump { height: 1; min-height: 1; border: none; width: auto; padding: 0 1;
         color: #7C3AED; background: $background; text-style: bold; }
@@ -167,7 +176,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #completions > .option-list--option-highlighted,
     #completions:focus > .option-list--option-highlighted {
         background: #7C3AED; color: #FFFFFF; text-style: bold; }
-    #auth-question { height: auto; max-height: 3; color: #7C3AED; text-style: bold; }
+    .prompt-title { display: none; height: auto; max-height: 3; color: #7C3AED; text-style: bold; }
     #auth-value { height: 3; border: solid #7C3AED; padding: 0;
         background: $background; color: $foreground; }
     #auth-value:focus { border: solid #7C3AED; }
@@ -294,7 +303,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         return len(self.screen_stack) > 1
 
     def on_mount(self) -> None:
-        for selector in ("#jump", "#pending", "#completions", "#auth-question", "#auth-value"):
+        for selector in ("#jump", "#pending", "#completions", "#auth-value"):
             self._pane.query_one(selector).display = False
         self.editor.focus()
         self._poll_timer = self.set_interval(1 / 30, self.poll)
@@ -491,7 +500,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             target.display = False
             self._panes.append(target)
             await self.screen_stack[0].mount(target)
-            for selector in ("#jump", "#pending", "#completions", "#auth-question", "#auth-value"):
+            for selector in ("#jump", "#pending", "#completions", "#auth-value"):
                 target.query_one(selector).display = False
             target.controller.start(initial)
         if target is not None:
@@ -694,16 +703,14 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.focus_composer()
             self.update_status()
             return
-        question = root.query_one("#auth-question", Static)
-        question.update(request.question)
-        question.display = True
+        prompt = root.query_one("#command-prompt", PromptPanel)
+        prompt.add_class("framed-prompt")
+        prompt.set_prompt_title(request.question)
         self.editor.display = False
-        options = root.query_one("#completions", ChoiceList)
+        options = root.query_one("#completions", MarkedChoiceList)
         field = root.query_one("#auth-value", Input)
         if request.options is not None:
-            options.clear_options()
-            options.add_options(Option(Text(label), id=str(i)) for i, label in enumerate(request.options))
-            options.highlighted = 0
+            options.set_choices([(str(i), label) for i, label in enumerate(request.options)], highlighted=0)
             options.display = True
             options.styles.max_height = max(3, min(6, self.size.height // 4))
         else:
@@ -747,9 +754,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         field.value = ""
         field.password = False
         field.display = False
-        question = root.query_one("#auth-question", Static)
-        question.update("")
-        question.display = False
+        prompt = root.query_one("#command-prompt", PromptPanel)
+        prompt.remove_class("framed-prompt")
+        prompt.set_prompt_title("")
         root.query_one("#completions", ChoiceList).clear_options()
         self.set_composer_visible(True)
         self.hide_completions()
@@ -788,8 +795,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         else:
             hints = Text()
         hint_row = root.query_one("#hints", Static)
-        hint_row.display = bool(hints) and root.query_one("#metrics").display
-        update_static(hint_row, hints, layout=False)
+        in_prompt = self.input_request is not None and self.input_request.preferences is None
+        hint_row.display = not in_prompt and bool(hints) and root.query_one("#metrics").display
+        if in_prompt:
+            hint_row = root.query_one("#prompt-hints", Static)
+        update_static(hint_row, hints, layout=in_prompt)
         cwd = self.screen_stack[0].query_one("#cwd", Static)
         brand_width = self.screen_stack[0].query_one("#brand", Static).content.cell_len
         cwd_width = max(1, self.size.width - 2 - brand_width - 1)

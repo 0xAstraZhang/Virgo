@@ -45,7 +45,7 @@ def form_is_ready(app, question=None) -> bool:
         and (question is None or request.question == question)
         # State changes precede Textual's layout pass; geometry assertions need
         # the newly displayed form to have reached the screen as well.
-        and app.query_one("#auth-question").region.height > 0
+        and app.query_one("#prompt-hints").region.height > 0
     )
 
 

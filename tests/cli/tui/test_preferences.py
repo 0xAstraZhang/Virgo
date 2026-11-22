@@ -199,7 +199,7 @@ def test_model_panel_saves_default_and_cancel_keeps_it(make_session):
             await wait_for(pilot, lambda: panel.display)
             await pilot.press("enter", "down", "left", "backspace")
             assert panel.provider is None
-            assert "Select provider" in str(panel.query_one("#preference-title", Static).content)
+            assert panel.border_title == "Select provider"
             await pilot.press("escape")
             await wait_for(pilot, lambda: not app.controller.busy)
             assert session.model.spec == selected and session.effort == "high"
@@ -232,8 +232,8 @@ def test_picker_waits_for_active_run_and_stays_usable_when_resized(make_session)
                 for width, height in ((40, 16), (80, 24), (120, 40)):
                     await pilot.resize_terminal(width, height)
                     await pilot.pause()
-                    assert panel.region.bottom <= app.query_one("#status").region.y
-                    assert panel.region.height > 0 and panel.region.right <= width
+                    assert panel.region.bottom + 1 == app.query_one("#status").region.y
+                    assert panel.region.height > 0 and panel.region.x == 0 and panel.region.right == width
                     assert app.query_one("#status").region.bottom <= height
                     await pilot.press("down", "right")
                 await pilot.press("escape")
