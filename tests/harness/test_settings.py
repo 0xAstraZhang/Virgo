@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import pytest
 
 from virgo.harness.session import AgentSession
-from virgo.harness.settings import Paths, Settings
+from virgo.harness.settings import Paths, Settings, UserSettingsPatch
 
 
 def test_default_user_and_project_directories(project, tmp_path, monkeypatch):
@@ -35,6 +36,52 @@ def test_home_and_model_overrides(project, tmp_path, monkeypatch):
     assert settings.get("model") == "faux/environment"
     assert settings.get("effort") == "low"
     assert Settings.load(paths, {"model": "faux/explicit"}).get("model") == "faux/explicit"
+
+
+def test_save_user_removes_provider_keys_and_prunes_only_newly_empty_parents(project):
+    paths = Paths(project)
+    path = paths.user / "settings.json"
+    path.write_text(json.dumps({"effort": "low", "providers": {
+        "deepseek": {"baseUrl": "https://old.invalid", "apiKeyEnv": "MY_API_KEY"}, "xai": {"api": "openai"},
+    }}))
+    settings = Settings.load(paths)
+    settings.save_user(UserSettingsPatch({"model": "xai/grok-4.3"}, {"xai": ("api",), "deepseek": ("baseUrl",)}))
+    saved = {"effort": "low", "model": "xai/grok-4.3", "providers": {"deepseek": {"apiKeyEnv": "MY_API_KEY"}}}
+    assert json.loads(path.read_text()) == saved
+    assert settings.data == Settings.load(paths).data
+
+    settings.save_user(UserSettingsPatch({}, {"deepseek": ("apiKeyEnv",)}))
+    del saved["providers"]
+    assert json.loads(path.read_text()) == saved
+    assert settings.data == Settings.load(paths).data
+
+
+def test_save_user_removal_preserves_trusted_project_and_startup_values(project):
+    paths = Paths(project)
+    path = paths.user / "settings.json"
+    path.write_text(json.dumps({"providers": {"deepseek": {"baseUrl": "https://old.invalid", "api": "anthropic"}}}))
+    paths.project.mkdir()
+    (paths.project / "settings.json").write_text(json.dumps({"providers": {"deepseek": {
+        "baseUrl": "https://api.deepseek.com", "headers": {"X-Project": "keep"},
+    }}}))
+    overrides = {"providers": {"deepseek": {"api": "openai"}}}
+    settings = Settings.load(paths, overrides, trust_project_extensions=True)
+    settings.save_user(UserSettingsPatch({}, {"deepseek": ("api", "baseUrl")}))
+    assert json.loads(path.read_text()) == {}
+    assert settings.data == Settings.load(paths, overrides, trust_project_extensions=True).data
+
+
+def test_save_user_failed_validation_keeps_keys_on_disk_and_in_session(project):
+    paths = Paths(project)
+    path = paths.user / "settings.json"
+    path.write_text(json.dumps({"providers": {"deepseek": {"baseUrl": "https://old.invalid"}}}))
+    settings = Settings.load(paths)
+    previous_disk = path.read_bytes()
+    previous_data = copy.deepcopy(settings.data)
+    with pytest.raises(ValueError, match="budget.maxModelCalls"):
+        settings.save_user(UserSettingsPatch({"budget": {"maxModelCalls": 0}}, {"deepseek": ("baseUrl",)}))
+    assert path.read_bytes() == previous_disk
+    assert settings.data == previous_data
 
 
 @pytest.mark.parametrize(

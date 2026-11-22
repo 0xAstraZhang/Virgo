@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,27 @@ def deep_merge(base: dict, over: dict) -> dict:
         else:
             out[k] = copy.deepcopy(v)
     return out
+
+
+@dataclass
+class UserSettingsPatch:
+    """User-layer writes and removals to apply in one settings file replacement."""
+
+    values: dict
+    remove_provider_keys: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+def _remove_provider_keys(data: dict, provider: str, keys: tuple[str, ...], *, prune_root: bool = True) -> None:
+    providers = data.get("providers")
+    config = providers.get(provider) if isinstance(providers, dict) else None
+    if not isinstance(config, dict) or config.keys().isdisjoint(keys):
+        return
+    for key in keys:
+        config.pop(key, None)
+    if not config:
+        del providers[provider]
+        if prune_root and not providers:
+            del data["providers"]
 
 
 class Paths:
@@ -366,18 +388,28 @@ class Settings:
             enabled = enabled and (self.get("plugins.web.searchEnabled", True) or self.get("plugins.web.fetchEnabled", True))
         return bool(enabled)
 
-    def save_user(self, patch: dict) -> None:
+    def save_user(self, patch: dict | UserSettingsPatch) -> None:
         """Persist only explicit changes, preserving unrelated user configuration."""
+        if not isinstance(patch, UserSettingsPatch):
+            patch = UserSettingsPatch(patch)
         notices: list[str] = []
-        normalized = _normalize_layer(patch, notices)
+        normalized = _normalize_layer(patch.values, notices)
         candidate = deep_merge(self.data, normalized)
-        _validate(candidate)
         path = self.paths.user / "settings.json"
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         saved = _read_json(path)
         if saved is None:
             saved = {"execution": {"mode": default_execution_mode()}}
-        data = deep_merge(saved, patch)
+        data = deep_merge(saved, patch.values)
+        for provider, keys in patch.remove_provider_keys.items():
+            _remove_provider_keys(data, provider, keys)
+            _remove_provider_keys(candidate, provider, keys, prune_root=False)
+            # Removing a user key reveals the trusted project or startup value.
+            higher = self._provider_overrides(provider)
+            inherited = {key: higher[key] for key in keys if key in higher}
+            if inherited:
+                candidate.setdefault("providers", {}).setdefault(provider, {}).update(inherited)
+        _validate(candidate)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix=".settings-", suffix=".tmp", dir=path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -389,9 +421,8 @@ class Settings:
         self.data = candidate
         self.migration_warnings = list(dict.fromkeys([*self.migration_warnings, *notices]))
 
-    def check_provider_update(self, provider: str, config: dict) -> None:
-        """Reject a login that would use a different endpoint on the next startup."""
-        effective = copy.deepcopy(config)
+    def _provider_overrides(self, provider: str) -> dict:
+        effective = {}
         if self.project_extensions_trusted and not same_directory(self.paths.project, self.paths.user):
             project = _read_json(self.paths.project / "settings.json") or {}
             project_providers = project.get("providers")
@@ -400,6 +431,11 @@ class Settings:
         override_providers = self.overrides.get("providers")
         if isinstance(override_providers, dict):
             effective = deep_merge(effective, override_providers.get(provider, {}))
+        return effective
+
+    def check_provider_update(self, provider: str, config: dict) -> None:
+        """Reject a login that would use a different endpoint on the next startup."""
+        effective = deep_merge(config, self._provider_overrides(provider))
         for key in ("api", "baseUrl", "apiKeyEnv"):
             if effective.get(key) != config.get(key):
                 raise ValueError(
