@@ -37,6 +37,38 @@ def test_default_request_keeps_tool_definitions_without_duplicate_or_empty_secti
     assert str(session.cwd) in first.system and "<environment>" in first.system
 
 
+@pytest.mark.parametrize("preset", ["workspace-edit", "read-only"])
+@pytest.mark.parametrize("windows", [False, True], ids=["posix", "native-windows"])
+def test_sandbox_temp_guidance_in_request_prefix(broker_session, monkeypatch, preset, windows):
+    runtime = broker_session(preset=preset).main
+    monkeypatch.setattr("virgo.execution_policy.is_native_windows", lambda: windows)
+
+    first = runtime.request_context([])
+    second = runtime.request_context([])
+    assert (first.system, first.tools) == (second.system, second.tools)
+    boundary = first.system.split("<execution_boundary>")[1].split("</execution_boundary>")[0]
+    # The JSON descriptor can contain host paths such as /tmp on the machine running the test.
+    _, guidance = boundary.split("\n", 1)
+    assert "$TMPDIR" in guidance and "removed when the command finishes" in guidance
+    assert "writable workspace" in guidance and "persist across calls" in guidance
+    assert "clean them up" in guidance
+    if windows:
+        assert "$env:TMPDIR" in guidance
+        assert "$env:TEMP" in guidance and "%TEMP%" in guidance and "session-scoped" in guidance
+        assert "/tmp" not in guidance
+    else:
+        assert "/tmp is read-only by default" in guidance
+        assert "%TEMP%" not in guidance
+
+
+def test_no_limit_boundary_omits_sandbox_temp_guidance(broker_session):
+    system = broker_session(preset="no-limit").main.request_context([]).system
+    boundary = system.split("<execution_boundary>")[1].split("</execution_boundary>")[0]
+    assert "Host" in boundary
+    for claim in ("/tmp", "TMPDIR", "%TEMP%", "$env:TEMP", "when the command finishes"):
+        assert claim not in boundary
+
+
 @pytest.mark.parametrize(("ui_language", "guidance"), [
     ("en", "language of the user's message"),
     ("zh-CN", "用户当前消息的语言"),

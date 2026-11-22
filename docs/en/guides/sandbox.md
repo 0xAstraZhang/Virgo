@@ -18,6 +18,13 @@ Linux, macOS, supported Windows 11 (`null.sys` Feature `60692039`), and Windows 
 - Defending against prompt-injection attack chains (though hard-denying private credentials, confirming `.virgo` writes, stripping untrusted project configs, and Read-Only network isolation still mitigate common accidental and injection impact).
 - Identical isolation strength across all operating systems.
 
+## Temporary files in sandboxed Shell commands
+
+- On Linux, WSL2, and macOS, host `/tmp` is read-only by default. Use `$TMPDIR` for temporary files. `TMPDIR`, `TMP`, and `TEMP` all point to the same writable directory, which Virgo removes when the command finishes.
+- On native Windows, use `TMPDIR` (`$env:TMPDIR` in PowerShell) for files Virgo removes when the command finishes. `TEMP` and `TMP` point to the AppContainer session's shared temp directory. Use `$env:TEMP` in PowerShell or `%TEMP%` in cmd for files needed later in that session.
+
+Put temporary files in a writable workspace path only if they must persist across calls, and remove them after their last use.
+
 ## Platform backends and honest differences
 
 - **Linux (Tier 1 — `bubblewrap`)**: Requires system `bwrap` and unprivileged user namespaces (`--unshare-all --unshare-user --disable-userns --cap-drop ALL`, with `--info-fd` startup acknowledgement and no `libseccomp` runtime dependency). Mounts the host filesystem read-only (`--ro-bind / /`) with real read-only `$HOME` so user-installed toolchains (`~/.cargo`, `~/.rustup`, `~/.local`, `nvm`, `pyenv`, etc.), `AF_UNIX` local sockets, `AF_NETLINK`, and `io_uring` work seamlessly, while masking high-sensitivity credential directories/files (`--perms 000 --tmpfs` / empty read-only file mounts) and mounting the workspace, session cache, and per-command `TMPDIR` writable. Existing unapproved `.virgo` directories are bind-mounted read-only; absent `.virgo` creation inside Shell is a Linux bind-mount limitation, while Broker file tools and untrusted project settings stripping still protect it.
