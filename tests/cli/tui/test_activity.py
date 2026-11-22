@@ -246,7 +246,7 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                 await pilot.press("enter")
                 assert app.controller.busy and not app.activity.display
                 assert "Working…" in app.query_one("#status").render_line(0).text
-                assert "/help" in app.query_one("#hints").render_line(0).text
+                assert "Esc interrupt" in app.query_one("#hints").render_line(0).text
                 app._poll_timer.resume()
                 await wait_for(pilot, lambda: entered.is_set() and app.activity.display)
                 for width, height in ((40, 16), (80, 24)):
@@ -264,6 +264,11 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                     assert not app.query("#activity")
                     assert app.transcript.scroll_y == 0
                     assert not app.transcript.follow_latest
+                await pilot.click("#jump")
+                await wait_for(pilot, lambda: app.transcript.follow_latest and
+                               "Thinking" not in str(status.content))
+                assert header.display and "Thinking" in str(header.content)
+                await pilot.press("ctrl+home")
                 release.set()
                 await wait_for(pilot, lambda: len(summaries(app)) == 2)
                 await pilot.pause()
