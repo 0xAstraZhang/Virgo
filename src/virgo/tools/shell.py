@@ -60,8 +60,8 @@ def sandbox_failure_hint(
     ):
         return t("tools.output.sandbox_tmp_hint")
     if not write_paths:
-        return t("tools.output.sandbox_readonly_hint")
-    return t("tools.output.sandbox_write_hint")
+        return t("tools.output.sandbox_readonly_hint" if is_posix else "tools.output.sandbox_windows_readonly_hint")
+    return t("tools.output.sandbox_write_hint" if is_posix else "tools.output.sandbox_windows_write_hint")
 
 
 @dataclass(frozen=True)

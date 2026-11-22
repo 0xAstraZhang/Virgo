@@ -97,6 +97,12 @@ MESSAGES = {
     "可用于单条命令的临时文件；如需写权限请使用 request_permissions。]",
     "tools.output.sandbox_tmp_hint": "[沙箱提示：宿主机 /tmp 在沙箱中默认只读。单条命令的临时文件请写入 "
     "$TMPDIR（若需跨调用保留，请写入工作区内的可写路径）。]",
+    "tools.output.sandbox_windows_readonly_hint": "[沙箱提示：当前沙箱为只读模式（无 write_paths）。仅 "
+    "$env:TMPDIR（Bash 中为 $TMPDIR，单条命令临时文件）与 $env:TEMP（cmd 中为 %TEMP%，会话级临时文件）可写；"
+    "如需写权限请使用 request_permissions。]",
+    "tools.output.sandbox_windows_write_hint": "[沙箱提示：沙箱命令只能写入已允许的 write_paths、"
+    "$env:TMPDIR（Bash 中为 $TMPDIR）与 $env:TEMP（cmd 中为 %TEMP%）（私有凭据目录及未获批的 .virgo 禁止写入）。"
+    "请检查目标路径是否超出沙箱边界。]",
     "tools.output.sandbox_write_hint": "[沙箱提示：沙箱命令只能写入已允许的 write_paths 和 $TMPDIR"
     "（宿主机 /tmp、私有凭据目录及未获批的 .virgo 禁止写入）。请检查目标路径是否超出沙箱边界。]",
     "tools.output.timeout": "{text}\n\n[命令在 {timeout:g} 秒后超时]",

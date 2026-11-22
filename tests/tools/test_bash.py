@@ -243,3 +243,32 @@ def test_sandbox_failure_hint_explains_tmp_and_write_boundary_denials():
         "touch: /tmp/x: Permission denied",
         {"provider": "host"},
     ) is None
+
+    # Native Windows AppContainer hints must use Windows temp variables and omit host /tmp
+    win_ro_boundary = {
+        "provider": "sandbox",
+        "backend": "windows-appcontainer",
+        "effective": {"native_process": {"write_paths": [], "unrestricted": False}},
+    }
+    win_ro_hint = sandbox_failure_hint(
+        "Set-Content a.txt hi",
+        "UnauthorizedAccessException: Access to the path is denied.",
+        win_ro_boundary,
+    )
+    assert win_ro_hint is not None
+    assert "$env:TMPDIR" in win_ro_hint and "$env:TEMP" in win_ro_hint and "%TEMP%" in win_ro_hint
+    assert "/tmp" not in win_ro_hint
+
+    win_rw_boundary = {
+        "provider": "sandbox",
+        "backend": "windows-appcontainer",
+        "effective": {"native_process": {"write_paths": ["C:\\work\\proj"], "unrestricted": False}},
+    }
+    win_rw_hint = sandbox_failure_hint(
+        "Set-Content C:\\outside.txt hi",
+        "Access is denied.",
+        win_rw_boundary,
+    )
+    assert win_rw_hint is not None
+    assert "$env:TMPDIR" in win_rw_hint and "$env:TEMP" in win_rw_hint and "write_paths" in win_rw_hint
+    assert "/tmp" not in win_rw_hint

@@ -117,6 +117,12 @@ MESSAGES = {
     "is writable for per-command temporary files; use request_permissions if you need write access.]",
     "tools.output.sandbox_tmp_hint": "[Sandbox hint: Host /tmp is read-only in the sandbox. Write per-command "
     "temporary files to $TMPDIR (or a writable workspace path if they must persist across calls).]",
+    "tools.output.sandbox_windows_readonly_hint": "[Sandbox hint: This sandbox is read-only (no write_paths). Only "
+    "$env:TMPDIR ($TMPDIR in Bash) for per-command files and $env:TEMP (%TEMP% in cmd) for session-scoped files are "
+    "writable; use request_permissions if you need write access.]",
+    "tools.output.sandbox_windows_write_hint": "[Sandbox hint: Sandboxed commands can only write to allowed "
+    "write_paths, $env:TMPDIR ($TMPDIR in Bash), and $env:TEMP (%TEMP% in cmd) (private credential roots and "
+    "unapproved .virgo are write-denied). Check whether the target path is outside the sandbox boundary.]",
     "tools.output.sandbox_write_hint": "[Sandbox hint: Sandboxed commands can only write to allowed write_paths and "
     "$TMPDIR (host /tmp, private credential roots, and unapproved .virgo are write-denied). Check whether the target "
     "path is outside the sandbox boundary.]",
