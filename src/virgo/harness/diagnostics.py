@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..diagnostics import capture_error, emergency_write, safe_text, sanitize
-from .diagnostic_store import connect
+from .diagnostic_store import connect, execute_durable_write
 
 _ERROR_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _UNSAVED_SEQUENCE = 2**63 - 1
@@ -93,8 +93,10 @@ class DiagnosticLog:
     def _insert(self, db, record, *, instance, fallback_time=None):
         record = dict(record)
         record["log_path"] = str(self.path)
-        db.execute("INSERT OR IGNORE INTO errors(error_id, occurred, instance, payload) VALUES (?, ?, ?, ?)",
-                   (record["error_id"], _occurred(record, fallback_time), instance, _json(record)))
+        execute_durable_write(
+            db, "INSERT OR IGNORE INTO errors(error_id, occurred, instance, payload) VALUES (?, ?, ?, ?)",
+            (record["error_id"], _occurred(record, fallback_time), instance, _json(record)),
+        )
         return record
 
     def record(self, details: dict) -> dict:

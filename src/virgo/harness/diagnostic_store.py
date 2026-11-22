@@ -8,22 +8,26 @@ import stat
 import time
 from pathlib import Path
 
-_DURABLE_BUSY_TIMEOUT_MS = 2000
+_BUSY_TIMEOUT_SECONDS = 1
 
 
-def _enable_wal(connection: sqlite3.Connection) -> None:
-    # Switching journal modes can return SQLITE_BUSY without invoking SQLite's busy handler.
-    deadline = time.monotonic() + _DURABLE_BUSY_TIMEOUT_MS / 1000
-    while True:
-        try:
-            connection.execute("PRAGMA journal_mode=WAL").fetchone()
-            break
-        except sqlite3.OperationalError as error:
-            remaining = deadline - time.monotonic()
-            if (error.sqlite_errorcode & 0xFF) != sqlite3.SQLITE_BUSY or remaining <= 0:
-                raise
-            time.sleep(min(0.025, remaining))
-    connection.execute(f"PRAGMA busy_timeout={_DURABLE_BUSY_TIMEOUT_MS}")
+def execute_durable_write(connection: sqlite3.Connection, sql: str, parameters=()) -> None:
+    # Use one deadline for the statement. WAL negotiation may skip SQLite's busy
+    # handler, and a statement can encounter contention at more than one lock.
+    deadline = time.monotonic() + 2
+    connection.execute("PRAGMA busy_timeout=0")
+    try:
+        while True:
+            try:
+                connection.execute(sql, parameters).close()
+                return
+            except sqlite3.OperationalError as error:
+                remaining = deadline - time.monotonic()
+                if (error.sqlite_errorcode & 0xFF) != sqlite3.SQLITE_BUSY or remaining <= 0:
+                    raise
+                time.sleep(min(0.025, remaining))
+    finally:
+        connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_SECONDS * 1000}")
 
 
 def connect(path: Path, *, durable: bool) -> sqlite3.Connection:
@@ -37,10 +41,10 @@ def connect(path: Path, *, durable: bool) -> sqlite3.Connection:
             raise OSError("Diagnostic database must be a regular private file") from None
     else:
         os.close(descriptor)
-    connection = sqlite3.connect(path, timeout=0 if durable else 1, check_same_thread=False, isolation_level=None)
+    connection = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_SECONDS, check_same_thread=False, isolation_level=None)
     try:
         if durable:
-            _enable_wal(connection)
+            execute_durable_write(connection, "PRAGMA journal_mode=WAL")
         else:
             connection.execute("PRAGMA journal_mode=MEMORY")
         connection.execute("PRAGMA cache_size=-2048")
