@@ -19,6 +19,7 @@ from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from ..i18n import tr
+from .selection import SelectionScreenMixin
 
 
 def session_key(item: dict) -> Path | str:
@@ -103,7 +104,7 @@ class SessionList(OptionList):
         self.call_after_refresh(self.scroll_to_highlight)
 
 
-class SessionPicker(ModalScreen[Path | str | None]):
+class SessionPicker(SelectionScreenMixin, ModalScreen[Path | str | None]):
     """`g` changes grouping; dismisses a path, ``"new"``, or None."""
 
     class GroupingChanged(Message):
