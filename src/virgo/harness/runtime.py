@@ -228,8 +228,12 @@ class Runtime:
         ):
             # Input measures the replacement prompt. This reply's output already counts as growth.
             baseline = ev.message.usage.input_total
+            window = self._auto_compaction_model[1]
             keep = int(self.session.settings.get("compaction.keepRecentTokens", 20000))
-            self._auto_compaction_floor = baseline + max(1, keep, min(baseline // 4, 2048))
+            if window > 0:
+                keep = min(max(0, keep), window // 4)
+            growth = max(1, keep, min(baseline // 4, 2048))
+            self._auto_compaction_floor = self._cap_compaction_floor(baseline + growth, window)
             self._awaiting_compaction_usage = False
         if ev.type == "agent_end":
             self.execution_active = False
@@ -386,6 +390,14 @@ class Runtime:
                 )
                 self._call_started = None
 
+    @staticmethod
+    def _cap_compaction_floor(floor: int, window: int) -> int:
+        """Cap the growth floor to reserve 10% of a known window, up to 4096 tokens."""
+        if window <= 0:
+            return floor
+        reserve = min(max(1, window // 10), 4096)
+        return min(floor, max(1, window - reserve))
+
     def _reset_auto_compaction(self, *, unless_model: ai.Model | None = None) -> None:
         if unless_model is not None and self._auto_compaction_model == (unless_model.spec, unless_model.context_window):
             return
@@ -404,7 +416,8 @@ class Runtime:
                 # Use a local floor until the provider measures the replacement prompt.
                 after = self.context_tokens(estimate_only=True)
                 self._auto_compaction_model = (target_model.spec, target_model.context_window)
-                self._auto_compaction_floor = after + max(1, min(after // 10, 1024))
+                floor = after + max(1, min(after // 10, 1024))
+                self._auto_compaction_floor = self._cap_compaction_floor(floor, target_model.context_window)
                 self._awaiting_compaction_usage = True
             else:
                 self._reset_auto_compaction()
@@ -442,10 +455,12 @@ class Runtime:
         s = self.session.settings
         if not self.compaction or not s.get("compaction.enabled", True):
             return False
+        window = target_model.context_window
         trigger = s.get("compaction.triggerTokens")
         if trigger is None:
-            trigger = int(target_model.context_window * float(s.get("compaction.triggerRatio", 0.8)))
-        return self.context_tokens() >= max(trigger, self._auto_compaction_floor)
+            trigger = int(window * float(s.get("compaction.triggerRatio", 0.8)))
+        floor = self._cap_compaction_floor(self._auto_compaction_floor, window)
+        return self.context_tokens() >= max(trigger, floor)
 
     def _base_context(self, messages: list, *, report_errors: bool = False) -> Context:
         """Assemble instructions and schemas; only actual requests report formatting failures."""

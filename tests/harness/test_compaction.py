@@ -169,6 +169,57 @@ def test_auto_compaction_waits_for_growth_from_first_reported_input(make_session
     assert len(estimates) == 2 and runtime.agent.last_text == "done"
 
 
+@pytest.mark.parametrize("window, baseline, floor, due_at", [
+    pytest.param(16_000, 12_000, 14_400, 14_400, id="small-window"),
+    pytest.param(16_000, 5_000, 9_000, 12_800, id="below-trigger"),
+    pytest.param(200_000, 190_000, 195_904, 195_904, id="near-large-window-limit"),
+])
+def test_auto_compaction_growth_respects_context_budget(make_session, monkeypatch, window, baseline, floor, due_at):
+    session = make_session(faux.reply("started"), faux.reply("summary"), settings={
+        "providers": {"faux": {"models": {"test": {"contextWindow": window}}}},
+    })
+    session.prompt("Start the task.")
+    runtime = session.main
+    assert runtime.compact(reason="auto")
+    install_responses(monkeypatch, AssistantMessage(provider="faux", model="test", usage=Usage(input=baseline)))
+    session.prompt("Continue.")
+
+    assert runtime._auto_compaction_floor == floor
+    assert not runtime._compaction_due()
+    usage = runtime.messages[-1].usage
+    usage.output = due_at - baseline - 1
+    assert not runtime._compaction_due()
+    usage.output += 1
+    assert runtime._compaction_due()
+    usage.output = window + 1 - baseline
+    assert runtime._compaction_due()
+
+
+@pytest.mark.parametrize("settings, due_at", [
+    pytest.param({}, 14_400, id="default-ratio"),
+    pytest.param({"triggerRatio": 0.95}, 15_200, id="configured-ratio"),
+    pytest.param({"triggerTokens": 15_000}, 15_000, id="configured-tokens"),
+    pytest.param({"triggerTokens": 20_000}, 20_000, id="deferred-past-window"),
+])
+def test_auto_compaction_caps_estimated_floor_and_respects_trigger(make_session, monkeypatch, settings, due_at):
+    session = make_session(faux.reply("started"), faux.reply("summary"), settings={
+        "compaction": settings,
+    })
+    session.prompt("Start the task.")
+    runtime = session.main
+    target = replace(session.resolve("faux/fallback"), context_window=16_000)
+    tokens = 15_900
+    monkeypatch.setattr(runtime, "context_tokens", lambda *, estimate_only=False: tokens)
+
+    assert runtime.compact(reason="auto", model=target)
+    assert runtime._auto_compaction_floor == 14_400
+    assert runtime._compaction_due(target) == (tokens >= due_at)
+    tokens = due_at - 1
+    assert not runtime._compaction_due(target)
+    tokens = due_at
+    assert runtime._compaction_due(target)
+
+
 @pytest.mark.parametrize("switch", ["set_model", "window_only", "fallback"])
 def test_auto_compaction_floor_resets_on_model_switch(make_session, monkeypatch, switch):
     session = make_session(faux.reply("started"), faux.reply("summary"), settings={
@@ -194,11 +245,12 @@ def test_auto_compaction_floor_resets_on_model_switch(make_session, monkeypatch,
         assert runtime._compaction_due(session.resolve("faux/small"))
 
 
-def test_post_compaction_usage_belongs_to_target_model(make_session):
+@pytest.mark.parametrize("window, expected_floor", [(200_000, 32_000), (16_000, 14_400)])
+def test_post_compaction_usage_belongs_to_target_model(make_session, window, expected_floor):
     session = make_session(faux.reply("started"), faux.reply("summary"))
     session.prompt("Start the task.")
     runtime = session.main
-    fallback = session.resolve("faux/fallback")
+    fallback = replace(session.resolve("faux/fallback"), context_window=window)
     assert runtime.compact(reason="auto", model=fallback)
     estimate_floor = runtime._auto_compaction_floor
 
@@ -209,10 +261,10 @@ def test_post_compaction_usage_belongs_to_target_model(make_session):
     report(runtime.model)
     assert runtime._auto_compaction_floor == estimate_floor
     report(fallback)
-    assert runtime._auto_compaction_floor == 32_000
+    assert runtime._auto_compaction_floor == expected_floor
     session.settings.set("compaction.triggerTokens", 1)
     assert not runtime._compaction_due(fallback)
-    assert runtime._compaction_due()  # Different spec with the same context window.
+    assert runtime._compaction_due()  # Switching back to the primary model clears the floor.
 
 
 def test_retry_compacts_portable_history_before_smaller_model_call(make_session, monkeypatch):
