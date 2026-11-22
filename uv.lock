@@ -1218,6 +1218,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "httpx" },
+    { name = "mcp" },
     { name = "openai" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
@@ -1225,14 +1226,8 @@ dependencies = [
     { name = "textual" },
 ]
 
-[package.optional-dependencies]
-mcp = [
-    { name = "mcp" },
-]
-
 [package.dev-dependencies]
 dev = [
-    { name = "mcp" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -1241,18 +1236,16 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=2.7.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3.0,<3" },
+    { name = "mcp", specifier = ">=2.3.0,<3" },
     { name = "openai", specifier = ">=3.48.0" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=312" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "send2trash", specifier = ">=1.8.3" },
     { name = "textual", specifier = ">=8.2.8,<9" },
 ]
-provides-extras = ["mcp"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mcp", specifier = ">=2.3.0,<3" },
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "ruff", specifier = ">=0.17.4" },
 ]

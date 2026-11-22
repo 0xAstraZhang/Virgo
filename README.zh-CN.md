@@ -24,7 +24,7 @@ Virgo 是一个轻量、可扩展的终端编程 Agent。你可以让它理解�
 - **留在熟悉的终端里。** 全屏对话、实时工具活动、可恢复的会话，以及适用于不同环境的逐行模式。
 - **自由选择模型。** 登录账号、接入 API，或连接兼容的本地服务；在会话中切换模型和推理强度。
 - **让复杂任务分工进行。** 将独立工作交给子 Agent，用后台任务推进较大的任务，同时保留主对话。
-- **适应你的项目。** 用项目指令、技能、提示模板和 Python 扩展定制行为，包括可选的 MCP 和 Todos 扩展。
+- **适应你的项目。** 用项目指令、技能、提示模板和 Python 扩展定制行为，并开箱内置 MCP 和 Todos 扩展。
 - **使用中文或英文。** 输入 `/language 中文` 或 `/language English`，切换界面提示、命令帮助和内置工具描述。
 
 Virgo 的设计参考了 [Pi](https://github.com/earendil-works/pi)。模型适配、Agent 循环和会话运行时彼此分离，便于按需扩展。
@@ -84,7 +84,7 @@ uv run virgo -p --format json "总结 README"
 
 ## 继续了解
 
-[执行边界](docs/zh-CN/guides/sandbox.md) · [WSL2 使用指南](docs/zh-CN/guides/wsl2.md) · [安装可选扩展](extensions/README.zh-CN.md) · [示例](examples/README.zh-CN.md) · [反馈问题](https://github.com/0xAstraZhang/Virgo/issues)
+[执行边界](docs/zh-CN/guides/sandbox.md) · [WSL2 使用指南](docs/zh-CN/guides/wsl2.md) · [内置扩展（Todos 与 MCP）](docs/zh-CN/guides/extensions.md) · [示例](examples/README.zh-CN.md) · [反馈问题](https://github.com/0xAstraZhang/Virgo/issues)
 
 ## 许可证
 

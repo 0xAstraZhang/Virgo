@@ -217,3 +217,21 @@ def test_first_user_save_preserves_fresh_default_across_projects_and_cli_overrid
     assert settings.get("execution.mode") == "read-only"
     assert json.loads(path.read_text())["execution"]["mode"] == expected
     assert Settings.load(Paths(tmp_path / "other-project")).get("execution.mode") == expected
+
+
+def test_extensions_disabled_validation_and_normalization(project):
+    settings = Settings.load(Paths(project), {"extensions": {"disabled": ["todo", "mcp.py"]}})
+    assert settings.disabled_extensions() == frozenset({"todo", "mcp"})
+
+    for invalid in (
+        {"extensions": "bad"},
+        {"extensions": {"unknownKey": True}},
+        {"extensions": {"disabled": "todo"}},
+        {"extensions": {"disabled": [123]}},
+        {"extensions": {"disabled": ["  "]}},
+        {"extensions": {"disabled": [".py"]}},
+        {"extensions": {"disabled": ["../todo"]}},
+        {"extensions": {"disabled": ["sub\\todo"]}},
+    ):
+        with pytest.raises(ValueError):
+            Settings.load(Paths(project), invalid)

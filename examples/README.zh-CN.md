@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | [项目指令](project/AGENTS.example.md) | 项目根目录的 `AGENTS.md` | 随项目上下文读取的共享指令 |
 | [配置](project/.virgo/settings.json) | `.virgo/settings.json` | 语言、推理强度、Shell及可选本地 API |
-| [MCP 配置](project/.virgo/mcp.json) | `.virgo/mcp.json` | [MCP 扩展](../extensions/README.zh-CN.md)的默认禁用占位示例 |
+| [MCP 配置](project/.virgo/mcp.json) | `.virgo/mcp.json` | 内置 [MCP 扩展](../docs/zh-CN/guides/extensions.md)的默认禁用占位示例 |
 | [敏感文件保护](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | 工具钩子与 `/stats` 命令 |
 | [审查模板](project/.virgo/prompts/inspect.md) | `.virgo/prompts/inspect.md` | 支持参数的 `/inspect` |
 | [代码审查技能](project/.virgo/skills/code-review/SKILL.md) | `.virgo/skills/code-review/` | 技能与单独的检查清单 |
@@ -32,4 +32,4 @@ cp examples/project/.virgo/prompts/inspect.md /path/to/project/.virgo/prompts/in
 
 配置示例中的 `language` 会固定该项目的语言；中文使用 `zh-CN`，省略该字段则遵循用户默认值。可选的 `local` provider 需要真实服务、其安装的模型 ID／上下文窗口以及项目信任（`extensions.trustedProjects` 或 `--trust-project-extensions`），只有选择后才会更换当前模型。示例不再包含过时的 `smallModel` 覆盖项，辅助模型由运行时选择。
 
-MCP 示例默认禁用，路径为占位内容。MCP 本身由[扩展](../extensions/README.zh-CN.md)提供；安装扩展、替换为自己的 stdio 服务命令和参数后再启用。项目指令和提示文本属于作者提供的资源，`/language` 不会改写这些内容。
+MCP 示例默认禁用，路径为占位内容。MCP 由内置 [MCP 扩展](../docs/zh-CN/guides/extensions.md)提供；替换为自己的 stdio 服务命令和参数并信任该项目后再启用。项目指令和提示文本属于作者提供的资源，`/language` 不会改写这些内容。

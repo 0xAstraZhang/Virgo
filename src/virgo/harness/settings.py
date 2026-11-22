@@ -18,7 +18,6 @@ REMOVED_FEATURES = frozenset({
     "schedule", "workflow", "team", "tasks", "memory", "goal", "plan", "code_review", "workMode", "profile",
 })
 RETIRED_PLUGINS = frozenset({"plan", "code_review"})
-EXTENSION_ONLY = frozenset({"mcp", "todo"})
 _FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
 UNTRUSTED_PROJECT_KEYS = ("hooks", "mcpServers", "providers", "extensions")
 
@@ -122,9 +121,6 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
             raise ValueError(f"features.{name} is retired; use permissions.approval=ask or never")
         if not isinstance(enabled, bool):
             raise ValueError(f"features.{name} must be a boolean")
-        if name in EXTENSION_ONLY:
-            notices.append(f"features.{name} is no longer built in; install the {name} extension instead.")
-            continue
         if name in REMOVED_FEATURES:
             notices.append(f"features.{name} is retired and ignored; existing data is preserved.")
             continue
@@ -150,9 +146,6 @@ def _normalize_layer(layer: dict, notices: list[str]) -> dict:
     for name in sorted(RETIRED_PLUGINS.intersection(out["plugins"])):
         out["plugins"].pop(name)
         notices.append(f"plugins.{name} is retired and ignored; existing data is preserved.")
-    for name in sorted(EXTENSION_ONLY.intersection(out["plugins"])):
-        out["plugins"].pop(name)
-        notices.append(f"plugins.{name} is no longer built in; install the {name} extension instead.")
     for name in sorted(REMOVED_FEATURES.intersection(out)):
         out.pop(name)
         notices.append(f"The retired {name} configuration is ignored; existing data is preserved.")
@@ -181,12 +174,32 @@ def _validate_permissions(value: object) -> None:
         raise ValueError("permissions.confirmHighRisk must be a boolean")
 
 
+def _validate_extensions(value: object) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("extensions must be an object")
+    unknown = set(value) - {"trustedProjects", "disabled"}
+    if unknown:
+        raise ValueError(f"Unknown extensions setting(s): {', '.join(sorted(unknown))}")
+    if "disabled" in value:
+        disabled = value["disabled"]
+        if not isinstance(disabled, list) or any(
+            not isinstance(item, str)
+            or "/" in item
+            or "\\" in item
+            or not item.strip().removesuffix(".py")
+            for item in disabled
+        ):
+            raise ValueError("extensions.disabled must be a list of nonempty extension names")
+
+
 def _validate(data: dict) -> None:
     _reject_retired_execution(data)
     execution = data.get("execution")
     if (not isinstance(execution, dict) or set(execution) != {"mode"}
             or not isinstance(execution["mode"], str) or execution["mode"] not in DEFAULT_MODES):
         raise ValueError("execution.mode must be read-only, workspace-edit or no-limit")
+    if "extensions" in data:
+        _validate_extensions(data["extensions"])
     plugins = data.get("plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("plugins must be an object keyed by plugin ID")
@@ -331,7 +344,7 @@ class Settings:
 
     def set(self, dotted: str, value: Any) -> None:
         parts = dotted.split(".")
-        checked = parts[0] in {"permissions", "execution", "sandbox"}
+        checked = parts[0] in {"permissions", "execution", "sandbox", "extensions"}
         data = copy.deepcopy(self.data) if checked else self.data
         cur = data
         for part in parts[:-1]:
@@ -340,6 +353,12 @@ class Settings:
         if checked:
             _validate(data)
         self.data = data
+
+    def disabled_extensions(self) -> frozenset[str]:
+        raw = self.get("extensions.disabled")
+        if not raw:
+            return frozenset()
+        return frozenset(item.strip().removesuffix(".py") for item in raw)
 
     def plugin_enabled(self, name: str) -> bool:
         if name not in PLUGIN_IDS:

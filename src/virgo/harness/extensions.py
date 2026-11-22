@@ -1,6 +1,9 @@
-"""Extension system: an event bus plus the API that built-in features and user extensions share.
+"""Extension system: an event bus plus the API that built-in features and extensions share.
 
-A user extension is a Python file in ``~/.virgo/extensions/`` or ``.virgo/extensions/``::
+Built-in extensions live in ``virgo.extensions`` (``mcp``, ``todo``) and load
+automatically unless disabled via ``extensions.disabled`` or ``--no-extensions``.
+A user or trusted project extension is a Python file in ``~/.virgo/extensions/``
+or ``.virgo/extensions/`` (overriding any built-in extension with the same stem)::
 
     from virgo.agent import Block
 
@@ -39,7 +42,8 @@ from typing import TYPE_CHECKING, Any
 from ..agent.types import AgentTool, Block, Continue, ToolResult
 from ..ai.types import TextContent
 from ..diagnostics import capture_error, emergency_write, safe_text
-from .settings import PLUGIN_IDS
+from ..extensions import BUILTIN_EXTENSIONS
+from .settings import PLUGIN_IDS, same_directory
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -361,24 +365,8 @@ def load_builtin_features(session: AgentSession) -> None:
         _setup(session, name, lambda api, name=name: importlib.import_module(f"virgo.plugins.{name}").setup(api))
 
 
-def load_user_extensions(session: AgentSession) -> None:
-    for d in session.paths.both("extensions"):
-        if not d.is_dir():
-            continue
-        if d == session.paths.project / "extensions" and not (
-            session.trust_project_extensions or session.settings.project_extensions_trusted
-        ):
-            if any(d.glob("*.py")):
-                session.ui.print(session.t("harness.extensions.untrusted_project"), "warn")
-            continue
-        for path in sorted(d.glob("*.py")):
-            _load_file(session, path)
-
-
-def _load_file(session: AgentSession, path: Path) -> None:
-    scope = "project" if path.parent == session.paths.project / "extensions" else "user"
-
-    def load(api):
+def _file_loader(path: Path) -> Callable[[ExtensionAPI], None]:
+    def load(api: ExtensionAPI) -> None:
         spec = importlib.util.spec_from_file_location(f"virgo_ext_{path.stem}", path)
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)
@@ -386,7 +374,39 @@ def _load_file(session: AgentSession, path: Path) -> None:
         if hasattr(mod, "setup"):
             mod.setup(api)
 
-    _setup(session, f"{scope}:{path.stem}", load, context={"extension": str(path)})
+    return load
+
+
+def load_extensions(session: AgentSession) -> None:
+    """Load built-in, user, and trusted project extensions with stem-based override."""
+    entries: dict[str, tuple[str, Callable[[ExtensionAPI], None], dict[str, str]]] = {
+        name: (
+            f"builtin:{name}",
+            lambda api, name=name: importlib.import_module(f"virgo.extensions.{name}").setup(api),
+            {"extension": f"builtin:{name}"},
+        )
+        for name in BUILTIN_EXTENSIONS
+    }
+
+    user_dir = session.paths.user / "extensions"
+    if user_dir.is_dir():
+        for path in sorted(user_dir.glob("*.py")):
+            entries[path.stem] = (f"user:{path.stem}", _file_loader(path), {"extension": str(path)})
+
+    project_dir = session.paths.project / "extensions"
+    if not same_directory(session.paths.project, session.paths.user) and project_dir.is_dir():
+        if not (session.trust_project_extensions or session.settings.project_extensions_trusted):
+            if any(project_dir.glob("*.py")):
+                session.ui.print(session.t("harness.extensions.untrusted_project"), "warn")
+        else:
+            for path in sorted(project_dir.glob("*.py")):
+                entries[path.stem] = (f"project:{path.stem}", _file_loader(path), {"extension": str(path)})
+
+    disabled = session.settings.disabled_extensions()
+    for stem, (owner, loader, context) in entries.items():
+        if stem in disabled:
+            continue
+        _setup(session, owner, loader, context=context)
 
 
 # ---------------------------------------------------------------------------

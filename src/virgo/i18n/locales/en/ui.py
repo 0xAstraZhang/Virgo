@@ -69,7 +69,7 @@ MESSAGES = {
     "ui.cli.language": "interface language: English or 中文 (also en or zh-CN)",
     "ui.cli.format": "print-mode output format (json = event stream)",
     "ui.cli.model": "model as provider/id, e.g. anthropic/claude-opus-5-5 or openai/gpt-5",
-    "ui.cli.no_extensions": "skip user/project extensions",
+    "ui.cli.no_extensions": "skip built-in, user, and project extensions",
     "ui.cli.no_saved_sessions": "No saved sessions for this directory.",
     "ui.cli.no_session": "do not save this session",
     "ui.cli.options": "options",
@@ -205,6 +205,6 @@ MESSAGES = {
     "ui.state.unsaved": "Unsaved — paused",
     "ui.state.unsaved_footer": "UNSAVED · paused · memory only  ",
     "ui.state.waiting": "Waiting",
-    "ui.cli.no_extensions_warning": "--no-extensions only disables user/project Python extensions; official plugins stay enabled unless plugins.<id>.enabled is false.",
+    "ui.cli.no_extensions_warning": "--no-extensions disables built-in, user, and project Python extensions; official plugins stay enabled unless plugins.<id>.enabled is false.",
     "ui.cli.trust_project_extensions": "Trust and load Python extensions from this project for this session",
 }

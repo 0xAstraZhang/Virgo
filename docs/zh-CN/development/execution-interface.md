@@ -13,5 +13,5 @@
 
 - **文件工具**（`virgo.tools.fs` + `virgo.file_access`）直接在 Broker 进程内按 `PermissionPolicy` 强制执行权限校验，配合末级组件 `O_NOFOLLOW` 与临时文件原子 `os.replace`。文件工具不引入独立的 OS 沙箱辅助进程（原则 R4）。
 - **命令输出**（`virgo.output_store.OutputStore`）通过管道回传 Broker，按会话持久化在 `<VIRGO_HOME>/outputs/session-<id>` 下，使用紧凑的 16 字符 ID（`out_<12-hex>`，兼容旧版 48 位十六进制 ID），提供按 UTF-8 字符边界对齐的分页读取（`read_output`）、会话回收清理与 7 天 TTL。未截断的前台命令会立即删除临时落盘文件。
-- **MCP 服务器**（`extensions/mcp.py`）通过 `HostContext.unrestricted` 与 `SandboxExecutor` 在 Host 上启动，并在 `main` 与 `subagent` 运行时之间共享每个服务器的单一连接。项目级 `.virgo/mcp.json` 需要显式项目信任，持久化“始终允许”授权绑定到服务器展开后的 `command`、`args` 与 `env` 的 SHA-256 指纹。
+- **MCP 服务器**（`src/virgo/extensions/mcp.py`）通过 `HostContext.unrestricted` 与 `SandboxExecutor` 在 Host 上启动，并在 `main` 与 `subagent` 运行时之间共享每个服务器的单一连接。项目级 `.virgo/mcp.json` 需要显式项目信任，持久化“始终允许”授权绑定到服务器展开后的 `command`、`args` 与 `env` 的 SHA-256 指纹。
 - 每个 POSIX Host 命令拥有独立的进程组（`HostProcess`）；Windows Host 命令运行在关闭即终止的 Job Object（`WindowsProcess`）中。

@@ -68,7 +68,7 @@ MESSAGES = {
     "ui.cli.language": "界面语言：中文或 English（也可使用 zh-CN 或 en）",
     "ui.cli.format": "非交互输出格式（json 为事件流）",
     "ui.cli.model": "模型，格式为 provider/id，例如 anthropic/claude-opus-5-5 或 openai/gpt-5",
-    "ui.cli.no_extensions": "跳过用户及项目扩展",
+    "ui.cli.no_extensions": "跳过内置、用户及项目扩展",
     "ui.cli.no_saved_sessions": "此目录没有已保存的会话。",
     "ui.cli.no_session": "不保存本次会话",
     "ui.cli.options": "选项",
@@ -202,6 +202,6 @@ MESSAGES = {
     "ui.state.unsaved": "未保存 · 已暂停",
     "ui.state.unsaved_footer": "未保存 · 已暂停 · 仅在内存中  ",
     "ui.state.waiting": "等待中",
-    "ui.cli.no_extensions_warning": "--no-extensions 只禁用用户和项目的 Python 扩展；官方插件仍启用，除非把 plugins.<id>.enabled 设为 false。",
+    "ui.cli.no_extensions_warning": "--no-extensions 禁用内置、用户和项目的 Python 扩展；官方插件仍启用，除非把 plugins.<id>.enabled 设为 false。",
     "ui.cli.trust_project_extensions": "本次会话信任并加载此项目的 Python 扩展",
 }

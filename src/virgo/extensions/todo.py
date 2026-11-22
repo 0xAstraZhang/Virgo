@@ -1,4 +1,8 @@
-"""Optional model checklist. Copy into a user or trusted project extensions directory.
+"""Built-in model checklist extension (``todo_write``).
+
+Loaded automatically as a built-in extension. Disable with
+``extensions.disabled: ["todo"]`` or ``--no-extensions``, or override with
+``~/.virgo/extensions/todo.py`` (or a trusted ``.virgo/extensions/todo.py``).
 
 Successful tool-result details are the journal; compaction never owns the state.
 """

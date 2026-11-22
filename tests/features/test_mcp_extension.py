@@ -1,11 +1,10 @@
-"""MCP is a Host extension built on the official SDK, not a built-in plugin (S4-01..S4-08, VER-09)."""
+"""MCP is a built-in Host extension on the official SDK with lazy SDK loading (S4-01..S4-08, VER-09)."""
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import shutil
+import subprocess
 import sys
 import textwrap
 import threading
@@ -17,26 +16,12 @@ import pytest
 from virgo.agent import ToolContext
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage
+from virgo.extensions import mcp as mcp_ext
 
 from tests.support import SUPPORT
 from tests.support.harness import RecordingUI, calls, tool_results
 
-EXTENSION = Path(__file__).resolve().parents[2] / "extensions" / "mcp.py"
 SERVER = SUPPORT / "mcp_echo_server.py"
-
-
-def load_mcp_module():
-    spec = importlib.util.spec_from_file_location("virgo_ext_mcp_unit", EXTENSION)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def install_extension() -> None:
-    extensions = Path(os.environ["VIRGO_HOME"]) / "extensions"
-    extensions.mkdir(parents=True, exist_ok=True)
-    shutil.copy(EXTENSION, extensions / "mcp.py")
 
 
 def configure(path: Path, command: str = sys.executable, args: list[str] | None = None,
@@ -53,28 +38,117 @@ def configure(path: Path, command: str = sys.executable, args: list[str] | None 
     path.write_text(json.dumps({"mcpServers": {"echo": entry}}), encoding="utf-8")
 
 
-def test_mcp_is_not_built_in(make_session, project):
-    configure(project / ".virgo" / "mcp.json")
-    session = make_session(
-        settings={"plugins": {"mcp": {"enabled": True}}, "features": {"mcp": True}}
+def test_mcp_builtin_lazy_sdk_and_dynamic_status(make_session, project, tmp_path):
+    """Built-in mcp keeps SDK unimported and hides mcp_status when no servers are configured."""
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "from virgo.harness.session import AgentSession\n"
+                f"s = AgentSession({str(project)!r}, model='faux/test', session=None, "
+                "refresh_models=False, settings={'execution': {'mode': 'no-limit'}})\n"
+                "try:\n"
+                "    assert 'builtin:mcp' in s.loaded_plugins\n"
+                "    assert s.commands.get('mcp') is not None\n"
+                "    assert s.tool('mcp_status') is None\n"
+                "    assert 'mcp' not in sys.modules\n"
+                "finally:\n"
+                "    s.shutdown()\n"
+            ),
+        ],
+        env={**os.environ, "VIRGO_HOME": str(tmp_path / "clean-home")},
+        capture_output=True,
+        text=True,
+        check=False,
     )
+    assert probe.returncode == 0, f"stdout={probe.stdout}\nstderr={probe.stderr}"
+
+    # No configured servers -> /mcp exists, mcp_status is hidden.
+    session = make_session(settings={"execution": {"mode": "no-limit"}})
+    assert session.commands.get("mcp") is not None
     assert session.tool("mcp_status") is None
     assert not any(tool.name.startswith("mcp__") for tool in session.tools_for("main"))
-    assert any("mcp extension" in notice for notice in session.settings.migration_warnings)
+    session.prompt("/mcp")
+    assert "No MCP servers configured" in session.ui.text
+
+    # Reconnecting onto a broken server dynamically publishes mcp_status so the failure is inspectable.
+    cfg = Path(os.environ["VIRGO_HOME"]) / "mcp.json"
+    configure(cfg, command="/nonexistent/mcp-server", args=[], timeout=5)
+    session.prompt("/mcp reconnect")
+    assert session.tool("mcp_status") is not None
+    status = session.tool("mcp_status").execute(
+        {}, ToolContext("status", project, threading.Event())
+    ).as_text()
+    assert '"server": "echo"' in status and '"state": "unavailable"' in status
+
+    # Reconnecting back to an empty config hides mcp_status again.
+    cfg.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+    session.prompt("/mcp reconnect")
+    assert session.tool("mcp_status") is None
+
+
+def test_mcp_builtin_disable_override_and_untrusted_project_isolation(make_session, project):
+    """Built-in mcp respects --no-extensions, extensions.disabled, user overrides, and R5 project trust."""
+    configure(Path(os.environ["VIRGO_HOME"]) / "mcp.json")
+
+    no_ext = make_session(extensions=False, settings={"execution": {"mode": "no-limit"}})
+    assert no_ext.commands.get("mcp") is None
+    assert no_ext.tool("mcp_status") is None
+    assert no_ext.tool("mcp__echo__echo") is None
+
+    disabled = make_session(
+        settings={"execution": {"mode": "no-limit"}, "extensions": {"disabled": ["mcp"]}}
+    )
+    assert disabled.commands.get("mcp") is None
+    assert disabled.tool("mcp_status") is None
+    assert disabled.tool("mcp__echo__echo") is None
+
+    # Retired plugin/feature toggles fail clearly instead of silently migrating.
+    with pytest.raises(ValueError, match="Unknown plugin 'mcp'"):
+        make_session(settings={"plugins": {"mcp": {"enabled": True}}})
+    with pytest.raises(ValueError, match="Unknown legacy feature 'mcp'"):
+        make_session(settings={"features": {"mcp": True}})
+
+    # Untrusted project cannot disable built-in mcp via .virgo/settings.json.
+    (project / ".virgo").mkdir(parents=True, exist_ok=True)
+    (project / ".virgo" / "settings.json").write_text(
+        json.dumps({"extensions": {"disabled": ["mcp"]}}),
+        encoding="utf-8",
+    )
+    untrusted = make_session(trust_project_extensions=False, settings={"execution": {"mode": "no-limit"}})
+    assert untrusted.commands.get("mcp") is not None
+    assert untrusted.tool("mcp__echo__echo") is not None
+
+    # User override ~/.virgo/extensions/mcp.py replaces built-in mcp cleanly without collision.
+    (project / ".virgo" / "settings.json").unlink()
+    user_ext = Path(os.environ["VIRGO_HOME"]) / "extensions"
+    user_ext.mkdir(parents=True, exist_ok=True)
+    (user_ext / "mcp.py").write_text(
+        "def setup(api):\n"
+        "    api.register_command('mcp', lambda s, a: api.ui.print('custom mcp override'), 'custom')\n",
+        encoding="utf-8",
+    )
+    overridden = make_session(settings={"execution": {"mode": "no-limit"}})
+    assert "user:mcp" in overridden.loaded_plugins
+    assert "builtin:mcp" not in overridden.loaded_plugins
+    assert overridden.tool("mcp__echo__echo") is None
+    overridden.prompt("/mcp")
+    assert "custom mcp override" in overridden.ui.text
 
 
 def test_mcp_untrusted_project_config_is_ignored_with_warning(make_session, project):
     """S4-02 (R5): Project-level .virgo/mcp.json requires explicit project trust."""
-    install_extension()
     configure(project / ".virgo" / "mcp.json")
     ui = RecordingUI()
     session = make_session(ui=ui, trust_project_extensions=False)
     assert session.tool("mcp__echo__echo") is None
+    assert session.tool("mcp_status") is None
     assert "untrusted project .virgo/mcp.json" in ui.text
 
 
 def test_mcp_extension_exposes_and_rebinds_tools(make_session, project):
-    install_extension()
     config = project / ".virgo" / "mcp.json"
     configure(config)
     session = make_session(
@@ -101,19 +175,20 @@ def test_mcp_extension_exposes_and_rebinds_tools(make_session, project):
     assert '"server": "echo"' in status and '"state": "ready"' in status
     assert session.tool("mcp_status").execute({"server": "missing"}, context).is_error
 
-    # Removing the server removes its tools at the next publication.
+    # Removing the server removes its tools and hides mcp_status at the next publication.
     config.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
     session.prompt("/mcp reconnect")
     assert session.tool("mcp__echo__add") is None
+    assert session.tool("mcp_status") is None
     assert not any(tool.name.startswith("mcp__") for tool in session.tools_for("main"))
 
     configure(config)
     session.prompt("/mcp reconnect")
     assert session.tool("mcp__echo__echo") is not None
+    assert session.tool("mcp_status") is not None
 
 
 def test_mcp_extension_reports_unavailable_servers_without_stopping(make_session):
-    install_extension()
     session = make_session(
         settings={"mcpServers": {"broken": {"command": "/nonexistent/mcp-server", "timeout": 5}}}
     )
@@ -125,7 +200,6 @@ def test_mcp_extension_reports_unavailable_servers_without_stopping(make_session
 
 
 def test_mcp_extension_skips_unsupported_schemas(make_session, project, tmp_path):
-    install_extension()
     server = tmp_path / "schema_server.py"
     server.write_text(
         textwrap.dedent(
@@ -168,7 +242,6 @@ def test_mcp_extension_skips_unsupported_schemas(make_session, project, tmp_path
 
 def test_mcp_extension_reports_terminated_connections_and_reaps_threads(make_session, project, tmp_path):
     """S4-05: A server that exits spontaneously transitions to unavailable and reaps its loop/stderr threads."""
-    install_extension()
     server = tmp_path / "exit_server.py"
     server.write_text(
         textwrap.dedent(
@@ -209,17 +282,16 @@ def test_mcp_extension_reports_terminated_connections_and_reaps_threads(make_ses
 
 
 def test_mcp_extension_ignores_malformed_config(make_session, project):
-    install_extension()
     (project / ".virgo").mkdir()
     (project / ".virgo" / "mcp.json").write_text("[]", encoding="utf-8")
     session = make_session(trust_project_extensions=True)
     assert "mcp: invalid" in session.ui.text
-    assert session.tool("mcp_status") is not None
+    assert session.commands.get("mcp") is not None
+    assert session.tool("mcp_status") is None
 
 
 def test_ver09_jsonrpc_error_keeps_connection_healthy_and_shared_across_subagents(make_session, project, tmp_path):
     """VER-09 (S4-01, S4-03): -32602 keeps connection healthy; two subagents reuse one shared Host server PID."""
-    install_extension()
     server = tmp_path / "rpc_pid_server.py"
     server.write_text(
         textwrap.dedent(
@@ -291,7 +363,7 @@ def test_ver09_jsonrpc_error_keeps_connection_healthy_and_shared_across_subagent
 
 def test_ver09_connect_cancellation_interrupts_hanging_server_without_deadlock(tmp_path):
     """VER-09 (S4-04): Esc/cancellation interrupts a hanging MCP handshake promptly."""
-    mcp_mod = load_mcp_module()
+    mcp_mod = mcp_ext
     from virgo.execution import HostContext
 
     hang = tmp_path / "hang_server.py"
@@ -319,7 +391,7 @@ def test_ver09_connect_cancellation_interrupts_hanging_server_without_deadlock(t
 
 def test_s405_s406_crashed_server_rejected_and_stderr_redacted_with_boundary(tmp_path):
     """S4-05 & S4-06: Crashed server is rejected by connect() with redacted stderr and boundary metadata."""
-    mcp_mod = load_mcp_module()
+    mcp_mod = mcp_ext
     from virgo.execution import HostContext
 
     secret = "ghp_super_secret_token_98765"
@@ -347,7 +419,6 @@ def test_s405_s406_crashed_server_rejected_and_stderr_redacted_with_boundary(tmp
 
 def test_s402_always_allow_bound_to_server_config_fingerprint(broker_session, tmp_path):
     """S4-02: 'Always allow' persists for identical server config fingerprint and invalidates when config changes."""
-    install_extension()
     cfg_path = Path(os.environ["VIRGO_HOME"]) / "mcp.json"
     configure(cfg_path, args=[str(SERVER)], env={"SERVER_TAG": "v1"})
     ui = RecordingUI(["a", "n"])
@@ -379,7 +450,7 @@ def test_s402_always_allow_bound_to_server_config_fingerprint(broker_session, tm
 
 def test_s407_config_validation_rejects_empty_and_non_string_fields(monkeypatch):
     """S4-07: Strict validation rejects empty expanded commands and non-string args/env values."""
-    mcp_mod = load_mcp_module()
+    mcp_mod = mcp_ext
     monkeypatch.delenv("VIRGO_UNSET_MCP_CMD", raising=False)
     for bad in (
         {"command": ""},
@@ -398,7 +469,7 @@ def test_s407_config_validation_rejects_empty_and_non_string_fields(monkeypatch)
 
 def test_ver09_s408_windows_host_path_and_cmd_bat_resolution():
     """VER-09 (S4-08): Native Windows Host MCP resolves commands via PATH and wraps .cmd/.bat with cmd.exe."""
-    mcp_mod = load_mcp_module()
+    mcp_mod = mcp_ext
 
     def fake_which(cmd, path=None):
         return {
@@ -430,7 +501,6 @@ def test_ver09_s408_windows_host_path_and_cmd_bat_resolution():
 
 def test_mcp_tool_crash_stderr_is_retained_in_diagnostic_get(make_session, project, tmp_path):
     """Real MCP tool failure stderr is forwarded through Runtime into DiagnosticAccess section='stderr'."""
-    install_extension()
     server = tmp_path / "crash_on_call_server.py"
     server.write_text(
         textwrap.dedent(
@@ -478,7 +548,6 @@ def test_mcp_tool_crash_stderr_is_retained_in_diagnostic_get(make_session, proje
 
 def test_mcp_bounded_startup_does_not_block_cold_start_and_cancels_cleanly(make_session, project, tmp_path):
     """A hanging MCP server must not block AgentSession startup past the bounded grace window."""
-    install_extension()
     hang = tmp_path / "hang_mcp.py"
     hang.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
     cfg = Path(os.environ["VIRGO_HOME"]) / "mcp.json"
@@ -514,7 +583,6 @@ def test_mcp_bounded_startup_does_not_block_cold_start_and_cancels_cleanly(make_
 
 def test_mcp_tool_name_collision_disambiguation_and_filtering(make_session, project, tmp_path):
     """Long truncated names and punctuation-normalized duplicates are disambiguated; include/exclude filter tools."""
-    install_extension()
     prefix = "create_pull_request_review_comment_for_enterprise_repository_"
     server = tmp_path / "collision_server.py"
     server.write_text(
@@ -570,7 +638,6 @@ def test_mcp_tool_name_collision_disambiguation_and_filtering(make_session, proj
 
 def test_mcp_config_precedence_and_reconnect_reloads_settings_and_call_timeout(make_session, project, tmp_path):
     """Trusted project mcp.json overrides user settings.json; reconnect reloads settings.json; callTimeout & cancel work."""
-    install_extension()
     home = Path(os.environ["VIRGO_HOME"])
     slow = tmp_path / "slow_call.py"
     slow.write_text(
@@ -640,7 +707,6 @@ def test_mcp_colliding_server_names_are_order_independent_across_startup_and_rec
     make_session, project, tmp_path
 ):
     """Servers normalizing identically (e.g. prod.api and prod_api) keep stable tool names regardless of arrival order."""
-    install_extension()
     server = tmp_path / "tagged_server.py"
     server.write_text(
         textwrap.dedent(

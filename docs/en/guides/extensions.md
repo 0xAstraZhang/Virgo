@@ -1,30 +1,50 @@
 # Virgo extensions
 
-[Project home](../README.md) · [简体中文](README.zh-CN.md)
+[Project home](../../../README.md) · [简体中文](../../zh-CN/guides/extensions.md)
 
-Optional capabilities that live outside the installed package. Copy a file into
-`~/.virgo/extensions/` (or `.virgo/extensions/` in a trusted project); Virgo loads
-every `*.py` file there at session start.
+Virgo loads Python extensions through the shared `setup(api)` interface at
+session start. Built-in extensions ship inside the package (`virgo.extensions`)
+and require no separate installation; you can also add custom extensions—or
+override a built-in extension by filename—in `~/.virgo/extensions/*.py` (or
+`.virgo/extensions/*.py` in a trusted project).
 
-| Extension | Install | Purpose |
+| Built-in extension | Source | Purpose |
 | --- | --- | --- |
-| [mcp.py](mcp.py) | Copy to `~/.virgo/extensions/mcp.py` and install the SDK extra | Connect configured stdio MCP servers and expose their tools |
-| [todo.py](todo.py) | Copy to `~/.virgo/extensions/todo.py`; no extra dependencies | Model-owned checklist with ordered steps and compaction retention |
+| `mcp` | [src/virgo/extensions/mcp.py](../../../src/virgo/extensions/mcp.py) | Connect configured stdio MCP servers on Host and expose their tools |
+| `todo` | [src/virgo/extensions/todo.py](../../../src/virgo/extensions/todo.py) | Model-owned checklist (`todo_write`) with optional phases and compaction retention |
 
-## Todos
+## Precedence and disabling
 
-```bash
-mkdir -p ~/.virgo/extensions
-cp extensions/todo.py ~/.virgo/extensions/todo.py
+Extensions resolve by filename stem with precedence:
+
+`built-in` < `~/.virgo/extensions/<name>.py` < trusted `.virgo/extensions/<name>.py`
+
+- **Override a built-in extension**: place `todo.py` or `mcp.py` in
+  `~/.virgo/extensions/` (or in a trusted project's `.virgo/extensions/`).
+- **Disable specific extensions**: add their names to `extensions.disabled` in
+  `~/.virgo/settings.json` (or trusted `.virgo/settings.json`):
+
+```json
+{
+  "extensions": {
+    "disabled": ["todo", "mcp"]
+  }
+}
 ```
 
-Repeat the copy when upgrading an older installation. The current extension updates
-the conversation checklist directly in Read-Only and Workspace-Edit.
-Restart Virgo after installing. A project-local copy requires project extension
-trust; `--no-extensions` disables both locations. Todos is not an official plugin:
-old `plugins.todo` and `features.todo` settings are ignored with a migration notice.
+- **Disable all extensions for a session**: pass `--no-extensions` (skips
+  built-in, user, and project Python extensions; official plugins remain
+  controlled by `plugins.<id>.enabled`).
+- **Project trust**: project-level `.virgo/extensions/`, `.virgo/mcp.json`,
+  `mcpServers`, and `extensions` settings are ignored until you trust the
+  project via user-level `extensions.trustedProjects` or
+  `--trust-project-extensions`.
 
-The main model receives `todo_write`, with no `/todos` or `/plan` command:
+## Todos (`todo`)
+
+Enabled by default as a built-in extension. It works directly in Read-Only and
+Workspace-Edit, and exposes `todo_write` to the main model (with no `/todos` or
+`/plan` command):
 
 ```json
 {
@@ -54,17 +74,13 @@ repeatedly appending snapshots to history. A finished or cleared list is not
 pinned, and unfinished work does not force another model turn. Old results
 without steps remain readable without inferred grouping.
 
-## MCP
+## MCP (`mcp`)
 
-MCP is provided by the `mcp.py` extension, which uses the official
-[Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk).
-It is not built into Virgo.
-
-```bash
-cp extensions/mcp.py ~/.virgo/extensions/mcp.py
-uv tool install 'virgo[mcp]'    # installed distribution
-uv sync --extra mcp             # source checkout
-```
+Enabled by default as a built-in extension using the official
+[Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+(included in Virgo's dependencies and imported lazily only when at least one
+server is configured, so sessions without MCP servers incur zero SDK startup
+cost).
 
 Configure servers in `~/.virgo/mcp.json` (or `.virgo/mcp.json` in a trusted
 project) using the common format:
@@ -98,7 +114,8 @@ Read-Only and Workspace-Edit (with **Always allow** bound to the SHA-256
 fingerprint of the server's expanded `command`, `args`, and `env`) and run
 directly in No-Limit.
 
-`/mcp` lists configured servers and tool counts. `/mcp reconnect` reloads
-`mcp.json` and `settings.json`; a failed reload keeps the previous connections
-and tools. `mcp_status` exposes the same local state to the model without
-contacting servers.
+`/mcp` is always available to list configured servers and tool counts, and
+`/mcp reconnect` reloads `mcp.json` and `settings.json` (a failed reload keeps
+the previous connections and tools). `mcp_status` is exposed to the model
+dynamically whenever at least one server is configured and hidden otherwise to
+save tool schema tokens.
