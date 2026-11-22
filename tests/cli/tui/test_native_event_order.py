@@ -281,3 +281,23 @@ def test_reused_text_block_before_native_search_remains_visible_live_and_in_hist
                 assert all(e.display for e in card.events if e.kind in ("tool_call", "tool_result", "sources"))
 
     asyncio.run(scenario())
+
+
+def test_streamed_markdown_fence_crosses_text_block_boundary():
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test() as pilot:
+            view = app.query_one(Transcript)
+            message = AssistantMessage([TextContent("Example\n\n```python\n")])
+            await view.consume(AgentEvent("message_start", message=message))
+            message.content.append(TextContent("print(42)\n```"))
+            await view.consume(AgentEvent("message_update", stream_event=StreamEvent("text_delta", message, index=1)))
+            await pilot.pause(0.2)
+            card = view.query_one(AssistantView)
+            rows = [event for event in card.events if event.kind == "text"]
+            assert len(rows) == 1 and rows[0].output.source == message.text()
+            assert len(rows[0].query("MarkdownFence")) == 1
+            await view.consume(AgentEvent("message_end", message=message))
+            assert card.body.source == message.text()
+
+    asyncio.run(scenario())

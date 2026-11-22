@@ -707,6 +707,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         if agent not in self._message_open:
             await self._start_message(agent)
         blocks = self._blocks[agent]
+        text_parts: dict[EventView, list[str]] = {}
         # Bridge coalescing can skip token updates; scan all newly added blocks.
         for index, block in enumerate(message.content):
             row = blocks.get(index)
@@ -721,13 +722,17 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 else:
                     kind = "sources" if block.text.startswith("\n\nSources:\n") else "text"
                     value = block.text
+                if row is None and kind == "text" and index:
+                    previous = blocks.get(index - 1)
+                    if previous is not None and previous.kind == "text" and previous is card.events[-1]:
+                        # An empty start may yet become a separate Sources block.
+                        if not value:
+                            continue
+                        row = previous
                 if row is None:
                     row = await self._append(EventView(kind, value, agent=agent))
-                if row.kind == "text" and (final or not row.text):
-                    # Bypass the throttle on the first delta after an empty
-                    # block and on completion, including non-answer text.
-                    row.text = value
-                    await row.flush_markdown()
+                if row.kind == "text":
+                    text_parts.setdefault(row, []).append(value)
                 else:
                     row.set_text(value)
             elif isinstance(block, RawContent):
@@ -738,6 +743,13 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 )
             if row is not None:
                 blocks[index] = row
+        for row, parts in text_parts.items():
+            value = "".join(parts)
+            if final or not row.text:
+                row.text = value
+                await row.flush_markdown()
+            else:
+                row.set_text(value)
         card.message = message
         if final:
             card.clear_event_activity(agent)
@@ -749,7 +761,8 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 last_tool = max(
                     (i for i, row in blocks.items() if row.kind in ("tool_call", "tool_result")), default=-1
                 )
-                text_rows = [(i, row) for i, row in blocks.items() if row.kind == "text"]
+                text_rows = [(i, row) for i, row in sorted(blocks.items())
+                             if row.kind == "text" and blocks.get(i - 1) is not row]
                 answer = [row for i, row in text_rows if i > last_tool]
                 # Native search can append its final answer to a text block
                 # opened before the search. Block order alone must not hide
