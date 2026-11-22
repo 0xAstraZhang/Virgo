@@ -113,6 +113,13 @@ MESSAGES = {
     "tools.output.exit": "{text}\n\n[Exit code {code}]",
     "tools.output.first": "first",
     "tools.output.last": "last",
+    "tools.output.sandbox_readonly_hint": "[Sandbox hint: This sandbox is read-only (no write_paths). Only $TMPDIR "
+    "is writable for per-command temporary files; use request_permissions if you need write access.]",
+    "tools.output.sandbox_tmp_hint": "[Sandbox hint: Host /tmp is read-only in the sandbox. Write per-command "
+    "temporary files to $TMPDIR (or a writable workspace path if they must persist across calls).]",
+    "tools.output.sandbox_write_hint": "[Sandbox hint: Sandboxed commands can only write to allowed write_paths and "
+    "$TMPDIR (host /tmp, private credential roots, and unapproved .virgo are write-denied). Check whether the target "
+    "path is outside the sandbox boundary.]",
     "tools.output.timeout": "{text}\n\n[Command timed out after {timeout:g}s]",
     "tools.output.truncated": "[Output truncated: showing the tail (limit {max_lines} lines / {max_kb}KB; "
     "{total} bytes total). Full output ID: {path}; use read_output]\n",

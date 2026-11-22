@@ -167,3 +167,79 @@ def test_bash_marks_child_processes(project, python_command):
     interpreter = default_shell(discover_shells())
     result = run(project, python_command("import os; print(os.environ['VIRGO'])", shell=interpreter), interpreter=interpreter)
     assert not result.is_error and result.as_text() == "1"
+
+
+def test_sandbox_failure_hint_explains_tmp_and_write_boundary_denials():
+    from virgo.tools.shell import sandbox_failure_hint
+
+    seatbelt_boundary = {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "effective": {
+            "native_process": {
+                "write_paths": ["/Users/alice/project"],
+                "unrestricted": False,
+            }
+        },
+    }
+    # macOS curl writing to /tmp under Seatbelt fails with exit 56 and cryptic callback error
+    curl_hint = sandbox_failure_hint(
+        'curl -sS "https://example.com/a.xml" -o /tmp/kv.xml',
+        "curl: (56) Failure writing output to destination, passed 1369 returned 4294967295",
+        seatbelt_boundary,
+    )
+    assert curl_hint is not None
+    assert "/tmp" in curl_hint and "$TMPDIR" in curl_hint
+
+    # Linux bwrap or macOS Seatbelt EPERM / EROFS on /tmp
+    erofs_hint = sandbox_failure_hint(
+        "echo hi > /tmp/out.txt",
+        "bash: /tmp/out.txt: Read-only file system",
+        {**seatbelt_boundary, "backend": "bubblewrap"},
+    )
+    assert erofs_hint is not None
+    assert "/tmp" in erofs_hint and "$TMPDIR" in erofs_hint
+
+    # When /tmp is explicitly granted writable, do not claim /tmp is read-only
+    tmp_granted = {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "effective": {"native_process": {"write_paths": ["/Users/alice/project", "/tmp"], "unrestricted": False}},
+    }
+    granted_hint = sandbox_failure_hint(
+        "touch /tmp/out.txt",
+        "touch: /tmp/out.txt: Permission denied",
+        tmp_granted,
+    )
+    assert granted_hint is not None
+    assert "Host /tmp is read-only" not in granted_hint
+    assert "write_paths" in granted_hint
+
+    # Read-only sandbox mode (empty write_paths)
+    readonly_boundary = {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "effective": {"native_process": {"write_paths": [], "unrestricted": False}},
+    }
+    ro_hint = sandbox_failure_hint("touch a.txt", "touch: a.txt: Operation not permitted", readonly_boundary)
+    assert ro_hint is not None
+    assert "read-only" in ro_hint and "$TMPDIR" in ro_hint
+
+    # Non-write errors (e.g. network failure, missing file) must not emit false-positive hints
+    assert sandbox_failure_hint(
+        'curl -sS "https://example.com" -o /tmp/kv.xml',
+        "curl: (52) Empty reply from server",
+        seatbelt_boundary,
+    ) is None
+    assert sandbox_failure_hint(
+        "cat /tmp/missing.txt",
+        "cat: /tmp/missing.txt: No such file or directory",
+        seatbelt_boundary,
+    ) is None
+
+    # Host / No-Limit provider must never emit sandbox hints
+    assert sandbox_failure_hint(
+        "touch /tmp/x",
+        "touch: /tmp/x: Permission denied",
+        {"provider": "host"},
+    ) is None

@@ -17,6 +17,52 @@ from ..i18n import Translator
 SUPPORTED = ("bash", "zsh", "sh", "dash", "pwsh", "powershell")
 SHELL_TOOLS = {"bash", "powershell"}
 
+_SANDBOX_WRITE_ERROR_RE = re.compile(
+    r"operation not permitted|read-only file system|permission denied|access is denied"
+    r"|unauthorizedaccessexception|failure writing output|failed writing (?:body|received data)"
+    r"|failed to create the file|cannot create (?:regular file|directory)"
+    r"|errno (?:1|13|30)\b|\b(?:eperm|eacces|erofs)\b",
+    re.IGNORECASE,
+)
+_TMP_PATH_RE = re.compile(r"(?:^|[\s\"'=:(>])/(?:private/)?tmp(?:/|[\s\"'&;|):]|$)")
+
+
+def _tmp_is_writable(write_paths: list[str] | tuple[str, ...]) -> bool:
+    for raw in write_paths:
+        normalized = raw.rstrip("/") or "/"
+        if normalized in {"/", "/tmp", "/private/tmp"}:
+            return True
+    return False
+
+
+def sandbox_failure_hint(
+    command: str,
+    output_text: str,
+    boundary: dict | None,
+    *,
+    t=None,
+) -> str | None:
+    """Return a concise sandbox write-boundary hint when a sandboxed command hits a write denial."""
+    if not isinstance(boundary, dict) or boundary.get("provider") != "sandbox":
+        return None
+    if not output_text or not _SANDBOX_WRITE_ERROR_RE.search(output_text):
+        return None
+    effective = (boundary.get("effective") or {}).get("native_process") or boundary.get("requested") or {}
+    if effective.get("unrestricted"):
+        return None
+    t = t or Translator()
+    write_paths = effective.get("write_paths") or []
+    is_posix = boundary.get("backend") != "windows-appcontainer"
+    if (
+        is_posix
+        and not _tmp_is_writable(write_paths)
+        and (_TMP_PATH_RE.search(command or "") or _TMP_PATH_RE.search(output_text))
+    ):
+        return t("tools.output.sandbox_tmp_hint")
+    if not write_paths:
+        return t("tools.output.sandbox_readonly_hint")
+    return t("tools.output.sandbox_write_hint")
+
 
 @dataclass(frozen=True)
 class Shell:
@@ -336,6 +382,11 @@ def make_shell_tool(shell: Shell, jobs=None, *, execution=None, on_unavailable=N
         result.details.update(shell=shell.kind, executable=shell.executable, version=shell.version)
         if out.boundary is not None:
             result.details["boundary"] = out.boundary
+        if status == "ok" and code:
+            effective_boundary = {**(policy.describe() if policy is not None else {}), **(out.boundary or {})}
+            hint = sandbox_failure_hint(args["command"], out.text, effective_boundary, t=ctx.t)
+            if hint:
+                result = ToolResult.error(f"{result.as_text()}\n{hint}", result.details)
         return result
 
     params = {**BASH_PARAMS, "properties": {**BASH_PARAMS["properties"]}}
