@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage
 
@@ -28,6 +30,20 @@ def test_subagent_fresh_context_and_no_recursion(make_session):
     r = tool_results(s)
     assert r[0].text() == "sub result: found files"
     assert s.main.agent.last_text == "main done"
+
+
+@pytest.mark.parametrize("tail", [" from the child", ""], ids=["visible-tail", "empty-tail"])
+def test_subagent_returns_complete_answer_after_length_continuation(make_session, tail):
+    session = make_session(
+        faux.reply(tools=[("agent", {"description": "inspect", "prompt": "Inspect the files."})]),
+        faux.reply("Report", stop_reason="length"),
+        faux.reply(tail),
+        faux.reply("main done"),
+    )
+    session.prompt("delegate")
+    (result,) = tool_results(session)
+    assert not result.is_error
+    assert result.text() == "Report" + tail
 
 
 def test_subagent_request_exposes_only_its_own_tools(make_session):

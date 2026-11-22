@@ -160,7 +160,8 @@ def test_length_stop_rejects_possibly_truncated_tool_calls():
 def test_length_stop_continues_with_a_prompt_for_the_visible_output(text, key):
     agent, _ = make_agent([], faux.reply(text, thinking="reasoning", stop_reason="length"), faux.reply("done"))
     agent.prompt("go")
-    assert agent.messages[-1].stop_reason == "stop" and agent.last_text == "done"
+    assert agent.messages[-1].stop_reason == "stop"
+    assert agent.last_text == text + "done"
     second = faux.CALLS["loop"][1]["messages"]
     assert second[-2]["stop_reason"] == "length"
     assert second[-1]["kind"] == "continue" and second[-1]["content"] == agent.cfg.t(key)
@@ -192,8 +193,9 @@ def test_length_stop_recovers_into_tool_use():
 
 
 def test_length_stop_delivers_queued_follow_up_after_exhaustion():
-    truncated = faux.reply(stop_reason="length")
-    agent, _ = make_agent([], truncated, truncated, truncated, truncated, faux.reply("new answer"))
+    truncated = faux.reply("abandoned", stop_reason="length")
+    agent, _ = make_agent([], truncated, truncated, truncated, faux.reply("new ", stop_reason="length"),
+                          faux.reply("answer"))
     agent.follow_up("new question")
     agent.prompt("go")
     requests = faux.CALLS["loop"]
@@ -217,7 +219,9 @@ def test_length_continuations_reset_after_a_normal_turn_or_tool_call(intervening
 
 def test_length_stop_delivers_steering_instead_of_an_automatic_prompt():
     truncated = faux.reply(stop_reason="length")
-    agent, _ = make_agent([], truncated, truncated, truncated, faux.reply("done"))
+    agent, _ = make_agent(
+        [], faux.reply("old direction", stop_reason="length"), truncated, truncated, faux.reply("done")
+    )
     agent.steer("change direction")
     agent.prompt("go")
     users = [m for m in agent.messages if isinstance(m, UserMessage)]
@@ -281,13 +285,23 @@ def test_abort_at_length_continuation_boundary_leaves_no_prompt(abort_event):
 @pytest.mark.parametrize("limit", [1, 2])
 def test_length_stop_respects_turn_limit_without_an_orphaned_prompt(limit):
     should_stop = Mock(return_value=Continue("keep going"))
-    agent, _ = make_agent([], *[faux.reply(stop_reason="length")] * limit, max_turns=limit,
+    agent, _ = make_agent([], *[faux.reply("part", stop_reason="length")] * limit, max_turns=limit,
                           should_stop=should_stop)
     agent.prompt("go")
     assert len(faux.CALLS["loop"]) == limit
     assert [m.kind for m in agent.messages if isinstance(m, UserMessage)] == [None] + ["continue"] * (limit - 1)
     assert agent.messages[-1].stop_reason == "length"
+    assert agent.last_text == "part" * limit
     should_stop.assert_not_called()
+
+
+@pytest.mark.parametrize("reason", ["turn_limit", "error", "aborted", "refusal", "search_paused"])
+def test_length_continuation_ending_without_an_answer_keeps_only_terminal_text(reason):
+    agent, _ = make_agent(
+        [], faux.reply("partial answer", stop_reason="length"), faux.reply("terminal", stop_reason=reason)
+    )
+    agent.prompt("go")
+    assert agent.last_text == "terminal"
 
 
 def test_before_tool_call_can_block_and_mutate():
@@ -349,6 +363,7 @@ def test_follow_up_and_stop_hook_continue():
     users = [m for m in agent.messages if isinstance(m, UserMessage)]
     assert users[1].text() == "queued follow-up"
     assert users[2].kind == "continue" and users[2].text() == "keep going"
+    assert agent.last_text == "third"
 
 
 def test_abort_stops_streaming():

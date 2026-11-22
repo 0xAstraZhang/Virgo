@@ -341,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"virgo: {safe_text(last.error_message or last.stop_reason)}", file=sys.stderr)
         return 1
     if args.format == "text":
-        print(last.text())
+        print(session.main.agent.last_text)
     return 0
 
 

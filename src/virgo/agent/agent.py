@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
-from ..ai.types import UserMessage
+from ..ai.types import AssistantMessage, Message, UserMessage
 from ..diagnostics import capture_error, emergency_write
 from .loop import run_loop
 from .types import AgentConfig, AgentEvent
@@ -117,12 +117,35 @@ class Agent:
 
     @property
     def last_text(self) -> str:
-        from ..ai.types import AssistantMessage
+        return last_assistant_text(self.messages)
 
-        for m in reversed(self.messages):
-            if isinstance(m, AssistantMessage):
-                return m.text()
+
+def last_assistant_text(messages: Sequence[Message]) -> str:
+    """Return the latest assistant text, including contiguous length continuations.
+
+    Stop hooks and compaction also use "continue". The preceding length stop
+    identifies which prompts belong to the same answer.
+    """
+    history = reversed(messages)
+    last = next((message for message in history if isinstance(message, AssistantMessage)), None)
+    if last is None:
         return ""
+    if last.stop_reason not in ("stop", "length") or last.tool_calls():
+        return last.text()
+
+    fragments = [last.text()]
+    for bridge in history:
+        if not isinstance(bridge, UserMessage) or bridge.kind != "continue":
+            break
+        previous = next(history, None)
+        if (
+            not isinstance(previous, AssistantMessage)
+            or previous.stop_reason != "length"
+            or previous.tool_calls()
+        ):
+            break
+        fragments.append(previous.text())
+    return "".join(reversed(fragments))
 
 
 def _as_message(m):

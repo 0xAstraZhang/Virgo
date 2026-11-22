@@ -216,6 +216,27 @@ def test_print_text_ignores_fullscreen_option(entry, project):
     assert result.stdout.strip() == "(faux) You said: hello"
 
 
+@pytest.mark.parametrize(("responses", "expected"), [
+    pytest.param([faux.reply("inter", stop_reason="length"), faux.reply("face")],
+                 "interface", id="one-continuation"),
+    pytest.param([faux.reply("def get_", stop_reason="length"), faux.reply("value():\n", stop_reason="length"),
+                  faux.reply("    return 42")], "def get_value():\n    return 42", id="two-continuations"),
+    pytest.param([faux.reply(thinking="reasoning", stop_reason="length"), faux.reply("done")],
+                 "done", id="thinking-only"),
+    pytest.param([faux.reply("Looking for files", stop_reason="length"),
+                  faux.reply(tools=[("glob", {"pattern": "*"})]), faux.reply("Found the files.")],
+                 "Found the files.", id="tool-result"),
+])
+def test_print_text_after_length_continuation(project, monkeypatch, capsys, responses, expected):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    faux.script("limited", *responses)
+    code = cli.main(["-p", "--format", "text", "--no-session", "-C", str(project),
+                     "--permission", "no-limit", "-m", "faux/limited", "hello"])
+    assert code == 0
+    assert capsys.readouterr().out == expected + "\n"
+
+
 @pytest.mark.parametrize(("fmt", "language", "partial", "prefix", "warning"), [
     ("text", "en", "unfinished", "virgo: ", "output token limit"),
     ("json", "zh-CN", "", "virgo：", "输出 token 上限"),
