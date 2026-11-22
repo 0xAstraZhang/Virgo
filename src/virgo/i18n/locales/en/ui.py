@@ -10,7 +10,6 @@ MESSAGES = {
     'ui.modes.help_short': '↑↓/1-3 · Enter · g grants · Esc',
     'ui.modes.use': 'Use',
     'ui.modes.close': 'Close',
-    'ui.modes.flags': 'Read paths {read_paths} · Write paths {write_paths} · Web on · Shell net {network_allowed}',
     'ui.modes.flags_short': 'R:{read_paths} W:{write_paths} Web:on Shell:{network_allowed}',
     "ui.modes.host_flags": "Host · Full OS access",
     'ui.modes.on': 'on',

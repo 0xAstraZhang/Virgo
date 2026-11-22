@@ -294,7 +294,7 @@ def test_layout_keeps_input_and_status_visible_after_resize(make_session):
                 assert 3 <= app.editor.region.height <= height // 3
                 assert app.transcript.region.bottom <= app.editor.region.y
                 status = app.query_one("#status").region
-                meta = app.query_one("#footer-meta").region
+                meta = app.query_one("#metrics").region
                 assert not app.query_one("#hints").display
                 assert status.height == meta.height == 1
                 assert app.editor.region.bottom == status.y
@@ -367,7 +367,7 @@ def test_permission_picker_keeps_transcript_and_draft_and_wraps_selection(make_s
                 assert app.query_one("#status").display
                 assert app.editor.prompt_marker == "›"
                 assert "No-Limit · Waiting for approval" in app.query_one("#status").render_line(0).text
-                assert not app.query_one("#footer-meta").display and not app.query_one("#hints").display
+                assert not app.query_one("#metrics").display and not app.query_one("#hints").display
                 assert choices.highlighted == 1 and question.max_scroll_y > 0
                 assert choices.get_option_at_index(1).prompt.plain.startswith("› 2. Deny")
                 highlight = choices.get_component_styles("option-list--option-highlighted")
@@ -624,29 +624,23 @@ def test_status_preserves_fields_with_wide_path_and_long_model(broker_session, p
                 metrics = app.query_one("#metrics", Static)
                 status = app.query_one("#status", Static)
                 model_line = str(status.content)
-                flags_widget = app.query_one("#flags", Static)
-                flags = str(flags_widget.content)
+                assert app.query_one_optional("#flags") is None
                 assert cell_len(model_line) == width - 2
                 authority = session.services["execution"].selected_mode.name
                 assert model_line.startswith(authority[:10])
                 if width - 2 >= cell_len(authority):
                     assert model_line.startswith(authority)
                 assert status.render_line(0).text == model_line
-                assert ("R:1 W:1 Web:on Shell:on" in flags or
-                        "Read paths 1 · Write paths 1 · Web on · Shell net on" in flags)
-                assert cell_len(flags) <= width - 2
-                assert flags_widget.render_line(0).text.rstrip() == flags
                 assert status.region.bottom <= app.size.height
                 assert "ready" not in model_line
                 if width >= 64:
-                    assert metrics.display and metrics.render_line(0).text.startswith("↑0 ↓0 cache")
+                    assert metrics.display and metrics.render_line(0).text.strip().startswith("↑0 ↓0 cache")
                 if metrics.display:
-                    assert metrics.render_line(0).text.rstrip() == str(metrics.content)
-                    assert metrics.region.x > flags_widget.region.x + cell_len(flags) - 1
+                    assert metrics.render_line(0).text.strip() == str(metrics.content)
                 if width - 2 - cell_len(authority) - 2 >= cell_len(f" · {session.effort}") + 1:
                     assert model_line.endswith(f" · {session.effort}")
                 assert "faux/" not in model_line
-                assert app.query_one("#footer-meta").region.y == status.region.bottom
+                assert app.query_one("#metrics").region.y == status.region.bottom
                 assert app.editor.region.bottom == status.region.y
                 cwd = app.query_one("#cwd", Static)
                 assert cell_len(str(cwd.content)) <= cwd.region.width
@@ -737,24 +731,32 @@ def test_narrow_footer_renders_complete_idle_and_busy_shortcuts(make_session, mo
     asyncio.run(scenario())
 
 
-def test_chinese_footer_fits_both_flags_and_usage_at_64_columns(broker_session):
+def test_chinese_footer_shows_usage_without_permission_flags(broker_session):
     async def scenario():
         ui = FullscreenUI()
         session = broker_session(ui=ui, settings={"language": "zh-CN"})
         app = VirgoApp(session, ui)
         async with app.run_test(size=(64, 24)) as pilot:
             await pilot.pause()
-            flags = app.query_one("#flags")
+            assert app.query_one_optional("#flags") is None
             metrics = app.query_one("#metrics")
             hints = app.query_one("#hints")
-            assert flags.render_line(0).text.rstrip() == "读:1 写:1 网页开 Shell:开"
-            assert metrics.render_line(0).text == str(metrics.content) and "缓存" in str(metrics.content)
+            assert metrics.render_line(0).text.strip() == str(metrics.content) and "缓存" in str(metrics.content)
             assert not hints.display
+            app.editor.load_text("/status")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: any(
+                f"可读路径：{session.cwd}" in str(row.content)
+                and f"可写路径：{session.cwd}" in str(row.content)
+                and "Shell 联网：开" in str(row.content)
+                for row in app.transcript.query(".notice")
+            ))
+
 
     asyncio.run(scenario())
 
 
-def test_footer_places_permissions_and_usage_below_editor(make_session):
+def test_footer_places_mode_and_usage_below_editor(make_session):
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
@@ -781,13 +783,13 @@ def test_footer_places_permissions_and_usage_below_editor(make_session):
             assert str(metrics.content).startswith("↑100 ↓10 cache 45.0%  0.0%/")
             assert metrics.styles.text_align == "right"
             await pilot.pause()
-            assert metrics.render_line(0).text == str(metrics.content)
+            assert metrics.render_line(0).text.strip() == str(metrics.content)
             assert metrics.region.right == app.editor.region.right
             assert status.styles.text_align == "left"
             status_line = status.render_line(0).text
             assert status_line.startswith("No-Limit  ")
             assert status_line.endswith(f"deepseek-flash · {session.effort}")
-            assert "Host · Full OS access" in app.query_one("#flags").render_line(0).text
+            assert app.query_one_optional("#flags") is None
             assert cell_len(status_line) == app.editor.region.width
             assert metrics.region.y == status.region.bottom
             assert app.editor.region.bottom == status.region.y
@@ -822,7 +824,7 @@ def test_shift_tab_cycles_permission_modes_without_changing_draft(broker_session
                 assert picker.size.height == picker.option_count == 3
                 assert app.transcript.region.height > 0 and app.transcript.region.bottom <= panel.region.y
                 assert app.query_one("#status").display
-                hidden = ("#editor", "#footer-meta", "#hints", "#jump", "#completions")
+                hidden = ("#editor", "#metrics", "#hints", "#jump", "#completions")
                 assert all(not app.query_one(selector).display for selector in hidden)
                 for _ in modes:
                     last = picker.highlighted
@@ -1067,6 +1069,12 @@ def test_status_shows_active_preset_while_only_a_child_is_queued(broker_session)
                 await wait_for(pilot, lambda: "Next: Read-Only" in str(app.query_one("#status", Static).content))
                 text = str(app.query_one("#status", Static).content).splitlines()[0]
                 assert text.startswith("Workspace-Edit") and "Next: Read-Only" in text
+                app.editor.load_text("/status")
+                await pilot.press("enter")
+                await wait_for(pilot, lambda: any(
+                    "Permissions: Workspace-Edit" in str(row.content) and "Next task: Read-Only" in str(row.content)
+                    for row in app.transcript.query(".notice")
+                ))
             finally:
                 release()
 

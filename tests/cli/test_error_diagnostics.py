@@ -117,16 +117,16 @@ def test_repl_inline_command_keeps_running_and_saves_error(make_session, monkeyp
     def broken(s, args):
         raise RuntimeError("status lookup failed")
 
-    session.commands.register("status", broken, concurrent=True)
+    session.commands.register("broken-status", broken, concurrent=True)
     runner = threading.Thread(target=repl.run_repl, args=(session, ui, broker), daemon=True)
     runner.start()
     try:
-        broker.push("line", "/status")
+        broker.push("line", "/broken-status")
         wait_until(lambda: "status lookup failed" in ui.text)
         assert runner.is_alive()
         records = _records(session.paths.user / "logs")
         record = next(row for row in records if row["phase"] == "cli.command")
-        assert record["context"]["command"] == "status" and record["error_id"] in ui.text
+        assert record["context"]["command"] == "broken-status" and record["error_id"] in ui.text
     finally:
         broker.push("line", "/exit")
         runner.join(5)
@@ -159,12 +159,12 @@ def test_tui_concurrent_command_error_retains_command_name(make_session):
     def broken(s, args):
         raise RuntimeError("concurrent command unavailable")
 
-    session.commands.register("status", broken, concurrent=True)
-    controller.submit("/status private argument")
+    session.commands.register("broken-status", broken, concurrent=True)
+    controller.submit("/broken-status private argument")
     pump(controller, lambda item: not item._helpers)
     records = _records(session.paths.user / "logs")
     record = next(row for row in records if row["phase"] == "cli.command")
-    assert record["context"]["command"] == "status"
+    assert record["context"]["command"] == "broken-status"
     assert "private argument" not in json.dumps(record)
 
 

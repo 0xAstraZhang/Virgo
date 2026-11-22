@@ -284,7 +284,7 @@ def test_picker_keeps_status_visible_with_scrolled_history_and_queued_commands(m
                 await pilot.resize_terminal(width, height)
                 await pilot.pause()
                 assert not app.query_one("#jump").display
-                assert not app.editor.display and not app.query_one("#footer-meta").display
+                assert not app.editor.display and not app.query_one("#metrics").display
                 assert not app.query_one("#hints").display and app.query_one("#status").display
                 assert len(str(app.query_one("#pending", Static).content).splitlines()) == 3
                 assert panel.region.bottom <= app.query_one("#status").region.y

@@ -16,11 +16,11 @@ from ..i18n import tr
 from .choices import MarkedChoiceList
 
 
-def permission_flags(owner, mode, *, compact: bool = False) -> str:
+def permission_flags(owner, mode) -> str:
     if mode.id == "no-limit":
-        return tr(owner, "sandbox.host_execution")
+        return tr(owner, "ui.modes.host_flags")
     network = tr(owner, "ui.modes.on" if mode.network else "ui.modes.off")
-    return tr(owner, "ui.modes.flags_short" if compact else "ui.modes.flags",
+    return tr(owner, "ui.modes.flags_short",
               read_paths=len(mode.read_paths), write_paths=len(mode.write_paths), network_allowed=network)
 
 
@@ -71,11 +71,7 @@ class PermissionModePicker(Vertical):
             label = Text(f"{number}. {mode.name}")
             if mode.id == selected_mode_id:
                 label.append(" ✓", style="green")
-            flags = (
-                tr(self, "ui.modes.host_flags") if mode.id == "no-limit"
-                else permission_flags(self, mode, compact=True)
-            )
-            label.append(" · " + flags)
+            label.append(" · " + permission_flags(self, mode))
             rows.append((mode.id, label))
         self.query_one(MarkedChoiceList).set_choices(rows, list(modes).index(selected_mode_id))
         self.update_help()
