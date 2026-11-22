@@ -46,6 +46,26 @@ def test_subagent_returns_complete_answer_after_length_continuation(make_session
     assert result.text() == "Report" + tail
 
 
+def test_subagent_returns_complete_answer_after_overflow_compaction(make_session):
+    session = make_session(
+        faux.reply(tools=[("agent", {"description": "inspect", "prompt": "Inspect the files."})]),
+        faux.reply("First ", stop_reason="length"),
+        faux.error("context overflow", kind="overflow"),
+        faux.reply("Earlier progress"),
+        faux.reply("finding"),
+        faux.reply("main done"),
+        settings={"compaction": {"keepRecentTokens": 1}},
+    )
+    session.prompt("delegate")
+
+    continuation = faux.CALLS["test"][-2]["messages"]
+    assert continuation[0]["kind"] == "summary"
+    assert not any(message["role"] == "assistant" for message in continuation)
+    (result,) = tool_results(session)
+    assert not result.is_error
+    assert result.text() == "First finding"
+
+
 def test_subagent_request_exposes_only_its_own_tools(make_session):
     # Read-only delegation uses a capability ceiling and controlled Git reads.
     seen = {}

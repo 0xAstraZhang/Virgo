@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -165,6 +166,64 @@ def test_length_stop_continues_with_a_prompt_for_the_visible_output(text, key):
     second = faux.CALLS["loop"][1]["messages"]
     assert second[-2]["stop_reason"] == "length"
     assert second[-1]["kind"] == "continue" and second[-1]["content"] == agent.cfg.t(key)
+
+
+def compact_before_continuations(agent, style):
+    call_model = agent.cfg.call_model
+
+    def call(messages, signal):
+        if isinstance(messages[-1], UserMessage) and messages[-1].kind == "continue":
+            if style == "summary":
+                messages[:] = [UserMessage("Earlier progress", kind="summary"), messages[-1]]
+            else:
+                messages[:] = [AssistantMessage(stop_reason="compaction")]
+        return call_model(messages, signal)
+
+    agent.cfg.call_model = call
+
+
+@pytest.mark.parametrize("style", ["summary", "native"])
+@pytest.mark.parametrize("continuations", [1, 2])
+def test_length_continuation_survives_compaction(style, continuations):
+    parts = ["first ", "second "][:continuations]
+    agent, _ = make_agent([], *(faux.reply(part, stop_reason="length") for part in parts), faux.reply("end"))
+    compact_before_continuations(agent, style)
+    answers = []
+
+    def record_answer(event):
+        if event.type == "message_end" and isinstance(event.message, AssistantMessage):
+            answers.append(agent.last_text)
+
+    agent.subscribe(record_answer)
+    agent.prompt("go")
+    assert agent.last_text == "".join(parts) + "end"
+    assert answers == ["".join(parts[:i + 1]) for i in range(continuations)] + [agent.last_text]
+
+
+def test_last_text_uses_current_history_after_post_run_compaction():
+    agent, _ = make_agent([], faux.reply("first ", stop_reason="length"), faux.reply("last"))
+    agent.prompt("go")
+    assert Agent(agent.cfg, messages=list(agent.messages)).last_text == "first last"
+
+    summary = UserMessage("Earlier progress", kind="summary")
+    agent.messages[:] = [summary, replace(agent.messages[-1])]
+    assert agent.last_text == "last"
+    agent.messages[:] = [summary]
+    assert agent.last_text == ""
+
+
+@pytest.mark.parametrize("reason", ["tool_use", "error", "aborted"])
+def test_compacted_length_continuation_discards_fragments_on_interruption(reason):
+    if reason == "tool_use":
+        responses = [faux.reply("checking", tools=[("echo", {})]), faux.reply("terminal")]
+    else:
+        responses = [faux.reply("terminal", stop_reason=reason)]
+    agent, _ = make_agent([echo_tool()], faux.reply("old answer", stop_reason="length"), *responses)
+    compact_before_continuations(agent, "native")
+    agent.prompt("go")
+    if reason == "tool_use":
+        assert isinstance(agent.messages[-2], ToolResultMessage) and not agent.messages[-2].is_error
+    assert agent.last_text == "terminal"
 
 
 def test_length_stop_exhausts_two_continuations_without_running_stop_hooks():

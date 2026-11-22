@@ -32,6 +32,8 @@ def run_loop(
     signal: threading.Event,
     steering: Queue = lambda: [],
     follow_ups: Queue = lambda: [],
+    *,
+    on_answer: Callable[[AssistantMessage, str], None] | None = None,
 ) -> None:
     """Append to `messages` in place, emitting events as it goes."""
     def push(m) -> None:
@@ -45,6 +47,7 @@ def run_loop(
     turns = 0
     native_continues = 0
     length_continues = 0
+    length_fragments: list[str] = []  # A model call may compact earlier fragments out of messages.
     length_prompt = None
     try:
         while True:
@@ -78,6 +81,13 @@ def run_loop(
                 turns += 1
                 msg = _stream_assistant(messages, cfg, emit, signal)
                 messages.append(msg)
+                if msg.stop_reason in ("stop", "length") and not msg.tool_calls():
+                    answer_text = "".join((*length_fragments, msg.text()))
+                else:
+                    length_fragments.clear()
+                    answer_text = msg.text()
+                if on_answer is not None:
+                    on_answer(msg, answer_text)
                 emit(AgentEvent("message_end", cfg.name, message=msg))
                 if msg.stop_reason in ("error", "aborted", "refusal"):
                     emit(AgentEvent("turn_end", cfg.name, message=msg))
@@ -112,10 +122,13 @@ def run_loop(
                 pending = steering()
                 if not truncated or pending:
                     length_continues = 0
+                    length_fragments.clear()
                 elif length_continues < MAX_LENGTH_CONTINUES:
                     length_continues += 1
+                    fragment = msg.text()
+                    length_fragments.append(fragment)
                     length_prompt = (
-                        "harness.agent.length_continue" if msg.text().strip()
+                        "harness.agent.length_continue" if fragment.strip()
                         else "harness.agent.length_continue_empty"
                     )
             if signal.is_set():
@@ -123,6 +136,7 @@ def run_loop(
             pending = follow_ups()
             if pending:
                 length_continues = 0
+                length_fragments.clear()
                 continue
             # Stop hooks cannot extend the retry budget. A queued follow-up above is explicit input.
             if length_continues >= MAX_LENGTH_CONTINUES:

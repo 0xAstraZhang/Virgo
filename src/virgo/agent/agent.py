@@ -16,6 +16,7 @@ class Agent:
     def __init__(self, cfg: AgentConfig, messages: list | None = None, signal: threading.Event | None = None):
         self.cfg = cfg
         self.messages: list = messages if messages is not None else []
+        self._last_answer: tuple[AssistantMessage, str] | None = None
         self.signal = signal or threading.Event()
         self._own_signal = signal is None
         self._listeners: list[Callable[[AgentEvent], None]] = []
@@ -104,6 +105,7 @@ class Agent:
                 self.signal,
                 steering=lambda: self._drain(self._steer),
                 follow_ups=lambda: self._drain(self._follow),
+                on_answer=self._record_answer,
             )
         finally:
             with self._lock:
@@ -115,13 +117,22 @@ class Agent:
     def abort(self) -> None:
         self.signal.set()
 
+    def _record_answer(self, msg: AssistantMessage, text: str) -> None:
+        self._last_answer = (msg, text)
+
     @property
     def last_text(self) -> str:
+        last = next((m for m in reversed(self.messages) if isinstance(m, AssistantMessage)), None)
+        if last is None:
+            return ""
+        answer = self._last_answer
+        if answer is not None and answer[0] is last:
+            return answer[1]
         return last_assistant_text(self.messages)
 
 
 def last_assistant_text(messages: Sequence[Message]) -> str:
-    """Return the latest assistant text, including contiguous length continuations.
+    """Return the latest assistant text, including contiguous length continuations still in history.
 
     Stop hooks and compaction also use "continue". The preceding length stop
     identifies which prompts belong to the same answer.

@@ -20,8 +20,10 @@ from virgo.ai import resolve_model
 from virgo.ai.catalog import CatalogError, CatalogModel
 from virgo.ai.model_metadata import cache_path, write_metadata
 from virgo.ai.providers import faux
+from virgo.ai.types import AssistantMessage, TextContent, Usage
 from virgo.harness import preferences
 
+from tests.support.harness import install_responses
 from tests.support.persistence import diagnostic_records
 
 COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" else "virgo")
@@ -235,6 +237,28 @@ def test_print_text_after_length_continuation(project, monkeypatch, capsys, resp
                      "--permission", "no-limit", "-m", "faux/limited", "hello"])
     assert code == 0
     assert capsys.readouterr().out == expected + "\n"
+
+
+def test_print_text_after_auto_compaction_of_length_fragment(project, monkeypatch, capsys):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    (Path(os.environ["VIRGO_HOME"]) / "settings.json").write_text(json.dumps({
+        "compaction": {"triggerTokens": 50_000, "keepRecentTokens": 1},
+    }))
+    seen = install_responses(
+        monkeypatch,
+        AssistantMessage([TextContent("inter")], stop_reason="length", usage=Usage(input=50_000)),
+        AssistantMessage([TextContent("Earlier progress")]),
+        AssistantMessage([TextContent("face")]),
+    )
+    code = cli.main(["-p", "--format", "text", "-C", str(project),
+                     "--permission", "no-limit", "-m", "faux/limited", "hello"])
+
+    continuation = seen[-1][1].messages
+    assert continuation[0].kind == "summary"
+    assert not any(isinstance(message, AssistantMessage) for message in continuation)
+    assert code == 0
+    assert capsys.readouterr().out == "interface\n"
 
 
 @pytest.mark.parametrize(("fmt", "language", "partial", "prefix", "warning"), [
