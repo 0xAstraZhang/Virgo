@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from rich.text import Text
-from textual.widgets import Static
+from textual.color import Color
+from textual.widgets import Markdown, Static
 
 from virgo.agent.types import AgentEvent, ToolResult
 from virgo.ai.stream import StreamEvent
@@ -19,6 +21,7 @@ from virgo.ai.types import (
     UserMessage,
     message_to_dict,
 )
+from virgo.cli.tui import transcript as transcript_module
 from virgo.cli.tui.transcript import AssistantView, ToolView, Transcript
 
 from tests.support.tui import TranscriptApp, wait_for
@@ -50,16 +53,112 @@ def test_stream_and_final_share_one_card_with_folded_thinking():
             card = cards[0]
             assert card.text == message.text()
             assert card.body._markdown == message.text()
-            assert next(e for e in card.events if e.kind == "thinking").text == "Check carefully"
+            thought = next(e for e in card.events if e.kind == "thinking")
+            assert thought.has_class("thinking") and thought.text == "Check carefully"
+            assert thought.header.styles.text_style.dim
+            assert thought.header.content.plain == "▸ Thought · Check carefully"
             assert card.thought_body.display
             assert not card.thought_header.display
             view.toggle_thinking()
             assert card.events[0].output.display
+            assert thought.header.content.plain == "▾ Thought"
+            assert thought.output.content == "Check carefully"
             assert card.thought_body.display
             card.events[0].header.focus()
             await pilot.press("enter")
             assert not card.events[0].output.display
             assert card.thought_body.display
+
+    asyncio.run(scenario())
+
+
+def test_stream_markdown_coalesces_and_serializes_final_flush(monkeypatch):
+    # Freeze only the throttle clock so all deltas in a burst share a timestamp.
+    monkeypatch.setattr(transcript_module, "time", SimpleNamespace(monotonic=lambda: 1000.0))
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test() as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("message_start", message=AssistantMessage([TextContent("")])))
+            card = view.query_one(AssistantView)
+            row = card.events[0]
+            update = row.output.update
+            calls = []
+            entered, release = asyncio.Event(), asyncio.Event()
+            active = False
+
+            async def observe(text):
+                nonlocal active
+                assert not active, "Markdown started mounting a second snapshot"
+                active = True
+                calls.append(text)
+                if text == "latest delta":
+                    entered.set()
+                    await asyncio.wait_for(release.wait(), 4)
+                await update(text)
+                active = False
+
+            monkeypatch.setattr(row.output, "update", observe)
+
+            async def delta(text):
+                message = AssistantMessage([TextContent(text)])
+                await view.consume(AgentEvent("message_update", stream_event=StreamEvent("text_delta", message)))
+
+            await delta("first")
+            assert calls == ["first"] and row.output.source == "first"
+            for text in ("second", "third", "latest delta"):
+                await delta(text)
+            assert calls == ["first"]
+            await asyncio.wait_for(entered.wait(), 4)
+            await delta("superseded")
+            final = AssistantMessage([TextContent("**exact final**")])
+            finishing = asyncio.create_task(view.consume(AgentEvent("message_end", message=final)))
+            await asyncio.sleep(0)
+            assert not finishing.done()
+            release.set()
+            await finishing
+            assert row._markdown_timer is None
+            assert card.body.source == row.output.source == final.text()
+            await pilot.pause(0.1)
+            assert calls == ["first", "latest delta", final.text()]
+
+    asyncio.run(scenario())
+
+
+def test_detached_stream_replay_mounts_latest_text_once_and_unmount_cancels_timer(monkeypatch):
+    calls = []
+    update = Markdown.update
+
+    def observe(widget, text):
+        if widget.has_class("output"):
+            calls.append(text)
+        return update(widget, text)
+
+    monkeypatch.setattr(Markdown, "update", observe)
+    monkeypatch.setattr(transcript_module, "time", SimpleNamespace(monotonic=lambda: 1000.0))
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test() as pilot:
+            view = app.query_one(Transcript)
+            await view.load_history([
+                {"type": "custom", "kind": "transcript_stream", "data": {
+                    "stream_type": "text_delta", "index": 0, "block": {"type": "text", "text": text},
+                }}
+                for text in ("first saved delta", "last saved delta")
+            ])
+            await pilot.pause()
+            row = view.query_one(AssistantView).events[0]
+            assert row.output.source == "last saved delta"
+            assert calls == ["last saved delta"]
+            row.set_text("pending")
+            timer = row._markdown_timer
+            assert timer is not None
+            await view.load_history([])
+            assert row._markdown_timer is None and timer.cancelled()
+            await pilot.pause(0.1)
+            assert calls == ["last saved delta"]
 
     asyncio.run(scenario())
 
@@ -150,6 +249,9 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
             calls = {(t.agent, t.call_id): t for t in view.query(ToolView) if t.kind == "tool_call"}
             main = next(t for t in view.query(ToolView) if t.kind == "tool_result" and (t.agent, t.call_id) == ("main", "shared-id"))
             assert main.status == "error"
+            assert "failed → one (+4 lines)" in main.header.content.plain
+            assert not main.header.styles.text_style.dim
+            assert main.header.styles.color == Color.parse(app.get_css_variables()["error"])
             assert not main.output.display
             view.toggle_thinking()
             main.header.focus()
@@ -186,7 +288,10 @@ def test_sandbox_failure_shows_boundary_and_preserves_raw_evidence():
             await pilot.pause()
             row = next(t for t in view.query(ToolView) if t.kind == "tool_result" and t.call_id == "write-1")
             assert row.status == "blocked" and not row.expanded
-            assert all(value in str(row.header.content) for value in ("blocked", "Write paths", "settings.json"))
+            assert row.has_class("error") and not row.header.styles.text_style.dim
+            assert all(value in str(row.header.content) for value in (
+                "blocked", "Write paths", "settings.json", "Host file writes are disabled."
+            ))
             row.header.focus()
             await pilot.press("enter")
             assert "Host file writes are disabled." in str(row.output.content)
@@ -351,6 +456,7 @@ def test_inline_activity_is_separate_from_thought_folding_and_follows_prompt():
             assert card.thought_body.display
             assert not card.thought_header.display
             assert "Thinking" in str(card.events[0].header.content)
+            assert "Consider this carefully." not in str(card.events[0].header.content)
             view.show_activity(Text("✽ Thinking… (4s · thinking with high effort)"))
             assert "✽" in str(card.events[0].header.content)
             assert not card.thought_header.display
@@ -386,18 +492,40 @@ def test_history_does_not_receive_activity_from_later_local_commands():
     asyncio.run(scenario())
 
 
-def test_markdown_code_blocks_keep_native_terminal_colors():
+@pytest.mark.parametrize("theme", ["ansi-dark", "ansi-light"])
+def test_markdown_code_blocks_keep_native_terminal_colors(theme):
+    def check_fence(markdown):
+        fence = markdown.query_one("MarkdownFence")
+        label = fence.query_one("Label")
+        for widget in (fence, label):
+            assert widget.styles.background.ansi == -1 or widget.styles.background.a == 0
+            assert widget.styles.color.ansi == -1
+        assert fence.styles.border_left == ("solid", Color.parse("ansi_bright_black"))
+        assert fence.styles.padding == (0, 1, 0, 1)
+        assert fence.styles.margin == (0, 0, 1, 0)
+        assert label.styles.padding == (0, 0, 0, 0)
+        assert label.region.y == markdown.query_one("MarkdownParagraph").region.bottom + 1
+        return label
+
     async def scenario():
-        for theme in ("ansi-dark", "ansi-light"):
-            app = TranscriptApp(ansi_color=True)
-            app.theme = theme
-            async with app.run_test(size=(80, 24)) as pilot:
-                view = app.query_one(Transcript)
-                text = "```python\nclass Thing:\n    def __init__(self):\n        self.value = 'hello'\n```"
-                await view.consume(AgentEvent("message_end", message=AssistantMessage([TextContent(text)])))
-                await pilot.pause()
-                fence = view.query_one("MarkdownFence")
-                assert fence.styles.background.ansi == -1 or fence.styles.background.a == 0
-                assert fence.styles.color.ansi == -1
+        app = TranscriptApp(ansi_color=True)
+        app.theme = theme
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one(Transcript)
+            message = AssistantMessage([TextContent("Example\n\n```python\nprint('hello')\n```")])
+            await view.consume(AgentEvent("message_start", message=message))
+            await pilot.pause()
+            card = view.query_one(AssistantView)
+            live_region = check_fence(card.query_one("EventView.message > Markdown")).region
+
+            await view.consume(AgentEvent("message_end", message=message))
+            await pilot.pause()
+            final_label = check_fence(card.body)
+            assert final_label.region == live_region
+
+            view.finish_activity()
+            await view.add_notice("✻ Worked for 1s")
+            await pilot.pause()
+            assert view.query_one(".notice").region.y == final_label.region.bottom + 1
 
     asyncio.run(scenario())

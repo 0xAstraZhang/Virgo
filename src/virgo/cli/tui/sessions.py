@@ -44,7 +44,7 @@ def relative_time(timestamp: float, *, now: float | None = None, owner=None) -> 
 def workspace_name(cwd: str | Path, owner=None) -> str:
     value = str(cwd)
     home = str(Path.home())
-    if value == home or value.startswith(home + "/"):
+    if value == home or value.startswith((home + "/", home + "\\")):
         value = "~" + value[len(home) :]
     return " ".join(value.split()) or tr(owner, "ui.sessions.unknown_workspace")
 

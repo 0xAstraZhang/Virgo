@@ -6,13 +6,14 @@ from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, OptionList, Static
-from textual.widgets.option_list import Option
+from textual.containers import Vertical
+from textual.message import Message
+from textual.widgets import OptionList, Static
 
+from ...execution_policy import ExecutionMode
+from ...i18n import Translator
 from ..i18n import tr
-from .choices import ChoiceList
+from .choices import MarkedChoiceList
 
 
 def permission_flags(owner, mode, *, compact: bool = False) -> str:
@@ -23,60 +24,100 @@ def permission_flags(owner, mode, *, compact: bool = False) -> str:
               read_paths=len(mode.read_paths), write_paths=len(mode.write_paths), network_allowed=network)
 
 
-class PermissionModePicker(ModalScreen[str | None]):
+class PermissionModePicker(Vertical):
     DEFAULT_CSS = """
-    PermissionModePicker { align: center middle; }
-    PermissionModePicker > Vertical {
-        width: 92%; max-width: 90; height: auto; padding: 0 1;
-        border: solid #7C3AED; background: $background; color: $foreground;
+    PermissionModePicker {
+        height: auto; padding: 0 1; border-top: solid #7C3AED;
+        background: $background; color: $foreground;
     }
     PermissionModePicker #modes-title { height: 1; text-style: bold; color: #7C3AED; }
-    PermissionModePicker #modes-list { height: 5; border: none; padding: 0; }
-    PermissionModePicker #modes-actions { height: auto; }
-    PermissionModePicker Button { width: 1fr; min-width: 0; padding: 0; }
+    PermissionModePicker #modes-list {
+        height: auto; border: none; padding: 0; text-wrap: nowrap; text-overflow: ellipsis;
+    }
+    PermissionModePicker #modes-help { height: 1; text-style: dim; text-wrap: nowrap; }
     """
-    BINDINGS = [Binding("escape", "cancel", priority=True, show=False)]
+    BINDINGS = [
+        Binding("up,left", "move(-1)", priority=True, show=False),
+        Binding("down,right,tab,shift+tab", "move(1)", priority=True, show=False),
+        Binding("enter", "choose", priority=True, show=False),
+        Binding("1", "choose(0)", priority=True, show=False),
+        Binding("2", "choose(1)", priority=True, show=False),
+        Binding("3", "choose(2)", priority=True, show=False),
+        Binding("g", "answer('grants')", priority=True, show=False),
+        Binding("escape", "answer(None)", priority=True, show=False),
+    ]
 
-    def __init__(self, modes: dict, selected_mode_id: str, *, translator):
-        super().__init__()
-        self.translator = translator
-        self.modes = modes
-        self.selected_mode_id = selected_mode_id
+    class Answered(Message):
+        def __init__(self, choice: str | None) -> None:
+            self.choice = choice
+            super().__init__()
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.display = False
+        self.pending_answer: PermissionModePicker.Answered | None = None
 
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(tr(self, "ui.modes.title"), id="modes-title", markup=False)
-            yield ChoiceList(id="modes-list")
-            with Horizontal(id="modes-actions"):
-                yield Button(tr(self, "ui.modes.use"), id="mode-use")
-                yield Button(tr(self, "ui.modes.grants"), id="mode-grants")
-                yield Button(tr(self, "ui.modes.close"), id="mode-close")
+        yield Static("", id="modes-title", markup=False)
+        yield MarkedChoiceList(id="modes-list")
+        yield Static("", id="modes-help", markup=False)
 
-    def on_mount(self) -> None:
-        choices = self.query_one("#modes-list", ChoiceList)
-        choices.add_options(
-            Option(Text(f"{mode.name} · {permission_flags(self, mode, compact=True)}"), id=mode.id)
-            for mode in self.modes.values()
-        )
-        choices.highlighted = list(self.modes).index(self.selected_mode_id)
+    def open(self, modes: dict[str, ExecutionMode], selected_mode_id: str, *, translator: Translator) -> None:
+        self.translator = translator
+        self.display = True
+        self.query_one("#modes-title", Static).update(tr(self, "ui.modes.title"))
+        rows = []
+        for number, mode in enumerate(modes.values(), 1):
+            label = Text(f"{number}. {mode.name}")
+            if mode.id == selected_mode_id:
+                label.append(" ✓", style="green")
+            flags = (
+                tr(self, "ui.modes.host_flags") if mode.id == "no-limit"
+                else permission_flags(self, mode, compact=True)
+            )
+            label.append(" · " + flags)
+            rows.append((mode.id, label))
+        self.query_one(MarkedChoiceList).set_choices(rows, list(modes).index(selected_mode_id))
+        self.update_help()
+        self.focus_control()
+
+    def update_help(self) -> None:
+        key = "ui.modes.help_short" if self.app.size.width < 64 else "ui.modes.help"
+        self.query_one("#modes-help", Static).update(tr(self, key))
+
+    def on_resize(self) -> None:
+        if self.display:
+            self.update_help()
+
+    def focus_control(self) -> None:
+        self.query_one(MarkedChoiceList).focus()
+
+    def close(self) -> None:
+        self.display = False
+        self.pending_answer = None
+
+    def action_move(self, direction: int) -> None:
+        choices = self.query_one(MarkedChoiceList)
+        choices.move_selection(direction)
         choices.focus()
+
+    def action_choose(self, index: int | None = None) -> None:
+        choices = self.query_one(MarkedChoiceList)
+        if index is None:
+            index = choices.highlighted
+        if index is not None and index < choices.option_count:
+            self.action_answer(choices.get_option_at_index(index).id)
 
     @on(OptionList.OptionSelected, "#modes-list")
     def mode_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
-        self.dismiss(event.option.id)
+        choices = self.query_one(MarkedChoiceList)
+        if event.option_index < choices.option_count and event.option is choices.get_option_at_index(
+            event.option_index
+        ):
+            self.action_answer(event.option.id)
 
-    @on(Button.Pressed)
-    def selected(self, event: Button.Pressed) -> None:
-        event.stop()
-        if event.button.id == "mode-grants":
-            self.dismiss("grants")
-        elif event.button.id == "mode-use":
-            choices = self.query_one("#modes-list", ChoiceList)
-            if choices.highlighted is not None:
-                self.dismiss(choices.get_option_at_index(choices.highlighted).id)
-        else:
-            self.action_cancel()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+    def action_answer(self, choice: str | None) -> None:
+        if self.display and self.pending_answer is None:
+            self.pending_answer = self.Answered(choice)
+            self.post_message(self.pending_answer)

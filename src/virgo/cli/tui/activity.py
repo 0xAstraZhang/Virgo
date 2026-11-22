@@ -37,6 +37,7 @@ class RunActivity:
         self.stop_reason = "stop"
         self.running_tools: dict[str, str] = {}
         self.content = Text()
+        self.compact_label = ""
         self.display = False
 
     def reset(self) -> None:
@@ -97,6 +98,7 @@ class RunActivity:
         phase = self.waiting or self.phase
         label = Text(f"{frame} {phase}…", no_wrap=True, overflow="ellipsis")
         detail = elapsed_text(elapsed, self)
+        self.compact_label = f"{label.plain} ({detail})"
         if phase == tr(self, "ui.activity.thinking") and self.effort:
             detail += tr(self, "ui.activity.effort", effort=self.effort)
         label.append(f" ({detail})", style="dim")

@@ -7,13 +7,14 @@ import os
 import re
 import time
 from collections import deque
+from pathlib import Path, PurePath
 
-from rich.cells import cell_len
+from rich.cells import cell_len, split_text
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.events import Click
 from textual.theme import Theme
 from textual.widgets import Input, OptionList, Static, TextArea
@@ -92,15 +93,36 @@ def short_number(value: int) -> str:
 def shortcut_hints(text: str) -> Text:
     hint = Text(text)
     for key in re.finditer(
-        r"(?<!\S)(?:Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter|Esc|Backspace|↑↓|←→|/exit|/|s)(?=\s|$)", text
+        r"(?<!\S)(?:Ctrl\+O/T|Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter|Esc|Backspace|↑↓|←→|/exit|/help|/|s)(?=\s|$)", text
     ):
         hint.stylize("bold", key.start(), key.end())
     return hint
 
 
-def input_hints(owner=None) -> Text:
+def input_hints(owner=None, width: int | None = None) -> Text:
     newline = "Ctrl+J" if os.environ.get("TERM_PROGRAM") == "Apple_Terminal" else "Shift+Enter"
-    return shortcut_hints(tr(owner, "ui.hints.input", newline=newline))
+    hint = tr(owner, "ui.hints.input", newline=newline)
+    if width is not None:
+        available = max(1, width - 2)
+        if width < 76 or cell_len(hint) > available:
+            hint = tr(owner, "ui.hints.input_compact", newline=newline)
+        if cell_len(hint) > available:
+            hint = tr(owner, "ui.hints.input_narrow")
+            if cell_len(hint) > available:
+                hint = hint.replace(" · ", " ")
+    return shortcut_hints(hint)
+
+
+def display_cwd(cwd: PurePath, home: PurePath, width: int) -> Text:
+    if cwd.is_relative_to(home):
+        cwd = type(cwd)("~") / cwd.relative_to(home)
+    path = str(cwd)
+    cells = cell_len(path)
+    if width <= 0:
+        path = ""
+    elif cells > width:
+        path = "…" + split_text(path, cells - width + 1)[1]
+    return Text(path, no_wrap=True)
 
 
 class ConversationPane(Vertical):
@@ -110,6 +132,7 @@ class ConversationPane(Vertical):
         super().__init__()
         self.controller = controller
         self.updates = deque()
+        self.modes = PermissionModePicker(id="modes")
 
     @property
     def state(self) -> ConversationState:
@@ -121,21 +144,23 @@ class ConversationPane(Vertical):
         return store.path if store.path is not None else f"memory:{store.id}"
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="cwd", markup=False)
-        yield Static(input_hints(self), id="hints", markup=False)
         with Vertical(id="body"):
             yield Transcript(id="transcript")
         with Vertical(id="dock"):
             yield Static(tr(self, "ui.latest"), id="jump")
             yield Static("", id="pending", markup=False)
             yield ApprovalPicker(id="approval")
+            yield self.modes
             yield PreferencePicker(id="preferences")
             yield Static("", id="auth-question", markup=False)
             yield ChoiceList(id="completions")
             yield Input(id="auth-value")
-            yield Static("", id="metrics", markup=False)
             yield ChatEditor(self.state.history)
             yield Static("", id="status", markup=False)
+            with Horizontal(id="footer-meta"):
+                yield Static("", id="flags", markup=False)
+                yield Static("", id="metrics", markup=False)
+            yield Static(input_hints(self), id="hints", markup=False)
 
 
 class VirgoApp(SelectionCopyMixin, App[int]):
@@ -144,8 +169,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     CSS = """
     * { scrollbar-size-vertical: 0; }
     Screen { background: $background; color: $foreground; }
-    #brand { height: 1; margin: 0 1; }
-    #cwd { height: 1; margin: 0 1; text-style: dim; }
+    #topbar { height: 1; padding: 0 1; }
+    #brand { height: 1; width: auto; margin-right: 1; }
+    #cwd { height: 1; width: 1fr; text-align: right; text-style: dim; }
     ConversationPane { width: 100%; height: 1fr; }
     #body { height: 1fr; }
     Transcript { height: 1fr; }
@@ -153,7 +179,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #pending { height: auto; max-height: 3; text-style: dim; }
     #jump { height: 1; min-height: 1; border: none; width: auto; padding: 0 1;
         color: #7C3AED; background: $background; text-style: bold; }
-    #completions { height: auto; max-height: 6; border: solid #7C3AED;
+    #completions { height: auto; max-height: 6; border: none; border-top: solid #7C3AED;
         padding: 0; background: $background; }
     #completions > .option-list--option-highlighted,
     #completions:focus > .option-list--option-highlighted {
@@ -167,17 +193,21 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #editor:focus { border: none; border-top: solid #7C3AED; border-bottom: solid #7C3AED; }
     TextArea > .text-area--cursor { text-style: reverse; background: $background; color: $foreground; }
     TextArea > .text-area--selection { text-style: reverse; background: $background; color: $foreground; }
-    #metrics { height: 1; text-align: right; text-style: dim; }
-    #status { height: auto; min-height: 2; text-align: left; }
-    #hints { height: auto; max-height: 2; margin: 0 1; text-style: dim; }
+    #status, #footer-meta, #flags, #metrics, #hints { height: 1; }
+    #status { text-align: left; }
+    #flags { width: 1fr; text-wrap: nowrap; }
+    #metrics { width: auto; margin-left: 1; text-align: right; text-style: dim; }
+    #hints { text-wrap: nowrap; text-overflow: ellipsis; text-style: dim; }
     ToastRack { dock: top; margin: 0 1; }
     Toast { width: auto; max-width: 50%; padding: 0 1; margin: 0;
         border: none; color: #FFFFFF; background: #7C3AED; }
     OptionList { background: $background; color: $foreground; }
     OptionList > .option-list--option-highlighted { background: $background;
         color: $foreground; text-style: reverse; }
-    #approval-options > .option-list--option-highlighted,
-    #approval-options:focus > .option-list--option-highlighted {
+    MarkedChoiceList > .option-list--option-highlighted,
+    MarkedChoiceList:focus > .option-list--option-highlighted,
+    #preference-models > .option-list--option-highlighted,
+    #preference-models:focus > .option-list--option-highlighted {
         background: $background; color: #7C3AED; text-style: bold; }
     ModalScreen { align: center middle; background: $background; }
     """
@@ -212,7 +242,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self._pending_switch = None
 
     def compose(self) -> ComposeResult:
-        yield Static(Text.assemble(("V_", f"bold {PURPLE}"), (f" Virgo {__version__}", "dim")), id="brand")
+        with Horizontal(id="topbar"):
+            brand = Text.assemble(("V_", f"bold {PURPLE}"), " Virgo", (f" {__version__}", "dim"))
+            yield Static(brand, id="brand")
+            yield Static("", id="cwd", markup=False)
         yield self._pane
 
     # The application exposes the visible conversation through these read-only
@@ -291,6 +324,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_sessions(self) -> None:
         if self.controller.closing or self.has_modal:
             return
+        self.close_permission_modes()
         if self.active_input is None:
             self.hide_completions()
         self.controller.browsing = True
@@ -532,8 +566,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     self.update_status()
                 elif update.kind == "run_start":
                     self.activity.begin(update.created_at, self.session.effort)
+                    self.update_status()
                 elif update.kind == "done":
                     summary = self.activity.finish(update.payload, update.created_at)
+                    self.update_status()
                     self.transcript.finish_activity()
                     if summary is not None:
                         await self.transcript.add_notice(summary, "dim")
@@ -565,6 +601,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     self._session_picker.refresh_sessions(self.session_browser_items(), self._pane.key)
                 self._session_picker.set_current_status(self.session_browser_status())
                 self._session_picker.set_statuses(self.session_browser_statuses())
+            previous_waiting = self.activity.waiting
             self.activity.waiting = (
                 tr(self, "ui.state.closing")
                 if self.controller.closing
@@ -587,6 +624,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 and not self.transcript.follow_latest
                 and self.transcript.display
                 and self.active_confirmation is None
+                and not self._pane.modes.display
                 and not (self.input_request and self.input_request.preferences)
             )
             pending = self.controller.pending
@@ -603,6 +641,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 self._pane.query_one(PreferencePicker).resize_panel()
             if time.monotonic() - self.last_status >= 0.5:
                 self.update_status()
+            elif self.activity.display or previous_waiting != self.activity.waiting:
+                self._update_status_line()
         finally:
             self._polling = False
 
@@ -620,12 +660,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 break
         else:
             return
+        self.close_permission_modes()
         self.state.active_confirmation = confirmation.id
         self.hide_completions()
-        root = self._pane
-        for selector in ("#editor", "#metrics", "#hints", "#jump"):
-            root.query_one(selector).display = False
-        root.query_one(ApprovalPicker).open(confirmation)
+        self.set_composer_visible(False)
+        self._pane.query_one(ApprovalPicker).open(confirmation)
         self.update_status()
 
     def finish_confirmation(self, answer: str | None, confirmation_id: int | None = None) -> None:
@@ -635,8 +674,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.state.active_confirmation = None
         root = self._pane
         root.query_one(ApprovalPicker).close()
-        for selector in ("#editor", "#metrics", "#status", "#hints"):
-            root.query_one(selector).display = True
+        self.set_composer_visible(True)
         self.ui.resolve_confirmation(request_id, answer)
         self.update_completions()
         self.focus_composer()
@@ -661,15 +699,15 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 break
         else:
             return
+        self.close_permission_modes()
         self.hide_completions()
         self.state.active_input = request.id
         self.state.input_request = request
         root = self._pane
         if request.preferences is not None:
-            self.editor.display = False
             # Keep the permission strip in view while the picker occupies the
             # composer, including a compact screen with pending input.
-            root.query_one("#metrics").display = False
+            self.set_composer_visible(False)
             root.query_one(PreferencePicker).open(request.preferences)
             self.focus_composer()
             self.update_status()
@@ -693,11 +731,19 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.focus_composer()
         self.update_status()
 
+    def set_composer_visible(self, visible: bool) -> None:
+        for selector in ("#editor", "#footer-meta", "#hints"):
+            self._pane.query_one(selector).display = visible
+        if not visible:
+            self._pane.query_one("#jump").display = False
+
     def focus_composer(self) -> None:
         if self.has_modal:
             return
         if self.active_confirmation is not None:
             self._pane.query_one(ApprovalPicker).focus_control()
+        elif self._pane.modes.display:
+            self._pane.modes.focus_control()
         elif self.input_request is None:
             self.editor.focus()
         elif self.input_request.preferences is not None:
@@ -723,8 +769,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         question.update("")
         question.display = False
         root.query_one("#completions", ChoiceList).clear_options()
-        self.editor.display = True
-        root.query_one("#metrics").display = True
+        self.set_composer_visible(True)
         self.hide_completions()
         self.update_completions()
         self.focus_composer()
@@ -747,40 +792,27 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         """Refresh the dock labels; unchanged labels are left alone (see ``update_static``)."""
         self.last_status = time.monotonic()
         root = self._pane
-        brand = Text.assemble(("V_", f"bold {PURPLE}"), " Virgo", (f" {__version__}", "dim"))
-        update_static(self.screen_stack[0].query_one("#brand", Static), brand)
+        width = max(1, self.size.width - 2)
         if self.controller.closing:
             hints = shortcut_hints(tr(self, "ui.hints.closing"))
-        elif self.input_request is not None:
-            if self.input_request.preferences is not None:
-                if self.input_request.preferences.kind == "model":
-                    picker = self._pane.query_one(PreferencePicker)
-                    hint = (
-                        tr(self, "ui.hints.providers")
-                        if picker.provider is None
-                        else tr(self, "ui.hints.models")
-                    )
-                else:
-                    hint = tr(self, "ui.hints.effort")
-            else:
-                hint = (
-                    tr(self, "ui.hints.select")
-                    if self.input_request.options is not None
-                    else tr(self, "ui.hints.confirm")
-                )
-            hints = shortcut_hints(hint)
+        elif self.input_request is not None and self.input_request.preferences is None:
+            key = "ui.hints.select" if self.input_request.options is not None else "ui.hints.confirm"
+            hints = shortcut_hints(tr(self, key))
+        elif (self.controller.busy and not self.has_modal
+              and self.active_confirmation is None and self.active_input is None):
+            busy_hint = tr(self, "ui.hints.busy")
+            if cell_len(busy_hint) > width:
+                busy_hint = tr(self, "ui.hints.busy_compact")
+            hints = shortcut_hints(busy_hint)
         elif not self.controller.busy and 0 < time.monotonic() - self.state.last_interrupt < 2:
             hints = shortcut_hints(tr(self, "ui.hints.exit"))
         else:
-            hints = input_hints(self)
-        update_static(root.query_one("#hints", Static), hints)
-        width = max(1, self.size.width - 2)
-        cwd = str(self.session.cwd)
-        if cell_len(cwd) > width:
-            while cwd and cell_len(cwd) > width - 1:
-                cwd = cwd[1:]
-            cwd = "…" + cwd
-        update_static(root.query_one("#cwd", Static), Text(cwd, no_wrap=True))
+            hints = input_hints(self, self.size.width)
+        update_static(root.query_one("#hints", Static), hints, layout=False)
+        cwd = self.screen_stack[0].query_one("#cwd", Static)
+        brand_width = self.screen_stack[0].query_one("#brand", Static).content.cell_len
+        cwd_width = max(1, self.size.width - 2 - brand_width - 1)
+        update_static(cwd, display_cwd(self.session.cwd, Path.home(), cwd_width), layout=False)
         usage = Usage(**self.session.store.total_usage())
         window = self.session.main.model.context_window
         if self.session.main.messages:
@@ -795,19 +827,49 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             output=short_number(usage.output),
             cache=usage.cache_hit_rate,
         )
-        metrics = Text(f"{used}  {context}", no_wrap=True, overflow="ellipsis")
-        metrics.truncate(width, overflow="ellipsis")
-        update_static(root.query_one("#metrics", Static), metrics)
+        metrics = f"{used}  {context}"
+        active = self._active_mode()
+        if active.id == "no-limit":
+            flags = tr(self, "ui.modes.host_flags")
+        else:
+            flags = permission_flags(self, active)
+            if cell_len(flags) + 1 + cell_len(metrics) > width:
+                flags = permission_flags(self, active, compact=True)
+        available = width - cell_len(flags) - 1
+        if cell_len(metrics) > available:
+            metrics = f"↑{short_number(usage.input_total)} ↓{short_number(usage.output)}  {context}"
+        metrics_widget = root.query_one("#metrics", Static)
+        metrics_widget.display = cell_len(metrics) <= available
+        # Only a change in the natural width needs to rearrange the two columns.
+        if cell_len(metrics) != cell_len(str(metrics_widget.content)):
+            metrics_widget.refresh(layout=True)
+        update_static(metrics_widget, metrics, layout=False)
+        update_static(root.query_one("#flags", Static), flags, layout=False)
+        self._update_status_line()
+
+    def _active_mode(self):
         manager = self.session.services["execution"]
-        selected = manager.selected_mode
         snapshot = self.session.main.permission_snapshot
-        active = snapshot.mode if snapshot is not None else manager.mode_for(self.session.main)
+        return snapshot.mode if snapshot is not None else manager.mode_for(self.session.main)
+
+    def _update_status_line(self) -> None:
+        width = max(1, self.size.width - 2)
+        active = self._active_mode()
+        selected = self.session.services["execution"].selected_mode
         footer = Text(no_wrap=True, overflow="ellipsis")
         if self.session.store.save_error is not None:
             footer.append(tr(self, "ui.state.unsaved_footer"), style="bold red")
         footer.append(active.name)
         if active != selected:
             footer.append(" · " + tr(self, "ui.modes.next", name=selected.name), style="dim")
+        live = self.activity.waiting
+        if not live and self.activity.display:
+            live = self.activity.compact_label
+        if not live and self.controller.busy:
+            live = "✻ " + tr(self, "ui.activity.working") + "…"
+        if live:
+            footer.append(" · ")
+            footer.append(live, style=f"bold {PURPLE}")
         effort = f" · {self.session.effort}"
         available = width - footer.cell_len - 2
         if available >= cell_len(effort) + 1:
@@ -819,16 +881,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         else:
             footer.pad_right(max(0, width - footer.cell_len))
         footer.truncate(width, overflow="ellipsis")
-        flags = permission_flags(self, active)
-        if cell_len(flags) > width:
-            flags = permission_flags(self, active, compact=True)
-        # Policy values remain on their own line so the model details
-        # and the model name do not truncate a permission bit.
-        status = Text(no_wrap=False)
-        status.append(footer)
-        status.append("\n")
-        status.append(flags)
-        update_static(root.query_one("#status", Static), status)
+        update_static(self._pane.query_one("#status", Static), footer, layout=False)
 
     def refresh_language(self) -> None:
         """Refresh presentation chrome without altering stored conversation text."""
@@ -882,7 +935,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.update_completions()
 
     def update_completions(self) -> None:
-        if self.active_input is not None or self.active_confirmation is not None:
+        if self.active_input is not None or self.active_confirmation is not None or self._pane.modes.display:
             return
         text = self.editor.text
         self.state.completion_query = text
@@ -932,8 +985,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.accept_completion()
 
     def action_escape(self) -> None:
-        if isinstance(self.screen, (SessionPicker, PermissionModePicker)):
+        if isinstance(self.screen, SessionPicker):
             self.screen.dismiss(None)
+        elif self._pane.modes.display:
+            self._pane.modes.action_answer(None)
         elif self.active_confirmation is not None:
             self.finish_confirmation("n")
         elif self.active_input is not None:
@@ -945,16 +1000,19 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.controller.abort()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if (
-            self.has_modal or self.active_input is not None or self.active_confirmation is not None
-        ) and action in {"page", "top", "tools", "thinking", "permission_modes", "cancel_pending"}:
-            return False
+        prompt_open = self.has_modal or self.active_input is not None or self.active_confirmation is not None
+        if action == "permission_modes":
+            return not prompt_open
+        if action in {"page", "top", "tools", "thinking", "cancel_pending"}:
+            return not (prompt_open or self._pane.modes.display)
         return True
 
     def action_interrupt(self) -> None:
         if self.controller.closing:
             self.exit_code = 130
             self.exit(self.exit_code)
+        elif self._pane.modes.display:
+            self.action_escape()
         elif self.controller.busy:
             self.controller.abort()
         elif self.has_modal or self.active_confirmation is not None:
@@ -970,25 +1028,41 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             update_static(
                 self._pane.query_one("#hints", Static),
                 shortcut_hints(tr(self, "ui.hints.exit")),
+                layout=False,
             )
 
     def action_permission_modes(self) -> None:
-        if self.controller.closing or self.has_modal:
+        if (
+            self.controller.closing or self.has_modal
+            or self.active_confirmation is not None or self.active_input is not None
+        ):
             return
-        controller = self.controller
+        picker = self._pane.modes
+        if picker.display:
+            picker.action_move(1)
+            return
         manager = self.session.services["execution"]
         self.hide_completions()
+        self.set_composer_visible(False)
+        picker.open(manager.modes, manager.selected_mode_id, translator=self.session.translator)
 
-        def selected(choice) -> None:
-            if choice is not None and controller is self.controller:
-                controller.change_permission_mode(choice)
-            self.focus_composer()
-            self.update_status()
+    def close_permission_modes(self) -> None:
+        if self._pane.modes.display:
+            self._pane.modes.close()
+            self.set_composer_visible(True)
 
-        self.push_screen(
-            PermissionModePicker(manager.modes, manager.selected_mode_id, translator=self.session.translator),
-            selected,
-        )
+    @on(PermissionModePicker.Answered)
+    def mode_answered(self, event: PermissionModePicker.Answered) -> None:
+        event.stop()
+        # A prompt or a session switch can preempt the picker before delivery.
+        if event is not self._pane.modes.pending_answer:
+            return
+        self.close_permission_modes()
+        if event.choice is not None and not self.controller.closing:
+            self.controller.change_permission_mode(event.choice)
+        self.update_completions()
+        self.focus_composer()
+        self.update_status()
 
     def action_cancel_pending(self) -> None:
         if not self.controller.closing:
@@ -997,7 +1071,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_eof(self) -> None:
         if self.active_confirmation is not None or not self.editor.text:
             self.request_close()
-        elif not self.has_modal:
+        elif not self.has_modal and not self._pane.modes.display:
             self.editor.action_delete_right()
 
     def action_tools(self) -> None:

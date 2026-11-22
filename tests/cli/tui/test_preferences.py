@@ -15,6 +15,7 @@ from virgo.ai.providers import faux
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.preferences import PreferencePicker
+from virgo.harness import preferences
 from virgo.harness.preferences import PreferenceChoice
 
 from tests.support.terminal import PtyClient, plain
@@ -24,6 +25,14 @@ from tests.support.tui import wait_for
 def test_picker_escape_does_not_cancel_background_startup_refresh(make_session, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     entered = threading.Event()
+    read_empty = threading.Event()
+    choices = preferences.model_choices
+
+    def observe_snapshot(session):
+        models = choices(session)
+        if not models:
+            read_empty.set()
+        return models
 
     def stalled(_model, signal):
         entered.set()
@@ -31,15 +40,19 @@ def test_picker_escape_does_not_cancel_background_startup_refresh(make_session, 
         raise CatalogCancelled("Model discovery cancelled.")
 
     monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", stalled)
+    monkeypatch.setattr(preferences, "model_choices", observe_snapshot)
 
     async def scenario():
         ui = FullscreenUI()
-        app = VirgoApp(make_session(ui=ui), ui)
+        session = make_session(ui=ui)
+        session.set_model("deepseek-chat")
+        session.small_model = session.model
+        app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             app.controller.submit("/model")
-            await wait_for(pilot, entered.is_set)
+            await wait_for(pilot, lambda: entered.is_set() and read_empty.is_set())
             await pilot.press("escape")
-            await wait_for(pilot, lambda: not app.controller.busy)
+            await wait_for(pilot, lambda: not app.controller.busy, timeout=1)
             assert not app.query_one(PreferencePicker).display
             assert app.editor.display and app.active_input is None
             assert not app.session._catalog_refresh_done.is_set()
@@ -163,9 +176,15 @@ def test_model_panel_saves_default_and_cancel_keeps_it(make_session):
             panel = app.query_one(PreferencePicker)
             await wait_for(pilot, lambda: panel.display)
             assert panel.provider is None
-            await pilot.press("enter")
-            await pilot.pause()
             models = panel.query_one("#preference-models", OptionList)
+            await wait_for(pilot, lambda: models.size.height == 1)
+            assert models.option_count == 1
+            await pilot.press("enter")
+            for width, height in ((80, 24), (40, 16), (100, 30)):
+                await pilot.resize_terminal(width, height)
+                await pilot.pause()
+                assert models.size.height == models.option_count == 2
+                assert app.transcript.region.height > 0
             await pilot.click(models, offset=(4, 1))
             assert models.highlighted == 1
             assert panel.display and session.model.spec == "faux/test"
@@ -265,15 +284,18 @@ def test_picker_keeps_status_visible_with_scrolled_history_and_queued_commands(m
                 await pilot.resize_terminal(width, height)
                 await pilot.pause()
                 assert not app.query_one("#jump").display
+                assert not app.editor.display and not app.query_one("#footer-meta").display
+                assert not app.query_one("#hints").display and app.query_one("#status").display
                 assert len(str(app.query_one("#pending", Static).content).splitlines()) == 3
                 assert panel.region.bottom <= app.query_one("#status").region.y
                 assert app.query_one("#status").region.bottom <= height
                 assert panel.query_one("#preference-help").region.bottom <= panel.region.bottom
                 assert models.highlighted == selected
                 if width < 64:
-                    assert models.size.height == 1
-                    assert selected_name in models.render_line(0).text
-                    assert "context" not in models.render_line(0).text
+                    assert 1 <= models.size.height <= 3
+                    rows = [models.render_line(y).text for y in range(models.size.height)]
+                    assert any(selected_name in row for row in rows)
+                    assert all("context" not in row for row in rows)
             app.controller.request_close()
             await wait_for(pilot, lambda: app.controller.closed)
 

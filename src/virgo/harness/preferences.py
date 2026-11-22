@@ -264,9 +264,23 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if kind not in ("model", "effort"):
         raise ValueError(f"unknown preference kind: {kind}")
     effort = session.effort if session.effort in EFFORT_LEVELS else "medium"
+    # Sample before reading the snapshot: the refresh can finish during model_choices.
+    refreshing = kind == "model" and not session._catalog_refresh_done.is_set()
     models = model_choices(session) if kind == "model" else (
         ModelChoice(session.model.spec, session.model.id, session.model.provider),
     )
+    if refreshing and not models:
+        deadline = time.monotonic() + 5
+        while not session._catalog_refresh_done.is_set():
+            if session.main.agent.signal.is_set():
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            session._catalog_refresh_done.wait(min(0.05, remaining))
+        if session.main.agent.signal.is_set():
+            return
+        models = model_choices(session)
     if session.main.agent.signal.is_set():
         return
     if kind == "model" and not models:

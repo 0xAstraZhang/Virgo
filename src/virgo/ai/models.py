@@ -29,6 +29,8 @@ BUILTIN_PROVIDERS = {
 
 # Known model metadata (context window, max output). Unknown ids get provider defaults.
 KNOWN_MODELS = {
+    "deepseek-chat": {"contextWindow": 128_000, "maxTokens": 8_192, "reasoning": False},
+    "deepseek-reasoner": {"contextWindow": 128_000, "maxTokens": 64_000, "reasoning": True},
     # Official documentation snapshot, verified 2026-11-12.
     # https://docs.x.ai/developers/grok-4-7
     # The directory may omit limits; do not mistake pricing thresholds for capacity.
@@ -63,6 +65,8 @@ def base_url(model: Model) -> str:
 
 
 def _guess_provider(model_id: str) -> str:
+    if model_id.startswith("deepseek"):
+        return "deepseek"
     if model_id.startswith("claude"):
         return "anthropic"
     if model_id.startswith(("gpt", "o1", "o3", "o4", "chatgpt")):

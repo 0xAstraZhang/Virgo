@@ -208,22 +208,30 @@ def test_print_text_ignores_fullscreen_option(entry, project):
 
 
 @pytest.mark.parametrize(
-    ("stdin_tty", "stdout_tty", "term", "platform", "wt_session", "expected"),
+    ("stdin_tty", "stdout_tty", "term", "platform", "indicators", "expected"),
     [
-        (True, True, "xterm-256color", "linux", "", True),
-        (False, True, "xterm-256color", "linux", "", False),
-        (True, False, "xterm-256color", "linux", "", False),
-        (True, True, None, "win32", "session-id", True),
-        (True, True, "", "win32", "session-id", True),
-        (False, True, None, "win32", "session-id", False),
-        (True, False, None, "win32", "session-id", False),
-        (True, True, "dumb", "win32", "session-id", False),
-        (True, True, "unknown", "win32", "session-id", False),
-        (True, True, None, "win32", "", False),
-        (True, True, None, "linux", "session-id", False),
+        (True, True, "xterm-256color", "linux", {}, True),
+        (False, True, "xterm-256color", "linux", {}, False),
+        (True, False, "xterm-256color", "linux", {}, False),
+        (True, True, None, "win32", {"WT_SESSION": "session-id"}, True),
+        (True, True, "", "win32", {"WT_SESSION": "session-id"}, True),
+        (False, True, None, "win32", {"WT_SESSION": "session-id"}, False),
+        (True, False, None, "win32", {"WT_SESSION": "session-id"}, False),
+        (True, True, "dumb", "win32", {"WT_SESSION": "session-id"}, False),
+        (True, True, "unknown", "win32", {"TERM_PROGRAM": "vscode"}, False),
+        (True, True, None, "win32", {"TERM_PROGRAM": "vscode"}, True),
+        (True, True, "", "win32", {"TERM_PROGRAM": "WezTerm"}, True),
+        (True, True, None, "win32", {"TERM_PROGRAM": "Dumb"}, False),
+        (True, True, None, "win32", {"TERM_PROGRAM": "UNKNOWN"}, False),
+        (True, True, None, "win32", {"TERMINAL_EMULATOR": "JetBrains-JediTerm"}, True),
+        (True, True, None, "win32", {"ConEmuANSI": "on"}, True),
+        (True, True, None, "win32", {"ConEmuANSI": "OFF"}, False),
+        (True, True, None, "win32", {"ANSICON": "1"}, True),
+        (True, True, None, "win32", {}, False),
+        (True, True, None, "linux", {"WT_SESSION": "session-id"}, False),
     ],
 )
-def test_fullscreen_terminal_detection(monkeypatch, stdin_tty, stdout_tty, term, platform, wt_session, expected):
+def test_fullscreen_terminal_detection(monkeypatch, stdin_tty, stdout_tty, term, platform, indicators, expected):
     import io
 
     cli = import_module("virgo.cli.main")
@@ -239,7 +247,10 @@ def test_fullscreen_terminal_detection(monkeypatch, stdin_tty, stdout_tty, term,
     monkeypatch.setattr(sys, "stdin", Stream(stdin_tty))
     monkeypatch.setattr(sys, "stdout", Stream(stdout_tty))
     monkeypatch.setattr(sys, "platform", platform)
-    monkeypatch.setenv("WT_SESSION", wt_session)
+    for name in ("WT_SESSION", "TERM_PROGRAM", "TERMINAL_EMULATOR", "ConEmuANSI", "ANSICON"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in indicators.items():
+        monkeypatch.setenv(name, value)
     if term is None:
         monkeypatch.delenv("TERM", raising=False)
     else:
