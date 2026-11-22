@@ -25,7 +25,7 @@ On Linux, macOS, WSL2, and supported Windows 11 builds (with updated `null.sys` 
 - **Choose your model.** Connect an account, bring an API key, or use a compatible local endpoint. Change models and reasoning effort during a session.
 - **Give larger tasks room to run.** Delegate focused work to subagents and track background jobs without losing the main conversation.
 - **Make it your own.** Add project instructions, skills, prompt templates, and Python extensions, alongside built-in MCP and Todos extensions.
-- **Use Chinese or English.** Switch interface messages, command help, and built-in tool descriptions with `/language 中文` or `/language English`.
+- **Choose your interface language.** Switch interface messages, command help, and built-in tool descriptions with `/language 中文` or `/language English`. Virgo replies in the language of your message unless you ask for another.
 
 Virgo is inspired by [Pi](https://github.com/earendil-works/pi). Its model adapters, agent loop, and session harness are separate, so you can extend the parts you need.
 

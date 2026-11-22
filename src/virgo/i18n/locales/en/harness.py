@@ -150,7 +150,7 @@ MESSAGES = {
     "harness.preferences.not_offered": "selected model was not offered",
     "harness.preferences.persisted": "saved as default",
     "harness.preferences.session_only": "this session only",
-    "harness.response_language": "Respond in English unless the user explicitly requests another language. "
+    "harness.response_language": "Respond in the language of the user's message unless they request another language. "
     "Preserve code, identifiers and quoted content.",
     "harness.retry.budget": "[Provider retry wait exceeds the remaining retry.maxWaitSeconds budget.]",
     "harness.retry.fallback": "[switching to fallback model {model}]",
