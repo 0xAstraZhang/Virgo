@@ -32,7 +32,6 @@ from .controller import RunController
 from .conversation import ConversationState
 from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
-from .modes import PermissionModePicker
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
 from .transcript import EventView, Transcript, update_static
@@ -117,7 +116,6 @@ class ConversationPane(Vertical):
         super().__init__()
         self.controller = controller
         self.updates = deque()
-        self.modes = PermissionModePicker(id="modes")
 
     @property
     def state(self) -> ConversationState:
@@ -135,7 +133,6 @@ class ConversationPane(Vertical):
             yield Static(tr(self, "ui.latest"), id="jump")
             yield Static("", id="pending", markup=False)
             yield ApprovalPicker(id="approval")
-            yield self.modes
             yield PreferencePicker(id="preferences")
             yield Static("", id="auth-question", markup=False)
             yield ChoiceList(id="completions")
@@ -202,7 +199,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         Binding("pageup", "page(-1)", priority=True, show=False),
         Binding("pagedown", "page(1)", priority=True, show=False),
         Binding("ctrl+home", "top", priority=True, show=False),
-        Binding("shift+tab", "permission_modes", priority=True, show=False),
+        Binding("shift+tab", "cycle_permission_mode", priority=True, show=False),
         Binding("ctrl+shift+k", "cancel_pending", priority=True, show=False),
         Binding("ctrl+r", "sessions", priority=True, show=False),
     ]
@@ -306,7 +303,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_sessions(self) -> None:
         if self.controller.closing or self.has_modal:
             return
-        self.close_permission_modes()
         if self.active_input is None:
             self.hide_completions()
         self.controller.browsing = True
@@ -606,7 +602,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 and not self.transcript.follow_latest
                 and self.transcript.display
                 and self.active_confirmation is None
-                and not self._pane.modes.display
                 and not (self.input_request and self.input_request.preferences)
             )
             pending = self.controller.pending
@@ -642,7 +637,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 break
         else:
             return
-        self.close_permission_modes()
         self.state.active_confirmation = confirmation.id
         self.hide_completions()
         self.set_composer_visible(False)
@@ -681,7 +675,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 break
         else:
             return
-        self.close_permission_modes()
         self.hide_completions()
         self.state.active_input = request.id
         self.state.input_request = request
@@ -724,8 +717,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             return
         if self.active_confirmation is not None:
             self._pane.query_one(ApprovalPicker).focus_control()
-        elif self._pane.modes.display:
-            self._pane.modes.focus_control()
         elif self.input_request is None:
             self.editor.focus()
         elif self.input_request.preferences is not None:
@@ -900,7 +891,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.update_completions()
 
     def update_completions(self) -> None:
-        if self.active_input is not None or self.active_confirmation is not None or self._pane.modes.display:
+        if self.active_input is not None or self.active_confirmation is not None:
             return
         text = self.editor.text
         self.state.completion_query = text
@@ -952,8 +943,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_escape(self) -> None:
         if isinstance(self.screen, SessionPicker):
             self.screen.dismiss(None)
-        elif self._pane.modes.display:
-            self._pane.modes.action_answer(None)
         elif self.active_confirmation is not None:
             self.finish_confirmation("n")
         elif self.active_input is not None:
@@ -966,18 +955,16 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         prompt_open = self.has_modal or self.active_input is not None or self.active_confirmation is not None
-        if action == "permission_modes":
-            return not prompt_open
+        if action == "cycle_permission_mode":
+            return not prompt_open and not self.controller.closing
         if action in {"page", "top", "tools", "thinking", "cancel_pending"}:
-            return not (prompt_open or self._pane.modes.display)
+            return not prompt_open
         return True
 
     def action_interrupt(self) -> None:
         if self.controller.closing:
             self.exit_code = 130
             self.exit(self.exit_code)
-        elif self._pane.modes.display:
-            self.action_escape()
         elif self.controller.busy:
             self.controller.abort()
         elif self.has_modal or self.active_confirmation is not None:
@@ -992,38 +979,16 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.state.last_interrupt = time.monotonic()
             self.update_status()
 
-    def action_permission_modes(self) -> None:
-        if (
-            self.controller.closing or self.has_modal
-            or self.active_confirmation is not None or self.active_input is not None
-        ):
-            return
-        picker = self._pane.modes
-        if picker.display:
-            picker.action_move(1)
-            return
-        manager = self.session.services["execution"]
-        self.hide_completions()
-        self.set_composer_visible(False)
-        picker.open(manager.modes, manager.selected_mode_id, translator=self.session.translator)
-
-    def close_permission_modes(self) -> None:
-        if self._pane.modes.display:
-            self._pane.modes.close()
-            self.set_composer_visible(True)
-
-    @on(PermissionModePicker.Answered)
-    def mode_answered(self, event: PermissionModePicker.Answered) -> None:
-        event.stop()
-        # A prompt or a session switch can preempt the picker before delivery.
-        if event is not self._pane.modes.pending_answer:
-            return
-        self.close_permission_modes()
-        if event.choice is not None and not self.controller.closing:
-            self.controller.change_permission_mode(event.choice)
-        self.update_completions()
-        self.focus_composer()
-        self.update_status()
+    async def action_cycle_permission_mode(self) -> None:
+        session = self.session
+        manager = session.services["execution"]
+        modes = list(manager.modes)
+        next_mode = modes[(modes.index(manager.selected_mode_id) + 1) % len(modes)]
+        try:
+            # Finish selecting before dispatching the next keystroke (which may submit a task).
+            await asyncio.to_thread(manager.select_mode, next_mode)
+        except Exception as error:
+            session.report_error(error, phase="cli.command", context={"command": "permissions"})
 
     def action_cancel_pending(self) -> None:
         if not self.controller.closing:
@@ -1032,7 +997,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     def action_eof(self) -> None:
         if self.active_confirmation is not None or not self.editor.text:
             self.request_close()
-        elif not self.has_modal and not self._pane.modes.display:
+        elif not self.has_modal:
             self.editor.action_delete_right()
 
     def action_tools(self) -> None:
