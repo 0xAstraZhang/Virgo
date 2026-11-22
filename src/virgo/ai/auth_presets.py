@@ -61,7 +61,10 @@ API_PRESETS = {
             "sendReasoning": True,
             "reasoningEffortMap": {"low": "low", "medium": None, "high": "high", "xhigh": None, "max": "max"},
             "models": {
-                "deepseek-flash": {"contextWindow": 1_000_000, "maxTokens": 32_768, "reasoning": True}
+                "deepseek-flash": {
+                    "contextWindow": 1_000_000, "maxTokens": 32_768, "reasoning": True,
+                    "supportedReasoningLevels": ("low", "high", "max"), "defaultReasoningLevel": "high",
+                }
             },
         },
     },

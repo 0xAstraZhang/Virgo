@@ -82,8 +82,9 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
         provider, model_id = _guess_provider(spec), spec
     if provider in RETIRED_PROVIDERS and provider not in providers:
         raise ValueError(RETIRED_PROVIDERS[provider])
-    conf = dict(BUILTIN_PROVIDERS.get(provider, {}))
-    conf.update(providers.get(provider, {}))
+    builtin = BUILTIN_PROVIDERS.get(provider, {})
+    configured = providers.get(provider, {})
+    conf = {**builtin, **configured}
     if not conf:
         raise ValueError(f"unknown provider {provider!r} (configure it under settings.providers)")
     api = conf.get("api", "openai")
@@ -105,7 +106,8 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
     else:
         meta = {"contextWindow": 200_000, "maxTokens": 8_192}
     meta.update(KNOWN_MODELS.get(model_id, {}))
-    model_config = (conf.get("models") or {}).get(model_id, {})
+    meta.update((builtin.get("models") or {}).get(model_id, {}))
+    model_config = (configured.get("models") or {}).get(model_id, {})
     meta.update(model_config)
     levels = meta.get("supportedReasoningLevels")
     if levels is not None:
@@ -122,9 +124,20 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
         levels, default_level = (), None
     elif api == "openai" and isinstance(effort_map := conf.get("reasoningEffortMap"), dict):
         supported = tuple(key for key, value in effort_map.items() if isinstance(key, str) and key == value)
-        levels = supported if levels is None else tuple(level for level in levels if level in supported)
+        if levels is None:
+            levels = supported
+        if "reasoningEffortMap" in configured:
+            levels = tuple(level for level in levels if level in supported)
+        elif (default_level and default_level not in levels and "defaultReasoningLevel" in model_config
+              and "supportedReasoningLevels" not in model_config):
+            # A directory may declare a newer default without listing all supported levels.
+            levels = (*levels, default_level)
     if levels is not None and default_level not in levels:
         default_level = None
+    options = {k: v for k, v in conf.items() if k not in ("api", "models", "baseUrl", "apiKeyEnv")}
+    # A preset is a fallback. Only user maps override a catalog declaration on the wire.
+    if "reasoningEffortMap" not in configured:
+        options.pop("reasoningEffortMap", None)
     return Model(
         provider=provider,
         id=model_id,
@@ -135,7 +148,7 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
         max_tokens=int(meta.get("maxTokens", 32_000)),
         reasoning=reasoning,
         vision=bool(meta.get("vision", True)),
-        options={k: v for k, v in conf.items() if k not in ("api", "models", "baseUrl", "apiKeyEnv")},
+        options=options,
         supported_reasoning_levels=levels,
         default_reasoning_level=default_level,
     )

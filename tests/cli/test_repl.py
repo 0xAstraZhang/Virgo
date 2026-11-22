@@ -61,3 +61,13 @@ def test_double_slash_input_is_steered_as_prompt_not_queued_as_command(make_sess
     assert repl.classify_input(session, "//not-a-command", busy=True) == ("steer", None)
     assert steered == ["//not-a-command"]
     assert repl.classify_input(session, "/effort high", busy=True) == ("defer_command", None)
+
+
+def test_welcome_shows_effective_effort(make_session, monkeypatch):
+    monkeypatch.setattr(repl, "_setup_readline", lambda *_: None)
+    ui, broker = ReplUI(), ScriptedBroker()
+    session = make_session(ui=ui)
+    session.set_model("deepseek/deepseek-flash")
+    broker.push("line", "/exit")
+    repl.run_repl(session, ui, broker)
+    assert "effort medium→high" in ui.text

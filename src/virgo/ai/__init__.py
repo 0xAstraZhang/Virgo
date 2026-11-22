@@ -9,7 +9,7 @@ from ..diagnostics import capture_error, safe_text
 from .compaction import compact as native_compact
 from .compaction import context_model
 from .models import resolve_model
-from .providers.reasoning import chat_effort, responses_effort
+from .providers.reasoning import resolved_effort
 from .stream import EventStream, StreamEvent, error_message
 from .transform import normalize
 from .types import (
@@ -98,11 +98,6 @@ def completion_token_limit(model: Model, max_tokens: int | None) -> int | None:
 
 def completion_request_metadata(model: Model, effort: str | None, limit: int | None) -> dict:
     """Describe adapter request controls, without recording credentials or prompt contents."""
-    effective = effort if model.reasoning else None
-    if effective and model.api == "openai":
-        effective = chat_effort(model, effective)
-    elif effective and model.api in {"openai-responses", "openai-codex"}:
-        effective = responses_effort(model, effective)
     supported = model.api != "openai-codex"
     actual_limit = limit or model.max_tokens
     if model.api == "anthropic" and limit is None:
@@ -110,7 +105,7 @@ def completion_request_metadata(model: Model, effort: str | None, limit: int | N
     elif model.api == "openai-responses":
         actual_limit = max(16, actual_limit)
     return {
-        "effective_effort": effective,
+        "effective_effort": resolved_effort(model, effort).wire,
         "requested_max_tokens": limit,
         "max_tokens": actual_limit if supported else None,
         "token_limit_supported": supported,
@@ -161,5 +156,6 @@ __all__ = [
     "error_message",
     "native_compact",
     "resolve_model",
+    "resolved_effort",
     "stream",
 ]

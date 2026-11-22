@@ -406,7 +406,7 @@ def test_explicit_arguments_and_nonpicker_clients_keep_command_behavior(make_ses
     session.prompt("/model")
     session.prompt("/effort")
     assert not ui.requests
-    assert ui.lines[-1] == "effort: high"
+    assert ui.lines[-1] == "effort: high→off"
     assert ui.lines[-2].startswith("model: faux/other")
 
 
@@ -417,3 +417,58 @@ def test_picker_normalizes_unknown_effort_without_changing_cancelled_session(mak
     assert ui.requests[0].effort == "medium"
     assert ui.requests[0].model == "faux/test"
     assert session.effort == "future-level"
+
+
+@pytest.mark.parametrize("kind", ["model", "effort"])
+def test_picker_rejects_effort_not_offered_by_selected_model(make_session, monkeypatch, kind):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    ui = PickerUI(PreferenceChoice("deepseek/deepseek-flash", "medium", True))
+    session = make_session(ui=ui)
+    if kind == "effort":
+        session.set_model("deepseek/deepseek-flash")
+    original = session.model
+    with pytest.raises(ValueError):
+        configure_preference(session, kind)
+    assert session.model is original and session.effort == "medium"
+    assert not (session.paths.user / "settings.json").exists()
+
+
+@pytest.mark.parametrize("spec,label", [
+    ("deepseek/deepseek-flash", "medium→high"),
+    ("kimi/kimi-k3.1-pro", "medium→default"),
+    ("deepseek/deepseek-chat", "medium→off"),
+])
+def test_command_output_explains_saved_effort(make_session, spec, label):
+    session = make_session()
+    session.set_model(spec)
+    for command in ("/status", "/model", "/effort"):
+        session.prompt(command)
+        assert label in session.ui.lines[-1]
+    assert session.effort == "medium"
+
+
+def test_effort_argument_validates_and_accepts_catalog_levels(make_session):
+    session = make_session()
+    session.set_model("deepseek/deepseek-flash")
+    session.prompt("/effort high")
+    session.prompt("/effort medium")
+    assert session.effort == "high"
+    assert "low, high, max" in session.ui.lines[-1]
+    session.set_model("openai/gpt-6-luna")
+    session.prompt("/effort none")
+    assert session.effort == "none"
+
+
+def test_explicitly_empty_effort_map_allows_model_selection_only(make_session, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    ui = PickerUI()
+    session = make_session(ui=ui, settings={"providers": {"deepseek": {"reasoningEffortMap": {}}}})
+    ui.answer = PreferenceChoice("deepseek/deepseek-flash", "high", False)
+    with pytest.raises(ValueError):
+        configure_preference(session, "model")
+    ui.answer = PreferenceChoice("deepseek/deepseek-flash", session.effort, False)
+    configure_preference(session, "model")
+    assert session.model.spec == "deepseek/deepseek-flash"
+    ui.requests.clear()
+    configure_preference(session, "effort")
+    assert not ui.requests and session.effort == "medium"

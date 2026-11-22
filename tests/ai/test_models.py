@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from virgo import ai
+from virgo.ai.catalog import CatalogModel
 from virgo.ai.models import resolve_model
 from virgo.ai.providers import codex, openai, responses
 from virgo.ai.types import Context, StreamOptions, UserMessage
@@ -129,3 +131,41 @@ def test_model_resolution_and_custom_providers():
 def test_retired_google_account_provider_has_a_clear_error():
     with pytest.raises(ValueError, match="Google account login was removed"):
         resolve_model("google-gemini-cli/gemini-2.5-pro")
+
+
+def test_deepseek_preset_knows_the_default_when_medium_is_omitted():
+    model = resolve_model("deepseek/deepseek-flash")
+    assert model.supported_reasoning_levels == ("low", "high", "max")
+    assert model.default_reasoning_level == "high"
+    params = openai.build_params(model, Context("", []), StreamOptions(effort="medium"))
+    assert "reasoning_effort" not in params
+    assert ai.completion_request_metadata(model, "medium", None)["effective_effort"] is None
+
+
+@pytest.mark.parametrize("configured_map", [False, True])
+def test_live_catalog_effort_reaches_active_model_unless_user_overrides(make_session, configured_map):
+    config = {"reasoningEffortMap": {"medium": None, "high": "high"}} if configured_map else {}
+    session = make_session(settings={"providers": {"deepseek": config}})
+    session.set_model("deepseek/deepseek-flash")
+    session.remember_model_metadata(session.model, [CatalogModel("deepseek-flash", {
+        "supported_reasoning_levels": ["medium", "high"], "default_reasoning_level": "high",
+    })])
+    model = session.main.model
+    assert model.supported_reasoning_levels == (("high",) if configured_map else ("medium", "high"))
+    assert model.default_reasoning_level == "high"
+    params = openai.build_params(model, Context("", []), StreamOptions(effort="medium"))
+    assert params.get("reasoning_effort") == (None if configured_map else "medium")
+    assert ai.completion_request_metadata(model, "medium", None)["effective_effort"] == params.get("reasoning_effort")
+
+
+@pytest.mark.parametrize("spec", ["deepseek/deepseek-flash", "glm/new-model"])
+def test_catalog_default_alone_overrides_preset_effort_fallback(make_session, spec):
+    session = make_session()
+    session.set_model(spec)
+    session.remember_model_metadata(session.model, [CatalogModel(session.model.id, {
+        "default_reasoning_level": "medium",
+    })])
+    model = session.main.model
+    assert model.default_reasoning_level == "medium"
+    params = openai.build_params(model, Context("", []), StreamOptions(effort="medium"))
+    assert params["reasoning_effort"] == "medium"

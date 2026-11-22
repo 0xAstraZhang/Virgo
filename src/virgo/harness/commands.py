@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from ..i18n import Translator, available_languages
+from .preferences import configure_preference, effort_label, effort_levels
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -207,7 +208,7 @@ def show_status(session: AgentSession, args: str) -> None:
         if runtime.permission_snapshot and runtime.permission_snapshot.approval == "never":
             approval = "never"
         rows = [
-            t("harness.status.model", model=runtime.model.spec, effort=session.effort),
+            t("harness.status.model", model=runtime.model.spec, effort=effort_label(runtime.model, session.effort, t)),
             t("harness.status.directory", path=context.workspace),
             t("harness.status.permissions", mode=mode.name, approval=approval),
         ]
@@ -235,7 +236,6 @@ def show_status(session: AgentSession, args: str) -> None:
 def register_builtins(session: AgentSession) -> None:
     from ..diagnostics import error_summary
     from .auth_commands import login, logout
-    from .preferences import configure_preference
     from .shell_commands import configure_shell
 
     c = session.commands
@@ -255,7 +255,8 @@ def register_builtins(session: AgentSession) -> None:
             return
         if args.strip():
             s.set_model(args.strip())
-        s.ui.print(s.t("harness.model.current", model=s.model.spec, small=s.small_model.spec, effort=s.effort))
+        label = effort_label(s.model, s.effort, s.t)
+        s.ui.print(s.t("harness.model.current", model=s.model.spec, small=s.small_model.spec, effort=label))
 
     def effort(s, args):
         a = args.strip()
@@ -263,11 +264,13 @@ def register_builtins(session: AgentSession) -> None:
             configure_preference(s, "effort")
             return
         if a:
-            if a not in ("low", "medium", "high", "xhigh", "max"):
-                s.ui.print(s.t("harness.effort.invalid"), "error")
+            levels = effort_levels(s.model)
+            if a not in levels:
+                message = s.t("harness.effort.invalid", levels=", ".join(levels)) if levels else s.t("harness.effort.no_levels")
+                s.ui.print(message, "error")
                 return
             s.effort = a
-        s.ui.print(s.t("harness.effort.current", effort=s.effort))
+        s.ui.print(s.t("harness.effort.current", effort=effort_label(s.model, s.effort, s.t)))
 
     def compact(s, args):
         r = s.compact(focus=args.strip() or None)
@@ -350,7 +353,7 @@ def register_builtins(session: AgentSession) -> None:
     c.register("logout", logout, "remove saved credentials (/logout [provider|all])", description_key="harness.commands.logout", argument_hint="[provider|all]")
     c.register("shell", configure_shell, "detect and choose the command shell (/shell [name|path|auto])", description_key="harness.commands.shell", argument_hint="[name|path|auto]", argument_hint_key="harness.hints.shell")
     c.register("model", model, "show or switch the model (/model provider/id)", description_key="harness.commands.model", argument_hint="[provider/id]")
-    c.register("effort", effort, "show or set reasoning effort", description_key="harness.commands.effort", argument_hint="[low|medium|high|xhigh|max]")
+    c.register("effort", effort, "show or set reasoning effort", description_key="harness.commands.effort", argument_hint="[level]")
     c.register("compact", compact, "summarize older context now (/compact [focus])", description_key="harness.commands.compact", argument_hint="[focus]", argument_hint_key="harness.hints.compact")
     c.register("new", new, "start a fresh session", description_key="harness.commands.new")
     c.register("status", show_status, "show session status and permissions",

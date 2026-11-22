@@ -131,6 +131,8 @@ MESSAGES = {
     "ui.preference.effort": "Effort",
     "ui.preference.effort_description": "Adjust how much reasoning the model uses.",
     "ui.preference.effort_label": "◯ {effort} effort",
+    "ui.preference.saved_effort_description": "This model has reasoning off. Adjust the preference for future models.",
+    "ui.preference.saved_effort_label": "Saved effort: {effort} (reasoning off)",
     "ui.preference.faster": "Faster",
     "ui.preference.help": "Enter to save as default · s for this session only · Esc to cancel",
     "ui.preference.help_short": "Enter default · s session · Esc cancel",

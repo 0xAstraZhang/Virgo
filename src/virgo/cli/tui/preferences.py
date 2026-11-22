@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
 from textual import on
@@ -11,7 +12,7 @@ from textual.message import Message
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest, provider_name
+from ...harness.preferences import ModelChoice, PreferenceChoice, PreferenceRequest, provider_name
 from ..i18n import tr
 from .choices import PromptPanel
 from .transcript import update_static
@@ -58,6 +59,7 @@ class PreferencePicker(PromptPanel, can_focus=True):
         super().__init__(**kwargs)
         self.request: PreferenceRequest | None = None
         self.effort = "medium"
+        self._effort_model: ModelChoice | None = None
         self._highlighted: int | None = None
         self._answered = False
         self._narrow_models = False
@@ -78,6 +80,7 @@ class PreferencePicker(PromptPanel, can_focus=True):
         self.request = request
         self._answered = False
         self.effort = request.effort
+        self._effort_model = None
         self.display = True
         model_mode = request.kind == "model"
         self.providers = tuple(
@@ -91,9 +94,8 @@ class PreferencePicker(PromptPanel, can_focus=True):
             self.show_catalog()
         else:
             self.set_prompt_title(tr(self, "ui.preference.effort"))
-            self.query_one("#preference-description", Static).update(
-                tr(self, "ui.preference.effort_description")
-            )
+            key = "ui.preference.effort_description" if request.models[0].reasoning else "ui.preference.saved_effort_description"
+            self.query_one("#preference-description", Static).update(tr(self, key))
         models.display = model_mode
         self.query_one("#preference-more").display = model_mode
         self.resize_panel()
@@ -129,7 +131,7 @@ class PreferencePicker(PromptPanel, can_focus=True):
         )
         models.highlighted = current if ids else None
         self._highlighted = models.highlighted
-        self.query_one("#preference-effort").display = provider is not None
+        self.render_effort()
         self.resize_panel()
         self.render_more()
 
@@ -165,7 +167,6 @@ class PreferencePicker(PromptPanel, can_focus=True):
         )
         if self.request is not None and self.request.kind == "effort":
             help_text = tr(self, "ui.preference.adjust") + help_text
-            self.query_one("#preference-effort").display = True
         elif self.provider is None:
             help_text = tr(self, "ui.preference.provider_help")
         else:
@@ -190,32 +191,52 @@ class PreferencePicker(PromptPanel, can_focus=True):
                     )
                 self.call_after_refresh(models.scroll_to_highlight)
 
+    def _sync_effort_model(self) -> ModelChoice | None:
+        if self.request.kind == "effort":
+            model = self.request.models[0]
+        else:
+            index = self.query_one("#preference-models", OptionList).highlighted
+            model = self.visible_models[index] if self.provider is not None and index is not None else None
+        if model is not self._effort_model:
+            self._effort_model = model
+            if model is not None:
+                self.effort = model.preferred_effort
+        return model
+
     def render_effort(self) -> None:
         if self.request is None:
             return
+        model = self._sync_effort_model()
+        control = self.query_one("#preference-effort", Static)
+        control.display = bool(model and model.effort_levels)
+        if not control.display:
+            return
+        levels = model.effort_levels
         if self.request.kind == "model":
+            key = "ui.preference.effort_label" if model.reasoning else "ui.preference.saved_effort_label"
             label = Text.assemble(
-                (tr(self, "ui.preference.effort_label", effort=self.effort.capitalize()), "#7C3AED"),
+                (tr(self, key, effort=self.effort.capitalize()), "#7C3AED"),
                 (tr(self, "ui.preference.adjust_label"), "dim"),
             )
         else:
             width = max(24, self.content_size.width - 2)
-            positions = [round(i * (width - 6) / 4) for i in range(5)]
+            span = max(0, width - cell_len(levels[-1]))
+            positions = [round(i * span / max(1, len(levels) - 1)) for i in range(len(levels))]
             title = (
                 tr(self, "ui.preference.faster")
                 + " " * max(1, width - 13)
                 + tr(self, "ui.preference.smarter")
             )
             bar = ["─"] * width
-            selected = EFFORT_LEVELS.index(self.effort)
+            selected = levels.index(self.effort)
             for i, position in enumerate(positions):
                 bar[position] = "▲" if i == selected else "┬"
             label = Text(title + "\n" + "".join(bar) + "\n", no_wrap=True, overflow="ellipsis")
-            for i, effort in enumerate(EFFORT_LEVELS):
+            for i, effort in enumerate(levels):
                 if i:
-                    label.append(" " * max(1, positions[i] - positions[i - 1] - len(EFFORT_LEVELS[i - 1])))
+                    label.append(" " * max(1, positions[i] - positions[i - 1] - cell_len(levels[i - 1])))
                 label.append(effort, style="bold #7C3AED" if effort == self.effort else "dim")
-        self.query_one("#preference-effort", Static).update(label)
+        control.update(label)
 
     def render_more(self) -> None:
         if self.request is None or self.request.kind != "model":
@@ -272,15 +293,18 @@ class PreferencePicker(PromptPanel, can_focus=True):
             event.option_index, self.model_row(event.option_index, selected=True)
         )
         self._highlighted = event.option_index
+        self.render_effort()
         self.render_more()
 
     def action_effort(self, direction: int) -> None:
         if self.request is None or self._answered:
             return
-        if self.request.kind == "model" and self.provider is None:
+        model = self._sync_effort_model()
+        if model is None or not model.effort_levels:
             return
-        index = EFFORT_LEVELS.index(self.effort)
-        self.effort = EFFORT_LEVELS[max(0, min(len(EFFORT_LEVELS) - 1, index + direction))]
+        levels = model.effort_levels
+        index = levels.index(self.effort)
+        self.effort = levels[max(0, min(len(levels) - 1, index + direction))]
         self.render_effort()
 
     def action_model_key(self, action: str) -> None:
@@ -294,17 +318,16 @@ class PreferencePicker(PromptPanel, can_focus=True):
     def action_choose(self, persist: bool) -> None:
         if self.request is None or self._answered:
             return
-        model = self.request.model
-        if self.request.kind == "model":
+        if self.request.kind == "model" and self.provider is None:
             options = self.query_one("#preference-models", OptionList)
-            if options.highlighted is None:
-                return
-            if self.provider is None:
+            if options.highlighted is not None:
                 self.show_catalog(self.providers[options.highlighted])
-                return
-            model = self.visible_models[options.highlighted].spec
+            return
+        model = self._sync_effort_model()
+        if model is None:
+            return
         self._answered = True
-        self.post_message(self.Answered(self.request, PreferenceChoice(model, self.effort, persist)))
+        self.post_message(self.Answered(self.request, PreferenceChoice(model.spec, self.effort, persist)))
 
     @on(OptionList.OptionSelected, "#preference-models")
     def model_selected(self, event: OptionList.OptionSelected) -> None:

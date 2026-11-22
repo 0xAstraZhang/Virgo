@@ -130,6 +130,8 @@ MESSAGES = {
     "ui.preference.effort": "推理强度",
     "ui.preference.effort_description": "调整模型的推理强度。",
     "ui.preference.effort_label": "◯ {effort} 推理强度",
+    "ui.preference.saved_effort_description": "此模型已关闭推理。调整的推理强度偏好可供切换模型后使用。",
+    "ui.preference.saved_effort_label": "推理强度偏好：{effort}（推理已关闭）",
     "ui.preference.faster": "更快",
     "ui.preference.help": "Enter 保存为默认 · s 仅用于本次会话 · Esc 取消",
     "ui.preference.help_short": "Enter 设为默认 · s 仅本次 · Esc 取消",
