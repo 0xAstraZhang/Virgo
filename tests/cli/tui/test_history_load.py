@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import asdict
 
 import pytest
@@ -18,6 +19,7 @@ from virgo.ai.types import (
 )
 from virgo.cli.tui import transcript as transcript_module
 from virgo.cli.tui.transcript import AssistantView, ToolView, Transcript
+from virgo.harness.store import SessionStore
 
 from tests.support.tui import TranscriptApp, saved_entry
 
@@ -79,6 +81,54 @@ async def settle(pilot) -> None:
     await pilot.pause()
     await pilot.app.workers.wait_for_complete()
     await pilot.pause()
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["compact", "legacy"])
+def test_saved_blocked_boundary_replays_with_its_audit_fields(tmp_path, legacy):
+    path = tmp_path / "history.jsonl"
+    store = SessionStore(None if legacy else path, tmp_path)
+    call = ToolCall("call", "bash", {"command": "echo hello > settings.json"})
+    grants = {"write_paths": ["/project"]}
+    policy = {**grants, "write_deny_paths": ["/project/settings.json"]}
+    audit = {
+        "provider": "sandbox", "backend": "seatbelt", "workspace": "/project", "revision": 4,
+        "state": "launch_unverified", "kind": "resource_denied", "dimension": "write_paths",
+        "target": "settings.json", "reason": "protected_path", "category": "write",
+        "payload_started": False, "side_effects": "none", "cleanup": None,
+        "escalation_available": True, "fallback": None,
+    }
+    boundary = {**audit, "requested": policy, "effective": {"file_tools": policy, "native_process": None}}
+    message = ToolResultMessage(call.id, call.name, [TextContent("Write denied.")], is_error=True,
+                                details={"status": "resource_denied", "boundary": boundary})
+    store.append_message(UserMessage("Update settings"))
+    store.append_message(AssistantMessage([call], stop_reason="tool_use"))
+    store.append("custom", kind="transcript_tool_result", data={"message": message_to_dict(message)})
+    store.append_message(message)
+    if legacy:
+        header = {"type": "session", "version": 1, "id": store.id, "cwd": str(tmp_path)}
+        path.write_text("".join(json.dumps(e) + "\n" for e in [header, *store.entries]), encoding="utf-8")
+
+    restored = SessionStore.load(path)
+    saved = restored.custom("transcript_tool_result")[0]["message"]["details"]["boundary"]
+    assert saved == (boundary if legacy else audit)
+    context = restored.build_context()
+    assert context == restored.build_full_context()
+    assert context[0][-1].details["boundary"] == (
+        boundary if legacy else {**audit, "effective": {"file_tools": grants}}
+    )
+
+    async def replay():
+        async with TranscriptApp().run_test(size=(100, 24)) as pilot:
+            view = pilot.app.query_one(Transcript)
+            await view.load_history(restored.branch())
+            row = view.query_one(ToolView)
+            assert row.status == "blocked" and row.has_class("error")
+            assert all(s in str(row.header.content) for s in ("blocked", "Write paths", "settings.json"))
+            view.toggle_tools()
+            assert "Operation did not start." in str(row.output.content)
+            assert "Additional permission can be requested for this operation." in str(row.output.content)
+
+    asyncio.run(replay())
 
 
 @pytest.mark.parametrize("toggle", [None, "tools", "thinking"])

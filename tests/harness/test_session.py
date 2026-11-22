@@ -6,6 +6,7 @@ import json
 import shutil
 import textwrap
 import threading
+from copy import deepcopy
 
 from virgo.agent import AgentEvent, AgentTool, ToolResult
 from virgo.ai.providers import faux
@@ -20,6 +21,7 @@ from virgo.ai.types import (
     ToolResultMessage,
     UserMessage,
     message_from_dict,
+    message_to_dict,
 )
 from virgo.cli import main as cli
 from virgo.harness.session import AgentSession, Runtime
@@ -90,6 +92,63 @@ def test_tool_completion_order_survives_reload_without_changing_model_history(ma
     assert [message.tool_call_id for message in context if isinstance(message, ToolResultMessage)] == [
         "slow-id", "fast-id",
     ]
+
+
+def test_sandbox_boundaries_are_compact_only_on_disk(project, tmp_path):
+    store = SessionStore.new(tmp_path / "sessions", project)
+    grants = {
+        "read_paths": ["/project", "/shared/docs"], "write_paths": ["/project"],
+        "network_allowed": False, "unrestricted": False, "web_allowed": True,
+    }
+    denied = [f"/home/user/.config/credentials/private-{i}" for i in range(13)]
+    policy = {**grants, "read_deny_paths": denied, "write_deny_paths": denied}
+    audit = {
+        "provider": "sandbox", "backend": "seatbelt", "workspace": "/project", "revision": 3,
+        "state": "established", "payload_started": True, "side_effects": "possible",
+        "cleanup": "executor_completed", "native_support": "checked_at_launch", "windows_network": None,
+    }
+    result = ToolResult.text("ok", details={"duration": 0.5, "boundary": {
+        **audit, "requested": policy, "effective": {"file_tools": policy, "native_process": {
+            **policy, "runtime_read_dependencies": ["/usr/bin"], "ambient_read_access": "POSIX read-only",
+        }},
+        "runtime_read_dependencies": ["/usr/bin"], "unmanaged": ["broker", "hooks", "MCP services"],
+    }})
+    original = deepcopy(result.details)
+    ids = []
+    for i in range(12):
+        message = ToolResultMessage(str(i), "bash", result.content, details=result.details)
+        data = {"tool_call_id": str(i), "message": message_to_dict(message)}
+        store.append("custom", kind="transcript_tool_result", data=data)
+        ids.append(store.append_message(message))
+        assert data["message"]["details"] == message.details == result.details == original
+
+    assert all(m.details == original for m in store.build_context()[0])
+    assert all(r["message"]["details"] == original for r in store.custom("transcript_tool_result"))
+    rows = [json.loads(line) for line in store.path.read_text(encoding="utf-8").splitlines()[1:]]
+    boundaries = [row.get("data", row)["message"]["details"]["boundary"] for row in rows]
+    assert len(boundaries) == 24
+    before = len(json.dumps(original["boundary"], ensure_ascii=False).encode()) * len(boundaries)
+    after = sum(len(json.dumps(b, ensure_ascii=False).encode()) for b in boundaries)
+    assert after <= 0.30 * before, f"Persisted boundary bytes: {before} -> {after}"
+
+    restored = SessionStore.load(store.path)
+    messages, message_ids = restored.build_context()
+    assert (messages, message_ids) == restored.build_full_context() and message_ids == ids
+    transcript = [r["message"]["details"] for r in restored.custom("transcript_tool_result")]
+    assert len(messages) == len(transcript) == 12
+    assert transcript == [{"duration": 0.5, "boundary": audit}] * 12
+    for message in messages:
+        assert message.details == {"duration": 0.5, "boundary": {**audit, "effective": {"native_process": grants}}}
+
+
+def test_store_preserves_extension_result_payloads(project, tmp_path):
+    store = SessionStore.new(tmp_path / "sessions", project)
+    for details in (["extension", {"requested": [1]}], {"boundary": ["custom"]}, {"custom": {"effective": 3}}):
+        message = ToolResultMessage("id", "extension", [], details=details)
+        store.append_message(message)
+        store.append("custom", kind="transcript_tool_result", data={"message": message_to_dict(message)})
+    store.append("custom", kind="extension", data={"message": {"details": {"boundary": {"requested": [1]}}}})
+    assert SessionStore.load(store.path).entries == store.entries
 
 
 def test_run_boundaries_preserve_notification_runs_without_entering_context(make_session):
