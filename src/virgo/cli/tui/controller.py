@@ -171,10 +171,6 @@ class RunController:
             *unsaved,
         ]
 
-    def change_permission_mode(self, choice: str) -> None:
-        manager = self.session.services["execution"]
-        self._launch(lambda: manager.command(self.session, choice), concurrent=True, command="permissions")
-
     def cancel_pending(self) -> int:
         """Cancel inputs not yet consumed; leave the running task and notifications alone."""
         count = len(self.state.deferred) + self.session.cancel_pending_input()
