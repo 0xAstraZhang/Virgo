@@ -428,3 +428,28 @@ def test_builtin_tool_localization_covers_read_output_and_request_permissions(br
     assert "read_output" in shell_tool.spec(zh).description
     assert "sed -n" not in en("tools.fs.long_line", line=1, max_kb=50, path="a.txt")
     assert "sed -n" not in zh("tools.fs.long_line", line=1, max_kb=50, path="a.txt")
+
+
+def test_status_shows_session_and_granted_write_path(broker_session, tmp_path):
+    target = tmp_path / "approved.txt"
+    session = broker_session(
+        faux.reply(tools=[("write", {"path": str(target), "content": "ok"})]),
+        faux.reply("done"), preset="read-only", ui=RecordingUI(["y"]),
+    )
+    session.prompt("Write the file")
+    assert session.commands.get("status").concurrent
+    session.prompt("/status")
+    output = session.ui.lines[-1]
+    assert session.store.id in output and session.main.model.spec in output
+    assert f"Read roots: {session.cwd}" in output
+    assert f"Write roots: {target}" in output
+    assert "Read-Only" in output and "Shell network: off" in output
+    assert "Token usage:" in output and "Context:" in output
+
+
+def test_status_reports_host_authority_without_sandbox_roots(make_session):
+    session = make_session(settings={"execution": {"mode": "no-limit"}}, ui=RecordingUI())
+    session.prompt("/status")
+    output = session.ui.lines[-1]
+    assert "Permissions: No-Limit" in output and "Host · OS permissions" in output
+    assert "Read roots:" not in output and "Next task:" not in output

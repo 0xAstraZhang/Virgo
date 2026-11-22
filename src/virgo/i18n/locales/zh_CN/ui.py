@@ -10,7 +10,6 @@ MESSAGES = {
     'ui.modes.help_short': '↑↓/1-3 · Enter · g 授权 · Esc',
     'ui.modes.use': '使用',
     'ui.modes.close': '关闭',
-    'ui.modes.flags': '可读路径 {read_paths} · 可写路径 {write_paths} · 网页开 · Shell 联网{network_allowed}',
     'ui.modes.flags_short': '读:{read_paths} 写:{write_paths} 网页开 Shell:{network_allowed}',
     "ui.modes.host_flags": "Host · 完整操作系统访问权限",
     'ui.modes.on': '开',

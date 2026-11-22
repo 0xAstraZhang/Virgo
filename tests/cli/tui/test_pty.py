@@ -27,7 +27,7 @@ def test_fullscreen_pty_history_round_trip_past_slash_command(project, tmp_path,
         "".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8"
     )
     with PtyClient(project, home) as terminal:
-        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"Host" in data)
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"No-Limit" in data)
         if draft:
             terminal.send(draft.encode())
             terminal.wait_for(lambda data: draft in plain(data))
@@ -57,7 +57,7 @@ def test_fullscreen_pty_history_round_trip_past_slash_command(project, tmp_path,
 
 def test_fullscreen_pty_paste_resize_and_clean_exit(project, tmp_path):
     with PtyClient(project, tmp_path / "pty-home") as terminal:
-        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"Host" in data)
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"No-Limit" in data)
         assert b"\x1b[?2004h" in terminal.output
         assert b"V_" in terminal.output
         assert not termios.tcgetattr(terminal.slave)[3] & termios.ICANON
@@ -160,7 +160,7 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
     argv = [sys.executable, "-m", "virgo", "--ui", "fullscreen", "--no-extensions",
             "--permission", "no-limit", "--model", "faux/demo"]
     with PtyClient(project, home, argv) as terminal:
-        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"Host" in data)
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"No-Limit" in data)
         before_browser = len(terminal.output)
         terminal.send(b"/sessions\r")
         browser = terminal.wait_for(
@@ -180,7 +180,7 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
 
         before_new = len(terminal.output)
         terminal.send(b"n")
-        terminal.wait_for(lambda data: "Host" in plain(data), start=before_new)
+        terminal.wait_for(lambda data: "No-Limit" in plain(data), start=before_new)
         before_model = len(terminal.output)
         terminal.send(b"/model faux/demo\r")
         terminal.wait_for(lambda data: "model: faux/demo" in plain(data), start=before_model)
@@ -194,7 +194,7 @@ def test_fullscreen_pty_session_browser_and_empty_session_cleanup(project, tmp_p
         assert not list(home.glob("sessions/**/*.jsonl"))
 
     with PtyClient(project, home, argv) as terminal:
-        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"Host" in data)
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b"No-Limit" in data)
         terminal.send(b"/sessions\r")
         terminal.wait_for(lambda data: "G Group by workspace" in plain(data))
         terminal.send(b"\x04")
@@ -232,7 +232,7 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--permission', 
         # Dismissing the picker repaints the old status before asynchronous
         # construction finishes. Observe completion without changing its timing.
         terminal.wait_for(
-            lambda data: (project / "conversation-ready").exists() and "Host" in plain(data),
+            lambda data: (project / "conversation-ready").exists() and "No-Limit" in plain(data),
             start=before_new,
         )
         before_reply = len(terminal.output)

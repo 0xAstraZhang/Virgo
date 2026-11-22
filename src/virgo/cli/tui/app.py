@@ -32,7 +32,7 @@ from .controller import RunController
 from .conversation import ConversationState
 from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
-from .modes import PermissionModePicker, permission_flags
+from .modes import PermissionModePicker
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
 from .transcript import EventView, Transcript, update_static
@@ -142,9 +142,7 @@ class ConversationPane(Vertical):
             yield Input(id="auth-value")
             yield ChatEditor(self.state.history)
             yield Static("", id="status", markup=False)
-            with Horizontal(id="footer-meta"):
-                yield Static("", id="flags", markup=False)
-                yield Static("", id="metrics", markup=False)
+            yield Static("", id="metrics", markup=False)
             yield Static("", id="hints", markup=False)
 
 
@@ -178,10 +176,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     #editor:focus { border: none; border-top: solid ansi_bright_black; border-bottom: solid ansi_bright_black; }
     TextArea > .text-area--cursor { text-style: reverse; background: $background; color: $foreground; }
     TextArea > .text-area--selection { text-style: reverse; background: $background; color: $foreground; }
-    #status, #footer-meta, #flags, #metrics, #hints { height: 1; }
+    #status, #metrics, #hints { height: 1; }
     #status { text-align: left; }
-    #flags { width: 1fr; text-wrap: nowrap; }
-    #metrics { width: auto; margin-left: 1; text-align: right; text-style: dim; }
+    #metrics { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; text-align: right; text-style: dim; }
     #hints { text-wrap: nowrap; text-overflow: ellipsis; text-style: dim; }
     ToastRack { dock: top; margin: 0 1; }
     Toast { width: auto; max-width: 50%; padding: 0 1; margin: 0;
@@ -718,7 +715,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.update_status()
 
     def set_composer_visible(self, visible: bool) -> None:
-        for selector in ("#editor", "#footer-meta", "#hints"):
+        for selector in ("#editor", "#metrics", "#hints"):
             self._pane.query_one(selector).display = visible
         if not visible:
             self._pane.query_one("#jump").display = False
@@ -792,7 +789,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         else:
             hints = Text()
         hint_row = root.query_one("#hints", Static)
-        hint_row.display = bool(hints) and root.query_one("#footer-meta").display
+        hint_row.display = bool(hints) and root.query_one("#metrics").display
         update_static(hint_row, hints, layout=False)
         cwd = self.screen_stack[0].query_one("#cwd", Static)
         brand_width = self.screen_stack[0].query_one("#brand", Static).content.cell_len
@@ -813,23 +810,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             cache=usage.cache_hit_rate,
         )
         metrics = f"{used}  {context}"
-        active = self._active_mode()
-        if active.id == "no-limit":
-            flags = tr(self, "ui.modes.host_flags")
-        else:
-            flags = permission_flags(self, active)
-            if cell_len(flags) + 1 + cell_len(metrics) > width:
-                flags = permission_flags(self, active, compact=True)
-        available = width - cell_len(flags) - 1
-        if cell_len(metrics) > available:
+        if cell_len(metrics) > width:
             metrics = f"↑{short_number(usage.input_total)} ↓{short_number(usage.output)}  {context}"
-        metrics_widget = root.query_one("#metrics", Static)
-        metrics_widget.display = cell_len(metrics) <= available
-        # Only a change in the natural width needs to rearrange the two columns.
-        if cell_len(metrics) != cell_len(str(metrics_widget.content)):
-            metrics_widget.refresh(layout=True)
-        update_static(metrics_widget, metrics, layout=False)
-        update_static(root.query_one("#flags", Static), flags, layout=False)
+        if cell_len(metrics) > width:
+            metrics = context
+        update_static(root.query_one("#metrics", Static), metrics, layout=False)
         self._update_status_line()
         self._update_prompt_marker()
 

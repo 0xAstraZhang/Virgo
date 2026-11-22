@@ -43,10 +43,10 @@ def test_failing_inline_command_does_not_end_the_repl(make_session, monkeypatch)
     def broken(s, args):
         raise RuntimeError("status unavailable")
 
-    session.commands.register("status", broken, concurrent=True)
+    session.commands.register("broken-status", broken, concurrent=True)
     runner = threading.Thread(target=repl.run_repl, args=(session, ui, broker), daemon=True)
     runner.start()
-    broker.push("line", "/status")
+    broker.push("line", "/broken-status")
     wait_until(lambda: "status unavailable" in ui.text)
     assert runner.is_alive()
     broker.push("line", "/exit")
