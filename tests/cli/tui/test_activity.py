@@ -246,7 +246,7 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                 app.editor.load_text("next answer")
                 await pilot.press("enter")
                 assert app.controller.busy and not app.activity.display
-                assert app.editor.render_line(0).text.startswith("· ")
+                assert app.editor.render_line(0).text.startswith("› ")
                 assert "Esc interrupt" in app.query_one("#hints").render_line(0).text
                 app._poll_timer.resume()
                 await wait_for(pilot, lambda: entered.is_set() and app.activity.display)
@@ -260,8 +260,9 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                     assert app.query_one("#status").region.bottom <= height
                     status = app.query_one("#status")
                     assert "Thinking" not in status.render_line(0).text
-                    first = app.editor.render_line(0).text[0]
-                    await wait_for(pilot, lambda first=first: app.editor.render_line(0).text[0] != first)
+                    first = str(header.content)[0]
+                    await wait_for(pilot, lambda first=first, header=header: str(header.content)[0] != first)
+                    assert app.editor.render_line(0).text.startswith("› ")
                     assert not app.query("#activity")
                     assert app.transcript.scroll_y == 0
                     assert not app.transcript.follow_latest
@@ -283,7 +284,7 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
 
 
 @pytest.mark.parametrize("reasoning", [False, True], ids=["long-reply", "expanded-reasoning"])
-def test_working_marker_stays_beside_draft_when_event_header_scrolls_away(make_session, reasoning):
+def test_draft_marker_stays_static_when_event_header_scrolls_away(make_session, reasoning):
     from virgo.ai.types import TextContent, ThinkingContent
 
     async def scenario():
@@ -308,11 +309,16 @@ def test_working_marker_stays_beside_draft_when_event_header_scrolls_away(make_s
                 region = app.editor.content_region
                 return app.screen._compositor.render_strips()[region.y].crop(region.x, region.x + 1).text
 
-            first = visible_marker()
-            assert tuple("·✢✳✶✻✽✽✻✶✳✢·") == activity_module.FRAMES
-            assert first in activity_module.FRAMES
-            assert next(iter(app.editor.render_line(0))).style.color.name == "#7c3aed"
-            await wait_for(pilot, lambda: visible_marker() in activity_module.FRAMES and visible_marker() != first)
+            assert visible_marker() == "›"
+            first = row.activity_frame
+            await wait_for(pilot, lambda: row.activity_frame != first)
+            assert visible_marker() == "›"
+            if reasoning:
+                title = row.header.content
+                assert title.plain.startswith(row.activity_frame + " Thinking")
+                assert str(title.spans[0].style) == app.theme_variables["accent"]
+            else:
+                assert not row.header.display
             assert app.editor.render_line(0).text[2:].rstrip() == app.editor.text == "下一条消息"
             app.controller.busy = False
             app.activity.reset()

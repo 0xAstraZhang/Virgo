@@ -81,7 +81,7 @@ def test_bridge_only_coalesces_matching_token_deltas():
     ]
 
 
-def test_native_search_completion_stays_after_preceding_message_in_one_frame():
+def test_native_search_completion_keeps_call_before_interleaved_message():
     search = {"type": "web_search_call", "id": "ws_1", "status": "in_progress"}
     completed = {**search, "status": "completed", "action": {"type": "search", "query": "Virgo"}}
     wire = [
@@ -103,9 +103,10 @@ def test_native_search_completion_stays_after_preceding_message_in_one_frame():
             for update in updates:
                 await transcript.consume(update.payload)
             rows = transcript.activity_card.events
-            assert [row.kind for row in rows] == ["tool_call", "text", "tool_result"]
+            assert [row.kind for row in rows] == ["tool_call", "text"]
             assert rows[1].text == "Checking the release now."
-            assert rows[2].tool_name == "web_search"
+            assert rows[0].tool_name == "web_search"
+            assert rows[0].status == "done" and "Virgo" in rows[0].result
             assert all(not row.expanded for row in rows)
 
     asyncio.run(scenario())
@@ -219,7 +220,7 @@ def test_native_search_history_preserves_interleaved_completion_and_final_answer
     emit("native_tool_end", 2)
     message.content.append(TextContent("Final answer."))
     emit("text_start", 3)
-    _assert_history_matches_live(events, message, ["tool_call", "text", "tool_result", "tool_call", "tool_result", "text"])
+    _assert_history_matches_live(events, message, ["tool_call", "text", "tool_call", "text"])
 
 
 def test_stream_history_retry_keeps_attempts_separate():
@@ -278,7 +279,7 @@ def test_reused_text_block_before_native_search_remains_visible_live_and_in_hist
                 await pilot.pause()
                 assert card.body.display
                 assert not card.answer_events[0].display
-                assert all(e.display for e in card.events if e.kind in ("tool_call", "tool_result", "sources"))
+                assert all(e.display for e in card.events if e.kind in ("tool_call", "sources"))
 
     asyncio.run(scenario())
 

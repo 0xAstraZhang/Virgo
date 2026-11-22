@@ -245,11 +245,12 @@ def test_tool_and_thinking_shortcuts_and_scroll_navigation(make_session, project
             tools = [t for t in app.transcript.query(ToolView) if t.kind == "tool_call"]
             thought = next(card for card in app.transcript.query(AssistantView)
                            if any(e.kind == "thinking" for e in card.events))
-            assert tools and not any(tool.expanded for tool in tools)
+            assert len(tools) == 1 and not tools[0].expanded
+            assert tools[0].status == "done"
             assert thought.thought_body.display
             assert all(not e.output.display for e in thought.events if e.kind == "thinking")
             await pilot.press("ctrl+o", "ctrl+t")
-            assert all(tool.expanded for tool in tools)
+            assert tools[0].expanded and "five" in str(tools[0].output.content)
             assert thought.thought_body.display
             assert all(e.output.display for e in thought.events if e.kind == "thinking")
             await pilot.press("ctrl+o", "ctrl+t")

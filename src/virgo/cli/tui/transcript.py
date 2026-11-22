@@ -37,7 +37,7 @@ from .folding import Foldable, FoldHeader
 # reader scrolls within OLDER_MARGIN screens of the first replayed run.
 HISTORY_RUNS = 30
 OLDER_MARGIN = 2
-TOOL_KINDS = ("tool_call", "tool_result", "sources")
+TOOL_KINDS = ("tool_call", "sources")
 STREAM_MARKDOWN_INTERVAL = 0.08
 
 
@@ -82,10 +82,10 @@ class EventView(Foldable):
     EventView > FoldHeader { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
     EventView > .output { height: auto; padding-left: 2; text-style: dim; }
     EventView.message > .output { padding: 0; margin: 0; text-style: none; }
-    EventView.tool-call > FoldHeader { color: $accent; }
-    EventView.thinking > FoldHeader, EventView.tool-result > FoldHeader {
+    EventView.thinking > FoldHeader, EventView.tool-call > FoldHeader {
         color: $foreground; text-style: dim;
     }
+    EventView.active > FoldHeader { text-style: none; }
     EventView.error > FoldHeader { color: $error; text-style: none; }
     EventView.error > .output { color: $error; }
     """
@@ -112,10 +112,9 @@ class EventView(Foldable):
         self._markdown_timer: asyncio.TimerHandle | None = None
         self._markdown_lock = asyncio.Lock()
         self.set_class(kind == "text", "message")
-        self.set_class(kind in ("tool_call", "tool_result"), "tool")
+        self.set_class(kind == "tool_call", "tool")
         self.set_class(kind == "thinking", "thinking")
         self.set_class(kind == "tool_call", "tool-call")
-        self.set_class(kind == "tool_result", "tool-result")
 
     def compose(self) -> ComposeResult:
         yield self.header
@@ -134,15 +133,18 @@ class EventView(Foldable):
         self.render_state()
 
     def summary(self) -> Text:
-        if self.kind == "tool_result":
-            prefix = "  ▾ " if self.expanded else "  ⎿ "
+        title = Text(no_wrap=True, overflow="ellipsis")
+        if self.activity_phase:
+            title.append(self.activity_frame + " ", style=self.app.theme_variables["accent"])
         else:
-            prefix = "▾ " if self.expanded else "▸ "
-        title = Text(prefix, no_wrap=True, overflow="ellipsis")
+            title.append("▾ " if self.expanded else "▸ ")
         if self.agent != "main":
             title.append(f"[{self.agent}] ")
         if self.tool_name:
+            title.append((self.activity_phase or self.summary_status()) + " · ")
             title.append(self.tool_name, style="bold")
+        elif self.activity_phase:
+            title.append(self.activity_phase)
         else:
             key = {
                 "thinking": "thought",
@@ -157,12 +159,8 @@ class EventView(Foldable):
                 "summary": "summary",
             }.get(self.kind)
             title.append(tr(self, "ui.event." + key) if key else self.kind.title())
-        if state := self.summary_status():
-            title.append(" · " + state)
-        if self.activity_phase:
-            title.append(f" · {self.activity_frame} {self.activity_phase}…", style="bold")
-        if not (self.expanded and self.kind in (*TOOL_KINDS, "thinking")):
-            title.append(" → " if self.tool_name and self.kind == "tool_result" else " · ")
+        if self.tool_name or not (self.expanded and self.kind in (*TOOL_KINDS, "thinking")):
+            title.append(" · ")
             preview = self.preview_text()
             if self._preview_text != preview:
                 self._preview_text = preview
@@ -196,10 +194,8 @@ class EventView(Foldable):
 
     def render_header(self) -> None:
         if self.kind == "text":
-            self.header.display = self.agent != "main" or bool(self.activity_phase)
+            self.header.display = self.agent != "main"
             title = Text(f"[{self.agent}] " if self.agent != "main" else "")
-            if self.activity_phase:
-                title.append(f"{self.activity_frame} {self.activity_phase}…")
         else:
             title = self.summary()
         width = self.header.size.width
@@ -248,19 +244,22 @@ class EventView(Foldable):
 
 
 class ToolView(EventView):
-    """A tool call or its separate result; arrival never moves the call."""
+    """One fold for a call, updated in place when its result arrives."""
 
-    def __init__(self, agent: str, call_id: str, name: str, args: dict | None = None, *, result=False):
-        super().__init__("tool_result" if result else "tool_call", agent=agent, name=name)
-        self.call_id, self.args = call_id, args or {}
-        self.status = "done" if result else "pending"
+    def __init__(self, agent: str, call_id: str, name: str, args: dict | None = None):
+        super().__init__("tool_call", agent=agent, name=name)
+        self.call_id = call_id
+        self.status = "pending"
         self.result = ""
-        self._first_line = ""
-        self._more_lines = 0
         self.details: dict = {}
         self.duration: float | None = None
-        if not result:
-            self.text = _json(self.args)
+        self.set_args(args or {})
+
+    def set_args(self, args: dict) -> None:
+        self.args = args
+        self._args_text = _json(args)
+        if self.status in ("pending", "running"):
+            self.set_text(self._args_text)
 
     def summary(self) -> Text:
         title = super().summary()
@@ -269,36 +268,25 @@ class ToolView(EventView):
         return title
 
     def summary_status(self) -> str:
-        if (self.kind == "tool_result" and self.status == "done") or (
-            self.kind == "tool_call" and self.activity_phase
-        ):
-            return ""
         return tr(self, "ui.tool.state." + self.status)
 
     def preview_text(self) -> str:
-        if self.kind == "tool_call":
-            if not isinstance(self.args, dict):
-                return self.text
-            if self.tool_name in ("grep", "glob"):
-                return f"{self.args.get('pattern', '')} · {self.args.get('path', '.')}"
-            for name in ("path", "command", "query", "url", "description"):
-                if isinstance(value := self.args.get(name), str) and value:
-                    return value
-            return self.text
         sandbox = self.details.get("boundary")
         if self.status == "blocked" and isinstance(sandbox, dict):
             dimension, target = sandbox.get("dimension"), sandbox.get("target")
             if dimension in ("read_paths", "write_paths", "network_allowed") and target:
                 return f"{tr(self, 'ui.modes.' + dimension)} · {target} · {self.result}"
-        if self._more_lines:
-            return self._first_line + tr(self, "ui.tool.more_lines", count=self._more_lines)
-        return self.result or self.text
+        if not isinstance(self.args, dict):
+            return self._args_text
+        if self.tool_name.lower() in ("grep", "glob"):
+            return f"{self.args.get('pattern', '')} · {self.args.get('path', '.')}"
+        for name in ("path", "command", "query", "url", "description"):
+            if isinstance(value := self.args.get(name), str) and value:
+                return value
+        return self._args_text
 
     def set_result(self, text: str, *, is_error: bool = False, details=None) -> None:
         self.result = text
-        lines = [line for line in text.splitlines() if line.strip()]
-        self._first_line = lines[0] if lines else ""
-        self._more_lines = max(0, len(lines) - 1)
         if isinstance(details, dict):
             self.details.update(details)
         error = self.details.get("error")
@@ -436,6 +424,7 @@ class AssistantView(Vertical):
         if event.activity_phase == phase:
             return
         event.activity_phase = phase
+        event.set_class(bool(phase), "active")
         if phase:
             self.active_events.add(event)
             if self.activity is not None and self.activity.plain:
@@ -490,9 +479,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self.show_tools = self.show_thinking = False
         self.activity_card: AssistantView | None = None
         self._current_calls: dict[tuple[str, str], ToolView] = {}
-        self._current_results: dict[tuple[str, str], ToolView] = {}
         self._blocks: dict[str, dict[int, EventView]] = {}
-        self._native_results: dict[tuple[str, str], ToolView] = {}
         self._message_open: set[str] = set()
         self._streaming: dict[str, EventView] = {}
         self._run: AssistantView | None = None
@@ -642,8 +629,6 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self.activity_card = self._run = None
         self._blocks.clear()
         self._current_calls.clear()
-        self._current_results.clear()
-        self._native_results.clear()
         self._message_open.clear()
         self._running = False
 
@@ -663,27 +648,17 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         else:
             card.tool_name = name or card.tool_name
             if args is not None:
-                card.args = args
-                card.set_text(_json(args))
+                card.set_args(args)
         return card
 
     async def _result(self, agent: str, message: ToolResultMessage) -> ToolView:
-        key = (agent, message.tool_call_id)
-        row = self._current_results.get(key)
-        if row is None:
-            row = ToolView(agent, message.tool_call_id, message.tool_name, result=True)
-            self._current_results[key] = row
-            await self._append(row)
+        row = await self._tool(agent, message.tool_call_id, message.tool_name)
         text = message.text()
         for block in message.content:
             if isinstance(block, ImageContent):
                 text += tr(self, "ui.event.image_line", type=block.mime_type)
         row.set_result(text, is_error=message.is_error, details=message.details)
-        if call := self._current_calls.get(key):
-            call.status = row.status
-            call.set_class(message.is_error, "error")
-            self._set_event_activity(call, "")
-            call.render_state()
+        self._set_event_activity(row, "")
         return row
 
     async def _start_message(self, agent: str) -> AssistantView:
@@ -694,10 +669,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             await card.clear_answer()
         # IDs belong to one model message. Providers may reuse them later in
         # the same run; only lifecycle duplicates of this occurrence coalesce.
-        for lookup in (self._current_calls, self._current_results, self._native_results):
-            for key in list(lookup):
-                if key[0] == agent:
-                    del lookup[key]
+        for key in list(self._current_calls):
+            if key[0] == agent:
+                del self._current_calls[key]
         self._blocks[agent] = {}
         self._message_open.add(agent)
         return card
@@ -759,7 +733,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 terminal_error or (not message.tool_calls() and message.stop_reason != "pause_turn")
             ):
                 last_tool = max(
-                    (i for i, row in blocks.items() if row.kind in ("tool_call", "tool_result")), default=-1
+                    (i for i, row in blocks.items() if row.kind == "tool_call"), default=-1
                 )
                 text_rows = [(i, row) for i, row in sorted(blocks.items())
                              if row.kind == "text" and blocks.get(i - 1) is not row]
@@ -778,43 +752,22 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             info = native_event(data)
             name, call_id = info["name"], data.get("id") or f"native-{index}"
             args = data.get("input", {}) if kind == "server_tool_use" else data.get("action", {})
-            if row is None:
-                row = await self._append(ToolView(agent, call_id, name, args))
-            self._current_calls[(agent, call_id)] = row
-            row.tool_name = name
-            row.set_text(_json(args))
-            terminal = data.get("status") in ("completed", "failed", "incomplete")
-            if row.status not in ("done", "error"):
-                row.status = "done" if terminal else "running"
-                self._set_event_activity(row, "" if terminal else tr(self, "ui.event.running"))
-                row.render_state()
+            row = await self._tool(agent, call_id, name, args)
             if kind == "web_search_call" and data.get("status") in ("completed", "failed", "incomplete"):
-                key = (agent, call_id)
-                result = self._native_results.get(key)
-                if result is None:
-                    result = ToolView(agent, call_id, name, result=True)
-                    self._native_results[key] = result
-                    await self._append(result)
-                result.set_result(_json(args), is_error=data.get("status") != "completed")
-                row.status = result.status
+                row.set_result(_json(args), is_error=data.get("status") != "completed")
                 self._set_event_activity(row, "")
+            elif row.status in ("pending", "running"):
+                row.status = "running"
+                self._set_event_activity(row, tr(self, "ui.event.running"))
                 row.render_state()
         elif kind.endswith("_tool_result"):
-            if row is None:
-                row = await self._append(
-                    ToolView(
-                        agent, data.get("tool_use_id", ""), kind.removesuffix("_tool_result"), result=True
-                    )
-                )
+            row = await self._tool(agent, data.get("tool_use_id", ""), kind.removesuffix("_tool_result"))
             info = native_event(data)
             content = info["result"] if info else data.get("content", {})
             row.set_result(
                 _json(content), is_error=isinstance(content, dict) and "error" in content.get("type", "")
             )
-            if call := self._current_calls.get((agent, data.get("tool_use_id", ""))):
-                call.status = row.status
-                self._set_event_activity(call, "")
-                call.render_state()
+            self._set_event_activity(row, "")
         elif row is None:
             row = await self._append(EventView("context", _json(data), agent=agent))
         return row

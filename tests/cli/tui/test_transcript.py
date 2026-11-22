@@ -245,11 +245,11 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
                 )
             )
             await pilot.pause()
-            assert len(view.query(ToolView)) == 3
+            assert len(view.query(ToolView)) == 2
             calls = {(t.agent, t.call_id): t for t in view.query(ToolView) if t.kind == "tool_call"}
-            main = next(t for t in view.query(ToolView) if t.kind == "tool_result" and (t.agent, t.call_id) == ("main", "shared-id"))
+            main = calls[("main", "shared-id")]
             assert main.status == "error"
-            assert "failed → one (+4 lines)" in main.header.content.plain
+            assert "failed · bash · pwd" in main.header.content.plain
             assert not main.header.styles.text_style.dim
             assert main.header.styles.color == Color.parse(app.get_css_variables()["error"])
             assert not main.output.display
@@ -286,7 +286,7 @@ def test_sandbox_failure_shows_boundary_and_preserves_raw_evidence():
                 }),
             ))
             await pilot.pause()
-            row = next(t for t in view.query(ToolView) if t.kind == "tool_result" and t.call_id == "write-1")
+            row = next(t for t in view.query(ToolView) if t.call_id == "write-1")
             assert row.status == "blocked" and not row.expanded
             assert row.has_class("error") and not row.header.styles.text_style.dim
             assert all(value in str(row.header.content) for value in (
@@ -455,7 +455,8 @@ def test_inline_activity_is_separate_from_thought_folding_and_follows_prompt():
             await pilot.press("enter")
             assert card.thought_body.display
             assert not card.thought_header.display
-            assert "Thinking" in str(card.events[0].header.content)
+            assert str(card.events[0].header.content).startswith("✻ Thinking")
+            assert "Thought" not in str(card.events[0].header.content)
             assert "Consider this carefully." not in str(card.events[0].header.content)
             view.show_activity(Text("✽ Thinking… (4s · thinking with high effort)"))
             assert "✽" in str(card.events[0].header.content)

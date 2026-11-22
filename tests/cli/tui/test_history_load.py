@@ -100,9 +100,8 @@ def test_older_runs_load_on_demand_and_match_a_full_replay(monkeypatch, toggle):
             await settle(pilot)
             assert view.scroll_y == 0
             maps = [
-                [((row.agent, row.call_id), row.text, row.status)
-                 for row in view.query(ToolView) if row.kind == kind]
-                for kind in ("tool_call", "tool_result")
+                ((row.agent, row.call_id), row.args, row.result, row.status)
+                for row in view.query(ToolView)
             ]
             return initially, shown(view), maps
 

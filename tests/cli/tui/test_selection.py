@@ -92,7 +92,7 @@ def test_completed_selections_copy_user_answer_thinking_and_tool_text(monkeypatc
             card = transcript.query_one(AssistantView)
             thought = next(event for event in card.events if event.kind == "thinking")
             thought.set_expanded(True)
-            result = next(t for t in transcript.query(ToolView) if t.kind == "tool_result" and t.call_id == "tool")
+            result = next(t for t in transcript.query(ToolView) if t.call_id == "tool")
             result.set_expanded(True)
             await pilot.pause()
             cases = [

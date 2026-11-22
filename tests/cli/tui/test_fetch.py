@@ -31,7 +31,7 @@ def test_native_open_page_and_find_are_reading_events_live_and_replayed():
                     await view.load_history([saved_entry(message)])
                 await pilot.pause()
                 rows = list(view.query(ToolView))
-                assert [row.tool_name for row in rows] == ["web_fetch", "web_fetch", "web_find", "web_find"]
+                assert [row.tool_name for row in rows] == ["web_fetch", "web_find"]
                 assert all("https://example.com" in row.text for row in rows)
     asyncio.run(scenario())
 

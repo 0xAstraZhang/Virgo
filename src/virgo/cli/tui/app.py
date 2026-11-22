@@ -597,7 +597,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 else None
             )
             self.activity.tick()
-            self._update_prompt_marker()
             self.transcript.show_activity(
                 self.activity.content if self.activity.display else None, waiting=self.activity.waiting
             )
@@ -831,14 +830,6 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         update_static(metrics_widget, metrics, layout=False)
         update_static(root.query_one("#flags", Static), flags, layout=False)
         self._update_status_line()
-        self._update_prompt_marker()
-
-    def _update_prompt_marker(self) -> None:
-        marker = "›"
-        if (self.controller.busy and not self.controller.closing
-                and self.active_confirmation is None and self.active_input is None):
-            marker = self.activity.frame if self.activity.display else "·"
-        self.editor.set_prompt_marker(marker)
 
     def _active_mode(self):
         manager = self.session.services["execution"]
