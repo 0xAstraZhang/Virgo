@@ -18,6 +18,13 @@ Linux、macOS、受支持的新版 Windows 11（`null.sys` Feature `60692039`）
 - 承诺防住提示词注入攻击链（但硬屏蔽私有凭据、`.virgo` 写时确认、不可信项目配置剥离和 Read-Only 断网仍能缓解常见误伤与注入影响）。
 - 要求所有操作系统的隔离强度完全一致。
 
+## 沙箱 Shell 命令的临时文件
+
+- 在 Linux、WSL2 和 macOS 上，宿主的 `/tmp` 默认只读。临时文件应写入 `$TMPDIR`。`TMPDIR`、`TMP` 和 `TEMP` 都指向同一个可写目录，Virgo 会在该命令结束时删除整个目录。
+- 在原生 Windows 上，单条命令使用的临时文件应写入 `TMPDIR`（PowerShell 中的 `$env:TMPDIR`），Virgo 会在命令结束时清理该目录。`TEMP` 和 `TMP` 指向 AppContainer 会话共享的临时目录。同一会话中后续命令还需要的临时文件，可写入 PowerShell 的 `$env:TEMP` 或 cmd 的 `%TEMP%`。
+
+只有需要跨调用保留的临时文件才应写入工作区内有写权限的位置，并在最后一次使用后删除。
+
 ## 各平台后端与如实说明的差异
 
 - **Linux（一级 — `bubblewrap`）**：仅需系统 `bwrap` 与非特权用户命名空间（`--unshare-all --unshare-user --disable-userns --cap-drop ALL`，通过 `--info-fd` 完成零额外进程启动确认，无需 `libseccomp` 依赖）。以只读方式挂载宿主常规路径（`--ro-bind / /` 与真实只读 `$HOME`），确保用户态工具链（`~/.cargo`、`~/.rustup`、`~/.local`、`nvm`、`pyenv` 等）、本地 `AF_UNIX` 套接字、`AF_NETLINK` 与 `io_uring` 正常工作；对高敏凭据目录/文件用权限 `000` 的 `tmpfs` 或空只读文件覆盖屏蔽，并对工作区、会话缓存和单命令 `TMPDIR` 挂载可写层。已存在且未获批的 `.virgo` 通过只读 bind 挂载保护；尚不存在的 `.virgo` 在 Shell 内新建属于 Linux bind 挂载的固有限制，Broker 文件工具与不可信项目配置剥离仍对其进行保护。
