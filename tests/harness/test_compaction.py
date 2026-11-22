@@ -18,8 +18,9 @@ from virgo.ai.types import (
 )
 from virgo.harness.compaction import estimate_tokens, find_cut
 from virgo.harness.session import AgentSession
+from virgo.harness.store import SessionStore
 
-from tests.support.harness import RecordingUI, calls
+from tests.support.harness import RecordingUI, calls, install_responses
 
 
 def summarizer(ctx):
@@ -128,6 +129,43 @@ def test_auto_compaction_triggers_before_model_call(make_session):
     assert s.main.agent.last_text == "after compaction"
 
 
+@pytest.mark.parametrize("usage", [
+    pytest.param(Usage(input=4800, output=150), id="below-trigger"),
+    pytest.param(Usage(input=800, cache_read=4000, cache_write=400, output=150), id="cached-above-trigger"),
+])
+def test_auto_compaction_waits_for_growth_from_first_reported_input(make_session, project, monkeypatch, usage):
+    previous = make_session(faux.reply("started"), faux.reply("previous progress " * 1600), persist=True)
+    previous.prompt("Start the task.")
+    assert previous.main.compact(reason="auto")
+    previous.shutdown()
+    session = make_session(session="continue", settings={"compaction": {"triggerTokens": 5000, "keepRecentTokens": 250}})
+    runtime = session.main
+    assert runtime.compacted_at == 1
+    (project / "small.txt").write_text("s" * 200)
+    (project / "large.txt").write_text("L" * 4000)
+    summary = AssistantMessage([TextContent("progress " * 500)])
+    install_responses(
+        monkeypatch, summary,
+        AssistantMessage([ToolCall("1", "read", {"path": "small.txt"})], usage=usage, stop_reason="tool_use"),
+        AssistantMessage([ToolCall("2", "read", {"path": "large.txt"})],
+                         usage=Usage(input=usage.input_total + 200, output=150), stop_reason="tool_use"),
+        summary, AssistantMessage([TextContent("done")]),
+    )
+    estimates, decisions = [], []
+
+    def after_turn(event, rt):
+        if event.tool_results:
+            decisions.append(rt._compaction_due())
+
+    session.bus.on("compact", lambda rt, _: estimates.append(rt.context_tokens(estimate_only=True)))
+    session.bus.on("turn_end", after_turn)
+    session.prompt("Read both files.")
+
+    assert estimates[0] < 5000
+    assert decisions == [False, True]
+    assert len(estimates) == 2 and runtime.agent.last_text == "done"
+
+
 def test_reactive_compaction_on_overflow(make_session):
     s = make_session()
     faux.push("test", scripted(faux.reply("long " * 2000)))
@@ -191,3 +229,108 @@ def test_freeform_summary_restores_and_can_be_compacted_incrementally(make_sessi
     assert "continue that work" in request
     assert any("new progress" in m.text() for m in restored.main.messages)
     assert any(m.text() == "continue that work" for m in restored.main.messages)
+
+
+def test_incremental_compaction_rebuilds_file_lists_once(make_session):
+    blocks = "<read-files>\nspec.md\n</read-files>\n\n<modified-files>\nresult.py\n</modified-files>"
+    original = make_session(persist=True)
+    # Resume a session written before deduplication, then simulate a summarizer emitting its own lists.
+    original.store.append("compaction", summary=f"Earlier progress\n\n{blocks}\n\n{blocks}", kept_ids=[],
+                          details={"read_files": ["spec.md"], "modified_files": ["result.py"]})
+    session = make_session(session=original.store.path, settings={"compaction": {"keepRecentTokens": 1}})
+    for i in range(2):
+        faux.push("test", faux.reply("recent answer"), faux.reply(f"Earlier progress, step {i}\n\n{blocks}"))
+        session.prompt(f"next step {i}")
+        result = session.compact()
+        previous = calls()[-1]["messages"][0]["content"].split("</previous-summary>")[0]
+        assert "<previous-summary>" in previous and "Earlier progress" in previous
+        assert "<read-files>" not in previous and "<modified-files>" not in previous
+        expected = f"Earlier progress, step {i}\n\n{blocks}"
+        assert result["summary"] == session.store.last_compaction()["summary"] == expected
+        assert expected in session.main.messages[0].text()
+        assert SessionStore.load(session.store.path).build_context() == (session.main.messages, session.main.ids)
+
+
+def test_stripping_a_thinking_only_tail_does_not_leave_a_bare_request(make_session):
+    session = make_session(faux.reply(thinking="thinking only"), faux.reply("Work in progress"),
+                           persist=True, settings={"compaction": {"keepRecentTokens": 1}})
+    session.prompt("Investigate the issue")
+    assert session.compact()["kept"] == 0
+    assert [m.kind for m in session.main.messages] == ["summary"]
+    assert SessionStore.load(session.store.path).build_context() == (session.main.messages, session.main.ids)
+
+
+@pytest.mark.parametrize("reason", ["auto", "overflow"])
+def test_full_mid_turn_compaction_continues_after_tool_result(make_session, project, reason):
+    (project / "spec.md").write_text("important facts\n" * 1200, encoding="utf-8")
+    request = "Read spec.md and report its conclusion."
+    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1}})
+    if reason == "auto":
+        session.settings.set("compaction.triggerTokens", session.context_tokens() + 500)
+    faux.push("test", faux.reply(tools=[("read", {"path": "spec.md"})]))
+    if reason == "overflow":
+        faux.push("test", faux.error("context overflow", kind="overflow"))
+    faux.push("test", faux.reply("Read spec.md successfully. The conclusion is ready to report."), faux.reply("Done"))
+    session.prompt(request)
+
+    entry = session.store.last_compaction()
+    assert entry["reason"] == reason and entry["kept_ids"] == []
+    sent = calls()[-1]["messages"]
+    assert sent[0]["kind"] == "summary" and "conclusion is ready" in sent[0]["content"]
+    assert not any(m["role"] == "user" and m["kind"] is None for m in sent)
+    assert "continue" in " ".join(m["content"] for m in sent if m["role"] == "user").lower()
+    assert session.main.agent.last_text == "Done"
+    assert SessionStore.load(session.store.path).build_context() == (session.main.messages, session.main.ids)
+
+
+def test_auto_compaction_waits_for_growth_after_nonshrinking_summary(make_session):
+    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1}})
+    runtime = session.main
+    trigger = runtime.context_tokens()
+    session.settings.set("compaction.triggerTokens", trigger)
+    faux.push("test", faux.reply("small task"), faux.reply("ok"))
+    session.prompt("hi")
+    first = session.store.last_compaction()
+    assert first["reason"] == "auto"
+    assert runtime.context_tokens() >= first["tokens_before"] >= trigger
+    faux.push("test", faux.reply("still here"))
+    session.prompt("and now?")
+    assert session.store.last_compaction() == first
+    assert runtime.agent.last_text == "still here"
+
+    # The automatic guard must still allow a provider overflow and an explicit /compact.
+    faux.push("test", faux.error("context overflow", kind="overflow"), faux.reply("updated"), faux.reply("fits"))
+    session.prompt("next?")
+    assert session.store.last_compaction()["reason"] == "overflow" and runtime.agent.last_text == "fits"
+    faux.push("test", faux.reply("manual summary"))
+    assert session.compact() and session.store.last_compaction()["reason"] == "manual"
+
+    faux.push("test", faux.reply("after growth"), faux.reply("finished"))
+    session.prompt("new material " * 2000)
+    assert session.store.last_compaction()["reason"] == "auto" and runtime.agent.last_text == "finished"
+
+
+def test_reported_usage_after_compaction_does_not_count_as_new_content(make_session):
+    session = make_session(settings={"compaction": {"keepRecentTokens": 1}})
+    trigger = session.context_tokens()
+    session.settings.set("compaction.triggerTokens", trigger)
+    # The provider counts escaped Unicode in its request. The local estimate uses character length.
+    faux.push("test", faux.reply("已读完文件。" * 300), faux.reply("ok"))
+    session.prompt("read the file")
+    first = session.store.last_compaction()
+    faux.push("test", faux.reply("yes"))
+    session.prompt("done?")
+    assert session.store.last_compaction() == first and session.main.agent.last_text == "yes"
+
+    faux.push("test", faux.reply("updated summary"), faux.reply("done"))
+    session.prompt("new information " * 1000)
+    second = session.store.last_compaction()
+    assert second != first and second["reason"] == "auto" and session.main.agent.last_text == "done"
+
+    # With ample headroom, the ordinary provider-reported threshold still wins.
+    session.settings.set("compaction.triggerTokens", trigger + 10_000)
+    reply = session.main.messages[-1]
+    reply.usage = Usage(input=trigger + 9999)
+    assert not session.main._compaction_due()
+    reply.usage.input += 1
+    assert session.main._compaction_due()

@@ -13,6 +13,7 @@ Per-result output budgets live in tools/output.py.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import asdict
@@ -31,7 +32,7 @@ from ..ai.types import (
     UserMessage,
     message_to_dict,
 )
-from .store import summary_message
+from .store import compacted_message, summary_message
 from .telemetry import record_call
 
 if TYPE_CHECKING:
@@ -51,6 +52,7 @@ SUMMARY_FORMAT = (
 )
 
 MAX_INPUT_CHARS = 600_000
+_FILE_BLOCK = re.compile(r"<(read-files|modified-files)>(.*?)</\1>", re.DOTALL)
 
 
 def _chars(m) -> int:
@@ -146,6 +148,30 @@ def _files(messages: list) -> tuple[set, set]:
     return read, modified
 
 
+def _retained_tail(rt: Runtime, cut: int, *, preserve_thinking: bool = False) -> tuple[list, list, bool]:
+    messages = rt.messages
+    tail = messages[cut:]
+    if not tail:
+        return [], [], False
+    owner = None
+    if not any(isinstance(m, UserMessage) and m.kind is None for m in tail):
+        for i in range(cut - 1, -1, -1):
+            if isinstance(messages[i], UserMessage) and messages[i].kind is None:
+                owner = i
+                preserve_thinking = False  # Pinning changes the prefix of the signed thinking blocks.
+                break
+    kept, ids = [], []
+    for i, message in enumerate(tail, cut):
+        for m in [message] if preserve_thinking else strip_thinking([message]):
+            kept.append(compacted_message(m))
+            ids.append(rt.ids[i] if i < len(rt.ids) else None)
+    # Stripping a thinking-only response can also leave the request with no tail to own.
+    if kept and owner is not None:
+        kept.insert(0, messages[owner])
+        ids.insert(0, rt.ids[owner] if owner < len(rt.ids) else None)
+    return kept, ids, preserve_thinking
+
+
 def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
     model = model or rt.model
     if reason == "manual" and not rt.agent.running:
@@ -167,15 +193,20 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, mo
     session.bus.emit("before_compact", rt)
     tokens_before = rt.context_tokens()
 
-    prev_entry = rt.store.last_compaction() if rt.store else None
-    prev_details = (prev_entry or {}).get("details", {})
     read, modified = _files(to_summarize)
-    read |= set(prev_details.get("read_files", []))
-    modified |= set(prev_details.get("modified_files", []))
 
     prompt = f"<conversation>\n{serialize(to_summarize)}\n</conversation>\n\n"
     if prev:
-        prev_text = prev.text().split("\n\n", 1)[-1].replace("</conversation_summary>", "").strip()
+        prev_text = prev.text().split("\n\n", 1)[-1].removesuffix("</conversation_summary>")
+        prev_entry = rt.store.by_id.get(rt.ids[0], {}) if rt.store and rt.ids else {}
+        if details := prev_entry.get("details"):
+            read.update(details.get("read_files", []))
+            modified.update(details.get("modified_files", []))
+        else:
+            # Storeless runtimes have only the file lists in the previous summary.
+            for tag, paths in _FILE_BLOCK.findall(prev_text):
+                (read if tag == "read-files" else modified).update(paths.strip("\n").splitlines())
+        prev_text = _FILE_BLOCK.sub("", prev_text).strip()
         prompt = f"<previous-summary>\n{prev_text}\n</previous-summary>\n\n{prompt}"
         prompt += "Update the previous summary with the new transcript: keep what is still relevant, update progress, drop what is obsolete.\n\n"
     if focus:
@@ -184,40 +215,29 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, mo
     msg = session.complete("compaction", SUMMARY_SYSTEM, prompt, max_tokens=8000,
                            effort=session.small_model_effort, signal=rt.agent.signal, agent=rt.name,
                            accounting_store=rt.accounting_store)
-    if msg.stop_reason != "stop" or rt.agent.signal.is_set() or not msg.text().strip():
+    summary = _FILE_BLOCK.sub("", msg.text()).strip()
+    if msg.stop_reason != "stop" or rt.agent.signal.is_set() or not summary:
         session.ui.print(session.t("harness.compact.failed", error=msg.error_message or session.t("harness.compact.empty_summary")), "error")
         return None
-    summary = msg.text().strip()
     if read - modified:
         summary += "\n\n<read-files>\n" + "\n".join(sorted(read - modified)) + "\n</read-files>"
     if modified:
         summary += "\n\n<modified-files>\n" + "\n".join(sorted(modified)) + "\n</modified-files>"
 
-    kept = list(range(cut, len(messages)))
-    # pin the request that started the current turn if it is about to be summarized
-    if not any(isinstance(messages[i], UserMessage) and messages[i].kind is None for i in kept):
-        for i in range(cut - 1, start - 1, -1):
-            if isinstance(messages[i], UserMessage) and messages[i].kind is None:
-                kept.insert(0, i)
-                break
-    kept_msgs: list = []
-    kept_ids: list = []
-    for i in kept:
-        for m in strip_thinking([messages[i]]):
-            kept_msgs.append(m)
-            kept_ids.append(rt.ids[i] if i < len(rt.ids) else None)
+    kept_msgs, kept_ids, _ = _retained_tail(rt, cut)
     entry_id = None
     if rt.store is not None:
         entry = rt.store.append(
             "compaction",
             summary=summary,
+            summary_timestamp=msg.timestamp,
             kept_ids=[k for k in kept_ids if k],
             tokens_before=tokens_before,
             reason=reason,
             details={"read_files": sorted(read), "modified_files": sorted(modified)},
         )
         entry_id = entry["id"]
-    messages[:] = [summary_message(summary), *kept_msgs]
+    messages[:] = [summary_message(summary, timestamp=msg.timestamp), *kept_msgs]
     rt.ids[:] = [entry_id, *kept_ids]
     rt.compacted_at = len(messages)
     rt.rebuild_system()
@@ -265,41 +285,34 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     if rt.agent.signal.is_set() or not is_native_context(result):
         session.ui.print(session.t("harness.compact.failed", error=result.error_message or result.stop_reason), "error")
         return None
-    kept = list(range(cut, len(messages)))
-    preserve_thinking = bool(kept) and is_user_like(messages[cut - 1]) != is_user_like(messages[cut])
+    preserve_thinking = cut < len(messages) and is_user_like(messages[cut - 1]) != is_user_like(messages[cut])
     if any(is_native_context(message) for message in messages) and rt.native_binding != binding:
         preserve_thinking = False
-    if api == "anthropic" and not any(
-        isinstance(messages[i], UserMessage) and messages[i].kind is None for i in kept
-    ):
-        for i in range(cut - 1, -1, -1):
-            if isinstance(messages[i], UserMessage) and messages[i].kind is None:
-                kept.insert(0, i)
-                preserve_thinking = False  # pinning a duplicate request changes the kept prefix
-                break
-    kept_msgs, kept_ids = [], []
-    for i in kept:
-        for message in [messages[i]] if preserve_thinking else strip_thinking([messages[i]]):
-            kept_msgs.append(message)
-            kept_ids.append(rt.ids[i] if i < len(rt.ids) else None)
+    kept_msgs, kept_ids, preserve_thinking = _retained_tail(rt, cut, preserve_thinking=preserve_thinking)
     # Summary-call usage measures the old window, not the size of the new context.
     result.usage = Usage()
     summary = next((
         b.data["content"] for b in result.content
         if isinstance(b, RawContent) and b.data.get("type") == "compaction" and isinstance(b.data.get("content"), str)
     ), "OpenAI native context compaction")
+    replacement = [result]
+    unfinished = reason in ("auto", "overflow") or isinstance(messages[-1], ToolResultMessage)
+    if api == "anthropic" and not kept_msgs and unfinished:
+        replacement.append(UserMessage(
+            "Continue the unfinished turn from the recorded progress without repeating completed steps.", kind="continue",
+        ))
     entry_id = None
     if rt.store is not None:
         entry = rt.store.append(
-            "compaction", summary=summary, context=[message_to_dict(result)],
+            "compaction", summary=summary, context=[message_to_dict(m) for m in replacement],
             kept_ids=[i for i in kept_ids if i], preserve_thinking=preserve_thinking,
             tokens_before=tokens_before, reason=reason, strategy=api, context_binding=binding,
         )
         entry_id = entry["id"]
     elif rt._native_source is None:
         rt._native_source = list(messages)
-    messages[:] = [result, *kept_msgs]
-    rt.ids[:] = [entry_id, *kept_ids]
+    messages[:] = [*replacement, *kept_msgs]
+    rt.ids[:] = [entry_id] * len(replacement) + kept_ids
     rt.compacted_at = len(messages)
     rt.native_binding = binding
     # Keep system/tools frozen so native compaction can preserve recent thinking.

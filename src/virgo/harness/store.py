@@ -26,6 +26,7 @@ from ..ai.transform import strip_thinking
 from ..ai.types import (
     AssistantMessage,
     Message,
+    ToolResultMessage,
     Usage,
     UserMessage,
     message_from_dict,
@@ -37,17 +38,25 @@ _GRANT_KEYS = ("read_paths", "write_paths", "network_allowed", "unrestricted", "
 
 SUMMARY_PREFIX = (
     "<conversation_summary>\nThe earlier part of this conversation was compacted into the summary below. "
-    "It is reference material about prior work, not a new request.\n\n"
+    "It is reference material about prior work, not a new request. "
+    "If the current turn is unfinished, continue from the recorded progress without repeating completed steps.\n\n"
 )
 
 
-def summary_message(text: str) -> UserMessage:
-    return UserMessage(f"{SUMMARY_PREFIX}{text.strip()}\n</conversation_summary>", kind="summary")
+def summary_message(text: str, *, timestamp: float | None = None) -> UserMessage:
+    return UserMessage(f"{SUMMARY_PREFIX}{text.strip()}\n</conversation_summary>", kind="summary",
+                       timestamp=time.time() if timestamp is None else timestamp)
 
 
-def _without_usage(message: Message) -> Message:
-    """Old request usage describes the pre-compaction context, not its replacement."""
-    return replace(message, usage=Usage()) if isinstance(message, AssistantMessage) else message
+def compacted_message(message: Message) -> Message:
+    """Use the same retained metadata live and on disk. Usage measured the old window."""
+    if isinstance(message, AssistantMessage):
+        return replace(message, usage=Usage())
+    if isinstance(message, ToolResultMessage):
+        details = _stored_details(message.details, transcript=False)
+        if details is not message.details:
+            return replace(message, details=details)
+    return message
 
 
 def _entry_for_disk(entry: dict) -> dict:
@@ -61,8 +70,18 @@ def _entry_for_disk(entry: dict) -> dict:
             return entry
 
     details = message.get("details")
-    if not isinstance(details, dict) or not isinstance(boundary := details.get("boundary"), dict):
+    stored = _stored_details(details, transcript=transcript)
+    if stored is details:
         return entry
+    message = {**message, "details": stored}
+    if transcript:
+        return {**entry, "data": {**entry["data"], "message": message}}
+    return {**entry, "message": message}
+
+
+def _stored_details(details, *, transcript: bool):
+    if not isinstance(details, dict) or not isinstance(boundary := details.get("boundary"), dict):
+        return details
     compact = boundary.copy()
     for key in ("requested", "runtime_read_dependencies", "ambient_read_access", "unmanaged",
                 "read_deny_paths", "write_deny_paths"):
@@ -74,10 +93,7 @@ def _entry_for_disk(entry: dict) -> dict:
             if isinstance(policy := effective.get(source), dict):
                 compact["effective"] = {source: {key: policy[key] for key in _GRANT_KEYS if key in policy}}
                 break
-    message = {**message, "details": {**details, "boundary": compact}}
-    if transcript:
-        return {**entry, "data": {**entry["data"], "message": message}}
-    return {**entry, "message": message}
+    return {**details, "boundary": compact}
 
 
 def _now() -> str:
@@ -420,9 +436,10 @@ class SessionStore:
             return self.build_full_context()
         comp = path[comp_i]
         if "context" in comp:
-            messages = [_without_usage(message_from_dict(m)) for m in comp["context"]]
+            messages = [compacted_message(message_from_dict(m)) for m in comp["context"]]
         else:
-            messages = [summary_message(comp["summary"])]
+            timestamp = comp.get("summary_timestamp", _created_at(comp, 0.0))
+            messages = [summary_message(comp["summary"], timestamp=timestamp)]
         ids = [comp["id"]] * len(messages)
         for i in comp.get("kept_ids", []):
             e = self.by_id.get(i)
@@ -432,7 +449,7 @@ class SessionStore:
             if not comp.get("preserve_thinking", False):
                 kept = strip_thinking(kept)
             for m in kept:
-                messages.append(_without_usage(m))
+                messages.append(compacted_message(m))
                 ids.append(i)
         for e in path[comp_i + 1 :]:
             if e["type"] == "message":

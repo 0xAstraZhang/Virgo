@@ -24,6 +24,7 @@ from virgo.ai.types import (
 )
 from virgo.harness import compaction
 from virgo.harness.session import AgentSession, Runtime
+from virgo.harness.store import SessionStore
 
 
 def append(runtime, *messages):
@@ -167,6 +168,20 @@ def test_native_failure_preserves_history_and_never_calls_summary(make_session, 
     assert session.store.custom("model_call")[-1]["stop_reason"] == "error"
     evidence = session.main.diagnostic_access.recent()
     assert len(evidence) == 1 and evidence[0]["message"] == "failed"
+
+
+def test_anthropic_compaction_with_no_retained_tail_does_not_replay_request(make_session, monkeypatch):
+    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1}})
+    session.set_model("anthropic/claude-opus-5-5")
+    runtime = session.main
+    append(runtime, UserMessage("Read the spec"), AssistantMessage([ToolCall("1", "read", {"path": "spec"})]),
+           ToolResultMessage("1", "read", [TextContent("facts " * 100)]))
+    monkeypatch.setattr(compaction, "native_compact", lambda model, *a, **kw: native_result(model))
+    assert runtime.compact(reason="auto")["kept"] == 0
+    assert runtime.messages[0].content[0].data["signature"] == "signed"
+    assert not any(isinstance(m, UserMessage) and m.kind is None for m in runtime.messages)
+    assert isinstance(runtime.messages[-1], UserMessage) and runtime.messages[-1].kind == "continue"
+    assert SessionStore.load(session.store.path).build_context() == (runtime.messages, runtime.ids)
 
 
 def test_manual_native_compaction_after_abort_starts_new_operation(make_session, monkeypatch):

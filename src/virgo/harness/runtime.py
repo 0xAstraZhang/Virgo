@@ -117,6 +117,8 @@ class Runtime:
         self._tool_version, registered = session.tool_snapshot(role)
         self._registered_tools = {tool.name: tool for tool in registered}
         self.compaction = compaction
+        self._auto_compaction_floor = 0
+        self._awaiting_compaction_usage = False
         self.compacted_at = 1 if messages and (
             getattr(messages[0], "kind", None) == "summary" or is_native_context(messages[0])
         ) else 0
@@ -209,6 +211,16 @@ class Runtime:
         self.execution_active = True
 
     def _on_event(self, ev: AgentEvent) -> None:
+        if (
+            self._awaiting_compaction_usage and ev.type == "message_end"
+            and isinstance(ev.message, AssistantMessage) and ev.message.usage.total > 0
+            and ev.message.stop_reason not in ("error", "aborted", "compaction")
+        ):
+            # Input measures the replacement prompt. This reply's output already counts as growth.
+            baseline = ev.message.usage.input_total
+            keep = int(self.session.settings.get("compaction.keepRecentTokens", 20000))
+            self._auto_compaction_floor = baseline + max(1, keep, min(baseline // 4, 2048))
+            self._awaiting_compaction_usage = False
         if ev.type == "agent_end":
             self.execution_active = False
         if ev.type == "agent_start":
@@ -370,6 +382,13 @@ class Runtime:
         result = compaction.compact(self, focus=focus, reason=reason, model=model)
         if result is not None:
             self.recovery.after_compaction()
+            self._awaiting_compaction_usage = reason == "auto"
+            if self._awaiting_compaction_usage:
+                # Use a local floor until the provider measures the replacement prompt.
+                after = self.context_tokens(estimate_only=True)
+                self._auto_compaction_floor = after + max(1, min(after // 10, 1024))
+            else:
+                self._auto_compaction_floor = 0
         return result
 
     def restore_native_context(self, model=None) -> bool:
@@ -385,16 +404,17 @@ class Runtime:
         self.messages[:] = messages
         self.ids[:] = ids
         self.compacted_at = len(messages)
+        self._auto_compaction_floor = 0
+        self._awaiting_compaction_usage = False
         self._native_source = None
         self.native_binding = None
         return True
 
-    def context_tokens(self) -> int:
+    def context_tokens(self, *, estimate_only: bool = False) -> int:
         # Status refreshes must not invoke extension hooks or search approvals.
         context = self._base_context(self.messages)
-        return compaction.estimate_tokens(
-            context.messages, self.compacted_at, system=context.system, tools=context.tools,
-        )
+        valid_from = len(context.messages) if estimate_only else self.compacted_at
+        return compaction.estimate_tokens(context.messages, valid_from, system=context.system, tools=context.tools)
 
     def _compaction_due(self, model=None) -> bool:
         s = self.session.settings
@@ -403,7 +423,7 @@ class Runtime:
         trigger = s.get("compaction.triggerTokens")
         if trigger is None:
             trigger = int((model or self.model).context_window * float(s.get("compaction.triggerRatio", 0.8)))
-        return self.context_tokens() >= trigger
+        return self.context_tokens() >= max(trigger, self._auto_compaction_floor)
 
     def _base_context(self, messages: list, *, report_errors: bool = False) -> Context:
         """Assemble instructions and schemas; only actual requests report formatting failures."""
