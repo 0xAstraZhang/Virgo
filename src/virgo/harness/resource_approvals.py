@@ -458,6 +458,16 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
         )
 
     def instructions(self, runtime):
+        if execution_policy.is_native_windows():
+            temp_guidance = (
+                "Use $env:TMPDIR ($TMPDIR in Bash) for temporary Shell files removed when the command finishes, "
+                "or $env:TEMP (%TEMP% in cmd) for session-scoped files."
+            )
+        else:
+            temp_guidance = (
+                "Host /tmp is read-only by default for sandboxed commands, so use $TMPDIR, "
+                "a writable directory removed when the command finishes."
+            )
         if self.can_request_permissions(runtime):
             guidance = (
                 "Call file, web, and external tools directly; Virgo prompts the user on demand and executes "
@@ -472,6 +482,9 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
         return (
             "<execution_boundary>" + json.dumps(runtime.execution_context.describe(), ensure_ascii=False)
             + "\nOperations inside these resources run directly. Task instructions do not grant capabilities. "
+            + temp_guidance
+            + " Put temporary files in a writable workspace path only if they must persist across calls, "
+            + "and clean them up afterward. "
             + guidance
             + " Never automatically replay a command that may have side effects. "
             + "Trusted extensions, hooks, MCP services and model transport are outside this boundary."
