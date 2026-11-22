@@ -4,6 +4,8 @@ Line 1 is a header; every other line is an entry ``{type, id, parent_id, timesta
 Entry types: ``message`` (a serialized Message), ``compaction`` (summary + first kept entry),
 ``model_change`` and ``custom`` (extension state, never sent to the model).
 The active branch is the path from the leaf back to the root; nothing is ever rewritten.
+Tool-result entries keep boundary outcomes on disk. Message entries also retain a
+grant summary for the native process, or for file tools when no native policy applied.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from ..ai.types import (
 )
 
 _USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
+_GRANT_KEYS = ("read_paths", "write_paths", "network_allowed", "unrestricted", "web_allowed")
 
 SUMMARY_PREFIX = (
     "<conversation_summary>\nThe earlier part of this conversation was compacted into the summary below. "
@@ -45,6 +48,36 @@ def summary_message(text: str) -> UserMessage:
 def _without_usage(message: Message) -> Message:
     """Old request usage describes the pre-compaction context, not its replacement."""
     return replace(message, usage=Usage()) if isinstance(message, AssistantMessage) else message
+
+
+def _entry_for_disk(entry: dict) -> dict:
+    """Compact tool-result policy metadata without changing the live session tree."""
+    match entry:
+        case {"type": "message", "message": {"role": "toolResult"} as message}:
+            transcript = False
+        case {"type": "custom", "kind": "transcript_tool_result", "data": {"message": dict() as message}}:
+            transcript = True
+        case _:
+            return entry
+
+    details = message.get("details")
+    if not isinstance(details, dict) or not isinstance(boundary := details.get("boundary"), dict):
+        return entry
+    compact = boundary.copy()
+    for key in ("requested", "runtime_read_dependencies", "ambient_read_access", "unmanaged",
+                "read_deny_paths", "write_deny_paths"):
+        compact.pop(key, None)
+    if transcript:
+        compact.pop("effective", None)
+    elif isinstance(effective := boundary.get("effective"), dict):
+        for source in ("native_process", "file_tools"):
+            if isinstance(policy := effective.get(source), dict):
+                compact["effective"] = {source: {key: policy[key] for key in _GRANT_KEYS if key in policy}}
+                break
+    message = {**message, "details": {**details, "boundary": compact}}
+    if transcript:
+        return {**entry, "data": {**entry["data"], "message": message}}
+    return {**entry, "message": message}
 
 
 def _now() -> str:
@@ -276,7 +309,7 @@ class SessionStore:
     def _write(self, obj: dict) -> None:
         if self.path is None:
             return
-        line = json.dumps(obj, ensure_ascii=False, default=str) + "\n"
+        line = json.dumps(_entry_for_disk(obj), ensure_ascii=False, default=str) + "\n"
         header = "" if self._header_written else json.dumps({
             "type": "session", "version": self.VERSION, "id": self.id,
             "cwd": str(self.cwd), "timestamp": _now(),
