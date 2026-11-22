@@ -218,13 +218,8 @@ class ChatEditor(TextArea):
         # TextArea uses this width for wrapping, hit testing and cursor placement.
         return 2
 
-    def set_prompt_marker(self, marker: str) -> None:
-        if self.prompt_marker != marker:
-            self.prompt_marker = marker
-            self.refresh_line(self.scroll_offset.y)
-
     def render_line(self, y: int) -> Strip:
-        style = self.rich_style + Style(color=self.app.theme_variables["accent"])
+        style = self.rich_style + Style(dim=True)
         prefix = self.prompt_marker + " " if y == 0 else "  "
         strip = Strip.join([Strip([Segment(prefix, style)]), super().render_line(y)]).crop(0, self.content_size.width)
         if y == 0 and self.document.end == (0, 0) and self.selection.is_empty:

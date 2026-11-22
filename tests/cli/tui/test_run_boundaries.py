@@ -60,11 +60,11 @@ def test_repeated_call_ids_within_one_run_preserve_both_calls_and_results():
             await pilot.pause()
             run = view.query_one(AssistantView)
             rows = [event for event in run.events if isinstance(event, ToolView)]
-            assert [row.kind for row in rows] == ["tool_call", "tool_result", "tool_call", "tool_result"]
+            assert [row.kind for row in rows] == ["tool_call", "tool_call"]
             assert rows[0].args == {"command": "echo 1"}
-            assert rows[1].result == "result 1"
-            assert rows[2].args == {"command": "echo 2"}
-            assert rows[3].result == "result 2"
+            assert rows[0].result == "result 1"
+            assert rows[1].args == {"command": "echo 2"}
+            assert rows[1].result == "result 2"
 
     asyncio.run(scenario())
 
@@ -85,9 +85,9 @@ def test_repeated_call_ids_across_runs_preserve_previous_rows():
             assert [run.text for run in runs] == ["Answer 1", "Answer 2"]
             for number, run in enumerate(runs, 1):
                 rows = [event for event in run.events if isinstance(event, ToolView)]
-                assert len(rows) == 2
+                assert len(rows) == 1
                 assert rows[0].args == {"command": f"echo {number}"}
-                assert rows[1].result == f"result {number}"
+                assert rows[0].result == f"result {number}"
 
     asyncio.run(scenario())
 

@@ -52,18 +52,16 @@ def test_parallel_results_notifications_and_agents_share_arrival_order():
             ], stop_reason="tool_use")))
             for call_id in ("a", "b"):
                 await view.consume(AgentEvent("tool_execution_start", tool_call_id=call_id, tool_name="bash"))
-            def tool_map(kind: str) -> dict[tuple[str, str], ToolView]:
-                return {(t.agent, t.call_id): t for t in view.query(ToolView) if t.kind == kind}
 
             view.show_activity(Text("✻ Running 2 tools… (1s)"))
-            calls = tool_map("tool_call")
-            assert all("Running" in str(calls[("main", key)].header.content) for key in ("a", "b"))
+            calls = {(t.agent, t.call_id): t for t in view.query(ToolView)}
+            assert all(str(calls[("main", key)].header.content).startswith("✻ Using · bash") for key in ("a", "b"))
             assert not view.activity_card.thought_header.display
             await view.consume(AgentEvent(
                 "tool_execution_end", tool_call_id="b", tool_name="bash", result=ToolResult.text("B finished")
             ))
-            assert "Running" not in str(calls[("main", "b")].header.content)
-            assert "Running" in str(calls[("main", "a")].header.content)
+            assert "Using" not in str(calls[("main", "b")].header.content)
+            assert "Using" in str(calls[("main", "a")].header.content)
             await view.consume(AgentEvent(
                 "message_end", message=UserMessage("Background news", kind="notification")
             ))
@@ -86,15 +84,15 @@ def test_parallel_results_notifications_and_agents_share_arrival_order():
             assert [(event.kind, event.agent) for event in run.events] == [
                 ("thinking", "main"), ("text", "main"),
                 ("tool_call", "main"), ("tool_call", "main"),
-                ("tool_result", "main"), ("notification", "main"),
+                ("notification", "main"),
                 ("thinking", "explorer"), ("text", "explorer"),
-                ("tool_result", "main"), ("text", "main"),
+                ("text", "main"),
             ]
-            assert [event.call_id for event in run.events if isinstance(event, ToolView)] == ["a", "b", "b", "a"]
-            results = tool_map("tool_result")
-            assert run.events[4] is results[("main", "b")]
-            assert run.events[8] is results[("main", "a")]
-            assert calls[("main", "a")] is not results[("main", "a")]
+            assert [event.call_id for event in run.events if isinstance(event, ToolView)] == ["a", "b"]
+            for key in ("a", "b"):
+                call = calls[("main", key)]
+                assert call.result == key.upper() + " finished"
+                assert call.status == "done"
             assert all(event.parent is run.thought_body for event in run.events)
             assert run.thought_body.display
             assert all(not event.expanded and not event.output.display for event in run.events if event.kind != "text")
@@ -148,21 +146,21 @@ def test_anthropic_native_search_and_sources_are_folded_events():
             await view.consume(AgentEvent("message_end", message=message))
             await pilot.pause()
             run = view.query_one(AssistantView)
-            assert [event.kind for event in run.events] == ["tool_call", "tool_result", "text", "sources"]
-            assert run.events[0].tool_name == run.events[1].tool_name == "web_search"
-            assert "https://example.com" in run.events[1].text
+            assert [event.kind for event in run.events] == ["tool_call", "text", "sources"]
+            assert run.events[0].tool_name == "web_search"
+            assert "https://example.com" in run.events[0].text
             assert run.thought_body.display
             assert all(not event.output.display for event in run.events if event.kind != "text")
             assert run.body._markdown == "A new release is available."
             run.set_thinking(True)
             await pilot.pause()
             assert all(event.size.height == 1 for event in run.events if event.display)
-            assert run.events[3].display
+            assert run.events[2].display
 
     asyncio.run(scenario())
 
 
-def test_responses_native_completion_adds_one_result_before_final_text():
+def test_responses_native_completion_updates_call_before_final_text():
     async def scenario():
         app = TranscriptApp()
         async with app.run_test() as pilot:
@@ -178,9 +176,9 @@ def test_responses_native_completion_adds_one_result_before_final_text():
             await view.consume(AgentEvent("message_end", message=message))
             await pilot.pause()
             run = view.query_one(AssistantView)
-            assert [event.kind for event in run.events] == ["tool_call", "tool_result", "text", "sources"]
-            assert len(run.query(ToolView)) == 2
-            assert run.events[1].status == "done"
+            assert [event.kind for event in run.events] == ["tool_call", "text", "sources"]
+            assert len(run.query(ToolView)) == 1
+            assert run.events[0].status == "done"
             assert run.body._markdown == "Search answer"
 
     asyncio.run(scenario())
@@ -234,11 +232,16 @@ def test_mounted_call_header_updates_on_result_without_execution_start(is_error,
             ], stop_reason="tool_use")))
             await pilot.pause()
             call = view.query_one(ToolView)
-            assert " · pending" in call.header.content.plain
+            assert "▸ pending · web_search" in call.header.content.plain
 
+            call.action_toggle()
+            assert "release" in str(call.output.content)
             result = ToolResultMessage("search", "web_search", [TextContent("result")], is_error=is_error)
             await view.consume(AgentEvent("message_end", message=result))
-            assert f" · {status}" in call.header.content.plain
+            assert list(view.query(ToolView)) == [call]
+            assert call.expanded
+            assert call.output.content == "result"
+            assert status in call.header.content.plain
 
     asyncio.run(scenario())
 
@@ -255,17 +258,15 @@ def test_web_search_result_header_toggles_and_body_keeps_details_open():
                 "search", "Release title\n\nhttps://example.com\nFull search snippet", "web_search"
             )))
             run = view.query_one(AssistantView)
-            result = next(t for t in view.query(ToolView) if t.kind == "tool_result" and t.call_id == "search")
+            result = view.query_one(ToolView)
             run.set_thinking(True)
             await pilot.pause()
-            call = next(t for t in run.events if t.kind == "tool_call")
-            assert call.has_class("tool-call") and " · done" in call.header.content.plain
-            assert result.has_class("tool-result") and result.header.styles.text_style.dim
-            assert result.header.content.plain == "  ⎿ web_search → Release title (+2 lines)"
+            assert result.header.content.plain == "▸ done · web_search · release"
             await pilot.click(result.header, offset=(5, 0))
             await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
             assert result.expanded and result.output.display
-            assert result.header.content.plain == "  ▾ web_search"
+            assert result.header.content.plain == "▾ done · web_search · release"
+            assert "Full search snippet" in str(result.output.content)
             assert run.show_thinking and run.thought_body.display
             await pilot.click(result.output, offset=(6, 1))
             await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
@@ -279,7 +280,7 @@ def test_web_search_result_header_toggles_and_body_keeps_details_open():
     asyncio.run(scenario())
 
 
-def test_history_custom_results_preserve_completion_order_without_duplicates():
+def test_history_custom_results_preserve_call_order_without_duplicates():
     async def scenario():
         app = TranscriptApp()
         async with app.run_test() as pilot:
@@ -300,7 +301,7 @@ def test_history_custom_results_preserve_completion_order_without_duplicates():
             await pilot.pause()
             run = view.query_one(AssistantView)
             assert [(row.kind, row.call_id) for row in run.events if isinstance(row, ToolView)] == [
-                ("tool_call", "a"), ("tool_call", "b"), ("tool_result", "b"), ("tool_result", "a")
+                ("tool_call", "a"), ("tool_call", "b")
             ]
             assert run.body._markdown == "Complete"
             assert all(not event.expanded for event in run.events)
@@ -308,7 +309,8 @@ def test_history_custom_results_preserve_completion_order_without_duplicates():
             await view.load_history(entries)
             await pilot.pause()
             assert len(view.query(AssistantView)) == 1
-            assert len(view.query(ToolView)) == 4
+            assert len(view.query(ToolView)) == 2
+            assert [tool.result for tool in view.query(ToolView)] == ["A", "B"]
 
     asyncio.run(scenario())
 
