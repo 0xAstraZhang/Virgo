@@ -153,30 +153,78 @@ def diagnostic_summary(details: dict, *, max_bytes=MAX_DIAGNOSTIC_BYTES, executi
     return _render(payload)
 
 
+def _boundary_summary(sandbox: dict) -> str:
+    boundary = {}
+    capsule = {"boundary": boundary, "omitted": True}
+    omitted = False
+
+    def include(target, key, raw):
+        nonlocal omitted
+        value = sanitize(raw)
+        if isinstance(value, str):
+            clipped = _clip(value, 96)
+            omitted |= clipped != value
+            value = clipped
+        target[key] = value
+        if len(_render(capsule).encode()) <= MAX_DIAGNOSTIC_BYTES:
+            return True
+        del target[key]
+        omitted = True
+        return False
+
+    for key in ("payload_started", "side_effects", "provider", "kind", "dimension", "cleanup", "state",
+                "escalation_available", "backend", "target", "workspace", "reason", "category"):
+        raw = sandbox.get(key)
+        if type(raw) in (str, int, float, bool):
+            include(boundary, key, raw)
+
+    effective = sandbox.get("effective")
+    if isinstance(effective, str):
+        include(boundary, "effective", effective)
+    elif isinstance(effective, dict) and include(boundary, "effective", {}):
+        # Native adapters distinguish file tools from the launched process.
+        # Reserve space for both sets of flags before considering path lists.
+        policies = []
+        view = boundary["effective"]
+        if "file_tools" in effective or "native_process" in effective:
+            for scope in ("file_tools", "native_process"):
+                flags = effective.get(scope)
+                if isinstance(flags, dict) and include(view, scope, {}):
+                    policies.append((flags, view[scope]))
+                elif scope in effective and flags is None:
+                    include(view, scope, None)
+        else:
+            policies.append((effective, view))
+        for flags, target in policies:
+            for key in ("network_allowed", "unrestricted", "web_allowed", "ambient_read_access"):
+                if type(flags.get(key)) in (str, int, float, bool):
+                    include(target, key, flags[key])
+        paths = ("read_paths", "write_paths")
+        if sandbox.get("dimension") == "protected_path":
+            paths += ("read_deny_paths", "write_deny_paths")
+        for flags, target in policies:
+            for key in paths:
+                items = flags.get(key)
+                if isinstance(items, list):
+                    # A partial list could misrepresent the effective permission.
+                    if len(items) > 64:
+                        omitted = True
+                    else:
+                        include(target, key, items)
+    if not omitted:
+        del capsule["omitted"]
+    return _render(capsule)
+
+
 def project_tool_result(call: ToolCall, result: ToolResult, *, query_available=True) -> list:
     """Preserve content and images, appending evidence only for a final failure."""
     content = list(result.content)
     details = result.details if isinstance(result.details, dict) else {}
     sandbox = details.get("boundary")
-    if result.is_error and isinstance(sandbox, dict):
-        selected = _fields(sandbox, ("payload_started", "side_effects", "provider", "kind", "dimension",
-                                     "cleanup", "state", "escalation_available", "backend", "target", "workspace"), limit=96)
-        for key in ("requested", "effective"):
-            value = sandbox.get(key)
-            if isinstance(value, (dict, str)):
-                selected[key] = value
-        boundary = {}
-        omitted = False
-        for key, value in selected.items():
-            candidate = {**boundary, key: value}
-            if len(_render({"boundary": candidate, "omitted": True}).encode()) <= MAX_DIAGNOSTIC_BYTES:
-                boundary = candidate
-            else:
-                omitted = True
-        if boundary:
-            # Full requested/effective policies remain in structured results;
-            # a large path list cannot displace payload and side-effect facts.
-            content.append(TextContent(_render({"boundary": boundary, **({"omitted": True} if omitted else {})})))
+    if result.is_error and isinstance(sandbox, dict) and (
+        sandbox.get("kind") or sandbox.get("payload_started") is not True or sandbox.get("cleanup") == "failed"
+    ):
+        content.append(TextContent(_boundary_summary(sandbox)))
     error = details.get("error")
     # A result hook may have recovered an earlier error. Retain that historical
     # evidence in metadata without presenting the successful result as failed.
