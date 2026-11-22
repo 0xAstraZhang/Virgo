@@ -42,6 +42,10 @@ MESSAGES = {
     "tools.fetch.deepseek_http": "DeepSeek fetch returned HTTP {status}; no backend fallback was attempted.",
     "tools.fetch.deepseek_invalid": "DeepSeek returned an invalid fetch response.",
     "tools.fetch.dns": "Could not resolve the page hostname.",
+    "tools.fetch.dns_nonpublic": "DNS resolved the hostname to a non-public address. This can happen on a "
+    "private network or with VPN Fake-IP DNS. Direct HTTP fetch only connects to public Internet addresses. "
+    "Other public URLs may hit the same DNS restriction. Try /fetch auto or /fetch deepseek, or disable "
+    "Fake-IP DNS if enabled.",
     "tools.fetch.empty": "No readable page content was retrieved.",
     "tools.fetch.encoding": "Unsupported HTTP content encoding.",
     "tools.fetch.http": "Web page returned HTTP {status}.",
