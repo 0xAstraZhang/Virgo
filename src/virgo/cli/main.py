@@ -334,6 +334,9 @@ def main(argv: list[str] | None = None) -> int:
     last = next((m for m in reversed(session.main.messages) if isinstance(m, AssistantMessage)), None)
     if last is None:
         return 1
+    if last.stop_reason == "length":
+        print(t("ui.cli.print_length_error"), file=sys.stderr)
+        return 1
     if last.stop_reason in ("error", "refusal", "aborted"):
         print(f"virgo: {safe_text(last.error_message or last.stop_reason)}", file=sys.stderr)
         return 1

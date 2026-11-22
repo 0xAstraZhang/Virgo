@@ -66,6 +66,7 @@ MESSAGES = {
     "ui.cli.permissions": "Sandbox resource requests (ask: allow one-operation requests; never: reject new requests)",
     "ui.cli.permission_mode": "initial permission mode for this conversation (see /permissions list)",
     "ui.cli.print": "run the prompt non-interactively and print the answer",
+    "ui.cli.print_length_error": "virgo: The response is incomplete because the model reached its output token limit.",
     "ui.cli.print_prompt_error": "virgo: -p needs a prompt (argument or stdin)",
     "ui.cli.prompt": "initial prompt",
     "ui.cli.resume": "resume a saved session; omit FILE to pick from a list",

@@ -65,6 +65,7 @@ MESSAGES = {
     "ui.cli.permissions": "Sandbox 资源增量（ask：允许单次申请；never：拒绝新申请）",
     "ui.cli.permission_mode": "当前对话的初始权限模式（可用 /permissions list 查看）",
     "ui.cli.print": "以非交互方式执行提示词并打印回答",
+    "ui.cli.print_length_error": "virgo：模型已达到输出 token 上限，回复未完成。",
     "ui.cli.print_prompt_error": "virgo：-p 需要提示词（通过参数或标准输入提供）",
     "ui.cli.prompt": "初始提示词",
     "ui.cli.resume": "恢复已保存的会话；省略 FILE 时从列表选择",

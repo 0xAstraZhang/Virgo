@@ -19,6 +19,7 @@ import pytest
 from virgo.ai import resolve_model
 from virgo.ai.catalog import CatalogError, CatalogModel
 from virgo.ai.model_metadata import cache_path, write_metadata
+from virgo.ai.providers import faux
 from virgo.harness import preferences
 
 from tests.support.persistence import diagnostic_records
@@ -213,6 +214,29 @@ def test_print_text_ignores_fullscreen_option(entry, project):
         timeout=10,
     )
     assert result.stdout.strip() == "(faux) You said: hello"
+
+
+@pytest.mark.parametrize(("fmt", "language", "partial", "prefix", "warning"), [
+    ("text", "en", "unfinished", "virgo: ", "output token limit"),
+    ("json", "zh-CN", "", "virgo：", "输出 token 上限"),
+])
+def test_print_reports_incomplete_response_after_length_continuations(project, monkeypatch, capsys,
+                                                                       fmt, language, partial, prefix, warning):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    truncated = faux.reply(partial, thinking="reasoning", stop_reason="length")
+    faux.script("limited", truncated, truncated, truncated)
+    code = cli.main(["-p", "--format", fmt, "--language", language, "--no-session", "-C", str(project),
+                     "--permission", "no-limit", "-m", "faux/limited", "hello"])
+    output = capsys.readouterr()
+    assert code == 1
+    assert len(faux.CALLS["limited"]) == 3
+    assert prefix in output.err and warning in output.err
+    if fmt == "text":
+        assert output.out == ""
+    else:
+        events = [json.loads(line) for line in output.out.splitlines()]
+        assert events[-1]["type"] == "agent_end"
 
 
 @pytest.mark.parametrize(("flag", "fmt"), [("-p", "text"), ("--print", "json")])
