@@ -683,6 +683,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             call.status = row.status
             call.set_class(message.is_error, "error")
             self._set_event_activity(call, "")
+            call.render_state()
         return row
 
     async def _start_message(self, agent: str) -> AssistantView:
@@ -773,6 +774,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             if row.status not in ("done", "error"):
                 row.status = "done" if terminal else "running"
                 self._set_event_activity(row, "" if terminal else tr(self, "ui.event.running"))
+                row.render_state()
             if kind == "web_search_call" and data.get("status") in ("completed", "failed", "incomplete"):
                 key = (agent, call_id)
                 result = self._native_results.get(key)
@@ -783,6 +785,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 result.set_result(_json(args), is_error=data.get("status") != "completed")
                 row.status = result.status
                 self._set_event_activity(row, "")
+                row.render_state()
         elif kind.endswith("_tool_result"):
             if row is None:
                 row = await self._append(
@@ -798,6 +801,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             if call := self._current_calls.get((agent, data.get("tool_use_id", ""))):
                 call.status = row.status
                 self._set_event_activity(call, "")
+                call.render_state()
         elif row is None:
             row = await self._append(EventView("context", _json(data), agent=agent))
         return row

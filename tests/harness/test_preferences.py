@@ -225,6 +225,33 @@ def test_unavailable_current_model_offers_login_and_effort_remains_editable(make
     assert session.effort == "high"
 
 
+@pytest.mark.parametrize("both_cached", [False, True], ids=["partial-cache", "warm-cache"])
+def test_model_picker_during_two_provider_refresh(make_session, monkeypatch, both_cached):
+    ui = PickerUI()
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    session = make_session(ui=ui)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    connection = session.resolve("deepseek/_catalog")
+    if both_cached:
+        session.remember_model_metadata(connection, [CatalogModel("cached")])
+    refresh = session._catalog_refresh_done
+    refresh.clear()
+
+    def wait(seconds):
+        assert not both_cached, "Populated catalogs should open the picker immediately."
+        assert 0 < seconds <= 0.05
+        session.remember_model_metadata(connection, [CatalogModel("fresh")])
+        refresh.set()
+        return True
+
+    monkeypatch.setattr(refresh, "wait", wait)
+    configure_preference(session, "model")
+    offered = {model.spec for model in ui.requests[0].models}
+    assert "openai/chat" in offered
+    assert ("deepseek/cached" if both_cached else "deepseek/fresh") in offered
+    assert refresh.is_set() == (not both_cached)
+
+
 @pytest.mark.parametrize("publish", [True, False], ids=["catalog-ready", "deadline"])
 def test_empty_picker_waits_in_bounded_slices_then_reads_catalog(make_session, monkeypatch, publish):
     ui = PickerUI()

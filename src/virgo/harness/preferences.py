@@ -7,6 +7,7 @@ import math
 import os
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -45,35 +46,47 @@ class PreferenceChoice:
     persist: bool
 
 
+def _catalog_connections(session: AgentSession, providers: set[str]) -> Iterator[Model]:
+    for provider in sorted(providers):
+        try:
+            yield session.resolve(f"{provider}/_catalog")
+        except (TypeError, ValueError):
+            continue
+
+
+def _connected_remote_models(session: AgentSession) -> list[Model]:
+    credentials = session.auth.all()
+    providers = set(BUILTIN_PROVIDERS) | set(session.settings.get("providers", {})) | set(credentials)
+    return [
+        model for model in _catalog_connections(session, providers)
+        if model.api != "faux" and _model_available(model, credentials)
+    ]
+
+
+def _has_uncached_remote_provider(session: AgentSession) -> bool:
+    return any(not session.cached_model_catalog(connection) for connection in _connected_remote_models(session))
+
+
 def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
     """Read the latest local directory snapshot without a network request."""
     configured = session.settings.get("providers", {})
-    credentials = session.auth.all()
     choices: dict[str, ModelChoice] = {}
-    connections = []
-    for provider in sorted(set(BUILTIN_PROVIDERS) | set(configured) | set(credentials)):
-        try:
-            model = session.resolve(f"{provider}/_catalog")
-        except (TypeError, ValueError):
+    # Offline providers offer only configured and selected models.
+    for model in _catalog_connections(session, {*configured, session.model.provider, session.small_model.provider}):
+        if model.api != "faux":
             continue
-        config = configured.get(provider, {})
-        if model.api == "faux":
-            # The offline test/demo provider has no remote service.
-            ids = dict(config.get("models") or {})
-            for selected in (session.model, session.small_model):
-                if selected.provider == provider:
-                    ids.setdefault(selected.id, {})
-            for model_id in ids:
-                try:
-                    local = session.resolve(f"{provider}/{model_id}")
-                except (TypeError, ValueError):
-                    continue
-                choices[local.spec] = ModelChoice(local.spec, local.id, session.t("harness.models.context", provider=provider, tokens=local.context_window))
-            continue
-        if not _model_available(model, credentials):
-            continue
-        connections.append(model)
-    for connection in connections:
+        provider = model.provider
+        ids = dict(configured.get(provider, {}).get("models") or {})
+        for selected in (session.model, session.small_model):
+            if selected.provider == provider:
+                ids.setdefault(selected.id, {})
+        for model_id in ids:
+            try:
+                local = session.resolve(f"{provider}/{model_id}")
+            except (TypeError, ValueError):
+                continue
+            choices[local.spec] = ModelChoice(local.spec, local.id, session.t("harness.models.context", provider=provider, tokens=local.context_window))
+    for connection in _connected_remote_models(session):
         for item in session.cached_model_catalog(connection):
             context = item.metadata.get("context_window")
             description = session.t("harness.models.context", provider=connection.provider, tokens=context) if context else connection.provider
@@ -87,16 +100,7 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
 
 def start_model_refresh(session: AgentSession) -> None:
     """One bounded, background lookup per connected provider at process startup."""
-    configured = session.settings.get("providers", {})
-    credentials = session.auth.all()
-    connections = []
-    for provider in sorted(set(BUILTIN_PROVIDERS) | set(configured) | set(credentials)):
-        try:
-            model = session.resolve(f"{provider}/_catalog")
-        except (TypeError, ValueError):
-            continue
-        if model.api != "faux" and _model_available(model, credentials):
-            connections.append(model)
+    connections = _connected_remote_models(session)
     if not connections:
         session._catalog_refresh_done.set()
         return
@@ -264,12 +268,13 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if kind not in ("model", "effort"):
         raise ValueError(f"unknown preference kind: {kind}")
     effort = session.effort if session.effort in EFFORT_LEVELS else "medium"
-    # Sample before reading the snapshot: the refresh can finish during model_choices.
+    # A missing provider can publish during model_choices, so check cache coverage first.
     refreshing = kind == "model" and not session._catalog_refresh_done.is_set()
+    uncached = refreshing and _has_uncached_remote_provider(session)
     models = model_choices(session) if kind == "model" else (
         ModelChoice(session.model.spec, session.model.id, session.model.provider),
     )
-    if refreshing and not models:
+    if refreshing and (not models or uncached):
         deadline = time.monotonic() + 5
         while not session._catalog_refresh_done.is_set():
             if session.main.agent.signal.is_set():

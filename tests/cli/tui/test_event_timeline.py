@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from rich.text import Text
 
 from virgo.agent.types import AgentEvent, ToolResult
@@ -218,6 +219,26 @@ def test_collapsed_events_fit_one_line_and_keep_bold_names_after_resizing():
                     assert title.plain.endswith("...")
                     if event.tool_name:
                         assert any(str(span.style) == "bold" and title.plain[span.start:span.end] == "web_search" for span in title.spans)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(("is_error", "status"), [(False, "done"), (True, "failed")])
+def test_mounted_call_header_updates_on_result_without_execution_start(is_error, status):
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test() as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("message_end", message=AssistantMessage([
+                ToolCall("search", "web_search", {"query": "release"})
+            ], stop_reason="tool_use")))
+            await pilot.pause()
+            call = view.query_one(ToolView)
+            assert " · pending" in call.header.content.plain
+
+            result = ToolResultMessage("search", "web_search", [TextContent("result")], is_error=is_error)
+            await view.consume(AgentEvent("message_end", message=result))
+            assert f" · {status}" in call.header.content.plain
 
     asyncio.run(scenario())
 
