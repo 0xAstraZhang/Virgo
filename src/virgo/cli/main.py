@@ -106,7 +106,13 @@ def _fullscreen_available() -> bool:
     term = os.environ.get("TERM", "").lower()
     if term:
         return term not in {"dumb", "unknown"}
-    return sys.platform == "win32" and bool(os.environ.get("WT_SESSION"))
+    return sys.platform == "win32" and (
+        bool(os.environ.get("WT_SESSION"))
+        or os.environ.get("TERM_PROGRAM", "").lower() not in {"", "dumb", "unknown"}
+        or bool(os.environ.get("TERMINAL_EMULATOR"))
+        or os.environ.get("ConEmuANSI", "").upper() == "ON"
+        or bool(os.environ.get("ANSICON"))
+    )
 
 
 def _startup_error(error: Exception, cwd: str, *, t: Translator | None = None) -> None:

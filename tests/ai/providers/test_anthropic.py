@@ -1,8 +1,10 @@
-"""Anthropic request building and error classification, without HTTP."""
+"""Anthropic request building, error classification, and authentication failures."""
 
 from __future__ import annotations
 
 import json
+
+import pytest
 
 from virgo.ai import resolve_model
 from virgo.ai.providers import anthropic as anth
@@ -58,3 +60,27 @@ def test_error_classification():
     )
     assert anth.classify_error(E(529, "Overloaded"))[0] == "retryable"
     assert anth.classify_error(E(401, "invalid x-api-key"))[0] == "fatal"
+
+
+@pytest.mark.parametrize("bearer_configured", [False, True])
+def test_missing_credentials_guidance_preserves_configured_auth_failures(server, monkeypatch, bearer_configured):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+    monkeypatch.setattr("anthropic._client.default_credentials", lambda **kwargs: None)
+    if bearer_configured:
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "fixture-bearer")
+    server["status"] = 401
+    server["body"] = b'{"error":{"type":"authentication_error","message":"Rejected fixture-bearer"}}'
+    model = resolve_model("claude-sonnet-5")
+    model.base_url = server["url"]
+    result = anth.stream(model, Context("", [UserMessage("hello")]), StreamOptions()).result()
+    assert result.stop_reason == "error" and result.error_kind == "fatal"
+    if bearer_configured:
+        assert "Rejected [redacted]" in result.error_message and "/login" not in result.error_message
+        assert "fixture-bearer" not in json.dumps(result.error_details)
+    else:
+        assert not server["requests"]
+        assert "No Anthropic credentials" in result.error_message
+        assert "/login" in result.error_message and "/model" in result.error_message
+        assert result.error_details["message"] == result.error_message

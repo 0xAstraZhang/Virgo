@@ -23,6 +23,8 @@ def test_slash_highlights_first_command_with_editor_focused(make_session):
             await wait_for(pilot, lambda: bool(app.completion_names))
             choices = app.query_one("#completions", OptionList)
             assert app.focused is app.editor
+            assert choices.styles.gutter.top == 1
+            assert choices.styles.gutter.left == choices.styles.gutter.right == choices.styles.gutter.bottom == 0
             assert choices.highlighted == 0 and choices.scroll_y == 0
             first_styles = [segment.style for segment in choices.render_line(0) if segment.text.strip()]
             second_styles = [segment.style for segment in choices.render_line(1) if segment.text.strip()]
@@ -129,7 +131,7 @@ def test_login_description_wraps_fully_and_reflows_when_window_resizes(make_sess
                 description_column = layouts[width][0].index("sign in")
                 assert all(not line[:description_column].strip() for line in layouts[width][1:])
                 assert choices.region.right <= width
-                assert choices.region.bottom <= app.editor.region.y
+                assert choices.region.bottom == app.editor.region.y
                 assert app.editor.region.bottom <= app.query_one("#status").region.y
                 assert app.query_one("#status").region.bottom <= 24
             assert layouts[52] != layouts[80]

@@ -78,10 +78,17 @@ def test_startup_refresh_and_cached_picker(tmp_path, mode):
                 async with app.run_test(size=(80, 24)) as pilot:
                     assert not session._catalog_refresh_done.is_set(), "Startup must not wait for a slow directory."
                     assert session.model.context_window == (250000 if mode == "override" else 500000)
-                    await open_picker(app, pilot)
-                    assert not gate.is_set(), "The UI remains usable while startup discovery is pending."
+                    app.controller.submit("/model")
+                    await wait_for(pilot, lambda: len(requests) == 2)
+                    panel = app.query_one(PreferencePicker)
+                    assert app.controller.busy and not panel.display
                     gate.set()
                     await wait_for(pilot, session._catalog_refresh_done.is_set)
+                    if mode != "unavailable":
+                        await wait_for(pilot, lambda: panel.display)
+                        assert "local/grok-4.7" in {model.spec for model in panel.request.models}
+                        await pilot.press("escape")
+                    await wait_for(pilot, lambda: not app.controller.busy)
                     assert session.model.context_window == expected
                     assert sorted(requests) == ["/other/models", "/v1/models"]
                     await open_picker(app, pilot)

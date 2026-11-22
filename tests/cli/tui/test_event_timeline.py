@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from rich.text import Text
 
 from virgo.agent.types import AgentEvent, ToolResult
@@ -194,7 +195,9 @@ def test_collapsed_events_fit_one_line_and_keep_bold_names_after_resizing():
                 TextContent("A very long\nmessage with 中文 " * 20),
                 ToolCall("search", "web_search", {"query": "中文 and more words " * 30}),
             ], stop_reason="tool_use")))
-            await view.consume(AgentEvent("message_end", message=result_message("search", "Long result\n" * 40, "web_search")))
+            await view.consume(AgentEvent("message_end", message=result_message(
+                "search", "Long first line " * 20 + "\nMore detail", "web_search"
+            )))
             run = view.query_one(AssistantView)
             run.set_thinking(True)
             for width in (80, 32, 120):
@@ -220,6 +223,26 @@ def test_collapsed_events_fit_one_line_and_keep_bold_names_after_resizing():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(("is_error", "status"), [(False, "done"), (True, "failed")])
+def test_mounted_call_header_updates_on_result_without_execution_start(is_error, status):
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test() as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("message_end", message=AssistantMessage([
+                ToolCall("search", "web_search", {"query": "release"})
+            ], stop_reason="tool_use")))
+            await pilot.pause()
+            call = view.query_one(ToolView)
+            assert " · pending" in call.header.content.plain
+
+            result = ToolResultMessage("search", "web_search", [TextContent("result")], is_error=is_error)
+            await view.consume(AgentEvent("message_end", message=result))
+            assert f" · {status}" in call.header.content.plain
+
+    asyncio.run(scenario())
+
+
 def test_web_search_result_header_toggles_and_body_keeps_details_open():
     async def scenario():
         app = TranscriptApp()
@@ -229,15 +252,20 @@ def test_web_search_result_header_toggles_and_body_keeps_details_open():
                 ToolCall("search", "web_search", {"query": "release"})
             ], stop_reason="tool_use")))
             await view.consume(AgentEvent("message_end", message=result_message(
-                "search", "Release title\nhttps://example.com\nFull search snippet", "web_search"
+                "search", "Release title\n\nhttps://example.com\nFull search snippet", "web_search"
             )))
             run = view.query_one(AssistantView)
             result = next(t for t in view.query(ToolView) if t.kind == "tool_result" and t.call_id == "search")
             run.set_thinking(True)
             await pilot.pause()
+            call = next(t for t in run.events if t.kind == "tool_call")
+            assert call.has_class("tool-call") and " · done" in call.header.content.plain
+            assert result.has_class("tool-result") and result.header.styles.text_style.dim
+            assert result.header.content.plain == "  ⎿ web_search → Release title (+2 lines)"
             await pilot.click(result.header, offset=(5, 0))
             await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)
             assert result.expanded and result.output.display
+            assert result.header.content.plain == "  ▾ web_search"
             assert run.show_thinking and run.thought_body.display
             await pilot.click(result.output, offset=(6, 1))
             await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.05)

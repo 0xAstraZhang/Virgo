@@ -5,12 +5,14 @@ from __future__ import annotations
 import copy
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from virgo.ai.catalog import CatalogError, CatalogModel
 from virgo.ai.providers import faux
 from virgo.execution_policy import default_execution_mode
+from virgo.harness import preferences
 from virgo.harness.preferences import PreferenceChoice, configure_preference, model_choices
 from virgo.harness.settings import Settings
 
@@ -221,6 +223,67 @@ def test_unavailable_current_model_offers_login_and_effort_remains_editable(make
     ui.answer = PreferenceChoice(session.model.spec, "high", False)
     session.prompt("/effort")
     assert session.effort == "high"
+
+
+@pytest.mark.parametrize("both_cached", [False, True], ids=["partial-cache", "warm-cache"])
+def test_model_picker_during_two_provider_refresh(make_session, monkeypatch, both_cached):
+    ui = PickerUI()
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    session = make_session(ui=ui)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    connection = session.resolve("deepseek/_catalog")
+    if both_cached:
+        session.remember_model_metadata(connection, [CatalogModel("cached")])
+    refresh = session._catalog_refresh_done
+    refresh.clear()
+
+    def wait(seconds):
+        assert not both_cached, "Populated catalogs should open the picker immediately."
+        assert 0 < seconds <= 0.05
+        session.remember_model_metadata(connection, [CatalogModel("fresh")])
+        refresh.set()
+        return True
+
+    monkeypatch.setattr(refresh, "wait", wait)
+    configure_preference(session, "model")
+    offered = {model.spec for model in ui.requests[0].models}
+    assert "openai/chat" in offered
+    assert ("deepseek/cached" if both_cached else "deepseek/fresh") in offered
+    assert refresh.is_set() == (not both_cached)
+
+
+@pytest.mark.parametrize("publish", [True, False], ids=["catalog-ready", "deadline"])
+def test_empty_picker_waits_in_bounded_slices_then_reads_catalog(make_session, monkeypatch, publish):
+    ui = PickerUI()
+    session = make_session(ui=ui)
+    session.set_model("deepseek-chat")
+    session.small_model = session.model
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    refresh = session._catalog_refresh_done
+    refresh.clear()
+    elapsed = 0.0
+    waits = []
+
+    def wait(seconds):
+        nonlocal elapsed
+        assert 0 < seconds <= 0.05
+        waits.append(seconds)
+        elapsed += seconds
+        if publish and len(waits) == 2:
+            session.remember_model_metadata(session.model, [CatalogModel("deepseek-reasoner")])
+            refresh.set()
+        return refresh.is_set()
+
+    monkeypatch.setattr(refresh, "wait", wait)
+    monkeypatch.setattr(preferences, "time", SimpleNamespace(monotonic=lambda: elapsed, time=time.time))
+    configure_preference(session, "model")
+    if publish:
+        assert elapsed == pytest.approx(0.1)
+        assert [model.spec for model in ui.requests[0].models] == ["deepseek/deepseek-reasoner"]
+    else:
+        assert elapsed == pytest.approx(5.0)
+        assert not ui.requests and "/login" in ui.lines[-1]
+        assert not session._catalog_stop.is_set()
 
 
 @pytest.mark.parametrize("kind", ["model", "effort"])

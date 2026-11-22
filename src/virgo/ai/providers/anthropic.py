@@ -82,7 +82,7 @@ def _client(model: Model):
     if not key and model.provider != "anthropic":
         # The SDK discovers Anthropic environment/profile credentials when no
         # explicit key is supplied. Those must never authenticate another host.
-        raise ValueError(f"No API credential for provider {model.provider!r}; use /login api.")
+        raise ValueError(f"No API credential for provider {model.provider!r}. Run /login api to connect, or /model to switch models.")
     base = model.base_url or os.environ.get("ANTHROPIC_BASE_URL") or None
     oauth = _is_oauth(model)
     headers = {}
@@ -454,7 +454,17 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
         out.error_kind = kind
         out.error_message = text
-        attach_error(out, e, model, token=_api_key(model), response=getattr(resp, "response", None))
+        key = _api_key(model)
+        guidance = None
+        if key is None:
+            # The SDK can authenticate via its own profile or bearer token even without an API key.
+            unauthorized = getattr(e, "status_code", None) == 401
+            headers = getattr(getattr(e, "request", None), "headers", {}) if unauthorized else {}
+            if "Could not resolve authentication method" in text or (
+                unauthorized and not (headers.get("Authorization") or headers.get("X-Api-Key"))
+            ):
+                guidance = "No Anthropic credentials configured. Run /login to connect a provider, or /model to switch models."
+        attach_error(out, e, model, token=key, response=getattr(resp, "response", None), message=guidance)
         yield StreamEvent("error", out)
     finally:
         if resp is not None:

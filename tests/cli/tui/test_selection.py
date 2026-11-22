@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import subprocess
 import sys
 from types import SimpleNamespace
+from unittest.mock import Mock, call
 
 import pytest
 from textual.app import App, ComposeResult
@@ -215,6 +217,120 @@ def test_macos_clipboard_failure_and_ssh_use_textual_fallback(monkeypatch, tmp_p
     assert not copied
 
 
+@pytest.fixture
+def clipboard_app(tmp_path, monkeypatch):
+    app = CopyApp(tmp_path)
+    app._driver = Mock()
+    monkeypatch.setattr(app, "notify", Mock())
+    for name in ("SSH_CONNECTION", "SSH_TTY", "WSL_DISTRO_NAME", "WAYLAND_DISPLAY", "DISPLAY"):
+        monkeypatch.delenv(name, raising=False)
+    return app
+
+
+def assert_terminal_copy(app, text, *, toast):
+    encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    app._driver.write.assert_called_once_with(f"\x1b]52;c;{encoded}\a")
+    assert app.clipboard == text
+    if toast:
+        app.notify.assert_called_once_with("Copied", timeout=1.2, markup=False)
+    else:
+        app.notify.assert_not_called()
+
+
+@pytest.mark.parametrize("outcome", ["success", "locked", "write_error", "import_error"])
+def test_windows_unicode_clipboard_retry_cleanup_and_fallback(monkeypatch, clipboard_app, outcome):
+    class ClipboardError(Exception):
+        pass
+
+    clipboard = Mock(error=ClipboardError, CF_UNICODETEXT=13)
+    monkeypatch.setitem(sys.modules, "win32clipboard", None if outcome == "import_error" else clipboard)
+    monkeypatch.setattr(selection_module, "sys", SimpleNamespace(platform="win32"))
+    sleep = Mock()
+    monkeypatch.setattr(selection_module, "time", SimpleNamespace(sleep=sleep))
+    clipboard.OpenClipboard.side_effect = {
+        "success": [ClipboardError(), None], "locked": ClipboardError(), "write_error": None,
+        "import_error": None,
+    }[outcome]
+    if outcome == "write_error":
+        clipboard.SetClipboardData.side_effect = OSError("write failed")
+
+    text = "复制到剪贴板"
+    clipboard_app.copy_to_clipboard(text)
+    if outcome == "success":
+        assert clipboard.mock_calls == [
+            call.OpenClipboard(), call.OpenClipboard(), call.EmptyClipboard(),
+            call.SetClipboardData(13, text), call.CloseClipboard(),
+        ]
+        sleep.assert_called_once_with(0.015)
+        assert clipboard_app.clipboard == text
+        clipboard_app.notify.assert_called_once_with("Copied", timeout=1.2, markup=False)
+        clipboard_app._driver.write.assert_not_called()
+    else:
+        assert_terminal_copy(clipboard_app, text, toast=False)
+        if outcome == "locked":
+            assert clipboard.mock_calls == [call.OpenClipboard()] * 3
+            assert sleep.call_args_list == [call(0.015)] * 2
+        elif outcome == "write_error":
+            clipboard.CloseClipboard.assert_called_once_with()
+            sleep.assert_not_called()
+
+
+@pytest.mark.parametrize("platform,ssh", [("win32", "SSH_CONNECTION"), ("linux", "SSH_TTY")])
+def test_ssh_uses_terminal_clipboard_without_touching_local_clipboard(monkeypatch, clipboard_app, platform, ssh):
+    monkeypatch.setattr(selection_module, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setenv(ssh, "remote")
+    monkeypatch.setattr(selection_module, "_copy_windows", lambda _: pytest.fail("local clipboard over SSH"))
+    monkeypatch.setattr(selection_module, "_clipboard_command", lambda: pytest.fail("local clipboard over SSH"))
+    clipboard_app.copy_to_clipboard("remote selection")
+    assert_terminal_copy(clipboard_app, "remote selection", toast=True)
+
+
+@pytest.mark.parametrize("wsl,tools,fallback,command,encoding", [
+    ("env", ["clip.exe", "wl-copy"], False, ["/bin/clip.exe"], "utf-16-le"),
+    ("proc", [], True, ["/mnt/c/Windows/System32/clip.exe"], "utf-16-le"),
+    ("", ["wl-copy", "xclip"], False, ["/bin/wl-copy"], "utf-8"),
+    ("", ["xclip", "xsel"], False, ["/bin/xclip", "-selection", "clipboard"], "utf-8"),
+    ("", ["xsel"], False, ["/bin/xsel", "--clipboard", "--input"], "utf-8"),
+])
+def test_linux_clipboard_command_and_encoding(monkeypatch, tmp_path, clipboard_app, wsl, tools, fallback, command, encoding):
+    monkeypatch.setattr(selection_module, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("DISPLAY", ":0")
+    if wsl == "env":
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    version = tmp_path / "version"
+    version.write_text("Linux MiCroSoft WSL2" if wsl == "proc" else "Linux generic")
+    clip = tmp_path / "clip.exe"
+    if fallback:
+        clip.touch()
+    paths = {"/proc/version": version, "/mnt/c/Windows/System32/clip.exe": clip}
+    monkeypatch.setattr(selection_module, "Path", paths.__getitem__)
+    monkeypatch.setattr(selection_module.shutil, "which", lambda name: "/bin/" + name if name in tools else None)
+    run = Mock()
+    monkeypatch.setattr(selection_module.subprocess, "run", run)
+    text = "第一行\n第二行"
+    clipboard_app.copy_to_clipboard(text)
+    run.assert_called_once_with(command, input=text.encode(encoding), stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=1, check=True)
+    assert clipboard_app.clipboard == text
+    clipboard_app.notify.assert_called_once_with("Copied", timeout=1.2, markup=False)
+    clipboard_app._driver.write.assert_not_called()
+
+
+@pytest.mark.parametrize("wsl,available", [(False, True), (False, False), (True, True), (True, False)])
+def test_linux_clipboard_terminal_fallback_toast_only_when_no_native_tool(monkeypatch, tmp_path, clipboard_app, wsl, available):
+    monkeypatch.setattr(selection_module, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(selection_module, "_is_wsl", lambda: wsl)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(selection_module.shutil, "which", lambda name: name if available else None)
+    monkeypatch.setattr(selection_module, "Path", lambda _: tmp_path / "absent")
+    run = Mock(side_effect=subprocess.TimeoutExpired("clipboard", 1))
+    monkeypatch.setattr(selection_module.subprocess, "run", run)
+    clipboard_app.copy_to_clipboard("fallback")
+    assert run.call_count == int(available)
+    assert_terminal_copy(clipboard_app, "fallback", toast=not wsl and not available)
+
+
 def test_successful_copy_shows_brief_copied_notice_but_failure_does_not(monkeypatch, make_session):
     copied = mock_mac_clipboard(monkeypatch)
 
@@ -252,7 +368,8 @@ def test_successful_copy_shows_brief_copied_notice_but_failure_does_not(monkeypa
 
 
 @pytest.mark.pty
-@pytest.mark.parametrize("sequence", [b"\x1b[13;2u", b"\n"], ids=["shift-enter", "ctrl-j"])
+@pytest.mark.parametrize("sequence", [b"\x1b[13;2u", b"\n", b"\x1b[13;3u", b"\\\r"],
+                         ids=["shift-enter", "ctrl-j", "alt-enter", "backslash-enter"])
 def test_pty_modified_enter_sequence_inserts_newline_without_submitting(project, tmp_path, sequence):
     captured = tmp_path / "captured.jsonl"
     script = """

@@ -117,6 +117,7 @@ class ChatEditor(TextArea):
     BINDINGS = [
         Binding("enter", "submit", show=False),
         Binding("shift+enter", "newline", show=False),
+        Binding("alt+enter", "newline", show=False),
         # LF remains compatible with terminal key mappings and pasted key input.
         Binding("ctrl+j", "newline", show=False),
         Binding("tab", "complete", show=False, priority=True),
@@ -144,7 +145,7 @@ class ChatEditor(TextArea):
     def on_key(self, event: Key) -> None:
         # Handle these in the editor queue, after preceding typed characters.
         # Priority bindings run in the app queue and can overtake text inserts.
-        if event.key in {"enter", "shift+enter", "ctrl+j"}:
+        if event.key in {"enter", "shift+enter", "alt+enter", "ctrl+j"}:
             event.stop()
             event.prevent_default()
             if event.key == "enter":
@@ -159,6 +160,13 @@ class ChatEditor(TextArea):
             choices = self.parent.query_one("#completions", ChoiceList)
             selected = names[choices.highlighted or 0]
             if self.text != selected and self.app.accept_completion():
+                return
+        if self.selection.is_empty:
+            row, col = self.cursor_location
+            line = self.document.get_line(row)
+            trailing_backslashes = len(line) - len(line.rstrip("\\"))
+            if col == len(line) and trailing_backslashes % 2 == 1:
+                self.replace("\n", (row, col - 1), (row, col), maintain_selection_offset=False)
                 return
         text = self.text.strip()
         if text:
@@ -206,6 +214,8 @@ class ChatEditor(TextArea):
 
     def render_line(self, y: int) -> Strip:
         strip = super().render_line(y)
+        if y == 0 and self.document.end == (0, 0) and self.selection.is_empty:
+            return self._overlay_hint(strip, tr(self, "ui.editor.placeholder"), 1 if self.has_focus else 0)
         # Overlay only; never populate TextArea.suggestion (Right accepts it).
         if (
             y != 0
@@ -233,9 +243,12 @@ class ChatEditor(TextArea):
             return strip
         # Reserve the real end-of-document cursor cell, including after spaces.
         x = self.cursor_screen_offset.x - self.content_region.x + 1
+        return self._overlay_hint(strip, hint, x)
+
+    def _overlay_hint(self, strip: Strip, hint: str, x: int) -> Strip:
         width = self.content_size.width
         if x >= width:
-            return strip
+            return strip.crop(0, width)
         overlay = Strip(
             [
                 Segment(
@@ -243,4 +256,4 @@ class ChatEditor(TextArea):
                 )
             ]
         )
-        return Strip.join([strip.crop(0, x), overlay]).adjust_cell_length(width).crop(0, width)
+        return Strip.join([strip.crop(0, x), overlay]).adjust_cell_length(width, self.rich_style)

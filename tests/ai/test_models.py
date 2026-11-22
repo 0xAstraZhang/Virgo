@@ -99,6 +99,16 @@ def test_gpt6_family_is_recognized_as_reasoning_without_inventing_levels():
     assert model.reasoning and model.supported_reasoning_levels is None
 
 
+@pytest.mark.parametrize("model_id,limit,reasoning", [
+    ("deepseek-chat", 8_192, False), ("deepseek-reasoner", 64_000, True),
+])
+def test_bare_deepseek_models_resolve_with_known_limits(model_id, limit, reasoning):
+    model = resolve_model(model_id)
+    assert model.spec == f"deepseek/{model_id}" and model.api == "openai"
+    assert model.context_window == 128_000 and model.max_tokens == limit
+    assert model.reasoning is reasoning
+
+
 def test_model_resolution_and_custom_providers():
     m = resolve_model("claude-sonnet-5-5")
     assert m.provider == "anthropic" and m.reasoning and m.context_window == 1_000_000

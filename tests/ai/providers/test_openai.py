@@ -1,14 +1,18 @@
-"""Chat Completions message conversion and streaming, without HTTP."""
+"""Chat Completions message conversion, streaming, and authentication failures."""
 
 from __future__ import annotations
 
 import types
+
+import pytest
 
 from virgo.ai import resolve_model
 from virgo.ai.providers import openai as oai
 from virgo.ai.transform import normalize
 from virgo.ai.types import (
     AssistantMessage,
+    Context,
+    StreamOptions,
     TextContent,
     ThinkingContent,
     ToolCall,
@@ -20,7 +24,6 @@ from virgo.ai.types import (
 def test_openai_chat_stream_closes_thinking_block(monkeypatch):
     from virgo import ai
     from virgo.ai.providers import openai as oai
-    from virgo.ai.types import Context, StreamOptions
 
     def chunk(**delta):
         return types.SimpleNamespace(
@@ -55,6 +58,27 @@ def test_chat_completions_skips_assistant_turns_without_content_or_tool_calls():
     ]
     conv = oai.convert_messages("", normalize(msgs, model), send_reasoning=True)
     assert conv == [{"role": "user", "content": "prove it"}, {"role": "user", "content": "never mind"}]
+
+
+@pytest.mark.parametrize("status,configured", [(401, False), (401, True), (503, False)])
+def test_openai_compatible_missing_credentials_guidance(server, monkeypatch, status, configured):
+    model = resolve_model("deepseek-chat")
+    monkeypatch.delenv(model.api_key_env, raising=False)
+    model.base_url = server["url"]
+    if configured:
+        model.options["apiKey"] = "fixture-key"
+    server["status"] = status
+    server["body"] = b'{"error":{"message":"Request rejected"}}'
+    result = oai.stream(model, Context("", [UserMessage("hello")]), StreamOptions()).result()
+    assert result.stop_reason == "error"
+    assert result.error_kind == ("fatal" if status == 401 else "retryable")
+    assert result.error_details["context"]["http"]["status_code"] == status
+    if status == 401 and not configured:
+        assert "No deepseek credentials" in result.error_message
+        assert "/login" in result.error_message and "/model" in result.error_message
+        assert result.error_details["message"] == result.error_message
+    else:
+        assert "Request rejected" in result.error_message and "/login" not in result.error_message
 
 
 def test_chat_completions_reasoning_field_accompanies_every_tool_call_turn():

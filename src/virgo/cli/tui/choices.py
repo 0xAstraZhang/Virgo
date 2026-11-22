@@ -9,6 +9,7 @@ from typing import Self
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.table import Table
 from rich.text import Text
+from textual import on
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
@@ -85,3 +86,25 @@ class ChoiceList(OptionList):
         # Calling it even at a clamped boundary also keeps selection visible after resize.
         self.scroll_to_highlight()
         return True
+
+
+class MarkedChoiceList(ChoiceList):
+    """Show a cursor beside the highlighted choice in a short dock menu."""
+
+    def set_choices(self, rows: list[tuple[str, str | Text]], highlighted: int) -> None:
+        self._rows = rows
+        self.set_options(
+            Option(self._row(index, highlighted), id=choice_id)
+            for index, (choice_id, _) in enumerate(rows)
+        )
+        self.highlighted = highlighted
+
+    def _row(self, index: int, highlighted: int) -> Text:
+        return Text.assemble("› " if index == highlighted else "  ", self._rows[index][1])
+
+    @on(OptionList.OptionHighlighted)
+    def update_marker(self, event: OptionList.OptionHighlighted) -> None:
+        event.stop()
+        if event.option_index == self.highlighted:
+            for index in range(self.option_count):
+                self.replace_option_prompt_at_index(index, self._row(index, self.highlighted))

@@ -9,28 +9,27 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import OptionList, Static
-from textual.widgets.option_list import Option
 
 from ..i18n import tr
 from .bridge import Confirmation
-from .choices import ChoiceList
+from .choices import MarkedChoiceList
 from .sessions import SessionPicker as SessionPicker
 
 
 class ApprovalPicker(Vertical):
     DEFAULT_CSS = """
     ApprovalPicker {
-        height: auto; border-left: solid #7C3AED; padding: 1 2;
+        height: auto; border-left: solid #7C3AED; padding: 0 1;
         background: $background; color: $foreground;
     }
-    ApprovalPicker > #approval-title { height: 1; text-style: dim; margin-bottom: 1; }
-    ApprovalPicker > #approval-question { height: auto; margin-bottom: 1; }
+    ApprovalPicker > #approval-title { height: 1; text-style: dim; }
+    ApprovalPicker > #approval-question { height: auto; }
     ApprovalPicker #approval-question-text { height: auto; }
     ApprovalPicker > #approval-options {
         height: auto; border: none; padding: 0; background: $background;
         background-tint: transparent;
     }
-    ApprovalPicker > #approval-help { height: auto; text-style: dim; margin-top: 1; }
+    ApprovalPicker > #approval-help { height: auto; text-style: dim; }
     """
     ANSWERS = ("y", "n", "a")
     BINDINGS = [
@@ -61,7 +60,7 @@ class ApprovalPicker(Vertical):
         yield Static("", id="approval-title", markup=False)
         with VerticalScroll(id="approval-question"):
             yield Static("", id="approval-question-text", markup=False)
-        yield ChoiceList(id="approval-options")
+        yield MarkedChoiceList(id="approval-options")
         yield Static("", id="approval-help", markup=False)
 
     def open(self, confirmation: Confirmation) -> None:
@@ -80,16 +79,14 @@ class ApprovalPicker(Vertical):
         ).removesuffix(tr(self, "features.permission.external_suffix")).rstrip()
         self.query_one("#approval-question-text", Static).update(Text(question))
         self.query_one("#approval-question").scroll_home(animate=False)
-        options = self.query_one("#approval-options", ChoiceList)
-        options.clear_options()
+        options = self.query_one(MarkedChoiceList)
         choices = [
-            Option(tr(self, "ui.approval.once"), id="allow"),
-            Option(tr(self, "ui.approval.deny"), id="deny"),
+            ("allow", tr(self, "ui.approval.once")),
+            ("deny", tr(self, "ui.approval.deny")),
         ]
         if not confirmation.once_only:
-            choices.append(Option(tr(self, "ui.approval.session"), id="always"))
-        options.add_options(choices)
-        options.highlighted = 1
+            choices.append(("always", tr(self, "ui.approval.session")))
+        options.set_choices(choices, highlighted=1)
         self.resize_panel()
         self.focus_control()
 
@@ -102,14 +99,9 @@ class ApprovalPicker(Vertical):
         self.query_one("#approval-options").focus()
 
     def resize_panel(self) -> None:
-        compact = self.app.size.height < 20
-        self.styles.padding = (0, 1) if compact else (1, 2)
-        self.query_one("#approval-title").styles.margin = (0, 0, 0 if compact else 1, 0)
-        self.query_one("#approval-question").styles.margin = (0, 0, 0 if compact else 1, 0)
-        self.query_one("#approval-help").styles.margin = (0 if compact else 1, 0, 0, 0)
         # Reserve space for the conversation, options and help even for a long command.
         self.query_one("#approval-question").styles.max_height = max(
-            1, min(8, self.app.size.height // 2 - (5 if compact else 7))
+            1, min(8, self.app.size.height // 2 - 5)
         )
         help_text = (
             tr(self, "ui.approval.hints_short") if self.app.size.width < 64 else tr(self, "ui.approval.hints")
@@ -122,7 +114,7 @@ class ApprovalPicker(Vertical):
 
     def action_move(self, direction: int) -> None:
         if self.confirmation is not None and not self._answered:
-            self.query_one("#approval-options", ChoiceList).move_selection(direction)
+            self.query_one(MarkedChoiceList).move_selection(direction)
             self.focus_control()
 
     def action_question_page(self, direction: int) -> None:
@@ -133,15 +125,17 @@ class ApprovalPicker(Vertical):
             question.action_page_down()
 
     def action_choose(self) -> None:
-        index = self.query_one("#approval-options", ChoiceList).highlighted
+        index = self.query_one(MarkedChoiceList).highlighted
         if index is not None:
             self.action_answer(self.answers[index])
 
     @on(OptionList.OptionSelected, "#approval-options")
     def answer_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
-        options = self.query_one("#approval-options", ChoiceList)
-        if event.option is options.get_option_at_index(event.option_index):
+        options = self.query_one(MarkedChoiceList)
+        if event.option_index < options.option_count and event.option is options.get_option_at_index(
+            event.option_index
+        ):
             self.action_answer(self.answers[event.option_index])
 
     def action_answer(self, answer: str) -> None:

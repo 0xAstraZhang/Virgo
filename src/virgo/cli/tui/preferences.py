@@ -14,27 +14,24 @@ from textual.widgets.option_list import Option
 
 from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest, provider_name
 from ..i18n import tr
+from .transcript import update_static
 
 
 class PreferencePicker(Vertical, can_focus=True):
     DEFAULT_CSS = """
     PreferencePicker {
-        height: auto; border-top: solid #7C3AED; padding: 1 2;
+        height: auto; border-top: solid #7C3AED; padding: 0 1;
         background: $background; color: $foreground;
     }
     PreferencePicker > Static { height: auto; }
     PreferencePicker > #preference-title { color: #7C3AED; text-style: bold; }
     PreferencePicker > #preference-description { text-style: dim; margin-bottom: 1; }
     PreferencePicker > #preference-models {
-        height: 5; border: none; padding: 0; background: $background;
+        height: auto; border: none; padding: 0; background: $background;
         scrollbar-size: 0 0; text-wrap: wrap;
     }
-    PreferencePicker #preference-models > .option-list--option-highlighted,
-    PreferencePicker #preference-models:focus > .option-list--option-highlighted {
-        background: $background; color: #7C3AED; text-style: bold;
-    }
     PreferencePicker > #preference-more { text-style: dim; }
-    PreferencePicker > #preference-effort { margin: 1 0; }
+    PreferencePicker > #preference-effort { margin: 0; }
     PreferencePicker > #preference-help { text-style: dim; }
     """
     BINDINGS = [
@@ -136,8 +133,6 @@ class PreferencePicker(Vertical, can_focus=True):
         self.query_one("#preference-effort").display = provider is not None
         self.resize_panel()
         self.render_more()
-        if hasattr(self.app, "update_status"):
-            self.app.update_status()
 
     def focus_control(self) -> None:
         if self.request is not None and self.request.kind == "model":
@@ -153,23 +148,17 @@ class PreferencePicker(Vertical, can_focus=True):
 
     def resize_panel(self) -> None:
         compact = self.app.size.height < 20
-        self.styles.padding = (0, 1) if compact else (1, 2)
         self.query_one("#preference-description").display = not compact
         self.query_one("#preference-more").display = bool(
             self.request is not None and self.request.kind == "model" and not compact
         )
-        root = self.parent.parent
-        pending = root.query_one_optional("#pending")  # runs every frame while open: no full DOM walk
-        pending_lines = 0
-        if pending is not None and pending.display:
-            pending_lines = min(3, len(str(pending.content).splitlines()))
-        header_height = 1 + sum(root.query_one(selector).region.height for selector in ("#cwd", "#hints"))
-        reserved = (12 if compact else 17) + max(0, header_height - 3)
-        self.query_one("#preference-models").styles.height = min(
-            3 if compact else 5,
-            max(1, self.app.size.height - reserved - pending_lines),
-        )
-        self.query_one("#preference-effort").styles.margin = (0, 0) if compact else (1, 0)
+        pending = self.parent.query_one("#pending")
+        models = self.query_one("#preference-models", OptionList)
+        # Measure wrapped controls, padding and borders after layout. Leave one
+        # row each for the top bar, status and transcript, plus any queued input.
+        controls = self.region.height - models.region.height
+        reserved = 3 + controls + (pending.region.height if pending.display else 0)
+        models.styles.height = max(1, min(3 if compact else 5, models.option_count, self.app.size.height - reserved))
         help_text = (
             tr(self, "ui.preference.help_short")
             if self.app.size.width < 64
@@ -186,7 +175,7 @@ class PreferencePicker(Vertical, can_focus=True):
                 if self.app.size.width < 64
                 else tr(self, "ui.preference.model_help")
             )
-        self.query_one("#preference-help", Static).update(help_text)
+        update_static(self.query_one("#preference-help", Static), help_text)
 
     def on_resize(self) -> None:
         if self.request is not None:

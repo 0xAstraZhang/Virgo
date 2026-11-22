@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from functools import partial
 
 from rich.text import Text
@@ -37,6 +38,7 @@ from .folding import Foldable, FoldHeader
 HISTORY_RUNS = 30
 OLDER_MARGIN = 2
 TOOL_KINDS = ("tool_call", "tool_result", "sources")
+STREAM_MARKDOWN_INTERVAL = 0.08
 
 
 def _json(value) -> str:
@@ -79,9 +81,13 @@ class EventView(Foldable):
     EventView { height: auto; margin: 0; background: $background; }
     EventView > FoldHeader { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
     EventView > .output { height: auto; padding-left: 2; text-style: dim; }
-    EventView.message > .output { padding: 0; margin: 1 0; text-style: none; }
-    EventView.tool > FoldHeader { color: $accent; }
-    EventView.error > FoldHeader, EventView.error > .output { color: $error; }
+    EventView.message > .output { padding: 0; margin: 0; text-style: none; }
+    EventView.tool-call > FoldHeader { color: $accent; }
+    EventView.thinking > FoldHeader, EventView.tool-result > FoldHeader {
+        color: $foreground; text-style: dim;
+    }
+    EventView.error > FoldHeader { color: $error; text-style: none; }
+    EventView.error > .output { color: $error; }
     """
 
     def __init__(self, kind: str, text: str = "", *, agent: str = "main", name: str = "") -> None:
@@ -102,21 +108,37 @@ class EventView(Foldable):
             else Static("", classes="output", markup=False)
         )
         self._rendered_text = text
+        self._last_markdown = 0.0
+        self._markdown_timer: asyncio.TimerHandle | None = None
+        self._markdown_lock = asyncio.Lock()
         self.set_class(kind == "text", "message")
         self.set_class(kind in ("tool_call", "tool_result"), "tool")
+        self.set_class(kind == "thinking", "thinking")
+        self.set_class(kind == "tool_call", "tool-call")
+        self.set_class(kind == "tool_result", "tool-result")
 
     def compose(self) -> ComposeResult:
         yield self.header
+        if self.kind == "text" and self.text != self._rendered_text:
+            # Detached history accumulates snapshots before a single mount.
+            self._rendered_text = self.text
+            self.output = Markdown(self.text, classes="output", open_links=False)
         yield self.output
 
     def on_mount(self) -> None:
+        if self.kind == "text" and self.text:
+            self._last_markdown = time.monotonic()
         self.render_state()
 
     def on_resize(self) -> None:
         self.render_state()
 
     def summary(self) -> Text:
-        title = Text("▾ " if self.expanded else "▸ ", no_wrap=True, overflow="ellipsis")
+        if self.kind == "tool_result":
+            prefix = "  ▾ " if self.expanded else "  ⎿ "
+        else:
+            prefix = "▾ " if self.expanded else "▸ "
+        title = Text(prefix, no_wrap=True, overflow="ellipsis")
         if self.agent != "main":
             title.append(f"[{self.agent}] ")
         if self.tool_name:
@@ -139,7 +161,7 @@ class EventView(Foldable):
             title.append(" · " + state)
         if self.activity_phase:
             title.append(f" · {self.activity_frame} {self.activity_phase}…", style="bold")
-        if not (self.expanded and self.kind in TOOL_KINDS):
+        if not (self.expanded and self.kind in (*TOOL_KINDS, "thinking")):
             title.append(" → " if self.tool_name and self.kind == "tool_result" else " · ")
             preview = self.preview_text()
             if self._preview_text != preview:
@@ -164,9 +186,6 @@ class EventView(Foldable):
         if self.kind == "text":
             self.render_header()
             self.output.display = True
-            if self._rendered_text != self.text:
-                self._rendered_text = self.text
-                self.output.update(self.text)
             return
         if self.kind == "thinking":
             self.display = bool(self.text.strip()) or bool(self.activity_phase)
@@ -192,7 +211,29 @@ class EventView(Foldable):
 
     def set_text(self, text: str) -> None:
         self.text = text
-        self.render_state()
+        if self.kind != "text":
+            self.render_state()
+        elif self.output.is_attached and text != self._rendered_text and self._markdown_timer is None:
+            delay = max(0.0, self._last_markdown + STREAM_MARKDOWN_INTERVAL - time.monotonic())
+            self._markdown_timer = asyncio.get_running_loop().call_later(delay, self.call_next, self.flush_markdown)
+
+    async def flush_markdown(self) -> None:
+        self._cancel_markdown_timer()
+        # A final snapshot may arrive while a timed update is mounting blocks.
+        # Read the latest text inside the lock so a stale delta cannot win.
+        async with self._markdown_lock:
+            if self.output.is_attached and self.text != self._rendered_text:
+                self._last_markdown = time.monotonic()
+                self._rendered_text = self.text
+                await self.output.update(self.text)
+
+    def _cancel_markdown_timer(self) -> None:
+        if self._markdown_timer is not None:
+            self._markdown_timer.cancel()
+            self._markdown_timer = None
+
+    def on_unmount(self) -> None:
+        self._cancel_markdown_timer()
 
     def set_expanded(self, expanded: bool) -> None:
         self.expanded = expanded
@@ -214,6 +255,8 @@ class ToolView(EventView):
         self.call_id, self.args = call_id, args or {}
         self.status = "done" if result else "pending"
         self.result = ""
+        self._first_line = ""
+        self._more_lines = 0
         self.details: dict = {}
         self.duration: float | None = None
         if not result:
@@ -226,7 +269,11 @@ class ToolView(EventView):
         return title
 
     def summary_status(self) -> str:
-        return "" if self.activity_phase else tr(self, "ui.tool.state." + self.status)
+        if (self.kind == "tool_result" and self.status == "done") or (
+            self.kind == "tool_call" and self.activity_phase
+        ):
+            return ""
+        return tr(self, "ui.tool.state." + self.status)
 
     def preview_text(self) -> str:
         if self.kind == "tool_call":
@@ -243,10 +290,15 @@ class ToolView(EventView):
             dimension, target = sandbox.get("dimension"), sandbox.get("target")
             if dimension in ("read_paths", "write_paths", "network_allowed") and target:
                 return f"{tr(self, 'ui.modes.' + dimension)} · {target} · {self.result}"
+        if self._more_lines:
+            return self._first_line + tr(self, "ui.tool.more_lines", count=self._more_lines)
         return self.result or self.text
 
     def set_result(self, text: str, *, is_error: bool = False, details=None) -> None:
         self.result = text
+        lines = [line for line in text.splitlines() if line.strip()]
+        self._first_line = lines[0] if lines else ""
+        self._more_lines = max(0, len(lines) - 1)
         if isinstance(details, dict):
             self.details.update(details)
         error = self.details.get("error")
@@ -276,7 +328,7 @@ class AssistantView(Vertical):
     """An always-visible run timeline, followed by the current final answer."""
 
     DEFAULT_CSS = """
-    AssistantView { height: auto; margin-bottom: 1; background: $background; }
+    AssistantView { height: auto; margin-bottom: 0; background: $background; }
     AssistantView > .thought-header {
         height: 1; color: $foreground; text-style: dim;
         text-wrap: nowrap; text-overflow: ellipsis;
@@ -284,8 +336,12 @@ class AssistantView(Vertical):
     AssistantView > .thought-header.active { color: $accent; text-style: none; }
     AssistantView > .thought-body { height: auto; }
     AssistantView > Markdown { margin: 0; padding: 0; background: $background; }
-    AssistantView MarkdownFence, AssistantView MarkdownFence > Label {
+    AssistantView MarkdownFence, AssistantView MarkdownFence:ansi {
         background: $background; color: $foreground;
+        border-left: solid ansi_bright_black;
+        margin: 0 0 1 0;
+        padding: 0 1;
+        & > Label { background: $background; color: $foreground; padding: 0; }
     }
     AssistantView > .error { height: auto; color: $error; }
     AssistantView > .aborted { color: $warning; }
@@ -479,8 +535,11 @@ class Transcript(VerticalScroll, inherit_bindings=False):
     def _scroll_page(self, direction: int) -> None:
         # Scroll now: Textual otherwise applies an absolute target after the
         # next refresh, which would be stale once older runs are prepended.
-        y = self.scroll_y + direction * self.scrollable_content_region.height
-        self.scroll_to(y=y, animate=False, immediate=True)
+        target = min(self.max_scroll_y, self.scroll_y + direction * self.scrollable_content_region.height)
+        if direction > 0 and self.max_scroll_y > 0 and target >= self.max_scroll_y - 0.5:
+            self.go_latest()
+        else:
+            self.scroll_to(y=target, animate=False, immediate=True)
 
     def action_scroll_home(self) -> None:
         self.release_anchor()
@@ -492,6 +551,11 @@ class Transcript(VerticalScroll, inherit_bindings=False):
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
+        if (
+            not self._prepending and not self.follow_latest and self.max_scroll_y > 0
+            and new_value > old_value and new_value >= self.max_scroll_y - 0.5
+        ):
+            self.anchor()
         self._check_older()
 
     def watch_virtual_size(self) -> None:
@@ -619,6 +683,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             call.status = row.status
             call.set_class(message.is_error, "error")
             self._set_event_activity(call, "")
+            call.render_state()
         return row
 
     async def _start_message(self, agent: str) -> AssistantView:
@@ -657,8 +722,14 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     kind = "sources" if block.text.startswith("\n\nSources:\n") else "text"
                     value = block.text
                 if row is None:
-                    row = await self._append(EventView(kind, agent=agent))
-                row.set_text(value)
+                    row = await self._append(EventView(kind, value, agent=agent))
+                if row.kind == "text" and (final or not row.text):
+                    # Bypass the throttle on the first delta after an empty
+                    # block and on completion, including non-answer text.
+                    row.text = value
+                    await row.flush_markdown()
+                else:
+                    row.set_text(value)
             elif isinstance(block, RawContent):
                 row = await self._native(agent, block, row, index)
             elif isinstance(block, ImageContent) and row is None:
@@ -703,6 +774,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             if row.status not in ("done", "error"):
                 row.status = "done" if terminal else "running"
                 self._set_event_activity(row, "" if terminal else tr(self, "ui.event.running"))
+                row.render_state()
             if kind == "web_search_call" and data.get("status") in ("completed", "failed", "incomplete"):
                 key = (agent, call_id)
                 result = self._native_results.get(key)
@@ -713,6 +785,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 result.set_result(_json(args), is_error=data.get("status") != "completed")
                 row.status = result.status
                 self._set_event_activity(row, "")
+                row.render_state()
         elif kind.endswith("_tool_result"):
             if row is None:
                 row = await self._append(
@@ -728,6 +801,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             if call := self._current_calls.get((agent, data.get("tool_use_id", ""))):
                 call.status = row.status
                 self._set_event_activity(call, "")
+                call.render_state()
         elif row is None:
             row = await self._append(EventView("context", _json(data), agent=agent))
         return row

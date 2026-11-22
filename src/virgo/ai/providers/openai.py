@@ -242,7 +242,10 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
         out.error_kind = kind
         out.error_message = text
-        attach_error(out, e, model, token=token, response=getattr(resp, "response", None))
+        guidance = None
+        if token == "not-set" and getattr(e, "status_code", None) == 401:
+            guidance = f"No {model.provider} credentials configured. Run /login to connect a provider, or /model to switch models."
+        attach_error(out, e, model, token=token, response=getattr(resp, "response", None), message=guidance)
         yield StreamEvent("error", out)
     finally:
         if resp is not None:

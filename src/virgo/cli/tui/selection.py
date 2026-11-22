@@ -1,15 +1,85 @@
-"""Copy completed mouse selections, including macOS Terminal's system clipboard."""
+"""Copy completed mouse selections to the local clipboard or terminal."""
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 from textual.events import Click, TextSelected
 from textual.widgets import Input, TextArea
 
 from ..i18n import tr
+
+
+def _copy_windows(text: str) -> None:
+    import win32clipboard as clipboard
+
+    try:
+        for attempt in range(3):
+            try:
+                clipboard.OpenClipboard()
+                break
+            except (clipboard.error, OSError):
+                if attempt == 2:
+                    raise
+                time.sleep(0.015)
+        try:
+            clipboard.EmptyClipboard()
+            clipboard.SetClipboardData(clipboard.CF_UNICODETEXT, text)
+        finally:
+            clipboard.CloseClipboard()
+    except clipboard.error as error:
+        raise OSError("Windows clipboard unavailable") from error
+
+
+def _is_wsl() -> bool:
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
+
+
+def _clipboard_command() -> tuple[list[str], str] | None:
+    if sys.platform == "darwin":
+        return ["/usr/bin/pbcopy"], "utf-8"
+    if sys.platform != "linux":
+        return None
+    if _is_wsl():
+        clip = shutil.which("clip.exe")
+        if not clip:
+            clip = "/mnt/c/Windows/System32/clip.exe"
+            if not Path(clip).is_file():
+                raise FileNotFoundError(clip)
+        return [clip], "utf-16-le"
+    if os.environ.get("WAYLAND_DISPLAY") and (tool := shutil.which("wl-copy")):
+        return [tool], "utf-8"
+    if os.environ.get("DISPLAY"):
+        if tool := shutil.which("xclip"):
+            return [tool, "-selection", "clipboard"], "utf-8"
+        if tool := shutil.which("xsel"):
+            return [tool, "--clipboard", "--input"], "utf-8"
+    return None
+
+
+def _copy_locally(text: str) -> bool:
+    if sys.platform == "win32":
+        _copy_windows(text)
+        return True
+    local = _clipboard_command()
+    if local is None:
+        return False
+    command, encoding = local
+    subprocess.run(
+        command, input=text.encode(encoding), stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, timeout=1, check=True,
+    )
+    return True
 
 
 class SelectionCopyMixin:
@@ -53,25 +123,16 @@ class SelectionCopyMixin:
     def copy_to_clipboard(self, text: str) -> None:
         if not text:
             return
-        if sys.platform == "darwin" and not (os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")):
-            self._clipboard = text
+        if not (os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")):
             try:
-                subprocess.run(
-                    ["/usr/bin/pbcopy"],
-                    input=text.encode("utf-8"),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=1,
-                    check=True,
-                )
-                self.notify(tr(self, "ui.copied"), timeout=1.2, markup=False)
-                return
-            except (OSError, subprocess.SubprocessError):
-                # Keep the existing fallback, but don't report a successful
-                # system copy after pbcopy failed (Terminal.app ignores OSC52).
+                copied = _copy_locally(text)
+            except (ImportError, OSError, subprocess.SubprocessError):
                 super().copy_to_clipboard(text)
                 return
-        # Keep Textual's internal clipboard and OSC52 support on other hosts.
+            if copied:
+                self._clipboard = text
+                self.notify(tr(self, "ui.copied"), timeout=1.2, markup=False)
+                return
         super().copy_to_clipboard(text)
         if self._driver is not None:
             self.notify(tr(self, "ui.copied"), timeout=1.2, markup=False)

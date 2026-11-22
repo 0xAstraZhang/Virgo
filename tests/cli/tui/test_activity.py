@@ -241,7 +241,13 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                 await wait_for(
                     pilot, lambda: app.transcript.scroll_y == 0 and not app.transcript.follow_latest
                 )
-                app.controller.submit("next answer")
+                app._poll_timer.pause()
+                app.editor.load_text("next answer")
+                await pilot.press("enter")
+                assert app.controller.busy and not app.activity.display
+                assert "Working…" in app.query_one("#status").render_line(0).text
+                assert "/help" in app.query_one("#hints").render_line(0).text
+                app._poll_timer.resume()
                 await wait_for(pilot, lambda: entered.is_set() and app.activity.display)
                 for width, height in ((40, 16), (80, 24)):
                     await pilot.resize_terminal(width, height)
@@ -251,6 +257,10 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                     assert header.parent is app.transcript.activity_card
                     assert header.region.width <= width
                     assert app.query_one("#status").region.bottom <= height
+                    status = app.query_one("#status")
+                    assert "Thinking… (" in status.render_line(0).text
+                    first = status.render_line(0).text
+                    await wait_for(pilot, lambda status=status, first=first: status.render_line(0).text != first)
                     assert not app.query("#activity")
                     assert app.transcript.scroll_y == 0
                     assert not app.transcript.follow_latest
@@ -259,6 +269,7 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
                 await pilot.pause()
                 assert app.transcript.scroll_y == 0
                 assert not app.transcript.follow_latest
+                assert "Thinking" not in str(app.query_one("#status").content)
         finally:
             release.set()
 

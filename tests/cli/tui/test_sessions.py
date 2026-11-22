@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 from textual.widgets import Input, OptionList, Static
@@ -13,9 +14,19 @@ from virgo.ai.providers import faux
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import SessionPicker
+from virgo.cli.tui.sessions import workspace_name
 from virgo.harness.store import SessionStore
 
 from tests.support.tui import has_reply, wait_for
+
+
+@pytest.mark.parametrize("home", [PureWindowsPath("C:/Users/zhang"), PurePosixPath("/home/zhang")])
+def test_workspace_name_abbreviates_home_at_directory_boundary(monkeypatch, home):
+    monkeypatch.setattr(Path, "home", lambda: home)
+    assert workspace_name(home) == "~"
+    assert workspace_name(home / "project") == str(type(home)("~") / "project")
+    sibling = home.with_name("zhang2") / "project"
+    assert workspace_name(sibling) == str(sibling)
 
 
 @pytest.mark.parametrize("entry", ["/sessions", "ctrl+r"])
@@ -42,7 +53,7 @@ def test_browser_entry_cancel_preserves_session_and_remembers_grouping(make_sess
             choices = picker.query_one(OptionList)
             headers = [option for option in choices.options if option.disabled]
             assert len(headers) == 1
-            assert str(headers[0].prompt) == str(session.cwd)
+            assert str(headers[0].prompt) == workspace_name(session.cwd)
             style = choices.get_component_rich_style("option-list--option-disabled")
             assert style.color.triplet == (37, 99, 235) and not style.dim
             footer = picker.query_one("#session-footer", Static)

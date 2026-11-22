@@ -45,17 +45,20 @@ def test_activity_label_refresh_does_not_relayout(make_session, monkeypatch):
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause(0.1)
             card = await app.transcript._assistant("main")
-            layouts = []
+            updates = []
             original = Static.update
             monkeypatch.setattr(Static, "update", lambda self, content="", *, layout=True: (
-                layouts.append(layout), original(self, content, layout=layout))[1])
+                updates.append((self, layout)), original(self, content, layout=layout))[1])
             app.activity.begin(time.monotonic(), "medium")
             for _ in range(5):
-                app.activity.tick()
+                app.activity.started_at -= 0.12
+                await app.poll()
+                before = len(updates)
+                app._update_status_line()
                 app.transcript.show_activity(app.activity.content)
-                app.transcript.show_activity(app.activity.content)  # same frame twice: no second update
-            assert layouts and not any(layouts)
-            assert len(layouts) <= 5
+                assert len(updates) == before
+            assert {widget for widget, _ in updates} == {card.thought_header, app.query_one("#status")}
+            assert not any(layout for _, layout in updates)
             assert "Working" in card.thought_header.content.plain
 
     asyncio.run(scenario())

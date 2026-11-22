@@ -113,14 +113,14 @@ def _redact(value, secrets):
     return value
 
 
-def attach_error(out, error, model, *, phase="provider.stream", token="", response=None) -> None:
+def attach_error(out, error, model, *, phase="provider.stream", token="", response=None, message=None) -> None:
     """Attach the original failure before an adapter turns it into a stream event.
 
     The concise UI message may remain generic for network failures; the diagnostic
     retains the actual exception and its cause. Cancellation is an expected stop.
     """
     secrets = model_secrets(model, token)
-    message = _provider_message(error)
+    message = message or _provider_message(error)
     out.error_message = safe_text(message or out.error_message or error, secrets=secrets)
     if out.stop_reason == "aborted":
         out.error_kind = "aborted"
