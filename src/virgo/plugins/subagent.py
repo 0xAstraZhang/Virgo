@@ -174,11 +174,12 @@ class Subagents:
             details["status"] = "incomplete"
             reason = safe_text(last.error_message or last.text() or last.stop_reason)[:500]
             return failed(api.t("features.agent.incomplete", reason=reason))
-        if not last.text().strip():
+        answer = rt.agent.last_text
+        if not answer.strip():
             details["status"] = "empty_answer"
             return failed(api.t("features.agent.no_answer"))
         turns = sum(isinstance(m, AssistantMessage) for m in rt.messages)
-        return ToolResult.text(last.text(), details={"agent": name, "turns": turns})
+        return ToolResult.text(answer, details={"agent": name, "turns": turns})
 
 
 def setup(api: ExtensionAPI) -> None:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
-from ..ai.types import UserMessage
+from ..ai.types import AssistantMessage, Message, UserMessage
 from ..diagnostics import capture_error, emergency_write
 from .loop import run_loop
 from .types import AgentConfig, AgentEvent
@@ -16,6 +16,7 @@ class Agent:
     def __init__(self, cfg: AgentConfig, messages: list | None = None, signal: threading.Event | None = None):
         self.cfg = cfg
         self.messages: list = messages if messages is not None else []
+        self._last_answer: tuple[AssistantMessage, str] | None = None
         self.signal = signal or threading.Event()
         self._own_signal = signal is None
         self._listeners: list[Callable[[AgentEvent], None]] = []
@@ -104,6 +105,7 @@ class Agent:
                 self.signal,
                 steering=lambda: self._drain(self._steer),
                 follow_ups=lambda: self._drain(self._follow),
+                on_answer=self._record_answer,
             )
         finally:
             with self._lock:
@@ -115,14 +117,46 @@ class Agent:
     def abort(self) -> None:
         self.signal.set()
 
+    def _record_answer(self, msg: AssistantMessage, text: str) -> None:
+        self._last_answer = (msg, text)
+
     @property
     def last_text(self) -> str:
-        from ..ai.types import AssistantMessage
+        last = next((m for m in reversed(self.messages) if isinstance(m, AssistantMessage)), None)
+        if last is None:
+            return ""
+        answer = self._last_answer
+        if answer is not None and answer[0] is last:
+            return answer[1]
+        return last_assistant_text(self.messages)
 
-        for m in reversed(self.messages):
-            if isinstance(m, AssistantMessage):
-                return m.text()
+
+def last_assistant_text(messages: Sequence[Message]) -> str:
+    """Return the latest assistant text, including contiguous length continuations still in history.
+
+    Stop hooks and compaction also use "continue". The preceding length stop
+    identifies which prompts belong to the same answer.
+    """
+    history = reversed(messages)
+    last = next((message for message in history if isinstance(message, AssistantMessage)), None)
+    if last is None:
         return ""
+    if last.stop_reason not in ("stop", "length") or last.tool_calls():
+        return last.text()
+
+    fragments = [last.text()]
+    for bridge in history:
+        if not isinstance(bridge, UserMessage) or bridge.kind != "continue":
+            break
+        previous = next(history, None)
+        if (
+            not isinstance(previous, AssistantMessage)
+            or previous.stop_reason != "length"
+            or previous.tool_calls()
+        ):
+            break
+        fragments.append(previous.text())
+    return "".join(reversed(fragments))
 
 
 def _as_message(m):

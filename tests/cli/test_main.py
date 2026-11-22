@@ -19,8 +19,11 @@ import pytest
 from virgo.ai import resolve_model
 from virgo.ai.catalog import CatalogError, CatalogModel
 from virgo.ai.model_metadata import cache_path, write_metadata
+from virgo.ai.providers import faux
+from virgo.ai.types import AssistantMessage, TextContent, Usage
 from virgo.harness import preferences
 
+from tests.support.harness import install_responses
 from tests.support.persistence import diagnostic_records
 
 COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" else "virgo")
@@ -213,6 +216,72 @@ def test_print_text_ignores_fullscreen_option(entry, project):
         timeout=10,
     )
     assert result.stdout.strip() == "(faux) You said: hello"
+
+
+@pytest.mark.parametrize(("responses", "expected"), [
+    pytest.param([faux.reply("inter", stop_reason="length"), faux.reply("face")],
+                 "interface", id="one-continuation"),
+    pytest.param([faux.reply("def get_", stop_reason="length"), faux.reply("value():\n", stop_reason="length"),
+                  faux.reply("    return 42")], "def get_value():\n    return 42", id="two-continuations"),
+    pytest.param([faux.reply(thinking="reasoning", stop_reason="length"), faux.reply("done")],
+                 "done", id="thinking-only"),
+    pytest.param([faux.reply("Looking for files", stop_reason="length"),
+                  faux.reply(tools=[("glob", {"pattern": "*"})]), faux.reply("Found the files.")],
+                 "Found the files.", id="tool-result"),
+])
+def test_print_text_after_length_continuation(project, monkeypatch, capsys, responses, expected):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    faux.script("limited", *responses)
+    code = cli.main(["-p", "--format", "text", "--no-session", "-C", str(project),
+                     "--permission", "no-limit", "-m", "faux/limited", "hello"])
+    assert code == 0
+    assert capsys.readouterr().out == expected + "\n"
+
+
+def test_print_text_after_auto_compaction_of_length_fragment(project, monkeypatch, capsys):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    (Path(os.environ["VIRGO_HOME"]) / "settings.json").write_text(json.dumps({
+        "compaction": {"triggerTokens": 50_000, "keepRecentTokens": 1},
+    }))
+    seen = install_responses(
+        monkeypatch,
+        AssistantMessage([TextContent("inter")], stop_reason="length", usage=Usage(input=50_000)),
+        AssistantMessage([TextContent("Earlier progress")]),
+        AssistantMessage([TextContent("face")]),
+    )
+    code = cli.main(["-p", "--format", "text", "-C", str(project),
+                     "--permission", "no-limit", "-m", "faux/limited", "hello"])
+
+    continuation = seen[-1][1].messages
+    assert continuation[0].kind == "summary"
+    assert not any(isinstance(message, AssistantMessage) for message in continuation)
+    assert code == 0
+    assert capsys.readouterr().out == "interface\n"
+
+
+@pytest.mark.parametrize(("fmt", "language", "partial", "prefix", "warning"), [
+    ("text", "en", "unfinished", "virgo: ", "output token limit"),
+    ("json", "zh-CN", "", "virgo：", "输出 token 上限"),
+])
+def test_print_reports_incomplete_response_after_length_continuations(project, monkeypatch, capsys,
+                                                                       fmt, language, partial, prefix, warning):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    truncated = faux.reply(partial, thinking="reasoning", stop_reason="length")
+    faux.script("limited", truncated, truncated, truncated)
+    code = cli.main(["-p", "--format", fmt, "--language", language, "--no-session", "-C", str(project),
+                     "--permission", "no-limit", "-m", "faux/limited", "hello"])
+    output = capsys.readouterr()
+    assert code == 1
+    assert len(faux.CALLS["limited"]) == 3
+    assert prefix in output.err and warning in output.err
+    if fmt == "text":
+        assert output.out == ""
+    else:
+        events = [json.loads(line) for line in output.out.splitlines()]
+        assert events[-1]["type"] == "agent_end"
 
 
 @pytest.mark.parametrize(("flag", "fmt"), [("-p", "text"), ("--print", "json")])

@@ -21,6 +21,8 @@ from .types import AgentConfig, AgentEvent, ToolCallEvent, ToolContext, ToolResu
 Emit = Callable[[AgentEvent], None]
 Queue = Callable[[], list]
 
+MAX_LENGTH_CONTINUES = 2
+
 
 def run_loop(
     messages: list,
@@ -30,6 +32,8 @@ def run_loop(
     signal: threading.Event,
     steering: Queue = lambda: [],
     follow_ups: Queue = lambda: [],
+    *,
+    on_answer: Callable[[AssistantMessage, str], None] | None = None,
 ) -> None:
     """Append to `messages` in place, emitting events as it goes."""
     def push(m) -> None:
@@ -42,9 +46,12 @@ def run_loop(
     need_call = True
     turns = 0
     native_continues = 0
+    length_continues = 0
+    length_fragments: list[str] = []  # A model call may compact earlier fragments out of messages.
+    length_prompt = None
     try:
         while True:
-            while need_call or pending:
+            while need_call or pending or length_prompt:
                 if signal.is_set():
                     # Preserve accepted prompts even if run-start persistence failed.
                     for m in pending:
@@ -65,9 +72,22 @@ def run_loop(
                     return
                 if signal.is_set() or (cfg.can_run is not None and not cfg.can_run()):
                     return
+                # Only put a recovery prompt in history once its turn can run.
+                if length_prompt:
+                    push(UserMessage(cfg.t(length_prompt), kind="continue"))
+                    length_prompt = None
+                    if signal.is_set() or (cfg.can_run is not None and not cfg.can_run()):
+                        return
                 turns += 1
                 msg = _stream_assistant(messages, cfg, emit, signal)
                 messages.append(msg)
+                if msg.stop_reason in ("stop", "length") and not msg.tool_calls():
+                    answer_text = "".join((*length_fragments, msg.text()))
+                else:
+                    length_fragments.clear()
+                    answer_text = msg.text()
+                if on_answer is not None:
+                    on_answer(msg, answer_text)
                 emit(AgentEvent("message_end", cfg.name, message=msg))
                 if msg.stop_reason in ("error", "aborted", "refusal"):
                     emit(AgentEvent("turn_end", cfg.name, message=msg))
@@ -96,12 +116,31 @@ def run_loop(
                 need_call = bool(calls) or msg.stop_reason == "pause_turn"
                 if signal.is_set():
                     return
+                truncated = msg.stop_reason == "length" and not calls
+                if truncated and cfg.max_turns is not None and turns >= cfg.max_turns:
+                    return
                 pending = steering()
+                if not truncated or pending:
+                    length_continues = 0
+                    length_fragments.clear()
+                elif length_continues < MAX_LENGTH_CONTINUES:
+                    length_continues += 1
+                    fragment = msg.text()
+                    length_fragments.append(fragment)
+                    length_prompt = (
+                        "harness.agent.length_continue" if fragment.strip()
+                        else "harness.agent.length_continue_empty"
+                    )
             if signal.is_set():
                 return
             pending = follow_ups()
             if pending:
+                length_continues = 0
+                length_fragments.clear()
                 continue
+            # Stop hooks cannot extend the retry budget. A queued follow-up above is explicit input.
+            if length_continues >= MAX_LENGTH_CONTINUES:
+                return
             cont = cfg.should_stop(messages) if cfg.should_stop else None
             if cont is not None:
                 pending = [UserMessage(cont.text, kind="continue")]

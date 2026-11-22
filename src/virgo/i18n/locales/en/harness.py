@@ -5,6 +5,10 @@ MESSAGES = {
     "harness.agent.hook_failed": "Tool call hook failed: {error}",
     "harness.agent.invalid_args": "Invalid arguments:\n{errors}",
     "harness.agent.invalid_json": "Tool arguments were not a valid JSON object. Re-issue the call.",
+    "harness.agent.length_continue": "The output token limit cut your reply short. Pick up where you left off. "
+    "Make the required tool call or finish the answer concisely without repeating earlier text or reasoning.",
+    "harness.agent.length_continue_empty": "You reached the output token limit before giving a visible answer. "
+    "Go directly to the required tool call or give a concise answer without repeating your reasoning.",
     "harness.agent.operation_aborted": "Operation aborted.",
     "harness.agent.permission_failed": "Execution permission check failed: {error}",
     "harness.agent.result_hook_failed": "Tool result hook failed: {error}",
