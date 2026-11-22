@@ -93,6 +93,18 @@ MESSAGES = {
     "tools.output.exit": "{text}\n\n[退出码 {code}]",
     "tools.output.first": "开头",
     "tools.output.last": "末尾",
+    "tools.output.sandbox_readonly_hint": "[沙箱提示：当前沙箱为只读模式（无 write_paths）。仅 $TMPDIR "
+    "可用于单条命令的临时文件；如需写权限请使用 request_permissions。]",
+    "tools.output.sandbox_tmp_hint": "[沙箱提示：宿主机 /tmp 在沙箱中默认只读。单条命令的临时文件请写入 "
+    "$TMPDIR（若需跨调用保留，请写入工作区内的可写路径）。]",
+    "tools.output.sandbox_windows_readonly_hint": "[沙箱提示：当前沙箱为只读模式（无 write_paths）。仅 "
+    "$env:TMPDIR（Bash 中为 $TMPDIR，单条命令临时文件）与 $env:TEMP（cmd 中为 %TEMP%，会话级临时文件）可写；"
+    "如需写权限请使用 request_permissions。]",
+    "tools.output.sandbox_windows_write_hint": "[沙箱提示：沙箱命令只能写入已允许的 write_paths、"
+    "$env:TMPDIR（Bash 中为 $TMPDIR）与 $env:TEMP（cmd 中为 %TEMP%）（私有凭据目录及未获批的 .virgo 禁止写入）。"
+    "请检查目标路径是否超出沙箱边界。]",
+    "tools.output.sandbox_write_hint": "[沙箱提示：沙箱命令只能写入已允许的 write_paths 和 $TMPDIR"
+    "（宿主机 /tmp、私有凭据目录及未获批的 .virgo 禁止写入）。请检查目标路径是否超出沙箱边界。]",
     "tools.output.timeout": "{text}\n\n[命令在 {timeout:g} 秒后超时]",
     "tools.output.truncated": "[输出已截断：显示末尾内容（上限 {max_lines} 行 / {max_kb}KB；共 {total} 字节）。完整输出 ID: {path}；使用 read_output 读取]\n",
     "tools.read.description": "读取文本文件（或图片）。每次最多返回 2000 行 / 50KB；用 offset（从 1 开始的行号）和 limit 分页读取较大的文件。",

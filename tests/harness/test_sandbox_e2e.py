@@ -1361,3 +1361,23 @@ def test_native_sandbox_runs_asyncio_event_loop(native, project):
     )
     result = run(native, python_command(native, source))
     assert not result.is_error and "asyncio-ok" in result.text(), result.text()
+
+
+def test_native_sandbox_write_to_tmp_reports_actionable_hint(native):
+    """Writing to host /tmp in a POSIX sandbox fails with an actionable hint pointing to $TMPDIR."""
+    probe = f"/tmp/virgo-hint-probe-{os.getpid()}"
+    result = run(native, f"printf hi > {probe}")
+    assert result.is_error
+    text = result.text()
+    assert "/tmp" in text and "$TMPDIR" in text and "Sandbox hint" in text
+    assert not Path(probe).exists()
+
+
+def test_native_sandbox_readonly_write_reports_actionable_hint(native, project):
+    """Writing in read-only sandbox mode fails with an actionable read-only hint."""
+    native.services["execution"].select_mode("read-only")
+    result = run(native, "printf hi > blocked.txt")
+    assert result.is_error
+    text = result.text()
+    assert "Sandbox hint" in text and "read-only" in text and "$TMPDIR" in text
+    assert not (project / "blocked.txt").exists()

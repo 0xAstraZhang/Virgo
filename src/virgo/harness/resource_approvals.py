@@ -461,12 +461,15 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
         if execution_policy.is_native_windows():
             temp_guidance = (
                 "Use $env:TMPDIR ($TMPDIR in Bash) for temporary Shell files removed when the command finishes, "
-                "or $env:TEMP (%TEMP% in cmd) for session-scoped files."
+                "or $env:TEMP (%TEMP% in cmd) for session-scoped files. Writes outside write_paths or those temp "
+                "directories fail with OS access errors."
             )
         else:
             temp_guidance = (
-                "Host /tmp is read-only by default for sandboxed commands, so use $TMPDIR, "
-                "a writable directory removed when the command finishes."
+                "Host /tmp is read-only by default for sandboxed commands; do not write to /tmp—use $TMPDIR "
+                "(a writable directory removed when the command finishes). Writes outside write_paths or $TMPDIR "
+                "fail with OS permission or tool write errors (e.g. Operation not permitted, Read-only file system, "
+                "or curl write errors)."
             )
         if self.can_request_permissions(runtime):
             guidance = (

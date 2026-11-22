@@ -55,9 +55,12 @@ def test_sandbox_temp_guidance_in_request_prefix(broker_session, monkeypatch, pr
     if windows:
         assert "$env:TMPDIR" in guidance
         assert "$env:TEMP" in guidance and "%TEMP%" in guidance and "session-scoped" in guidance
+        assert "outside write_paths" in guidance
         assert "/tmp" not in guidance
     else:
         assert "/tmp is read-only by default" in guidance
+        assert "do not write to /tmp" in guidance
+        assert "outside write_paths" in guidance
         assert "%TEMP%" not in guidance
 
 
