@@ -109,7 +109,8 @@ class Runtime:
             self.accounting_store = origin_parent.root
         self.construction_context = RuntimeContext(role, self.cwd, store, self.accounting_store, origin_parent)
         self.ids: list = list(ids or [])
-        self.model = model or session.model
+        self._model = model or session.model
+        self._reset_auto_compaction()
         self.system_extra = system_extra
         self.tools = tools if tools is not None else session.tools_for(role)
         self._dynamic_tools = tools is None
@@ -169,6 +170,15 @@ class Runtime:
     def messages(self) -> list:
         return self.agent.messages
 
+    @property
+    def model(self) -> ai.Model:
+        return self._model
+
+    @model.setter
+    def model(self, model: ai.Model) -> None:
+        self._reset_auto_compaction(unless_model=model)
+        self._model = model
+
     def rebuild_system(self) -> None:
         from dataclasses import replace
 
@@ -209,6 +219,22 @@ class Runtime:
         self.execution_active = True
 
     def _on_event(self, ev: AgentEvent) -> None:
+        if (
+            self._awaiting_compaction_usage and ev.type == "message_end"
+            and isinstance(ev.message, AssistantMessage) and ev.message.usage.total > 0
+            and ev.message.stop_reason not in ("error", "aborted", "compaction")
+            and self._auto_compaction_model is not None
+            and self._auto_compaction_model[0] == f"{ev.message.provider}/{ev.message.model}"
+        ):
+            # Input measures the replacement prompt. This reply's output already counts as growth.
+            baseline = ev.message.usage.input_total
+            window = self._auto_compaction_model[1]
+            keep = int(self.session.settings.get("compaction.keepRecentTokens", 20000))
+            if window > 0:
+                keep = min(max(0, keep), window // 4)
+            growth = max(1, keep, min(baseline // 4, 2048))
+            self._auto_compaction_floor = self._cap_compaction_floor(baseline + growth, window)
+            self._awaiting_compaction_usage = False
         if ev.type == "agent_end":
             self.execution_active = False
         if ev.type == "agent_start":
@@ -364,17 +390,44 @@ class Runtime:
                 )
                 self._call_started = None
 
+    @staticmethod
+    def _cap_compaction_floor(floor: int, window: int) -> int:
+        """Cap the growth floor to reserve 10% of a known window, up to 4096 tokens."""
+        if window <= 0:
+            return floor
+        reserve = min(max(1, window // 10), 4096)
+        return min(floor, max(1, window - reserve))
+
+    def _reset_auto_compaction(self, *, unless_model: ai.Model | None = None) -> None:
+        if unless_model is not None and self._auto_compaction_model == (unless_model.spec, unless_model.context_window):
+            return
+        self._auto_compaction_model: tuple[str, int] | None = None
+        self._auto_compaction_floor = 0
+        self._awaiting_compaction_usage = False
+
     def compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
         if not self.can_run():
             return None
-        result = compaction.compact(self, focus=focus, reason=reason, model=model)
+        target_model = model or self.model
+        result = compaction.compact(self, focus=focus, reason=reason, model=target_model)
         if result is not None:
             self.recovery.after_compaction()
+            if reason == "auto":
+                # Use a local floor until the provider measures the replacement prompt.
+                after = self.context_tokens(estimate_only=True)
+                self._auto_compaction_model = (target_model.spec, target_model.context_window)
+                floor = after + max(1, min(after // 10, 1024))
+                self._auto_compaction_floor = self._cap_compaction_floor(floor, target_model.context_window)
+                self._awaiting_compaction_usage = True
+            else:
+                self._reset_auto_compaction()
         return result
 
     def restore_native_context(self, model=None) -> bool:
         """Provider-owned state cannot replace portable history after a provider switch."""
-        if compatible_context(model or self.model, self.messages):
+        target_model = model or self.model
+        if compatible_context(target_model, self.messages):
+            self._reset_auto_compaction(unless_model=target_model)
             return False
         if self.store is not None:
             messages, ids = self.store.build_full_context()
@@ -385,25 +438,29 @@ class Runtime:
         self.messages[:] = messages
         self.ids[:] = ids
         self.compacted_at = len(messages)
+        self._reset_auto_compaction()
         self._native_source = None
         self.native_binding = None
         return True
 
-    def context_tokens(self) -> int:
+    def context_tokens(self, *, estimate_only: bool = False) -> int:
         # Status refreshes must not invoke extension hooks or search approvals.
         context = self._base_context(self.messages)
-        return compaction.estimate_tokens(
-            context.messages, self.compacted_at, system=context.system, tools=context.tools,
-        )
+        valid_from = len(context.messages) if estimate_only else self.compacted_at
+        return compaction.estimate_tokens(context.messages, valid_from, system=context.system, tools=context.tools)
 
     def _compaction_due(self, model=None) -> bool:
+        target_model = model or self.model
+        self._reset_auto_compaction(unless_model=target_model)
         s = self.session.settings
         if not self.compaction or not s.get("compaction.enabled", True):
             return False
+        window = target_model.context_window
         trigger = s.get("compaction.triggerTokens")
         if trigger is None:
-            trigger = int((model or self.model).context_window * float(s.get("compaction.triggerRatio", 0.8)))
-        return self.context_tokens() >= trigger
+            trigger = int(window * float(s.get("compaction.triggerRatio", 0.8)))
+        floor = self._cap_compaction_floor(self._auto_compaction_floor, window)
+        return self.context_tokens() >= max(trigger, floor)
 
     def _base_context(self, messages: list, *, report_errors: bool = False) -> Context:
         """Assemble instructions and schemas; only actual requests report formatting failures."""
@@ -471,25 +528,22 @@ class Runtime:
 
     def _attempts(self, messages: list, signal: threading.Event):
         s = self.session
-        if not self.can_run() or signal.is_set():
-            yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
-            return
-        self.restore_native_context()
-        if self._compaction_due():
-            self.compact(reason="auto")
         max_retries = int(s.settings.get("retry.maxRetries", 3))
         wait_budget = max(0.0, float(s.settings.get("retry.maxWaitSeconds", 120)))
         retries = overloaded = 0
         overflow_done = False
         web_fallbacks = 0
         model = self.model
+        checked_model = None
         while True:
             if not self.can_run() or signal.is_set():
                 stopped = AssistantMessage(stop_reason="aborted")
                 yield StreamEvent("error", stopped)
                 return
-            if self.restore_native_context(model) and self._compaction_due(model):
+            model_key = (model.spec, model.context_window)
+            if (self.restore_native_context(model) or model_key != checked_model) and self._compaction_due(model):
                 self.compact(reason="auto", model=model)
+            checked_model = model_key
             self.recovery.safely("before_request")
             if not self.can_run() or signal.is_set():
                 yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
