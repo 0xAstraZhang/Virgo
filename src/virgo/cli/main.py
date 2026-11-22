@@ -100,18 +100,72 @@ def _pick_session(sessions_dir: Path, t: Translator | None = None) -> Path | Non
     return listed[int(choice) - 1]["path"]
 
 
+def _windows_console_supports_vt() -> bool:
+    """Probe whether both stdin and stdout are Win32 consoles that support VT mode."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        in_handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        out_handle = msvcrt.get_osfhandle(sys.stdout.fileno())
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_mode = kernel32.GetConsoleMode
+        get_mode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        get_mode.restype = wintypes.BOOL
+        set_mode = kernel32.SetConsoleMode
+        set_mode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        set_mode.restype = wintypes.BOOL
+
+        in_mode = wintypes.DWORD()
+        out_mode = wintypes.DWORD()
+        if not get_mode(in_handle, ctypes.byref(in_mode)):
+            return False
+        if not get_mode(out_handle, ctypes.byref(out_mode)):
+            return False
+
+        vt_in = 0x0200  # ENABLE_VIRTUAL_TERMINAL_INPUT
+        vt_out = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        in_changed = out_changed = False
+        try:
+            if not (out_mode.value & vt_out):
+                if not set_mode(out_handle, out_mode.value | vt_out):
+                    return False
+                out_changed = True
+            if not (in_mode.value & vt_in):
+                if not set_mode(in_handle, in_mode.value | vt_in):
+                    return False
+                in_changed = True
+            return True
+        finally:
+            if in_changed:
+                set_mode(in_handle, in_mode.value)
+            if out_changed:
+                set_mode(out_handle, out_mode.value)
+    except (AttributeError, ImportError, OSError, ValueError):
+        return False
+
+
 def _fullscreen_available() -> bool:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False
     term = os.environ.get("TERM", "").lower()
     if term:
         return term not in {"dumb", "unknown"}
-    return sys.platform == "win32" and (
+    if sys.platform != "win32":
+        return False
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if term_program in {"dumb", "unknown"}:
+        return False
+    return (
         bool(os.environ.get("WT_SESSION"))
-        or os.environ.get("TERM_PROGRAM", "").lower() not in {"", "dumb", "unknown"}
+        or bool(term_program)
         or bool(os.environ.get("TERMINAL_EMULATOR"))
         or os.environ.get("ConEmuANSI", "").upper() == "ON"
         or bool(os.environ.get("ANSICON"))
+        or _windows_console_supports_vt()
     )
 
 
