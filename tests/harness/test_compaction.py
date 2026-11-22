@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-from virgo.agent import AgentTool
+from virgo.agent import AgentEvent, AgentTool
 from virgo.ai.providers import faux
 from virgo.ai.types import (
     AssistantMessage,
@@ -146,8 +148,9 @@ def test_auto_compaction_waits_for_growth_from_first_reported_input(make_session
     summary = AssistantMessage([TextContent("progress " * 500)])
     install_responses(
         monkeypatch, summary,
-        AssistantMessage([ToolCall("1", "read", {"path": "small.txt"})], usage=usage, stop_reason="tool_use"),
-        AssistantMessage([ToolCall("2", "read", {"path": "large.txt"})],
+        AssistantMessage([ToolCall("1", "read", {"path": "small.txt"})], provider="faux", model="test",
+                         usage=usage, stop_reason="tool_use"),
+        AssistantMessage([ToolCall("2", "read", {"path": "large.txt"})], provider="faux", model="test",
                          usage=Usage(input=usage.input_total + 200, output=150), stop_reason="tool_use"),
         summary, AssistantMessage([TextContent("done")]),
     )
@@ -164,6 +167,70 @@ def test_auto_compaction_waits_for_growth_from_first_reported_input(make_session
     assert estimates[0] < 5000
     assert decisions == [False, True]
     assert len(estimates) == 2 and runtime.agent.last_text == "done"
+
+
+@pytest.mark.parametrize("switch", ["set_model", "window_only", "fallback"])
+def test_auto_compaction_floor_resets_on_model_switch(make_session, monkeypatch, switch):
+    session = make_session(faux.reply("started"), faux.reply("summary"), settings={
+        "providers": {"faux": {"models": {"small": {"contextWindow": 16_000}}}},
+    })
+    runtime = session.main
+    session.prompt("Start the task.")
+    assert runtime.compact(reason="auto")
+    install_responses(monkeypatch, AssistantMessage(
+        provider="faux", model="test", usage=Usage(input=12_000, output=5000),
+    ))
+    session.prompt("Continue.")
+    assert runtime.context_tokens() == 17_000
+    assert runtime._auto_compaction_floor == 32_000
+
+    if switch == "set_model":
+        session.set_model("faux/small")
+        assert runtime._compaction_due()
+    elif switch == "window_only":
+        runtime.model = replace(runtime.model, context_window=16_000)
+        assert runtime._compaction_due()
+    else:
+        assert runtime._compaction_due(session.resolve("faux/small"))
+
+
+def test_post_compaction_usage_belongs_to_target_model(make_session):
+    session = make_session(faux.reply("started"), faux.reply("summary"))
+    session.prompt("Start the task.")
+    runtime = session.main
+    fallback = session.resolve("faux/fallback")
+    assert runtime.compact(reason="auto", model=fallback)
+    estimate_floor = runtime._auto_compaction_floor
+
+    def report(model):
+        reply = AssistantMessage(provider=model.provider, model=model.id, usage=Usage(input=12_000))
+        runtime._on_event(AgentEvent("message_end", "main", message=reply))
+
+    report(runtime.model)
+    assert runtime._auto_compaction_floor == estimate_floor
+    report(fallback)
+    assert runtime._auto_compaction_floor == 32_000
+    session.settings.set("compaction.triggerTokens", 1)
+    assert not runtime._compaction_due(fallback)
+    assert runtime._compaction_due()  # Different spec with the same context window.
+
+
+def test_retry_compacts_portable_history_before_smaller_model_call(make_session, monkeypatch):
+    session = make_session(
+        faux.reply("started"), faux.reply("initial summary"),
+        faux.error("overloaded", kind="retryable"), faux.error("overloaded", kind="retryable"),
+        faux.reply("fallback summary"), settings={
+            "providers": {"faux": {"models": {"small": {"contextWindow": 16_000}}}},
+            "retry": {"fallbackModel": "faux/small"},
+        },
+    )
+    monkeypatch.setattr(session.main.agent.signal, "wait", lambda _: False)
+    session.prompt("Start the task.")
+    assert session.main.compact(reason="auto")
+    faux.push("small", faux.reply("done"))
+    session.prompt("x" * 68_000)
+    assert session.main.agent.last_text == "done"
+    assert "fallback summary" in calls("small")[0]["messages"][0]["content"]
 
 
 def test_reactive_compaction_on_overflow(make_session):
