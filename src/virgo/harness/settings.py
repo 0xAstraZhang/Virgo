@@ -269,12 +269,9 @@ class Settings:
     def load(cls, paths: Paths, overrides: dict | None = None, *,
              trust_project_extensions: bool = False) -> Settings:
         notices: list[str] = []
-        saved_user = _read_json(paths.user / "settings.json")
-        user = saved_user or {}
+        user = _read_json(paths.user / "settings.json") or {}
         shared_settings = same_directory(paths.project, paths.user)
         project = {} if shared_settings else (_read_json(paths.project / "settings.json") or {})
-        if shared_settings and saved_user is not None:
-            notices.append("The working directory resolves to the Virgo state directory; user settings are not re-read as project settings.")
         trusted = _trusted_projects(user)
         project_trusted = bool(trust_project_extensions or (paths.cwd in trusted))
         for key in ("sandbox", "execution", "permissions"):
