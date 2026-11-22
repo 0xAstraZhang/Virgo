@@ -19,7 +19,8 @@ def connect(path: Path, *, durable: bool) -> sqlite3.Connection:
             raise OSError("Diagnostic database must be a regular private file") from None
     else:
         os.close(descriptor)
-    connection = sqlite3.connect(path, timeout=1, check_same_thread=False, isolation_level=None)
+    # The durable log is shared by processes that each commit with synchronous=FULL.
+    connection = sqlite3.connect(path, timeout=2 if durable else 1, check_same_thread=False, isolation_level=None)
     try:
         connection.execute("PRAGMA cache_size=-2048")
         connection.execute("PRAGMA journal_mode=" + ("WAL" if durable else "MEMORY"))

@@ -99,6 +99,28 @@ with DiagnosticLog(Path(sys.argv[1])) as log:
     assert len(diagnostic_records(tmp_path / "diagnostics.sqlite3")) == 161
 
 
+def test_record_waits_for_a_competing_writer_to_commit(tmp_path):
+    import sqlite3
+    import threading
+    from contextlib import closing
+
+    from tests.support.persistence import diagnostic_records
+
+    with DiagnosticLog(tmp_path) as log:
+        log.record(capture_error("initial", phase="fixture.lock"))
+        with closing(sqlite3.connect(log.path, check_same_thread=False)) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            release = threading.Timer(1.25, writer.commit)
+            release.start()
+            try:
+                saved = log.record(capture_error("contended write", phase="fixture.lock"))
+            finally:
+                release.join()
+
+    assert "logging_error" not in saved
+    assert diagnostic_records(log.path)[-1] == saved
+
+
 def test_busy_database_preserves_original_error_and_recovers_on_rereport(tmp_path, capsys, make_session):
     import sqlite3
     import time
