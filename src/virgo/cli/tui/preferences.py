@@ -7,24 +7,23 @@ from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from ...harness.preferences import EFFORT_LEVELS, PreferenceChoice, PreferenceRequest, provider_name
 from ..i18n import tr
+from .choices import PromptPanel
 from .transcript import update_static
 
 
-class PreferencePicker(Vertical, can_focus=True):
+class PreferencePicker(PromptPanel, can_focus=True):
     DEFAULT_CSS = """
     PreferencePicker {
-        height: auto; border-top: solid #7C3AED; padding: 0 1;
+        height: auto;
         background: $background; color: $foreground;
     }
     PreferencePicker > Static { height: auto; }
-    PreferencePicker > #preference-title { color: #7C3AED; text-style: bold; }
     PreferencePicker > #preference-description { text-style: dim; margin-bottom: 1; }
     PreferencePicker > #preference-models {
         height: auto; border: none; padding: 0; background: $background;
@@ -68,7 +67,7 @@ class PreferencePicker(Vertical, can_focus=True):
         self.display = False
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="preference-title", markup=False)
+        yield Static("", classes="prompt-title", markup=False)
         yield Static("", id="preference-description", markup=False)
         yield OptionList(id="preference-models")
         yield Static("", id="preference-more", markup=False)
@@ -91,7 +90,7 @@ class PreferencePicker(Vertical, can_focus=True):
         if model_mode:
             self.show_catalog()
         else:
-            self.query_one("#preference-title", Static).update(tr(self, "ui.preference.effort"))
+            self.set_prompt_title(tr(self, "ui.preference.effort"))
             self.query_one("#preference-description", Static).update(
                 tr(self, "ui.preference.effort_description")
             )
@@ -123,7 +122,7 @@ class PreferencePicker(Vertical, can_focus=True):
             ids = [model.spec for model in self.visible_models]
             title = tr(self, "ui.preference.model_title", provider=provider)
             description = tr(self, "ui.preference.model_description")
-        self.query_one("#preference-title", Static).update(title)
+        self.set_prompt_title(title)
         self.query_one("#preference-description", Static).update(description)
         models.add_options(
             Option(self.model_row(i, selected=i == current), id=id_) for i, id_ in enumerate(ids)
@@ -157,7 +156,7 @@ class PreferencePicker(Vertical, can_focus=True):
         # Measure wrapped controls, padding and borders after layout. Leave one
         # row each for the top bar, status and transcript, plus any queued input.
         controls = self.region.height - models.region.height
-        reserved = 3 + controls + (pending.region.height if pending.display else 0)
+        reserved = 3 + controls + self.styles.margin.bottom + (pending.region.height if pending.display else 0)
         models.styles.height = max(1, min(3 if compact else 5, models.option_count, self.app.size.height - reserved))
         help_text = (
             tr(self, "ui.preference.help_short")

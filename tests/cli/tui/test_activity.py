@@ -118,22 +118,19 @@ def test_waiting_for_first_token_animates_and_concurrent_command_does_not_restar
         app = VirgoApp(session, ui, initial="Wait for the first token")
         try:
             async with app.run_test(size=(80, 24)) as pilot:
-                await wait_for(pilot, lambda: entered.is_set() and app.activity.display)
-                assert "Thinking…" in str(app.activity.content)
-                assert len(app.transcript.query(AssistantView)) == 1
+                # The worker can enter the provider before the UI consumes agent_start.
+                await wait_for(pilot, lambda: entered.is_set() and app.transcript.activity_card is not None)
                 card = app.transcript.activity_card
-                await wait_for(pilot, lambda: card.activity is not None)
+                await wait_for(pilot, lambda: "Thinking…" in str(card.thought_header.content))
+                assert app.activity.display and "Thinking…" in str(app.activity.content)
+                assert len(app.transcript.query(AssistantView)) == 1
                 assert card.thought_header.display
-                assert "Thinking…" in str(card.thought_header.content)
                 assert not card.thought_header.can_focus
                 assert not app.transcript.query(".speaker")
                 assert not app.query("#activity")
                 started_at = app.activity.started_at
-                frames = set()
-                for _ in range(3):
-                    frames.add(str(app.activity.content)[0])
-                    await pilot.pause(0.16)
-                assert len(frames) > 1
+                first_frame = str(card.thought_header.content)[0]
+                await wait_for(pilot, lambda: str(card.thought_header.content)[0] != first_frame)
                 app.controller.submit("/help")
                 await wait_for(pilot, lambda: bool(app.transcript.query(".notice")))
                 assert app.activity.started_at == started_at

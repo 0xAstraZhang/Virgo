@@ -6,12 +6,34 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Self
 
+from rich.cells import cell_len
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.table import Table
 from rich.text import Text
 from textual import on
-from textual.widgets import OptionList
+from textual.containers import Vertical
+from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
+
+
+class PromptPanel(Vertical):
+    """Keep a short question on the border and wrap longer questions inside it."""
+
+    prompt_title = ""
+
+    def set_prompt_title(self, title: str) -> None:
+        self.prompt_title = title
+        # Two corners, two rule cells and two spaces surround Textual's border title.
+        fits = "\n" not in title and cell_len(title.expandtabs(4)) <= self.app.size.width - 6
+        self.border_title = Text(title) if title and fits else None
+        question = self.query_one(".prompt-title", Static)
+        question.display = bool(title) and not fits
+        if question.display:
+            question.update(title)
+
+    def on_resize(self) -> None:
+        if self.prompt_title:
+            self.set_prompt_title(self.prompt_title)
 
 
 @dataclass(frozen=True)
@@ -91,20 +113,27 @@ class ChoiceList(OptionList):
 class MarkedChoiceList(ChoiceList):
     """Show a cursor beside the highlighted choice in a short dock menu."""
 
+    _marked_index: int | None = None
+
+    def clear_options(self) -> Self:
+        self._marked_index = None
+        return super().clear_options()
+
     def set_choices(self, rows: list[tuple[str, str | Text]], highlighted: int) -> None:
-        self._rows = rows
+        self._marked_index = highlighted
         self.set_options(
-            Option(self._row(index, highlighted), id=choice_id)
-            for index, (choice_id, _) in enumerate(rows)
+            Option(Text.assemble("› " if index == highlighted else "  ", label), id=choice_id)
+            for index, (choice_id, label) in enumerate(rows)
         )
         self.highlighted = highlighted
-
-    def _row(self, index: int, highlighted: int) -> Text:
-        return Text.assemble("› " if index == highlighted else "  ", self._rows[index][1])
 
     @on(OptionList.OptionHighlighted)
     def update_marker(self, event: OptionList.OptionHighlighted) -> None:
         event.stop()
-        if event.option_index == self.highlighted:
-            for index in range(self.option_count):
-                self.replace_option_prompt_at_index(index, self._row(index, self.highlighted))
+        previous = self._marked_index
+        if previous is None or previous == event.option_index or event.option is not self.highlighted_option:
+            return
+        for index, prefix in ((previous, "  "), (event.option_index, "› ")):
+            label = self.get_option_at_index(index).prompt[2:]
+            self.replace_option_prompt_at_index(index, Text.assemble(prefix, label))
+        self._marked_index = event.option_index

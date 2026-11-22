@@ -22,11 +22,19 @@ from tests.support.tui import form_is_ready, wait_for
 def assert_inline_form(app, choices):
     assert len(app.screen_stack) == 1 and not app.has_modal
     assert app.query_one("#completions") is choices
-    question = app.query_one("#auth-question")
-    assert question.display
-    assert question.region.y >= app.transcript.region.bottom
-    assert question.region.bottom <= app.size.height
-    assert app.query_one("#status").region.bottom <= app.size.height
+    panel = app.query_one("#command-prompt")
+    assert panel.region.x == 0 and panel.region.width == app.size.width
+    assert panel.region.y >= app.transcript.region.bottom
+    title = panel.query_one(".prompt-title")
+    if title.display:
+        assert str(title.content) == app.input_request.question
+    else:
+        assert panel.border_title == app.input_request.question
+    field = choices if app.input_request.options is not None else app.query_one("#auth-value")
+    assert panel.content_region.contains_region(field.region)
+    assert panel.content_region.contains_region(app.query_one("#prompt-hints").region)
+    status = app.query_one("#status")
+    assert status.region.y == panel.region.bottom + 1 and status.region.bottom <= app.size.height
 
 
 def test_headless_forms_do_not_wait():
@@ -139,6 +147,20 @@ def test_real_login_wizard_reuses_command_list_and_saves_key_without_history(mak
             await wait_for(pilot, lambda: form_is_ready(app, "Login method"))
             assert_inline_form(app, choices)
             assert choices.highlighted == 0 and choices.option_count == 2
+            for width in (140, 36, 80):
+                await pilot.resize_terminal(width, 24)
+                await pilot.pause()
+                lines = [strip.text for strip in app.screen._compositor.render_strips()]
+                status_y = app.query_one("#status").region.y
+                top = next(i for i, line in enumerate(lines) if "Login method" in line)
+                assert lines[top].startswith("╭") and lines[top].endswith("╮")
+                assert lines[status_y - 2] == "╰" + "─" * (width - 2) + "╯"
+                assert not lines[status_y - 1].strip()
+                body = [line[1:-1].strip() for line in lines[top + 1:status_y - 2]]
+                assert all(line.startswith("│") and line.endswith("│") for line in lines[top + 1:status_y - 2])
+                assert "› Auth — Sign in to an account" in body
+                assert "↑↓ select · Enter confirm · Esc cancel" in " ".join(body)
+                assert not app.query_one("#hints").display
             await pilot.press("down", "enter")
             await wait_for(pilot, lambda: form_is_ready(app, "API — Choose a provider"))
             assert_inline_form(app, choices)
@@ -175,16 +197,19 @@ def test_inline_form_remains_in_dock_when_terminal_resizes(make_session):
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui)
-        session.commands.register("testlogin", lambda s, _: s.ui.input("API key", password=True))
+        question = "请输入用于本次会话的 API key，或者按 Esc 取消"
+        session.commands.register("testlogin", lambda s, _: s.ui.input(question, password=True))
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             choices = app.query_one("#completions", OptionList)
             app.controller.submit("/testlogin")
-            await wait_for(pilot, lambda: form_is_ready(app, "API key"))
-            for width, height in ((80, 24), (52, 16), (120, 40)):
+            await wait_for(pilot, lambda: form_is_ready(app, question))
+            for width, height in ((80, 24), (36, 16), (120, 40)):
                 await pilot.resize_terminal(width, height)
                 await pilot.pause()
                 assert_inline_form(app, choices)
+                panel = app.query_one("#command-prompt")
+                assert panel.query_one(".prompt-title").display == (width == 36)
                 field = app.query_one("#auth-value", Input)
                 assert field.region.bottom <= height and field.region.width <= width
             await pilot.press("escape")
