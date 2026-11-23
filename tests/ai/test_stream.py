@@ -182,3 +182,13 @@ def test_retained_iterator_stops_after_explicit_close(tracked_stream):
     assert next(events).type == "start"
     stream.close()
     assert closed.is_set() and list(events) == []
+
+
+def test_result_finishes_partially_consumed_stream(tracked_stream):
+    stream, closed = tracked_stream
+    events = iter(stream)
+    start = next(events)
+    assert not closed.is_set()
+    result = stream.result()
+    assert closed.is_set() and result is start.partial
+    assert list(events) == []

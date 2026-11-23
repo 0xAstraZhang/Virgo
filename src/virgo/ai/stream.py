@@ -56,7 +56,7 @@ class EventStream:
     def __init__(self, events: Iterator[StreamEvent], fallback: AssistantMessage):
         self._events = events
         self._final: AssistantMessage | None = None
-        self._fallback = fallback
+        self._last = fallback
         self._consumed = False
 
     def _close_events(self):
@@ -79,10 +79,14 @@ class EventStream:
         if self._consumed:
             return
         self._consumed = True
-        last = self._fallback
+        yield from self._read()
+
+    def _read(self) -> Iterator[StreamEvent]:
+        if self._events is None:
+            return
         try:
             for ev in self._events:
-                last = ev.partial
+                self._last = last = ev.partial
                 if ev.type in ("done", "error"):
                     if last.stop_reason == "error" and last.error_details is None:
                         last.error_details = capture_error(
@@ -98,7 +102,7 @@ class EventStream:
                 if self._events is None:  # explicit close while the caller held this event
                     return
             # EOF is not evidence of success: retain partial output and the missing terminal event.
-            msg = copy.copy(last)
+            msg = copy.copy(self._last)
             if msg.stop_reason != "aborted":
                 msg.stop_reason = "error"
                 msg.error_kind = "fatal"
@@ -108,7 +112,7 @@ class EventStream:
                     context=_context(msg), code="STREAM_INCOMPLETE",
                 )
         except Exception as e:  # noqa: BLE001 - contract: never raise
-            msg = copy.copy(last)
+            msg = copy.copy(self._last)
             if msg.stop_reason != "aborted":
                 msg.stop_reason = "error"
                 msg.error_kind = msg.error_kind or "fatal"
@@ -120,9 +124,10 @@ class EventStream:
         yield StreamEvent("error", msg)
 
     def result(self) -> AssistantMessage:
-        for _ in self:
+        self._consumed = True
+        for _ in self._read():
             pass
-        return self._final or self._fallback
+        return self._final or self._last
 
 
 def error_message(api: str, provider: str, model: str, text: str, kind: str = "fatal") -> AssistantMessage:
