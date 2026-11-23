@@ -12,7 +12,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent
@@ -212,6 +212,7 @@ class Runtime:
     def prepare_run(self) -> None:
         """Bind startup hooks to this run before its first model request exists."""
         self.refresh_permission_snapshot()
+        self._length_recovery = None
         self.run_id = uuid.uuid4().hex
         self._model_call_id = None
         self._attempt_number = 0
@@ -404,13 +405,31 @@ class Runtime:
         self._auto_compaction_model: tuple[str, int] | None = None
         self._auto_compaction_floor = 0
         self._awaiting_compaction_usage = False
+        self._length_recovery: Literal["pending", "exhausted"] | None = None
 
     def compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
+        outcome = self._compact(focus, reason, model=model)
+        return outcome if isinstance(outcome, dict) else None
+
+    def _compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> compaction.CompactOutcome:
         if not self.can_run():
             return None
         target_model = model or self.model
-        result = compaction.compact(self, focus=focus, reason=reason, model=target_model)
-        if result is not None:
+        if reason == "manual" and not self.agent.running:
+            self.agent.signal.clear()
+        self.restore_native_context(target_model)
+        automatic = reason in ("auto", "overflow")
+        concise = automatic and self._length_recovery is not None
+        if concise:
+            if self._length_recovery == "exhausted" or (reason == "auto" and not self._compaction_due(target_model)):
+                return None
+            self._length_recovery = "exhausted"
+        result = compaction.compact_context(self, focus, reason, model=target_model, concise=concise)
+        if result == "length" and automatic and not concise:
+            self._auto_compaction_model = (target_model.spec, target_model.context_window)
+            self._length_recovery = "pending"
+        if isinstance(result, dict):
+            self._reset_auto_compaction()
             self.recovery.after_compaction()
             if reason == "auto":
                 # Use a local floor until the provider measures the replacement prompt.
@@ -419,8 +438,6 @@ class Runtime:
                 floor = after + max(1, min(after // 10, 1024))
                 self._auto_compaction_floor = self._cap_compaction_floor(floor, target_model.context_window)
                 self._awaiting_compaction_usage = True
-            else:
-                self._reset_auto_compaction()
         return result
 
     def restore_native_context(self, model=None) -> bool:
@@ -456,6 +473,9 @@ class Runtime:
         if not self.compaction or not s.get("compaction.enabled", True):
             return False
         window = target_model.context_window
+        if self._length_recovery is not None:
+            return (self._length_recovery == "pending" and window > 0
+                    and self.context_tokens() >= self._cap_compaction_floor(window, window))
         trigger = s.get("compaction.triggerTokens")
         if trigger is None:
             trigger = int(window * float(s.get("compaction.triggerRatio", 0.8)))
@@ -542,7 +562,9 @@ class Runtime:
                 return
             model_key = (model.spec, model.context_window)
             if (self.restore_native_context(model) or model_key != checked_model) and self._compaction_due(model):
-                self.compact(reason="auto", model=model)
+                if self._compact(reason="auto", model=model) == "cancelled":
+                    yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
+                    return
             checked_model = model_key
             self.recovery.safely("before_request")
             if not self.can_run() or signal.is_set():
@@ -587,10 +609,15 @@ class Runtime:
                 # and let the user resume rather than silently replaying the turn.
                 yield StreamEvent("error", failed)
                 return
-            if failed.error_kind == "overflow" and not overflow_done and self.compaction:
+            if (failed.error_kind == "overflow" and not overflow_done and self.compaction
+                    and self._length_recovery != "exhausted" and not signal.is_set()):
                 overflow_done = True
                 yield StreamEvent("retry", failed)
-                if self.compact(reason="overflow", model=model) is not None:
+                outcome = self._compact(reason="overflow", model=model)
+                if outcome == "cancelled":
+                    yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
+                    return
+                if isinstance(outcome, dict):
                     record_call(self.accounting_store, request_model, failed, purpose="retry",
                                 started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
                     continue

@@ -82,6 +82,9 @@ MESSAGES = {
     "harness.compact.done": "Compacted: ~{tokens} tokens summarized.",
     "harness.compact.empty": "Nothing to compact.",
     "harness.compact.empty_summary": "empty summary",
+    "harness.compact.cancelled": "cancelled",
+    "harness.compact.length": "length (output token limit of {limit:,} tokens reached)",
+    "harness.compact.length_output": "length (provider output token limit reached after {output:,} reported output tokens)",
     "harness.compact.failed": "[compaction failed: {error}]",
     "harness.compact.native_focus": "[OpenAI native compaction uses the provider's summary instructions; focus "
     "is not applied.]",

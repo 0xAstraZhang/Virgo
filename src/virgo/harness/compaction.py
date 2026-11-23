@@ -4,6 +4,8 @@
 - Reactive: when the provider reports a context overflow, compact once and retry.
 - Manual: ``/compact [focus]``.
 
+After a length-limited automatic summary, the run can try one shorter summary in the
+safety reserve or on provider overflow, if the endpoint supports a shorter target.
 Compaction runs at model-call boundaries. OpenAI returns a complete replacement window;
 Anthropic and portable summaries retain about ``keepRecentTokens`` of recent messages.
 Native provider blocks are persisted verbatim; the complete original history stays on disk.
@@ -17,7 +19,7 @@ import re
 import time
 import uuid
 from dataclasses import asdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from ..ai import native_compact
 from ..ai.compaction import context_binding, is_native_context, native_api
@@ -50,6 +52,14 @@ SUMMARY_FORMAT = (
     "progress, unresolved work and key facts. Preserve exact identifiers, paths and errors when needed. "
     "Choose a concise structure suited to this conversation."
 )
+
+RECOVERY_TOKENS = 1024
+RECOVERY_INSTRUCTION = (
+    f"Write at most {RECOVERY_TOKENS} tokens. Keep only the current goal, binding constraints, "
+    "essential findings and immediate next steps. Omit the step-by-step history."
+)
+FailureReason = Literal["length", "empty", "cancelled", "error"]
+CompactOutcome = dict | FailureReason | None
 
 MAX_INPUT_CHARS = 600_000
 _FILE_BLOCK = re.compile(r"<(read-files|modified-files)>(.*?)</\1>", re.DOTALL)
@@ -173,12 +183,38 @@ def _retained_tail(rt: Runtime, cut: int, *, preserve_thinking: bool = False) ->
 
 
 def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
-    model = model or rt.model
-    if reason == "manual" and not rt.agent.running:
-        rt.agent.signal.clear()
-    rt.restore_native_context(model)
+    return rt.compact(focus, reason, model=model)
+
+
+def _report_failure(rt: Runtime, msg: AssistantMessage, *, complete: bool, limit: int | None) -> FailureReason | None:
+    t = rt.session.t
+    reason: FailureReason
+    if rt.agent.signal.is_set() or msg.stop_reason == "aborted":
+        reason = "cancelled"
+        detail = t("harness.compact.cancelled")
+    elif msg.stop_reason == "length":
+        reason = "length"
+        metadata = getattr(msg, "request_metadata", None) or {}
+        limit = metadata.get("max_tokens", metadata.get("requested_max_tokens", limit))
+        if limit is None:
+            detail = t("harness.compact.length_output", output=msg.usage.output)
+        else:
+            detail = t("harness.compact.length", limit=limit)
+    elif msg.error_message or msg.stop_reason not in ("stop", "compaction"):
+        reason = "error"
+        detail = msg.error_message or msg.stop_reason
+    elif not complete:
+        reason = "empty"
+        detail = t("harness.compact.empty_summary")
+    else:
+        return None
+    rt.session.ui.print(t("harness.compact.failed", error=detail), "error")
+    return reason
+
+
+def compact_context(rt: Runtime, focus: str | None, reason: str, *, model, concise: bool) -> CompactOutcome:
     if api := native_api(model):
-        return _native_compact(rt, model, api, focus, reason)
+        return _native_compact(rt, model, api, focus, reason, concise)
     session = rt.session
     messages = rt.messages
     keep = int(session.settings.get("compaction.keepRecentTokens", 20000))
@@ -212,13 +248,16 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, mo
     if focus:
         prompt += f"Pay special attention to: {focus}\n\n"
     prompt += SUMMARY_FORMAT
-    msg = session.complete("compaction", SUMMARY_SYSTEM, prompt, max_tokens=8000,
+    if concise:
+        prompt += "\n\n" + RECOVERY_INSTRUCTION
+    max_tokens = RECOVERY_TOKENS if concise else 8000
+    msg = session.complete("compaction", SUMMARY_SYSTEM, prompt, max_tokens=max_tokens,
                            effort=session.small_model_effort, signal=rt.agent.signal, agent=rt.name,
                            accounting_store=rt.accounting_store)
     summary = _FILE_BLOCK.sub("", msg.text()).strip()
-    if msg.stop_reason != "stop" or rt.agent.signal.is_set() or not summary:
-        session.ui.print(session.t("harness.compact.failed", error=msg.error_message or session.t("harness.compact.empty_summary")), "error")
-        return None
+    if failure := _report_failure(rt, msg, complete=msg.stop_reason == "stop" and bool(summary),
+                                  limit=max_tokens):
+        return failure
     if read - modified:
         summary += "\n\n<read-files>\n" + "\n".join(sorted(read - modified)) + "\n</read-files>"
     if modified:
@@ -245,7 +284,7 @@ def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, mo
     return {"tokens_before": tokens_before, "summary": summary, "kept": len(kept_msgs)}
 
 
-def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str) -> dict | None:
+def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str, concise: bool) -> CompactOutcome:
     messages = rt.messages
     if not messages or (len(messages) == 1 and is_native_context(messages[0])):
         return None
@@ -257,6 +296,10 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     cut = find_cut(messages, keep) if api == "anthropic" else len(messages)
     if not cut or (cut == 1 and is_native_context(messages[0])):
         return None
+    if concise:
+        if api != "anthropic":
+            return None  # These endpoints cannot accept a shorter summary target.
+        focus = RECOVERY_INSTRUCTION
     session.bus.emit("before_compact", rt)
     tokens_before = rt.context_tokens()
     if focus and api != "anthropic":
@@ -265,11 +308,12 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     binding = context_binding(model, context)
     started = time.monotonic()
     rt.request_budget.consume()
+    max_tokens = min(RECOVERY_TOKENS if concise else 8000, model.max_tokens)
     result = native_compact(
         model,
         context,
         StreamOptions(
-            signal=rt.agent.signal, max_tokens=min(8000, model.max_tokens), effort=session.effort,
+            signal=rt.agent.signal, max_tokens=max_tokens, effort=session.effort,
             prompt_cache_key=rt.diagnostic_id,
         ),
         focus=focus,
@@ -282,9 +326,9 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     })
     record_call(rt.accounting_store, model, result, purpose="compaction", started=started,
                 effort=session.effort, agent=rt.name)
-    if rt.agent.signal.is_set() or not is_native_context(result):
-        session.ui.print(session.t("harness.compact.failed", error=result.error_message or result.stop_reason), "error")
-        return None
+    if failure := _report_failure(rt, result, complete=is_native_context(result),
+                                  limit=max_tokens if api == "anthropic" else None):
+        return failure
     preserve_thinking = cut < len(messages) and is_user_like(messages[cut - 1]) != is_user_like(messages[cut])
     if any(is_native_context(message) for message in messages) and rt.native_binding != binding:
         preserve_thinking = False
