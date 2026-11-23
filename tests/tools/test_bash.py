@@ -14,10 +14,27 @@ import pytest
 
 from virgo.agent.types import ToolContext
 from virgo.execution import HostContext
+from virgo.i18n import Translator
 from virgo.tools.output import MAX_LINES
-from virgo.tools.shell import default_shell, discover_shells, make_shell_tool, probe_shell
+from virgo.tools.shell import Shell, default_shell, discover_shells, make_shell_tool, probe_shell
 
 from tests.support.http import serve
+
+
+@pytest.mark.parametrize("kind", ["bash", "zsh", "powershell"])
+@pytest.mark.parametrize(("language", "guidance"), [
+    ("en", ("When available, prefer", "read, write, edit, glob, grep",
+            "over shell commands or inline scripts", "reading, searching, or editing files")),
+    ("zh_CN", ("优先使用可用的专用文件工具", "read、write、edit、glob、grep",
+               "避免为此运行 Shell 命令或内联脚本", "读取、搜索或编辑文件")),
+])
+def test_shell_description_prefers_available_file_tools(kind, language, guidance):
+    tool = make_shell_tool(Shell(kind, kind, ""))
+    description = tool.spec(Translator(language)).description
+    if language == "en":
+        assert tool.description == description
+    for phrase in guidance:
+        assert phrase in description
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX directory permissions")

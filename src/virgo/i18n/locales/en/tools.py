@@ -188,7 +188,9 @@ MESSAGES = {
     "tools.search.timeout": "Web search timed out. Try again later.",
     "tools.search.timeout_config": "search.timeout must be a positive number of seconds.",
     "tools.shell.background": " background=true returns a job ID before the command finishes.",
-    "tools.shell.description": "Run {syntax} code in the working directory. {environment}\n"
+    "tools.shell.description": "Run {syntax} code in the working directory. "
+    "When available, prefer the dedicated file tools (read, write, edit, glob, grep) "
+    "over shell commands or inline scripts for reading, searching, or editing files.\n{environment}\n"
     "{errors} Output is limited to the last {max_lines} lines / {max_kb}KB; longer "
     "output is saved with an output_id for read_output.{background}",
     "tools.shell.environment": "Command tool: {tool}\n"

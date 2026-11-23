@@ -149,7 +149,9 @@ MESSAGES = {
     "tools.search.timeout": "联网搜索超时，请稍后重试。",
     "tools.search.timeout_config": "search.timeout 必须为正数，单位为秒。",
     "tools.shell.background": " background=true 会在命令完成前返回任务 ID。",
-    "tools.shell.description": "在工作目录中运行 {syntax} 代码。{environment}\n"
+    "tools.shell.description": "在工作目录中运行 {syntax} 代码。"
+    "读取、搜索或编辑文件时，优先使用可用的专用文件工具（read、write、edit、glob、grep），"
+    "避免为此运行 Shell 命令或内联脚本。\n{environment}\n"
     "{errors} 输出最多保留末尾 {max_lines} 行 / {max_kb}KB；更长的输出会保存并返回 output_id，可用 read_output 读取。{background}",
     "tools.shell.environment": "命令工具: {tool}\n"
     "Shell: {kind} {version}\n"
