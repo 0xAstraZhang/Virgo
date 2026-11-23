@@ -278,7 +278,8 @@ def test_truncated_stream_without_cancel_retains_diagnostics(server, provider):
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
-def test_cancel_with_backpressure(server, provider, monkeypatch):
+@pytest.mark.parametrize("clear_after_close", [False, True], ids=["set", "latched"])
+def test_cancel_with_backpressure(server, provider, monkeypatch, clear_after_close):
     paused, resume, cancel = (threading.Event() for _ in range(3))
     count = 512
     gates = stall(server, "delta", prefix=text_reply(provider, "x", count=count)[0])
@@ -315,6 +316,9 @@ def test_cancel_with_backpressure(server, provider, monkeypatch):
                     saturated = True
                     break
             deadline = cancel_by_deadline(cancel)
+            if clear_after_close:
+                assert gates["peer_closed"].wait(remaining(deadline))
+                cancel.clear()  # The producer already observed it while the client was paused.
             resume.set()
             assert_peer_and_result(finished, gates, deadline, "x")
             assert saturated, f"SDK read {read_count} events while consumer paused"

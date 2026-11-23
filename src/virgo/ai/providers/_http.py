@@ -39,11 +39,6 @@ class _StreamAborted(Exception):
     """Cancellation observed at a request boundary."""
 
 
-def _check_signal(signal):
-    if cancelled(signal):
-        raise _StreamAborted()
-
-
 class _HandshakeGuard:
     """httpcore2 does not own the new socket while AnyIO is upgrading it to TLS."""
 
@@ -131,7 +126,7 @@ class AsyncSDKBridge:
         with self._lock:
             if self._closed:
                 raise _StreamAborted()
-            _check_signal(request.signal)
+            request.check_signal()
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run, name="virgo-sdk-io", daemon=True)
                 self._thread.start()
@@ -152,6 +147,7 @@ class AsyncSDKBridge:
     async def _drain(self):
         requests = list(self._requests)
         for request in requests:
+            request.aborted.set()
             request.cancel()
         await asyncio.gather(*(r.task for r in requests), return_exceptions=True)
         async with AsyncExitStack() as clients:
@@ -182,6 +178,7 @@ class _SDKRequest:
     def __init__(self, bridge, signal, get_client, create):
         self.bridge = bridge
         self.signal = signal
+        self.aborted = threading.Event()
         self.get_client = get_client
         self.create = create
         self.items = queue.Queue(self.capacity + 1)
@@ -191,6 +188,12 @@ class _SDKRequest:
         self.scope = self.task = None
         self.error = None
         self.client = self.response = None
+
+    def check_signal(self):
+        if cancelled(self.signal):
+            self.aborted.set()
+        if self.aborted.is_set():
+            raise _StreamAborted()
 
     def track(self, gen):
         # Discard exhausted iterators during long responses. Only suspended
@@ -211,14 +214,14 @@ class _SDKRequest:
             resources.push_async_callback(self.close_generators)
             self.scope = anyio.CancelScope()
             with self.scope:
-                _check_signal(self.signal)
+                self.check_signal()
                 self.client = self.get_client(self.bridge)
-                _check_signal(self.signal)
+                self.check_signal()
                 stream = await resources.enter_async_context(await self.create(self.client))
                 self.response = stream.response
                 async for item in stream:
                     while self.items.qsize() >= self.capacity:
-                        _check_signal(self.signal)
+                        self.check_signal()
                         await asyncio.sleep(0.01)
                     self.items.put_nowait(item)
         if self.scope.cancel_called:
@@ -240,12 +243,12 @@ class _SDKRequest:
         self.bridge.start(self)
         try:
             while True:
-                _check_signal(self.signal)
+                self.check_signal()
                 try:
                     item = self.items.get(timeout=0.05)
                 except queue.Empty:
                     continue
-                _check_signal(self.signal)
+                self.check_signal()
                 if item is self.end:
                     if self.error is not None:
                         raise self.error
@@ -262,22 +265,22 @@ def sdk_stream(out, opts, get_client, create, parse, on_error):
         request = _SDKRequest(bridge, opts.signal, get_client, create)
         failure = terminal = None
         try:
-            _check_signal(opts.signal)
+            request.check_signal()
             with closing(iter(request)) as items, closing(parse(items, request)) as parsed:
                 for event in parsed:
-                    _check_signal(opts.signal)
+                    request.check_signal()
                     if event.type in ("done", "error"):
                         terminal = event
                         break
                     yield event
-                    _check_signal(opts.signal)
+                    request.check_signal()
         except Exception as exc:
             failure = exc
         finally:
             if opts.io_bridge is None:
                 bridge.close()
 
-        if isinstance(failure, _StreamAborted) or cancelled(opts.signal):
+        if isinstance(failure, _StreamAborted) or request.aborted.is_set() or cancelled(opts.signal):
             yield aborted_event(out)
         elif failure is not None:
             on_error(failure, request)
