@@ -35,7 +35,7 @@ from ..types import (
 from ..validate import parse_tool_arguments
 from ..web import declarations
 from ._errors import attach_error
-from ._http import ProviderError, run_cancellable
+from ._http import ProviderError, run_cancellable, sdk_stream
 
 BETA_FALLBACK = "server-side-fallback-2026-07-01"
 BETA_BINDING = "thinking-binding-controls-2026-08-01"
@@ -75,7 +75,7 @@ def _is_oauth(model: Model) -> bool:
     return model.options.get("authType") == "oauth" or "sk-ant-oat" in (_api_key(model) or "")
 
 
-def _client(model: Model):
+def _client(model: Model, bridge=None):
     import anthropic
 
     key = _api_key(model)
@@ -90,17 +90,19 @@ def _client(model: Model):
         headers.update({"accept": "application/json", "user-agent": "claude-cli/2.1.280", "x-app": "cli"})
     headers.update(model.options.get("headers") or {})
     cache_key = (key, base, oauth, tuple(sorted(headers.items())))
+    kwargs = {"max_retries": 0}  # the harness owns retries
+    if oauth:
+        kwargs["auth_token"] = key
+    elif key:
+        kwargs["api_key"] = key
+    if headers:
+        kwargs["default_headers"] = headers
+    if base:
+        kwargs["base_url"] = base
+    if bridge is not None:
+        return bridge.client(("anthropic", *cache_key), anthropic, anthropic.AsyncAnthropic, kwargs)
     with _clients_lock:
         if cache_key not in _clients:
-            kwargs = {"max_retries": 0}  # the harness owns retries
-            if oauth:
-                kwargs["auth_token"] = key
-            elif key:
-                kwargs["api_key"] = key
-            if headers:
-                kwargs["default_headers"] = headers
-            if base:
-                kwargs["base_url"] = base
             _clients[cache_key] = anthropic.Anthropic(**kwargs)
         return _clients[cache_key]
 
@@ -312,163 +314,149 @@ def classify_error(e: Exception) -> tuple[str, str]:
 
 def stream(model: Model, ctx: Context, opts: StreamOptions) -> EventStream:
     out = AssistantMessage(api="anthropic", provider=model.provider, model=model.id)
-    return EventStream(_events(model, ctx, opts, out), out)
+    return sdk_stream(
+        out, opts, lambda bridge: _client(model, bridge),
+        lambda client: client.beta.messages.create(**build_params(model, ctx, opts), stream=True),
+        lambda items, request: _events(items, out),
+        lambda error, request: _stream_error(error, request, model, ctx, out),
+    )
 
 
-def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessage):
+def _events(items, out: AssistantMessage):
     yield StreamEvent("start", out)
     json_bufs: dict[int, str] = {}
     index_map: dict[int, int] = {}  # api block index -> out.content index
-    resp = None
     completed = False
-    try:
-        params = build_params(model, ctx, opts)
-        if opts.signal is not None and opts.signal.is_set():
-            out.stop_reason = "aborted"
-            out.error_message = "aborted by user"
-            yield StreamEvent("error", out)
-            return
-        resp = _client(model).beta.messages.create(**params, stream=True)
-        for ev in resp:
-            if opts.signal is not None and opts.signal.is_set():
-                out.stop_reason = "aborted"
-                out.error_message = "aborted by user"
-                yield StreamEvent("error", out)
-                return
-            t = ev.type
-            if t == "message_start":
-                u = ev.message.usage
-                out.usage = Usage(
-                    input=u.input_tokens or 0,
-                    output=u.output_tokens or 0,
-                    cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
-                    cache_write=getattr(u, "cache_creation_input_tokens", 0) or 0,
-                )
-            elif t == "content_block_start":
-                b = ev.content_block
-                if b.type == "text":
-                    citations = [c.model_dump(mode="json", exclude_none=True) if hasattr(c, "model_dump") else copy.deepcopy(c)
-                                 for c in getattr(b, "citations", None) or []]
-                    out.content.append(TextContent(b.text or "", citations=citations))
-                    kind = "text_start"
-                elif b.type == "thinking":
-                    out.content.append(ThinkingContent(b.thinking or "", signature=b.signature or None))
-                    kind = "thinking_start"
-                elif b.type == "redacted_thinking":
-                    out.content.append(ThinkingContent("", signature=b.data, redacted=True))
-                    kind = "thinking_start"
-                elif b.type == "tool_use":
-                    out.content.append(ToolCall(b.id, b.name, b.input or {}))
+    for ev in items:
+        t = ev.type
+        if t == "message_start":
+            u = ev.message.usage
+            out.usage = Usage(
+                input=u.input_tokens or 0,
+                output=u.output_tokens or 0,
+                cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
+                cache_write=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            )
+        elif t == "content_block_start":
+            b = ev.content_block
+            if b.type == "text":
+                citations = [c.model_dump(mode="json", exclude_none=True) if hasattr(c, "model_dump") else copy.deepcopy(c)
+                             for c in getattr(b, "citations", None) or []]
+                out.content.append(TextContent(b.text or "", citations=citations))
+                kind = "text_start"
+            elif b.type == "thinking":
+                out.content.append(ThinkingContent(b.thinking or "", signature=b.signature or None))
+                kind = "thinking_start"
+            elif b.type == "redacted_thinking":
+                out.content.append(ThinkingContent("", signature=b.data, redacted=True))
+                kind = "thinking_start"
+            elif b.type == "tool_use":
+                out.content.append(ToolCall(b.id, b.name, b.input or {}))
+                json_bufs[ev.index] = ""
+                kind = "toolcall_start"
+            else:  # fallback / server blocks: echo back verbatim
+                out.content.append(RawContent("anthropic", b.model_dump(mode="json", exclude_none=True)))
+                kind = None
+                if b.type == "server_tool_use":
                     json_bufs[ev.index] = ""
-                    kind = "toolcall_start"
-                else:  # fallback / server blocks: echo back verbatim
-                    out.content.append(RawContent("anthropic", b.model_dump(mode="json", exclude_none=True)))
-                    kind = None
-                    if b.type == "server_tool_use":
-                        json_bufs[ev.index] = ""
-                        kind = "native_tool_start"
-                        out.native_started = True
-                    elif b.type in {"web_search_tool_result", "web_fetch_tool_result"}:
-                        out.native_started = True
-                        kind = "native_tool_start"
-                index_map[ev.index] = len(out.content) - 1
-                if kind:
-                    yield StreamEvent(kind, out, index_map[ev.index])
-            elif t == "content_block_delta":
-                i = index_map.get(ev.index)
-                if i is None:
-                    continue
-                d = ev.delta
-                blk = out.content[i]
-                if d.type == "text_delta":
-                    blk.text += d.text
-                    yield StreamEvent("text_delta", out, i, d.text)
-                elif d.type == "thinking_delta":
-                    blk.thinking += d.thinking
-                    yield StreamEvent("thinking_delta", out, i, d.thinking)
-                elif d.type == "signature_delta":
-                    blk.signature = (blk.signature or "") + d.signature
-                elif d.type == "input_json_delta":
-                    json_bufs[ev.index] = json_bufs.get(ev.index, "") + d.partial_json
-                    if isinstance(blk, ToolCall):
-                        yield StreamEvent("toolcall_delta", out, i, d.partial_json)
-                    elif isinstance(blk, RawContent) and blk.data.get("type") == "server_tool_use":
-                        yield StreamEvent("native_tool_delta", out, i, d.partial_json)
-                elif d.type == "citations_delta" and isinstance(blk, TextContent):
-                    citation = d.citation
-                    blk.citations.append(citation.model_dump(mode="json", exclude_none=True)
-                                         if hasattr(citation, "model_dump") else copy.deepcopy(citation))
-            elif t == "content_block_stop":
-                i = index_map.get(ev.index)
-                if i is None:
-                    continue
-                blk = out.content[i]
+                    kind = "native_tool_start"
+                    out.native_started = True
+                elif b.type in {"web_search_tool_result", "web_fetch_tool_result"}:
+                    out.native_started = True
+                    kind = "native_tool_start"
+            index_map[ev.index] = len(out.content) - 1
+            if kind:
+                yield StreamEvent(kind, out, index_map[ev.index])
+        elif t == "content_block_delta":
+            i = index_map.get(ev.index)
+            if i is None:
+                continue
+            d = ev.delta
+            blk = out.content[i]
+            if d.type == "text_delta":
+                blk.text += d.text
+                yield StreamEvent("text_delta", out, i, d.text)
+            elif d.type == "thinking_delta":
+                blk.thinking += d.thinking
+                yield StreamEvent("thinking_delta", out, i, d.thinking)
+            elif d.type == "signature_delta":
+                blk.signature = (blk.signature or "") + d.signature
+            elif d.type == "input_json_delta":
+                json_bufs[ev.index] = json_bufs.get(ev.index, "") + d.partial_json
                 if isinstance(blk, ToolCall):
-                    raw = json_bufs.pop(ev.index, "")
-                    if raw.strip():
-                        blk.arguments = parse_tool_arguments(raw)
-                    yield StreamEvent("toolcall_end", out, i)
+                    yield StreamEvent("toolcall_delta", out, i, d.partial_json)
                 elif isinstance(blk, RawContent) and blk.data.get("type") == "server_tool_use":
-                    raw = json_bufs.pop(ev.index, "")
-                    if raw.strip():
-                        # Server calls belong to the API history; never turn them into client calls.
-                        blk.data["input"] = json.loads(raw)
-                    yield StreamEvent("native_tool_end", out, i)
-                elif isinstance(blk, RawContent) and blk.data.get("type") in {"web_search_tool_result", "web_fetch_tool_result"}:
-                    yield StreamEvent("native_tool_end", out, i)
-                elif isinstance(blk, TextContent):
-                    yield StreamEvent("text_end", out, i)
-                elif isinstance(blk, ThinkingContent):
-                    yield StreamEvent("thinking_end", out, i)
-            elif t == "message_delta":
-                if ev.delta.stop_reason:
-                    out.stop_reason = _STOP.get(ev.delta.stop_reason, "stop")
-                    if ev.delta.stop_reason == "refusal":
-                        sd = getattr(ev.delta, "stop_details", None)
-                        cat = getattr(sd, "category", None) if sd else None
-                        expl = getattr(sd, "explanation", None) if sd else None
-                        out.error_message = (
-                            "The model declined this request"
-                            + (f" ({cat})" if cat else "")
-                            + (f": {expl}" if expl else ".")
-                        )
-                if ev.usage is not None:
-                    out.usage.output = ev.usage.output_tokens or out.usage.output
-                    if getattr(ev.usage, "input_tokens", None):
-                        out.usage.input = ev.usage.input_tokens
-            elif t == "message_stop":
-                completed = True
-        if not completed:
-            raise ProviderError("Anthropic stream ended before message_stop.", "retryable")
-        if out.stop_reason == "refusal":
-            yield StreamEvent("error", out)
-        else:
-            yield StreamEvent("done", out)
-    except Exception as e:  # noqa: BLE001
-        kind, text = classify_error(e)
-        web_decls = declarations(ctx)
-        if any(d.get("name") == "web_search" for d in web_decls) and is_search_unsupported(e):
-            kind = "search_unsupported"
-        if any(d.get("name") == "web_fetch" for d in web_decls) and is_web_unsupported(e, "fetch"):
-            kind = "fetch_unsupported"
-        out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
-        out.error_kind = kind
-        out.error_message = text
-        key = _api_key(model)
-        guidance = None
-        if key is None:
-            # The SDK can authenticate via its own profile or bearer token even without an API key.
-            unauthorized = getattr(e, "status_code", None) == 401
-            headers = getattr(getattr(e, "request", None), "headers", {}) if unauthorized else {}
-            if "Could not resolve authentication method" in text or (
-                unauthorized and not (headers.get("Authorization") or headers.get("X-Api-Key"))
-            ):
-                guidance = "No Anthropic credentials configured. Run /login to connect a provider, or /model to switch models."
-        attach_error(out, e, model, token=key, response=getattr(resp, "response", None), message=guidance)
+                    yield StreamEvent("native_tool_delta", out, i, d.partial_json)
+            elif d.type == "citations_delta" and isinstance(blk, TextContent):
+                citation = d.citation
+                blk.citations.append(citation.model_dump(mode="json", exclude_none=True)
+                                     if hasattr(citation, "model_dump") else copy.deepcopy(citation))
+        elif t == "content_block_stop":
+            i = index_map.get(ev.index)
+            if i is None:
+                continue
+            blk = out.content[i]
+            if isinstance(blk, ToolCall):
+                raw = json_bufs.pop(ev.index, "")
+                if raw.strip():
+                    blk.arguments = parse_tool_arguments(raw)
+                yield StreamEvent("toolcall_end", out, i)
+            elif isinstance(blk, RawContent) and blk.data.get("type") == "server_tool_use":
+                raw = json_bufs.pop(ev.index, "")
+                if raw.strip():
+                    # Server calls belong to the API history; never turn them into client calls.
+                    blk.data["input"] = json.loads(raw)
+                yield StreamEvent("native_tool_end", out, i)
+            elif isinstance(blk, RawContent) and blk.data.get("type") in {"web_search_tool_result", "web_fetch_tool_result"}:
+                yield StreamEvent("native_tool_end", out, i)
+            elif isinstance(blk, TextContent):
+                yield StreamEvent("text_end", out, i)
+            elif isinstance(blk, ThinkingContent):
+                yield StreamEvent("thinking_end", out, i)
+        elif t == "message_delta":
+            if ev.delta.stop_reason:
+                out.stop_reason = _STOP.get(ev.delta.stop_reason, "stop")
+                if ev.delta.stop_reason == "refusal":
+                    sd = getattr(ev.delta, "stop_details", None)
+                    cat = getattr(sd, "category", None) if sd else None
+                    expl = getattr(sd, "explanation", None) if sd else None
+                    out.error_message = (
+                        "The model declined this request"
+                        + (f" ({cat})" if cat else "")
+                        + (f": {expl}" if expl else ".")
+                    )
+            if ev.usage is not None:
+                out.usage.output = ev.usage.output_tokens or out.usage.output
+                if getattr(ev.usage, "input_tokens", None):
+                    out.usage.input = ev.usage.input_tokens
+        elif t == "message_stop":
+            completed = True
+    if not completed:
+        raise ProviderError("Anthropic stream ended before message_stop.", "retryable")
+    if out.stop_reason == "refusal":
         yield StreamEvent("error", out)
-    finally:
-        if resp is not None:
-            try:
-                resp.close()
-            except Exception:  # noqa: BLE001
-                pass
+    else:
+        yield StreamEvent("done", out)
+
+
+def _stream_error(e, request, model, ctx, out):
+    kind, text = classify_error(e)
+    web_decls = declarations(ctx)
+    if any(d.get("name") == "web_search" for d in web_decls) and is_search_unsupported(e):
+        kind = "search_unsupported"
+    if any(d.get("name") == "web_fetch" for d in web_decls) and is_web_unsupported(e, "fetch"):
+        kind = "fetch_unsupported"
+    out.stop_reason = "error"
+    out.error_kind = kind
+    out.error_message = text
+    key = _api_key(model)
+    guidance = None
+    if key is None:
+        # The SDK can authenticate via its own profile or bearer token even without an API key.
+        unauthorized = getattr(e, "status_code", None) == 401
+        headers = getattr(getattr(e, "request", None), "headers", {}) if unauthorized else {}
+        if "Could not resolve authentication method" in text or (
+            unauthorized and not (headers.get("Authorization") or headers.get("X-Api-Key"))
+        ):
+            guidance = "No Anthropic credentials configured. Run /login to connect a provider, or /model to switch models."
+    attach_error(out, e, model, token=key, response=request.response, message=guidance)

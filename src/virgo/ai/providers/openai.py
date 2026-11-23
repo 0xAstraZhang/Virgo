@@ -27,7 +27,7 @@ from ..types import (
 )
 from ..validate import parse_tool_arguments
 from ._errors import attach_error
-from ._http import ProviderError
+from ._http import ProviderError, sdk_stream
 from .reasoning import chat_effort
 
 _STOP = {"stop": "stop", "tool_calls": "tool_use", "function_call": "tool_use", "length": "length"}
@@ -39,7 +39,7 @@ _clients: dict = {}
 _clients_lock = threading.Lock()
 
 
-def _client(model: Model):
+def _client(model: Model, bridge=None):
     import openai
 
     env = model.api_key_env or ("OPENAI_API_KEY" if model.provider == "openai" else None)
@@ -47,13 +47,15 @@ def _client(model: Model):
     base = model.base_url or (os.environ.get("OPENAI_BASE_URL") if model.provider == "openai" else None)
     headers = dict(model.options.get("headers") or {})
     ck = (key, base, tuple(sorted(headers.items())))
+    kwargs = {"api_key": key, "max_retries": 0}
+    if headers:
+        kwargs["default_headers"] = headers
+    if base:
+        kwargs["base_url"] = base
+    if bridge is not None:
+        return bridge.client(("openai", *ck), openai, openai.AsyncOpenAI, kwargs)
     with _clients_lock:
         if ck not in _clients:
-            kwargs = {"api_key": key, "max_retries": 0}
-            if headers:
-                kwargs["default_headers"] = headers
-            if base:
-                kwargs["base_url"] = base
             _clients[ck] = openai.OpenAI(**kwargs)
         return _clients[ck]
 
@@ -148,108 +150,93 @@ def classify_error(e: Exception) -> tuple[str, str]:
 
 def stream(model: Model, ctx: Context, opts: StreamOptions) -> EventStream:
     out = AssistantMessage(api="openai", provider=model.provider, model=model.id)
-    return EventStream(_events(model, ctx, opts, out), out)
+    return sdk_stream(
+        out, opts, lambda bridge: _client(model, bridge),
+        lambda client: client.chat.completions.create(**build_params(model, ctx, opts)),
+        lambda items, request: _events(items, out),
+        lambda error, request: _stream_error(error, request, model, out),
+    )
 
 
-def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessage):
+def _events(items, out: AssistantMessage):
     yield StreamEvent("start", out)
     text_i: int | None = None
     think_i: int | None = None
     calls: dict[int, tuple[int, str]] = {}  # openai index -> (content index, json buffer)
     finish = None
-    resp = None
-    token = ""
-    try:
-        if opts.signal is not None and opts.signal.is_set():
-            out.stop_reason = "aborted"
-            out.error_message = "aborted by user"
-            yield StreamEvent("error", out)
-            return
-        client = _client(model)
-        token = getattr(client, "api_key", "")
-        resp = client.chat.completions.create(**build_params(model, ctx, opts))
-        for chunk in resp:
-            if opts.signal is not None and opts.signal.is_set():
-                out.stop_reason = "aborted"
-                out.error_message = "aborted by user"
-                yield StreamEvent("error", out)
-                return
-            if getattr(chunk, "usage", None):
-                u = chunk.usage
-                cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", None)
-                if cached is None:
-                    cached = getattr(u, "prompt_cache_hit_tokens", 0) or 0
-                out.usage = Usage(
-                    input=max(0, (u.prompt_tokens or 0) - cached),
-                    output=u.completion_tokens or 0,
-                    cache_read=cached,
+    for chunk in items:
+        if getattr(chunk, "usage", None):
+            u = chunk.usage
+            cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", None)
+            if cached is None:
+                cached = getattr(u, "prompt_cache_hit_tokens", 0) or 0
+            out.usage = Usage(
+                input=max(0, (u.prompt_tokens or 0) - cached),
+                output=u.completion_tokens or 0,
+                cache_read=cached,
+            )
+        if not chunk.choices:
+            continue
+        ch = chunk.choices[0]
+        d = ch.delta
+        reasoning = getattr(d, "reasoning_content", None) or getattr(d, "reasoning", None)
+        if reasoning:
+            if think_i is None:
+                out.content.append(ThinkingContent(""))
+                think_i = len(out.content) - 1
+                yield StreamEvent("thinking_start", out, think_i)
+            out.content[think_i].thinking += reasoning
+            yield StreamEvent("thinking_delta", out, think_i, reasoning)
+        if d.content:
+            if text_i is None:
+                out.content.append(TextContent(""))
+                text_i = len(out.content) - 1
+                yield StreamEvent("text_start", out, text_i)
+            out.content[text_i].text += d.content
+            yield StreamEvent("text_delta", out, text_i, d.content)
+        for tc in d.tool_calls or []:
+            if tc.index not in calls:
+                out.content.append(
+                    ToolCall(tc.id or f"call_{tc.index}", (tc.function and tc.function.name) or "", {})
                 )
-            if not chunk.choices:
-                continue
-            ch = chunk.choices[0]
-            d = ch.delta
-            reasoning = getattr(d, "reasoning_content", None) or getattr(d, "reasoning", None)
-            if reasoning:
-                if think_i is None:
-                    out.content.append(ThinkingContent(""))
-                    think_i = len(out.content) - 1
-                    yield StreamEvent("thinking_start", out, think_i)
-                out.content[think_i].thinking += reasoning
-                yield StreamEvent("thinking_delta", out, think_i, reasoning)
-            if d.content:
-                if text_i is None:
-                    out.content.append(TextContent(""))
-                    text_i = len(out.content) - 1
-                    yield StreamEvent("text_start", out, text_i)
-                out.content[text_i].text += d.content
-                yield StreamEvent("text_delta", out, text_i, d.content)
-            for tc in d.tool_calls or []:
-                if tc.index not in calls:
-                    out.content.append(
-                        ToolCall(tc.id or f"call_{tc.index}", (tc.function and tc.function.name) or "", {})
-                    )
-                    calls[tc.index] = (len(out.content) - 1, "")
-                    yield StreamEvent("toolcall_start", out, calls[tc.index][0])
-                ci, buf = calls[tc.index]
-                if tc.function and tc.function.name and not out.content[ci].name:
-                    out.content[ci].name = tc.function.name
-                piece = (tc.function and tc.function.arguments) or ""
-                calls[tc.index] = (ci, buf + piece)
-                if piece:
-                    yield StreamEvent("toolcall_delta", out, ci, piece)
-            if ch.finish_reason:
-                finish = ch.finish_reason
-        if think_i is not None:
-            yield StreamEvent("thinking_end", out, think_i)
-        for ci, buf in calls.values():
-            out.content[ci].arguments = parse_tool_arguments(buf)
-            yield StreamEvent("toolcall_end", out, ci)
-        if text_i is not None:
-            yield StreamEvent("text_end", out, text_i)
-        if finish is None:
-            raise ProviderError("Chat Completions stream ended before a finish reason.", "retryable")
-        if finish == "content_filter":
-            out.stop_reason = "refusal"
-            out.error_message = "The response was blocked by the provider's content filter."
-            yield StreamEvent("error", out)
-            return
-        out.stop_reason = _STOP.get(finish or "stop", "stop")
-        if calls and out.stop_reason == "stop":
-            out.stop_reason = "tool_use"
-        yield StreamEvent("done", out)
-    except Exception as e:  # noqa: BLE001
-        kind, text = classify_error(e)
-        out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
-        out.error_kind = kind
-        out.error_message = text
-        guidance = None
-        if token == "not-set" and getattr(e, "status_code", None) == 401:
-            guidance = f"No {model.provider} credentials configured. Run /login to connect a provider, or /model to switch models."
-        attach_error(out, e, model, token=token, response=getattr(resp, "response", None), message=guidance)
+                calls[tc.index] = (len(out.content) - 1, "")
+                yield StreamEvent("toolcall_start", out, calls[tc.index][0])
+            ci, buf = calls[tc.index]
+            if tc.function and tc.function.name and not out.content[ci].name:
+                out.content[ci].name = tc.function.name
+            piece = (tc.function and tc.function.arguments) or ""
+            calls[tc.index] = (ci, buf + piece)
+            if piece:
+                yield StreamEvent("toolcall_delta", out, ci, piece)
+        if ch.finish_reason:
+            finish = ch.finish_reason
+    if think_i is not None:
+        yield StreamEvent("thinking_end", out, think_i)
+    for ci, buf in calls.values():
+        out.content[ci].arguments = parse_tool_arguments(buf)
+        yield StreamEvent("toolcall_end", out, ci)
+    if text_i is not None:
+        yield StreamEvent("text_end", out, text_i)
+    if finish is None:
+        raise ProviderError("Chat Completions stream ended before a finish reason.", "retryable")
+    if finish == "content_filter":
+        out.stop_reason = "refusal"
+        out.error_message = "The response was blocked by the provider's content filter."
         yield StreamEvent("error", out)
-    finally:
-        if resp is not None:
-            try:
-                resp.close()
-            except Exception:  # noqa: BLE001
-                pass
+        return
+    out.stop_reason = _STOP.get(finish or "stop", "stop")
+    if calls and out.stop_reason == "stop":
+        out.stop_reason = "tool_use"
+    yield StreamEvent("done", out)
+
+
+def _stream_error(e, request, model, out):
+    token = getattr(request.client, "api_key", "")
+    kind, text = classify_error(e)
+    out.stop_reason = "error"
+    out.error_kind = kind
+    out.error_message = text
+    guidance = None
+    if token == "not-set" and getattr(e, "status_code", None) == 401:
+        guidance = f"No {model.provider} credentials configured. Run /login to connect a provider, or /model to switch models."
+    attach_error(out, e, model, token=token, response=request.response, message=guidance)

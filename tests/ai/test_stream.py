@@ -121,3 +121,64 @@ def test_legacy_search_started_deserializes_into_native_started():
     assert message_from_dict({**base, "native_started": False, "search_started": True}).native_started is True
     assert message_from_dict({**base, "native_started": True, "search_started": False}).native_started is True
     assert "search_started" not in message_to_dict(restored_false)
+
+
+@pytest.fixture(params=["EventStream", "ai.stream"])
+def tracked_stream(request, monkeypatch):
+    closed = threading.Event()
+    message = AssistantMessage()
+
+    def provider():
+        try:
+            yield StreamEvent("start", message)
+            yield StreamEvent("done", message)
+        finally:
+            closed.set()
+
+    # Keep both wrappers AND the generator alive. Reference counting must never be
+    # what runs finally at a terminal event, result(), explicit close, or scope exit.
+    generator = provider()
+    inner = EventStream(generator, message)
+    monkeypatch.setattr(faux, "stream", lambda *_: inner)
+    stream = inner if request.param == "EventStream" else ai.stream(ai.resolve_model("faux/test"), ai.Context("", []))
+    yield stream, closed
+    generator.close()
+
+
+def test_retained_stream_closes_before_terminal_delivery(tracked_stream):
+    stream, closed = tracked_stream
+    events = iter(stream)
+    assert next(events).type == "start" and not closed.is_set()
+    assert next(events).type == "done"
+    assert closed.is_set()
+
+
+def test_retained_stream_result_closes_provider(tracked_stream):
+    stream, closed = tracked_stream
+    assert stream.result().stop_reason == "stop"
+    assert closed.is_set()
+
+
+def test_explicit_stream_close_reaches_provider(tracked_stream):
+    stream, closed = tracked_stream
+    events = iter(stream)
+    assert next(events).type == "start" and not closed.is_set()
+    stream.close()
+    assert closed.is_set()
+
+
+def test_break_from_scoped_stream_closes_provider(tracked_stream):
+    stream, closed = tracked_stream
+    with stream as active:
+        for event in active:
+            assert event.type == "start" and not closed.is_set()
+            break
+    assert closed.is_set()
+
+
+def test_retained_iterator_stops_after_explicit_close(tracked_stream):
+    stream, closed = tracked_stream
+    events = iter(stream)
+    assert next(events).type == "start"
+    stream.close()
+    assert closed.is_set() and list(events) == []

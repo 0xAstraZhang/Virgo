@@ -11,7 +11,7 @@ import json
 from collections.abc import Iterable
 
 from ..search import is_search_unsupported
-from ..stream import EventStream, StreamEvent
+from ..stream import EventStream, StreamEvent, aborted_event
 from ..types import (
     AssistantMessage,
     Context,
@@ -29,7 +29,7 @@ from ..types import (
 from ..validate import parse_tool_arguments
 from ..web import declarations
 from ._errors import attach_error
-from ._http import ProviderError, cancelled, run_cancellable
+from ._http import ProviderError, cancelled, run_cancellable, sdk_stream
 from .openai import _client, classify_error
 from .reasoning import responses_effort
 
@@ -316,8 +316,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
 
     for raw in events:
         if opts.signal is not None and opts.signal.is_set():
-            out.stop_reason, out.error_message = "aborted", "aborted by user"
-            yield StreamEvent("error", out)
+            yield aborted_event(out)
             return
         event = _dict(raw)
         kind = event.get("type", "")
@@ -400,44 +399,31 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             yield StreamEvent("error", out)
             return
     if opts.signal is not None and opts.signal.is_set():
-        out.stop_reason, out.error_message = "aborted", "aborted by user"
-    else:
-        out.stop_reason, out.error_kind = "error", "retryable"
-        out.error_message = "Responses stream ended before the final response."
-        attach_error(out, None, model)
+        yield aborted_event(out)
+        return
+    out.stop_reason, out.error_kind = "error", "retryable"
+    out.error_message = "Responses stream ended before the final response."
+    attach_error(out, None, model)
     yield StreamEvent("error", out)
 
 
 def stream(model: Model, ctx: Context, opts: StreamOptions) -> EventStream:
     out = AssistantMessage(api=model.api, provider=model.provider, model=model.id)
-    return EventStream(_events(model, ctx, opts, out), out)
-
-
-def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessage):
-    response = None
-    token = ""
-    try:
-        if opts.signal is not None and opts.signal.is_set():
-            out.stop_reason, out.error_message = "aborted", "aborted by user"
-            yield StreamEvent("error", out)
-            return
-        client = _client(model)
-        token = getattr(client, "api_key", "")
-        response = client.responses.create(**build_params(model, ctx, opts))
-        for event in parse_events(response, model, out, opts, web_search=bool(ctx.web_tools)):
-            if out.error_message:
-                attach_error(out, None, model, token=token, response=getattr(response, "response", None))
+    def parse(items, request):
+        for event in parse_events(items, model, out, opts, web_search=bool(ctx.web_tools)):
+            if out.error_message and out.stop_reason != "aborted":
+                attach_error(out, None, model, token=getattr(request.client, "api_key", ""), response=request.response)
             yield event
-    except Exception as exc:  # noqa: BLE001 - provider failures are data
+
+    def on_error(exc, request):
         out.error_kind, out.error_message = classify_error(exc)
         if ctx.web_tools and is_search_unsupported(exc):
             out.error_kind = "search_unsupported"
-        out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
-        attach_error(out, exc, model, token=token, response=getattr(response, "response", None))
-        yield StreamEvent("error", out)
-    finally:
-        if response is not None:
-            try:
-                response.close()
-            except Exception:  # noqa: BLE001 - cleanup must not replace the result
-                pass
+        out.stop_reason = "error"
+        attach_error(out, exc, model, token=getattr(request.client, "api_key", ""), response=request.response)
+
+    return sdk_stream(
+        out, opts, lambda bridge: _client(model, bridge),
+        lambda client: client.responses.create(**build_params(model, ctx, opts)),
+        parse, on_error,
+    )

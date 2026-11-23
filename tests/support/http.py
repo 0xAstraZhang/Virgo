@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import select
 import socket
 import socketserver
 import threading
+import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -33,9 +35,10 @@ def bypass_proxies(monkeypatch) -> None:
 
 
 @contextlib.contextmanager
-def serve(handler: type[BaseHTTPRequestHandler]) -> Iterator[str]:
+def serve(handler: type[BaseHTTPRequestHandler], *, join_handlers: bool = False) -> Iterator[str]:
     """Serve ``handler`` on an ephemeral loopback port and yield its base URL."""
     server = LoopbackHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = not join_handlers
     # The default 0.5 s poll interval made every shutdown wait about half a second.
     worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     worker.start()
@@ -77,67 +80,97 @@ def fake_api(**overrides) -> Iterator[dict]:
     ``response_headers``
         Extra HTTP response headers, such as a provider request ID or Retry-After.
     ``stall`` / ``stall_at``
-        Hold the reply before its headers (``"headers"``) or before its body (``"body"``) until
-        teardown; ``started`` is set once the server is holding it.
+        Hold before headers (``"headers"``), after headers (``"body"``), or after flushing
+        ``prefix`` bytes (``"delta"``). Each POST snapshots its reply so siblings can be scripted
+        independently. ``started`` marks entry to the stall, ``peer_closed`` marks client EOF
+        or reset there, and ``expired`` marks the stall_timeout safety deadline.
     ``drop``
         Send the body as one chunk, then cut the connection before the terminating chunk.
 
     Each recorded request is ``{"path", "headers" (lower-case names), "json"}``.
     """
-    started, release = threading.Event(), threading.Event()
+    release = threading.Event()
     state = {
         "requests": [], "status": 200, "body": b"", "content_type": None,
         "stall": False, "stall_at": "body", "drop": False,
-        "started": started, "release": release, **overrides,
+        "started": threading.Event(), "release": release, "peer_closed": threading.Event(),
+        "expired": threading.Event(), "stall_timeout": 4.0, "prefix": b"", **overrides,
     }
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        timeout = 4
+
         def do_POST(self):  # noqa: N802
+            self.close_connection = True
             length = int(self.headers.get("content-length", 0))
+            reply = state.copy()
             state["requests"].append({
                 "path": self.path,
                 "headers": {key.lower(): value for key, value in self.headers.items()},
                 "json": json.loads(self.rfile.read(length)),
             })
-            if state["drop"]:
-                self.drop_mid_body()
+            try:
+                self.respond(reply)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass  # Client went away during a write, outside the observed stall.
+
+        def respond(self, reply):
+            stall = not reply["drop"] and reply["stall"] and reply["stall_at"]
+            if stall == "headers" and self.hold(reply):
                 return
-            stall = state["stall"] and state["stall_at"]
-            if stall == "headers":
-                started.set()
-                release.wait(3)
-            self.send_response(state["status"])
-            content_type = state["content_type"] or (
-                "text/event-stream" if state["status"] == 200 else "application/json"
+            status = 200 if reply["drop"] else reply["status"]
+            self.send_response(status)
+            content_type = reply["content_type"] or (
+                "text/event-stream" if status == 200 else "application/json"
             )
             self.send_header("Content-Type", content_type)
-            for name, value in state.get("response_headers", {}).items():
+            self.send_header("Connection", "close")
+            if reply["drop"]:
+                self.send_header("Transfer-Encoding", "chunked")
+            for name, value in reply.get("response_headers", {}).items():
                 self.send_header(name, value)
             self.end_headers()
-            started.set()
-            if stall == "body":
-                release.wait(3)
-            try:
-                self.wfile.write(state["body"])
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # the client cancelled while the reply was held
+            if reply["drop"]:
+                self.drop_mid_body(reply["body"])
+                return
+            if stall == "delta":
+                self.wfile.write(reply["prefix"])
+                self.wfile.flush()
+            if stall in ("body", "delta") and self.hold(reply):
+                return
+            reply["started"].set()
+            self.wfile.write(reply["body"])
 
-        def drop_mid_body(self):
-            self.protocol_version = "HTTP/1.1"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Transfer-Encoding", "chunked")
-            self.end_headers()
-            body = state["body"]
+        def hold(self, reply):
+            deadline = time.monotonic() + reply["stall_timeout"]
+            reply["started"].set()
+            while not (release.is_set() or reply["release"].is_set()):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    reply["expired"].set()
+                    return False
+                # Windows select accepts sockets. Only read when readable, while the
+                # handler still owns the connection and has sent no further bytes.
+                if select.select([self.connection], [], [], min(0.025, remaining))[0]:
+                    try:
+                        if self.connection.recv(1):
+                            continue
+                    except (ConnectionResetError, ConnectionAbortedError):
+                        pass
+                    reply["peer_closed"].set()
+                    return True
+            return False
+
+        def drop_mid_body(self, body):
             self.wfile.write(f"{len(body):x}\r\n".encode() + body + b"\r\n")
             self.wfile.flush()
             self.connection.shutdown(socket.SHUT_RDWR)
-            self.close_connection = True
 
         def log_message(self, *_args):
             pass
 
-    with serve(Handler) as url:
+    with serve(Handler, join_handlers=True) as url:
         state["url"] = url
         try:
             yield state

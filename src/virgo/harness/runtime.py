@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Literal
 from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent
 from ..ai.compaction import compatible_context, context_binding, is_native_context
-from ..ai.stream import EventStream, StreamEvent
+from ..ai.stream import EventStream, StreamEvent, aborted_event
 from ..ai.transform import strip_thinking
 from ..ai.types import (
     AssistantMessage,
@@ -557,38 +557,37 @@ class Runtime:
         checked_model = None
         while True:
             if not self.can_run() or signal.is_set():
-                stopped = AssistantMessage(stop_reason="aborted")
-                yield StreamEvent("error", stopped)
+                yield aborted_event(AssistantMessage())
                 return
             model_key = (model.spec, model.context_window)
             if (self.restore_native_context(model) or model_key != checked_model) and self._compaction_due(model):
                 if self._compact(reason="auto", model=model) == "cancelled":
-                    yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
+                    yield aborted_event(AssistantMessage())
                     return
             checked_model = model_key
             self.recovery.safely("before_request")
             if not self.can_run() or signal.is_set():
-                yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
+                yield aborted_event(AssistantMessage())
                 return
             ctx = self.request_context(messages, model)
             opts = StreamOptions(
                 signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort,
-                prompt_cache_key=self.diagnostic_id,
+                prompt_cache_key=self.diagnostic_id, io_bridge=s.io_bridge,
             )
             if not self.can_run() or signal.is_set():
-                stopped = AssistantMessage(stop_reason="aborted")
-                yield StreamEvent("error", stopped)
+                yield aborted_event(AssistantMessage())
                 return
             request_model = model
             self.request_budget.consume()
             self._attempt_number += 1
             self._call_started = time.monotonic()
             failed: AssistantMessage | None = None
-            for ev in ai.stream(model, ctx, opts):
-                if ev.type == "error" and ev.partial.stop_reason == "error":
-                    failed = ev.partial
-                    break
-                yield ev
+            with ai.stream(model, ctx, opts) as events:
+                for ev in events:
+                    if ev.type == "error" and ev.partial.stop_reason == "error":
+                        failed = ev.partial
+                        break
+                    yield ev
             if failed is None:
                 return
             duration = time.monotonic() - self._call_started
@@ -615,7 +614,7 @@ class Runtime:
                 yield StreamEvent("retry", failed)
                 outcome = self._compact(reason="overflow", model=model)
                 if outcome == "cancelled":
-                    yield StreamEvent("error", AssistantMessage(stop_reason="aborted"))
+                    yield aborted_event(AssistantMessage())
                     return
                 if isinstance(outcome, dict):
                     record_call(self.accounting_store, request_model, failed, purpose="retry",

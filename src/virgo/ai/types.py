@@ -225,3 +225,4 @@ class StreamOptions:
     max_tokens: int | None = None
     effort: str | None = None
     prompt_cache_key: str | None = None
+    io_bridge: Any = field(default=None, repr=False, compare=False)
