@@ -5,9 +5,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import sysconfig
+import time
+from contextlib import suppress
 from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
@@ -23,7 +26,7 @@ from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, TextContent, Usage
 from virgo.harness import preferences
 
-from tests.support.harness import install_responses
+from tests.support.harness import install_responses, wait_until
 from tests.support.persistence import diagnostic_records
 
 COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" else "virgo")
@@ -216,6 +219,97 @@ def test_print_text_ignores_fullscreen_option(entry, project):
         timeout=10,
     )
     assert result.stdout.strip() == "(faux) You said: hello"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires SIGINT delivery to a PID and POSIX process groups")
+def test_print_sigint_cancels_parallel_shell_process_groups(project, python_command, monkeypatch):
+    monkeypatch.setenv("VIRGO_SHELL", "/bin/bash")
+    payload = python_command(
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        "slot = sys.argv[1]\n"
+        "Path(f'started-{slot}-{os.getpid()}').touch()\n"
+        "time.sleep(20)\n"
+        "Path(f'late-{slot}').touch()\n"
+    )
+    calls = [("bash", {"command": f"exec {payload} {slot}"}) for slot in ("one", "two")]
+    # Only the provider is scripted. The second process must see the saved tool calls.
+    driver = f"""
+from virgo.ai.providers import faux
+from virgo.ai.types import AssistantMessage
+from virgo.cli.main import main
+
+def respond(ctx):
+    if ctx.messages[-1].text() == "start":
+        return faux.reply(tools={calls!r})
+    if any(isinstance(m, AssistantMessage) and len(m.tool_calls()) == 2 for m in ctx.messages):
+        return faux.reply("resumed interrupted batch")
+    return faux.error("missing interrupted batch in history")
+
+faux.handler("interrupt", respond)
+raise SystemExit(main())
+"""
+    argv = [sys.executable, "-c", driver, "-p", "-m", "faux/interrupt", "--permission", "no-limit"]
+
+    def started_pids():
+        return {int(path.name.rsplit("-", 1)[1]) for path in project.glob("started-*")}
+
+    reaped = set()
+    with subprocess.Popen(
+        [*argv, "start"],
+        cwd=project,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    ) as proc:
+        try:
+
+            def both_started():
+                return all(any(project.glob(f"started-{slot}-*")) for slot in ("one", "two"))
+
+            wait_until(lambda: both_started() or proc.poll() is not None, timeout=15)
+            assert proc.poll() is None, proc.stdout.read()
+            pids = started_pids()
+            assert len(pids) == 2
+            for pid in pids:
+                assert os.getpgid(pid) == pid  # exec made the payload the live group leader
+
+            start = time.monotonic()
+            proc.send_signal(signal.SIGINT)
+            try:
+                code = proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pytest.fail("Virgo was still running 5.0s after SIGINT with both shell calls started")
+            assert time.monotonic() - start < 5.0
+            assert code == 130, proc.stdout.read()
+            for pid in pids:
+                with pytest.raises(ProcessLookupError):
+                    os.kill(pid, 0)
+                with pytest.raises(ProcessLookupError):
+                    os.killpg(pid, 0)
+                reaped.add(pid)
+            assert not list(project.glob("late-*"))
+
+            resumed = subprocess.run(
+                [*argv, "--continue", "resume"],
+                cwd=project,
+                input="",
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+            assert resumed.stdout.strip() == "resumed interrupted batch"
+            assert started_pids() == pids
+            assert not list(project.glob("late-*"))
+        finally:
+            # A failed cancellation (including replay on resume) must not leave a payload running.
+            for pid in started_pids() - reaped:
+                with suppress(ProcessLookupError):
+                    os.killpg(pid, signal.SIGKILL)
+                with suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+            proc.kill()
 
 
 @pytest.mark.parametrize(("responses", "expected"), [
