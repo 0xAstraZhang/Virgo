@@ -150,6 +150,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     TITLE = "Virgo"
     CSS = """
     * { scrollbar-size-vertical: 0; }
+    ApprovalPicker > #approval-question { scrollbar-size-vertical: 1; }
     Screen { background: $background; color: $foreground; }
     #topbar { height: 1; padding: 0 1; }
     #brand { height: 1; width: auto; margin-right: 1; }

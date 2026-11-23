@@ -156,7 +156,7 @@ class ModeExecutionProvider(HostExecutionProvider):
             f"High-risk command detected ({match.category}): {match.reason}\n"
             f"Command: {command}\n"
             f"Working directory: {Path(event.cwd).resolve()}\n"
-            "Approve executing this command once? [y/n]"
+            "Approve executing this command once?"
         )
         answer = caller(question, event.agent)
         with self.session._lock:
@@ -195,7 +195,7 @@ class ModeExecutionProvider(HostExecutionProvider):
             f"Command: {command}\n"
             f"Working directory: {Path(ctx.cwd).resolve()}\n"
             f"Run this single command with No-Limit (Host) authority? "
-            f"(Session remains in {mode_name}; switch permanently with /permissions no-limit.) [y/n]"
+            f"(Session remains in {mode_name}; switch permanently with /permissions no-limit.)"
         )
         if confirm_callable(self.session.ui, prefer_persistent=False)(question, ctx.agent) != "y":
             return None

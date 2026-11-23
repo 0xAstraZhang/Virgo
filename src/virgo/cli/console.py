@@ -302,6 +302,10 @@ class TerminalUI(UI):
     def confirm(self, question: str, agent: str = "main") -> str | None:
         with self._lock:
             self._newline()
+        hint = tr(self, "ui.approval.prompt_hint")
+        question = question.rstrip()
+        if not question.endswith(hint):
+            question += "\n" + hint
         return self.broker.ask(self._style("? ", "warn") + question, self.write)
 
     def confirm_once(self, question: str, agent: str = "main") -> str | None:
