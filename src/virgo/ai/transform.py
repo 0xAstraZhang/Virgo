@@ -38,7 +38,7 @@ def _foreign_tool_id(tid: str) -> str:
 def normalize(messages: list, model: Model) -> list:
     """Return a cleaned copy:
 
-    - drop errored/aborted assistant messages that carry nothing usable
+    - drop empty errored turns and mark interruptions that have no replayable output
     - drop thinking / raw blocks produced by a different API
     - normalize foreign tool IDs and their paired results for Messages / Chat Completions
     - add an error tool result for any tool call that never got one
@@ -68,9 +68,8 @@ def normalize(messages: list, model: Model) -> list:
 
                 m = copy.deepcopy(m)
                 add_source_links(m)
-            if m.stop_reason in ("error", "aborted") and not m.tool_calls():
-                if not m.text().strip():
-                    continue
+            if m.stop_reason == "error" and not m.tool_calls() and not m.text().strip():
+                continue
             same_api = m.api == model.api
             same_provider = same_api and m.provider == model.provider
             blocks = []
@@ -122,6 +121,10 @@ def normalize(messages: list, model: Model) -> list:
                 # never replay tool calls from a broken turn
                 blocks = [b for b in blocks if not isinstance(b, ToolCall)]
                 source_calls.clear()
+            if m.stop_reason == "aborted" and not any(
+                isinstance(b, RawContent) or (isinstance(b, TextContent) and b.text.strip()) for b in blocks
+            ):
+                blocks = [TextContent("[Previous response interrupted.]")]
             if not blocks:
                 continue
             nm = copy.copy(m)
@@ -158,13 +161,13 @@ def _strip_images(m, model: Model):
 
 
 def strip_thinking(messages: list) -> list:
-    """Remove thinking blocks (used for turns retained across a compaction)."""
+    """Remove thinking from retained turns, keeping interruptions for request normalization."""
     out = []
     for m in messages:
         if isinstance(m, AssistantMessage) and any(isinstance(b, ThinkingContent) for b in m.content):
             nm = copy.copy(m)
             nm.content = [b for b in m.content if not isinstance(b, ThinkingContent)]
-            if not nm.content:
+            if not nm.content and m.stop_reason != "aborted":
                 continue
             out.append(nm)
         else:
