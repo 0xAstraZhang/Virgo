@@ -6,8 +6,10 @@
 
 After a length-limited automatic summary, the run can try one shorter summary in the
 safety reserve or on provider overflow, if the endpoint supports a shorter target.
-Compaction runs at model-call boundaries. OpenAI returns a complete replacement window;
-Anthropic and portable summaries retain about ``keepRecentTokens`` of recent messages.
+Compaction runs at model-call boundaries. OpenAI returns a complete replacement window.
+Anthropic uses ``keepRecentTokens`` for tail selection. Portable checkpoints cap that
+tail budget at a quarter of the active window and target 1/32 of the window for prose
+(256 to 8000 tokens, or 8000 for an unknown window). File lists are appended separately.
 Native provider blocks are persisted verbatim; the complete original history stays on disk.
 Per-result output budgets live in tools/output.py.
 """
@@ -48,16 +50,21 @@ SUMMARY_SYSTEM = (
 )
 
 SUMMARY_FORMAT = (
-    "Summarize what the agent needs to continue: the original goal, later corrections, constraints, "
-    "progress, unresolved work and key facts. Preserve exact identifiers, paths and errors when needed. "
-    "Choose a concise structure suited to this conversation."
+    "Summarize only the earlier evicted turns before the retained recent messages. "
+    "Describe progress as of the end of those turns. Later work may have changed that status. "
+    "Preserve the original goal, corrections, constraints, and essential identifiers and errors. "
+    "Replace obsolete status claims and long inventories with exact paths, validated decisions, "
+    "and unfinished deliverables. Limit the prose to {target} visible tokens (~{chars} characters). "
+    "Omit file lists. The harness appends them separately."
 )
 
+SUMMARY_TOKENS = 8000
 RECOVERY_TOKENS = 1024
-RECOVERY_INSTRUCTION = (
-    f"Write at most {RECOVERY_TOKENS} tokens. Keep only the current goal, binding constraints, "
+RECOVERY_FOCUS = (
+    "Keep only the current goal, binding constraints, "
     "essential findings and immediate next steps. Omit the step-by-step history."
 )
+RECOVERY_INSTRUCTION = f"Write at most {RECOVERY_TOKENS} tokens. {RECOVERY_FOCUS}"
 FailureReason = Literal["length", "empty", "cancelled", "error"]
 CompactOutcome = dict | FailureReason | None
 
@@ -217,7 +224,12 @@ def compact_context(rt: Runtime, focus: str | None, reason: str, *, model, conci
         return _native_compact(rt, model, api, focus, reason, concise)
     session = rt.session
     messages = rt.messages
+    window = model.context_window
     keep = int(session.settings.get("compaction.keepRecentTokens", 20000))
+    target = SUMMARY_TOKENS
+    if window > 0:
+        keep = min(max(0, keep), window // 4)
+        target = min(SUMMARY_TOKENS, max(256, window // 32))
     if reason == "overflow":
         keep //= 2
     cut = find_cut(messages, keep)
@@ -244,13 +256,16 @@ def compact_context(rt: Runtime, focus: str | None, reason: str, *, model, conci
                 (read if tag == "read-files" else modified).update(paths.strip("\n").splitlines())
         prev_text = _FILE_BLOCK.sub("", prev_text).strip()
         prompt = f"<previous-summary>\n{prev_text}\n</previous-summary>\n\n{prompt}"
-        prompt += "Update the previous summary with the new transcript: keep what is still relevant, update progress, drop what is obsolete.\n\n"
+        prompt += "Rewrite the previous summary to reflect the additional evicted turns.\n\n"
     if focus:
         prompt += f"Pay special attention to: {focus}\n\n"
-    prompt += SUMMARY_FORMAT
+    # The normal output allowance also pays for reasoning, even with a short prose target.
+    max_tokens = SUMMARY_TOKENS
     if concise:
-        prompt += "\n\n" + RECOVERY_INSTRUCTION
-    max_tokens = RECOVERY_TOKENS if concise else 8000
+        target = RECOVERY_TOKENS if target > RECOVERY_TOKENS else target // 2
+        max_tokens = target
+        prompt += RECOVERY_FOCUS + "\n\n"
+    prompt += SUMMARY_FORMAT.format(target=target, chars=4 * target)
     msg = session.complete("compaction", SUMMARY_SYSTEM, prompt, max_tokens=max_tokens,
                            effort=session.small_model_effort, signal=rt.agent.signal, agent=rt.name,
                            accounting_store=rt.accounting_store)

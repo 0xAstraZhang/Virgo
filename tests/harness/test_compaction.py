@@ -469,6 +469,114 @@ def summary_calls(session):
     return [row for row in session.store.custom("model_call") if row["purpose"] == "compaction"]
 
 
+@pytest.mark.parametrize("window,normal,recovery,reasoning,model_max", [
+    pytest.param(65_536, 2048, 1024, True, 32_768, id="64k-reasoning"),
+    pytest.param(65_536, 2048, 1024, False, 32_768, id="64k-plain"),
+    pytest.param(1_000_000, 8000, 1024, True, 10_000, id="1m-model-cap"),
+    pytest.param(256_000, 8000, 1024, False, 32_768, id="target-cap"),
+    pytest.param(32_800, 1025, 1024, True, 32_768, id="above-recovery-cap"),
+    pytest.param(32_768, 1024, 512, True, 32_768, id="at-recovery-cap"),
+    pytest.param(16_384, 512, 256, True, 32_768, id="16k"),
+    pytest.param(4096, 256, 128, False, 32_768, id="target-floor"),
+    pytest.param(0, 8000, 1024, True, 32_768, id="unknown"),
+    pytest.param(-1, 8000, 1024, False, 32_768, id="negative"),
+])
+def test_portable_prose_and_completion_budgets(make_session, monkeypatch, window, normal, recovery, reasoning, model_max):
+    session = make_session(faux.reply("Earlier work"))
+    session.prompt("Original request")
+    # The checkpoint has to fit the active fallback window. The auxiliary model generates it.
+    target = replace(session.resolve("faux/fallback"), context_window=window)
+    session.small_model = replace(session.resolve("faux/small"), context_window=200_000, reasoning=reasoning,
+                                  supported_reasoning_levels=("low",) if reasoning else (), max_tokens=model_max)
+    allowances = []
+    complete = session.complete
+
+    def record(purpose, system, prompt, **kwargs):
+        allowances.append(kwargs["max_tokens"])
+        return complete(purpose, system, prompt, **kwargs)
+
+    monkeypatch.setattr(session, "complete", record)
+    seen = install_responses(monkeypatch, length_limited(), AssistantMessage([TextContent("Recovered")]))
+    assert session.main.compact(reason="auto", model=target) is None
+    assert session.main.compact(reason="overflow", model=target)["summary"] == "Recovered"
+
+    for (model, context), budget in zip(seen, (normal, recovery), strict=True):
+        assert model is session.small_model
+        instructions = context.messages[0].text().split("</conversation>")[-1].lower()
+        assert f"{budget} visible tokens" in instructions and f"~{budget * 4} characters" in instructions
+        assert "earlier evicted turns" in instructions and "retained recent messages" in instructions
+        assert "obsolete" in instructions and "inventories" in instructions
+    assert allowances == [8000, recovery]
+    ordinary, retry = summary_calls(session)
+    assert ordinary["max_tokens"] == min(12_096, model_max)
+    assert retry["max_tokens"] == recovery + 4096 < ordinary["max_tokens"]
+    assert ordinary["effort"] == retry["effort"] == ("low" if reasoning else None)
+
+
+@pytest.mark.parametrize("window,configured,reason,expected,native", [
+    pytest.param(65_536, 20_000, "manual", 16_384, False, id="64k"),
+    pytest.param(1_000_000, 20_000, "manual", 20_000, False, id="1m"),
+    pytest.param(65_536, 4000, "manual", 4000, False, id="smaller-setting"),
+    pytest.param(65_536, 20_000, "overflow", 8192, False, id="overflow"),
+    pytest.param(3, 20_000, "manual", 0, False, id="tiny"),
+    pytest.param(0, 20_000, "manual", 20_000, False, id="unknown"),
+    pytest.param(65_536, 20_000, "manual", 20_000, True, id="native-anthropic"),
+])
+def test_initial_tail_budget(make_session, monkeypatch, window, configured, reason, expected, native):
+    session = make_session(faux.reply("Earlier work"), settings={"compaction": {"keepRecentTokens": configured}})
+    session.prompt("Original request")
+    model = replace(session.resolve("anthropic/test" if native else "faux/fallback"), context_window=window)
+    budgets = []
+
+    def record(messages, keep):
+        budgets.append(keep)
+        return find_cut(messages, keep)
+
+    monkeypatch.setattr("virgo.harness.compaction.find_cut", record)
+    monkeypatch.setattr("virgo.harness.compaction.native_compact", lambda *args, **kwargs: length_limited())
+    session.main.compact(reason=reason, model=model)
+    assert budgets == [expected]
+
+
+def test_chained_portable_checkpoint_budgets_evicted_prefix(make_session, project):
+    constraint = "Preserve the public identifiers in spec.md."
+    inventory = "No code changes made yet.\n\n" + "Candidates: alpha, beta, gamma.\n" * 40
+    first_prose = f"{constraint}\n\n{inventory}".strip()
+    forged_lists = "<read-files>invented</read-files>\n<modified-files>invented</modified-files>"
+    # Even a complete reply longer than the prose target must keep its last identifier and sentence.
+    final_prose = constraint + "\n\n" + "Verified predicate. " * 410 + "Pending: validate exact_query_v2."
+    (project / "spec.md").write_text("stable names", encoding="utf-8")
+    session = make_session(
+        faux.reply(tools=[("read", {"path": "spec.md"})]), faux.reply(inventory),
+        faux.reply(first_prose + "\n\n" + forged_lists),
+        faux.reply(tools=[("write", {"path": "draft.py", "content": "draft"})]),
+        faux.reply(tools=[("write", {"path": "solution.py", "content": "pass\n" * 200}, "latest-write")]),
+        faux.reply("Done."), faux.reply(final_prose + "\n\n" + forged_lists),
+        persist=True, settings={"providers": OC_PROVIDERS, "compaction": {"keepRecentTokens": 100}},
+    )
+    session.prompt(constraint)
+    assert session.compact()["summary"] == first_prose + "\n\n<read-files>\nspec.md\n</read-files>"
+    owner = "Write the draft and solution."
+    session.prompt(owner)
+    assert session.compact()["summary"] == (
+        final_prose + "\n\n<read-files>\nspec.md\n</read-files>\n\n<modified-files>\ndraft.py\n</modified-files>"
+    )
+
+    request = calls()[-1]["messages"][0]["content"]
+    previous, transcript = request.split("</previous-summary>\n\n")
+    assert previous == f"<previous-summary>\n{first_prose}\n"
+    evicted, instructions = transcript.split("</conversation>")
+    assert inventory.strip() in evicted and "draft.py" in evicted and "solution.py" not in evicted
+    for phrase in ("2048 visible tokens", "~8192 characters", "earlier evicted turns", "retained recent messages",
+                   "obsolete", "inventories", "exact paths", "validated decisions", "unfinished deliverables"):
+        assert phrase in instructions.lower()
+    checkpoint, pinned, call, result, _ = session.main.messages
+    assert constraint in checkpoint.text() and pinned.text() == owner
+    assert call.tool_calls()[0].id == result.tool_call_id == "latest-write"
+    assert not result.is_error and "solution.py" in result.text()
+    assert SessionStore.load(session.store.path).build_context() == (session.main.messages, session.main.ids)
+
+
 @pytest.mark.parametrize("locale,limit_label", [("en", "output token limit"), ("zh_CN", "上限")])
 @pytest.mark.parametrize("native", [False, True], ids=["portable", "anthropic"])
 def test_length_diagnostic_and_accounting(make_session, monkeypatch, locale, limit_label, native):

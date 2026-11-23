@@ -6,6 +6,7 @@ import copy
 
 import pytest
 
+from virgo.ai.providers import faux
 from virgo.ai.types import (
     AssistantMessage,
     RawContent,
@@ -18,6 +19,43 @@ from virgo.ai.types import (
 from virgo.harness.compaction import estimate_tokens
 from virgo.harness.store import SessionStore
 
+from tests.support.harness import calls
+
+
+@pytest.mark.parametrize("tool,status", [
+    ("edit", "No code changes made yet"),
+    ("write", "No solution files created yet"),
+], ids=["edit", "write"])
+def test_retained_result_supersedes_evicted_status(make_session, project, tool, status):
+    path = project / "solution.py"
+    content = "pass\n" * 200
+    if tool == "edit":
+        path.write_text("TODO", encoding="utf-8")
+        args = {"path": path.name, "edits": [{"old_text": "TODO", "new_text": content}]}
+    else:
+        args = {"path": path.name, "content": content}
+    session = make_session(
+        faux.reply(status), faux.reply(tools=[(tool, args, "apply-solution")]), faux.reply("Done."),
+        faux.reply(status), persist=True, settings={"compaction": {"keepRecentTokens": 100}},
+    )
+    session.prompt("Inspect the problem.")
+    owner = "Implement the solution."
+    session.prompt(owner)
+    assert path.read_text(encoding="utf-8") == content
+    assert session.compact()["summary"] == status
+    evicted = calls()[-1]["messages"][0]["content"].split("</conversation>")[0]
+    assert status in evicted and "solution.py" not in evicted
+
+    live = (session.main.messages, session.main.ids)
+    assert live == session.store.build_context() == SessionStore.load(session.store.path).build_context()
+    checkpoint, pinned, call, result, _ = live[0]
+    framing, prose = checkpoint.text().split("\n\n", 1)
+    assert "only the earlier evicted turns before the retained recent messages" in framing.lower()
+    assert "newer retained messages below supersede earlier status claims" in framing.lower()
+    assert prose == status + "\n</conversation_summary>"
+    assert pinned.text() == owner
+    assert call.tool_calls()[0].id == result.tool_call_id == "apply-solution"
+    assert result.tool_name == tool and not result.is_error and path.name in result.text()
 
 @pytest.mark.parametrize("api", ["anthropic", "openai-responses"])
 @pytest.mark.parametrize("preserve_thinking", [False, True])
