@@ -27,6 +27,7 @@ from ..agent import AgentTool, Block, ToolCallEvent, ToolContext, ToolResult
 from ..ai.auth import AuthStore
 from ..ai.model_metadata import cache_path, clean_metadata, read_catalog, write_metadata
 from ..ai.models import base_url
+from ..ai.providers._http import AsyncSDKBridge
 from ..ai.types import (
     TextContent,
     UserMessage,
@@ -124,6 +125,7 @@ class AgentSession:
         self.approval_revision = 0
         self.approval_policy = approval_policy or self.settings.get("permissions.approval", "ask")
         self.effort = self.settings.get("effort", "medium")
+        self._io_bridge: AsyncSDKBridge | None = None
         self._shutdown_started = False
         self.busy = False
         self.command_exit_code = 0
@@ -1160,6 +1162,15 @@ class AgentSession:
                 return
             time.sleep(0.1)
 
+    @property
+    def io_bridge(self) -> AsyncSDKBridge:
+        with self._lock:
+            if self._io_bridge is None:
+                self._io_bridge = AsyncSDKBridge()
+                if self._shutdown_started:
+                    self._io_bridge.close()
+            return self._io_bridge
+
     def shutdown(self) -> None:
         with self._lock:
             if self._shutdown_started:
@@ -1171,7 +1182,11 @@ class AgentSession:
         for runtime in tuple(self._child_runtimes.values()):
             runtime.agent.abort()
         try:
-            self.bus.emit("session_shutdown", self)
+            try:
+                if self._io_bridge is not None:
+                    self._io_bridge.close()
+            finally:
+                self.bus.emit("session_shutdown", self)
         finally:
             try:
                 self.cleanup_plugins()

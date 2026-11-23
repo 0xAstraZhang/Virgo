@@ -10,9 +10,12 @@ import json
 import re
 import struct
 import sys
+import time
 
 import pytest
 
+from tests.support.http import bypass_proxies, fake_api
+from tests.support.sdk_streams import PARTIAL, POST_PATH, PROVIDERS, RECOVERED, cli_args, text_reply
 from tests.support.terminal import ENTER_SCREEN, PtyClient, fcntl, plain, termios
 
 pytestmark = pytest.mark.pty
@@ -249,3 +252,86 @@ raise SystemExit(main(['--ui', 'fullscreen', '--no-extensions', '--permission', 
         new = next(text for text in texts if 'new-terminal-question' in text)
         assert 'new-terminal-answer' in new and 'old-terminal-question' not in new
         assert 'new-terminal-question' not in old and 'new-terminal-answer' not in old
+
+
+# Only the steering case widens the interval between provider teardown and session
+# queue handback. Release the real Agent.prompt caller once Session.steer accepted
+# the bytes from the PTY, so a fast cancel cannot turn this into an idle submit.
+STEERING_GATE = """
+from pathlib import Path
+from threading import Event
+from virgo.agent.agent import Agent
+from virgo.harness.session import AgentSession
+
+accepted = Event()
+prompt, steer = Agent.prompt, AgentSession.steer
+
+def hold_handback(self, messages):
+    prompt(self, messages)
+    if self.signal.is_set():
+        assert accepted.wait(4), "no input submitted while cancelling"
+
+def observe_steer(self, text):
+    queued = steer(self, text)
+    if queued:
+        Path("accepted-steering").write_text(text)
+        accepted.set()
+    return queued
+
+Agent.prompt, AgentSession.steer = hold_handback, observe_steer
+"""
+
+
+@pytest.mark.parametrize(("provider", "key", "submit_while_cancelling"), [
+    *[pytest.param(p, key, False, id=f"{p}-{name}") for p in PROVIDERS
+      for name, key in (("esc", b"\x1b"), ("ctrl-c", b"\x03"))],
+    pytest.param("openai", b"\x03", True, id="queued-while-cancelling"),
+])
+def test_fullscreen_pty_cancel_stalled_sdk_stream(project, tmp_path, monkeypatch, provider, key, submit_while_cancelling):
+    bypass_proxies(monkeypatch)
+    home = tmp_path / "pty-sdk"
+    prefix, _ = text_reply(provider, PARTIAL)
+    with fake_api(stall=True, stall_at="delta", prefix=prefix) as server:
+        args = cli_args(home, provider, server["url"])
+        # Isolate model discovery from user-configured account environment variables.
+        script = """
+from virgo.harness import preferences
+preferences.start_model_refresh = lambda session: session._catalog_refresh_done.set()
+"""
+        if submit_while_cancelling:
+            script += STEERING_GATE
+        script += "\nfrom virgo.cli.main import main\nraise SystemExit(main())"
+        argv = [sys.executable, "-c", script, *args[3:], "--ui", "fullscreen", "First prompt"]
+        with PtyClient(project, home, argv) as terminal:
+            terminal.wait_for(lambda data: ENTER_SCREEN in data and PARTIAL in plain(data))
+            assert server["started"].is_set()
+            server.update(stall=False, body=b"".join(text_reply(provider, RECOVERED)))
+            start = len(terminal.output)
+            deadline = time.monotonic() + 2
+            terminal.send(key)
+            if submit_while_cancelling:
+                terminal.wait_for(lambda data: "Interrupted." in plain(data), start=start,
+                                  timeout=max(0, deadline - time.monotonic()))
+                terminal.send(b"Say hello\r")
+            # This summary is rendered only when RunController consumes the worker's
+            # done update. The immediate "Interrupted." notice is insufficient.
+            terminal.wait_for(lambda data: "Interrupted after" in plain(data) and server["peer_closed"].is_set(),
+                              start=start, timeout=max(0, deadline - time.monotonic()))
+            assert time.monotonic() < deadline and terminal.process.poll() is None
+            assert not server["expired"].is_set()
+            if submit_while_cancelling:
+                assert (project / "accepted-steering").read_text() == "Say hello"
+            else:
+                assert len(server["requests"]) == 1
+                terminal.send(b"Say hello\r")
+            terminal.wait_for(lambda data: RECOVERED in plain(data), start=start)
+            before_exit = time.monotonic()
+            terminal.send(b"\x04")
+            assert terminal.finish(timeout=2) == 0
+            assert time.monotonic() - before_exit < 2
+            terminal.assert_restored()
+            assert "A worker is still stopping" not in plain(bytes(terminal.output))
+        assert [r["path"].split("?")[0] for r in server["requests"]] == [POST_PATH[provider]] * 2
+        wire = server["requests"][1]["json"]
+        turn = (wire["input"] if provider == "responses" else wire["messages"])[-1]
+        assert turn["role"] == "user" and "Say hello" in json.dumps(turn["content"])

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import types
-
 import pytest
 
 from virgo.ai import resolve_model
@@ -20,28 +18,17 @@ from virgo.ai.types import (
     UserMessage,
 )
 
+from tests.support.http import sse
 
-def test_openai_chat_stream_closes_thinking_block(monkeypatch):
-    from virgo import ai
-    from virgo.ai.providers import openai as oai
 
-    def chunk(**delta):
-        return types.SimpleNamespace(
-            usage=None,
-            choices=[types.SimpleNamespace(delta=types.SimpleNamespace(tool_calls=None, **delta), finish_reason=None)],
-        )
-
-    pieces = [
-        chunk(reasoning_content="think", content=None),
-        chunk(reasoning_content=None, content="answer"),
-    ]
-    pieces[-1].choices[0].finish_reason = "stop"
-    fake = types.SimpleNamespace(
-        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **kw: iter(pieces)))
-    )
-    monkeypatch.setattr(oai, "_client", lambda model: fake)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    model = ai.resolve_model("openai/gpt-5")
+def test_openai_chat_stream_closes_thinking_block(server):
+    model = resolve_model("openai/gpt-5")
+    model.base_url = server["url"]
+    model.options["apiKey"] = "test-key"
+    server["body"] = sse([
+        {"choices": [{"index": 0, "delta": {"reasoning_content": "think"}}]},
+        {"choices": [{"index": 0, "delta": {"content": "answer"}, "finish_reason": "stop"}]},
+    ])
     kinds = [ev.type for ev in oai.stream(model, Context("SYS", [UserMessage("hi")]), StreamOptions())]
     assert kinds.index("thinking_start") < kinds.index("thinking_end") < kinds.index("done")
     assert kinds.count("thinking_end") == 1

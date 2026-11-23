@@ -10,7 +10,7 @@ from .compaction import compact as native_compact
 from .compaction import context_model
 from .models import resolve_model
 from .providers.reasoning import resolved_effort
-from .stream import EventStream, StreamEvent, error_message
+from .stream import EventStream, StreamEvent, aborted_event, error_message
 from .transform import normalize
 from .types import (
     AssistantMessage,
@@ -32,6 +32,9 @@ from .types import (
 def stream(model: Model, context: Context, options: StreamOptions | None = None) -> EventStream:
     """Stream one assistant message. Never raises: failures arrive as an `error` event."""
     options = options or StreamOptions()
+    if options.signal is not None and options.signal.is_set():
+        fallback = AssistantMessage(api=model.api, provider=model.provider, model=model.id)
+        return EventStream(iter([aborted_event(fallback)]), fallback)
     try:
         from .auth import authenticated_model
 
@@ -56,32 +59,36 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
     except Exception as e:  # noqa: BLE001 - e.g. optional dependency missing
         msg = AssistantMessage(api=model.api, provider=model.provider, model=model.id, stop_reason="error")
         if options.signal is not None and options.signal.is_set():
-            msg.stop_reason = "aborted"
-            msg.error_message = "aborted by user"
-        else:
-            secrets = (model.options.get("apiKey"), model.options.get("token"),
-                       os.environ.get(model.api_key_env or ""))
-            msg.error_kind = "fatal"
-            msg.error_details = capture_error(
-                e, phase="model.request", context={"api": model.api, "provider": model.provider, "model": model.id},
-                secrets=secrets,
-            )
-            msg.error_message = safe_text(f"{type(e).__name__}: {msg.error_details['message']}", secrets=secrets)
+            return EventStream(iter([aborted_event(msg)]), msg)
+        secrets = (model.options.get("apiKey"), model.options.get("token"),
+                   os.environ.get(model.api_key_env or ""))
+        msg.error_kind = "fatal"
+        msg.error_details = capture_error(
+            e, phase="model.request", context={"api": model.api, "provider": model.provider, "model": model.id},
+            secrets=secrets,
+        )
+        msg.error_message = safe_text(f"{type(e).__name__}: {msg.error_details['message']}", secrets=secrets)
         return EventStream(iter([StreamEvent("error", msg)]), msg)
 
     def events():
         from .search import add_source_links
 
-        for event in result:
-            if event.type in ("done", "error"):
-                count = len(event.partial.content)
-                add_source_links(event.partial)
-                for i in range(count, len(event.partial.content)):
-                    block = event.partial.content[i]
-                    yield StreamEvent("text_start", event.partial, i)
-                    yield StreamEvent("text_delta", event.partial, i, block.text)
-                    yield StreamEvent("text_end", event.partial, i)
-            yield event
+        try:
+            for event in result:
+                if event.type in ("done", "error"):
+                    count = len(event.partial.content)
+                    add_source_links(event.partial)
+                    for i in range(count, len(event.partial.content)):
+                        block = event.partial.content[i]
+                        yield StreamEvent("text_start", event.partial, i)
+                        yield StreamEvent("text_delta", event.partial, i, block.text)
+                        yield StreamEvent("text_end", event.partial, i)
+                    if options.signal is not None and options.signal.is_set():
+                        yield aborted_event(event.partial)
+                        return
+                yield event
+        finally:
+            result.close()
 
     return EventStream(events(), AssistantMessage(api=model.api, provider=model.provider, model=model.id))
 
