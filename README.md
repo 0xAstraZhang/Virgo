@@ -78,7 +78,9 @@ In the full-screen UI, Enter sends a message and Ctrl+J inserts a newline. Type 
 
 Use `/status` for the session ID, model, working directory, token usage and active permissions, including read/write roots and Shell network access.
 
-Use `/permissions show` to inspect the active task and next-task mode. Select one of the three modes with `/permissions` or `--permission <read-only|workspace-edit|no-limit>`. See [permission modes and grants](docs/en/development/permission-profiles.md).
+In interactive sessions, `/permissions` summarizes the active mode, approval policy, read/write roots or Host authority, and Web and Shell network access. It also shows the next task’s mode if different. Use `/permissions show`, `/permissions status`, or noninteractive `-p /permissions` for the full execution boundary in JSON.
+
+Select one of the three modes with `/permissions <mode>` or `--permission <read-only|workspace-edit|no-limit>`. See [permission modes and grants](docs/en/development/permission-profiles.md).
 
 ## Inspect errors
 

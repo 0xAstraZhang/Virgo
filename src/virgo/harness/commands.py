@@ -192,44 +192,21 @@ def configure_language(session: AgentSession, args: str) -> None:
 
 
 def show_status(session: AgentSession, args: str) -> None:
-    from threading import Event
-
-    from ..agent.types import ToolContext
     from ..ai.types import Usage
 
     t = session.t
     with session._lock:
         runtime = session.main
         provider = session.services["execution"]
-        caller = ToolContext("/status", runtime.cwd, Event(), runtime.name, origin=runtime.origin)
-        context = provider.for_context(caller)
-        mode = provider.mode_for(runtime)
-        approval = session.approval_policy
-        if runtime.permission_snapshot and runtime.permission_snapshot.approval == "never":
-            approval = "never"
+        usage = Usage(**session.store.total_usage())
         rows = [
             t("harness.status.model", model=runtime.model.spec, effort=effort_label(runtime.model, session.effort, t)),
-            t("harness.status.directory", path=context.workspace),
-            t("harness.status.permissions", mode=mode.name, approval=approval),
-        ]
-        if mode.id != provider.selected_mode.id:
-            rows.append(t("harness.status.next", mode=provider.selected_mode.name))
-        if context.provider == "host":
-            rows.append(t("sandbox.host_execution"))
-        else:
-            mode = context.resources
-            for key, roots in (("read", mode.read_paths), ("write", mode.write_paths)):
-                rows.append(t("harness.status." + key, paths="\n  ".join(roots) or t("harness.status.none")))
-            rows.append(t("harness.status.exceptions"))
-        rows.append(t("harness.status.network",
-                      web=t("ui.modes.on" if mode.web_allowed else "ui.modes.off"),
-                      shell=t("ui.modes.on" if mode.network else "ui.modes.off")))
-        usage = Usage(**session.store.total_usage())
-        rows.extend((
+            t("harness.status.directory", path=runtime.execution_context.workspace),
+            *provider.permission_summary_rows(),
             t("harness.status.session", id=session.store.id),
             t("harness.status.usage", input=usage.input_total, output=usage.output),
             t("harness.status.context", used=session.context_tokens(), window=runtime.model.context_window),
-        ))
+        ]
     session.ui.command_result("\n".join(rows))
 
 

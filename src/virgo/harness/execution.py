@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 
-from ..agent import Block
+from ..agent import Block, ToolContext
 from ..execution import HostContext, SandboxExecutor
 from ..execution_policy import DEFAULT_MODES, HOST_MODE
 from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
@@ -257,6 +258,31 @@ class ModeExecutionProvider(HostExecutionProvider):
                         self.session.report_error(error, phase="execution.cleanup", notify=False)
             self.session.notify_state_change("permission_mode_changed", runtime, self.selected_mode)
 
+    def permission_summary_rows(self) -> list[str]:
+        session = self.session
+        t = session.t
+        with session._lock:
+            runtime = session.main
+            caller = ToolContext("/permissions", runtime.cwd, Event(), runtime.name, origin=runtime.origin)
+            context = self.for_context(caller)
+            mode = context.resources
+            approval = session.approval_policy
+            if runtime.permission_snapshot and runtime.permission_snapshot.approval == "never":
+                approval = "never"
+            rows = [t("harness.status.permissions", mode=mode.name, approval=approval)]
+            if mode.id != self.selected_mode.id:
+                rows.append(t("harness.status.next", mode=self.selected_mode.name))
+            if context.provider == "host":
+                rows.append(t("sandbox.host_execution"))
+            else:
+                for key, roots in (("read", mode.read_paths), ("write", mode.write_paths)):
+                    rows.append(t("harness.status." + key, paths="\n  ".join(roots) or t("harness.status.none")))
+                rows.append(t("harness.status.exceptions"))
+            rows.append(t("harness.status.network",
+                          web=t("ui.modes.on" if mode.web_allowed else "ui.modes.off"),
+                          shell=t("ui.modes.on" if mode.network else "ui.modes.off")))
+            return rows
+
     def status(self, session, args):
         with session._lock:
             context = session.main.execution_context
@@ -268,7 +294,9 @@ class ModeExecutionProvider(HostExecutionProvider):
 
     def command(self, session, args):
         value = args.strip()
-        if value in {"", "show", "status"}:
+        if not value and bool(getattr(session.ui, "interactive", False)):
+            session.ui.command_result("\n".join(self.permission_summary_rows()))
+        elif value in {"", "show", "status"}:
             self.status(session, args)
         elif value == "list":
             rows = [f"{mode.id}: {mode.name}" for mode in self.modes.values()]

@@ -207,6 +207,34 @@ def test_non_terminal_uses_plain_repl(entry, ui, project):
     assert "\x1b[?1049h" not in result.stdout
 
 
+def test_plain_repl_permissions_summary_and_detail_aliases(project):
+    result = subprocess.run(
+        [sys.executable, "-m", "virgo", "--ui", "plain", "--no-session", "--no-extensions",
+         "-m", "faux/demo", "--permission", "no-limit"],
+        cwd=project, input="/permissions\n/permissions show\n/permissions status\n/exit\n",
+        capture_output=True, text=True, check=True, timeout=10,
+    )
+    assert "Permissions: No-Limit · approval: ask\nHost · OS permissions\nWeb: on · Shell network: on" in result.stdout
+    assert "Read roots:" not in result.stdout and "Write roots:" not in result.stdout
+    show, status = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+    assert show == status and show["provider"] == "host"
+
+
+def test_print_bare_permissions_retains_detailed_json(project, monkeypatch, capsys):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    assert cli.main(["-C", str(project), "--no-session", "-m", "faux/demo", "--permission", "no-limit",
+                     "-p", "--format", "json", "/permissions"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["type"] == "command_result"
+    label, raw = result["text"].split("\n", 1)
+    assert label == "No-Limit (Host)"
+    detail = json.loads(raw)
+    assert detail["provider"] == "host"
+    assert detail["current_mode"] == detail["next_mode"] == "No-Limit"
+    assert detail["web_allowed"] is True and detail["shell_network"] is True
+
+
 @pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
 def test_print_text_ignores_fullscreen_option(entry, project):
     result = subprocess.run(
