@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import shlex
 import subprocess
@@ -46,6 +47,14 @@ def project(tmp_path) -> Path:
     p = tmp_path / "proj"
     p.mkdir()
     return p
+
+
+@pytest.fixture
+def pixel_png(project) -> str:
+    """Write a one-pixel PNG and return its expected base64 payload."""
+    data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg=="
+    (project / "pixel.png").write_bytes(base64.b64decode(data))
+    return data
 
 
 @pytest.fixture

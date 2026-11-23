@@ -35,26 +35,26 @@ from .reasoning import responses_effort
 
 
 def convert_messages(messages: list, *, api: str = "openai-responses") -> list[dict]:
+    def input_parts(blocks: list) -> list[dict]:
+        parts = []
+        for block in blocks:
+            if isinstance(block, TextContent):
+                parts.append({"type": "input_text", "text": block.text})
+            elif isinstance(block, ImageContent):
+                parts.append({
+                    "type": "input_image",
+                    "image_url": f"data:{block.mime_type};base64,{block.data}",
+                    "detail": "auto",
+                })
+        return parts
+
     result = []
     for message in messages:
         if isinstance(message, UserMessage):
             if isinstance(message.content, str):
                 result.append({"role": "user", "content": message.content})
-            else:
-                content = []
-                for block in message.content:
-                    if isinstance(block, TextContent):
-                        content.append({"type": "input_text", "text": block.text})
-                    elif isinstance(block, ImageContent):
-                        content.append(
-                            {
-                                "type": "input_image",
-                                "image_url": f"data:{block.mime_type};base64,{block.data}",
-                                "detail": "auto",
-                            }
-                        )
-                if content:
-                    result.append({"role": "user", "content": content})
+            elif content := input_parts(message.content):
+                result.append({"role": "user", "content": content})
         elif isinstance(message, AssistantMessage):
             items = []
             for block in message.content:
@@ -91,9 +91,10 @@ def convert_messages(messages: list, *, api: str = "openai-responses") -> list[d
                 items.pop()
             result.extend(items)
         elif isinstance(message, ToolResultMessage):
-            output = message.text() or "(no output)"
             if any(isinstance(block, ImageContent) for block in message.content):
-                output += "\n[image output omitted]"
+                output = input_parts(message.content)
+            else:
+                output = message.text() or "(no output)"
             result.append(
                 {
                     "type": "function_call_output",

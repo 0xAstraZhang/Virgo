@@ -13,6 +13,7 @@ from virgo.ai.providers import codex, responses
 from virgo.ai.types import (
     AssistantMessage,
     Context,
+    ImageContent,
     Model,
     RawContent,
     StreamOptions,
@@ -28,6 +29,10 @@ from tests.support.http import sse
 COMPACTION = {"type": "compaction", "id": "cmp_1", "encrypted_content": "encrypted-state"}
 RETAINED = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Finish it"}]}
 OUTPUT = [RETAINED, COMPACTION, {"type": "message", "role": "assistant", "content": [], "phase": None}]
+READ_OUTPUT = {"type": "function_call_output", "call_id": "call_1", "output": [
+    {"type": "input_text", "text": "file contents"},
+    {"type": "input_image", "image_url": "data:image/png;base64,YQ==", "detail": "auto"},
+]}
 
 
 @pytest.fixture
@@ -48,7 +53,7 @@ def _context():
     return Context("System", [
         UserMessage("Read a"),
         AssistantMessage([ToolCall("call_1", "read", {"path": "a"})]),
-        ToolResultMessage("call_1", "read", [TextContent("file contents")]),
+        ToolResultMessage("call_1", "read", [TextContent("file contents"), ImageContent("YQ==", "image/png")]),
         AssistantMessage([TextContent("Done")]),
         UserMessage("Finish it"),
     ], [ToolSpec("read", "Read", {"type": "object"})])
@@ -91,6 +96,7 @@ def test_responses_compact_http_roundtrip_preserves_entire_window(compact_server
     assert req["path"] == "/v1/responses/compact"
     assert req["headers"]["authorization"] == "Bearer private-token"
     assert req["json"] == {"model": "test", "input": responses.convert_messages(ctx.messages)}
+    assert req["json"]["input"][2] == READ_OUTPUT
     next_params = responses.build_params(model, Context("System", [result, UserMessage("Continue")]), StreamOptions())
     assert next_params["input"] == [*OUTPUT, {"role": "user", "content": "Continue"}]
 
@@ -177,6 +183,7 @@ def test_codex_compact_uses_trigger_and_preserves_user_inputs(compact_server):
     assert req["headers"]["authorization"] == "Bearer private-token"
     assert req["headers"]["chatgpt-account-id"] == "acct-1"
     assert req["json"]["input"][-1] == {"type": "compaction_trigger"}
+    assert req["json"]["input"][2] == READ_OUTPUT
     assert req["json"]["instructions"] == "System"
     assert req["json"]["tools"][0]["name"] == "read"
     assert responses.convert_messages([result], api=model.api) == [

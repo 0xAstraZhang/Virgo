@@ -9,10 +9,11 @@ import pytest
 
 from virgo import ai
 from virgo.ai.compaction import context_model, native_api
-from virgo.ai.providers import responses
+from virgo.ai.providers import openai, responses
 from virgo.ai.stream import EventStream, StreamEvent
 from virgo.ai.types import (
     AssistantMessage,
+    ImageContent,
     Model,
     RawContent,
     TextContent,
@@ -86,7 +87,9 @@ def test_default_threshold_is_eighty_percent_for_every_provider(make_session, pr
 def test_openai_compaction_uses_complete_window_and_roundtrips(make_session, monkeypatch, project, spec):
     session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1}})
     session.set_model(spec)
-    append(session.main, UserMessage("Original request"), AssistantMessage([TextContent("work " * 200)]), UserMessage("Continue"))
+    append(session.main, UserMessage("Original request"), AssistantMessage([
+        TextContent("work " * 200), ToolCall("read-1", "read", {"path": "pixel.png"}),
+    ]), ToolResultMessage("read-1", "read", [ImageContent("YQ==", "image/png")]), UserMessage("Continue"))
     original = list(session.main.messages)
     requests = []
     result = native_result(session.model)
@@ -123,6 +126,17 @@ def test_openai_compaction_uses_complete_window_and_roundtrips(make_session, mon
         assert ai.stream(restored.model, restored.main.request_context(restored.main.messages)).result().text() == "continued"
         assert observed[0][0].api == native_api(session.model)
         assert observed[0][1] == payload
+        restored.set_model("deepseek/deepseek-flash")
+        assert restored.main.restore_native_context()
+        assert restored.main.messages == original
+        chat = openai.convert_messages("", ai.normalize(restored.main.messages, restored.model))
+        assert chat[-2:] == [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Image from tool call read-1."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,YQ=="}},
+            ]},
+            {"role": "user", "content": "Continue"},
+        ]
     finally:
         restored.shutdown()
 
