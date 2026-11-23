@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import ast
 import base64
+import ntpath
 import os
 import re
+import shlex
 import shutil
 import subprocess
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from itertools import groupby, pairwise
 from pathlib import Path
 
 from ..agent.types import AgentTool, ToolResult
@@ -17,14 +22,358 @@ from ..i18n import Translator
 SUPPORTED = ("bash", "zsh", "sh", "dash", "pwsh", "powershell")
 SHELL_TOOLS = {"bash", "powershell"}
 
-_SANDBOX_WRITE_ERROR_RE = re.compile(
-    r"operation not permitted|read-only file system|permission denied|access is denied"
-    r"|unauthorizedaccessexception|failure writing output|failed writing (?:body|received data)"
-    r"|failed to create the file|cannot create (?:regular file|directory)"
-    r"|errno (?:1|13|30)\b|\b(?:eperm|eacces|erofs)\b",
-    re.IGNORECASE,
+_WRITE_ERROR_RE = re.compile(
+    r"read-only file system|\berofs\b|errno 30\b|failure writing output|failed writing (?:body|received data)"
+    r"|failed to create the file|cannot create (?:regular file|directory)", re.I,
 )
-_TMP_PATH_RE = re.compile(r"(?:^|[\s\"'=:(>])/(?:private/)?tmp(?:/|[\s\"'&;|):]|$)")
+_PERMISSION_RE = re.compile(
+    r"operation not permitted|permission denied|access is denied|access to the path(?: (?P<path>.+?))? is denied"
+    r"|unauthorizedaccessexception|errno (?:1|13)\b|\b(?:eperm|eacces)\b", re.I,
+)
+_MUTATION_ERROR_RE = re.compile(
+    r"(?:cannot|can't|unable to|failed to) (?:create|unlink|rename|remove|write to) (?:old )?['\"`/]", re.I,
+)
+_TMP_PATH_RE = re.compile(r"""(?:^|[\s"'=:(>])/(?:private/)?tmp(?:/|[\s"'&;|):]|$)""")
+
+# Preserve quoted words (including interpreter source) while separating shell control
+# operators and redirections. Only literal targets can corroborate a diagnostic.
+_SHELL_TOKEN_RE = re.compile(
+    r"""\d*(?:&>>?|>\||>>|>&|<&|[<>])|(?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[^\s;&|()<>'"\\])+|[;&|()\n]"""
+)
+_FILE_MUTATORS = {"touch", "mkdir", "rmdir", "rm", "unlink", "tee", "chmod", "chown"}
+_PS_MUTATORS = {"set-content", "add-content", "out-file", "new-item", "copy-item", "move-item", "remove-item", "rename-item"}
+_DOTNET_WRITE_RE = re.compile(r"\[(?:system\.)?io\.file\]::write\w+", re.I)
+_CONTROL_OPERATORS = {";", "&", "|", "\n"}
+
+
+def _literal(word: str) -> str:
+    if "'" in word or '"' in word or "\\ " in word:
+        try:
+            return shlex.split(word)[0]
+        except (ValueError, IndexError):
+            pass
+    return word
+
+
+def _program_name(executable: str) -> str:
+    return ntpath.basename(executable).lower().removesuffix(".exe")
+
+
+@dataclass
+class _Invocation:
+    executable: str
+    args: list[str]
+    inputs: list[str]
+    outputs: list[str]
+
+    @property
+    def program(self) -> str:
+        return _program_name(self.executable)
+
+    def references(self, target: str) -> bool:
+        return any(_mentions(word, target) for word in [self.executable, *self.args, *self.inputs, *self.outputs])
+
+
+def _invocations(command: str) -> Iterator[_Invocation]:
+    for separator, group in groupby(_SHELL_TOKEN_RE.findall(command), key=_CONTROL_OPERATORS.__contains__):
+        if separator:
+            continue
+        args, inputs, outputs = [], [], []
+        words = iter(group)
+        for word in words:
+            operator = word.lstrip("0123456789")
+            if operator in {">", ">>", ">|", "&>", "&>>", "<", "<&", ">&"}:
+                target = _literal(next(words, ""))
+                if operator not in {"<&", ">&"}:
+                    (inputs if operator == "<" else outputs).append(target)
+            elif word not in {"(", ")"}:
+                if len(args) == 1 and _DOTNET_WRITE_RE.fullmatch(args[0]):
+                    # A .NET call can put the next argument directly after the closing quote and comma.
+                    if path := re.match(r"""(?:'[^']*'|"[^"]*")(?=,|$)""", word):
+                        word = path[0]
+                args.append(_literal(word))
+        argv = iter(args)
+        executable = next(
+            (arg for arg in argv if arg not in {"env", "command"} and not re.match(r"^[A-Za-z_]\w*=", arg)), ""
+        )
+        yield _Invocation(executable, list(argv), inputs, outputs)
+
+
+def _parse_python(source: str) -> ast.Module | None:
+    try:
+        # Tracebacks show the header of a with statement without its suite.
+        return ast.parse(source + " pass" if source.endswith(":") else source)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+
+
+def _python_file_accesses(tree: ast.AST) -> Iterator[tuple[ast.expr, bool]]:
+    """Yield (path, writes) for file operations whose mode is known."""
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call):
+            continue
+        args = call.args
+        match call.func:
+            case ast.Name(id="open") | ast.Attribute(value=ast.Name(id="io"), attr="open"):
+                method = "open"
+                if not args:
+                    args = [kw.value for kw in call.keywords if kw.arg == "file"]
+            case ast.Attribute(value=ast.Name(id="os"), attr=method):
+                if method not in {"mkdir", "makedirs", "rename", "replace", "remove", "unlink", "rmdir"}:
+                    continue
+            case ast.Attribute(value=receiver, attr=method):
+                if method not in {"open", "read_text", "read_bytes", "write_text", "write_bytes",
+                                  "touch", "mkdir", "unlink", "rename", "rmdir"}:
+                    continue
+                match receiver:
+                    case ast.Call(func=ast.Name(id="Path") | ast.Attribute(attr="Path"), args=[path, *_]):
+                        receiver = path
+                args = [receiver, *args]
+            case _:
+                continue
+        writes = method not in {"read_text", "read_bytes"}
+        if method == "open":
+            mode = next((kw.value for kw in call.keywords if kw.arg == "mode"), args[1] if len(args) > 1 else None)
+            if mode is None:
+                if any(kw.arg is None for kw in call.keywords) or any(isinstance(arg, ast.Starred) for arg in args):
+                    continue
+                writes = False
+            elif isinstance(mode, ast.Constant) and isinstance(mode.value, str):
+                writes = bool(set("wax+").intersection(mode.value))
+            else:
+                continue
+        for target in args[:2 if method in {"rename", "replace"} else 1]:
+            yield target, writes
+
+
+def _python_source(cmd: _Invocation) -> str | None:
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", cmd.program):
+        for flag, source in pairwise(cmd.args):
+            if re.fullmatch("-[A-Za-z]*c", flag):
+                return source
+    return None
+
+
+def _option_values(args: list[str], short: str, long: str) -> list[str]:
+    values = []
+    for i, arg in enumerate(args):
+        if arg in {short, long}:
+            values.extend(args[i + 1:i + 2])
+        elif arg.startswith(long + "="):
+            values.append(arg[len(long) + 1:])
+        elif arg.startswith(short) and arg != short:
+            values.append(arg[len(short):])
+    return values
+
+
+def _powershell_target(cmd: _Invocation) -> list[str]:
+    copying = cmd.program in {"copy-item", "move-item"}
+    parameters = ("-path", "-destination" if copying else "-value")
+    bound = {}
+    positional = []
+    words = iter(cmd.args)
+    for word in words:
+        flag = word.lower()
+        if flag == "-literalpath":
+            flag = "-path"
+        if flag in parameters:
+            bound[flag] = next(words, "")
+        elif not word.startswith("-"):
+            positional.append(word)
+    # Named arguments bind first, even when they follow a positional operand.
+    unbound = [p for p in parameters if p not in bound]
+    bound.update(zip(unbound, positional, strict=False))
+    target = bound.get("-destination" if copying else "-path")
+    return [target] if target else []
+
+
+def _write_targets(cmd: _Invocation) -> list[str]:
+    program, args = cmd.program, cmd.args
+    operands = [arg for arg in args if not arg.startswith("-")]
+    if program in {"cp", "mv", "ln", "install"}:
+        return _option_values(args, "-t", "--target-directory") or operands[-1:]
+    if program in {"copy-item", "move-item", "set-content", "add-content"}:
+        return _powershell_target(cmd)
+    if _DOTNET_WRITE_RE.fullmatch(program):
+        return args[:1]
+    if program == "touch":
+        references = _option_values(args, "-r", "--reference")
+        return [p for p in operands if p not in references]
+    if program in _FILE_MUTATORS or program in _PS_MUTATORS:
+        return operands
+    if program == "dd":
+        return [arg[3:] for arg in args if arg.startswith("of=")]
+    if program == "curl":
+        return _option_values(args, "-o", "--output")
+    if program == "wget":
+        return _option_values(args, "-O", "--output-document")
+    if program == "unzip" and "-d" in args:
+        index = args.index("-d")
+        return args[index + 1:index + 2]
+    if program == "git" and args and args[0] in {"init", "clone"}:
+        return operands[-1:] if len(operands) > 1 else []
+    if program == "tar" and args and (args[0] == "--create" or re.fullmatch("-?[a-z]*c[a-z]*", args[0])):
+        # tar accepts grouped options such as czf archive or -czf archive.
+        flags = ["-f", *args[1:]] if re.fullmatch("-?[a-z]*f", args[0]) else args
+        return _option_values(flags, "-f", "--file")
+    if (source := _python_source(cmd)) and (tree := _parse_python(source)):
+        return [p.value for p, writes in _python_file_accesses(tree)
+                if writes and isinstance(p, ast.Constant) and isinstance(p.value, str)]
+    return []
+
+
+def _mentions(line: str, path: str) -> bool:
+    return bool(path and re.search(r"""(?:^|[\s:'"(=])""" + re.escape(path) + r"""(?=$|[\s:'")])""", line))
+
+
+def _explicit_write_destination(line: str, diagnostic: str, reporter: str, commands: list[_Invocation]) -> str:
+    callback_error = "writing" in diagnostic.lower()
+    if reporter:
+        candidates = [cmd for cmd in commands if cmd.program == reporter]
+    elif callback_error:
+        candidates = [cmd for cmd in commands if cmd.program == "curl"]
+    else:
+        candidates = commands if len(commands) == 1 else []
+    targets = [p for cmd in candidates for p in (_write_targets(cmd) or cmd.outputs or [""])]
+    # A copy error can name both its source and its destination. A curl callback
+    # can omit both. In either case, specialize only for an attributable output.
+    named = [p for p in targets if _mentions(line, p)]
+    if named:
+        return next((p for p in named if not _TMP_PATH_RE.match(p)), named[0])
+    if (callback_error or diagnostic.lower() == line.lower()) and targets and all(_TMP_PATH_RE.match(p) for p in targets):
+        return targets[0]
+    return line
+
+
+def _powershell_write_path(path: str, commands: list[_Invocation]) -> str | None:
+    """PowerShell can report a resolved path even when the command used a relative operand."""
+    resolved = ntpath.normcase(ntpath.normpath(path))
+
+    def matches(operand: str) -> bool:
+        target = ntpath.normcase(ntpath.normpath(operand))
+        return resolved == target or (ntpath.isabs(resolved) and resolved.endswith("\\" + target))
+
+    written = False
+    for cmd in commands:
+        targets = _write_targets(cmd)
+        if any(matches(p) for p in [cmd.executable, *cmd.inputs, *cmd.args] if p not in targets):
+            return None
+        if any(matches(p) for p in targets):
+            written = True
+    return path if written else None
+
+
+def _traceback_frames(lines: list[str], end: int, commands: list[_Invocation]) -> Iterator[ast.AST]:
+    """Read the current traceback from the innermost frame out."""
+    for i in range(end - 1, -1, -1):
+        header = lines[i]
+        if not header.startswith("  "):
+            break
+        if not header.startswith('  File "'):
+            continue
+        source = lines[i + 1]
+        if not source.startswith("    "):
+            # Python 3.12 reports the line number for -c but can omit its source.
+            location = re.match(r'  File "<string>", line ([0-9]{1,10}),', header)
+            if not location:
+                continue
+            candidates = [inline for cmd in commands if (inline := _python_source(cmd)) is not None]
+            if len(candidates) != 1:
+                continue
+            statements = candidates[0].splitlines()
+            lineno = int(location[1])
+            if not 1 <= lineno <= len(statements):
+                continue
+            source = statements[lineno - 1]
+        tree = _parse_python(source.strip())
+        if tree is None:
+            continue
+        if len(tree.body) > 1 and i + 2 < end and (mark := re.fullmatch(r"\s*([~^]+)\s*", lines[i + 2])):
+            # Select the marked statement. AST columns are UTF-8 byte offsets.
+            column = len(source[:mark.start(1)].lstrip().encode("utf-8"))
+            yield next((stmt for stmt in reversed(tree.body) if stmt.col_offset <= column), tree)
+        else:
+            yield tree
+
+
+def _denied_write_line(
+    line: str, frames: Iterator[ast.AST], definite: re.Match[str] | None, commands: list[_Invocation],
+) -> str | None:
+    reporter, colon, message = ntpath.splitdrive(line)[1].partition(":")
+    reporter = _program_name(reporter.strip()) if colon else ""
+    if _MUTATION_ERROR_RE.search(line):
+        return line
+    if definite:
+        return _explicit_write_destination(line, definite[0], reporter, commands)
+
+    python_error = reporter in {"permissionerror", "oserror"}
+    if python_error:
+        for frame in frames:
+            accesses = list(_python_file_accesses(frame))
+            if accesses:
+                matching = [
+                    writes for target, writes in accesses
+                    if not isinstance(target, ast.Constant) or (isinstance(target.value, str) and _mentions(line, target.value))
+                ]
+                # Without a marker, a read of the same path can also explain the denial.
+                return line if matching and all(matching) else None
+
+    if reporter in SUPPORTED:
+        # The shell reports both input and output redirections, and exec failures.
+        if any(_mentions(line, p) for cmd in commands for p in [cmd.executable, *cmd.inputs]):
+            return None
+        return next((p for cmd in commands for p in cmd.outputs if _mentions(line, p)), None)
+
+    named = [cmd for cmd in commands if cmd.program == reporter]
+    exception = reporter.endswith("unauthorizedaccessexception")
+    anonymous = _PERMISSION_RE.fullmatch((message if exception else line).strip().rstrip("."))
+    if anonymous and anonymous["path"]:
+        return _powershell_write_path(anonymous["path"].strip("'\""), commands)
+    if named:
+        possible = named
+    elif reporter in _FILE_MUTATORS and ":" in message:
+        return line
+    elif python_error:
+        possible = [cmd for cmd in commands if cmd.program.startswith("python")]
+    elif anonymous or exception:
+        possible = commands
+    else:
+        # Some utilities report only "path: Permission denied". Include readers
+        # and executables here: either could account for the very same path.
+        possible = [cmd for cmd in commands if any(line.startswith(p + ":") for p in [cmd.executable, *cmd.args, *cmd.inputs])]
+    for cmd in possible:
+        if named and cmd.program == "tar" and cmd.args:
+            extracting = cmd.args[0] == "--extract" or re.fullmatch("-?[a-z]*x[a-z]*", cmd.args[0])
+            if extracting and re.match(r".+: cannot open:", message, re.I) and not any(_mentions(message, p) for p in cmd.args):
+                return next(iter(_option_values(cmd.args, "-C", "--directory")), line)
+        targets = _write_targets(cmd)
+        for target in targets:
+            if _mentions(line, target) and not any(other.references(target) for other in possible if other is not cmd):
+                return target
+        if named and cmd.program in _PS_MUTATORS - {"copy-item", "move-item"}:
+            return line
+        if len(commands) == 1 and anonymous:
+            if cmd.outputs and not cmd.inputs and cmd.program in {"", "echo", "printf", ":"}:
+                return cmd.outputs[0] if len(cmd.outputs) == 1 else line
+            if cmd.program in _FILE_MUTATORS | _PS_MUTATORS or _DOTNET_WRITE_RE.fullmatch(cmd.program):
+                return targets[0] if len(targets) == 1 else line
+    return None
+
+
+def _denied_write(command: str, output: str) -> str | None:
+    """Use the last attributable write denial for temp-dir advice."""
+    lines = output.splitlines()
+    commands = None
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i].strip()
+        definite = _WRITE_ERROR_RE.search(line)
+        if definite or _PERMISSION_RE.search(line):
+            if commands is None:
+                commands = list(_invocations(command))
+            evidence = _denied_write_line(line, _traceback_frames(lines, i, commands), definite, commands)
+            if evidence is not None:
+                return evidence
+    return None
 
 
 def _tmp_is_writable(write_paths: list[str] | tuple[str, ...]) -> bool:
@@ -45,19 +394,16 @@ def sandbox_failure_hint(
     """Return a concise sandbox write-boundary hint when a sandboxed command hits a write denial."""
     if not isinstance(boundary, dict) or boundary.get("provider") != "sandbox":
         return None
-    if not output_text or not _SANDBOX_WRITE_ERROR_RE.search(output_text):
-        return None
     effective = (boundary.get("effective") or {}).get("native_process") or boundary.get("requested") or {}
     if effective.get("unrestricted"):
+        return None
+    evidence = _denied_write(command or "", output_text or "")
+    if evidence is None:
         return None
     t = t or Translator()
     write_paths = effective.get("write_paths") or []
     is_posix = boundary.get("backend") != "windows-appcontainer"
-    if (
-        is_posix
-        and not _tmp_is_writable(write_paths)
-        and (_TMP_PATH_RE.search(command or "") or _TMP_PATH_RE.search(output_text))
-    ):
+    if is_posix and not _tmp_is_writable(write_paths) and _TMP_PATH_RE.search(evidence):
         return t("tools.output.sandbox_tmp_hint")
     if not write_paths:
         return t("tools.output.sandbox_readonly_hint" if is_posix else "tools.output.sandbox_windows_readonly_hint")

@@ -15,8 +15,15 @@ import pytest
 from virgo.agent.types import ToolContext
 from virgo.execution import HostContext
 from virgo.i18n import Translator
-from virgo.tools.output import MAX_LINES
-from virgo.tools.shell import Shell, default_shell, discover_shells, make_shell_tool, probe_shell
+from virgo.tools.output import MAX_LINES, CommandOutput
+from virgo.tools.shell import (
+    Shell,
+    default_shell,
+    discover_shells,
+    make_shell_tool,
+    probe_shell,
+    sandbox_failure_hint,
+)
 
 from tests.support.http import serve
 
@@ -187,8 +194,6 @@ def test_bash_marks_child_processes(project, python_command):
 
 
 def test_sandbox_failure_hint_explains_tmp_and_write_boundary_denials():
-    from virgo.tools.shell import sandbox_failure_hint
-
     seatbelt_boundary = {
         "provider": "sandbox",
         "backend": "seatbelt",
@@ -289,3 +294,334 @@ def test_sandbox_failure_hint_explains_tmp_and_write_boundary_denials():
     assert win_rw_hint is not None
     assert "$env:TMPDIR" in win_rw_hint and "$env:TEMP" in win_rw_hint and "write_paths" in win_rw_hint
     assert "/tmp" not in win_rw_hint
+
+
+_CASE53A_COMMAND = 'ps -p 21839 -o pid=,stat=,command=; status=$?; echo "ps status=$status"; wc -l < ledger.log'
+_CASE53A_DENIAL = "/bin/bash: /bin/ps: Operation not permitted"
+
+
+@pytest.fixture
+def workspace_boundary():
+    return {
+        "provider": "sandbox",
+        "backend": "seatbelt",
+        "effective": {"native_process": {
+            "read_paths": ["/workspace"], "write_paths": ["/workspace"],
+            "network_allowed": True, "unrestricted": False, "web_allowed": True,
+        }},
+    }
+
+
+def test_case53a_shell_result_preserves_native_denial(project, monkeypatch, workspace_boundary):
+    def recorded_run(command, *args, **kwargs):
+        assert command == _CASE53A_COMMAND
+        return CommandOutput(_CASE53A_DENIAL, boundary=workspace_boundary), 1, "ok"
+
+    monkeypatch.setattr("virgo.tools.bash.run_command", recorded_run)
+    result = make_shell_tool(Shell("bash", "/bin/bash", "3.2")).execute({"command": _CASE53A_COMMAND}, ctx(project))
+
+    assert result.is_error
+    assert result.details["exit_code"] == 1
+    assert result.details["boundary"] == workspace_boundary
+    assert result.as_text() == Translator()("tools.output.exit", text=_CASE53A_DENIAL, code=1)
+
+
+@pytest.mark.parametrize(("command", "diagnostic"), [
+    pytest.param(_CASE53A_COMMAND, _CASE53A_DENIAL, id="case53a"),
+    pytest.param("pgrep workers", "pgrep: Operation not permitted", id="pgrep"),
+    pytest.param("sysctl -a", "sysctl: EPERM", id="sysctl"),
+    pytest.param("cat /root/secret", "cat: /root/secret: Permission denied", id="cat"),
+    pytest.param("ls /root", "ls: /root: EACCES", id="ls"),
+    pytest.param("./script.sh", "bash: ./script.sh: Permission denied", id="exec"),
+    pytest.param(shlex.join(["python", "-c", "open('/tmp/in').read()"]), "PermissionError: [Errno 13] Permission denied: '/tmp/in'",
+                 id="python-read"),
+    pytest.param("Get-Content secret", "System.UnauthorizedAccessException: Access is denied.", id="powershell-read"),
+    pytest.param("echo ok > ok.txt; /bin/ps -p 1", _CASE53A_DENIAL, id="write-then-ps"),
+    pytest.param("echo ok > /tmp/ok.txt; ps -p 1", _CASE53A_DENIAL, id="tmp-write-then-ps"),
+    pytest.param("touch ok.txt && cat /root/secret", "cat: /root/secret: Permission denied", id="write-then-read"),
+    pytest.param("touch same && cat same", "cat: same: Permission denied", id="same-target-read"),
+    pytest.param("cat /root/secret > out", "cat: /root/secret: Permission denied", id="redirect-but-read-failed"),
+    pytest.param("cat < /tmp/in > out", "bash: /tmp/in: Permission denied", id="input-redirect"),
+    pytest.param("echo 'touch /tmp/x; > secret'; wc -l < secret", "bash: secret: Permission denied",
+                 id="quoted-command-is-data"),
+    pytest.param("cp /tmp/in /etc/out", "cp: /tmp/in: Permission denied", id="copy-source"),
+    pytest.param("cp /etc/bar bar", "cp: /etc/bar: Permission denied", id="copy-source-same-basename"),
+    pytest.param("git status", "fatal: cannot open .git/config: Permission denied", id="git-read"),
+    pytest.param("tar -tf /tmp/in.tar", "tar: /tmp/in.tar: Permission denied", id="tar-list"),
+    pytest.param("echo hi > same; cat < same", "bash: same: Permission denied", id="same-redirect-target"),
+    pytest.param("touch config && git status", "fatal: cannot open config: Permission denied", id="git-read-after-touch"),
+    pytest.param("cp /tmp/in /etc/out", "cp: cannot open '/tmp/in' for reading: Permission denied",
+                 id="copy-input-diagnostic"),
+    pytest.param(shlex.join(["python", "-c", "'text'.replace('in', 'new'); open('in').read()"]),
+                 "PermissionError: [Errno 13] Permission denied: 'in'", id="string-replace-is-data"),
+    pytest.param("touch ./script && ./script", "./script: Permission denied", id="same-target-exec"),
+    pytest.param("helper", "cannot create socket: Operation not permitted", id="socket"),
+    pytest.param("cp /tmp/in out", "Permission denied", id="ambiguous-copy"),
+    pytest.param("Get-Content file | Set-Content other", "Get-Content : Access to the path 'file' is denied.",
+                 id="powershell-pipeline-read"),
+    pytest.param("touch -r /tmp/ref out", "touch: failed to get attributes of '/tmp/ref': Permission denied",
+                 id="touch-reference-read"),
+    pytest.param(r"Copy-Item C:\input C:\out", r"Access to the path 'C:\input' is denied.", id="powershell-copy-input"),
+    pytest.param("touch same; cat same", "same: Permission denied", id="ambiguous-path-only"),
+    pytest.param(shlex.join(["python", "-c", "open('same', 'w')"]) + "; " + shlex.join(["python", "-c", "open('same')"]),
+                 "PermissionError: [Errno 13] Permission denied: 'same'", id="ambiguous-interpreter"),
+    pytest.param("touch x; helper", "Permission denied", id="unattributed"),
+])
+def test_sandbox_hint_requires_write_evidence(command, diagnostic, workspace_boundary):
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary) is None
+
+
+@pytest.mark.parametrize(("command", "diagnostic", "hint"), [
+    ("Get-Content in | Set-Content out", "UnauthorizedAccessException: Access to the path 'out' is denied.", "write"),
+    ("helper", "EROFS", "write"),
+    ("touch /tmp/out", "EROFS", "tmp"),
+    ("sh script.sh", "mkdir: /tmp/build: Permission denied", "tmp"),
+    ("unzip data.zip -d /tmp/out", "unzip: /tmp/out: Permission denied", "tmp"),
+    ("touch /tmp/out", "Permission denied", "tmp"),
+    ("rm '/tmp/old'", "rm: cannot remove '/tmp/old': EPERM", "tmp"),
+    ("rmdir /etc/old", "rmdir: /etc/old: Operation not permitted", "write"),
+    ("ln -s /tmp/in /etc/link", "ln: /etc/link: Permission denied", "write"),
+    ("chmod 600 /etc/file", "chmod: /etc/file: Operation not permitted", "write"),
+    ("chown me /etc/file", "chown: /etc/file: Operation not permitted", "write"),
+    ("install /tmp/in /etc/out", "install: /etc/out: Permission denied", "write"),
+    ("git add foo", "fatal: Unable to create '/repo/.git/index.lock': Permission denied", "write"),
+    ("tar -cf /tmp/out.tar src", "tar: /tmp/out.tar: Cannot open: Permission denied", "tmp"),
+    ("tar -xf archive -C /tmp/out", "tar: member: Cannot open: Permission denied", "tmp"),
+    ("echo hi > /tmp/a\\ b", "bash: line 1: /tmp/a b: Permission denied", "tmp"),
+    (shlex.join(["python3", "-Ic", "open('/tmp/out', 'ab')"]), "PermissionError: [Errno 1] EPERM: '/tmp/out'", "tmp"),
+    ("python script.py", 'Traceback (most recent call last):\n  File "script.py", line 2, in <module>\n'
+     '    open(path, "x")\nPermissionError: [Errno 13] Permission denied: \'/tmp/file\'', "tmp"),
+    ("python script.py", 'Traceback (most recent call last):\n  File "script.py", line 2, in <module>\n'
+     '    open(path, "x")\n    ~~~~^^^^^^^^^^^\nPermissionError: [Errno 13] Permission denied: \'/tmp/file\'', "tmp"),
+    ("helper", "OSError: [Errno 30] Read-only file system: '/private/tmp/x'", "tmp"),
+    ("helper", "cannot create regular file '/etc/out'", "write"),
+    ("(env VAR=1 touch '/tmp/a b')", "touch: /tmp/a b: Operation not permitted", "tmp"),
+    ("cat /tmp/in.txt && touch /etc/out.txt", "touch: /etc/out.txt: Permission denied", "write"),
+    ("echo /tmp/input; mkdir /etc/build", "/tmp/input\nmkdir: /etc/build: EACCES", "write"),
+    ("cat /tmp/in | tee /etc/out", "tee: /etc/out: Permission denied", "write"),
+    ("cp /tmp/in /etc/out", "cp: /etc/out: Permission denied", "write"),
+    ("cp /tmp/in /etc/out", "cp: error copying '/tmp/in' to '/etc/out': Read-only file system", "write"),
+    ("cat in && curl -o /tmp/out url", "Failure writing output to destination", "tmp"),
+    ("mv in '/tmp/a b'", "mv: rename in to /tmp/a b: Operation not permitted", "tmp"),
+    ("cat /tmp/in\necho hi 2>> '/etc/out file'", "bash: line 2: /etc/out file: Permission denied", "write"),
+    ("echo ok >| '/tmp/out file'", "zsh:1: permission denied: /tmp/out file", "tmp"),
+    ("echo ok >> /tmp/out", "Permission denied", "tmp"),
+    ("echo ok &>/etc/out", "bash: /etc/out: Permission denied", "write"),
+    ("echo ok 1>/etc/out", "sh: 1: cannot create /etc/out: Permission denied", "write"),
+    ("dd if=/tmp/in of=/etc/out", "dd: /etc/out: Permission denied", "write"),
+    ("cat /tmp/in; curl --output /etc/out url", "curl: (23) Failed writing received data", "write"),
+    ("curl -o /tmp/feed url; cat in", "curl: (23) Failure writing output to destination", "tmp"),
+    ("/usr/bin/curl -o /tmp/feed url", "/usr/bin/curl: (56) Failure writing output to destination", "tmp"),
+    (r"C:\Tools\curl.EXE -o /tmp/feed url", r"C:\Tools\curl.EXE: (56) Failure writing output to destination", "tmp"),
+    ("/usr/bin/touch /tmp/out", "/usr/bin/touch: /tmp/out: Operation not permitted", "tmp"),
+    ("sh script.sh", "/usr/bin/touch.exe: /tmp/out: Operation not permitted", "tmp"),
+    ("echo hi > /tmp/out.txt; ps -p 1", "bash: /tmp/out.txt: Operation not permitted\n" + _CASE53A_DENIAL, "tmp"),
+    ("touch /tmp/out; touch /etc/out", "touch: /tmp/out: Permission denied\ntouch: /etc/out: Permission denied", "write"),
+    ("wget -O /tmp/feed url", "/tmp/feed: Permission denied", "tmp"),
+    ("git init /tmp/repo", "/tmp/repo: Permission denied", "tmp"),
+    ("tar -xf /tmp/in.tar -C /etc", "tar: out: Cannot open: Permission denied", "write"),
+    ("unzip /tmp/in.zip -d /etc", "error: cannot create /etc/out: Permission denied", "write"),
+    (shlex.join(["python", "-c", "open('/etc/out', 'w')"]), "PermissionError: [Errno 13] Permission denied: '/etc/out'", "write"),
+    (shlex.join(["python", "-c", "from pathlib import Path; Path('/tmp/out').write_text('ok')"]),
+     "PermissionError: [Errno 1] Operation not permitted: '/tmp/out'", "tmp"),
+    (shlex.join(["python", "-c", "import os; os.makedirs('/etc/build')"]), "PermissionError: [Errno 13] EACCES: '/etc/build'", "write"),
+])
+def test_sandbox_hint_uses_failed_write_destination(command, diagnostic, hint, workspace_boundary):
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == f"tools.output.sandbox_{hint}_hint"
+
+
+@pytest.mark.parametrize("command", [
+    r"Set-Content -Path 'C:\outside file' hi",
+    r"Add-Content 'C:\outside file' hi",
+    r"Out-File 'C:\outside file'",
+    r"New-Item 'C:\outside file'",
+    r"Copy-Item src 'C:\outside file'",
+    r"Move-Item src 'C:\outside file'",
+    r"Remove-Item 'C:\outside file'",
+    r"Rename-Item 'C:\outside file' other",
+    r"[IO.File]::WriteAllText('C:\outside file', 'ok')",
+])
+def test_windows_sandbox_hint_for_file_mutation(command, workspace_boundary):
+    boundary = {**workspace_boundary, "backend": "windows-appcontainer"}
+    assert sandbox_failure_hint(command, "Access is denied.", boundary, t=str) == "tools.output.sandbox_windows_write_hint"
+
+
+@pytest.mark.parametrize(("command", "diagnostic", "write"), [
+    ("Set-Content -Path 'pwsh_ro_blocked.txt' -Value 'no'",
+     r"Access to the path 'C:\Users\alice\proj\pwsh_ro_blocked.txt' is denied.", True),
+    ("Get-Content in | Set-Content -Path out -Value value", r"Access to the path 'C:\work\value' is denied.", False),
+    ("Set-Content -Value hi out", r"Access to the path 'C:\work\out' is denied.", True),
+    (r"[IO.File]::WriteAllText('C:\outside file', 'ok')", r"Access to the path 'C:\outside file' is denied.", True),
+    (r"[IO.File]::WriteAllText('C:\outside,file','ok')", r"Access to the path 'C:\outside,file' is denied.", True),
+    ("Get-Content in.txt | Set-Content out.txt",
+     r"UnauthorizedAccessException: Access to the path 'C:\work\out.txt' is denied.", True),
+    ("Get-Content in.txt | Set-Content out.txt", r"Access to the path 'C:\work\in.txt' is denied.", False),
+    (r"Get-Content input\out.txt | Set-Content out.txt", r"Access to the path 'C:\work\input\out.txt' is denied.", False),
+    ("Copy-Item -Destination dst -Path src", r"Access to the path 'C:\work\src' is denied.", False),
+    ("Copy-Item -Destination dst -Path src", r"Access to the path 'C:\work\dst' is denied.", True),
+    ("Copy-Item dst -Path src", r"Access to the path 'C:\work\src' is denied.", False),
+    ("Copy-Item dst -Path src", r"Access to the path 'C:\work\dst' is denied.", True),
+    ("Copy-Item src dst", r"Access to the path 'C:\work\src' is denied.", False),
+    ("Copy-Item src dst", r"Access to the path 'C:\work\dst' is denied.", True),
+    (r"Copy-Item input\dst dst", r"Access to the path 'C:\work\input\dst' is denied.", False),
+])
+def test_windows_sandbox_hint_for_resolved_path(command, diagnostic, write, workspace_boundary):
+    boundary = {**workspace_boundary, "backend": "windows-appcontainer"}
+    expected = "tools.output.sandbox_windows_write_hint" if write else None
+    assert sandbox_failure_hint(command, diagnostic, boundary, t=str) == expected
+
+
+@pytest.mark.parametrize(("statement", "write"), [
+    ('(Path(d) / "out").write_text("hi")', True),
+    ('self.dest.write_text("hi")', True),
+    ('open(f"{base}/out", "w")', True),
+    ('Path("/tmp/other").write_text("hi")', False),
+    ('open(f"{base}/out")', False),
+])
+@pytest.mark.parametrize("underline", ["", "    ^^^^\n"], ids=["plain", "short-marker"])
+def test_python_traceback_uses_failing_statement(statement, write, underline, workspace_boundary):
+    diagnostic = (
+        'Traceback (most recent call last):\n  File "script.py", line 2, in <module>\n'
+        f"    {statement}\n{underline}PermissionError: [Errno 13] Permission denied: '/tmp/out'"
+    )
+    expected = "tools.output.sandbox_tmp_hint" if write else None
+    assert sandbox_failure_hint("python script.py", diagnostic, workspace_boundary, t=str) == expected
+
+
+@pytest.mark.parametrize("underline", ["", "    ~~~~^^^^^^\n"], ids=["plain", "caret"])
+def test_python_traceback_read_after_write(workspace_boundary, underline):
+    command = shlex.join(["python", "-c", 'open("/tmp/out", "w").close()\nopen(path)'])
+    diagnostic = (
+        'Traceback (most recent call last):\n  File "<string>", line 2, in <module>\n'
+        f"    open(path)\n{underline}PermissionError: [Errno 13] Permission denied: '/tmp/out'"
+    )
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary) is None
+
+
+def test_python312_pathlib_write_text_traceback(workspace_boundary):
+    source = "from pathlib import Path; Path('/root/virgo-review-probe').write_text('x')"
+    diagnostic = f"""Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    {source}
+                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1046, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: '/root/virgo-review-probe'"""
+    command = shlex.join(["python3", "-c", source])
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == "tools.output.sandbox_write_hint"
+
+
+@pytest.mark.parametrize(("caller", "writer_frame", "mode"), [
+    ("path.write_text('ok')", '"/usr/lib/python3.13/pathlib/_abc.py", line 651, in write_text', "w"),
+    ("path.write_bytes(b'ok')", '"/usr/lib/python3.13/pathlib/_abc.py", line 641, in write_bytes', "wb"),
+    ("save_report(path)", '"writer.py", line 5, in save_report', "w"),
+])
+def test_python_script_write_through_open(caller, writer_frame, mode, workspace_boundary):
+    diagnostic = f"""Traceback (most recent call last):
+  File "script.py", line 2, in <module>
+    {caller}
+  File {writer_frame}
+    with self.open(mode='{mode}') as f:
+  File "/usr/lib/python3.13/pathlib/_local.py", line 537, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+PermissionError: [Errno 13] Permission denied: '/tmp/out'"""
+    hint = sandbox_failure_hint("python script.py", diagnostic, workspace_boundary, t=str)
+    assert hint == "tools.output.sandbox_tmp_hint"
+
+
+@pytest.mark.parametrize(("method", "read_frame"), [
+    ("read_text", "    with self.open(mode='r', encoding=encoding, errors=errors) as f:"),
+    ("read_bytes", "    with self.open(mode='rb') as f:"),
+    ("open", ""),
+])
+@pytest.mark.parametrize("separator", ["; ", "\n"], ids=["same-line", "next-line"])
+def test_pathlib_read_denial_after_same_path_write(method, read_frame, separator, workspace_boundary):
+    source = separator.join(["from pathlib import Path; Path('/tmp/out').write_text('ok')", f"Path('/tmp/out').{method}()"])
+    statements = source.splitlines()
+    frames = [f'  File "<string>", line {len(statements)}, in <module>', f"    {statements[-1]}"]
+    if read_frame:
+        frames.extend([f'  File "/usr/lib/python3.12/pathlib.py", line 1020, in {method}', read_frame])
+    diagnostic = "\n".join([
+        "Traceback (most recent call last):", *frames,
+        '  File "/usr/lib/python3.12/pathlib.py", line 1013, in open',
+        "    return io.open(self, mode, buffering, encoding, errors, newline)",
+        "PermissionError: [Errno 13] Permission denied: '/tmp/out'",
+    ])
+    assert sandbox_failure_hint(shlex.join(["python3", "-c", source]), diagnostic, workspace_boundary) is None
+
+
+@pytest.mark.parametrize(("source", "lineno", "write"), [
+    ("Path('/tmp/out').write_text('ok')\nPath('/tmp/out').open()", 2, False),
+    ("Path('/tmp/out').open('w')\nPath('/tmp/out').open()", 1, True),
+])
+@pytest.mark.parametrize("prefix", ["", "cd /workspace && "])
+def test_python312_inline_frame_without_source(source, lineno, write, prefix, workspace_boundary):
+    diagnostic = f"""Traceback (most recent call last):
+  File "<string>", line {lineno}, in <module>
+  File "/usr/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+PermissionError: [Errno 13] Permission denied: '/tmp/out'"""
+    expected = "tools.output.sandbox_tmp_hint" if write else None
+    command = prefix + shlex.join(["python3", "-c", "from pathlib import Path; " + source])
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == expected
+
+
+@pytest.mark.parametrize(("earlier", "failing", "write"), [
+    ("path.open()", "path.open('w')", True),
+    ("path.write_text('ok')", "load_report(path)", False),
+])
+def test_python_traceback_highlights_failing_call(earlier, failing, write, workspace_boundary):
+    diagnostic = f"""Traceback (most recent call last):
+  File "script.py", line 2, in <module>
+    {earlier}; {failing}
+    {' ' * (len(earlier) + 2)}{'^' * len(failing)}
+  File "/usr/lib/python3.13/pathlib/_local.py", line 537, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+PermissionError: [Errno 13] Permission denied: '/tmp/out'"""
+    expected = "tools.output.sandbox_tmp_hint" if write else None
+    assert sandbox_failure_hint("python script.py", diagnostic, workspace_boundary, t=str) == expected
+
+
+@pytest.mark.parametrize(("statement", "write"), [
+    ("save_report(path)", True),
+    ("Path('/tmp/other').write_text('ok')", False),
+    ("io.open(path, 'rb')", False),
+])
+def test_python_traceback_command_fallback(statement, write, workspace_boundary):
+    source = "from pathlib import Path; from script import save; Path('/tmp/out').write_text('ok'); save()"
+    command = shlex.join(["python3", "-c", source])
+    diagnostic = f"""Traceback (most recent call last):
+  File "script.py", line 2, in save
+    {statement}
+PermissionError: [Errno 13] Permission denied: '/tmp/out'"""
+    expected = "tools.output.sandbox_tmp_hint" if write else None
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == expected
+
+
+@pytest.mark.parametrize("expression", [
+    "open('/tmp/out', 'a')", "open('/tmp/out', mode='xb')", "Path('/tmp/out').write_bytes(b'data')",
+    "Path('/tmp/out').mkdir()", "Path('/tmp/out').unlink()", "Path('old').rename('/tmp/out')",
+    "io.open('/tmp/out', 'w')", "Path('/tmp/out').touch()",
+])
+def test_python_mutation_permission_errors(expression, workspace_boundary):
+    command = shlex.join(["python", "-c", "import io; from pathlib import Path; " + expression])
+    diagnostic = "PermissionError: [Errno 13] Permission denied: '/tmp/out'"
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == "tools.output.sandbox_tmp_hint"
+
+
+@pytest.mark.parametrize(("code", "status"), [(0, "ok"), (1, "timeout"), (None, "aborted")])
+def test_shell_only_appends_write_hint_on_completed_nonzero_exit(project, monkeypatch, workspace_boundary, code, status):
+    output = CommandOutput("touch: /tmp/out: Permission denied", boundary=workspace_boundary)
+    monkeypatch.setattr("virgo.tools.bash.run_command", lambda *a, **kw: (output, code, status))
+    result = make_shell_tool(Shell("bash", "/bin/bash", "3.2")).execute({"command": "touch /tmp/out"}, ctx(project))
+    assert result.details["status"] == status
+    assert "$TMPDIR" not in result.as_text()
+
+
+def test_unrestricted_sandbox_omits_write_hint(workspace_boundary):
+    workspace_boundary["effective"]["native_process"]["unrestricted"] = True
+    assert sandbox_failure_hint("touch /tmp/out", "touch: /tmp/out: Permission denied", workspace_boundary) is None
