@@ -67,6 +67,28 @@ MESSAGES = {
     "features.jobs.unit.chars": "chars",
     "features.permission.allow_suffix": "  Allow once [y] / Deny [n] / Always allow [a]",
     "features.permission.external_suffix": "Allow this call once [y] / Deny [n]",
+    "features.permission.user_declined": "The user declined this permission request. Do not repeat it or request "
+    "a broader grant for this access in the current turn.",
+    "features.permission.external_declined": "The user declined this external tool call. It was not approved. "
+    "Do not retry it or request a broader grant for it in the current turn.",
+    "features.permission.already_denied_this_turn": "The user already denied access covered by this request in "
+    "the current turn. Do not repeat the request or ask for a broader grant.",
+    "features.permission.confirmation_unavailable": "Additional resources were not granted because interactive "
+    "confirmation is unavailable.",
+    "features.permission.cancelled": "The permission request was cancelled.",
+    "features.permission.cancelled_or_expired": "The permission request expired because its context changed.",
+    "features.permission.approval_disabled": "Permission requests are disabled by the approval policy.",
+    "features.permission.protected_path": "Protected resources cannot be granted: {path}",
+    "features.permission.high_risk_user_declined": "The user declined to execute this high-risk command. {risk} "
+    "The command did not start. Do not retry unless the user asks.",
+    "features.permission.high_risk_confirmation_unavailable": "Interactive confirmation is unavailable for this "
+    "high-risk command. {risk} The command did not start.",
+    "features.permission.high_risk_cancelled": "Confirmation for this high-risk command was cancelled. {risk} "
+    "The command did not start.",
+    "features.permission.high_risk_cancelled_or_expired": "Confirmation for this high-risk command expired "
+    "because its context changed. {risk} The command did not start.",
+    "features.permission.high_risk_approval_disabled": "The approval policy has disabled confirmation for this "
+    "high-risk command. {risk} The command did not start.",
     "features.search.key": "DeepSeek search requires an official API key. Use /login api deepseek with "
     "https://api.deepseek.com or set DEEPSEEK_API_KEY (search.apiKeyEnv can select a "
     "separate search key).",

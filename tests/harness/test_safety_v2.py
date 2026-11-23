@@ -176,6 +176,63 @@ def test_ver10_high_risk_command_prompts_in_workspace_edit_and_no_limit(broker_s
     assert "git_force_push" in ui.questions[0]
 
 
+@pytest.mark.parametrize("mode", ["workspace-edit", "read-only", "no-limit"])
+@pytest.mark.parametrize("outcome,reason,language", [
+    ("declined", "user_declined", "en"), ("declined", "user_declined", "zh-CN"),
+    ("unanswered", "confirmation_unavailable", "en"), ("no_ui", "confirmation_unavailable", "en"),
+    ("disabled", "approval_disabled", "en"), ("cancelled", "cancelled", "en"),
+    ("context_changed", "cancelled_or_expired", "en"), ("disabled_in_dialog", "cancelled_or_expired", "en"),
+])
+def test_high_risk_denial_provenance_before_dispatch(broker_session, monkeypatch, mode, outcome, reason, language):
+    ui = RecordingUI([None if outcome == "unanswered" else "n"])
+    session = broker_session(ui=ui, preset=mode, settings={"language": language},
+                             approval="never" if outcome == "disabled" else "ask")
+    shell = selected(session).tool_name
+    dispatched = []
+
+    def record_dispatch(args, _):
+        dispatched.append(args)
+        return "started"
+
+    monkeypatch.setattr(session.tool(shell), "execute", record_dispatch)
+    if outcome == "no_ui":
+        monkeypatch.setattr(ui, "confirm", None)
+    elif outcome in {"cancelled", "context_changed", "disabled_in_dialog"}:
+        def confirm(question, agent):
+            ui.questions.append(question)
+            if outcome == "cancelled":
+                session.main.agent.signal.set()
+            elif outcome == "context_changed":
+                session.main.refresh_permission_snapshot()
+            else:
+                session.approval_policy = "never"
+            return "y"  # Even an affirmative stale answer must not start the command.
+
+        monkeypatch.setattr(ui, "confirm", confirm)
+    faux.script("test", faux.reply(tools=[(shell, {"command": "git reset --hard"})]), faux.reply("done"))
+    session.prompt("Run the command")
+    assert not dispatched
+    assert len(ui.questions) == (0 if outcome in {"no_ui", "disabled"} else 1)
+    result, = tool_results(session)
+    assert result.is_error and result.details["status"] == "high_risk_denied"
+    assert result.details["category"] == "git_reset_hard"
+    boundary = result.details["boundary"]
+    assert boundary["reason"] == reason
+    assert boundary["escalation_available"] is False and boundary["payload_started"] is False
+    assert boundary["side_effects"] == "none" and boundary["category"] == "git_reset_hard"
+    message = result.content[0].text.lower()
+    if outcome == "declined":
+        assert "git reset --hard" in message
+        if language == "en":
+            assert "user declined" in message and "did not start" in message and "retry" in message
+        else:
+            assert "用户拒绝" in message and "未启动" in message and "重试" in message
+    else:
+        assert "user declined" not in message
+        assert {"approval_disabled": "disabled", "confirmation_unavailable": "unavailable",
+                "cancelled": "cancelled", "cancelled_or_expired": "expired"}[reason] in message
+
+
 def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session, make_session, project):
     # In no-limit with confirmHighRisk=False, high-risk confirmation is skipped.
     ui_host = RecordingUI()
