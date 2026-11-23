@@ -9,6 +9,7 @@ import threading
 import pytest
 
 from virgo.ai.providers import responses
+from virgo.ai.transform import normalize
 from virgo.ai.types import (
     AssistantMessage,
     Context,
@@ -103,6 +104,20 @@ def test_responses_account_http_roundtrip(server):
     assert request["json"]["instructions"] == "System"
     assert request["json"]["tools"][0]["name"] == "read"
     assert request["json"]["reasoning"]["effort"] == "high"
+
+
+def test_responses_read_tool_output(server, responses_read):
+    history, vision, expected = responses_read
+    selected = Model("openai", "reader", "openai-responses", vision=vision, base_url=server["url"], options={"apiKey": "test"})
+    history[1].api = selected.api
+    before = copy.deepcopy(history)
+    ctx = Context("", normalize(history, selected))
+    server["body"] = sse(EVENTS, named=True)
+    assert responses.stream(selected, ctx, StreamOptions()).result().stop_reason == "tool_use"
+    items = server["requests"][0]["json"]["input"]
+    assert (items[1]["call_id"], items[1]["id"]) == ("call_1", "fc_1")
+    assert items[2:] == [expected]
+    assert history == before
 
 
 @pytest.mark.parametrize("effort", ["xhigh", "max"])

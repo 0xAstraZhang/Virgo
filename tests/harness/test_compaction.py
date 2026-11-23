@@ -9,9 +9,10 @@ import pytest
 
 from virgo import ai
 from virgo.agent import AgentEvent, AgentTool
-from virgo.ai.providers import faux
+from virgo.ai.providers import faux, responses
 from virgo.ai.types import (
     AssistantMessage,
+    ImageContent,
     TextContent,
     ThinkingContent,
     ToolCall,
@@ -131,6 +132,25 @@ def test_auto_compaction_triggers_before_model_call(make_session):
     s.prompt("second")
     assert s.main.messages[0].kind == "summary"
     assert s.main.agent.last_text == "after compaction"
+
+
+def test_portable_compaction_reloads_image_in_kept_tail(make_session, pixel_png):
+    session = make_session(faux.reply("earlier answer"), persist=True, settings={"compaction": {"keepRecentTokens": 1250}})
+    session.prompt("earlier request")
+    faux.push("test", faux.reply(tools=[("read", {"path": "pixel.png"}, "read-1")]), faux.reply("done"))
+    session.prompt("Inspect the image. " * 20)
+    faux.push("test", scripted())
+    assert session.compact()["kept"] == 4
+    restored, ids = SessionStore.load(session.store.path).build_context()
+    assert (restored, ids) == (session.main.messages, session.main.ids)
+    summary, user, assistant, result, _ = restored
+    assert summary.kind == "summary" and user.text().startswith("Inspect the image.")
+    assert assistant.tool_calls()[0].id == result.tool_call_id == "read-1"
+    assert result.content == [TextContent("Image: pixel.png"), ImageContent(pixel_png, "image/png")]
+    assert responses.convert_messages(restored)[-2]["output"] == [
+        {"type": "input_text", "text": "Image: pixel.png"},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{pixel_png}", "detail": "auto"},
+    ]
 
 
 @pytest.mark.parametrize("usage", [

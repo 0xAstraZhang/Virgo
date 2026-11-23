@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import threading
 import time
 
@@ -9,6 +10,7 @@ import pytest
 
 from virgo.ai.providers import codex
 from virgo.ai.providers._http import ProviderError, _parse_events
+from virgo.ai.transform import normalize
 from virgo.ai.types import Context, Model, StreamOptions, ToolSpec, UserMessage
 
 from tests.support.http import sse
@@ -60,6 +62,21 @@ def test_codex_account_stream_and_request(account_server):
     assert request["json"]["store"] is False and request["json"]["stream"] is True
     assert "max_output_tokens" not in request["json"]
     assert request["json"]["tools"][0]["name"] == "read"
+
+
+def test_codex_read_tool_output(account_server, responses_read):
+    history, vision, expected = responses_read
+    model = _model(account_server)
+    model.id, model.vision = "reader", vision
+    history[1].api = model.api
+    before = copy.deepcopy(history)
+    ctx = Context("", normalize(history, model))
+    account_server["body"] = sse([{"type": "response.completed", "response": {"status": "completed", "output": []}}])
+    assert codex.stream(model, ctx, StreamOptions()).result().stop_reason == "stop"
+    items = account_server["requests"][0]["json"]["input"]
+    assert (items[1]["call_id"], items[1]["id"]) == ("call_1", "fc_1")
+    assert items[2:] == [expected]
+    assert history == before
 
 
 @pytest.mark.parametrize("effort", ["xhigh", "max"])

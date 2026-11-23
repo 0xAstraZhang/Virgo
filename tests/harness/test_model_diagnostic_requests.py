@@ -15,15 +15,17 @@ from virgo.ai.types import Model, ToolResultMessage, UserMessage
 from tests.support.http import bypass_proxies, serve, sse
 
 
-def wire_reply(api, *, tool=None, arguments=None, call_id="tool-call", text="done"):
+def wire_reply(api, *, tool=None, arguments=None, call_id="tool-call", text="done", chat_calls=()):
     if api == "openai":
         base = {"id": "reply-1", "object": "chat.completion.chunk", "created": 1, "model": "wire-test"}
-        delta = {"tool_calls": [{"index": 0, "id": call_id, "type": "function", "function": {
-            "name": tool, "arguments": json.dumps(arguments or {}),
-        }}]} if tool else {"content": text}
+        calls = [(call_id, tool, arguments or {})] if tool else chat_calls
+        delta = {"tool_calls": [
+            {"index": i, "id": tid, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+            for i, (tid, name, args) in enumerate(calls)
+        ]} if calls else {"content": text}
         return sse([
             {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
-            {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if tool else "stop"}]},
+            {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if calls else "stop"}]},
         ])
     block = {"type": "tool_use", "id": call_id, "name": tool, "input": {}} if tool else {"type": "text", "text": ""}
     delta = {"type": "input_json_delta", "partial_json": json.dumps(arguments or {})} if tool else {
@@ -92,6 +94,37 @@ def fail_with_cause(*_args):
         raise FileNotFoundError("backend adapter manifest is missing")
     except FileNotFoundError as cause:
         raise RuntimeError("backend operation failed") from cause
+
+
+def test_chat_request_follows_parallel_reads_with_one_attachment(make_session, monkeypatch, project, pixel_png):
+    bypass_proxies(monkeypatch)
+    (project / "notes.txt").write_text("some notes")
+
+    def responder(_request, number):
+        if number == 1:
+            return {"chat_calls": [("pic", "read", {"path": "pixel.png"}), ("notes", "read", {"path": "notes.txt"})]}
+        return {"text": "done"}
+
+    with scripted_api("openai", responder) as (url, requests):
+        session = make_session(refresh_models=False, persist=True, settings={
+            "compaction": {"enabled": False}, "retry": {"maxRetries": 0},
+        })
+        session.model = session.main.model = Model("wire-test", "reader", "openai", base_url=url, options={"apiKey": "test"})
+        session.prompt("Read both files")
+
+    assert session.main.agent.last_text == "done"
+    assert len(requests) == 2
+    assert [m.text() for m in session.main.messages if isinstance(m, UserMessage)] == ["Read both files"]
+    tail = requests[1]["messages"][-4:]
+    assert [m["role"] for m in tail] == ["assistant", "tool", "tool", "user"]
+    call, picture, notes, attachment = tail
+    assert [c["id"] for c in call["tool_calls"]] == ["pic", "notes"]
+    assert picture == {"role": "tool", "tool_call_id": "pic", "content": "Image: pixel.png"}
+    assert notes["role"] == "tool" and notes["tool_call_id"] == "notes" and "some notes" in notes["content"]
+    assert attachment == {"role": "user", "content": [
+        {"type": "text", "text": "Image from tool call pic."},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{pixel_png}"}},
+    ]}
 
 
 @pytest.mark.parametrize("api", ["openai", "anthropic"])

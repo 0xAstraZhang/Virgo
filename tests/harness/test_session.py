@@ -22,6 +22,7 @@ from virgo.ai.stream import StreamEvent
 from virgo.ai.types import (
     AssistantMessage,
     ImageContent,
+    Model,
     RawContent,
     TextContent,
     ThinkingContent,
@@ -38,6 +39,8 @@ from virgo.harness.store import SessionStore, _locked_file
 
 from tests.support import REPO_ROOT
 from tests.support.harness import TORN_MESSAGE, RecordingUI, calls, write_legacy_session
+from tests.support.http import bypass_proxies, fake_api
+from tests.support.sdk_streams import text_reply
 from tests.support.shell import selected
 
 
@@ -58,6 +61,54 @@ def test_session_persists_and_resumes(make_session, project):
     assert s2.main.agent.last_text == "second answer"
     assert SessionStore.list(path.parent)[0]["title"] == "hello"
     s2.shutdown()
+
+
+@pytest.mark.parametrize("api", ["anthropic", "openai", "openai-responses", "openai-codex"])
+def test_resumed_image_read_reaches_destination(make_session, pixel_png, monkeypatch, api):
+    session = make_session(faux.reply(tools=[("read", {"path": "pixel.png"}, "read-1")]), faux.reply("done"), persist=True)
+    session.prompt("inspect")
+    resumed = make_session(session=session.store.path)
+    before = deepcopy(resumed.main.messages)
+    bypass_proxies(monkeypatch)
+    protocol = "responses" if api in ("openai-responses", "openai-codex") else api
+    with fake_api(body=b"".join(text_reply(protocol, "seen"))) as server:
+        resumed.model = resumed.main.model = Model(
+            "wire-test", "reader", api, base_url=server["url"],
+            options={"apiKey": "test", "authMetadata": {"accountId": "test"}},
+        )
+        resumed.prompt("continue")
+        assert resumed.main.agent.last_text == "seen"
+        [request] = server["requests"]
+
+    assert resumed.main.messages[:-2] == before
+    _, _, result, _ = before
+    assert result.content == session.main.messages[2].content == [TextContent("Image: pixel.png"), ImageContent(pixel_png, "image/png")]
+    entries = SessionStore.load(session.store.path).entries
+    stored_users = [e["message"]["content"] for e in entries if e["type"] == "message" and e["message"]["role"] == "user"]
+    assert stored_users == ["inspect", "continue"]
+    url = f"data:image/png;base64,{pixel_png}"
+    if api == "anthropic":
+        _, call, reply, _, _ = request["json"]["messages"]
+        assert call["content"][0]["id"] == reply["content"][0]["tool_use_id"] == "read-1"
+        assert reply["content"][0]["content"] == [
+            {"type": "text", "text": "Image: pixel.png"},
+            {"type": "image", "source": {"type": "base64", "data": pixel_png, "media_type": "image/png"}},
+        ]
+    elif api == "openai":
+        tail = request["json"]["messages"][-5:]
+        assert [m["role"] for m in tail] == ["assistant", "tool", "user", "assistant", "user"]
+        call, reply, attachment, _, _ = tail
+        assert call["tool_calls"][0]["id"] == reply["tool_call_id"] == "read-1"
+        assert reply["content"] == "Image: pixel.png"
+        assert attachment == {"role": "user", "content": [
+            {"type": "text", "text": "Image from tool call read-1."}, {"type": "image_url", "image_url": {"url": url}},
+        ]}
+    else:
+        _, call, reply, _, _ = request["json"]["input"]
+        assert call["call_id"] == reply["call_id"] == "read-1"
+        assert reply["output"] == [
+            {"type": "input_text", "text": "Image: pixel.png"}, {"type": "input_image", "image_url": url, "detail": "auto"},
+        ]
 
 
 def test_tool_completion_order_survives_reload_without_changing_model_history(make_session):

@@ -61,8 +61,16 @@ def _client(model: Model, bridge=None):
 
 
 def convert_messages(system: str, messages: list, send_reasoning: bool = False) -> list[dict]:
+    def image_part(block: ImageContent) -> dict:
+        return {"type": "image_url", "image_url": {"url": f"data:{block.mime_type};base64,{block.data}"}}
+
     out: list[dict] = [{"role": "system", "content": system}] if system else []
+    attachments: list[dict] = []
     for m in messages:
+        # Chat accepts images on user turns. Finish all parallel tool replies before adding one.
+        if attachments and not isinstance(m, ToolResultMessage):
+            out.append({"role": "user", "content": attachments})
+            attachments = []
         if isinstance(m, UserMessage):
             if isinstance(m.content, str):
                 out.append({"role": "user", "content": m.content})
@@ -72,9 +80,7 @@ def convert_messages(system: str, messages: list, send_reasoning: bool = False) 
                     if isinstance(b, TextContent):
                         parts.append({"type": "text", "text": b.text})
                     elif isinstance(b, ImageContent):
-                        parts.append(
-                            {"type": "image_url", "image_url": {"url": f"data:{b.mime_type};base64,{b.data}"}}
-                        )
+                        parts.append(image_part(b))
                 out.append({"role": "user", "content": parts})
         elif isinstance(m, AssistantMessage):
             text, calls = m.text(), m.tool_calls()
@@ -101,9 +107,15 @@ def convert_messages(system: str, messages: list, send_reasoning: bool = False) 
             out.append(msg)
         elif isinstance(m, ToolResultMessage):
             text = m.text()
-            if any(isinstance(b, ImageContent) for b in m.content):
-                text += "\n[image output omitted]"
+            images = [image_part(b) for b in m.content if isinstance(b, ImageContent)]
+            if images:
+                label = "Image" if len(images) == 1 else "Images"
+                attachments.append({"type": "text", "text": f"{label} from tool call {m.tool_call_id}."})
+                attachments.extend(images)
+                text = text or "Image attached."
             out.append({"role": "tool", "tool_call_id": m.tool_call_id, "content": text or "(no output)"})
+    if attachments:
+        out.append({"role": "user", "content": attachments})
     return out
 
 
