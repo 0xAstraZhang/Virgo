@@ -40,6 +40,7 @@ HISTORY_RUNS = 30
 OLDER_MARGIN = 2
 TOOL_KINDS = ("tool_call", "sources")
 STREAM_MARKDOWN_INTERVAL = 0.08
+TEXT_STALL_SECONDS = 2.0
 
 
 def _json(value) -> str:
@@ -344,11 +345,13 @@ class AssistantView(Vertical):
         self.text = ""
         self.message: AssistantMessage | None = None
         self.activity: Text | None = None
+        self._text_progress_at: float | None = None
         self.active_events: set[EventView] = set()
         self.waiting: str | None = None
         self.events: list[EventView] = []
         self.answer_events: list[EventView] = []
         self.thought_header = Static("", classes="thought-header", markup=False)
+        self.thought_header.display = False
         self.thought_body = Vertical(classes="thought-body")
         self.body = Markdown(open_links=False)
         self.error = Static("", classes="error", markup=False)
@@ -417,11 +420,23 @@ class AssistantView(Vertical):
         self._render_thinking()
 
     def _render_thinking(self) -> None:
-        visible = self.activity is not None and (not self.active_events or self.waiting is not None)
-        self.thought_header.display = visible
-        update_static(self.thought_header, self.activity or Text(""), layout=False)
-        self.thought_header.set_class(visible, "active")
+        visible = self.activity is not None and (
+            self.waiting is not None or not self.active_events or (
+                all(event.kind == "text" and event.agent == "main" for event in self.active_events)
+                and (self._text_progress_at is None or time.monotonic() - self._text_progress_at >= TEXT_STALL_SECONDS)
+            )
+        )
+        if self.thought_header.display != visible:
+            self.thought_header.display = visible
+            self.thought_header.set_class(visible, "active")
+        if visible:
+            update_static(self.thought_header, self.activity or Text(""), layout=False)
         self.thought_body.display = True
+
+    def record_text_progress(self) -> None:
+        self._text_progress_at = time.monotonic()
+        if self.thought_header.display:
+            self._render_thinking()
 
     def set_event_activity(self, event: EventView, phase: str) -> None:
         if event.activity_phase == phase:
@@ -434,6 +449,8 @@ class AssistantView(Vertical):
                 event.activity_frame = self.activity.plain[0]
         else:
             self.active_events.discard(event)
+            if event.kind == "text" and event.agent == "main":
+                self._text_progress_at = None
         event.render_state()
         self._render_thinking()
 
@@ -779,11 +796,25 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         if self.activity_card is not None and self._staged is None:
             self.activity_card.set_event_activity(row, phase)
 
-    def _stream_activity(self, agent: str, stream: StreamEvent) -> None:
+    async def _stream_update(self, agent: str, stream: StreamEvent) -> None:
         # Native tools can overlap text and each other; their snapshots own
         # their lifetimes. Only model content blocks replace one another.
-        if stream.type.startswith("native_tool_"):
+        native_tool = stream.type.startswith("native_tool_")
+        row = self._streaming.get(agent) if native_tool else self._blocks.get(agent, {}).get(stream.index)
+        previous_length = len(row.text) if row is not None else 0
+        await self._snapshot(agent, stream.partial)
+        if self._staged is not None:
             return
+        if not native_tool:
+            self._stream_activity(agent, stream)
+        row = self._streaming.get(agent)
+        # The bridge can coalesce a growing snapshot into a final empty delta.
+        if agent == "main" and row is not None and row.kind == "text" and (
+            (stream.type == "text_delta" and stream.delta) or len(row.text) > previous_length
+        ):
+            self.activity_card.record_text_progress()
+
+    def _stream_activity(self, agent: str, stream: StreamEvent) -> None:
         row = self._blocks.get(agent, {}).get(stream.index)
         previous = self._streaming.get(agent)
         if previous is not None and (
@@ -816,8 +847,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 await self._append(EventView("retry", tr(self, "ui.event.retry"), agent=ev.agent))
                 await self._start_message(ev.agent)
             else:
-                await self._snapshot(ev.agent, ev.stream_event.partial)
-                self._stream_activity(ev.agent, ev.stream_event)
+                await self._stream_update(ev.agent, ev.stream_event)
         elif ev.type == "message_end":
             if isinstance(message, UserMessage):
                 await self._user_message(ev.agent, message)
