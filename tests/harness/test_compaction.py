@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 
 import pytest
 
+from virgo import ai
 from virgo.agent import AgentEvent, AgentTool
 from virgo.ai.providers import faux
 from virgo.ai.types import (
@@ -22,7 +24,7 @@ from virgo.harness.compaction import estimate_tokens, find_cut
 from virgo.harness.session import AgentSession
 from virgo.harness.store import SessionStore
 
-from tests.support.harness import RecordingUI, calls, install_responses
+from tests.support.harness import RecordingUI, calls, install_responses, response_stream
 
 
 def summarizer(ctx):
@@ -453,3 +455,244 @@ def test_reported_usage_after_compaction_does_not_count_as_new_content(make_sess
     assert not session.main._compaction_due()
     reply.usage.input += 1
     assert session.main._compaction_due()
+
+
+OC_PROVIDERS = {"faux": {"models": {"test": {"contextWindow": 65_536, "maxTokens": 32_768}}}}
+
+
+def length_limited(output=12_096):
+    return AssistantMessage([TextContent("unfinished checkpoint")], stop_reason="length",
+                            usage=Usage(input=33_209, cache_read=384, output=output))
+
+
+def summary_calls(session):
+    return [row for row in session.store.custom("model_call") if row["purpose"] == "compaction"]
+
+
+@pytest.mark.parametrize("locale,limit_label", [("en", "output token limit"), ("zh_CN", "上限")])
+@pytest.mark.parametrize("native", [False, True], ids=["portable", "anthropic"])
+def test_length_diagnostic_and_accounting(make_session, monkeypatch, locale, limit_label, native):
+    session = make_session(faux.reply("prior work"), persist=True, settings={"language": locale, "providers": OC_PROVIDERS})
+    session.prompt("Original task")
+    if native:
+        session.set_model("anthropic/test")
+        reply = length_limited(output=7900)
+        monkeypatch.setattr("virgo.harness.compaction.native_compact", lambda *a, **kw: reply)
+        ceiling = 8000
+    else:
+        reply = length_limited()
+        install_responses(monkeypatch, reply)
+        ceiling = 12_096
+    rt = session.main
+    before = list(rt.messages), list(rt.ids)
+    assert rt.compact(reason="auto") is None
+    assert before == (rt.messages, rt.ids) == SessionStore.load(session.store.path).build_context()
+    assert session.store.last_compaction() is None
+    row, = summary_calls(session)
+    assert row["stop_reason"] == "length"
+    assert row["usage"] == dict(input=33_209, cache_read=384, output=reply.usage.output, cache_write=0)
+    diagnostic = session.ui.lines[-1].lower().replace(",", "")
+    assert "length" in diagnostic and limit_label in diagnostic and str(ceiling) in diagnostic
+    assert session.t("harness.compact.empty_summary") not in diagnostic
+
+
+@pytest.mark.parametrize("native", [False, True], ids=["portable", "anthropic"])
+@pytest.mark.parametrize("stop,text,error,expected", [
+    ("stop", "  ", None, "empty summary"),
+    ("error", "", "provider unavailable", "provider unavailable"),
+    ("stop", "partial", "provider unavailable", "provider unavailable"),
+    ("aborted", "partial", None, "cancel"),
+])
+def test_compaction_distinguishes_other_failures(make_session, monkeypatch, native, stop, text, error, expected):
+    session = make_session(faux.reply("prior work"))
+    session.prompt("Original task")
+    reply = AssistantMessage([TextContent(text)], stop_reason=stop, error_message=error)
+    if native:
+        session.set_model("anthropic/test")
+        monkeypatch.setattr("virgo.harness.compaction.native_compact", lambda *a, **kw: reply)
+    else:
+        install_responses(monkeypatch, reply)
+    assert session.compact() is None
+    assert expected in session.ui.lines[-1].lower()
+    assert session.store.last_compaction() is None
+    assert len(summary_calls(session)) == 1
+
+
+@pytest.mark.parametrize("before,main_input,after,at_reserve", [
+    pytest.param(57_196, 59_956, 65_474, True, id="OC-F1"),
+    pytest.param(63_763, 63_569, 63_923, True, id="OC-F2"),
+    pytest.param(60_665, 61_273, 63_439, True, id="OC-F3"),
+    pytest.param(57_196, 59_956, 61_439, False, id="one-before-reserve"),
+    pytest.param(57_196, 59_956, 61_440, True, id="at-reserve"),
+])
+def test_length_then_tool_turn_bounds_recovery(make_session, monkeypatch, project, before, main_input, after, at_reserve):
+    session = make_session(persist=True, settings={"providers": OC_PROVIDERS})
+    rt = session.main
+    (project / "spec").write_text("fact", encoding="utf-8")
+    install_responses(monkeypatch, AssistantMessage([TextContent("prior work")], usage=Usage(input=before - 1)))
+    session.prompt("Original task")
+    original = list(rt.messages)
+    # "Read" and the real tool result "fact" each add one token to the preceding reported usage.
+    tool_turn = AssistantMessage([ToolCall("read-spec", "read", {"path": "spec"})], stop_reason="tool_use",
+                                usage=Usage(input=main_input, output=after - main_input - 1))
+    overflow = AssistantMessage(stop_reason="error", error_kind="overflow", error_message="context is too long")
+    replies = iter([tool_turn, overflow])
+    requests, instructions, model_contexts = [], [], []
+
+    def stream(model, ctx, opts):
+        if "context summarization assistant" in ctx.system:
+            requests.append("summary")
+            instructions.append(ctx.messages[0].text().split("</conversation>")[-1])
+            if len(instructions) == 2 and after == 61_440:
+                return response_stream(AssistantMessage())  # An empty recovery also exhausts the attempt.
+            return response_stream(length_limited(output=opts.max_tokens))
+        requests.append("main")
+        model_contexts.append(list(ctx.messages))
+        return response_stream(next(replies))
+
+    monkeypatch.setattr(ai, "stream", stream)
+    session.prompt("Read")
+    assert requests == (["summary", "main", "summary", "main"] if at_reserve
+                        else ["summary", "main", "main", "summary"])
+    ordinary, recovery = summary_calls(session)
+    assert ordinary["max_tokens"] == 12_096 and recovery["max_tokens"] < ordinary["max_tokens"]
+    assert instructions[0] != instructions[1]
+    assert re.search(r"\b\d[\d,]* (?:visible )?tokens\b", instructions[1])
+    assert model_contexts[0][:-1] == original
+    assert model_contexts[1][:-2] == model_contexts[0]
+    call, result = model_contexts[1][-2:]
+    assert call.tool_calls()[0].id == result.tool_call_id == "read-spec" and result.text() == "fact"
+    assert rt.messages == [*model_contexts[1], overflow]
+    restored, ids = SessionStore.load(session.store.path).build_context()
+    assert ids == rt.ids and restored[:-2] == rt.messages[:-2] and restored[-1] == overflow
+    # The store compacts tool policy metadata on disk. All tool message fields sent to the model survive.
+    assert replace(restored[-2], details=None) == replace(result, details=None)
+    assert session.store.last_compaction() is None
+
+
+@pytest.mark.parametrize("reactive", [False, True], ids=["auto", "overflow"])
+@pytest.mark.parametrize("cancellation", ["signal-and-length", "aborted"])
+def test_cancelled_compaction_ends_run_without_retry(make_session, monkeypatch, cancellation, reactive):
+    session = make_session(settings={"compaction": {"triggerTokens": 1}})
+    rt = session.main
+    requests = []
+
+    def stream(model, ctx, opts):
+        if "context summarization assistant" in ctx.system:
+            requests.append("summary")
+            if reactive and requests.count("summary") == 1:
+                return response_stream(length_limited())
+            if cancellation == "signal-and-length":
+                opts.signal.set()
+                return response_stream(length_limited())
+            return response_stream(AssistantMessage(stop_reason="aborted"))
+        requests.append("main")
+        return response_stream(AssistantMessage(stop_reason="error", error_kind="overflow", error_message="too long"))
+
+    monkeypatch.setattr(ai, "stream", stream)
+    session.prompt("Original task")
+    assert requests == (["summary", "main", "summary"] if reactive else ["summary"])
+    assert rt.messages[-1].stop_reason == "aborted"
+    assert "cancel" in session.ui.lines[-1].lower()
+    assert session.store.last_compaction() is None
+    if not reactive:
+        assert rt._compaction_due()  # Even a racing length response did not arm the length guard.
+
+
+@pytest.fixture
+def after_length(make_session, monkeypatch):
+    session = make_session(settings={"providers": OC_PROVIDERS})
+    install_responses(monkeypatch, AssistantMessage([TextContent("work")], usage=Usage(input=57_196)), length_limited())
+    session.prompt("Original task")
+    assert session.main.compact(reason="auto") is None
+    return session
+
+
+@pytest.mark.parametrize("reason", ["manual", "auto", "overflow"])
+def test_compaction_success_clears_length_failure(after_length, monkeypatch, reason):
+    session = after_length
+    rt = session.main
+    assert not rt._compaction_due()
+    rt.messages[-1].usage.input = 61_440
+    assert rt._compaction_due()
+    install_responses(monkeypatch, AssistantMessage([TextContent("complete checkpoint")]))
+    assert rt.compact(reason=reason)["summary"] == "complete checkpoint"
+    # Growth in this same run must allow ordinary compaction again, below the safety reserve.
+    rt.messages.append(AssistantMessage(usage=Usage(input=57_196)))
+    assert rt._compaction_due()
+    install_responses(monkeypatch, length_limited())
+    rt.compact(reason="auto")
+    assert [c["max_tokens"] for c in summary_calls(session)][-1] == 12_096
+
+
+@pytest.mark.parametrize("reset", ["set_model", "window_only", "restore_native_context", "prepare_run", "new_prompt"])
+def test_length_failure_resets_at_runtime_boundaries(after_length, monkeypatch, reset):
+    session = after_length
+    rt = session.main
+    assert not rt._compaction_due()
+    if reset == "set_model":
+        session.set_model("faux/other")
+        session.set_model("faux/test")
+    elif reset == "window_only":
+        original = rt.model
+        rt.model = replace(original, context_window=original.context_window - 1)
+        rt.model = original
+    elif reset == "restore_native_context":
+        rt.restore_native_context(session.resolve("faux/other"))
+    elif reset == "prepare_run":
+        rt.prepare_run()
+    else:
+        install_responses(monkeypatch, length_limited(), AssistantMessage([TextContent("done")]))
+        session.prompt("Continue")
+        assert session.main.agent.last_text == "done"
+        assert [row["max_tokens"] for row in summary_calls(session)] == [12_096, 12_096]
+        return
+    assert rt._compaction_due()
+
+
+def test_length_failure_resets_on_retry_fallback(make_session, monkeypatch):
+    session = make_session(settings={
+        "providers": OC_PROVIDERS,
+        "compaction": {"triggerTokens": 1},
+        "retry": {"fallbackModel": "faux/fallback"},
+    })
+    monkeypatch.setattr(session.main.agent.signal, "wait", lambda _: False)
+    overloaded = AssistantMessage(stop_reason="error", error_kind="retryable", error_message="overloaded")
+    seen = install_responses(monkeypatch, length_limited(), overloaded, overloaded,
+                             AssistantMessage([TextContent("checkpoint")]), AssistantMessage([TextContent("done")]))
+    session.prompt("Original task")
+    assert session.main.agent.last_text == "done" and seen[-1][0].spec == "faux/fallback"
+    assert [row["max_tokens"] for row in summary_calls(session)] == [12_096, 12_096]
+
+
+@pytest.mark.parametrize("api", ["anthropic", "openai"])
+def test_native_length_recovery_requires_shorter_request(make_session, monkeypatch, api):
+    session = make_session(faux.reply("prior work"))
+    session.prompt("Original task")
+    session.set_model(f"{api}/test")
+    rt = session.main
+    requests = []
+
+    def native(model, context, opts, *, focus):
+        requests.append((opts.max_tokens, focus))
+        return length_limited(output=opts.max_tokens)
+
+    monkeypatch.setattr("virgo.harness.compaction.native_compact", native)
+    assert rt.compact(reason="auto") is None
+    assert rt.compact(reason="overflow") is None
+    if api == "anthropic":
+        ordinary, recovery = requests
+        assert recovery[0] < ordinary[0] and recovery[1] and "tokens" in recovery[1]
+    else:
+        assert len(requests) == 1  # The standalone endpoint accepts neither focus nor an output limit.
+
+
+def test_successful_length_recovery_keeps_one_reactive_overflow_guard(make_session, monkeypatch):
+    session = make_session(settings={"compaction": {"triggerTokens": 1}})
+    overflow = AssistantMessage(stop_reason="error", error_kind="overflow", error_message="context is too long")
+    install_responses(monkeypatch, length_limited(), overflow, AssistantMessage([TextContent("checkpoint")]), overflow)
+    session.prompt("Original task")
+    assert session.main.messages[-1].error_message == "context is too long"
+    assert session.store.last_compaction()["reason"] == "overflow"
+    ordinary, recovery = summary_calls(session)
+    assert recovery["max_tokens"] < ordinary["max_tokens"]
