@@ -65,8 +65,9 @@ MESSAGES = {
     "features.jobs.stopping": "Stopping {id}.",
     "features.jobs.unit.bytes": "bytes",
     "features.jobs.unit.chars": "chars",
-    "features.permission.allow_suffix": "  Allow once [y] / Deny [n] / Always allow [a]",
-    "features.permission.external_suffix": "Allow this call once [y] / Deny [n]",
+    "features.permission.read_paths": "Read access: {path}",
+    "features.permission.write_paths": "Write access: {path}",
+    "features.permission.network_allowed": "Shell network: allowed",
     "features.permission.user_declined": "The user declined this permission request. Do not repeat it or request "
     "a broader grant for this access in the current turn.",
     "features.permission.external_declined": "The user declined this external tool call. It was not approved. "

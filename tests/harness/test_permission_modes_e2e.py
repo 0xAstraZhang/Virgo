@@ -52,8 +52,9 @@ def test_direct_file_approval_persists_in_session_and_preserves_the_mode(broker_
     assert target.read_text() == "two"
     assert not other.exists()
     assert len(session.ui.questions) == 2
-    assert all(str(session.cwd) in question and "write_paths" in question and "Reason:" in question
-               for question in session.ui.questions)
+    for question, path in zip(session.ui.questions, (target, other), strict=True):
+        assert f"Write access: {path.resolve()}" in question.splitlines()
+        assert str(session.cwd) in question and "Reason:" in question
     assert session.main.permission_snapshot.mode.id == "read-only"
 
 

@@ -67,8 +67,9 @@ def test_saved_resource_scope_reuses_across_commands_and_isolates_projects_and_m
     # Incremental write_paths request only prompts for write_paths, not already-granted read_paths.
     assert not ask(session, shell.name, command, reads | {"write_paths": [str(directory)]}).is_error
     assert len(session.ui.questions) == 2
-    assert "read_paths" in session.ui.questions[0]
-    assert "write_paths" in session.ui.questions[1] and "read_paths" not in session.ui.questions[1]
+    assert f"Read access: {directory.resolve()}" in session.ui.questions[0].splitlines()
+    assert f"Write access: {directory.resolve()}" in session.ui.questions[1].splitlines()
+    assert "Read access:" not in session.ui.questions[1]
     assert str(project) in session.ui.questions[1]
 
     # Different command arguments targeting the same granted path reuse the resource grant without prompting.

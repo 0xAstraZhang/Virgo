@@ -1,7 +1,6 @@
 """Explicit single-operation decisions cannot be inferred or silently reused."""
 from __future__ import annotations
 
-import json
 import threading
 from string import Formatter
 
@@ -84,8 +83,8 @@ def test_only_covering_path_grants_are_blocked(broker_session, tmp_path):
         _assert_denial(result.details, "already_denied_this_turn")
     assert not other.is_error and not prefix.is_error
     assert len(ui.questions) == 3
-    assert json.dumps(str(sibling.resolve()), ensure_ascii=False) in ui.questions[1]
-    assert json.dumps(str(similar.resolve()), ensure_ascii=False) in ui.questions[2]
+    assert f"Read access: {sibling.resolve()}" in ui.questions[1].splitlines()
+    assert f"Read access: {similar.resolve()}" in ui.questions[2].splitlines()
 
 
 def test_denied_write_still_allows_read_request(broker_session, tmp_path):

@@ -247,8 +247,7 @@ class ResourceApprovals:
     def _confirm_external(self, event, base, resources):
         question = (f"External tool: {event.tool_name}\n"
                     f"Arguments: {json.dumps(event.args, ensure_ascii=False)}\n"
-                    "This trusted extension runs outside the native sandbox and may modify host state."
-                    + self.session.t("features.permission.external_suffix"))
+                    "This trusted extension runs outside the native sandbox and may modify host state.")
         return self._ask(event, base, resources, question, persistent=bool(external_tool_target(event)))
 
     def _admit(self, event, *, consume):
@@ -364,15 +363,25 @@ class ResourceApprovals:
         return self._confirm(context, base, missing, args["reason"], tool_name=raw_tool, tool_args=args.get("arguments"))
 
     def _confirm(self, context_or_event, base, missing, reason, *, tool_name=None, tool_args=None):
-        cwd = getattr(context_or_event, "cwd", base.workspace)
+        cwd = Path(getattr(context_or_event, "cwd", base.workspace)).resolve()
+        project = Path(base.workspace).resolve()
         display_tool = tool_name or getattr(context_or_event, "tool_name", "request_permissions")
         display_args = tool_args if tool_args is not None else getattr(context_or_event, "args", {})
-        question = (f"Operation: {display_tool} {json.dumps(display_args, ensure_ascii=False)}\n"
-                    f"Working directory: {Path(cwd).resolve()}\n"
-                    f"Project: {base.workspace}\n"
-                    f"Additional resources: {json.dumps(missing, ensure_ascii=False)}\n"
-                    f"Reason: {reason}" + self.session.t("features.permission.external_suffix"))
-        return self._ask(context_or_event, base, missing, question, audit_tool=display_tool)
+        lines = []
+        for kind, target in missing:
+            if kind in {"read_paths", "write_paths"}:
+                lines.append(self.session.t(f"features.permission.{kind}", path=target))
+            elif kind == "network_allowed":
+                lines.append(self.session.t("features.permission.network_allowed"))
+            else:
+                lines.append(json.dumps((kind, target), ensure_ascii=False))
+        operation = f"Operation: {display_tool}"
+        if display_args:
+            operation += " " + json.dumps(display_args, ensure_ascii=False)
+        lines.extend([operation, f"Reason: {reason}", f"Working directory: {cwd}"])
+        if project != cwd:
+            lines.append(f"Project: {project}")
+        return self._ask(context_or_event, base, missing, "\n".join(lines), audit_tool=display_tool)
 
     def _ask(self, context, base, missing, question, *, persistent=True, audit_tool=None):
         runtime = self.session.runtime_for_context(context)

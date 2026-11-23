@@ -74,18 +74,16 @@ class ApprovalPicker(Vertical):
         self.query_one("#approval-title", Static).update(
             title
         )
-        question = confirmation.question.removesuffix(
-            tr(self, "features.permission.allow_suffix")
-        ).removesuffix(tr(self, "features.permission.external_suffix")).rstrip()
+        question = confirmation.question.rstrip().removesuffix(tr(self, "ui.approval.prompt_hint")).rstrip()
         self.query_one("#approval-question-text", Static).update(Text(question))
         self.query_one("#approval-question").scroll_home(animate=False)
         options = self.query_one(MarkedChoiceList)
         choices = [
-            ("allow", tr(self, "ui.approval.once")),
+            ("allow", tr(self, "ui.approval.once" if confirmation.once_only else "ui.approval.allow_session")),
             ("deny", tr(self, "ui.approval.deny")),
         ]
         if not confirmation.once_only:
-            choices.append(("always", tr(self, "ui.approval.session")))
+            choices.append(("always", tr(self, "ui.approval.allow_project")))
         options.set_choices(choices, highlighted=1)
         self.resize_panel()
         self.focus_control()
