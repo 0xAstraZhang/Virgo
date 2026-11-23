@@ -424,12 +424,18 @@ def _execute(
             run(i)
             _end(cfg, emit, calls[i], results[i])
     else:
-        with ThreadPoolExecutor(max_workers=min(cfg.max_parallel, len(todo))) as pool:
+        pool = ThreadPoolExecutor(max_workers=min(cfg.max_parallel, len(todo)))
+        try:
             futures = {pool.submit(run, i): i for i in todo}
             for f in as_completed(futures):
                 f.result()
                 i = futures[f]
                 _end(cfg, emit, calls[i], results[i])
+        except BaseException:
+            signal.set()
+            raise
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
     # Model history still pairs results in call order; UI events above follow completion order.
     out = [
         ToolResultMessage(call.id, call.name, _project_content(call, res, cfg), details=res.details,

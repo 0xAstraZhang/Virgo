@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from virgo import ai
-from virgo.agent import Agent, AgentConfig, AgentTool, Block, Continue
+from virgo.agent import Agent, AgentConfig, AgentTool, Block, Continue, ToolResult
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, ToolResultMessage, UserMessage
 from virgo.ai.validate import INVALID_ARGUMENTS
@@ -98,6 +98,80 @@ def test_parallel_results_are_emitted_as_completed_but_history_keeps_call_order(
     results = [message for message in agent.messages if isinstance(message, ToolResultMessage)]
     assert [message.tool_call_id for message in results] == ["slow-id", "fast-id"]
     assert results[0].text() == "slow result" and not results[0].is_error
+
+
+def test_parallel_interrupt_signals_workers_cancels_queue_and_joins(monkeypatch):
+    ready = threading.Barrier(3, timeout=2)
+    queue_cancelled = threading.Event()
+    workers = {}
+    saw_signal = {}
+    timeline = []
+
+    def execute(args, ctx):
+        workers[ctx.call_id] = threading.current_thread()
+        if ctx.call_id != "queued":
+            ready.wait()
+            saw_signal[ctx.call_id] = ctx.signal.wait(2)
+            if saw_signal[ctx.call_id]:
+                # Keep both slots occupied until the queued future is cancelled.
+                queue_cancelled.wait(2)
+        return "finished"
+
+    def interrupt(futures):
+        ready.wait()
+        (pending,) = (future for future in futures if not future.running())
+        pending.add_done_callback(lambda f: f.cancelled() and queue_cancelled.set())
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("virgo.agent.loop.as_completed", interrupt)
+    agent, _ = make_agent(
+        [AgentTool("wait", "wait", {"type": "object"}, execute)],
+        faux.reply(tools=[("wait", {}, name) for name in ("one", "two", "queued")]),
+        faux.reply("restarted"),
+        max_parallel=2,
+        after_tool_call=lambda ev, res: timeline.append(("after_tool_call", ev.call_id)),
+    )
+    agent.subscribe(lambda ev: timeline.append((ev.type, ev.tool_call_id)))
+    with pytest.raises(KeyboardInterrupt):
+        agent.prompt("go")
+
+    assert saw_signal == {"one": True, "two": True}
+    assert queue_cancelled.is_set()
+    assert set(workers) == {"one", "two"}
+    assert all(not thread.is_alive() for thread in workers.values())
+    assert {call_id for kind, call_id in timeline if kind == "after_tool_call"} == {"one", "two"}
+    assert timeline[-1][0] == "agent_end"
+    agent.prompt("new prompt")
+    assert agent.last_text == "restarted"
+
+
+def test_external_abort_completes_both_active_parallel_calls():
+    ready = threading.Barrier(3, timeout=2)
+
+    def execute(args, ctx):
+        ready.wait()
+        if ctx.signal.wait(2):
+            return ToolResult.error("aborted", details={"cancelled": True})
+        return "timed out"
+
+    agent, events = make_agent(
+        [AgentTool("wait", "wait", {"type": "object"}, execute)],
+        faux.reply(tools=[("wait", {}, "one"), ("wait", {}, "two")]),
+    )
+    prompt = threading.Thread(target=agent.prompt, args=("go",))
+    prompt.start()
+    try:
+        ready.wait()
+    finally:
+        agent.abort()
+        prompt.join(5)
+
+    assert not prompt.is_alive()
+    results = [m for m in agent.messages if isinstance(m, ToolResultMessage)]
+    assert [m.tool_call_id for m in results if m.is_error and m.details.get("cancelled")] == ["one", "two"]
+    assert {ev.tool_call_id for ev in events if ev.type == "tool_execution_end"} == {"one", "two"}
+    assert events[-1].type == "agent_end"
+    assert len(faux.CALLS["loop"]) == 1
 
 
 def test_preflight_failures_are_emitted_before_preparing_the_next_call():
