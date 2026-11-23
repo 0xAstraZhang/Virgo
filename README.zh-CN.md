@@ -78,7 +78,9 @@ uv run virgo -p --format json "总结 README"
 
 使用 `/status` 查看会话 ID、模型、工作目录、token 用量和当前权限，包括具体可读写路径及 Shell 联网权限。
 
-使用 `/permissions show` 查看当前任务和下一任务的模式，使用 `/permissions` 或 `--permission <read-only|workspace-edit|no-limit>` 在三种模式间切换。见[权限模式与审批](docs/zh-CN/development/permission-profiles.md)。
+在交互式会话中，`/permissions` 显示当前模式、审批策略、可读写路径或宿主账户权限，以及网页访问和 Shell 联网状态。如果下一任务的模式不同，摘要也会列出该模式。使用 `/permissions show`、`/permissions status` 或非交互式的 `-p /permissions` 查看完整的执行边界 JSON。
+
+使用 `/permissions <mode>` 或 `--permission <read-only|workspace-edit|no-limit>` 在三种模式间切换。见[权限模式与审批](docs/zh-CN/development/permission-profiles.md)。
 
 ## 查看错误记录
 

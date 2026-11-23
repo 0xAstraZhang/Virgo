@@ -177,6 +177,34 @@ def test_exact_slash_command_submits_with_one_enter(make_session):
     asyncio.run(scenario())
 
 
+def test_permissions_summary_fits_initial_viewport_and_show_opens_details(broker_session):
+    async def scenario():
+        ui = FullscreenUI()
+        session = broker_session(ui=ui, preset="workspace-edit")
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.editor.load_text("/permissions")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: bool(app.transcript.query(".notice")))
+            viewport = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+            for row in ("Permissions: Workspace-Edit · approval: ask", "Read roots:", "Write roots:",
+                        "Protected paths and exceptions: /permissions show", "Web: on · Shell network: on"):
+                assert row in viewport
+            summary = str(app.transcript.query(".notice").last().content)
+            assert f"Read roots: {session.cwd}" in summary and f"Write roots: {session.cwd}" in summary
+            assert '"native_process"' not in summary and '"provider"' not in summary
+
+            app.editor.load_text("/permissions show")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: '"native_process"' in str(app.transcript.query(".notice").last().content))
+            label, raw = str(app.transcript.query(".notice").last().content).split("\n", 1)
+            assert label == "Workspace-Edit (Sandbox)"
+            detail = json.loads(raw)
+            assert detail["provider"] == "sandbox" and "native_process" in detail["effective"]
+
+    asyncio.run(scenario())
+
+
 def test_up_moves_within_wrapped_line_before_recalling_history(make_session):
     async def scenario():
         ui = FullscreenUI()

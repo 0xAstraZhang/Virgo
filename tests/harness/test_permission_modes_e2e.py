@@ -436,6 +436,7 @@ def test_status_shows_session_and_granted_write_path(broker_session, tmp_path):
         faux.reply(tools=[("write", {"path": str(target), "content": "ok"})]),
         faux.reply("done"), preset="read-only", ui=RecordingUI(["y"]),
     )
+    session.ui.interactive = True
     session.prompt("Write the file")
     assert session.commands.get("status").concurrent
     session.prompt("/status")
@@ -445,6 +446,30 @@ def test_status_shows_session_and_granted_write_path(broker_session, tmp_path):
     assert f"Write roots: {target}" in output
     assert "Read-Only" in output and "Shell network: off" in output
     assert "Token usage:" in output and "Context:" in output
+    session.prompt("/permissions")
+    summary = session.ui.lines[-1]
+    assert f"Write roots: {target}" in summary
+    assert summary in output and session.store.id not in summary
+
+
+@pytest.mark.parametrize(("language", "expected"), [
+    ("en", ("Permissions: Read-Only · approval: never", "Next task: Workspace-Edit",
+            "Write roots: none", "Web: on · Shell network: off")),
+    ("zh-CN", ("权限：Read-Only · 审批策略：never", "下一任务：Workspace-Edit", "可写路径：无",
+               "受保护路径与例外规则：/permissions show", "网页访问：开 · Shell 联网：关")),
+])
+def test_permissions_summary_during_task_keeps_active_approval_and_mode(broker_session, language, expected):
+    def during_task(_):
+        session.prompt("/permissions ask")
+        session.prompt("/permissions workspace-edit")
+        session.prompt("/permissions")
+        return faux.reply("done")
+
+    session = broker_session(during_task, preset="read-only", approval="never", settings={"language": language})
+    session.ui.interactive = True
+    session.prompt("Inspect the workspace")
+    for row in expected:
+        assert row in session.ui.lines[-1].splitlines()
 
 
 def test_status_reports_host_authority_without_sandbox_roots(make_session):
