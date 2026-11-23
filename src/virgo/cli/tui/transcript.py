@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from functools import partial
 
@@ -41,6 +42,7 @@ OLDER_MARGIN = 2
 TOOL_KINDS = ("tool_call", "sources")
 STREAM_MARKDOWN_INTERVAL = 0.08
 TEXT_STALL_SECONDS = 2.0
+DIAGNOSTIC_NOTIFICATION = re.compile(r'<notification source="diagnostics">\r?\n(.*?)\r?\n</notification>', re.DOTALL)
 
 
 def _json(value) -> str:
@@ -158,6 +160,7 @@ class EventView(Foldable):
                 "notice": "notice",
                 "user": "user",
                 "notification": "notification",
+                "diagnostics": "diagnostics",
                 "summary": "summary",
             }.get(self.kind)
             title.append(tr(self, "ui.event." + key) if key else self.kind.title())
@@ -872,13 +875,16 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             )
 
     async def _user_message(self, agent: str, message: UserMessage) -> None:
+        kind = message.kind
         text = message.text()
+        if kind == "notification" and (match := DIAGNOSTIC_NOTIFICATION.fullmatch(text)):
+            kind, text = "diagnostics", match.group(1)
         if isinstance(message.content, list):
             for image in message.content:
                 if isinstance(image, ImageContent):
                     text += tr(self, "ui.event.image_line", type=image.mime_type)
-        if agent != "main" or message.kind or (self._running and self._run and self._run.has_prompt):
-            await self._append(EventView(message.kind or "user", text, agent=agent))
+        if agent != "main" or kind or (self._running and self._run and self._run.has_prompt):
+            await self._append(EventView(kind or "user", text, agent=agent))
             return
         pending = self._run
         if pending is not None and (pending.has_prompt or pending.events):

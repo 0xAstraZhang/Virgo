@@ -90,6 +90,7 @@ MESSAGES = {
     "ui.elapsed.seconds": "{seconds}秒",
     "ui.event.compacted": "早期上下文已压缩 · 完整对话仍然保留",
     "ui.event.context": "上下文",
+    "ui.event.diagnostics": "诊断",
     "ui.event.image": "[图片：{type}]",
     "ui.event.image_line": "\n[图片：{type}]",
     "ui.event.image_title": "图片",

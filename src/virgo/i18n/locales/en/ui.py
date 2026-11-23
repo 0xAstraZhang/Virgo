@@ -91,6 +91,7 @@ MESSAGES = {
     "ui.elapsed.seconds": "{seconds}s",
     "ui.event.compacted": "Earlier context compacted · full conversation retained",
     "ui.event.context": "Context",
+    "ui.event.diagnostics": "Diagnostics",
     "ui.event.image": "[image: {type}]",
     "ui.event.image_line": "\n[image: {type}]",
     "ui.event.image_title": "Image",
