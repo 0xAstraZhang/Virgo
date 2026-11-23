@@ -14,7 +14,9 @@ from ..diagnostics import error_summary
 from ..execution import FileAccessDenied
 from ..harness.extensions import ExtensionAPI
 from ..harness.jobs import Job, JobManager
-from ..tools.output import MAX_BYTES, budget, display_output, read_output
+from ..tools.output import bound, display_output, read_output
+
+JOB_OUTPUT_PREVIEW_BYTES = 8 * 1024
 
 
 def setup(api: ExtensionAPI) -> None:
@@ -56,32 +58,41 @@ def setup(api: ExtensionAPI) -> None:
         if job.error_details is not None:
             details.update(error=job.error_details, related_errors=job.related_errors)
             head += "\n" + error_summary(job.error_details, t=api.t)
+        heading = head.encode("utf-8")
+        # A long diagnostic can use any space left after the output ID and tail are rendered.
+        reserved_bytes = min(len(heading) + 1, JOB_OUTPUT_PREVIEW_BYTES // 2)
+        body_bytes = JOB_OUTPUT_PREVIEW_BYTES - reserved_bytes
         if job.log is not None:
             try:
-                captured = read_output(job.log, execution_context=job.execution_context)
+                captured = read_output(job.log, max_bytes=body_bytes, execution_context=job.execution_context)
             except FileAccessDenied as error:
                 return ToolResult.error(str(error), details={**details, "status": "resource_denied", "boundary": {
                     **job.execution_context.describe(), "kind": "resource_denied", "dimension": error.dimension,
                     "target": error.target, "payload_started": False, "side_effects": "none",
                 }})
-            displayed = display_output(captured, max_bytes=MAX_BYTES - len(head.encode("utf-8")) - 1, t=ctx.t)
-            return ToolResult.text(
-                head + "\n" + displayed,
-                {
-                    **details,
-                    "output_id": str(job.log),
-                    "output_bytes": captured.total_bytes,
-                    "truncated": captured.truncated
-                    or len((captured.text.rstrip() or ctx.t("tools.output.empty")).encode("utf-8"))
-                    > MAX_BYTES - len(head.encode("utf-8")) - 1,
-                },
+        else:
+            captured = bound(
+                job.result, ctx.cwd, job.id, keep="tail", max_bytes=body_bytes,
+                execution_context=api.services["execution"].for_context(ctx),
             )
+        if job.log is None and not captured.truncated:
+            displayed = captured.text or ctx.t("features.jobs.no_output")
+        else:
+            displayed = display_output(
+                captured, max_bytes=JOB_OUTPUT_PREVIEW_BYTES, reserved_bytes=reserved_bytes, t=ctx.t,
+            )
+        heading_limit = JOB_OUTPUT_PREVIEW_BYTES - len(displayed.encode("utf-8")) - 1
+        heading_cut = len(heading) > heading_limit
+        if heading_cut:
+            head = heading[:heading_limit - len("…".encode())].decode("utf-8", errors="ignore") + "…"
         return ToolResult.text(
-            head
-            + "\n"
-            + budget(job.result or ctx.t("features.jobs.no_output"), ctx.cwd, job.id, keep="tail", t=ctx.t,
-                     execution_context=api.services["execution"].for_context(ctx)),
-            details,
+            head + "\n" + displayed,
+            {
+                **details,
+                "output_id": str(captured.path) if captured.path else None,
+                "output_bytes": captured.total_bytes,
+                "truncated": heading_cut or captured.truncated,
+            },
         )
 
     def kill(args: dict, ctx: ToolContext) -> ToolResult:

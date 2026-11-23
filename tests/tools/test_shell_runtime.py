@@ -22,11 +22,13 @@ import tracemalloc
 
 import pytest
 
+from virgo.agent.types import ToolResult
 from virgo.ai.providers import faux
 from virgo.ai.types import ToolResultMessage
+from virgo.diagnostics import capture_error
 from virgo.tools.output import MAX_BYTES
 
-from tests.support.shell import invoke, selected
+from tests.support.shell import invoke, result, selected
 
 ENGINES = [n for n in ("pwsh", "powershell") if shutil.which(n)] if os.name == "nt" else ["bash"]
 
@@ -138,6 +140,106 @@ def test_background_output_reader_and_notification_are_bounded(make_session, eng
         assert tracemalloc.get_traced_memory()[1] < 8 * 1024 * 1024
     finally:
         tracemalloc.stop()
+
+
+def poll_tool(session, name, **args):
+    faux.push("test", faux.reply(tools=[(name, args)]), faux.reply("done"))
+    session.prompt(name)
+    response = result(session)
+    assert not response.is_error, response.text()
+    return response
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_noisy_daemon_job_output_preview_and_full_spool(make_session, engine):
+    session = make_session()
+    session.prompt(f"/shell {engine}")
+    probes = "".join(f"subsystem_probe_{i:03d} {'x' * 163}\n" for i in range(553))
+    payload = ("[BOOT_START]\n" + probes + "界" * 3000 + "[BOOT_READY]\n").encode()
+    (session.cwd / "boot.txt").write_bytes(payload)
+    command = python_command(selected(session), (
+        "from pathlib import Path; import sys, time\n"
+        "sys.stdout.buffer.write(Path('boot.txt').read_bytes()); sys.stdout.buffer.flush()\n"
+        "while not Path('release').exists(): time.sleep(0.02)"
+    ))
+    invoke(session, command, background=True)
+    job = next(iter(session.services["jobs"].jobs.values()))
+    try:
+        wait_until(lambda: job.log._path.stat().st_size == len(payload))
+        for status in ("running", "completed"):
+            if status == "completed":
+                (session.cwd / "release").touch()
+                wait_until(lambda: job.reported)
+            preview = poll_tool(session, "job_output", id=job.id)
+            size = len(preview.text().encode())
+            assert size <= 8192
+            heading, notice, tail = preview.text().split("\n", 2)
+            assert f"{job.id} [{status}]" in heading and preview.details["status"] == status
+            assert "8KB" in notice and str(job.log) in notice and "read_output" in notice
+            assert preview.details["output_id"] == str(job.log)
+            assert preview.details["output_bytes"] == len(payload) and preview.details["truncated"] is True
+            assert tail.endswith("[BOOT_READY]") and "界" in tail and "\ufffd" not in tail
+            assert payload.rstrip().endswith(tail.encode())
+    finally:
+        (session.cwd / "release").touch()
+
+    offset = 0
+    while offset < len(payload):
+        page = poll_tool(session, "read_output", output_id=preview.details["output_id"], offset=offset)
+        chunk = page.text().encode()
+        assert chunk and page.details["offset"] == offset and chunk == payload[offset:offset + len(chunk)]
+        offset += len(chunk)
+        assert page.details["next_offset"] == (offset if offset < len(payload) else None)
+
+
+@pytest.mark.parametrize("long_error", [False, True], ids=["completed", "long-error"])
+def test_job_result_preview_spills_full_text(make_session, long_error):
+    session = make_session()
+    # The result alone fits in 8 KiB. Its heading pushes it over the limit.
+    payload = "始" + "x" * 8186 + "終"
+    value = payload
+    if long_error:
+        error = capture_error("failed", phase="agent.run", context={"model": "界" * 4000})
+        value = ToolResult.error(payload, {"error": error})
+    job = session.services["jobs"].start_callable("worker", lambda _: value)
+    assert job.done.wait(5) and job.log is None
+
+    preview = poll_tool(session, "job_output", id=job.id)
+    size = len(preview.text().encode())
+    assert size <= 8192
+    assert preview.text().startswith(f"{job.id} [{job.status}]") and preview.text().endswith("終")
+    assert "8KB" in preview.text() and "\ufffd" not in preview.text()
+    assert preview.details["truncated"] is True and preview.details["output_bytes"] == 8192
+    assert preview.details["output_id"] in preview.text()
+    page = poll_tool(session, "read_output", output_id=preview.details["output_id"], offset=0)
+    assert page.text() == payload
+
+
+def test_short_job_result_keeps_text_without_spilling(make_session):
+    session = make_session()
+    # A long diagnostic and a short body still fit together in the preview.
+    model = "界" * 1500
+    error = capture_error("failed", phase="agent.run", context={"model": model})
+    job = session.services["jobs"].start_callable("worker", lambda _: ToolResult.error("短い\n", {"error": error}))
+    assert job.done.wait(5)
+    preview = poll_tool(session, "job_output", id=job.id)
+    assert preview.text().endswith("短い\n")
+    assert preview.details["output_bytes"] == len("短い\n".encode())
+    assert preview.details["truncated"] is False and preview.details["output_id"] is None
+    assert model in preview.text()
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_foreground_preview_and_read_output_keep_50_kib(make_session, engine):
+    session = make_session()
+    session.prompt(f"/shell {engine}")
+    preview = invoke(session, python_command(selected(session), "print('x' * 60000)"))
+    assert preview.details["truncated"] is True and "50KB" in preview.text()
+    assert 49 * 1024 < len(preview.text().encode()) <= 50 * 1024
+    assert session.tool("read_output").parameters["properties"]["limit"]["maximum"] == 50 * 1024
+    for args in ({}, {"limit": 50 * 1024}):
+        page = poll_tool(session, "read_output", output_id=preview.details["output_id"], **args)
+        assert page.text() == "x" * (50 * 1024) and page.details["next_offset"] == 50 * 1024
 
 
 def tree_command(session, *, parent_exits=False):

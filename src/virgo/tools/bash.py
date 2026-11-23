@@ -125,7 +125,7 @@ def format_output(
     if isinstance(output, str):
         # Compatibility for extensions that format a pre-existing in-memory result.
         output = bound(output, cwd, prefix, keep="tail")
-    text = display_output(output, max_bytes=MAX_BYTES - 256, t=t)
+    text = display_output(output, reserved_bytes=256, t=t)
     details = {
         "exit_code": code,
         "status": status,

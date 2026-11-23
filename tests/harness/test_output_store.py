@@ -4,12 +4,25 @@ from __future__ import annotations
 import os
 import time
 
+import pytest
+
 from virgo.ai.providers import faux
+from virgo.i18n import Translator
 from virgo.output_store import OutputStore
-from virgo.tools.output import MAX_BYTES, save_output
+from virgo.tools.output import MAX_BYTES, CommandOutput, display_output, save_output
 
 from tests.support.harness import tool_results
 from tests.support.sandbox import python_command, run
+
+
+@pytest.mark.parametrize(("language", "notice"), [("en", "Output truncated"), ("zh-CN", "输出已截断")],
+                         ids=["en", "zh-CN"])
+def test_display_output_reports_custom_byte_budget(language, notice):
+    output = CommandOutput("界" * 3000, truncated=True, total_bytes=9000)
+    preview = display_output(output, max_bytes=4096, t=Translator(language))
+    heading, tail = preview.split("\n", 1)
+    assert notice in heading and "4KB" in heading
+    assert len(preview.encode()) <= 4096 and tail and output.text.endswith(tail)
 
 
 def test_ver08_read_output_survives_session_resume(make_session, project):
