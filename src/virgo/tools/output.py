@@ -66,9 +66,10 @@ def save_output(text: str, cwd: Path, prefix: str, *, execution_context=None) ->
     return record
 
 
-def bound(text: str, cwd: Path, prefix: str, keep: str = "head", *, execution_context=None) -> CommandOutput:
+def bound(text: str, cwd: Path, prefix: str, keep: str = "head", *, max_bytes: int = MAX_BYTES,
+          execution_context=None) -> CommandOutput:
     """Bound in-memory text, spilling the full text to private storage when it is cut."""
-    shown, cut = (truncate_tail if keep == "tail" else truncate_head)(text)
+    shown, cut = (truncate_tail if keep == "tail" else truncate_head)(text, max_bytes=max_bytes)
     record = save_output(text, cwd, prefix, execution_context=execution_context) if cut else None
     return CommandOutput(shown, record, cut, len(_encode(text)))
 
@@ -110,23 +111,25 @@ def read_output(record: OutputRecord, *, max_bytes: int = MAX_BYTES, max_lines: 
     return CommandOutput(text, record, start > 0 or cut, total)
 
 
-def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, t=None) -> str:
+def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, reserved_bytes: int = 0, t=None) -> str:
+    """Render within the total preview budget, allowing for caller-supplied text."""
     t = t or Translator()
+    available = max(0, max_bytes - reserved_bytes)
     text = output.text.rstrip() or t("tools.output.empty")
-    if not output.truncated and len(_encode(text)) <= max_bytes:
+    if not output.truncated and len(_encode(text)) <= available:
         return text
     header = t(
         "tools.output.truncated",
         max_lines=MAX_LINES,
-        max_kb=MAX_BYTES // 1024,
+        max_kb=str(max_bytes / 1024).removesuffix(".0"),
         total=output.total_bytes,
         path=output.path,
     )
     # Include the pointer in the budget so the harness won't truncate the tail again.
-    available = max_bytes - len(_encode(header))
-    if available <= 0:
-        return _encode(header)[:max_bytes].decode("utf-8", errors="ignore")
-    text, _ = truncate_tail(text, max_bytes=available)
+    body_bytes = available - len(_encode(header))
+    if body_bytes <= 0:
+        return _encode(header)[:available].decode("utf-8", errors="ignore")
+    text, _ = truncate_tail(text, max_bytes=body_bytes)
     return header + text
 
 
