@@ -71,9 +71,9 @@ _USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
 _GRANT_KEYS = ("read_paths", "write_paths", "network_allowed", "unrestricted", "web_allowed")
 
 SUMMARY_PREFIX = (
-    "<conversation_summary>\nThe earlier part of this conversation was compacted into the summary below. "
-    "It is reference material about prior work, not a new request. "
-    "If the current turn is unfinished, continue from the recorded progress without repeating completed steps.\n\n"
+    "<conversation_summary>\nThis checkpoint summarizes only the earlier evicted turns before the retained recent messages. "
+    "Newer retained messages below supersede earlier status claims in this summary. "
+    "Use this as reference material. Continue any unfinished turn without repeating completed steps.\n\n"
 )
 
 
