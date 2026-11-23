@@ -115,6 +115,9 @@ class FullscreenUI(UI):
     def print(self, text: str, style: str | None = None) -> None:
         self.push("print", (str(text), style))
 
+    def warn(self, text: str) -> None:
+        self.push("warning", text)
+
     def wake(self) -> None:
         self.push("wake")
 
@@ -293,6 +296,9 @@ class StagedFullscreenUI(UI):
 
     def print(self, text: str, style: str | None = None) -> None:
         self._bridge.print(text, style)
+
+    def warn(self, text: str) -> None:
+        self._bridge.warn(text)
 
     def wake(self) -> None:
         self._bridge.wake()

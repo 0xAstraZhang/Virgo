@@ -15,11 +15,14 @@ def fail_session_write(monkeypatch, path, *, partial=False, containing=""):
 
     class FailedAppend:
         def __enter__(self):
-            self.file = original(path, "a", encoding="utf-8")
+            self.file = original(path, "a+b")
             return self
 
+        def __getattr__(self, name):
+            return getattr(self.file, name)
+
         def write(self, text):
-            if containing and containing not in text:
+            if containing and containing.encode("utf-8") not in text:
                 return self.file.write(text)
             if partial:
                 self.file.write(text[:10])
@@ -29,7 +32,7 @@ def fail_session_write(monkeypatch, path, *, partial=False, containing=""):
             self.file.close()
 
     def open_file(target, *args, **kwargs):
-        if Path(target) == path and (args[0] if args else kwargs.get("mode")) == "a":
+        if Path(target) == path and (args[0] if args else kwargs.get("mode")) == "a+b":
             return FailedAppend()
         return original(target, *args, **kwargs)
 

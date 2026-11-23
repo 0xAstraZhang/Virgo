@@ -568,6 +568,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 elif update.kind == "event":
                     self.activity.consume(update.payload)
                     await self.transcript.consume(update.payload)
+                elif update.kind == "warning":
+                    self.notify(update.payload, severity="warning")
                 elif update.kind == "print":
                     await self.transcript.add_notice(*update.payload)
                 elif update.kind == "confirmation":

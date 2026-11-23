@@ -77,7 +77,10 @@ def test_sessions_command_reopens_unsaved_history(make_session, monkeypatch, par
     s.prompt("pending input")
     pending = list(s.wakeups)
     s.prompt("/new")
-    assert not SessionStore.list(s.paths.sessions)
+    rows = SessionStore.list(s.paths.sessions)
+    assert [row["path"] for row in rows] == ([path] if partial else [])
+    if partial:
+        assert rows[0]["messages"] < len(original.messages)
     s.ui.lines.clear()
     s.prompt("/sessions")
     assert path.name in s.ui.text

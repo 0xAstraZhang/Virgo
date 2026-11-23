@@ -31,8 +31,11 @@ def test_failed_save_stops_requests_and_keeps_history(make_session, monkeypatch,
 
     class BrokenFile:
         def __enter__(self):
-            self.file = original(target, "a", encoding="utf-8")
+            self.file = original(target, "a+b")
             return self
+
+        def __getattr__(self, name):
+            return getattr(self.file, name)
 
         def write(self, text):
             if failure == "partial":
@@ -47,7 +50,7 @@ def test_failed_save_stops_requests_and_keeps_history(make_session, monkeypatch,
                 raise OSError("flush unavailable")
 
     def open_file(path, *args, **kwargs):
-        if Path(path) == target:
+        if Path(path) == target and args[0] == "a+b":
             if failure == "open":
                 raise OSError("disk unavailable")
             return BrokenFile()

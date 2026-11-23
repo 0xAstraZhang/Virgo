@@ -136,3 +136,6 @@ def write_legacy_session(path, cwd, created, title="saved") -> None:
     header = {"type": "session", "version": 1, "id": path.stem, "cwd": str(cwd), "timestamp": created}
     entries = [{"type": "message", "id": "user", "parent_id": None, "message": {"role": "user", "content": title}}]
     path.write_text("\n".join(json.dumps(row) for row in [header, *entries]) + "\n")
+
+
+TORN_MESSAGE = b'{"type":"message","id":"trunc-1","parent_id":"ae4d615c","message":{"role":"assistan'

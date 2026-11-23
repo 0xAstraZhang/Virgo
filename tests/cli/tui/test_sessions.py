@@ -541,8 +541,6 @@ def test_open_saved_workspace_while_running_keeps_old_session_alive(make_session
     (target / "AGENTS.md").write_text("Other workspace instructions.")
     path = SessionStore.new(tmp_path / "home" / "sessions" / "other", target)
     path.append_message(UserMessage("saved question"))
-    if invalid:
-        path.append("message", message={"role": "invalid"})
 
     async def scenario():
         ui = FullscreenUI()
@@ -554,6 +552,9 @@ def test_open_saved_workspace_while_running_keeps_old_session_alive(make_session
             notices = []
             app.notify = lambda message, **_: notices.append(message)
             await pilot.press("ctrl+r")
+            if invalid:
+                # A listed session can become unreadable before the user selects it.
+                path.append("message", message={"role": "invalid"})
             app.screen.query_one(OptionList).highlighted = app.screen.query_one(OptionList).get_option_index(str(path.path))
             await pilot.press("enter")
             if invalid:

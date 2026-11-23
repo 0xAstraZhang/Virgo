@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import builtins
 import json
+import multiprocessing
+import os
 import shutil
+import subprocess
+import sys
 import textwrap
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+
+import pytest
 
 from virgo.agent import AgentEvent, AgentTool, ToolResult
 from virgo.ai.providers import faux
@@ -26,10 +34,10 @@ from virgo.ai.types import (
 from virgo.cli import main as cli
 from virgo.harness.session import AgentSession, Runtime
 from virgo.harness.settings import Paths
-from virgo.harness.store import SessionStore
+from virgo.harness.store import SessionStore, _locked_file
 
 from tests.support import REPO_ROOT
-from tests.support.harness import RecordingUI, calls
+from tests.support.harness import TORN_MESSAGE, RecordingUI, calls, write_legacy_session
 from tests.support.shell import selected
 
 
@@ -456,3 +464,148 @@ def test_reopening_legacy_session_with_search_started_succeeds(make_session, pro
     assistants = [m for m in messages if isinstance(m, AssistantMessage)]
     assert [m.text() for m in assistants] == ["first", "second"]
     assert [m.native_started for m in assistants] == [False, True]
+
+
+@pytest.mark.parametrize("mode", ["continue", "path", "interactive"])
+def test_resume_modes_recover_torn_tail(make_session, project, mode):
+    directory = Paths(project).sessions
+    older = directory / "older.jsonl"
+    write_legacy_session(older, project, "2025-01-01", "other conversation")
+    os.utime(older, (100, 100))
+    store = SessionStore.new(directory, project)
+    store.append_message(UserMessage("earlier task"))
+    leaf = store.append_message(AssistantMessage([TextContent("earlier answer")]))
+    # A late entry on an inactive branch is the last retained record, but not the leaf.
+    last = store.append("custom", kind="extension", data={}, parent_id=None, active_leaf=leaf)["id"]
+    path = store.path
+    prefix = path.read_bytes() + b"\r\n"
+    path.write_bytes(prefix + TORN_MESSAGE)
+    before = set(directory.iterdir())
+    if mode == "interactive":
+        session = make_session(faux.reply("continued"))
+        session.open_session(path)
+    else:
+        session = make_session(faux.reply("continued"), session="continue" if mode == "continue" else path)
+    assert session.store.id == store.id and session.store.leaf == leaf
+    assert path.read_bytes() == prefix
+    warning, = session.ui.lines
+    assert str(path) in warning or store.id in warning
+    line_number = prefix.count(b"\n") + 1
+    assert f"line {line_number}" in warning and "83 bytes" in warning
+    assert last in warning and "unterminated" in warning.lower()
+    session.prompt("next task")
+    assert [msg["content"] for msg in calls()[0]["messages"] if msg["role"] == "user"] == ["earlier task", "next task"]
+    assert calls()[0]["messages"][1]["content"][0]["text"] == "earlier answer"
+    data = path.read_bytes()
+    assert data.startswith(prefix) and set(directory.iterdir()) == before
+    rows = [json.loads(line) for line in data.splitlines() if line.strip()]
+    assert rows[4]["parent_id"] == leaf
+    clean = make_session(session=path)
+    assert clean.store.id == store.id and clean.store.entries == session.store.entries and clean.ui.lines == []
+
+
+@pytest.mark.parametrize(("header_only", "eol", "ending"), [
+    pytest.param(False, b"\n", b"", id="entry"),
+    pytest.param(True, b"\n", b"", id="header"),
+    pytest.param(False, b"\n", b"  ", id="spaces"),
+    pytest.param(False, b"\r\n", b"\r\n", id="crlf"),
+    pytest.param(False, b"\n", b"\n\n\n", id="blanks"),
+    pytest.param(False, b"\n", b"\n\t ", id="whitespace-suffix"),
+])
+def test_append_preserves_valid_unterminated_record(make_session, project, header_only, eol, ending):
+    path = Paths(project).sessions / "saved.jsonl"
+    write_legacy_session(path, project, "2025-01-01", "preserved")
+    rows = path.read_bytes().splitlines()
+    prefix = eol.join(rows[:1] if header_only else rows) + ending
+    path.write_bytes(prefix)
+    assert SessionStore.list(path.parent)[0]["messages"] == int(not header_only)
+    session = make_session(session=path)
+    assert path.read_bytes() == prefix and session.ui.lines == []
+    store = session.store
+    previous = None if header_only else "user"
+    next_id = store.append_message(UserMessage("next"))
+    move = store.append("leaf", target=previous)
+    boundary = prefix if prefix.endswith(b"\n") else prefix + b"\n"
+    raw = path.read_bytes()
+    assert raw.startswith(boundary + b"{")
+    saved = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    assert saved[-2]["parent_id"] == previous and saved[-1]["parent_id"] == next_id
+    loaded = SessionStore.load(path)
+    assert loaded.leaf == previous and loaded.entries[-1] == move
+    assert [m.text() for m in loaded.build_context()[0]] == ([] if header_only else ["preserved"])
+
+
+@pytest.mark.parametrize("outcome", ["completed", "repair-io-error"])
+def test_tail_repair_revalidates_before_truncation(make_session, project, monkeypatch, outcome):
+    path = Paths(project).sessions / "race.jsonl"
+    write_legacy_session(path, project, "2025-01-01")
+    record = b'{"type":"message","id":"late","parent_id":"user","message":{"role":"user","content":"late"}}\n'
+    prefix = path.read_bytes()
+    path.write_bytes(prefix + record[:20])
+    original = builtins.open
+    entered = []
+
+    def on_writable_open(target, mode="r", *args, **kwargs):
+        if target == path and mode == "r+b":
+            entered.append(target)
+            if outcome == "repair-io-error":
+                raise OSError("injected repair failure")
+            with path.open("ab") as writer:
+                writer.write(record[20:])
+        return original(target, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", on_writable_open)
+    ui = RecordingUI()
+    if outcome == "repair-io-error":
+        with pytest.raises((ValueError, OSError), match="injected repair failure"):
+            make_session(session=path, ui=ui).prompt("must not run")
+        assert not ui.events and not calls() and path.read_bytes() == prefix + record[:20]
+    else:
+        session = make_session(session=path, ui=ui)
+        assert session.store.leaf == SessionStore.load(path).leaf == "late"
+        assert session.main.messages[-1].text() == "late" and path.read_bytes() == prefix + record
+    assert entered == [path] and not ui.lines
+
+
+def test_session_readers_can_overlap_across_processes(project):
+    path = Paths(project).sessions / "readers.jsonl"
+    write_legacy_session(path, project, "2025-01-01")
+    with _locked_file(path, "rb"):
+        subprocess.run(
+            [sys.executable, "-c", "import sys; from virgo.harness.store import SessionStore; "
+             "SessionStore.load(sys.argv[1])", str(path)],
+            check=True, timeout=15,
+        )
+
+
+def _append_from_threads(path, writer, barrier):
+    def append(thread):
+        store = SessionStore.load(path)
+        barrier.wait(timeout=15)
+        for i in range(12):
+            store.append("custom", kind="worker", data=[writer, thread, i])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(append, range(2)))
+
+
+def test_concurrent_appends_share_one_boundary(project):
+    path = Paths(project).sessions / "workers.jsonl"
+    write_legacy_session(path, project, "2025-01-01")
+    path.write_bytes(path.read_bytes().rstrip(b"\r\n"))
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(4)
+    process = ctx.Process(target=_append_from_threads, args=(path, "child", barrier))
+    process.start()
+    try:
+        _append_from_threads(path, "parent", barrier)
+        process.join(15)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+    entries = SessionStore.load(path).entries
+    records = [tuple(e["data"]) for e in entries if e["type"] == "custom"]
+    assert sorted(records) == [(w, t, i) for w in ("child", "parent") for t in range(2) for i in range(12)]
+    assert set(path.parent.iterdir()) == {path, path.parent / ".workspace.json"}

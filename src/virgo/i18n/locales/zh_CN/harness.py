@@ -183,6 +183,7 @@ MESSAGES = {
     "harness.shell.usage": "用法：/shell [名称|绝对路径|auto]（路径包含空格时请加引号）",
     "harness.plugins.degraded": "插件 {name!r} 不可用；当前会话已降级运行。",
     "harness.extensions.untrusted_project": "未加载项目 Python 扩展。审查后，可使用 --trust-project-extensions 或用户配置中的 extensions.trustedProjects 授予本工作区信任。",
+    "harness.session.repaired_tail": "{path} 第 {line} 行末尾的记录不完整，已移除 {size} 字节。最后保留的记录为 {last}。",
     "harness.migration.retired_data": "发现旧版自动化或记忆数据，已原样保留。定时任务不再执行；如需导出或清理，请直接检查 .virgo/ 下的相关文件。",
     "harness.commands.retired": "/{name} 已被移除。历史数据保持原样。",
 }
