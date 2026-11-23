@@ -111,13 +111,8 @@ class ModeExecutionProvider(HostExecutionProvider):
         return base if base.provider == "host" else self.sandbox.for_context(event)
 
     def _approval_allowed(self, base, signal) -> bool:
-        snapshot = getattr(base, "permission_snapshot", None)
-        return (
-            self.session.approval_policy != "never"
-            and (snapshot is None or snapshot.approval != "never")
-            and (signal is None or not signal.is_set())
-            and confirm_callable(self.session.ui, prefer_persistent=False) is not None
-        )
+        caller = confirm_callable(self.session.ui, prefer_persistent=False)
+        return self._confirmation_blocker(base, signal, caller) is None
 
     def _check_high_risk(self, event, base, *, confirm: bool):
         """Enforce high-risk shell command confirmation across all modes (S5-01)."""
@@ -132,21 +127,29 @@ class ModeExecutionProvider(HostExecutionProvider):
             return None
 
         def deny(reason: str):
-            return Block(reason, details={
+            message = self.session.t(f"features.permission.high_risk_{reason}", risk=match.reason)
+            return Block(message, details={
                 "status": "high_risk_denied",
                 "category": match.category,
                 "boundary": {
                     **base.describe(),
                     "kind": "high_risk_denied",
                     "category": match.category,
+                    "reason": reason,
                     "payload_started": False,
                     "side_effects": "none",
                     "escalation_available": False,
                 },
             })
 
-        if not self._approval_allowed(base, event.signal):
-            return deny(f"High-risk command blocked ({match.reason}). Interactive confirmation is required.")
+        caller = confirm_callable(self.session.ui, prefer_persistent=False)
+        runtime = self.session.runtime_for_context(event)
+        with self.session._lock:
+            if blocker := self._confirmation_blocker(base, event.signal, caller):
+                return deny(blocker)
+            if runtime is None or base is not runtime.execution_context:
+                return deny("cancelled_or_expired")
+            revision = self.revision
         if not confirm:
             return None
         question = (
@@ -155,9 +158,14 @@ class ModeExecutionProvider(HostExecutionProvider):
             f"Working directory: {Path(event.cwd).resolve()}\n"
             "Approve executing this command once? [y/n]"
         )
-        answer = confirm_callable(self.session.ui, prefer_persistent=False)(question, event.agent)
+        answer = caller(question, event.agent)
+        with self.session._lock:
+            if expired := self._confirmation_expiry(runtime, base, event.signal, revision):
+                return deny(expired)
+        if answer == "n":
+            return deny("user_declined")
         if answer != "y":
-            return deny(f"High-risk command was not approved: {match.reason}")
+            return deny("confirmation_unavailable")
         return None
 
     @staticmethod
