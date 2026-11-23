@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from virgo.ai.types import UserMessage
-from virgo.harness.store import SessionStore
+from virgo.harness.settings import Paths
+from virgo.harness.store import SessionStore, _session_info
 
-from tests.support.harness import write_legacy_session
+from tests.support.harness import TORN_MESSAGE, write_legacy_session
 
 
 def test_global_catalog_sorts_updates_and_keeps_workspace_creation_order(tmp_path):
@@ -92,9 +94,33 @@ def test_empty_catalog_is_read_only(tmp_path):
     assert not missing.exists()
 
 
-def test_registration_failure_keeps_in_memory_catalog_available(tmp_path, monkeypatch):
-    from pathlib import Path
+def test_continue_with_non_directory_sessions_path(make_session, project):
+    directory = Paths(project).sessions
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    directory.touch()
+    store = make_session(session="continue").store
+    assert store.path.parent == directory and not store.entries
 
+
+def test_continue_skips_disappearing_candidate(make_session, project, monkeypatch):
+    directory = Paths(project).sessions
+    saved = directory / "saved.jsonl"
+    write_legacy_session(saved, project, "2025-01-01")
+    removed = directory / "removed.jsonl"
+    removed.touch()
+    iterdir = Path.iterdir
+
+    def discard_after_listing(path):
+        entries = list(iterdir(path))
+        if path == directory:
+            removed.unlink(missing_ok=True)
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "iterdir", discard_after_listing)
+    assert make_session(session="continue").store.path == saved
+
+
+def test_registration_failure_keeps_in_memory_catalog_available(tmp_path, monkeypatch):
     original = Path.open
 
     def reject_marker(path, *args, **kwargs):
@@ -174,3 +200,75 @@ def test_describe_in_memory_session_tracks_title_and_messages(tmp_path):
     assert row["path"] is None
     assert row["title"] == "two lines" and row["messages"] == 1
     assert row["mtime"] >= created
+
+
+@pytest.mark.parametrize("fragment", [
+    pytest.param(TORN_MESSAGE, id="83-bytes"),
+    pytest.param(b'{"type":"mess', id="short"),
+    pytest.param(b'{"text":"\xe4\xb8', id="split-utf8"),
+])
+def test_catalog_reads_torn_tail_without_mutation(tmp_path, fragment):
+    path = tmp_path / "sessions" / "workspace" / "saved.jsonl"
+    write_legacy_session(path, tmp_path, "2025-01-01", "earlier task")
+    original = path.read_bytes() + b"\r\n" + fragment
+    path.write_bytes(original)
+    mtime = path.stat().st_mtime_ns
+    for _ in range(2):
+        for row in (SessionStore.list(path.parent)[0], SessionStore.list_all(path.parent.parent)[0], _session_info(path)):
+            assert (row["id"], row["title"], row["messages"]) == ("saved", "earlier task", 1)
+        saved = SessionStore.load(path)
+        assert saved.leaf == "user" and saved.build_context()[0][0].text() == "earlier task"
+        assert path.read_bytes() == original and path.stat().st_mtime_ns == mtime
+
+    # Empty-prefix cleanup also inspects from disk. The tail may contain user work.
+    header = original.split(b"\n", 1)[0] + b"\n"
+    path.write_bytes(header + fragment)
+    mtime = path.stat().st_mtime_ns
+    assert not SessionStore.load(path).discard_if_empty()
+    assert path.read_bytes() == header + fragment and path.stat().st_mtime_ns == mtime
+
+
+@pytest.mark.parametrize(("has_header", "suffix", "number", "reason"), [
+    pytest.param(False, b"", 1, "header", id="empty"),
+    pytest.param(False, b" \t\r\n\n", 1, "header", id="blank-only"),
+    pytest.param(False, b'\n{"type":"sess', 2, "header", id="truncated-header"),
+    pytest.param(False, b'{"type":"custom","id":"other"}\n', 1, "header", id="wrong-header"),
+    pytest.param(False, b'{"type":"session","cwd":"."}', 1, "id", id="missing-header-id"),
+    pytest.param(False, b'{"type":"session","id":"s"}', 1, "cwd", id="missing-cwd"),
+    pytest.param(True, b'{"type":"message","id":"bad","message":{"role":"assistant","usage":null}}', 4, "usage", id="bad-usage"),
+    pytest.param(True, b'{"type":"message","id":"bad","message":{"role":"assistant","usage":{"input":true}}}', 4, "usage", id="bool-usage"),
+    pytest.param(True, b'{"type":"message","id":"bad","message":{"role":"assistant","content":[{"type":"unknown"}]}}', 4, "message", id="bad-block"),
+    pytest.param(True, b'{broken\n{}\n', 4, "JSON", id="interior-json"),
+    pytest.param(True, b'{"id":"\xff"}\n', 4, "UTF-8", id="interior-utf8"),
+    pytest.param(True, b'{broken\n', 4, "JSON", id="terminated"),
+    pytest.param(True, b'{broken\r\n\n \t', 4, "JSON", id="terminated-before-blanks"),
+    pytest.param(True, b'42', 4, "object", id="scalar"),
+    pytest.param(True, b'{"type":"leaf","id":"bad","parent_id":"bad","target":null}', 4, "parent", id="parent-cycle"),
+    pytest.param(True, b'[]\n', 4, "object", id="array"),
+    pytest.param(True, b'{"type":"custom"}', 4, "id", id="missing-entry-id"),
+    pytest.param(True, b'{"type":"message","id":"m"}', 4, "message", id="missing-message"),
+    pytest.param(True, b'{"type":"message","id":"m","message":{}}', 4, "role", id="missing-role"),
+    pytest.param(True, b'{"type":"message","id":"m","message":{"role":"other"}}', 4, "role", id="unknown-role"),
+    pytest.param(True, b'{"type":"message","id":"m","message":{"role":"assistant","content":42}}', 4, "content", id="bad-content"),
+    pytest.param(True, b'{"type":"leaf","id":"move"}', 4, "target", id="missing-target"),
+    pytest.param(True, b'{"type":"leaf","id":"move","target":"unknown"}', 4, "target", id="unknown-target"),
+])
+def test_unrecoverable_session_is_reported_on_selection(make_session, project, has_header, suffix, number, reason):
+    directory = Paths(project).sessions
+    good, bad = directory / "older.jsonl", directory / "broken.jsonl"
+    write_legacy_session(good, project, "2025-01-01")
+    # Equal mtimes also exercise the catalog's path tiebreaker (broken < older).
+    original = (good.read_bytes() + b"\r\n" if has_header else b"") + suffix
+    bad.write_bytes(original)
+    for path in (good, bad):
+        os.utime(path, (100, 100))
+    before = set(directory.iterdir())
+    for items in (SessionStore.list(directory), SessionStore.list_all(directory.parent)):
+        assert [item["path"] for item in items] == [good]
+    for choice in (bad, "continue"):
+        with pytest.raises(ValueError) as exc:
+            make_session(session=choice)
+        message = str(exc.value)
+        assert str(bad) in message and f"line {number}" in message and reason.lower() in message.lower()
+        assert "another saved session" in message.lower()
+        assert bad.read_bytes() == original and set(directory.iterdir()) == before

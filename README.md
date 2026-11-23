@@ -72,6 +72,8 @@ uv run virgo --continue
 uv run virgo -p --format json "Summarize the README"
 ```
 
+`--continue` opens the most recently updated session file in the workspace. If its final record is incomplete and lacks a newline, Virgo keeps the saved prefix and reports how many bytes it removed. If a header or complete record is corrupt, startup stops and identifies the file and line. Use `-r <path>` to open another saved session.
+
 In the full-screen UI, Enter sends a message and Ctrl+J inserts a newline. Type `/` to browse commands. Ctrl+T expands reasoning, Ctrl+O expands tool details, and Esc interrupts a running reply. A purple spinner marks active reasoning and tool calls in the transcript. Each tool call updates in place when it finishes. Click its row to see the result, or focus it and press Enter.
 
 Use `/status` for the session ID, model, working directory, token usage and active permissions, including read/write roots and Shell network access.

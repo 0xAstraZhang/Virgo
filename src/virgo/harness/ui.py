@@ -44,6 +44,9 @@ class UI:
     def print(self, text: str, style: str | None = None) -> None:
         pass
 
+    def warn(self, text: str) -> None:
+        self.print(text, "warn")
+
     def save_failed(self, session_id: str, path: str, message: str) -> None:
         self.print(message, "error")
 

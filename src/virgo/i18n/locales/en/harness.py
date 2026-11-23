@@ -202,6 +202,7 @@ MESSAGES = {
     "harness.shell.usage": "Usage: /shell [name|absolute path|auto] (quote paths containing spaces)",
     "harness.plugins.degraded": "Plugin {name!r} is unavailable; the session is running with reduced capabilities.",
     "harness.extensions.untrusted_project": "Project Python extensions were not loaded. Trust this workspace with --trust-project-extensions or a user-level extensions.trustedProjects entry.",
+    "harness.session.repaired_tail": "{path}, line {line}: discarded {size} bytes from an unterminated trailing record. Last retained record: {last}.",
     "harness.migration.retired_data": "Legacy automation or memory data was found and left untouched. Schedules no longer run; inspect or export the files under .virgo/ manually if needed.",
     "harness.commands.retired": "/{name} was removed. Historical data is unchanged.",
 }

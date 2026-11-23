@@ -19,6 +19,7 @@ from collections import deque
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
+from stat import S_ISREG
 from urllib.parse import urlsplit
 
 from .. import ai
@@ -524,15 +525,30 @@ class AgentSession:
         if session is None:
             return SessionStore(None, self.cwd)
         if session == "continue":
-            items = SessionStore.list(self.paths.sessions) if self.paths.sessions.is_dir() else []
-            return (
-                SessionStore.load(items[0]["path"])
-                if items
-                else SessionStore.new(self.paths.sessions, self.cwd)
-            )
+            try:
+                paths = list(self.paths.sessions.iterdir())
+            except (FileNotFoundError, NotADirectoryError):
+                paths = []
+            candidates = {}
+            for path in paths:
+                if not path.match("*.jsonl"):
+                    continue
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    continue
+                if S_ISREG(stat.st_mode):
+                    candidates[path] = stat.st_mtime
+            session = min(candidates, key=lambda path: (-candidates[path], str(path)), default="new")
         if session == "new":
             return SessionStore.new(self.paths.sessions, self.cwd)
-        return SessionStore.load(Path(session))
+        store, tail = SessionStore.resume(Path(session))
+        if tail is not None:
+            self.ui.warn(self.t(
+                "harness.session.repaired_tail", path=store.path, line=tail.line, size=tail.size,
+                last=store.entries[-1]["id"] if store.entries else store.id,
+            ))
+        return store
 
     def create_runtime(self, name: str, role: str, *, parent=None, **kwargs) -> Runtime:
         with self._lock:
@@ -635,7 +651,7 @@ class AgentSession:
                 runtime, pending = retained
                 self._activate_store(runtime.store, runtime=runtime, pending=pending)
                 return
-            self._activate_store(SessionStore.load(path))
+            self._activate_store(self._open_store(path))
 
     def new_session(self) -> None:
         self.assert_state_change_allowed()

@@ -1,9 +1,10 @@
 """Append-only JSONL session tree (≈ Pi's session format).
 
-Line 1 is a header; every other line is an entry ``{type, id, parent_id, timestamp, ...}``.
+The first nonblank line is a header; subsequent records are entries ``{type, id, parent_id, timestamp, ...}``.
 Entry types: ``message`` (a serialized Message), ``compaction`` (summary + first kept entry),
 ``model_change`` and ``custom`` (extension state, never sent to the model).
-The active branch is the path from the leaf back to the root; nothing is ever rewritten.
+The active branch is the path from the leaf back to the root. Writable resume may
+discard an undecodable, unterminated final record.
 Tool-result entries keep boundary outcomes on disk. Message entries also retain a
 grant summary for the native process, or for file tools when no native policy applied.
 """
@@ -12,13 +13,16 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import secrets
 import threading
 import time
 import uuid
-from dataclasses import replace
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import BinaryIO
 
 from send2trash import send2trash
 
@@ -32,6 +36,36 @@ from ..ai.types import (
     message_from_dict,
     message_to_dict,
 )
+from ..tools.fs import file_lock
+
+if os.name == "nt":
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _Overlapped(ctypes.Structure):
+        # File locks use the two DWORD offsets in OVERLAPPED's union.
+        _fields_ = [
+            ("Internal", ctypes.c_size_t),
+            ("InternalHigh", ctypes.c_size_t),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        ]
+
+    _LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.LockFileEx.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(_Overlapped),
+    )
+    _kernel32.LockFileEx.restype = wintypes.BOOL
+    _kernel32.UnlockFileEx.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(_Overlapped),
+    )
+    _kernel32.UnlockFileEx.restype = wintypes.BOOL
+else:
+    import fcntl
 
 _USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
 _GRANT_KEYS = ("read_paths", "write_paths", "network_allowed", "unrestricted", "web_allowed")
@@ -109,46 +143,162 @@ def _created_at(header: dict, fallback: float) -> float:
 
 
 def _title_and_count(entries: list) -> tuple[str, int]:
-    """The first genuine user request and the number of saved messages.
-
-    Raises TypeError for malformed entries; catalog readers treat that file as unreadable.
-    """
+    """The first genuine user request and the number of validated message entries."""
     title, count = "", 0
     for entry in entries:
-        if not isinstance(entry, dict):
-            raise TypeError("session entry is not an object")
         if entry.get("type") == "message":
             message = entry["message"]
-            if not isinstance(message, dict):
-                raise TypeError("saved message is not an object")
             count += 1
             if not title and message.get("role") == "user" and not message.get("kind"):
                 title = " ".join(text_of_dict(message).split())[:80]
     return title, count
 
 
+@contextmanager
+def _locked_file(path: Path, mode: str):
+    """Hold a shared read lock or an exclusive write lock through the final flush."""
+    with file_lock(path.resolve()), open(path, mode) as handle:
+        if os.name != "nt":
+            fcntl.flock(handle, fcntl.LOCK_SH if mode == "rb" else fcntl.LOCK_EX)
+            yield handle
+            return  # Close flushes before releasing flock.
+
+        native_handle = msvcrt.get_osfhandle(handle.fileno())
+        offset = _Overlapped()  # Zero offset and event for a synchronous file handle.
+        flags = 0 if mode == "rb" else _LOCKFILE_EXCLUSIVE_LOCK
+        if not _kernel32.LockFileEx(native_handle, flags, 0, 1, 0, ctypes.byref(offset)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield handle
+        finally:
+            handle.flush()
+            if not _kernel32.UnlockFileEx(native_handle, 0, 1, 0, ctypes.byref(offset)):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+
+@dataclass(frozen=True)
+class _IncompleteTail:
+    line: int
+    offset: int
+    size: int
+
+
+def _validate_message(message: dict) -> None:
+    if not isinstance(message, dict):
+        raise ValueError("expected a message object")
+    role = message.get("role")
+    if role not in ("user", "assistant", "toolResult"):
+        raise ValueError("missing or unknown message role")
+    content = message.get("content", [] if role == "assistant" else None)
+    if not isinstance(content, list) and not (role == "user" and isinstance(content, str)):
+        raise ValueError("invalid message content")
+    if role == "assistant" and "usage" in message:
+        usage = message["usage"]
+        if not isinstance(usage, dict) or any(isinstance(n, bool) or not isinstance(n, int) for n in usage.values()):
+            raise ValueError("invalid message usage")
+    # Use the same block constructors and legacy field conversions as runtime replay.
+    try:
+        message_from_dict(message).text()
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"invalid message: {error}") from error
+
+
+def _validate_record(record: dict, *, header: bool, ids: set[str], absent_parents: set[str]) -> None:
+    if not isinstance(record, dict):
+        raise ValueError("expected a session header object" if header else "expected an entry object")
+    kind = record.get("type")
+    if header and kind != "session":
+        raise ValueError("expected a session header")
+    if not isinstance(record.get("id"), str) or not record["id"].strip():
+        raise ValueError("missing or invalid record id")
+    if header:
+        if not isinstance(record.get("cwd"), str) or not record["cwd"].strip():
+            raise ValueError("missing or invalid session header cwd")
+        return
+    if not isinstance(kind, str) or not kind.strip() or kind == "session":
+        raise ValueError("invalid entry type")
+    entry_id = record["id"]
+    if entry_id in ids:
+        raise ValueError("duplicate entry id")
+    parent = record.get("parent_id")
+    if parent is not None:
+        if not isinstance(parent, str) or not parent.strip():
+            raise ValueError("invalid parent_id")
+        if parent not in ids:
+            # Empty-session cleanup can retire a model_change parent. branch()
+            # treats a missing parent as a root. It must never become a forward edge.
+            absent_parents.add(parent)
+    if entry_id in absent_parents:
+        raise ValueError("forward or cyclic parent_id")
+    if kind == "leaf" and "target" not in record:
+        raise ValueError("missing leaf target")
+    for key in ("active_leaf", "target") if kind == "leaf" else ("active_leaf",):
+        value = record.get(key)
+        if value is not None and (not isinstance(value, str) or value not in ids):
+            raise ValueError(f"invalid {key}: expected an earlier entry id or null")
+    if kind == "message":
+        _validate_message(record.get("message"))
+    elif kind == "compaction":
+        if "context" in record:
+            if not isinstance(record["context"], list):
+                raise ValueError("invalid compaction context")
+            for message in record["context"]:
+                _validate_message(message)
+        elif not isinstance(record.get("summary"), str):
+            raise ValueError("missing compaction summary")
+        kept = record.get("kept_ids", [])
+        if not isinstance(kept, list) or not all(isinstance(key, str) for key in kept):
+            raise ValueError("invalid compaction kept_ids")
+    elif kind == "custom" and "data" not in record:
+        raise ValueError("missing custom entry data")
+    ids.add(record["id"])
+
+
+def _invalid_session(path: Path, line: int, reason: str) -> ValueError:
+    return ValueError(f"{path}, line {line}: {reason}. Choose another saved session explicitly with -r <path>.")
+
+
+def _read_records(handle: BinaryIO, path: Path) -> tuple[list[dict], _IncompleteTail | None]:
+    records = []
+    ids: set[str] = set()
+    absent_parents: set[str] = set()
+    offset = 0
+    for number, raw in enumerate(handle, 1):
+        if raw.strip():
+            try:
+                record = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                split_utf8 = isinstance(error, UnicodeDecodeError) and error.reason == "unexpected end of data"
+                if records and not raw.endswith(b"\n") and (isinstance(error, json.JSONDecodeError) or split_utf8):
+                    return records, _IncompleteTail(number, offset, len(raw))
+                reason = "invalid UTF-8" if isinstance(error, UnicodeDecodeError) else f"invalid JSON ({error.msg})"
+                if not records:
+                    reason = f"invalid session header: {reason}"
+                raise _invalid_session(path, number, reason) from error
+            except (RecursionError, ValueError) as error:
+                # Decoder limits (nesting or integer size) can reject complete values.
+                raise _invalid_session(path, number, f"unreadable JSON: {error}") from error
+            try:
+                _validate_record(record, header=not records, ids=ids, absent_parents=absent_parents)
+            except (ValueError, KeyError, TypeError, AttributeError) as error:
+                raise _invalid_session(path, number, str(error)) from error
+            records.append(record)
+        offset += len(raw)
+    if not records:
+        raise _invalid_session(path, 1, "missing session header")
+    return records, None
+
+
 def _session_info(path: Path) -> dict | None:
     """Read one catalog row, tolerating a corrupt or concurrently removed file."""
     try:
-        stat = path.stat()
-        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if not records or not isinstance(records[0], dict) or records[0].get("type") != "session":
-            return None
-        header = records[0]
-        cwd = header.get("cwd", ".")
-        if not isinstance(cwd, str):
-            return None
-        title, count = _title_and_count(records[1:])
+        store = SessionStore.load(path)
+        title, count = _title_and_count(store.entries)
         return {
-            "path": path,
-            "id": header.get("id"),
-            "cwd": Path(cwd),
-            "mtime": stat.st_mtime,
-            "created_at": _created_at(header, getattr(stat, "st_birthtime", stat.st_mtime)),
-            "title": title or "(empty)",
-            "messages": count,
+            "path": path, "id": store.id, "cwd": store.cwd, "mtime": store.updated_at,
+            "created_at": store.created_at, "title": title or "(empty)", "messages": count,
         }
-    except (OSError, UnicodeError, ValueError, KeyError, TypeError, AttributeError):
+    except (OSError, ValueError):
         return None
 
 
@@ -210,7 +360,7 @@ class SessionStore:
         self.leaf: str | None = self.entries[-1]["id"] if self.entries else None
         self.created_at = time.time()
         self.updated_at = self.created_at
-        self._header_written = self.path is not None and self.path.exists()
+        self._tail: _IncompleteTail | None = None
         self._lock = threading.RLock()
         self.save_error: SessionSaveError | None = None
         self.last_saved_id = self.leaf
@@ -230,24 +380,48 @@ class SessionStore:
 
     @classmethod
     def load(cls, path: Path) -> SessionStore:
-        lines = [
-            json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()
-        ]
-        if not lines or lines[0].get("type") != "session":
-            raise ValueError(f"{path} is not a Virgo session file")
+        """Inspect a saved tree without modifying the session file."""
+        path = Path(path)
+        with _locked_file(path, "rb") as handle:
+            return cls._read(path, handle)
+
+    @classmethod
+    def _read(cls, path: Path, handle: BinaryIO) -> SessionStore:
+        lines, tail = _read_records(handle, path)
         header = lines[0]
-        store = cls(Path(path), Path(header.get("cwd", ".")), header.get("id"), lines[1:])
-        stat = Path(path).stat()
+        store = cls(path, Path(header["cwd"]), header["id"], lines[1:])
+        store._tail = tail
+        stat = os.fstat(handle.fileno())
         store.created_at = _created_at(header, getattr(stat, "st_birthtime", stat.st_mtime))
         store.updated_at = stat.st_mtime
-        for e in lines[1:]:
-            if "active_leaf" in e:  # Late review accounting on an inactive branch.
-                store.leaf = e["active_leaf"]
-            elif e.get("type") == "leaf":  # explicit leaf moves (branching)
-                store.leaf = e["target"]
-            else:
-                store.leaf = e["id"]
+        if store.entries:
+            last = store.entries[-1]
+            if "active_leaf" in last:  # Late review accounting on an inactive branch.
+                store.leaf = last["active_leaf"]
+            elif last["type"] == "leaf":  # Explicit leaf move.
+                store.leaf = last["target"]
         return store
+
+    @classmethod
+    def resume(cls, path: Path) -> tuple[SessionStore, _IncompleteTail | None]:
+        """Recheck a torn tail under writer exclusion before removing it."""
+        path = Path(path)
+        store = cls.load(path)
+        tail = store._tail
+        if tail is not None:
+            line = tail.line
+            try:
+                with _locked_file(path, "r+b") as handle:
+                    store = cls._read(path, handle)
+                    tail = store._tail
+                    if tail is not None:
+                        line = tail.line
+                        handle.truncate(tail.offset)
+                        store.updated_at = os.fstat(handle.fileno()).st_mtime
+                        store._tail = None
+            except OSError as error:
+                raise _invalid_session(path, line, f"could not repair the trailing record: {error}") from error
+        return store, tail
 
     @staticmethod
     def list(sessions_dir: Path) -> list[dict]:
@@ -298,11 +472,10 @@ class SessionStore:
                 return False
             try:
                 saved = self.load(self.path)
-                if saved.id != self.id or any(entry.get("type") not in {"model_change", "leaf"} for entry in saved.entries):
+                if saved._tail is not None or saved.id != self.id or any(entry.get("type") not in {"model_change", "leaf"} for entry in saved.entries):
                     return False
                 _register_workspace(self.path.parent, self.cwd)
                 self.path.unlink()
-                self._header_written = False
                 return True
             except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
                 return False
@@ -325,16 +498,21 @@ class SessionStore:
     def _write(self, obj: dict) -> None:
         if self.path is None:
             return
-        line = json.dumps(_entry_for_disk(obj), ensure_ascii=False, default=str) + "\n"
-        header = "" if self._header_written else json.dumps({
-            "type": "session", "version": self.VERSION, "id": self.id,
-            "cwd": str(self.cwd), "timestamp": _now(),
-        }, ensure_ascii=False) + "\n"
+        if self._tail is not None:
+            raise ValueError(f"Resume {self.path} before appending to its incomplete trailing record")
+        line = json.dumps(_entry_for_disk(obj), ensure_ascii=False, default=str).encode("utf-8") + b"\n"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _register_workspace(self.path.parent, self.cwd)
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(header + line)
-        self._header_written = True
+        with _locked_file(self.path, "a+b") as handle:
+            if handle.seek(0, os.SEEK_END):
+                handle.seek(-1, os.SEEK_END)
+                if handle.read(1) != b"\n":
+                    line = b"\n" + line
+            else:
+                header = {"type": "session", "version": self.VERSION, "id": self.id,
+                          "cwd": str(self.cwd), "timestamp": _now()}
+                line = json.dumps(header, ensure_ascii=False).encode("utf-8") + b"\n" + line
+            handle.write(line)
 
     def notify_save_failure(self) -> None:
         if self.save_error is not None:

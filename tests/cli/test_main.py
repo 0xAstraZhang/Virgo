@@ -26,7 +26,7 @@ from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, TextContent, Usage
 from virgo.harness import preferences
 
-from tests.support.harness import install_responses, wait_until
+from tests.support.harness import TORN_MESSAGE, install_responses, wait_until, write_legacy_session
 from tests.support.persistence import diagnostic_records
 
 COMMAND = Path(sysconfig.get_path("scripts")) / ("virgo.exe" if os.name == "nt" else "virgo")
@@ -584,3 +584,41 @@ def test_fullscreen_route_and_resume_picker(monkeypatch, ui, session_args, expec
     assert calls["kwargs"]["session"] == expected_session
     assert calls["kwargs"]["refresh_models"] is True
     assert calls["run"] == (session, calls["kwargs"]["ui"], "initial prompt", pick_session)
+
+
+@pytest.mark.parametrize(("mode", "damage"), [
+    ("continue", "torn"), ("path", "torn"), ("continue", "corrupt"), ("path", "corrupt"), ("continue", "empty-dir"),
+])
+def test_print_resume_reports_recovery_on_stderr(project, monkeypatch, capsys, mode, damage):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    directory = cli.Paths(project).sessions
+    path = directory / "latest.jsonl"
+    directory.mkdir(parents=True)
+    if damage != "empty-dir":
+        older = directory / "older.jsonl"
+        write_legacy_session(older, project, "2025-01-01")
+        os.utime(older, (100, 100))
+        write_legacy_session(path, project, "2025-01-02", "prior question")
+        original = path.read_bytes() + TORN_MESSAGE + (b"\n" if damage == "corrupt" else b"")
+        path.write_bytes(original)
+    faux.script("test", faux.reply("answer"))
+    arg = ["--continue"] if mode == "continue" else ["-r", str(path)]
+    code = cli.main(["-p", "--format", "json", "--language", "en", "--permission", "no-limit",
+                     "-C", str(project), "-m", "faux/test", *arg, "next question"])
+    output = capsys.readouterr()
+    if damage == "corrupt":
+        assert code == 2 and output.out == "" and not faux.CALLS["test"]
+        assert str(path) in output.err and "line 3" in output.err
+        assert path.read_bytes() == original and set(directory.glob("*.jsonl")) == {path, older}
+        return
+    assert code == 0
+    events = [json.loads(line) for line in output.out.splitlines()]
+    assert events[0]["type"] == "agent_start" and events[-1]["type"] == "agent_end"
+    if damage == "empty-dir":
+        assert output.err == "" and len(list(directory.glob("*.jsonl"))) == 1
+    else:
+        warning, = output.err.splitlines()
+        assert "line 3" in warning and "83 bytes" in warning and "user" in warning
+        assert [msg["content"] for msg in faux.CALLS["test"][0]["messages"]] == ["prior question", "next question"]
+        assert cli.SessionStore.load(path).id == "latest" and set(directory.glob("*.jsonl")) == {path, older}

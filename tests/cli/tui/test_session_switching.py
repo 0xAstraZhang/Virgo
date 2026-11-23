@@ -241,3 +241,26 @@ def test_close_removes_empty_record_written_after_shutdown_hooks(make_session, m
     controller.request_close()
     assert controller.wait_closed()
     assert not path.exists()
+
+
+def test_cross_workspace_tail_warning_survives_history_reset(make_session, tmp_path):
+    path = saved_session(tmp_path / "target")
+    with path.open("ab") as writer:
+        writer.write(b'{"type":"mess')
+    ui = FullscreenUI()
+    previous = make_session(ui=ui)
+    controller = RunController(previous, ui)
+    controller.start()
+    try:
+        assert controller.open_session(path)
+        updates = pump(controller)
+        assert controller.session.store.path == path
+        notices = [u for u in updates if "13 bytes" in str(u.payload)]
+        notice, = notices
+        # A toast survives a history reset. A transcript notice must follow it.
+        assert notice.kind == "warning" or updates.index(notice) > max(
+            i for i, u in enumerate(updates) if u.kind == "reset"
+        )
+    finally:
+        controller.request_close()
+        assert controller.wait_closed()
