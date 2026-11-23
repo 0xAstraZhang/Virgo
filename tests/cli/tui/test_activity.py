@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import asynccontextmanager
+from time import strftime
 from types import SimpleNamespace
 
 import pytest
@@ -12,18 +14,279 @@ from textual.widgets import Static
 from virgo.agent.types import AgentEvent
 from virgo.ai.providers import faux
 from virgo.ai.stream import StreamEvent
-from virgo.ai.types import AssistantMessage
+from virgo.ai.types import AssistantMessage, RawContent, TextContent, ThinkingContent
 from virgo.cli.tui import activity as activity_module
+from virgo.cli.tui import transcript as transcript_module
 from virgo.cli.tui.activity import RunActivity
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI, RunFinished
-from virgo.cli.tui.transcript import AssistantView
+from virgo.cli.tui.transcript import AssistantView, Transcript
 
-from tests.support.tui import wait_for
+from tests.support.tui import TranscriptApp, wait_for
 
 
 def summaries(app):
     return [str(row.content) for row in app.transcript.query(".notice") if str(row.content).startswith("✻ ")]
+
+
+def stream_event(kind, *blocks, index=0, delta="", agent="main"):
+    stream = StreamEvent(kind, AssistantMessage(list(blocks)), index=index, delta=delta)
+    return AgentEvent("message_update", agent=agent, stream_event=stream)
+
+
+async def poll_events(app, *events):
+    for event in events:
+        app.ui.on_event(event)
+    await app.poll()
+
+
+@pytest.fixture
+def live_turn(make_session, monkeypatch):
+    clock = SimpleNamespace(now=100.0)
+    time = SimpleNamespace(monotonic=lambda: clock.now, strftime=strftime)
+    monkeypatch.setattr(activity_module, "time", time)
+    monkeypatch.setattr(transcript_module, "time", time)
+
+    @asynccontextmanager
+    async def start(size=(80, 24)):
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            app._poll_timer.pause()
+            app.activity.begin(clock.now, None)
+            await poll_events(app, AgentEvent("agent_start"), AgentEvent("turn_start"))
+            yield app, pilot, clock
+
+    return start
+
+
+def test_main_text_stall_shows_elapsed_then_clears_on_progress(live_turn):
+    async def scenario():
+        async with live_turn() as (app, pilot, clock):
+            header = app.transcript.activity_card.thought_header
+
+            async def assert_header(label=None):
+                await pilot.pause()
+                assert header.display == header.has_class("active") == (label is not None)
+                lines = [strip.text for strip in app.screen._compositor.render_strips()]
+                if label is None:
+                    assert not any("Responding…" in line for line in lines)
+                else:
+                    assert label in header.content.plain
+                    assert label in lines[header.region.y]
+
+            clock.now = 101.0
+            await poll_events(app, stream_event("text_delta", TextContent("a"), delta="a"))
+            await assert_header()
+            clock.now = 102.0
+            await poll_events(app, stream_event("text_delta", TextContent("ab"), delta="b"))
+            clock.now = 103.99
+            await app.poll()
+            await assert_header()
+            clock.now = 104.0
+            await app.poll()
+            await assert_header("Responding… (4s)")
+            clock.now = 105.0
+            await app.poll()
+            await assert_header("Responding… (5s)")
+            await poll_events(app, stream_event("text_delta", TextContent("ab")))
+            await assert_header("Responding… (5s)")
+
+            # Consume directly so a later poll cannot mask a late hide.
+            await app.transcript.consume(stream_event("text_delta", TextContent("abc"), delta="c"))
+            await assert_header()
+            clock.now = 107.0
+            await app.poll()
+            await assert_header("Responding… (7s)")
+            # The bridge keeps only the last delta, which has no payload but a longer snapshot.
+            await poll_events(app, stream_event("text_delta", TextContent("abcd"), delta="d"),
+                              stream_event("text_delta", TextContent("abcd")))
+            await assert_header()
+            clock.now = 109.0
+            await app.poll()
+            await assert_header("Responding… (9s)")
+            await poll_events(app, AgentEvent("message_end", message=AssistantMessage([TextContent("abcd")])))
+            assert "Working… (9s)" in header.content.plain
+            app.transcript.finish_activity()
+            await assert_header()
+
+    asyncio.run(scenario())
+
+
+def test_empty_text_start_keeps_first_token_indicator(live_turn):
+    async def scenario():
+        async with live_turn() as (app, _, clock):
+            header = app.transcript.activity_card.thought_header
+            for kind in ("text_start", "text_delta"):
+                await poll_events(app, stream_event(kind, TextContent("")))
+                assert header.display and "Responding… (0s)" in header.content.plain
+            clock.now += 0.5
+            await poll_events(app, stream_event("text_delta", TextContent("first")))
+            assert not header.display
+            clock.now += 2
+            await app.poll()
+            assert header.display
+            # A nonempty payload also signals progress when the snapshot is unchanged.
+            await app.transcript.consume(stream_event("text_delta", TextContent("first"), delta="!"))
+            assert not header.display
+
+    asyncio.run(scenario())
+
+
+def test_visible_event_headers_take_priority_over_stalled_text(live_turn):
+    async def scenario():
+        async with live_turn() as (app, _, clock):
+            card = app.transcript.activity_card
+            text = TextContent("partial")
+            await poll_events(app, stream_event("text_start", text))
+            search = RawContent("openai-responses", {"type": "web_search_call", "id": "a", "status": "in_progress"})
+            server = RawContent("anthropic", {"type": "server_tool_use", "id": "b", "name": "web_search"})
+            await poll_events(app, stream_event("native_tool_start", text, search, index=1),
+                              stream_event("native_tool_start", text, search, server, index=2))
+            clock.now += 3
+            await app.poll()
+            assert {row.call_id for row in card.active_events if row.kind == "tool_call"} == {"a", "b"}
+            assert not card.thought_header.display
+            search.data["status"] = "completed"
+            await poll_events(app, stream_event("native_tool_end", text, search, server, index=1))
+            assert not card.thought_header.display
+            result = RawContent("anthropic", {"type": "web_search_tool_result", "tool_use_id": "b", "content": []})
+            await poll_events(app, stream_event("native_tool_end", text, search, server, result, index=3))
+            assert card.thought_header.display and "Responding… (3s)" in card.thought_header.content.plain
+
+            child = TextContent("child text")
+            await poll_events(app, stream_event("text_delta", child, agent="explorer"))
+            assert not card.thought_header.display
+            await poll_events(app, AgentEvent("message_end", agent="explorer", message=AssistantMessage([child])))
+            assert card.thought_header.display
+            await poll_events(app, stream_event("thinking_start", text, search, server, result,
+                                                 ThinkingContent("checking"), index=4))
+            clock.now += 3
+            await app.poll()
+            assert not card.thought_header.display
+            assert {row.kind for row in card.active_events} == {"thinking"}
+
+    asyncio.run(scenario())
+
+
+def test_waiting_overrides_fast_text(live_turn):
+    async def scenario():
+        async with live_turn() as (app, _, clock):
+            header = app.transcript.activity_card.thought_header
+            await poll_events(app, stream_event("text_delta", TextContent("first")))
+            assert not header.display
+            for key in ("approval", "input", "closing"):
+                waiting = app.session.t("ui.state." + key)
+                app.activity.waiting = waiting
+                app.activity.tick()
+                app.transcript.show_activity(app.activity.content, waiting=waiting)
+                await app.transcript.consume(stream_event("text_delta", TextContent("first " + key), delta=key))
+                assert header.display and f"{waiting}… (0s)" in header.content.plain
+                clock.now += 0.1
+                await app.poll()
+                assert not header.display
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("reason", ["aborted", "error"])
+def test_stalled_text_finishes_and_next_turn_starts_cleanly(live_turn, reason):
+    async def scenario():
+        async with live_turn() as (app, _, clock):
+            card = app.transcript.activity_card
+            text = TextContent("partial")
+            await poll_events(app, stream_event("text_delta", text))
+            clock.now += 2
+            await app.poll()
+            assert card.thought_header.display
+            await poll_events(app, AgentEvent("message_end", message=AssistantMessage([text], stop_reason=reason)))
+            assert card._text_progress_at is None
+            app.ui.push("done", RunFinished(1))
+            await app.poll()
+            assert not card.thought_header.display and not card.active_events
+
+            app.activity.begin(clock.now, None)
+            await poll_events(app, AgentEvent("agent_start"), AgentEvent("turn_start"),
+                              stream_event("text_start", TextContent("")))
+            fresh = app.transcript.activity_card
+            assert fresh is not card and not card.thought_header.display
+            assert fresh.thought_header.display and "Responding… (0s)" in fresh.thought_header.content.plain
+            await poll_events(app, stream_event("text_delta", TextContent("recovered")))
+            assert not fresh.thought_header.display
+
+    asyncio.run(scenario())
+
+
+def test_text_progress_clears_at_block_message_and_run_boundaries(live_turn):
+    async def scenario():
+        async with live_turn() as (app, _, clock):
+            card = app.transcript.activity_card
+            text = TextContent("visible")
+            for end in (
+                stream_event("text_end", text),
+                stream_event("done", text, index=-1),
+                stream_event("error", text, index=-1),
+                stream_event("thinking_start", text, ThinkingContent("checking"), index=1),
+                AgentEvent("message_start", message=AssistantMessage()),
+            ):
+                await poll_events(app, stream_event("text_delta", text, delta="visible"))
+                assert card._text_progress_at == clock.now
+                await poll_events(app, end)
+                assert card._text_progress_at is None
+            await poll_events(app, stream_event("text_delta", text))
+            app.transcript.finish_activity()
+            assert card._text_progress_at is None and not card.thought_header.display
+
+    asyncio.run(scenario())
+
+
+def test_replayed_stream_never_arms_text_stall():
+    async def scenario():
+        async with TranscriptApp().run_test():
+            replay = Transcript()
+            replay._staged = []
+            await replay._replay([{
+                "type": "custom", "kind": "transcript_stream",
+                "data": {"stream_type": "text_delta", "index": 0, "block": {"type": "text", "text": "saved"}},
+            }], has_run_boundaries=True)
+            card = replay.activity_card
+            assert card.events[0].text == "saved"
+            # Inspect the staged partial before finish_activity can clear its state.
+            assert card._text_progress_at is None
+            assert not card.active_events and not card.thought_header.display
+
+    asyncio.run(scenario())
+
+
+def test_text_stall_preserves_narrow_screen_draft_and_manual_scroll(live_turn):
+    async def scenario():
+        async with live_turn(size=(40, 16)) as (app, pilot, clock):
+            text = "\n\n".join(f"Paragraph {i}" for i in range(35))
+            await poll_events(app, stream_event("text_delta", TextContent(text)))
+            app.editor.load_text("next message")
+            await pilot.pause()
+            await pilot.press("pageup")
+            await pilot.pause()
+            view = app.transcript
+            y = view.scroll_y
+            assert 0 < y < view.max_scroll_y and not view.follow_latest
+            header = view.activity_card.thought_header
+            for stalled in (True, False):
+                if stalled:
+                    clock.now += 2
+                    await app.poll()
+                else:
+                    await poll_events(app, stream_event("text_delta", TextContent(text + "."), delta="."))
+                await pilot.pause()
+                assert header.display == stalled
+                if stalled:
+                    assert header.region.height == 1 and header.region.width <= 40
+                assert view.scroll_y == y and not view.follow_latest
+                assert app.editor.text == "next message"
+                assert app.editor.render_line(0).text.rstrip() == "› next message"
+
+    asyncio.run(scenario())
 
 
 def test_activity_tracks_main_phases_and_elapsed_time_across_retries(monkeypatch):
@@ -283,8 +546,6 @@ def test_activity_stays_in_message_on_narrow_screen_and_preserves_scroll_positio
 
 @pytest.mark.parametrize("reasoning", [False, True], ids=["long-reply", "expanded-reasoning"])
 def test_draft_marker_stays_static_when_event_header_scrolls_away(make_session, reasoning):
-    from virgo.ai.types import TextContent, ThinkingContent
-
     async def scenario():
         ui = FullscreenUI()
         app = VirgoApp(make_session(ui=ui), ui)
