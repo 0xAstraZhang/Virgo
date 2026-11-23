@@ -478,10 +478,11 @@ def test_windows_sandbox_hint_for_resolved_path(command, diagnostic, write, work
     ('Path("/tmp/other").write_text("hi")', False),
     ('open(f"{base}/out")', False),
 ])
-def test_python_traceback_uses_failing_statement(statement, write, workspace_boundary):
+@pytest.mark.parametrize("underline", ["", "    ^^^^\n"], ids=["plain", "short-marker"])
+def test_python_traceback_uses_failing_statement(statement, write, underline, workspace_boundary):
     diagnostic = (
         'Traceback (most recent call last):\n  File "script.py", line 2, in <module>\n'
-        f"    {statement}\nPermissionError: [Errno 13] Permission denied: '/tmp/out'"
+        f"    {statement}\n{underline}PermissionError: [Errno 13] Permission denied: '/tmp/out'"
     )
     expected = "tools.output.sandbox_tmp_hint" if write else None
     assert sandbox_failure_hint("python script.py", diagnostic, workspace_boundary, t=str) == expected
@@ -497,12 +498,117 @@ def test_python_traceback_read_after_write(workspace_boundary, underline):
     assert sandbox_failure_hint(command, diagnostic, workspace_boundary) is None
 
 
+def test_python312_pathlib_write_text_traceback(workspace_boundary):
+    source = "from pathlib import Path; Path('/root/virgo-review-probe').write_text('x')"
+    diagnostic = f"""Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    {source}
+                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1046, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: '/root/virgo-review-probe'"""
+    command = shlex.join(["python3", "-c", source])
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == "tools.output.sandbox_write_hint"
+
+
+@pytest.mark.parametrize(("caller", "writer_frame", "mode"), [
+    ("path.write_text('ok')", '"/usr/lib/python3.13/pathlib/_abc.py", line 651, in write_text', "w"),
+    ("path.write_bytes(b'ok')", '"/usr/lib/python3.13/pathlib/_abc.py", line 641, in write_bytes', "wb"),
+    ("save_report(path)", '"writer.py", line 5, in save_report', "w"),
+])
+def test_python_script_write_through_open(caller, writer_frame, mode, workspace_boundary):
+    diagnostic = f"""Traceback (most recent call last):
+  File "script.py", line 2, in <module>
+    {caller}
+  File {writer_frame}
+    with self.open(mode='{mode}') as f:
+  File "/usr/lib/python3.13/pathlib/_local.py", line 537, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+PermissionError: [Errno 13] Permission denied: '/tmp/out'"""
+    hint = sandbox_failure_hint("python script.py", diagnostic, workspace_boundary, t=str)
+    assert hint == "tools.output.sandbox_tmp_hint"
+
+
+@pytest.mark.parametrize(("method", "read_frame"), [
+    ("read_text", "    with self.open(mode='r', encoding=encoding, errors=errors) as f:"),
+    ("read_bytes", "    with self.open(mode='rb') as f:"),
+    ("open", ""),
+])
+@pytest.mark.parametrize("separator", ["; ", "\n"], ids=["same-line", "next-line"])
+def test_pathlib_read_denial_after_same_path_write(method, read_frame, separator, workspace_boundary):
+    source = separator.join(["from pathlib import Path; Path('/tmp/out').write_text('ok')", f"Path('/tmp/out').{method}()"])
+    statements = source.splitlines()
+    frames = [f'  File "<string>", line {len(statements)}, in <module>', f"    {statements[-1]}"]
+    if read_frame:
+        frames.extend([f'  File "/usr/lib/python3.12/pathlib.py", line 1020, in {method}', read_frame])
+    diagnostic = "\n".join([
+        "Traceback (most recent call last):", *frames,
+        '  File "/usr/lib/python3.12/pathlib.py", line 1013, in open',
+        "    return io.open(self, mode, buffering, encoding, errors, newline)",
+        "PermissionError: [Errno 13] Permission denied: '/tmp/out'",
+    ])
+    assert sandbox_failure_hint(shlex.join(["python3", "-c", source]), diagnostic, workspace_boundary) is None
+
+
+@pytest.mark.parametrize(("source", "lineno", "write"), [
+    ("Path('/tmp/out').write_text('ok')\nPath('/tmp/out').open()", 2, False),
+    ("Path('/tmp/out').open('w')\nPath('/tmp/out').open()", 1, True),
+])
+@pytest.mark.parametrize("prefix", ["", "cd /workspace && "])
+def test_python312_inline_frame_without_source(source, lineno, write, prefix, workspace_boundary):
+    diagnostic = f"""Traceback (most recent call last):
+  File "<string>", line {lineno}, in <module>
+  File "/usr/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+PermissionError: [Errno 13] Permission denied: '/tmp/out'"""
+    expected = "tools.output.sandbox_tmp_hint" if write else None
+    command = prefix + shlex.join(["python3", "-c", "from pathlib import Path; " + source])
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == expected
+
+
+@pytest.mark.parametrize(("earlier", "failing", "write"), [
+    ("path.open()", "path.open('w')", True),
+    ("path.write_text('ok')", "load_report(path)", False),
+])
+def test_python_traceback_highlights_failing_call(earlier, failing, write, workspace_boundary):
+    diagnostic = f"""Traceback (most recent call last):
+  File "script.py", line 2, in <module>
+    {earlier}; {failing}
+    {' ' * (len(earlier) + 2)}{'^' * len(failing)}
+  File "/usr/lib/python3.13/pathlib/_local.py", line 537, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+PermissionError: [Errno 13] Permission denied: '/tmp/out'"""
+    expected = "tools.output.sandbox_tmp_hint" if write else None
+    assert sandbox_failure_hint("python script.py", diagnostic, workspace_boundary, t=str) == expected
+
+
+@pytest.mark.parametrize(("statement", "write"), [
+    ("save_report(path)", True),
+    ("Path('/tmp/other').write_text('ok')", False),
+    ("io.open(path, 'rb')", False),
+])
+def test_python_traceback_command_fallback(statement, write, workspace_boundary):
+    source = "from pathlib import Path; from script import save; Path('/tmp/out').write_text('ok'); save()"
+    command = shlex.join(["python3", "-c", source])
+    diagnostic = f"""Traceback (most recent call last):
+  File "script.py", line 2, in save
+    {statement}
+PermissionError: [Errno 13] Permission denied: '/tmp/out'"""
+    expected = "tools.output.sandbox_tmp_hint" if write else None
+    assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == expected
+
+
 @pytest.mark.parametrize("expression", [
     "open('/tmp/out', 'a')", "open('/tmp/out', mode='xb')", "Path('/tmp/out').write_bytes(b'data')",
     "Path('/tmp/out').mkdir()", "Path('/tmp/out').unlink()", "Path('old').rename('/tmp/out')",
+    "io.open('/tmp/out', 'w')", "Path('/tmp/out').touch()",
 ])
 def test_python_mutation_permission_errors(expression, workspace_boundary):
-    command = shlex.join(["python", "-c", "from pathlib import Path; " + expression])
+    command = shlex.join(["python", "-c", "import io; from pathlib import Path; " + expression])
     diagnostic = "PermissionError: [Errno 13] Permission denied: '/tmp/out'"
     assert sandbox_failure_hint(command, diagnostic, workspace_boundary, t=str) == "tools.output.sandbox_tmp_hint"
 

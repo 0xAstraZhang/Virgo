@@ -99,24 +99,31 @@ def _invocations(command: str) -> Iterator[_Invocation]:
         yield _Invocation(executable, list(argv), inputs, outputs)
 
 
-def _python_writes(source: str) -> Iterator[ast.expr]:
-    """Yield destination expressions, keeping either the filename or the Path receiver."""
+def _parse_python(source: str) -> ast.Module | None:
     try:
-        tree = ast.parse(source)
+        # Tracebacks show the header of a with statement without its suite.
+        return ast.parse(source + " pass" if source.endswith(":") else source)
     except (SyntaxError, ValueError, RecursionError):
-        return
+        return None
+
+
+def _python_file_accesses(tree: ast.AST) -> Iterator[tuple[ast.expr, bool]]:
+    """Yield (path, writes) for file operations whose mode is known."""
     for call in ast.walk(tree):
         if not isinstance(call, ast.Call):
             continue
         args = call.args
         match call.func:
-            case ast.Name(id="open"):
+            case ast.Name(id="open") | ast.Attribute(value=ast.Name(id="io"), attr="open"):
                 method = "open"
+                if not args:
+                    args = [kw.value for kw in call.keywords if kw.arg == "file"]
             case ast.Attribute(value=ast.Name(id="os"), attr=method):
                 if method not in {"mkdir", "makedirs", "rename", "replace", "remove", "unlink", "rmdir"}:
                     continue
             case ast.Attribute(value=receiver, attr=method):
-                if method not in {"open", "write_text", "write_bytes", "mkdir", "unlink", "rename", "rmdir"}:
+                if method not in {"open", "read_text", "read_bytes", "write_text", "write_bytes",
+                                  "touch", "mkdir", "unlink", "rename", "rmdir"}:
                     continue
                 match receiver:
                     case ast.Call(func=ast.Name(id="Path") | ast.Attribute(attr="Path"), args=[path, *_]):
@@ -124,11 +131,27 @@ def _python_writes(source: str) -> Iterator[ast.expr]:
                 args = [receiver, *args]
             case _:
                 continue
+        writes = method not in {"read_text", "read_bytes"}
         if method == "open":
             mode = next((kw.value for kw in call.keywords if kw.arg == "mode"), args[1] if len(args) > 1 else None)
-            if not isinstance(mode, ast.Constant) or not isinstance(mode.value, str) or not set("wax+").intersection(mode.value):
+            if mode is None:
+                if any(kw.arg is None for kw in call.keywords) or any(isinstance(arg, ast.Starred) for arg in args):
+                    continue
+                writes = False
+            elif isinstance(mode, ast.Constant) and isinstance(mode.value, str):
+                writes = bool(set("wax+").intersection(mode.value))
+            else:
                 continue
-        yield from args[:2 if method in {"rename", "replace"} else 1]
+        for target in args[:2 if method in {"rename", "replace"} else 1]:
+            yield target, writes
+
+
+def _python_source(cmd: _Invocation) -> str | None:
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", cmd.program):
+        for flag, source in pairwise(cmd.args):
+            if re.fullmatch("-[A-Za-z]*c", flag):
+                return source
+    return None
 
 
 def _option_values(args: list[str], short: str, long: str) -> list[str]:
@@ -193,10 +216,9 @@ def _write_targets(cmd: _Invocation) -> list[str]:
         # tar accepts grouped options such as czf archive or -czf archive.
         flags = ["-f", *args[1:]] if re.fullmatch("-?[a-z]*f", args[0]) else args
         return _option_values(flags, "-f", "--file")
-    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", program):
-        for flag, source in pairwise(args):
-            if re.fullmatch("-[A-Za-z]*c", flag):
-                return [p.value for p in _python_writes(source) if isinstance(p, ast.Constant) and isinstance(p.value, str)]
+    if (source := _python_source(cmd)) and (tree := _parse_python(source)):
+        return [p.value for p, writes in _python_file_accesses(tree)
+                if writes and isinstance(p, ast.Constant) and isinstance(p.value, str)]
     return []
 
 
@@ -241,21 +263,60 @@ def _powershell_write_path(path: str, commands: list[_Invocation]) -> str | None
     return path if written else None
 
 
-def _denied_write_line(line: str, previous: str, definite: re.Match[str] | None, commands: list[_Invocation]) -> str | None:
+def _traceback_frames(lines: list[str], end: int, commands: list[_Invocation]) -> Iterator[ast.AST]:
+    """Read the current traceback from the innermost frame out."""
+    for i in range(end - 1, -1, -1):
+        header = lines[i]
+        if not header.startswith("  "):
+            break
+        if not header.startswith('  File "'):
+            continue
+        source = lines[i + 1]
+        if not source.startswith("    "):
+            # Python 3.12 reports the line number for -c but can omit its source.
+            location = re.match(r'  File "<string>", line ([0-9]{1,10}),', header)
+            if not location:
+                continue
+            candidates = [inline for cmd in commands if (inline := _python_source(cmd)) is not None]
+            if len(candidates) != 1:
+                continue
+            statements = candidates[0].splitlines()
+            lineno = int(location[1])
+            if not 1 <= lineno <= len(statements):
+                continue
+            source = statements[lineno - 1]
+        tree = _parse_python(source.strip())
+        if tree is None:
+            continue
+        if len(tree.body) > 1 and i + 2 < end and (mark := re.fullmatch(r"\s*([~^]+)\s*", lines[i + 2])):
+            # Select the marked statement. AST columns are UTF-8 byte offsets.
+            column = len(source[:mark.start(1)].lstrip().encode("utf-8"))
+            yield next((stmt for stmt in reversed(tree.body) if stmt.col_offset <= column), tree)
+        else:
+            yield tree
+
+
+def _denied_write_line(
+    line: str, frames: Iterator[ast.AST], definite: re.Match[str] | None, commands: list[_Invocation],
+) -> str | None:
     reporter, colon, message = ntpath.splitdrive(line)[1].partition(":")
     reporter = _program_name(reporter.strip()) if colon else ""
     if _MUTATION_ERROR_RE.search(line):
         return line
-    python_error = reporter in {"permissionerror", "oserror"}
-    if python_error and previous.startswith("    ") and not re.fullmatch(r"[\s~^]+", previous):
-        for target in _python_writes(previous.strip()):
-            if not isinstance(target, ast.Constant) or (isinstance(target.value, str) and _mentions(line, target.value)):
-                return line
-        if not definite:
-            return None
-
     if definite:
         return _explicit_write_destination(line, definite[0], reporter, commands)
+
+    python_error = reporter in {"permissionerror", "oserror"}
+    if python_error:
+        for frame in frames:
+            accesses = list(_python_file_accesses(frame))
+            if accesses:
+                matching = [
+                    writes for target, writes in accesses
+                    if not isinstance(target, ast.Constant) or (isinstance(target.value, str) and _mentions(line, target.value))
+                ]
+                # Without a marker, a read of the same path can also explain the denial.
+                return line if matching and all(matching) else None
 
     if reporter in SUPPORTED:
         # The shell reports both input and output redirections, and exec failures.
@@ -309,10 +370,7 @@ def _denied_write(command: str, output: str) -> str | None:
         if definite or _PERMISSION_RE.search(line):
             if commands is None:
                 commands = list(_invocations(command))
-            previous = lines[i - 1] if i else ""
-            if i >= 2 and previous.startswith("    ") and re.fullmatch(r"[\s~^]+", previous):
-                previous = lines[i - 2]
-            evidence = _denied_write_line(line, previous, definite, commands)
+            evidence = _denied_write_line(line, _traceback_frames(lines, i, commands), definite, commands)
             if evidence is not None:
                 return evidence
     return None
