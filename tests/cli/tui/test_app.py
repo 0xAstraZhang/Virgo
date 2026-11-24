@@ -185,8 +185,11 @@ def test_permissions_summary_fits_initial_viewport_and_show_opens_details(broker
         async with app.run_test(size=(80, 24)) as pilot:
             app.editor.load_text("/permissions")
             await pilot.press("enter")
-            await wait_for(pilot, lambda: bool(app.transcript.query(".notice")))
-            viewport = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+            def visible_text():
+                return "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+
+            await wait_for(pilot, lambda: "Permissions: Workspace-Edit" in visible_text())
+            viewport = visible_text()
             for row in ("Permissions: Workspace-Edit · approval: ask", "Read roots:", "Write roots:",
                         "Protected paths and exceptions: /permissions show", "Web: on · Shell network: on"):
                 assert row in viewport
@@ -258,17 +261,16 @@ def test_tool_and_thinking_shortcuts_and_scroll_navigation(make_session, project
 
     async def scenario():
         ui = FullscreenUI()
+        answer = "\n\n".join(f"Paragraph {i}." for i in range(30))
         session = make_session(
             faux.reply("Reading.", thinking="Check the file.", tools=[("read", {"path": "sample.txt"})]),
-            faux.reply("\n\n".join(f"Paragraph {i}." for i in range(30))),
+            faux.reply(answer),
             ui=ui,
         )
         app = VirgoApp(session, ui, initial="read sample.txt")
         async with app.run_test(size=(80, 24)) as pilot:
-            await wait_for(
-                pilot, lambda: len(app.transcript.query(AssistantView)) == 1 and not app.controller.busy
-            )
-            await pilot.pause()
+            await wait_for(pilot, lambda: has_reply(app, answer) and not app.controller.busy)
+            assert len(app.transcript.query(AssistantView)) == 1
             tools = [t for t in app.transcript.query(ToolView) if t.kind == "tool_call"]
             thought = next(card for card in app.transcript.query(AssistantView)
                            if any(e.kind == "thinking" for e in card.events))
@@ -351,8 +353,9 @@ def test_resource_approval_controls_one_file_write(broker_session, project, keys
         app = VirgoApp(session, ui, initial="write file")
         async with app.run_test(size=(80, 24)) as pilot:
             picker = app.query_one(ApprovalPicker)
-            await wait_for(pilot, lambda: picker.display and app.focused is not None)
-            assert picker.query_one("#approval-options", OptionList).option_count == 3
+            options = picker.query_one("#approval-options", OptionList)
+            await wait_for(pilot, lambda: picker.display and app.focused is options)
+            assert options.option_count == 3
             assert "approved.txt" in picker.confirmation.question and not target.exists()
             await pilot.press(*keys)
             await wait_for(pilot, lambda: has_reply(app, "finished") and not app.controller.busy)
@@ -697,6 +700,9 @@ def test_topbar_renders_correct_cwd_immediately_on_shrink_and_grow(make_session,
                     app.update_status()
                     assert str(label.content) == expected
                 await pilot.resize_terminal(width, 24)
+                refreshed = asyncio.Event()
+                app.call_after_refresh(refreshed.set)
+                await asyncio.wait_for(refreshed.wait(), timeout=4)
                 assert str(label.content) == expected
                 assert label.render_line(0).text == expected
 
