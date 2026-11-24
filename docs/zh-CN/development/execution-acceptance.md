@@ -28,7 +28,7 @@ uv run --no-sync pytest -q \
 
 - GitHub Actions 托管的 Windows Server 2022/2025 runner 默认搭载未启用 Feature `60692039` 的旧版 `null.sys`。Virgo 生产代码**绝不**修改 `\Device\Null`（不受支持的主机默认以 **No-Limit** 启动并给出提示，显式请求沙箱模式时 fail-closed）。
 - `windows-sandbox.yml`（`Windows sandbox boundaries`）在 `pull_request`、向 `main` 推送、每日定时任务和手动触发时运行 `windows-2022`（原生）以及 `windows-2025` 上的 `standard-user` 任务。两个 runner 均先运行 `ci/prepare_windows_null_device.py --verify-unsupported` 验证原生旧 Server 的默认降级与 fail-closed 行为，再通过 `ci/prepare_windows_null_device.py` 对齐 CI runner 的 `\Device\Null` DACL，随后端到端运行完整标准 AppContainer 隔离套件（含 `NUL`/`subprocess.DEVNULL` 与纯 `*Users` 非管理员账号 `virgo_std` 的 `ci/run_as_standard_user.py --assert-standard-user` 验收），并由 `ci/check_native_report.py` 校验零跳过报告。
-- `pr-platform-comparison.yml` 针对单一候选提交（`head`）在 `ubuntu-latest`、`windows-latest`（`windows-2025`，通过 `ci/prepare_windows_null_device.py` 对齐 `\Device\Null` 且不跳过原生沙箱测试）与 `macos-latest` 上运行完整 pytest 套件并强制三平台全绿。
+- `pr-platform-comparison.yml` 针对单一候选提交（`head`）在 `ubuntu-latest`、`windows-latest`（`windows-2025`，通过 `ci/prepare_windows_null_device.py` 对齐 `\Device\Null` 且不跳过原生沙箱测试）与 `macos-latest` 上运行完整 pytest 套件并强制三平台全绿。 部分重跑时，汇总选取每个平台最新一次执行的报告。pytest 失败的任务上传报告后仍会标记为失败，可通过 GitHub 的“Re-run failed jobs”再次运行。
 
 如需在非提权 PowerShell 会话中手动运行原生 Windows 验收（使用用户自有或 AAP 可读的原生 x64 Python 3.11+）：
 

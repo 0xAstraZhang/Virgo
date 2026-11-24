@@ -31,6 +31,7 @@ def main():
     summarizer.add_argument("--output", type=Path, required=True)
     summarizer.add_argument("--platforms", nargs="+", default=PLATFORMS)
     summarizer.add_argument("--target", type=Path)
+    summarizer.add_argument("--run-attempt", type=int, help="Select the latest attempt per platform from Actions artifacts")
     for job in ("resolve", "checks", "test"):
         summarizer.add_argument(f"--{job}-result")
     args = parser.parse_args()
