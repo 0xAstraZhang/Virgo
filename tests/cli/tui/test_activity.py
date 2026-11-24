@@ -594,7 +594,7 @@ def test_draft_marker_stays_static_when_event_header_scrolls_away(make_session, 
 def test_footer_and_thinking_banner_follow_model_effort(make_session, spec, suffix, effort):
     async def scenario():
         ui = FullscreenUI()
-        session = make_session(ui=ui)
+        session = make_session(ui=ui, settings={"effort": "medium"})
         session.set_model(spec)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:

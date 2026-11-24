@@ -197,7 +197,8 @@ class Model:
     options: dict = field(default_factory=dict)  # provider-specific knobs
     auth_path: str | None = field(default=None, repr=False)
     supported_reasoning_levels: tuple[str, ...] | None = None  # None: unknown; (): unsupported
-    default_reasoning_level: str | None = None
+    default_reasoning_level: str | None = None  # May include a known provider preset.
+    automatic_effort: str | None = None  # Request level when the user has no preference.
 
     @property
     def spec(self) -> str:

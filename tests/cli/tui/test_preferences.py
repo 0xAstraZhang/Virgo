@@ -75,15 +75,15 @@ def test_effort_panel_previews_cancels_then_saves_default(make_session):
             assert panel.request.kind == "effort"
             assert "Faster" in str(panel.query_one("#preference-effort", Static).content)
             await pilot.press("right", "right")
-            assert panel.effort == "xhigh"
-            assert session.effort == "medium"
+            assert panel.effort == "max"
+            assert session.effort is None
             await pilot.press("escape")
             await wait_for(pilot, lambda: not app.controller.busy)
-            assert session.effort == "medium"
+            assert session.effort is None
             assert not (session.paths.user / "settings.json").exists()
             app.controller.submit("/effort")
             await wait_for(pilot, lambda: panel.display)
-            await pilot.press("left", "enter")
+            await pilot.press("left", "left", "enter")
             await wait_for(pilot, lambda: not app.controller.busy)
             assert session.effort == "low"
             assert json.loads((session.paths.user / "settings.json").read_text())["effort"] == "low"
@@ -115,11 +115,11 @@ def test_model_panel_switches_custom_model_and_effort_for_session_only(make_sess
             await pilot.press("enter")
             assert panel.provider == "local" and panel.visible_models[0].spec == "local/custom"
             await pilot.press("right")
-            assert session.model.spec == "faux/test" and session.effort == "medium"
+            assert session.model.spec == "faux/test" and session.effort is None
             await pilot.press("s")
             await wait_for(pilot, lambda: not app.controller.busy)
             assert session.model.spec == session.main.model.spec == "local/custom"
-            assert session.effort == "high"
+            assert session.effort == "xhigh"
             assert not (session.paths.user / "settings.json").exists()
             assert not faux.CALLS["test"]
             assert app.editor.display and not panel.display
@@ -194,7 +194,7 @@ def test_model_panel_saves_default_and_cancel_keeps_it(make_session):
             await pilot.press("enter")
             await wait_for(pilot, lambda: not app.controller.busy)
             saved = json.loads((session.paths.user / "settings.json").read_text())
-            assert saved["model"] == selected and saved["effort"] == "high"
+            assert saved["model"] == selected and saved["effort"] == "xhigh"
             app.controller.submit("/model")
             await wait_for(pilot, lambda: panel.display)
             await pilot.press("enter", "down", "left", "backspace")
@@ -202,7 +202,7 @@ def test_model_panel_saves_default_and_cancel_keeps_it(make_session):
             assert panel.border_title == "Select provider"
             await pilot.press("escape")
             await wait_for(pilot, lambda: not app.controller.busy)
-            assert session.model.spec == selected and session.effort == "high"
+            assert session.model.spec == selected and session.effort == "xhigh"
             assert json.loads((session.paths.user / "settings.json").read_text()) == saved
 
     asyncio.run(scenario())
@@ -238,7 +238,7 @@ def test_picker_waits_for_active_run_and_stays_usable_when_resized(make_session)
                     await pilot.press("down", "right")
                 await pilot.press("escape")
                 await wait_for(pilot, lambda: not app.controller.busy)
-                assert session.model.spec == "faux/test" and session.effort == "medium"
+                assert session.model.spec == "faux/test" and session.effort is None
                 assert len(faux.CALLS["test"]) == 1
         finally:
             release.set()
@@ -316,7 +316,7 @@ def test_repeated_confirmation_and_stale_answer_cannot_commit_next_picker(make_s
             panel.action_choose(False)
             panel.action_choose(True)
             await wait_for(pilot, lambda: not app.controller.busy)
-            assert session.effort == "high"
+            assert session.effort == "xhigh"
             assert not (session.paths.user / "settings.json").exists()
             app.controller.submit("/effort")
             await wait_for(pilot, lambda: panel.display)
@@ -325,7 +325,7 @@ def test_repeated_confirmation_and_stale_answer_cannot_commit_next_picker(make_s
                 PreferencePicker.Answered(request, PreferenceChoice(request.model, "max", True))
             )
             await pilot.pause()
-            assert panel.display and session.effort == "high"
+            assert panel.display and session.effort == "xhigh"
             assert not (session.paths.user / "settings.json").exists()
             await pilot.press("escape")
             await wait_for(pilot, lambda: not app.controller.busy)
@@ -347,7 +347,7 @@ def test_pty_fast_arrow_and_confirm_selects_new_model_and_effort(project, tmp_pa
         terminal.wait_for(lambda _: json.loads((home / "settings.json").read_text()).get("model") == "faux/other")
         saved = json.loads((home / "settings.json").read_text())
         assert saved["model"] == "faux/other"
-        assert saved["effort"] == "high"
+        assert saved["effort"] == "xhigh"
         terminal.send(b"\x04")
         assert terminal.finish() == 0
         terminal.assert_restored()
@@ -386,7 +386,42 @@ def test_deepseek_picker_uses_high_and_only_catalog_levels(make_session, monkeyp
                 assert panel.effort == "low"
             await pilot.press("escape")
             await wait_for(pilot, lambda: not app.controller.busy)
-            assert session.effort == "medium"
+            assert session.effort == "high"
             assert not (session.paths.user / "settings.json").exists()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("adjust", [False, True], ids=["keep-model-default", "set-explicit-level"])
+def test_confirming_model_preserves_automatic_effort_until_adjusted(make_session, monkeypatch, adjust):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(preferences, "fetch_model_catalog", lambda *_: [
+        CatalogModel("deepseek-flash", {"default_reasoning_level": "low"}),
+    ])
+
+    async def scenario():
+        ui = FullscreenUI()
+        session = make_session(ui=ui)
+        session.set_model("deepseek/deepseek-reasoner")
+        assert session.effort == "high"
+        app = VirgoApp(session, ui)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.controller.submit("/model")
+            panel = app.query_one(PreferencePicker)
+            await wait_for(pilot, lambda: panel.display)
+            await pilot.press("enter")
+            assert panel.effort == "low"
+            if adjust:
+                await pilot.press("right", "left")
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: not app.controller.busy)
+            saved = json.loads((session.paths.user / "settings.json").read_text())
+            assert saved["model"] == "deepseek/deepseek-flash"
+            session.remember_model_metadata(session.model, [CatalogModel("deepseek-flash", {"default_reasoning_level": "max"})])
+            if adjust:
+                assert saved["effort"] == session.effort == "low"
+            else:
+                assert "effort" not in saved
+                assert session.effort == "max"
 
     asyncio.run(scenario())

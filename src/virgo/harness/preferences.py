@@ -25,6 +25,8 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 def effort_levels(model: Model) -> tuple[str, ...]:
+    if model.supported_reasoning_levels is None and model.default_reasoning_level:
+        return tuple(dict.fromkeys((*EFFORT_LEVELS, model.default_reasoning_level)))
     if not model.reasoning or model.supported_reasoning_levels is None:
         return EFFORT_LEVELS
     return model.supported_reasoning_levels
@@ -43,14 +45,14 @@ class ModelChoice:
     description: str
     released_at: float | None = None
     effort_levels: tuple[str, ...] = EFFORT_LEVELS
-    preferred_effort: str = "medium"
+    preferred_effort: str | None = "high"
     reasoning: bool = False
 
     @classmethod
-    def from_model(cls, model: Model, description: str, requested: str, released_at: float | None = None) -> ModelChoice:
+    def from_model(cls, model: Model, description: str, requested: str | None, released_at: float | None = None) -> ModelChoice:
         levels = effort_levels(model)
         effective = resolved_effort(model, requested).effective
-        candidates = (effective, requested, model.default_reasoning_level, "medium")
+        candidates = (effective, requested, model.automatic_effort, "high")
         preferred = next((level for level in candidates if level in levels), levels[0] if levels else requested)
         return cls(model.spec, model.id, description, released_at, levels, preferred, model.reasoning)
 
@@ -60,22 +62,24 @@ class PreferenceRequest:
     kind: str
     models: tuple[ModelChoice, ...]
     model: str
-    effort: str
+    effort: str | None
 
     def offers(self, choice: PreferenceChoice) -> bool:
         model = next((item for item in self.models if item.spec == choice.model), None)
         if model is None or (self.kind == "effort" and choice.model != self.model):
             return False
+        if self.kind == "model" and choice.effort is None:
+            return True
         if not model.effort_levels:
             # Selecting the model alone must preserve the saved preference.
-            return self.kind == "model" and choice.effort == self.effort
+            return self.kind == "model" and choice.effort == model.preferred_effort
         return choice.effort in model.effort_levels
 
 
 @dataclass(frozen=True)
 class PreferenceChoice:
     model: str
-    effort: str
+    effort: str | None
     persist: bool
 
 
@@ -119,7 +123,7 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
             except (TypeError, ValueError):
                 continue
             description = session.t("harness.models.context", provider=provider, tokens=local.context_window)
-            choices[local.spec] = ModelChoice.from_model(local, description, session.effort)
+            choices[local.spec] = ModelChoice.from_model(local, description, session.effort_for(local))
     for connection in _connected_remote_models(session):
         for item in session.cached_model_catalog(connection):
             context = item.metadata.get("context_window")
@@ -129,7 +133,7 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
                 model = session.resolve(spec)
             except (TypeError, ValueError):
                 continue
-            choices[spec] = ModelChoice.from_model(model, description, session.effort, item.released_at)
+            choices[spec] = ModelChoice.from_model(model, description, session.effort_for(model), item.released_at)
     # Keep each connection's server order independent of parallel fetch completion.
     ordered = sorted(choices.values(), key=lambda choice: choice.spec.split("/", 1)[0])
     # Stable ties preserve server order; undated models follow dated models.
@@ -336,7 +340,7 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if kind == "effort" and not models[0].effort_levels:
         session.ui.print(session.t("harness.effort.no_levels"), "warn")
         return
-    effort = models[0].preferred_effort if kind == "effort" else session.effort
+    effort = models[0].preferred_effort if kind == "effort" else session.effort_override
     request = PreferenceRequest(kind, models, session.model.spec, effort)
     choice = session.ui.choose_preferences(request)
     if choice is None:
@@ -354,14 +358,15 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if kind == "model":
         # Validate before saving defaults so a bad model cannot corrupt settings.
         session.resolve(choice.model)
-    patch = {"effort": choice.effort}
-    if kind == "model":
-        patch["model"] = choice.model
+    patch = {"model": choice.model} if kind == "model" else {}
+    if choice.effort is not None:
+        patch["effort"] = choice.effort
     if choice.persist:
         session.settings.save_user(patch)
     if kind == "model":
         session.set_model(choice.model)
-    session.effort = choice.effort
+    if choice.effort is not None:
+        session.effort = choice.effort
     scope = session.t("harness.preferences.persisted") if choice.persist else session.t("harness.preferences.session_only")
     label = effort_label(session.model, session.effort, session.t)
     if kind == "model":

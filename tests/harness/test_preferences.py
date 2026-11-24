@@ -296,7 +296,7 @@ def test_cancelling_picker_preserves_session_settings_and_history(make_session, 
     assert ui.requests[0].kind == kind
     assert ui.requests[0].model == "faux/test"
     assert session.model.spec == "faux/test"
-    assert session.effort == "medium"
+    assert session.effort is None
     assert session.settings.data == settings_before
     assert session.store.branch() == branch_before
     assert not (session.paths.user / "settings.json").exists()
@@ -358,7 +358,7 @@ def test_effort_choice_only_changes_effort(make_session, persist):
         assert json.loads(path.read_text()) == {"effort": "xhigh", "execution": {"mode": default_execution_mode()}}
     else:
         assert not path.exists()
-        assert session.settings.get("effort") == "medium"
+        assert session.settings.get("effort") is None
     assert not session.main.messages
 
 
@@ -375,7 +375,7 @@ def test_invalid_picker_choice_cannot_change_settings(make_session, kind, choice
     with pytest.raises(ValueError):
         configure_preference(session, kind)
     assert session.model.spec == "faux/test"
-    assert session.effort == "medium"
+    assert session.effort is None
     assert not (session.paths.user / "settings.json").exists()
 
 
@@ -390,7 +390,7 @@ def test_failed_default_write_leaves_runtime_unchanged(make_session, monkeypatch
     with pytest.raises(OSError, match="read-only"):
         configure_preference(session, "model")
     assert session.model.spec == "faux/test"
-    assert session.effort == "medium"
+    assert session.effort is None
 
 
 def test_explicit_arguments_and_nonpicker_clients_keep_command_behavior(make_session):
@@ -414,7 +414,7 @@ def test_picker_normalizes_unknown_effort_without_changing_cancelled_session(mak
     ui = PickerUI()
     session = make_session(ui=ui, settings={"effort": "future-level"})
     session.prompt("/effort")
-    assert ui.requests[0].effort == "medium"
+    assert ui.requests[0].effort == "high"
     assert ui.requests[0].model == "faux/test"
     assert session.effort == "future-level"
 
@@ -423,7 +423,7 @@ def test_picker_normalizes_unknown_effort_without_changing_cancelled_session(mak
 def test_picker_rejects_effort_not_offered_by_selected_model(make_session, monkeypatch, kind):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     ui = PickerUI(PreferenceChoice("deepseek/deepseek-flash", "medium", True))
-    session = make_session(ui=ui)
+    session = make_session(ui=ui, settings={"effort": "medium"})
     if kind == "effort":
         session.set_model("deepseek/deepseek-flash")
     original = session.model
@@ -439,7 +439,7 @@ def test_picker_rejects_effort_not_offered_by_selected_model(make_session, monke
     ("deepseek/deepseek-chat", "medium→off"),
 ])
 def test_command_output_explains_saved_effort(make_session, spec, label):
-    session = make_session()
+    session = make_session(settings={"effort": "medium"})
     session.set_model(spec)
     for command in ("/status", "/model", "/effort"):
         session.prompt(command)
@@ -471,4 +471,4 @@ def test_explicitly_empty_effort_map_allows_model_selection_only(make_session, m
     assert session.model.spec == "deepseek/deepseek-flash"
     ui.requests.clear()
     configure_preference(session, "effort")
-    assert not ui.requests and session.effort == "medium"
+    assert not ui.requests and session.effort is None

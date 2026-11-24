@@ -202,7 +202,7 @@ def show_status(session: AgentSession, args: str) -> None:
         provider = session.services["execution"]
         usage = Usage(**session.store.total_usage())
         rows = [
-            t("harness.status.model", model=runtime.model.spec, effort=effort_label(runtime.model, session.effort, t)),
+            t("harness.status.model", model=runtime.model.spec, effort=effort_label(runtime.model, session.effort_for(runtime.model), t)),
             t("harness.status.directory", path=runtime.execution_context.workspace),
             *provider.permission_summary_rows(),
             t("harness.status.session", id=session.store.id),

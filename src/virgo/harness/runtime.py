@@ -388,7 +388,7 @@ class Runtime:
                 # Loop notices (turn limit, paused search) are not model calls.
                 record_call(
                     self.accounting_store, self.model, ev.message, purpose="agent",
-                    started=self._call_started, effort=self.session.effort, agent=self.name,
+                    started=self._call_started, effort=self.session.effort_for(self.model), agent=self.name,
                 )
                 self._call_started = None
 
@@ -587,7 +587,7 @@ class Runtime:
                 return
             ctx = self.request_context(messages, model)
             opts = StreamOptions(
-                signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort,
+                signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort_for(model),
                 prompt_cache_key=self.diagnostic_id, io_bridge=s.io_bridge,
                 before_dispatch=self._record_request_header if self.role == "main" and self.store is not None else None,
             )
@@ -617,7 +617,7 @@ class Runtime:
                     and web.fallback(request_model, ctx, failed)):
                 web_fallbacks += 1
                 record_call(self.accounting_store, request_model, failed, purpose="fetch-fallback" if failed.error_kind == "fetch_unsupported" else "search-fallback",
-                            started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
+                            started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
                 yield StreamEvent("retry", failed)
                 continue
             if failed.native_started:
@@ -635,7 +635,7 @@ class Runtime:
                     return
                 if isinstance(outcome, dict):
                     record_call(self.accounting_store, request_model, failed, purpose="retry",
-                                started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
+                                started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
                     continue
             elif failed.error_kind == "retryable" and retries < max_retries and not signal.is_set():
                 retries += 1
@@ -671,7 +671,7 @@ class Runtime:
                     yield StreamEvent("error", failed)
                     return
                 record_call(self.accounting_store, request_model, failed, purpose="retry",
-                            started=self._call_started, duration=duration, effort=s.effort, agent=self.name)
+                            started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
                 continue
             yield StreamEvent("error", failed)
             return

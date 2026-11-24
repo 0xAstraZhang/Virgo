@@ -26,7 +26,7 @@ DEFAULTS: dict[str, Any] = {
     "language": "en",
     "execution": {"mode": "workspace-edit"},
     "model": "anthropic/claude-opus-5-5",
-    "effort": "medium",
+    "effort": None,
     "maxTokens": None,
     "providers": {},
     "permissions": {"approval": "ask", "confirmHighRisk": True},
