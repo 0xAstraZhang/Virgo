@@ -42,7 +42,9 @@ OLDER_MARGIN = 2
 TOOL_KINDS = ("tool_call", "sources")
 STREAM_MARKDOWN_INTERVAL = 0.08
 TEXT_STALL_SECONDS = 2.0
-DIAGNOSTIC_NOTIFICATION = re.compile(r'<notification source="diagnostics">\r?\n(.*?)\r?\n</notification>', re.DOTALL)
+NOTIFICATION_ENVELOPE = re.compile(
+    r'<notification(?: source="(?P<source>[^"<\r\n]*)")?>\r?\n(?P<body>.*?)\r?\n</notification>', re.DOTALL
+)
 
 
 def _json(value) -> str:
@@ -877,8 +879,10 @@ class Transcript(VerticalScroll, inherit_bindings=False):
     async def _user_message(self, agent: str, message: UserMessage) -> None:
         kind = message.kind
         text = message.text()
-        if kind == "notification" and (match := DIAGNOSTIC_NOTIFICATION.fullmatch(text)):
-            kind, text = "diagnostics", match.group(1)
+        if kind == "notification" and (match := NOTIFICATION_ENVELOPE.fullmatch(text)):
+            text = match["body"]
+            if match["source"] == "diagnostics":
+                kind = "diagnostics"
         if isinstance(message.content, list):
             for image in message.content:
                 if isinstance(image, ImageContent):
