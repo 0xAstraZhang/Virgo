@@ -556,7 +556,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 elif update.kind == "run_start":
                     model = self.session.main.model
                     effort = (
-                        effort_label(model, self.session.effort, self.session.t, show_requested=False)
+                        effort_label(model, self.session.effort_for(model), self.session.t, show_requested=False)
                         if model.reasoning else None
                     )
                     self.activity.begin(update.created_at, effort)
@@ -849,7 +849,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         active_model = self.session.main.model
         effort = ""
         if active_model.reasoning:
-            requested = self.session.effort
+            requested = self.session.effort_for(active_model)
             label = effort_label(active_model, requested, self.session.t)
             if cell_len(f"{active_model.id} · {label}") > available:
                 label = effort_label(active_model, requested, self.session.t, show_requested=False)

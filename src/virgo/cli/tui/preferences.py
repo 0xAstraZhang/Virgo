@@ -58,8 +58,9 @@ class PreferencePicker(PromptPanel, can_focus=True):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.request: PreferenceRequest | None = None
-        self.effort = "medium"
+        self.effort: str | None = None
         self._effort_model: ModelChoice | None = None
+        self._effort_adjusted = False
         self._highlighted: int | None = None
         self._answered = False
         self._narrow_models = False
@@ -199,6 +200,7 @@ class PreferencePicker(PromptPanel, can_focus=True):
             model = self.visible_models[index] if self.provider is not None and index is not None else None
         if model is not self._effort_model:
             self._effort_model = model
+            self._effort_adjusted = False
             if model is not None:
                 self.effort = model.preferred_effort
         return model
@@ -304,6 +306,7 @@ class PreferencePicker(PromptPanel, can_focus=True):
             return
         levels = model.effort_levels
         index = levels.index(self.effort)
+        self._effort_adjusted = True
         self.effort = levels[max(0, min(len(levels) - 1, index + direction))]
         self.render_effort()
 
@@ -327,7 +330,10 @@ class PreferencePicker(PromptPanel, can_focus=True):
         if model is None:
             return
         self._answered = True
-        self.post_message(self.Answered(self.request, PreferenceChoice(model.spec, self.effort, persist)))
+        effort = self.effort
+        if self.request.kind == "model" and self.request.effort is None and not self._effort_adjusted:
+            effort = None  # Keep following the selected model's default.
+        self.post_message(self.Answered(self.request, PreferenceChoice(model.spec, effort, persist)))
 
     @on(OptionList.OptionSelected, "#preference-models")
     def model_selected(self, event: OptionList.OptionSelected) -> None:

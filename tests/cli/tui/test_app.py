@@ -820,7 +820,7 @@ def test_footer_places_mode_and_usage_below_editor(make_session):
             assert status.styles.text_align == "left"
             status_line = status.render_line(0).text
             assert status_line.startswith("No-Limit  ")
-            assert status_line.endswith("deepseek-flash · medium→high")
+            assert status_line.endswith("deepseek-flash · high")
             assert app.query_one_optional("#flags") is None
             assert cell_len(status_line) == app.editor.region.width
             assert metrics.region.y == status.region.bottom

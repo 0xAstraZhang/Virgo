@@ -122,18 +122,26 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
         reasoning = False
     if not reasoning:
         levels, default_level = (), None
-    elif api == "openai" and isinstance(effort_map := conf.get("reasoningEffortMap"), dict):
-        supported = tuple(key for key, value in effort_map.items() if isinstance(key, str) and key == value)
-        if levels is None:
-            levels = supported
-        if "reasoningEffortMap" in configured:
-            levels = tuple(level for level in levels if level in supported)
-        elif (default_level and default_level not in levels and "defaultReasoningLevel" in model_config
-              and "supportedReasoningLevels" not in model_config):
-            # A directory may declare a newer default without listing all supported levels.
+    else:
+        effort_map = conf.get("reasoningEffortMap") if api == "openai" else None
+        if levels is None and isinstance(effort_map, dict):
+            levels = tuple(key for key, value in effort_map.items() if isinstance(key, str) and key == value)
+        # A declared default can extend a preset when the directory omits its list of levels.
+        if (levels is not None and model_config.get("defaultReasoningLevel")
+                and "supportedReasoningLevels" not in model_config and default_level not in levels):
             levels = (*levels, default_level)
+        if isinstance(effort_map, dict) and "reasoningEffortMap" in configured:
+            levels = tuple(level for level in levels if effort_map.get(level) == level)
     if levels is not None and default_level not in levels:
         default_level = None
+    # Preset defaults describe the server's behavior on omission. Automatic requests
+    # use an advertised/configured default, then high when the model accepts it.
+    automatic_effort = default_level if "defaultReasoningLevel" in model_config else None
+    if automatic_effort is None:
+        if levels is None or "high" in levels:
+            automatic_effort = "high"
+        elif levels:
+            automatic_effort = levels[0]
     options = {k: v for k, v in conf.items() if k not in ("api", "models", "baseUrl", "apiKeyEnv")}
     # A preset is a fallback. Only user maps override a catalog declaration on the wire.
     if "reasoningEffortMap" not in configured:
@@ -151,4 +159,5 @@ def resolve_model(spec: str, providers: dict | None = None) -> Model:
         options=options,
         supported_reasoning_levels=levels,
         default_reasoning_level=default_level,
+        automatic_effort=automatic_effort,
     )

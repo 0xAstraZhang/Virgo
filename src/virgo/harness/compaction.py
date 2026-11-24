@@ -324,11 +324,12 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     started = time.monotonic()
     rt.request_budget.consume()
     max_tokens = min(RECOVERY_TOKENS if concise else 8000, model.max_tokens)
+    effort = session.effort_for(model)
     result = native_compact(
         model,
         context,
         StreamOptions(
-            signal=rt.agent.signal, max_tokens=max_tokens, effort=session.effort,
+            signal=rt.agent.signal, max_tokens=max_tokens, effort=effort,
             prompt_cache_key=rt.diagnostic_id,
         ),
         focus=focus,
@@ -340,7 +341,7 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
         "duration": round(time.monotonic() - started, 6),
     })
     record_call(rt.accounting_store, model, result, purpose="compaction", started=started,
-                effort=session.effort, agent=rt.name)
+                effort=effort, agent=rt.name)
     if failure := _report_failure(rt, result, complete=is_native_context(result),
                                   limit=max_tokens if api == "anthropic" else None):
         return failure

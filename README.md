@@ -69,6 +69,7 @@ uv run virgo -p --format json "Summarize the README"
 ```
 
 - **Full-screen UI**: `Enter` sends a message, `Ctrl+J` inserts a newline, `/` browses commands, `Shift+Tab` cycles permission modes, `Ctrl+T` expands reasoning, `Ctrl+O` expands tool details, and `Esc` interrupts a running reply. Click a tool call row (or focus it and press `Enter`) to inspect its result.
+- Virgo sets **reasoning effort** to the default advertised for the selected model. If the directory omits it, Virgo uses `high`, or the first supported level if `high` is unavailable. You can override this with `/effort`, `--effort`, or the `effort` setting.
 - **Sessions & recovery**: `--continue` opens the most recently updated session in the workspace. If its final record is incomplete and lacks a trailing newline, Virgo trims the incomplete tail and keeps the valid prefix; corrupt headers or complete records halt startup with the file and line number.
 - **Status & permissions**: `/status` shows session ID, model, working directory, token usage, and active permissions. `/permissions` summarizes the active mode and boundaries (`/permissions show` or `-p /permissions` prints full JSON); switch modes with `/permissions <mode>`, `--permission <read-only|workspace-edit|no-limit>`, or `Shift+Tab`.
 - **Diagnostics**: `/diagnostics` lists the latest ten errors stored in `~/.virgo/logs/diagnostics.sqlite3` (or `$VIRGO_HOME/logs/diagnostics.sqlite3`). Use `--before <cursor>` for older pages or `/diagnostics <error-id>` for full details; review details before sharing.

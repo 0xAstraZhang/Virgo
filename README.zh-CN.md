@@ -69,6 +69,7 @@ uv run virgo -p --format json "总结 README"
 ```
 
 - **全屏界面**：`Enter` 发送消息，`Ctrl+J` 换行，`/` 浏览命令，`Shift+Tab` 循环切换权限模式，`Ctrl+T` 展开思考，`Ctrl+O` 展开工具详情，`Esc` 中断当前回复。点击工具调用行（或聚焦后按 `Enter`）即可展开结果。
+- Virgo 的**推理强度**默认采用模型目录返回的档位。目录未给出默认值时使用 `high`。如果列表中没有 `high`，则使用模型支持的第一档。你可以通过 `/effort`、`--effort` 或设置文件中的 `effort` 指定档位。
 - **会话与恢复**：`--continue` 打开当前工作区最近更新的会话文件。若最后一条记录不完整且缺少换行符，Virgo 会截断损坏尾部并保留之前的有效记录；若文件头或完整记录损坏，启动会停止并指出文件和行号。
 - **状态与权限**：`/status` 显示会话 ID、模型、工作目录、token 用量和当前权限。`/permissions` 汇总当前模式与执行边界（`/permissions show` 或 `-p /permissions` 输出完整 JSON）；通过 `/permissions <mode>`、`--permission <read-only|workspace-edit|no-limit>` 或 `Shift+Tab` 切换模式。
 - **错误诊断**：`/diagnostics` 列出保存在 `~/.virgo/logs/diagnostics.sqlite3`（或 `$VIRGO_HOME/logs/diagnostics.sqlite3`）中的最近十条错误。可用 `--before <cursor>` 翻看更早记录，或用 `/diagnostics <error-id>` 查看详情；分享诊断详情前请先检查内容。

@@ -124,7 +124,7 @@ class AgentSession:
         self._lock = threading.RLock()
         self.approval_revision = 0
         self.approval_policy = approval_policy or self.settings.get("permissions.approval", "ask")
-        self.effort = self.settings.get("effort", "medium")
+        self.effort_override: str | None = self.settings.get("effort")
         self._io_bridge: AsyncSDKBridge | None = None
         self._shutdown_started = False
         self.busy = False
@@ -411,6 +411,7 @@ class AgentSession:
                 vision=resolved.vision,
                 supported_reasoning_levels=resolved.supported_reasoning_levels,
                 default_reasoning_level=resolved.default_reasoning_level,
+                automatic_effort=resolved.automatic_effort,
             )
             return current if model == current else model
 
@@ -422,6 +423,17 @@ class AgentSession:
             self.model = self.main.model = model
         self.small_model = self.model if shared_model else refreshed(self.small_model)
         self._metadata_pending = False
+
+    def effort_for(self, model: ai.Model) -> str | None:
+        return self.effort_override if self.effort_override is not None else model.automatic_effort
+
+    @property
+    def effort(self) -> str | None:
+        return self.effort_for(self.model)
+
+    @effort.setter
+    def effort(self, level: str | None) -> None:
+        self.effort_override = level
 
     def _small_model(self, model: ai.Model) -> ai.Model:
         host = urlsplit(base_url(model)).hostname
