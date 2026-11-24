@@ -87,10 +87,12 @@ def test_session_read_grant_keeps_mode_defaults_in_request_prefix(broker_session
 
 
 @pytest.mark.parametrize("preset", ["workspace-edit", "read-only"])
-@pytest.mark.parametrize("windows", [False, True], ids=["posix", "native-windows"])
-def test_sandbox_temp_guidance_in_request_prefix(broker_session, monkeypatch, preset, windows):
+@pytest.mark.parametrize("backend", ["seatbelt", "bubblewrap", "windows-appcontainer"])
+def test_sandbox_temp_guidance_in_request_prefix(broker_session, monkeypatch, preset, backend):
     runtime = broker_session(preset=preset).main
+    windows = backend == "windows-appcontainer"
     monkeypatch.setattr("virgo.execution_policy.is_native_windows", lambda: windows)
+    monkeypatch.setattr(type(runtime.execution_context.executor), "backend", property(lambda _self: backend))
 
     first = runtime.request_context([])
     second = runtime.request_context([])
