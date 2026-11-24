@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 
 import pytest
 
 from virgo.ai.providers import faux
 from virgo.harness.session import Runtime
+
+from tests.support.harness import RecordingUI
 
 MAIN_TOOLS = {
     "read", "write", "edit", "glob", "grep", "read_output", "web_search", "web_fetch",
@@ -35,6 +38,50 @@ def test_default_request_keeps_tool_definitions_without_duplicate_or_empty_secti
     for tag in ("tools", "asking", "memory", "skills", "workflows"):
         assert f"<{tag}>" not in first.system
     assert str(session.cwd) in first.system and "<environment>" in first.system
+
+
+def test_session_read_grant_keeps_mode_defaults_in_request_prefix(broker_session, project):
+    approved = project.parent / "outside-approved.txt"
+    sibling = project.parent / "outside-sibling.txt"
+    content = "approved text\n"
+    approved.write_bytes(content.encode())
+    sibling.write_text("unapproved sibling content")
+    ui = RecordingUI(["y", "n"])
+    session = broker_session(preset="workspace-edit", ui=ui)
+    read = faux.reply(tools=[("read", {"path": str(approved)})])
+    replies = iter([read, faux.reply("done"), read,
+                    faux.reply(tools=[("read", {"path": str(sibling)})]), faux.reply("done")])
+    requests = []
+
+    def respond(context):
+        requests.append(context)
+        return next(replies)
+
+    faux.handler("test", respond)
+    session.prompt("Read the external file")
+    session.prompt("Read it again, then read its sibling")
+
+    first, after_read, _, after_reread, after_decline = requests
+    for request in (after_read, after_reread):
+        result = request.messages[-1]
+        assert not result.is_error and result.text() == content
+    denied = after_decline.messages[-1]
+    assert denied.is_error and denied.details["boundary"]["reason"] == "user_declined"
+    assert "unapproved sibling content" not in denied.text()
+    assert len(ui.questions) == 2
+    assert f"Read access: {approved.resolve()}" in ui.questions[0].splitlines()
+    assert f"Read access: {sibling.resolve()}" in ui.questions[1].splitlines()
+
+    assert all(request.system == first.system for request in requests)
+    tool_schemas = {json.dumps([asdict(tool) for tool in request.tools]) for request in requests}
+    assert len(tool_schemas) == 1
+    boundary = after_read.system.split("<execution_boundary>")[1].split("</execution_boundary>")[0]
+    descriptor, guidance = boundary.split("\n", 1)
+    facts = json.loads(descriptor)
+    assert "effective" not in facts and "requested" not in facts
+    assert facts["mode_defaults"]["read_paths"] == facts["mode_defaults"]["write_paths"] == [str(project.resolve())]
+    assert "mode defaults before user grants" in guidance
+    assert "File tools check access for each call and return data after any required approval" in guidance
 
 
 @pytest.mark.parametrize("preset", ["workspace-edit", "read-only"])

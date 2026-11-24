@@ -174,6 +174,47 @@ def test_ver10_high_risk_command_prompts_in_workspace_edit_and_no_limit(broker_s
     assert results[0].details["status"] == "high_risk_denied"
     assert len(ui.questions) == 1
     assert "git_force_push" in ui.questions[0]
+    if mode == "no-limit":
+        boundary = results[0].details["boundary"]
+        assert boundary["provider"] == boundary["state"] == boundary["requested"] == "host"
+        assert boundary["effective"] == "host operating-system authority"
+
+
+def test_high_risk_denial_after_external_read_grant(broker_session, project, monkeypatch):
+    approved = project.parent / "outside-approved.txt"
+    content = "approved before the denial\n"
+    approved.write_bytes(content.encode())
+    ui = RecordingUI(["y", "n"])
+    session = broker_session(preset="workspace-edit", ui=ui)
+    shell = selected(session).tool_name
+    dispatched = []
+    monkeypatch.setattr(session.tool(shell), "execute", lambda args, ctx: dispatched.append(args))
+    read = faux.reply(tools=[("read", {"path": str(approved)})])
+    faux.script("test", read, faux.reply(tools=[(shell, {"command": "git reset --hard"})]),
+                faux.reply("done"), read, faux.reply("done"))
+    session.prompt("Read the external file, then reset the repository")
+    delivered = faux.CALLS["test"][-1]["messages"][-1]
+    session.prompt("Read the same file again")
+
+    first, denied, second = tool_results(session)
+    assert not first.is_error and not second.is_error and first.text() == second.text() == content
+    assert len(ui.questions) == 2
+    assert f"Read access: {approved.resolve()}" in ui.questions[0].splitlines()
+    assert "git_reset_hard" in ui.questions[1]
+    assert not dispatched
+    assert denied.is_error and denied.details["status"] == "high_risk_denied"
+    assert denied.details["category"] == "git_reset_hard"
+    boundary = denied.details["boundary"]
+    assert boundary["kind"] == "high_risk_denied" and boundary["category"] == "git_reset_hard"
+    assert boundary["provider"] == "sandbox" and boundary["workspace"] == str(project.resolve())
+    assert boundary["backend"] == session.main.execution_context.executor.backend
+    assert boundary["reason"] == "user_declined" and boundary["escalation_available"] is False
+    assert boundary["payload_started"] is False and boundary["side_effects"] == "none"
+    assert "effective" not in boundary
+    assert '"effective"' not in denied.text()
+    assert delivered["tool_call_id"] == denied.tool_call_id
+    visible = "\n".join(block["text"] for block in delivered["content"])
+    assert visible == denied.text() and '"reason":"user_declined"' in visible
 
 
 @pytest.mark.parametrize("mode", ["workspace-edit", "read-only", "no-limit"])
