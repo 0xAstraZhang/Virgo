@@ -2,11 +2,14 @@
 
 MESSAGES = {
     "tools.agent.background": " Set background=true to keep working while it runs.",
-    "tools.agent.description": "Delegate a self-contained task to a sub-agent with a fresh context. It cannot "
-    "see this conversation, so include the needed context; only its final answer "
-    "comes back. Several calls in one response run in parallel. Children inherit "
+    "tools.agent.description": "Delegate a self-contained task to a sub-agent. Omit agent_id to start a fresh "
+    "context, or pass a previously returned agent_id from this session to reuse that sub-agent with its prior "
+    "context. It cannot see this main conversation, so include needed context; only its final answer and "
+    "[agent_id: ...] come back. Several calls in one response run in parallel. Children inherit "
     "the originating task execution boundary.{background}",
     "tools.agent.label": "Agent",
+    "tools.agent.parameters.properties.agent_id.description": "Optional existing sub-agent ID from this session to "
+    "reuse with its prior context.",
     "tools.agent.parameters.properties.background.description": "Run in the background; job_output/job_kill "
     "manage the job.",
     "tools.agent.parameters.properties.description.description": "Short task label",

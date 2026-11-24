@@ -104,7 +104,7 @@ def test_user_authored_diagnostic_xml_stays_literal():
                 await view.consume(AgentEvent("message_end", agent, message=message))
             assert view.query_one(".user-message").content.plain == "> " + expected
             rows = list(view.query(EventView))
-            assert [(row.kind, row.agent) for row in rows] == [("user", "main"), ("user", "explorer")]
+            assert [(row.kind, row.agent) for row in rows] == [("user", "main")]
             for row in rows:
                 row.action_toggle()
                 assert row.output.content == expected

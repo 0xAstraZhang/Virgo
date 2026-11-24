@@ -56,6 +56,7 @@ from .runtime_limits import ChildCancellation
 from .settings import Paths, Settings
 from .shell_commands import ShellSelection
 from .store import SessionSaveError, SessionStore
+from .subagents import SubagentStore
 from .telemetry import record_call
 from .ui import UI
 
@@ -114,6 +115,7 @@ class AgentSession:
         self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
         self._main_runtimes: dict[str, Runtime] = {}
         self._output_stores: dict[str, OutputStore] = {}
+        self._subagent_stores: dict[str, SubagentStore] = {}
         self._pending_child_work: dict[str, tuple[Runtime, int]] = {}
         self._tool_groups: dict[tuple[str, str], tuple[tuple[AgentTool, tuple], ...]] = {}
         self._tool_version = 0
@@ -538,6 +540,18 @@ class AgentSession:
                 self._output_stores[session_id] = existing
             return existing
 
+    def subagent_store_for(self, store=None) -> SubagentStore:
+        """Return the per-session SubagentStore for ``store`` (defaulting to the active store)."""
+        with self._lock:
+            target = store if store is not None else self.store
+            session_id = target.id if target is not None else "ephemeral"
+            existing = self._subagent_stores.get(session_id)
+            if existing is None:
+                persist = target is not None and target.path is not None
+                existing = SubagentStore.for_session(self.paths.user, session_id, persist=persist)
+                self._subagent_stores[session_id] = existing
+            return existing
+
     def _open_store(self, session) -> SessionStore:
         if session is None:
             return SessionStore(None, self.cwd)
@@ -711,6 +725,11 @@ class AgentSession:
                     output_store.delete_all()
                 else:
                     OutputStore.delete_session(self.paths.user, store.id)
+                subagent_store = self._subagent_stores.pop(store.id, None)
+                if subagent_store is not None:
+                    subagent_store.delete_all()
+                else:
+                    SubagentStore.delete_session(self.paths.user, store.id)
             if current:
                 self._activate_store(replacement, runtime=runtime)
 
@@ -1221,11 +1240,17 @@ class AgentSession:
                     output_store = self._output_stores.pop(store.id, None)
                     if output_store is not None:
                         output_store.delete_all()
+                    subagent_store = self._subagent_stores.pop(store.id, None)
+                    if subagent_store is not None:
+                        subagent_store.delete_all()
                 else:
                     store.discard_if_empty()
                     if not store.path.exists():
                         output_store = self._output_stores.pop(store.id, None)
                         if output_store is not None:
                             output_store.delete_all()
+                        subagent_store = self._subagent_stores.pop(store.id, None)
+                        if subagent_store is not None:
+                            subagent_store.delete_all()
             except OSError as error:
                 self.report_error(error, phase="session.cleanup", store=store)

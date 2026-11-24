@@ -417,12 +417,9 @@ class TerminalUI(UI):
                 self.write(f"  ⎿ {first}{more}\n", "error" if ev.is_error else "dim")
 
     def _sub(self, ev: AgentEvent) -> None:
-        if ev.type == "tool_execution_start":
-            self._newline()
-            self.write(f"  ↳ [{ev.agent}] {ev.tool_name}({_brief(ev.args)})\n", "dim")
-        elif ev.type == "message_end" and getattr(ev.message, "role", "") == "assistant":
-            if ev.message.stop_reason in ("error", "refusal"):
-                self.print(f"  ↳ [{ev.agent}] ✗ {ev.message.error_message}", "error")
+        # Sub-agent execution details stay out of the main conversation;
+        # the parent `agent` tool call reports status and final outcome.
+        return
 
 
 class PrintUI(UI):

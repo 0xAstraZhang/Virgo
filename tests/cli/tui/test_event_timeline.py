@@ -85,7 +85,6 @@ def test_parallel_results_notifications_and_agents_share_arrival_order():
                 ("thinking", "main"), ("text", "main"),
                 ("tool_call", "main"), ("tool_call", "main"),
                 ("notification", "main"),
-                ("thinking", "explorer"), ("text", "explorer"),
                 ("text", "main"),
             ]
             assert [event.call_id for event in run.events if isinstance(event, ToolView)] == ["a", "b"]

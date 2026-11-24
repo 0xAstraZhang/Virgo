@@ -19,6 +19,7 @@ As Virgo grew to support multiple LLM providers, subagents, background jobs, MCP
 - **Purpose-built, failure-isolated durable stores**:
   - **Sessions (`sessions/<workspace-slug>/*.jsonl`)**: Append-only JSONL trees with file locking, automatic truncation of an incomplete unterminated trailing line on writable resume, and fail-closed `SessionSaveError` on broken persistence without discarding in-memory history.
   - **Command & MCP outputs (`outputs/session-<id>/`)**: Broker-private `OutputStore` (`out_<12-hex>`, UTF-8-aligned `read_output` paging, 7-day TTL, immediate unlink for untruncated foreground commands) so large tool output survives session resume without bloating conversation transcripts.
+  - **Sub-agent traces (`subagents/session-<id>/`)**: Per-session `SubagentStore` (`subagent-<n>.jsonl` backed by `SessionStore`) keeping sub-agent execution out of the main conversation transcript while enabling multi-turn sub-agent reuse within a session and on-demand trace inspection (including after session resume); cleaned up alongside parent session removal.
   - **Diagnostics (`logs/diagnostics.sqlite3`)**: WAL-mode SQLite isolated from session saves, separating routine tool errors from runtime faults and scoping model-visible `diagnostic_get` access strictly to error IDs emitted in that runtime.
   - **Saved grants (`permission-grants.sqlite3`)**: Single `resource_grants` table keyed by `(project, mode, resource, target)`.
 

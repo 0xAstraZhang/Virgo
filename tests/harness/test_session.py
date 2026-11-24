@@ -282,7 +282,7 @@ def test_child_stream_events_do_not_enter_main_transcript_history(make_session, 
     child._on_event(AgentEvent("message_update", agent="worker", stream_event=StreamEvent(
         "text_start", AssistantMessage([TextContent("Child reply")]), 0,
     )))
-    assert not child_store.custom("transcript_stream")
+    assert len(child_store.custom("transcript_stream")) == 1
     assert not session.store.custom("transcript_stream")
 
 

@@ -19,6 +19,7 @@
 - **按职责拆分的故障隔离持久化存储**：
   - **会话树（`sessions/<workspace-slug>/*.jsonl`）**：带文件锁的追加写入 JSONL 树，可写恢复时自动截断末尾未换行的不完整记录；持久化异常时 fail-closed 抛出 `SessionSaveError` 且不丢弃内存历史。
   - **命令与 MCP 输出（`outputs/session-<id>/`）**：Broker 私有 `OutputStore`（`out_<12-hex>`、按 UTF-8 边界分页的 `read_output`、7 天 TTL、未截断前台命令立即删临时文件），让大段输出可跨恢复查阅而不膨胀对话历史。
+  - **子 Agent 轨迹（`subagents/session-<id>/`）**：按主会话隔离的 `SubagentStore`（基于 `SessionStore` 的 `subagent-<n>.jsonl`），将子 Agent 执行过程与主对话解耦，同时支持同一会话内跨任务复用子 Agent 以及按需查看实时/历史轨迹（含会话恢复后），并在删除主会话时一并清理。
   - **错误诊断（`logs/diagnostics.sqlite3`）**：WAL 模式 SQLite，与会话写入完全隔离，区分常规工具错误与运行时故障，且模型侧 `diagnostic_get` 仅能读取当前运行时记录过的 `error_id`。
   - **持久授权（`permission-grants.sqlite3`）**：单一 `resource_grants` 表，按 `(project, mode, resource, target)` 存储。
 

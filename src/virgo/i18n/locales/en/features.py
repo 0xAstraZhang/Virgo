@@ -2,10 +2,12 @@
 
 MESSAGES = {
     "features.agent.aborted": "Sub-agent was aborted.",
-    "features.agent.background": "Started background agent {id} ({description}). You will be notified when it "
+    "features.agent.background": "Started background agent {id} ({agent_id}: {description}). You will be notified when it "
     "finishes; use job_output to read its result.",
     "features.agent.background_disabled": "Background execution is disabled for this session.",
+    "features.agent.busy": "Sub-agent {id} is already running.",
     "features.agent.failed": "Sub-agent failed: {error}",
+    "features.agent.list_empty": "No sub-agents in this session.",
     "features.agent.turn_limit": "Sub-agent stopped at its {turns}-turn limit without finishing. "
     "Inspect completed work before delegating a smaller task or increasing subagents.maxTurns.",
     "features.agent.incomplete": "Sub-agent stopped without a completed answer: {reason}. "
@@ -14,6 +16,7 @@ MESSAGES = {
     "features.agent.progress": "\n"
     "The child returned {count} tool result(s) before stopping; earlier actions may "
     "already have taken effect. Recent results:\n",
+    "features.agent.unknown_id": "Unknown sub-agent {id!r} in this session.",
     "features.ask_user.answered": "The user answered: {answer}",
     "features.ask_user.cancelled": "The question was cancelled without an answer.",
     "features.ask_user.chose": "The user chose {letter}: {answer}",
@@ -32,6 +35,7 @@ MESSAGES = {
     "features.commands.permissions": "show or change permission presets, approval policy and remembered decisions",
     "features.commands.search": "choose search backend (/search [auto|duckduckgo|deepseek|off])",
     "features.commands.skills": "list available skills (/skill:name to use one)",
+    "features.commands.subagents": "inspect sub-agent traces in this session",
     "features.diagnostics.failed": "Diagnostic lookup failed; the original result is unchanged.",
     "features.diagnostics.runtime": "Diagnostic lookup requires a trusted calling runtime.",
     "features.diagnostics.unavailable": "This runtime has no diagnostic evidence collection.",

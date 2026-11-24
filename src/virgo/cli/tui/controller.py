@@ -189,10 +189,29 @@ class RunController:
     def _runtime_created(self, runtime) -> None:
         if runtime.session is self.session:
             self.ui.bind_signal(runtime.name, runtime.agent.signal)
+            if runtime.role == "subagent":
+                self.ui.push(
+                    "subagent_started",
+                    {
+                        "agent_id": runtime.name,
+                        "parent_tool_call_id": getattr(runtime, "parent_tool_call_id", None),
+                        "description": getattr(runtime, "description", ""),
+                        "job_id": getattr(runtime, "job_id", None),
+                    },
+                )
 
     def _runtime_closed(self, runtime) -> None:
         if runtime.session is self.session:
             self.ui.unbind_signal(runtime.name, runtime.agent.signal)
+            if runtime.role == "subagent":
+                self.ui.push(
+                    "subagent_finished",
+                    {
+                        "agent_id": runtime.name,
+                        "parent_tool_call_id": getattr(runtime, "parent_tool_call_id", None),
+                        "job_id": getattr(runtime, "job_id", None),
+                    },
+                )
 
     def _agent_event(self, event, runtime) -> None:
         if runtime.session is not self.session:

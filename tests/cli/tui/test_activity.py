@@ -155,9 +155,10 @@ def test_visible_event_headers_take_priority_over_stalled_text(live_turn):
             await poll_events(app, stream_event("native_tool_end", text, search, server, result, index=3))
             assert card.thought_header.display and "Responding… (3s)" in card.thought_header.content.plain
 
+            # Child agent events stay isolated from the main transcript.
             child = TextContent("child text")
             await poll_events(app, stream_event("text_delta", child, agent="explorer"))
-            assert not card.thought_header.display
+            assert card.thought_header.display
             await poll_events(app, AgentEvent("message_end", agent="explorer", message=AssistantMessage([child])))
             assert card.thought_header.display
             await poll_events(app, stream_event("thinking_start", text, search, server, result,
