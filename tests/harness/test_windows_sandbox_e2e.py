@@ -439,7 +439,9 @@ while not Path('child-ready').exists():
 def test_background_cancel_preserves_other_job_and_origin_after_switch(native, project):
     cmd = python_command(
         native,
-        f"import time; from pathlib import Path; Path('ready').touch(); time.sleep({2 * _BACKGROUND_CLEANUP_TIMEOUT})",
+        "import time\n"
+        "with open('ready', 'w'):\n"
+        f"    time.sleep({2 * _BACKGROUND_CLEANUP_TIMEOUT})",
     )
     result = run(native, cmd, background=True)
     assert not result.is_error, result.text()
