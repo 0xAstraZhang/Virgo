@@ -1,7 +1,9 @@
 """Immutable execution permission policies and built-in execution modes.
 
-This core module has no harness or OS-backend imports. Rules follow deny-first
-precedence with a boolean network toggle.
+This core module has no harness imports and no top-level OS-backend imports
+(``is_windows_sandbox_supported()`` lazily probes ``virgo.sandbox.windows_acl``
+on native Windows). Rules follow deny-first precedence with a boolean network
+toggle.
 """
 from __future__ import annotations
 
