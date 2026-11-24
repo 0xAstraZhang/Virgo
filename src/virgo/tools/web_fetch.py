@@ -255,6 +255,8 @@ def _http(url, maximum, timeout, ctx, deadline, review):
                         raise FetchError(ctx.t("tools.fetch.no_location"))
                     url = urljoin(url, location)
                     continue
+                if response.status_code == 429:
+                    raise FetchError(ctx.t("tools.fetch.rate_limited"))
                 if response.status_code != 200:
                     raise FetchError(ctx.t("tools.fetch.http", status=response.status_code))
                 media = response.headers.get("content-type", "").split(";")[0].strip().lower()

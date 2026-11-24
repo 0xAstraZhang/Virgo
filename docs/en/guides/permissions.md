@@ -8,6 +8,8 @@
 | Workspace-Edit | Read and write the live workspace (`.git`, `AGENTS.md`, `CLAUDE.md`, and `.venv` are writable; project `.virgo` confirms on write; private credential paths are hard-denied). | Allowed | Allowed | Native sandbox |
 | No-Limit | Host account rights | Allowed | Allowed | Host |
 
+A direct HTTP 429 from `web_fetch` means the target site rate-limited the request. An HTTP error from the DeepSeek page reader leaves the target page status unknown. A timeout means the reader did not receive a complete page.
+
 ## Default mode and selection
 
 - **Supported Tier 1 platforms (Linux, macOS, updated Windows 11, and WSL2)**: default is **Workspace-Edit**. Older Windows builds that do not support unelevated Standard AppContainer default to **No-Limit** with a one-time notice and fail closed if a sandbox mode is explicitly selected (see [Native Windows sandbox](windows-sandbox.md) and [WSL2 setup](wsl2.md)).
