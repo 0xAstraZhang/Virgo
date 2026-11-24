@@ -51,6 +51,8 @@ By default, Virgo stores user state under `~/.virgo` (overrideable via `VIRGO_HO
 | `logs/diagnostics.sqlite3` | WAL-mode durable diagnostic error store (isolated from session saves; runtime-scoped evidence exposed to the model via `diagnostic_get`) |
 | `permission-grants.sqlite3` | Saved **Always allow** resource grants (`resource_grants` table keyed by `(project, mode, resource, target)`) |
 
+The main agent can use `session_info` to obtain the same session ID and transcript path as `/session`. A memory-only conversation returns a null path.
+
 Main model requests append a `custom/request_header` before adapter dispatch on first use (including resume) and whenever the resolved configuration changes. It records provider, model, API, requested/wire/effective reasoning effort and output limits. Usage remains on the assistant message.
 
 On native Windows, AppContainer session lease journals live separately under `%LOCALAPPDATA%\Virgo\sandbox-sessions\` (overrideable via `VIRGO_WINDOWS_SANDBOX_STATE_DIR`).
