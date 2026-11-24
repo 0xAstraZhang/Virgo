@@ -21,7 +21,8 @@ Virgo 在四个**一级支持**平台上均选用最简可靠的原生机制，�
 
 - **旧版 Windows 显式降级**：Virgo 生产代码绝不修改 `\Device\Null`。未启用 Feature `60692039` 的旧版 Windows 10/11 与默认 Windows Server 以 **No-Limit** 启动并给出一次性提示（WSL2 / No-Limit / 更新 Windows），显式指定沙箱模式时 fail-closed（`windows_null_device_unavailable`）。
 - **接受真实平台限制，不通过提权绕过**：
-  - 原生 Windows 非管理员 AppContainer 阻止本机回环（`127.0.0.1` / `[::1]`），需要本地服务/代理时使用一次性 **No-Limit** 或 WSL2；同时禁止将 `$HOME` 作为工作区。
+  - 原生 Windows 非管理员 AppContainer 阻止本机回环（`127.0.0.1` / `[::1]`），需要本地服务/代理时使用一次性 **No-Limit** 或 WSL2；同时隔离宿主机桌面/凭据服务，并禁止将 `$HOME` 作为工作区。
+  - Linux `bubblewrap` 隔离 `/run`（D-Bus、systemd、`$XDG_RUNTIME_DIR` 会话服务与 `/run/docker.sock` 等不可达）；macOS Seatbelt 默认拒绝宿主机 Mach/XPC 服务（Spotlight `mdls`/`mdfind`、Keychain、剪贴板、`open` 等不可用）。这些后端边界通过 `<execution_boundary>` 如实告知模型，而不是为个别桌面工具开放宽泛宿主 IPC 或在热路径抓取系统日志。
   - Linux bind 挂载与 Windows NTFS/ReFS ACL 无法在可写工作区的 Shell 内阻止新建原本不存在的 `.virgo`（由 Broker 文件工具与不可信项目配置剥离兜底）。
   - macOS 下显式调用 `setsid()` 脱离进程组的后代进程不会被自动回收，与 POSIX Host 行为一致。
 - **真实主机验收为前提**：每个一级后端都必须在真实主机上以 `VIRGO_REQUIRE_SANDBOX_TESTS=1` 零跳过通过原生验收套件（见[原生执行与性能验收](../development/execution-acceptance.md)）。

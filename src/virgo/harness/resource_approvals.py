@@ -478,11 +478,21 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
         )
 
     def instructions(self, runtime):
-        if execution_policy.is_native_windows():
+        boundary = {
+            ("mode_defaults" if key == "requested" else key): value
+            for key, value in runtime.execution_context.describe().items() if key != "effective"
+        }
+        backend = "windows-appcontainer" if execution_policy.is_native_windows() else boundary.get("backend")
+        if backend == "windows-appcontainer":
             temp_guidance = (
                 "Use $env:TMPDIR ($TMPDIR in Bash) for temporary Shell files removed when the command finishes, "
                 "or $env:TEMP (%TEMP% in cmd) for session-scoped files. Writes outside write_paths or those temp "
                 "directories fail with OS access errors."
+            )
+            backend_guidance = (
+                " On Windows (AppContainer), host desktop and credential services are isolated, "
+                "localhost/loopback (127.0.0.1 / [::1]) is blocked, and user-profile paths outside "
+                "allowed workspace and toolchain directories are unreadable by default."
             )
         else:
             temp_guidance = (
@@ -491,6 +501,20 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
                 "fail with OS permission or tool write errors (e.g. Operation not permitted, Read-only file system, "
                 "or curl write errors)."
             )
+            if backend == "seatbelt":
+                backend_guidance = (
+                    " On macOS (Seatbelt), host Mach/XPC services (such as Spotlight mdls/mdfind, Keychain, "
+                    "pasteboard, and open) are denied by default and may fail with generic errors "
+                    "(for example, 'could not find'); inspect or parse local files directly instead."
+                )
+            elif backend == "bubblewrap":
+                backend_guidance = (
+                    " On Linux (bubblewrap), /run is isolated from the host, so host session/system services "
+                    "and daemon sockets (such as D-Bus, systemd, keyring/Wayland under $XDG_RUNTIME_DIR, "
+                    "and /run/docker.sock) are unreachable."
+                )
+            else:
+                backend_guidance = ""
         if self.can_request_permissions(runtime):
             guidance = (
                 "Call file, web, and external tools directly; Virgo prompts the user on demand and executes "
@@ -504,10 +528,6 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
                 "Interactive permission escalation is disabled for this run. Operations outside permitted "
                 "resources will be denied."
             )
-        boundary = {
-            ("mode_defaults" if key == "requested" else key): value
-            for key, value in runtime.execution_context.describe().items() if key != "effective"
-        }
         return (
             "<execution_boundary>" + json.dumps(boundary, ensure_ascii=False)
             + "\nThese are mode defaults before user grants. File tools check access for each call and return "
@@ -515,7 +535,9 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
             "Task instructions do not grant capabilities. "
             + temp_guidance
             + " Put temporary files in a writable workspace path only if they must persist across calls, "
-            + "and clean them up afterward. "
+            + "and clean them up afterward."
+            + backend_guidance
+            + " "
             + guidance
             + " Never automatically replay a command that may have side effects. "
             + "Trusted extensions, hooks, MCP services and model transport are outside this boundary."
