@@ -27,7 +27,7 @@ Virgo 将运行时能力划分为三层，对应不同的覆盖优先级与故�
 
 | 层级 | 加载方式与清单 | 禁用与覆盖规则 | 故障隔离 |
 | --- | --- | --- | --- |
-| **核心工具** | 在 `AgentSession.__init__` 中直接装配：`read`、`write`、`edit`、`glob`、`grep`、`read_output`、`bash`/`powershell`，以及 `request_permissions`（无法交互审批时自动隐藏） | 不允许按文件名覆盖 | 核心初始化失败直接中止启动 |
+| **核心工具** | 在 `AgentSession.__init__` 中直接装配：`read`、`write`、`edit`、`glob`、`grep`、`present_file`（显示可读本地文件经核验的绝对路径）、`read_output`、`bash`/`powershell`，以及 `request_permissions`（无法交互审批时自动隐藏） | 不允许按文件名覆盖 | 核心初始化失败直接中止启动 |
 | **内置插件**（`virgo.plugins`） | 由 `load_builtin_features()` 通过 `setup(api)` 加载：`diagnostic_get`、`skills`、`ask_user`、`subagent`、`background`、`web` | 按 ID 通过 `plugins.<id>.enabled` 控制（设为 `false` 时不导入）；不受 `--no-extensions` 影响；不允许按文件名覆盖 | 在可回滚事务中加载；单插件失败仅降级该插件（如 `background` 降级时，`shell` 与 `subagent` 自动去掉 `background` 参数） |
 | **内置与自定义扩展**（`virgo.extensions` + 用户/项目扩展） | 由 `load_extensions()` 通过 `setup(api)` 加载：内置 `mcp`、`todo`，以及 `~/.virgo/extensions/*.py` 和受信任 `.virgo/extensions/*.py` | 按文件主名（stem）解析覆盖：`内置 < 用户 < 受信任项目`；可用 `extensions.disabled` 按名禁用，或用 `--no-extensions` 跳过全部扩展 | 同样通过 `setup(api)` 的可回滚事务隔离故障 |
 

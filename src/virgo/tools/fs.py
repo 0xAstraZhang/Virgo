@@ -1,4 +1,4 @@
-"""File tools: read, write, edit, glob, grep (pure Python, enforced by PermissionPolicy)."""
+"""Broker file and delivery tools (pure Python, enforced by PermissionPolicy)."""
 
 from __future__ import annotations
 
@@ -141,6 +141,34 @@ READ = AgentTool(
     execution_scope="file",
     i18n_key="tools.read",
 )
+
+
+def _present_file(args: dict, ctx: ToolContext, *, access) -> ToolResult:
+    try:
+        path = resolve_read_path(args["path"], ctx.cwd)
+        if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in str(path)):
+            return ToolResult.error(ctx.t("tools.present_file.control"))
+        # A zero-byte budget still opens and checks the regular file, including empty files.
+        access.read_bytes(path, max_bytes=0)
+    except FileAccessDenied:
+        raise
+    except (OSError, ValueError) as error:
+        return ToolResult.error(ctx.t("tools.present_file.failed", error=error))
+    return ToolResult.text(str(path), details={"presented_file": str(path)})
+
+
+PRESENT_FILE = AgentTool(
+    name="present_file",
+    label="Present file",
+    description="Present a finished local file to the user. Pass its exact path after saving and verifying it. The UI displays the confirmed absolute path.",
+    parameters={"type": "object", "properties": {"path": {"type": "string", "minLength": 1}},
+                "required": ["path"], "additionalProperties": False},
+    execute=_present_file,
+    side_effect="read",
+    execution_scope="file",
+    i18n_key="tools.present_file",
+)
+
 
 # ---------------------------------------------------------------------------
 # write
