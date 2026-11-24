@@ -13,6 +13,7 @@ from virgo.harness.session import Runtime
 from tests.support.harness import RecordingUI
 
 MAIN_TOOLS = {
+    "present_file",
     "read", "write", "edit", "glob", "grep", "read_output", "web_search", "web_fetch",
     "ask_user", "agent", "bash", "job_output", "job_kill", "diagnostic_get", "todo_write",
 }

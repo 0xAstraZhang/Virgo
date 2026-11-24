@@ -407,6 +407,9 @@ class TerminalUI(UI):
                 self.write(f"({_brief(ev.args)})\n", "dim")
             elif t == "tool_execution_end":
                 text = ev.result.as_text() if ev.result else ""
+                if ev.tool_name == "present_file":
+                    self.write(f"  ⎿ {text}\n", "error" if ev.is_error else "tool")
+                    return
                 lines = text.strip().splitlines() or [tr(self, "ui.no_output")]
                 width = shutil.get_terminal_size((100, 20)).columns - 6
                 first = lines[0][:width]
@@ -477,6 +480,10 @@ class PrintUI(UI):
                 )
 
     def on_event(self, ev: AgentEvent) -> None:
+        if (not self.json_mode and ev.type == "tool_execution_end" and ev.agent == "main"
+                and ev.tool_name == "present_file" and ev.result is not None):
+            with self._lock:
+                print(ev.result.as_text(), file=sys.stderr)
         if self.json_mode:
             line = json.dumps(event_json(ev), ensure_ascii=False, default=str)
             with self._lock:  # one complete JSONL record per write
@@ -506,6 +513,8 @@ def event_json(ev: AgentEvent) -> dict:
         if ev.result is not None:
             d.update(result=ev.result.as_text(), is_error=ev.is_error)
             if isinstance(ev.result.details, dict):
+                if ev.tool_name == "present_file" and not ev.is_error and "presented_file" in ev.result.details:
+                    d["presented_file"] = ev.result.details["presented_file"]
                 if ev.result.details.get("error") is not None:
                     d["error_details"] = sanitize(ev.result.details["error"])
                 if ev.result.details.get("related_errors"):

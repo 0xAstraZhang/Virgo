@@ -199,3 +199,23 @@ def test_plain_question_timeout_can_be_cancelled_without_answering(monkeypatch):
     finally:
         broker.close()
         worker.join(3)
+
+
+def test_verified_delivery_preserves_full_path_in_plain_print_and_json(make_session, project, capsys):
+    from virgo.ai.providers import faux
+    from virgo.cli.console import PrintUI, TerminalUI
+
+    from tests.support.harness import ScriptedBroker
+
+    name = ("long [v1] " * 8) + "report_KV-cache.pdf"
+    target = project / name
+    target.write_bytes(b"%PDF-fixture")
+    session = make_session(faux.reply(tools=[("present_file", {"path": name})]), faux.reply("Done"))
+    session.prompt("Present the file")
+    event, = [event for event in session.ui.events if event.type == "tool_execution_end"]
+    TerminalUI(ScriptedBroker()).on_event(event)
+    assert str(target.resolve()) in capsys.readouterr().out
+    PrintUI().on_event(event)
+    assert capsys.readouterr().err.strip() == str(target.resolve())
+    PrintUI(json_mode=True).on_event(event)
+    assert json.loads(capsys.readouterr().out)["presented_file"] == str(target.resolve())

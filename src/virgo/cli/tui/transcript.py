@@ -293,6 +293,8 @@ class ToolView(EventView):
         return self._args_text
 
     def set_result(self, text: str, *, is_error: bool = False, details=None) -> None:
+        if self.tool_name == "present_file" and self.status in ("pending", "running"):
+            self.expanded = True
         self.result = text
         if isinstance(details, dict):
             self.details.update(details)

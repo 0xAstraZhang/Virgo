@@ -19,7 +19,7 @@
 
 Core 依据 deny 优先的 `PermissionPolicy` 校验每次工具调用：
 
-- **文件工具**（`read`、`write`、`edit`、`glob`、`grep`）由 Broker 直接按 `PermissionPolicy` 执行。越界路径与修改 `.virgo` 在派发前按需弹窗询问，解析符号链接以展示真实目标路径，批准后当场放行执行。`read`、`write`、`edit` 按解析后的精确文件路径授权；`glob`、`grep` 按请求的目录前缀授权。高敏凭据路径（`~/.virgo`、`~/.ssh`、`~/.aws` 等）硬性拒绝，不可授权。
+- **文件工具**（`read`、`write`、`edit`、`glob`、`grep`、`present_file`）由 Broker 直接按 `PermissionPolicy` 执行。越界路径与修改 `.virgo` 在派发前按需弹窗询问，解析符号链接以展示真实目标路径，批准后当场放行执行。`read`、`write`、`edit`、`present_file` 按解析后的精确文件路径授权；`glob`、`grep` 按请求的目录前缀授权。高敏凭据路径（`~/.virgo`、`~/.ssh`、`~/.aws` 等）硬性拒绝，不可授权。
 - **Shell 命令**在 **Read-Only** 与 **Workspace-Edit** 下运行在 OS 沙箱中，可通过 `request_permissions`（`tool` 与 `arguments` 为可选字段）申请额外路径前缀或联网开关（`network_allowed: true`），支持与对应 Shell 工具在同一轮发出。当无法进行交互式提权审批时（**No-Limit**、`--approval never` 或非交互界面），`request_permissions` 会自动对模型隐藏。
 - **高危 Shell 命令**（`git push --force`、推送至受保护分支、`git reset --hard`、`git clean -f`、`curl | sh`、工作区外递归删除、部署/发布、云资源删除，以及通过数据库/缓存 CLI 执行的破坏性 SQL/Redis 语句）在**所有模式**下均需逐次确认。用户明确选择 `n` 时返回 `user_declined`，并告知模型命令未启动、仅在用户要求时才可重试。无法交互确认、确认取消、确认失效和审批被禁用时分别返回对应原因。配置 `permissions.confirmHighRisk: false` **仅在 No-Limit 模式下**关闭该确认。
 - **沙箱不可用时的一次性回退**：当原生沙箱后端在启动载荷前无法建立时，Virgo 明确报错，并在交互式会话中提供显式的“本次使用 No-Limit”选项（不改变会话模式）。
