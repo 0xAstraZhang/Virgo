@@ -258,7 +258,8 @@ class Runtime:
         self.session.bus.emit("agent_event", ev, self)
         if ev.type == "turn_end":
             self.session.bus.emit("turn_end", ev, self)
-        self.session.ui.on_event(ev)
+        if self.role == "main" or self.accounting_store is None or self.accounting_store.id == self.session.store.id:
+            self.session.ui.on_event(ev)
 
     def diagnostic_context(self, **extra) -> dict:
         owner = self.store if self.role == "main" and self.store is not None else self.accounting_store

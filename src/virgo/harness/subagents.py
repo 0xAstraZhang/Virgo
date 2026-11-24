@@ -94,6 +94,7 @@ class SubagentStore:
     def __init__(self, directory: Path, *, persist: bool = True) -> None:
         self.directory = Path(directory)
         self._persist = persist
+        self._deleted = False
         self._lock = threading.RLock()
         self._handles: dict[str, SubagentHandle] = {}
 
@@ -112,8 +113,13 @@ class SubagentStore:
 
     def delete_all(self) -> None:
         with self._lock:
+            self._deleted = True
+            handles = list(self._handles.values())
             self._handles.clear()
-        shutil.rmtree(self.directory, ignore_errors=True)
+            for handle in handles:
+                with handle.store._lock:
+                    handle.store.path = None
+            shutil.rmtree(self.directory, ignore_errors=True)
 
     @staticmethod
     def is_valid_id(agent_id: str) -> bool:
@@ -185,7 +191,7 @@ class SubagentStore:
                 resumed = True
             else:
                 new_id = self._next_id_locked()
-                path = (self.directory / f"{new_id}.jsonl") if self._persist else None
+                path = (self.directory / f"{new_id}.jsonl") if (self._persist and not self._deleted) else None
                 store = SessionStore(path, Path(cwd), session_id=new_id)
                 handle = SubagentHandle(id=new_id, store=store, description=description)
                 self._handles[new_id] = handle
@@ -206,7 +212,7 @@ class SubagentStore:
             handle.status = status
             handle.updated_at = time.time()
             try:
-                if handle.store.save_error is None:
+                if not self._deleted and handle.store.path is not None and handle.store.save_error is None:
                     handle.store.append("custom", kind="subagent_status", data={"status": status})
             except OSError:
                 pass
@@ -220,6 +226,8 @@ class SubagentStore:
         job_id: str | None = None,
     ) -> None:
         with self._lock:
+            if self._deleted:
+                return
             handle.store.append(
                 "custom",
                 kind="subagent_run",

@@ -322,6 +322,7 @@ class ToolView(EventView):
         self.duration: float | None = None
         self.subagent_id: str | None = None
         self.background_active = False
+        self.background_final_status: str | None = None
         self.trace_link = TraceLink("", markup=False)
         self.trace_link.display = False
         self.set_args(args or {})
@@ -385,7 +386,15 @@ class ToolView(EventView):
                 return value
         return self._args_text
 
-    def set_result(self, text: str, *, is_error: bool = False, details=None, live: bool = True) -> None:
+    def set_result(
+        self,
+        text: str,
+        *,
+        is_error: bool = False,
+        details=None,
+        live: bool = True,
+        background_status: str | None = None,
+    ) -> None:
         if self.tool_name == "present_file" and self.status in ("pending", "running"):
             self.expanded = True
         self.result = text
@@ -403,9 +412,14 @@ class ToolView(EventView):
             and self.tool_name == "agent"
             and self.details.get("background") is True
         )
-        if is_bg_started:
+        resolved_bg = background_status or self.background_final_status
+        if is_bg_started and resolved_bg is None:
             self.background_active = True
             self.status = "running"
+        elif is_bg_started and resolved_bg is not None:
+            self.background_active = False
+            self.background_final_status = resolved_bg
+            self._apply_background_status(resolved_bg)
         elif self.details.get("cancelled") is True:
             self.background_active = False
             self.status = "cancelled"
@@ -421,7 +435,8 @@ class ToolView(EventView):
         value = details.get("duration") if isinstance(details, dict) else None
         if isinstance(value, (int, float)) and not is_bg_started:
             self.duration = value
-        self.set_class(is_error, "error")
+        if not (is_bg_started and resolved_bg is not None):
+            self.set_class(is_error, "error")
         sandbox = self.details.get("boundary")
         if is_error and isinstance(sandbox, dict):
             if sandbox.get("payload_started") is False:
@@ -432,17 +447,23 @@ class ToolView(EventView):
             text += "\n" + tr(self, "harness.error.id", id=safe_text(error["error_id"]))
         self.set_text(text)
 
-    def finish_background(self, status: str) -> None:
-        if not self.background_active:
-            return
-        self.background_active = False
+    def _apply_background_status(self, status: str) -> None:
         if status == "aborted":
             self.status = "cancelled"
+            self.set_class(False, "error")
         elif status == "error":
             self.status = "error"
             self.set_class(True, "error")
         else:
             self.status = "done"
+            self.set_class(False, "error")
+
+    def finish_background(self, status: str) -> None:
+        self.background_final_status = status
+        if not self.background_active:
+            return
+        self.background_active = False
+        self._apply_background_status(status)
         self.render_state()
 
 
@@ -632,6 +653,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self._current_calls: dict[tuple[str, str], ToolView] = {}
         self._tool_calls_by_id: dict[str, ToolView] = {}
         self._subagent_tools: dict[str, list[ToolView]] = {}
+        self._finished_call_status: dict[str, str] = {}
         self._blocks: dict[str, dict[int, EventView]] = {}
         self._message_open: set[str] = set()
         self._streaming: dict[str, EventView] = {}
@@ -818,13 +840,17 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         if not isinstance(agent_id, str) or not agent_id:
             return
         parent_call_id = info.get("parent_tool_call_id")
-        if isinstance(parent_call_id, str) and (card := self._tool_calls_by_id.get(parent_call_id)):
-            card.bind_subagent(agent_id)
-            self._register_subagent_tool(agent_id, card)
+        if isinstance(parent_call_id, str) and parent_call_id:
+            self._finished_call_status.pop(parent_call_id, None)
+            if card := self._tool_calls_by_id.get(parent_call_id):
+                card.bind_subagent(agent_id)
+                self._register_subagent_tool(agent_id, card)
 
     def on_subagent_finished(self, info: dict, status: str = "done") -> None:
         agent_id = info.get("agent_id")
         parent_call_id = info.get("parent_tool_call_id")
+        if isinstance(parent_call_id, str) and parent_call_id:
+            self._finished_call_status[parent_call_id] = status
         cards: list[ToolView] = []
         if isinstance(parent_call_id, str) and (card := self._tool_calls_by_id.get(parent_call_id)):
             cards.append(card)
@@ -833,8 +859,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 if card not in cards:
                     cards.append(card)
         for card in cards:
-            if card.background_active:
-                card.finish_background(status)
+            was_active = card.background_active
+            card.finish_background(status)
+            if was_active:
                 self._set_event_activity(card, "")
 
     async def _result(self, agent: str, message: ToolResultMessage) -> ToolView:
@@ -843,7 +870,13 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         for block in message.content:
             if isinstance(block, ImageContent):
                 text += tr(self, "ui.event.image_line", type=block.mime_type)
-        row.set_result(text, is_error=message.is_error, details=message.details, live=self._staged is None)
+        row.set_result(
+            text,
+            is_error=message.is_error,
+            details=message.details,
+            live=self._staged is None,
+            background_status=self._finished_call_status.get(message.tool_call_id),
+        )
         if row.subagent_id:
             self._register_subagent_tool(row.subagent_id, row)
         if not row.background_active:
@@ -1078,6 +1111,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         self.finish_activity()
         self._tool_calls_by_id.clear()
         self._subagent_tools.clear()
+        self._finished_call_status.clear()
         self._older, self._older_pending, self._older_tools, self._keep_in_view = [], False, False, None
         self._prepending = False
         has_run_boundaries = any(e.get("kind") == "transcript_run_start" for e in entries)

@@ -148,3 +148,69 @@ def test_background_subagent_row_stays_running_until_completion_and_streams_into
                 release.set()
 
     asyncio.run(scenario())
+
+
+def test_background_subagent_completion_before_and_after_ack_stays_terminal():
+    from virgo.agent.types import AgentEvent, ToolResult
+    from virgo.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
+    from virgo.cli.tui.transcript import Transcript
+
+    from tests.support.tui import TranscriptApp
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            view = app.query_one(Transcript)
+            await view.consume(AgentEvent("agent_start"))
+            await view.consume(AgentEvent("turn_start"))
+            await view.consume(
+                AgentEvent(
+                    "message_end",
+                    message=AssistantMessage(
+                        [ToolCall("call-bg", "agent", {"description": "Fast bg", "prompt": "hi", "background": True})],
+                        stop_reason="tool_use",
+                    ),
+                )
+            )
+            await view.consume(
+                AgentEvent(
+                    "tool_execution_start",
+                    tool_call_id="call-bg",
+                    tool_name="agent",
+                    args={"description": "Fast bg", "prompt": "hi", "background": True},
+                )
+            )
+            # Worker starts and finishes before tool_execution_end delivers the background ack.
+            view.on_subagent_started({"agent_id": "subagent-1", "parent_tool_call_id": "call-bg"})
+            view.on_subagent_finished({"agent_id": "subagent-1", "parent_tool_call_id": "call-bg"}, status="done")
+
+            ack_details = {"agent_id": "subagent-1", "job_id": "job1", "background": True}
+            await view.consume(
+                AgentEvent(
+                    "tool_execution_end",
+                    tool_call_id="call-bg",
+                    tool_name="agent",
+                    result=ToolResult.text("Started background agent job1", details=ack_details),
+                )
+            )
+            row = next(t for t in view.query(ToolView) if t.call_id == "call-bg")
+            assert row.status == "done"
+            assert not row.background_active
+
+            # Repeated ToolResultMessage in model history must not revert terminal status to running.
+            await view.consume(
+                AgentEvent(
+                    "message_end",
+                    message=ToolResultMessage(
+                        "call-bg",
+                        "agent",
+                        [TextContent("Started background agent job1")],
+                        details=ack_details,
+                    ),
+                )
+            )
+            await pilot.pause()
+            assert row.status == "done"
+            assert not row.background_active
+
+    asyncio.run(scenario())

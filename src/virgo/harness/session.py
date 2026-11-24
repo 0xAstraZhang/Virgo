@@ -121,7 +121,7 @@ class AgentSession:
         self._tool_version = 0
         self._plugin_cleanups: list[tuple[str, object]] = []
         self.loaded_plugins: list[str] = []
-        self._child_runtimes: dict[str, Runtime] = {}
+        self._child_runtimes: dict[tuple[str, str], Runtime] = {}
         self._notification_depth = 0
         self._lock = threading.RLock()
         self.approval_revision = 0
@@ -494,7 +494,7 @@ class AgentSession:
         if store.save_error is not None:
             self.report_save_error(store.save_error)
             raise store.save_error
-        runtime = self._child_runtimes.get(agent) or self.runtime_for_store(store)
+        runtime = self._child_runtimes.get((store.id, agent)) or self.runtime_for_store(store)
         if runtime is not None:
             runtime.request_budget.consume()
         started = time.monotonic()
@@ -591,7 +591,8 @@ class AgentSession:
                     raise ValueError("Runtime parent must belong to this session")
                 if origin_parent is not None and origin_parent is not parent.origin:
                     raise ValueError("Runtime origin must match its parent")
-                if name in self._child_runtimes or name == "main":
+                child_key = (parent.origin.root.id, name)
+                if child_key in self._child_runtimes or name == "main":
                     raise ValueError(f"Runtime name {name!r} is already in use")
                 origin_parent = parent.origin
                 kwargs["origin_parent"] = origin_parent
@@ -610,7 +611,7 @@ class AgentSession:
                 if role == "main" and runtime.store is not None:
                     self._main_runtimes[runtime.store.id] = runtime
                 elif role != "main":
-                    self._child_runtimes[name] = runtime
+                    self._child_runtimes[(runtime.origin.root.id, name)] = runtime
                 return runtime
             except Exception as error:
                 owner = kwargs.get("store") or kwargs.get("accounting_store")
@@ -620,9 +621,10 @@ class AgentSession:
 
     def release_runtime(self, runtime: Runtime) -> None:
         with self._lock:
-            if self._child_runtimes.get(runtime.name) is not runtime:
+            child_key = (runtime.origin.root.id, runtime.name)
+            if self._child_runtimes.get(child_key) is not runtime:
                 return
-            self._child_runtimes.pop(runtime.name)
+            self._child_runtimes.pop(child_key)
             for store in (runtime.store, runtime.accounting_store):
                 if store is not None:
                     with store._lock:

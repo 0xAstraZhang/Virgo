@@ -624,6 +624,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     ):
                         await self._trace_screen.consume_event(update.payload)
                 elif update.kind == "subagent_started":
+                    owner_id = update.payload.get("session_id")
+                    if owner_id is not None and owner_id != self.session.store.id:
+                        continue
                     self.transcript.on_subagent_started(update.payload)
                     agent_id = update.payload.get("agent_id")
                     if (
@@ -635,6 +638,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     if self._subagent_picker is not None and self._subagent_picker.is_mounted:
                         self._subagent_picker.refresh_items(self.session.subagent_store_for().list())
                 elif update.kind == "subagent_finished":
+                    owner_id = update.payload.get("session_id")
+                    if owner_id is not None and owner_id != self.session.store.id:
+                        continue
                     agent_id = update.payload.get("agent_id")
                     handle = self.session.subagent_store_for().get(agent_id) if isinstance(agent_id, str) else None
                     status = handle.summary()["status"] if handle is not None else "done"

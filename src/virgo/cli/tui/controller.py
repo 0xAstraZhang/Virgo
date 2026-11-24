@@ -188,11 +188,14 @@ class RunController:
 
     def _runtime_created(self, runtime) -> None:
         if runtime.session is self.session:
-            self.ui.bind_signal(runtime.name, runtime.agent.signal)
+            owner_id = runtime.accounting_store.id if runtime.accounting_store is not None else self.session.store.id
+            if runtime.role == "main" or owner_id == self.session.store.id:
+                self.ui.bind_signal(runtime.name, runtime.agent.signal)
             if runtime.role == "subagent":
                 self.ui.push(
                     "subagent_started",
                     {
+                        "session_id": owner_id,
                         "agent_id": runtime.name,
                         "parent_tool_call_id": getattr(runtime, "parent_tool_call_id", None),
                         "description": getattr(runtime, "description", ""),
@@ -202,11 +205,13 @@ class RunController:
 
     def _runtime_closed(self, runtime) -> None:
         if runtime.session is self.session:
+            owner_id = runtime.accounting_store.id if runtime.accounting_store is not None else self.session.store.id
             self.ui.unbind_signal(runtime.name, runtime.agent.signal)
             if runtime.role == "subagent":
                 self.ui.push(
                     "subagent_finished",
                     {
+                        "session_id": owner_id,
                         "agent_id": runtime.name,
                         "parent_tool_call_id": getattr(runtime, "parent_tool_call_id", None),
                         "job_id": getattr(runtime, "job_id", None),
@@ -216,7 +221,9 @@ class RunController:
     def _agent_event(self, event, runtime) -> None:
         if runtime.session is not self.session:
             return
-        self.ui.bind_signal(event.agent, runtime.agent.signal)
+        owner_id = runtime.accounting_store.id if runtime.accounting_store is not None else self.session.store.id
+        if runtime.role == "main" or owner_id == self.session.store.id:
+            self.ui.bind_signal(event.agent, runtime.agent.signal)
         if event.agent == "main" and event.type == "agent_start" and (self.closing or self._interrupted):
             # Agent.prompt resets its own signal. An interrupt may have arrived
             # after scheduling but before that reset on the worker thread.

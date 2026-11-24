@@ -260,3 +260,88 @@ def test_subagent_traces_removed_when_session_trashed(make_session):
     assert trace_dir.is_dir()
     session.trash_session(session_path)
     assert not trace_dir.exists()
+
+
+def test_background_subagent_in_previous_session_does_not_block_new_session_subagent(make_session):
+    import threading
+
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def respond(ctx):
+        if "You are a Virgo sub-agent" in ctx.system:
+            if ctx.messages[0].text() == "Slow task A":
+                first_started.set()
+                release_first.wait(timeout=5)
+                return faux.reply("A done")
+            return faux.reply("B done")
+        return None
+
+    session = make_session(persist=True)
+    faux.handler("test", respond)
+
+    # Start a background subagent-1 in conversation A.
+    main_a = iter([
+        faux.reply(tools=[("agent", {"description": "task A", "prompt": "Slow task A", "background": True})]),
+        faux.reply("A launched"),
+        faux.reply("A finished"),
+    ])
+    faux.handler("test", lambda ctx: respond(ctx) or next(main_a))
+    try:
+        session.prompt("run A")
+        assert first_started.wait(timeout=5)
+
+        # Switch to a new conversation B while A's subagent-1 is still running.
+        session.new_session()
+        main_b = iter([
+            faux.reply(tools=[("agent", {"description": "task B", "prompt": "Fast task B"})]),
+            faux.reply("B finished"),
+        ])
+        faux.handler("test", lambda ctx: respond(ctx) or next(main_b))
+        session.prompt("run B")
+
+        result_b = tool_results(session)[-1]
+        assert not result_b.is_error
+        assert result_b.details["agent_id"] == "subagent-1"
+        assert "B done" in result_b.text()
+    finally:
+        release_first.set()
+        session.wait_idle(timeout=5)
+
+
+def test_trashing_session_detaches_active_background_subagent_writer(make_session):
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def respond(ctx):
+        if "You are a Virgo sub-agent" in ctx.system:
+            started.set()
+            release.wait(timeout=5)
+            return faux.reply("late child reply")
+        return None
+
+    session = make_session(persist=True)
+    session_path = session.store.path
+    trace_dir = session.subagent_store_for().directory
+    main_replies = iter([
+        faux.reply(tools=[("agent", {"description": "slow", "prompt": "Wait then write", "background": True})]),
+        faux.reply("started"),
+        faux.reply("done"),
+    ])
+    faux.handler("test", lambda ctx: respond(ctx) or next(main_replies))
+    try:
+        session.prompt("launch")
+        assert started.wait(timeout=5)
+        assert trace_dir.is_dir()
+
+        # Trash the parent session while the background subagent is still running.
+        session.trash_session(session_path)
+        assert not trace_dir.exists()
+    finally:
+        release.set()
+        session.wait_idle(timeout=5)
+
+    # Late events and handle release must not recreate the deleted trace directory.
+    assert not trace_dir.exists()
