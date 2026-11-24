@@ -27,6 +27,7 @@ from ..diagnostics import capture_error, error_summary, safe_text
 from ..execution import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable, cleanup_process
 from ..tools.bash import kill_tree, spawn
 from ..tools.output import open_output, read_output
+from ..tools.shell import sandbox_failure_details
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -278,9 +279,10 @@ class JobManager:
 
         def watch():
             status = "failed"
+            timed_out = False
+            watch_failed = False
             try:
                 deadline = time.monotonic() + timeout if timeout else None
-                timed_out = False
                 while proc.poll() is None:
                     if job.signal.is_set() or (deadline and time.monotonic() > deadline):
                         timed_out = not job.signal.is_set()
@@ -294,17 +296,8 @@ class JobManager:
                     if job.signal.is_set()
                     else ("completed" if proc.returncode == 0 and not timed_out else "failed")
                 )
-                if status == "failed":
-                    self._report(
-                        job,
-                        f"Background job {job.id} timed out."
-                        if timed_out
-                        else f"Background job {job.id} exited with status {job.exit_code}.",
-                        phase="background.command",
-                        code="BACKGROUND_TIMEOUT" if timed_out else "BACKGROUND_EXIT_FAILED",
-                        context={"timeout_seconds": timeout} if timed_out else None,
-                    )
             except Exception as error:
+                watch_failed = True
                 status = "killed" if job.signal.is_set() and not isinstance(error, ExecutionFailed) else "failed"
                 details = self._report(job, error, phase="background.watch",
                                        kind="fatal" if isinstance(error, ExecutionFailed) else None,
@@ -315,14 +308,36 @@ class JobManager:
                 # Failed native teardown must remain a failed job.
                 if not self._stop_process(job):
                     status = "failed"
+                close_error = None
                 try:
                     fh.close()
                 except Exception as error:
+                    close_error = error
                     if status != "killed":
                         status = "failed"
-                    self._report(job, error, phase="background.close")
                 if job.boundary is not None and job.boundary.get("provider") == "host":
                     job.boundary["cleanup"] = "process_group_best_effort" if os.name != "nt" else "job_object"
+                if not watch_failed and status == "failed" and not job.signal.is_set():
+                    if not timed_out and job.exit_code and isinstance(job.boundary, dict) and job.log is not None:
+                        try:
+                            sample = read_output(job.log, max_bytes=4800, execution_context=job.execution_context).text
+                        except Exception:
+                            sample = ""
+                        hint = sandbox_failure_details(job.label, sample, job.boundary, t=self.session.t)
+                        if hint is not None:
+                            job.boundary["hint"] = hint.to_dict()
+                    if timed_out or job.exit_code:
+                        self._report(
+                            job,
+                            f"Background job {job.id} timed out."
+                            if timed_out
+                            else f"Background job {job.id} exited with status {job.exit_code}.",
+                            phase="background.command",
+                            code="BACKGROUND_TIMEOUT" if timed_out else "BACKGROUND_EXIT_FAILED",
+                            context={"timeout_seconds": timeout} if timed_out else None,
+                        )
+                if close_error is not None:
+                    self._report(job, close_error, phase="background.close")
                 self._finish(job, status)
 
         try:
@@ -457,6 +472,9 @@ class JobManager:
                     unit=self.session.t("features.jobs.unit." + unit),
                     id=job.id,
                 )
+            hint = job.boundary.get("hint") if isinstance(job.boundary, dict) else None
+            if isinstance(hint, dict) and isinstance(hint.get("message"), str) and hint["message"]:
+                text += "\n" + hint["message"]
             if job.error_details is not None:
                 text += "\n" + error_summary(job.error_details, t=self.session.t)
             evidence = ([job.error_details] if job.error_details is not None else []) + job.related_errors

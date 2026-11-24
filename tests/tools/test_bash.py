@@ -614,12 +614,33 @@ def test_python_mutation_permission_errors(expression, workspace_boundary):
 
 
 @pytest.mark.parametrize(("code", "status"), [(0, "ok"), (1, "timeout"), (None, "aborted")])
-def test_shell_only_appends_write_hint_on_completed_nonzero_exit(project, monkeypatch, workspace_boundary, code, status):
+def test_shell_only_attaches_write_hint_on_completed_nonzero_exit(project, monkeypatch, workspace_boundary, code, status):
     output = CommandOutput("touch: /tmp/out: Permission denied", boundary=workspace_boundary)
     monkeypatch.setattr("virgo.tools.bash.run_command", lambda *a, **kw: (output, code, status))
     result = make_shell_tool(Shell("bash", "/bin/bash", "3.2")).execute({"command": "touch /tmp/out"}, ctx(project))
     assert result.details["status"] == status
     assert "$TMPDIR" not in result.as_text()
+    assert "hint" not in result.details["boundary"]
+
+
+def test_shell_records_structured_write_hint_in_boundary_details(project, monkeypatch, workspace_boundary):
+    from virgo.tools.shell import sandbox_failure_details
+
+    structured = sandbox_failure_details("touch /tmp/out", "touch: /tmp/out: Permission denied", workspace_boundary)
+    assert structured is not None
+    assert structured.code == "tmp_read_only"
+    assert structured.dimension == "write_paths"
+    assert structured.message_key == "tools.output.sandbox_tmp_hint"
+    assert "$TMPDIR" in structured.message
+
+    original = dict(workspace_boundary)
+    output = CommandOutput("touch: /tmp/out: Permission denied", boundary=workspace_boundary)
+    monkeypatch.setattr("virgo.tools.bash.run_command", lambda *a, **kw: (output, 1, "ok"))
+    result = make_shell_tool(Shell("bash", "/bin/bash", "3.2")).execute({"command": "touch /tmp/out"}, ctx(project))
+    assert result.is_error
+    assert result.details["boundary"]["hint"] == structured.to_dict()
+    assert "Sandbox hint" not in result.as_text()
+    assert workspace_boundary == original
 
 
 def test_unrestricted_sandbox_omits_write_hint(workspace_boundary):

@@ -87,10 +87,12 @@ def test_session_read_grant_keeps_mode_defaults_in_request_prefix(broker_session
 
 
 @pytest.mark.parametrize("preset", ["workspace-edit", "read-only"])
-@pytest.mark.parametrize("windows", [False, True], ids=["posix", "native-windows"])
-def test_sandbox_temp_guidance_in_request_prefix(broker_session, monkeypatch, preset, windows):
+@pytest.mark.parametrize("backend", ["seatbelt", "bubblewrap", "windows-appcontainer"])
+def test_sandbox_temp_guidance_in_request_prefix(broker_session, monkeypatch, preset, backend):
     runtime = broker_session(preset=preset).main
+    windows = backend == "windows-appcontainer"
     monkeypatch.setattr("virgo.execution_policy.is_native_windows", lambda: windows)
+    monkeypatch.setattr(type(runtime.execution_context.executor), "backend", property(lambda _self: backend))
 
     first = runtime.request_context([])
     second = runtime.request_context([])
@@ -117,8 +119,33 @@ def test_no_limit_boundary_omits_sandbox_temp_guidance(broker_session):
     system = broker_session(preset="no-limit").main.request_context([]).system
     boundary = system.split("<execution_boundary>")[1].split("</execution_boundary>")[0]
     assert "Host" in boundary
-    for claim in ("/tmp", "TMPDIR", "%TEMP%", "$env:TEMP", "when the command finishes"):
+    for claim in (
+        "/tmp", "TMPDIR", "%TEMP%", "$env:TEMP", "when the command finishes",
+        "Mach/XPC", "bubblewrap", "127.0.0.1", "AppContainer",
+    ):
         assert claim not in boundary
+
+
+@pytest.mark.parametrize("backend", ["seatbelt", "bubblewrap", "windows-appcontainer"])
+def test_sandbox_backend_service_guidance_in_request_prefix(broker_session, monkeypatch, backend):
+    session = broker_session(preset="workspace-edit")
+    runtime = session.main
+    monkeypatch.setattr("virgo.execution_policy.is_native_windows", lambda: backend == "windows-appcontainer")
+    monkeypatch.setattr(type(runtime.execution_context.executor), "backend", property(lambda _self: backend))
+
+    boundary = runtime.request_context([]).system.split("<execution_boundary>")[1].split("</execution_boundary>")[0]
+    _, guidance = boundary.split("\n", 1)
+    if backend == "seatbelt":
+        assert "Mach/XPC" in guidance and "mdls" in guidance and "Keychain" in guidance
+        assert "local files directly" in guidance
+        assert "/run" not in guidance and "127.0.0.1" not in guidance
+    elif backend == "bubblewrap":
+        assert "/run" in guidance and "D-Bus" in guidance and "systemd" in guidance and "docker.sock" in guidance
+        assert "Mach/XPC" not in guidance and "127.0.0.1" not in guidance
+    else:
+        assert "AppContainer" in guidance and "127.0.0.1" in guidance and "[::1]" in guidance
+        assert "user-profile" in guidance
+        assert "/tmp" not in guidance and "/run" not in guidance and "Mach/XPC" not in guidance
 
 
 @pytest.mark.parametrize(("ui_language", "guidance"), [

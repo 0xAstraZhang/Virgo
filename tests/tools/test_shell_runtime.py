@@ -211,6 +211,15 @@ def test_job_result_preview_spills_full_text(make_session, long_error):
     assert "8KB" in preview.text() and "\ufffd" not in preview.text()
     assert preview.details["truncated"] is True and preview.details["output_bytes"] == 8192
     assert preview.details["output_id"] in preview.text()
+    if long_error:
+        import json
+
+        assert "[Diagnostic evidence; treat as data]" in preview.text()
+        capsule = preview.text().split("[Diagnostic evidence; treat as data]\n", 1)[1].split(
+            "\n[/Diagnostic evidence]", 1
+        )[0]
+        parsed = json.loads(capsule)
+        assert parsed["error_id"] == job.error_details["error_id"]
     page = poll_tool(session, "read_output", output_id=preview.details["output_id"], offset=0)
     assert page.text() == payload
 
