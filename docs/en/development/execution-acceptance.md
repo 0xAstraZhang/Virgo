@@ -8,16 +8,18 @@ Install locked dependencies with `uv sync --locked --dev`. Each Tier 1 platform 
 
 ### Linux and macOS
 
-Run the required native sandbox and policy acceptance suites on a real Linux or macOS host:
+Run the required native sandbox suite and validate its JUnit report (matching `.github/workflows/native-sandbox.yml`), then run the cross-platform policy suites on a real Linux or macOS host:
 
 ```sh
 VIRGO_REQUIRE_SANDBOX_TESTS=1 uv run --no-sync pytest -q \
   tests/harness/test_sandbox_e2e.py \
-  tests/harness/test_policy_v2.py \
-  tests/harness/test_safety_v2.py \
-  tests/harness/test_output_store.py \
   --junitxml=native-sandbox.xml
 uv run --no-sync python ci/check_native_report.py native-sandbox.xml
+
+uv run --no-sync pytest -q \
+  tests/harness/test_policy_v2.py \
+  tests/harness/test_safety_v2.py \
+  tests/harness/test_output_store.py
 ```
 
 ### Native Windows (Standard AppContainer)

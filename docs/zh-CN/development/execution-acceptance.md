@@ -8,16 +8,18 @@
 
 ### Linux 与 macOS
 
-在真实的 Linux 或 macOS 主机上运行强制原生沙箱与策略验收套件：
+在真实的 Linux 或 macOS 主机上运行强制原生沙箱套件并校验其 JUnit 报告（与 `.github/workflows/native-sandbox.yml` 一致），再单独运行跨平台策略套件：
 
 ```sh
 VIRGO_REQUIRE_SANDBOX_TESTS=1 uv run --no-sync pytest -q \
   tests/harness/test_sandbox_e2e.py \
-  tests/harness/test_policy_v2.py \
-  tests/harness/test_safety_v2.py \
-  tests/harness/test_output_store.py \
   --junitxml=native-sandbox.xml
 uv run --no-sync python ci/check_native_report.py native-sandbox.xml
+
+uv run --no-sync pytest -q \
+  tests/harness/test_policy_v2.py \
+  tests/harness/test_safety_v2.py \
+  tests/harness/test_output_store.py
 ```
 
 ### 原生 Windows（标准 AppContainer）
