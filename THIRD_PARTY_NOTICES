@@ -1,9 +1,4 @@
-Pi
-https://github.com/earendil-works/pi
-
-The authentication and account-provider implementation references and adapts
-Pi's OAuth flows, request conversion, and credential-storage design. Current
-providers reference Pi 1.5.0.
+Pi (https://github.com/earendil-works/pi)
 
 MIT License
 

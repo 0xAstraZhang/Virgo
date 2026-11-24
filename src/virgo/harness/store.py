@@ -1,4 +1,4 @@
-"""Append-only JSONL session tree (≈ Pi's session format).
+"""Append-only JSONL session tree.
 
 The first nonblank line is a header; subsequent records are entries ``{type, id, parent_id, timestamp, ...}``.
 Entry types: ``message`` (a serialized Message), ``compaction`` (summary + first kept entry),

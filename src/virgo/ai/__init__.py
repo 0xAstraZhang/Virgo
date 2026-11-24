@@ -1,4 +1,4 @@
-"""Unified LLM layer (≈ pi-ai): one streaming interface over several providers."""
+"""Unified LLM layer: one streaming interface over several providers."""
 
 from __future__ import annotations
 

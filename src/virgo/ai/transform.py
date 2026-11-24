@@ -1,4 +1,4 @@
-"""Normalize a transcript before it is converted for a provider (Pi's transform-messages)."""
+"""Normalize a transcript before it is converted for a provider."""
 
 from __future__ import annotations
 

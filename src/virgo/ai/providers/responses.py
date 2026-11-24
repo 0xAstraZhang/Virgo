@@ -1,7 +1,6 @@
 """OpenAI Responses transport, including xAI account credentials.
 
-The message and event conversion follows Pi's openai-responses-shared adapter.
-Codex reuses it with its own request transport and parameters.
+Codex reuses its message and event conversion with its own request transport and parameters.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Agent core (≈ pi-agent-core): an event-emitting tool-calling loop with no I/O of its own."""
+"""Agent core: an event-emitting tool-calling loop with no I/O of its own."""
 
 from .agent import Agent
 from .loop import run_loop

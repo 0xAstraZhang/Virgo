@@ -27,7 +27,7 @@ On Tier 1 platforms, Virgo starts in **Workspace-Edit** by default, constraining
 - **Make it your own.** Add project instructions, skills, prompt templates, and Python extensions, alongside built-in MCP and Todos extensions.
 - **Choose your interface language.** Switch interface messages, command help, and built-in tool descriptions with `/language 中文` or `/language English`. Virgo replies in the language of your message unless you ask for another.
 
-Virgo is inspired by [Pi](https://github.com/earendil-works/pi). Its model adapters, agent loop, execution layer, and session harness are separate so you can extend the parts you need.
+Virgo keeps its model adapters, agent loop, execution layer, and session harness separate so you can extend the parts you need.
 
 ## Get started
 
@@ -87,4 +87,4 @@ Browse the full [documentation hub](docs/en/README.md):
 
 ## License
 
-[MIT](LICENSE). Third-party acknowledgements are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+[MIT](LICENSE).

@@ -1,4 +1,4 @@
-"""Provider-neutral message model (mirrors Pi's pi-ai types)."""
+"""Provider-neutral message model."""
 
 from __future__ import annotations
 

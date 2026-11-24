@@ -1,4 +1,4 @@
-"""ChatGPT account transport, following Pi's OpenAI Codex SSE adapter."""
+"""ChatGPT account transport using the OpenAI Codex SSE protocol."""
 
 from __future__ import annotations
 

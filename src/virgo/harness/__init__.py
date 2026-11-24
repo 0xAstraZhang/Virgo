@@ -1,4 +1,4 @@
-"""Harness (≈ pi-coding-agent core): session, store, prompt, extensions, compaction."""
+"""Harness: session, store, prompt, extensions, compaction."""
 
 from .extensions import EventBus, ExtensionAPI, Handled
 from .runtime import Runtime
