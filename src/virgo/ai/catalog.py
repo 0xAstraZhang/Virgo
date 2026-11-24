@@ -8,7 +8,7 @@ import os
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 import httpx
@@ -32,6 +32,10 @@ class CatalogError(Exception):
 
 class CatalogCancelled(CatalogError):
     pass
+
+
+class CatalogUnsupported(CatalogError):
+    """The initial model listing request returned HTTP 404, 405, or 501."""
 
 
 @dataclass(frozen=True)
@@ -188,7 +192,9 @@ def _read_catalog(model: Model, signal, stopped: threading.Event, version=None) 
             with client.stream("GET", url, headers=headers, params=params) as response:
                 if response.status_code != 200:
                     # Never echo response bodies, URLs, or transport exceptions containing secrets.
-                    raise CatalogError(f"Model directory returned HTTP {response.status_code}.", response.status_code)
+                    status = response.status_code
+                    error = CatalogUnsupported if not cursors and status in (404, 405, 501) else CatalogError
+                    raise error(f"Model directory returned HTTP {status}.", status)
                 payload = bytearray()
                 for chunk in response.iter_bytes():
                     if stopped.is_set() or (signal is not None and signal.is_set()):
@@ -253,8 +259,8 @@ def _fetch(model: Model, signal, stopped: threading.Event) -> list[CatalogModel]
         raise CatalogError(str(error)) from error
 
 
-def fetch_model_catalog(model: Model, signal=None) -> list[CatalogModel]:
-    """Bound the entire lookup and let Esc return promptly even if a provider stalls."""
+def fetch_model_catalog(model: Model, signal=None, *, api_key: str | None = None) -> list[CatalogModel]:
+    """Fetch with the pending login key, or use stored credentials for an existing connection."""
     if signal is not None and signal.is_set():
         raise CatalogCancelled("Model discovery cancelled.")
     result = queue.Queue(maxsize=1)
@@ -263,14 +269,17 @@ def fetch_model_catalog(model: Model, signal=None) -> list[CatalogModel]:
     def fetch():
         request_model = model
         try:
-            request_model = authenticated_model(model, signal)
+            if api_key is None:
+                request_model = authenticated_model(model, signal)
+            else:
+                request_model = replace(model, options={**model.options, "apiKey": api_key, "authType": "api_key"})
             result.put((_fetch(request_model, signal, stopped), None))
         except CatalogCancelled as error:
             result.put((None, error))
         except Exception as cause:
             error = cause
             if not isinstance(error, CatalogError):
-                error = CatalogError("Could not read the model directory. Check the connection and login, then retry /model.")
+                error = CatalogError("Could not read the model directory. Check the connection and credentials.")
                 error.__cause__ = cause
             # Capture before the request-only credentials leave scope. The
             # Harness must reuse this redacted chain, including for stderr.
@@ -288,7 +297,7 @@ def fetch_model_catalog(model: Model, signal=None) -> list[CatalogModel]:
             if signal is not None and signal.is_set():
                 raise CatalogCancelled("Model discovery cancelled.")
             if time.monotonic() >= deadline:
-                raise CatalogError("Model directory request timed out. Retry /model.")
+                raise CatalogError("Model directory request timed out.")
             try:
                 models, error = result.get(timeout=0.05)
             except queue.Empty:

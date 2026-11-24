@@ -133,6 +133,7 @@ class AgentSession:
         self.discovered_models: dict[str, dict] = {}
         self._metadata_paths: dict[str, Path] = {}
         self._model_catalogs: dict[Path, list] = {}
+        self._catalog_revisions: dict[str, int] = {}
         self._catalog_stop = threading.Event()
         self._catalog_refresh_done = threading.Event()
         self._metadata_pending = False
@@ -384,8 +385,10 @@ class AgentSession:
         with self._lock:
             path = cache_path(self.paths.user, connection)
             self._model_catalogs[path] = list(models)
-            self._replace_metadata(connection.provider, {item.id: item.metadata for item in models})
-            self._metadata_paths[connection.provider] = path
+            provider = connection.provider
+            self._catalog_revisions[provider] = self._catalog_revisions.get(provider, 0) + 1
+            self._replace_metadata(provider, {item.id: item.metadata for item in models})
+            self._metadata_paths[provider] = path
             try:
                 write_metadata(path, models)
             except OSError as error:

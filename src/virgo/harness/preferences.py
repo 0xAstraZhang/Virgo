@@ -150,8 +150,10 @@ def start_model_refresh(session: AgentSession) -> None:
             if session._catalog_stop.is_set():
                 return
             try:
+                with session._lock:
+                    revision = session._catalog_revisions.get(connection.provider, 0)
                 models = fetch_model_catalog(connection, session._catalog_stop)
-                _publish_catalog(session, connection, models, owner)
+                _publish_catalog(session, connection, models, owner, revision=revision)
             except CatalogCancelled:
                 pass
             except CatalogError as error:
@@ -178,10 +180,13 @@ def start_model_refresh(session: AgentSession) -> None:
     threading.Thread(target=run, daemon=True, name="virgo-startup-catalog").start()
 
 
-def _publish_catalog(session: AgentSession, connection: Model, models: list, owner) -> int | None:
+def _publish_catalog(session: AgentSession, connection: Model, models: list, owner, *, revision: int | None = None) -> int | None:
     """Publish one connection's directory snapshot after the endpoint still matches."""
     with session._lock:
         if session._catalog_stop.is_set():
+            return None
+        # A login on the same endpoint may have already published the new account's models.
+        if revision is not None and session._catalog_revisions.get(connection.provider, 0) != revision:
             return None
         # A settings/login change during the request must not publish into a different endpoint.
         current = session.resolve(f"{connection.provider}/_catalog")

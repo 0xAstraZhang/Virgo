@@ -40,7 +40,9 @@ uv sync --locked
 uv run virgo
 ```
 
-In Virgo, enter `/login` to connect a supported account or configure an API. Once connected, try a concrete task:
+In Virgo, enter `/login` to connect a supported account or configure an API. API key login reads the server's model list. It keeps your current model for that provider if listed, then prefers the provider preset, then the first model returned. Use `/model` to switch. Only **API → Custom** asks for a model ID when the server reports that it does not support `/models` (HTTP 404, 405, or 501).
+
+Once connected, try asking Virgo to explain the project.
 
 ```text
 Explain how this project starts and where I should add a new command.
