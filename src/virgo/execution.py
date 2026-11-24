@@ -177,7 +177,7 @@ class ExecutionContext(Protocol):
     def read_bytes(self, path: Path, *, max_bytes: int | None = None) -> bytes | None: ...
     def open_mutation(self, path: Path, *, create: bool, max_read_bytes: int | None = None): ...
     def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None,
-                   max_files: int | None = None): ...
+                   max_files: int | None = None, respect_gitignore: bool = False): ...
     def open_output(self, cwd: Path, prefix: str): ...
     def run_process(self, request: ProcessRequest, cancellation=None) -> ProcessHandle: ...
     def describe(self) -> dict: ...
@@ -326,11 +326,12 @@ class HostContext:
         return open_mutation(path, self.policy, create=create, max_read_bytes=max_read_bytes)
 
     def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None,
-                   max_files: int | None = None):
+                   max_files: int | None = None, respect_gitignore: bool = False):
         from .file_access import MAX_WALK_FILES, walk_files
 
         return walk_files(path, self.policy, ignore, max_depth=max_depth,
-                          max_files=MAX_WALK_FILES if max_files is None else max_files)
+                          max_files=MAX_WALK_FILES if max_files is None else max_files,
+                          respect_gitignore=respect_gitignore, gitignore_root=self.workspace)
 
     def open_output(self, cwd: Path, prefix: str):
         return self.outputs.create(prefix)
@@ -390,11 +391,12 @@ class SandboxContext:
         return open_mutation(path, self.policy, create=create, max_read_bytes=max_read_bytes)
 
     def walk_files(self, path: Path, ignore: set[str], *, max_depth: int | None = None,
-                   max_files: int | None = None):
+                   max_files: int | None = None, respect_gitignore: bool = False):
         from .file_access import MAX_WALK_FILES, walk_files
 
         return walk_files(path, self.policy, ignore, max_depth=max_depth,
-                          max_files=MAX_WALK_FILES if max_files is None else max_files)
+                          max_files=MAX_WALK_FILES if max_files is None else max_files,
+                          respect_gitignore=respect_gitignore, gitignore_root=self.workspace)
 
     def validate(self, cwd: Path) -> Path:
         cwd = Path(cwd).resolve()

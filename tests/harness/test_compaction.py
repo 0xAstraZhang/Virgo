@@ -660,7 +660,7 @@ def test_length_then_tool_turn_bounds_recovery(make_session, monkeypatch, projec
     install_responses(monkeypatch, AssistantMessage([TextContent("prior work")], usage=Usage(input=before - 1)))
     session.prompt("Original task")
     original = list(rt.messages)
-    # "Read" and the real tool result "fact" each add one token to the preceding reported usage.
+    # "Read" and the real tool result "1|fact" each add one token to the preceding reported usage.
     tool_turn = AssistantMessage([ToolCall("read-spec", "read", {"path": "spec"})], stop_reason="tool_use",
                                 usage=Usage(input=main_input, output=after - main_input - 1))
     overflow = AssistantMessage(stop_reason="error", error_kind="overflow", error_message="context is too long")
@@ -689,7 +689,7 @@ def test_length_then_tool_turn_bounds_recovery(make_session, monkeypatch, projec
     assert model_contexts[0][:-1] == original
     assert model_contexts[1][:-2] == model_contexts[0]
     call, result = model_contexts[1][-2:]
-    assert call.tool_calls()[0].id == result.tool_call_id == "read-spec" and result.text() == "fact"
+    assert call.tool_calls()[0].id == result.tool_call_id == "read-spec" and result.text() == "1|fact"
     assert rt.messages == [*model_contexts[1], overflow]
     restored, ids = SessionStore.load(session.store.path).build_context()
     assert ids == rt.ids and restored[:-2] == rt.messages[:-2] and restored[-1] == overflow

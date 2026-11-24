@@ -18,7 +18,7 @@
 - **Core 统一托管后台任务**：`AgentSession` 与 `JobManager` 负责会话存储、生命周期通知和进程/任务清理，`Runtime` 专注执行单条对话循环，插件只暴露用户命令和模型工具。
 - **按职责拆分的故障隔离持久化存储**：
   - **会话树（`sessions/<workspace-slug>/*.jsonl`）**：带文件锁的追加写入 JSONL 树，可写恢复时自动截断末尾未换行的不完整记录；持久化异常时 fail-closed 抛出 `SessionSaveError` 且不丢弃内存历史。
-  - **命令与 MCP 输出（`outputs/session-<id>/`）**：Broker 私有 `OutputStore`（`out_<12-hex>`、按 UTF-8 边界分页的 `read_output`、7 天 TTL、未截断前台命令立即删临时文件），让大段输出可跨恢复查阅而不膨胀对话历史。
+  - **命令与 MCP 输出（`outputs/session-<id>/`）**：Broker 私有 `OutputStore`（`out_<12-hex>`、`read_output` 支持模式搜索、尾部读取、按行分页与按 UTF-8 边界字节分页、7 天 TTL、未截断前台命令立即删临时文件），让大段输出可跨恢复查阅而不膨胀对话历史。
   - **错误诊断（`logs/diagnostics.sqlite3`）**：WAL 模式 SQLite，与会话写入完全隔离，区分常规工具错误与运行时故障，且模型侧 `diagnostic_get` 仅能读取当前运行时记录过的 `error_id`。
   - **持久授权（`permission-grants.sqlite3`）**：单一 `resource_grants` 表，按 `(project, mode, resource, target)` 存储。
 

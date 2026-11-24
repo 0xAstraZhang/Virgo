@@ -97,12 +97,21 @@ def _read(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
     limit = int(args.get("limit") or MAX_LINES)
     if offset > max(total, 1):
         return ToolResult.error(ctx.t("tools.fs.offset", offset=offset, total=total))
+    footer_bytes = (
+        len(ctx.t("tools.fs.page", offset=offset, end=total, total=total, next_offset=total + 1).encode("utf-8"))
+        if offset <= total
+        else 0
+    )
     chunk, size = [], 0
-    for line in lines[offset - 1 : offset - 1 + min(limit, MAX_LINES)]:
-        size += len(line.encode("utf-8"))
-        if size > MAX_BYTES and chunk:
+    for idx, line in enumerate(lines[offset - 1 : offset - 1 + min(limit, MAX_LINES)]):
+        lineno = offset + idx
+        formatted = f"{lineno}|{line}"
+        line_bytes = len(formatted.encode("utf-8"))
+        reserve = footer_bytes if lineno < total else 0
+        if size + line_bytes + reserve > MAX_BYTES:
             break
-        chunk.append(line)
+        size += line_bytes
+        chunk.append(formatted)
     if not chunk and lines:
         n = offset
         return ToolResult.error(
@@ -121,7 +130,8 @@ READ = AgentTool(
     name="read",
     label="Read",
     description=(
-        f"Read a text file (or an image). Returns at most {MAX_LINES} lines / {MAX_BYTES // 1024}KB per call; "
+        "Read a text file (or an image). Prefixes each text line with '<line>|' (omit this prefix in edit). "
+        f"Returns at most {MAX_LINES} lines / {MAX_BYTES // 1024}KB per call; "
         "use offset (1-based line number) and limit to page through larger files."
     ),
     parameters={
@@ -477,8 +487,12 @@ def _glob(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
     if not base.is_dir():
         return ToolResult.error(ctx.t("tools.fs.not_directory", path=args.get("path")))
     pattern = args["pattern"]
+    include_ignored = bool(args.get("include_ignored"))
+    ignore_dirs = {".git"} if include_ignored else IGNORE_DIRS
     hits = []
-    entries = access.walk_files(base, IGNORE_DIRS, max_files=MAX_WALK_FILES)
+    entries = access.walk_files(
+        base, ignore_dirs, max_files=MAX_WALK_FILES, respect_gitignore=not include_ignored
+    )
     modified = {}
     for f, info in entries:
         if glob_match(f.relative_to(base).as_posix(), pattern):
@@ -498,12 +512,16 @@ GLOB = AgentTool(
     name="glob",
     label="Glob",
     description="Find files by glob pattern (e.g. '**/*.py', 'src/**/test_*.ts'), newest first. "
-    "Skips .git, node_modules, virtualenvs and caches.",
+    "Respects .gitignore and skips .git, node_modules, virtualenvs and caches unless include_ignored is true.",
     parameters={
         "type": "object",
         "properties": {
             "pattern": {"type": "string"},
             "path": {"type": "string", "description": "Directory to search"},
+            "include_ignored": {
+                "type": "boolean",
+                "description": "Include files ignored by .gitignore and default skip directories (still skips .git)",
+            },
         },
         "required": ["pattern"],
     },
@@ -517,24 +535,35 @@ GLOB = AgentTool(
 def _grep(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
     access = access or HostContext(ctx.cwd)
     flags = re.IGNORECASE if args.get("ignore_case") else 0
+    raw_pattern = args["pattern"]
+    pattern_text = re.escape(raw_pattern) if args.get("fixed_strings") else raw_pattern
     try:
-        rx = re.compile(args["pattern"], flags)
+        rx = re.compile(pattern_text, flags)
     except re.error as e:
         return ToolResult.error(ctx.t("tools.fs.regex", error=e))
+    mode = args.get("mode") or "content"
+    if mode not in {"content", "files", "count"}:
+        return ToolResult.error(ctx.t("tools.fs.invalid_mode", mode=mode))
     try:
         base = resolve_read_path(args.get("path") or ".", ctx.cwd)
     except ValueError as error:
         return ToolResult.error(str(error))
     access.check_read(base)
     base_is_dir = base.is_dir()
+    include_ignored = bool(args.get("include_ignored"))
+    ignore_dirs = {".git"} if include_ignored else IGNORE_DIRS
     files = [base] if base.is_file() else (
-        path for path, _info in access.walk_files(base, IGNORE_DIRS, max_files=MAX_WALK_FILES)
+        path
+        for path, _info in access.walk_files(
+            base, ignore_dirs, max_files=MAX_WALK_FILES, respect_gitignore=not include_ignored
+        )
     )
     gl = args.get("glob")
     ctxn = int(args.get("context") or 0)
     limit = int(args.get("limit") or 100)
     out: list[str] = []
     matches = 0
+    file_hits = 0
     for f in files:
         if gl:
             rel = f.relative_to(base).as_posix() if base_is_dir else f.name
@@ -551,6 +580,22 @@ def _grep(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
         if b"\x00" in raw[:8192]:
             continue
         lines = raw.decode("utf-8", errors="replace").splitlines()
+        if mode == "files":
+            if any(rx.search(line) for line in lines):
+                file_hits += 1
+                if file_hits > limit:
+                    break
+                out.append(_display(f, ctx.cwd))
+            continue
+        if mode == "count":
+            count = sum(1 for line in lines if rx.search(line))
+            if count:
+                file_hits += 1
+                if file_hits > limit:
+                    break
+                matches += count
+                out.append(f"{_display(f, ctx.cwd)}:{count}")
+            continue
         shown: set[int] = set()
         for i, line in enumerate(lines):
             if not rx.search(line):
@@ -569,24 +614,46 @@ def _grep(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
             break
     if not out:
         return ToolResult.text(ctx.t("tools.fs.no_matches"))
+    if mode in {"files", "count"}:
+        if file_hits > limit:
+            out.append(ctx.t("tools.fs.file_limit", limit=limit))
+        details = {"files": min(file_hits, limit), "mode": mode}
+        if mode == "count":
+            details["matches"] = matches
+        return ToolResult.text("\n".join(out), details=details)
     if matches > limit:
         out.append(ctx.t("tools.fs.match_limit", limit=limit))
-    return ToolResult.text("\n".join(out), details={"matches": min(matches, limit)})
+    return ToolResult.text("\n".join(out), details={"matches": min(matches, limit), "mode": "content"})
 
 
 GREP = AgentTool(
     name="grep",
     label="Grep",
-    description="Search file contents with a Python regular expression. Output lines are 'path:line:text'.",
+    description="Search file contents with a Python regular expression (or literal string when fixed_strings=true). "
+    "Respects .gitignore by default. Output depends on mode: 'content' ('path:line:text', default), "
+    "'files' (matching paths), or 'count' ('path:count').",
     parameters={
         "type": "object",
         "properties": {
             "pattern": {"type": "string"},
             "path": {"type": "string", "description": "File or directory (default: working directory)"},
             "glob": {"type": "string", "description": "Only search files matching this glob, e.g. '*.py'"},
+            "mode": {
+                "type": "string",
+                "enum": ["content", "files", "count"],
+                "description": "Output mode: 'content' (matching lines, default), 'files' (matching file paths), or 'count' (match count per file)",
+            },
+            "fixed_strings": {
+                "type": "boolean",
+                "description": "Treat pattern as a literal string instead of a regular expression",
+            },
             "ignore_case": {"type": "boolean"},
             "context": {"type": "integer", "minimum": 0, "description": "Lines of context around matches"},
             "limit": {"type": "integer", "minimum": 1},
+            "include_ignored": {
+                "type": "boolean",
+                "description": "Include files ignored by .gitignore and default skip directories (still skips .git)",
+            },
         },
         "required": ["pattern"],
     },

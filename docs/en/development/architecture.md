@@ -47,7 +47,7 @@ By default, Virgo stores user state under `~/.virgo` (overrideable via `VIRGO_HO
 | `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md` | User-level prompt context and system prompt overrides |
 | `extensions/`, `skills/`, `prompts/` | User Python extensions, `SKILL.md` skills, and Markdown slash-command templates |
 | `sessions/<workspace-slug>/` | Append-only JSONL session trees (`session`, `message`, `compaction`, `model_change`, `leaf`, `custom` records) with cross-platform file locking and incomplete-tail recovery on resume |
-| `outputs/session-<id>/` | Broker-private `OutputStore` spools (`out_<12-hex>`, UTF-8-aligned paging via `read_output`, 7-day TTL, cleaned on session trash) |
+| `outputs/session-<id>/` | Broker-private `OutputStore` spools (`out_<12-hex>`, searchable / tail / line- or UTF-8-aligned byte-paged inspection via `read_output`, 7-day TTL, cleaned on session trash) |
 | `logs/diagnostics.sqlite3` | WAL-mode durable diagnostic error store (isolated from session saves; runtime-scoped evidence exposed to the model via `diagnostic_get`) |
 | `permission-grants.sqlite3` | Saved **Always allow** resource grants (`resource_grants` table keyed by `(project, mode, resource, target)`) |
 

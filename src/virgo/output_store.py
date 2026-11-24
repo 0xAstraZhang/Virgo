@@ -14,6 +14,7 @@ import stat
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -226,8 +227,9 @@ class OutputStore:
             raise FileAccessDenied("Output ID is unknown or belongs to another session", dimension="output_id")
         return record
 
-    def read(self, record: OutputRecord, *, offset: int = 0, limit: int = 50 * 1024,
-             tail: bool = False, align_utf8: bool = False) -> tuple[bytes, int, int]:
+    @contextmanager
+    def open_read(self, record: OutputRecord):
+        """Safely open a session-owned output record for streaming reads."""
         from .execution import FileAccessDenied
 
         if not isinstance(record, OutputRecord) or self.lookup(record.id) is not record:
@@ -244,10 +246,23 @@ class OutputStore:
             raise FileAccessDenied(f"Output record cannot be opened safely: {error}", dimension="output_id") from error
         with os.fdopen(fd, "rb") as stream:
             total = stream.seek(0, os.SEEK_END)
+            stream.seek(0)
+            yield stream, total
+
+    def read(self, record: OutputRecord, *, offset: int = 0, limit: int = 50 * 1024,
+             tail: bool = False, align_utf8: bool = False) -> tuple[bytes, int, int]:
+        with self.open_read(record) as (stream, total):
             if tail:
                 start = max(0, total - limit)
                 stream.seek(start)
                 data = stream.read(limit)
+                if align_utf8 and start > 0:
+                    skip = 0
+                    while skip < len(data) and skip < 3 and (data[skip] & 0xC0) == 0x80:
+                        skip += 1
+                    if skip:
+                        start += skip
+                        data = data[skip:]
                 return data, total, start
             start = min(max(0, offset), total)
             stream.seek(start)

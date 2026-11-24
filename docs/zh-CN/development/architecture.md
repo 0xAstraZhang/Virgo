@@ -47,7 +47,7 @@ Virgo 将运行时能力划分为三层，对应不同的覆盖优先级与故�
 | `AGENTS.md`、`SYSTEM.md`、`APPEND_SYSTEM.md` | 用户级提示词上下文与系统提示词覆盖 |
 | `extensions/`、`skills/`、`prompts/` | 用户 Python 扩展、`SKILL.md` 技能及 Markdown 斜杠命令模板 |
 | `sessions/<workspace-slug>/` | 追加写入的 JSONL 会话树（`session`、`message`、`compaction`、`model_change`、`leaf`、`custom` 记录），带跨平台文件锁与恢复时截断尾部自动修复 |
-| `outputs/session-<id>/` | Broker 私有的 `OutputStore` 输出存储（`out_<12-hex>`、通过 `read_output` 按 UTF-8 字符边界分页、7 天 TTL、随会话回收清理） |
+| `outputs/session-<id>/` | Broker 私有的 `OutputStore` 输出存储（`out_<12-hex>`、通过 `read_output` 支持模式搜索、尾部读取、按行分页及按 UTF-8 字符边界字节分页、7 天 TTL、随会话回收清理） |
 | `logs/diagnostics.sqlite3` | WAL 模式持久化诊断错误库（与会话存储故障隔离；通过 `diagnostic_get` 向模型暴露当前运行时范围的诊断证据） |
 | `permission-grants.sqlite3` | 持久化的**始终允许**资源授权（`resource_grants` 表，按 `(project, mode, resource, target)` 索引） |
 
