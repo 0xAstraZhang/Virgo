@@ -52,6 +52,7 @@ from virgo.ai.validate import valid_schema
 from virgo.diagnostics import capture_error, safe_text
 from virgo.execution import HostContext, ProcessRequest, cleanup_process
 from virgo.harness.settings import same_directory
+from virgo.tools.output import budget, exceeds_budget
 
 if TYPE_CHECKING:
     from mcp import ClientSession, types
@@ -742,26 +743,41 @@ def _tool_allowed(connection: _Connection, raw_name: str) -> bool:
     return not any(fnmatch.fnmatchcase(raw_name, pattern) for pattern in connection.exclude_tools)
 
 
-def _content(result: types.CallToolResult) -> list:
-    content: list = []
+def _content(result: types.CallToolResult, cwd: Path, name: str, *, t, execution_context) -> ToolResult:
+    converted = ToolResult([], is_error=bool(result.is_error))
+
+    def add_text(text: str) -> None:
+        if execution_context is None:
+            if exceeds_budget(text):
+                text = "The MCP tool already ran. Storing its oversized output requires an originating runtime."
+                converted.is_error = True
+        else:
+            try:
+                text = budget(text, cwd, name, t=t, execution_context=execution_context)
+            except Exception:
+                text = "The MCP tool already ran, but its oversized output could not be stored."
+                converted.is_error = True
+        converted.content.append(TextContent(text))
+
     for item in result.content:
         if item.type == "text":
-            content.append(TextContent(item.text))
+            add_text(item.text)
         elif item.type == "image":
-            content.append(ImageContent(item.data, item.mime_type))
+            converted.content.append(ImageContent(item.data, item.mime_type))
         elif item.type == "audio":
-            content.append(TextContent(f"[audio {item.mime_type}]"))
+            add_text(f"[audio {item.mime_type}]")
         elif item.type == "resource":
             resource = item.resource
-            content.append(TextContent(getattr(resource, "text", None) or f"[resource {resource.uri}]"))
+            add_text(getattr(resource, "text", f"[resource {resource.uri}]"))
         elif item.type == "resource_link":
-            content.append(TextContent(f"[resource {item.uri}]"))
+            add_text(f"[resource {item.uri}]")
         else:
             payload = item.model_dump(mode="json", by_alias=True, exclude_none=True)
-            content.append(TextContent(json.dumps(payload, ensure_ascii=False)))
-    if not content and result.structured_content is not None:
-        content.append(TextContent(json.dumps(result.structured_content, ensure_ascii=False)))
-    return content or [TextContent("(no content)")]
+            add_text(json.dumps(payload, ensure_ascii=False))
+    if not converted.content:
+        structured = result.structured_content
+        add_text(json.dumps(structured, ensure_ascii=False) if structured is not None else "(no content)")
+    return converted
 
 
 class _Manager:
@@ -1000,16 +1016,18 @@ class _Manager:
                         if stderr:
                             extra["stderr"] = stderr
                         return ToolResult.error(detail, details=extra)
-                    return ToolResult(
-                        _content(result),
-                        details={
-                            "mcp": True,
-                            "server": _connection.name,
-                            "tool": _name,
-                            "boundary": _connection.boundary,
-                        },
-                        is_error=bool(result.is_error),
+                    runtime = self.api.runtime_for_context(ctx)
+                    converted = _content(
+                        result, ctx.cwd, _name, t=ctx.translator or self.api.translator,
+                        execution_context=runtime.execution_context if runtime is not None else None,
                     )
+                    converted.details = {
+                        "mcp": True,
+                        "server": _connection.name,
+                        "tool": _name,
+                        "boundary": _connection.boundary,
+                    }
+                    return converted
 
                 description = (spec.description or spec.name).strip()
                 annotations = getattr(spec, "annotations", None)

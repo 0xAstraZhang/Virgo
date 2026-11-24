@@ -61,8 +61,12 @@ def truncate_tail(text: str, max_lines: int = MAX_LINES, max_bytes: int = MAX_BY
 
 def save_output(text: str, cwd: Path, prefix: str, *, execution_context=None) -> OutputRecord:
     record, stream = open_output(cwd, prefix, execution_context=execution_context)
-    with stream:
-        stream.write(_encode(text))
+    try:
+        with stream:
+            stream.write(_encode(text))
+    except BaseException:
+        record.unlink(missing_ok=True)
+        raise
     return record
 
 
@@ -74,21 +78,28 @@ def bound(text: str, cwd: Path, prefix: str, keep: str = "head", *, max_bytes: i
     return CommandOutput(shown, record, cut, len(_encode(text)))
 
 
+def exceeds_budget(text: str) -> bool:
+    return len(text) > MAX_BYTES or len(_encode(text)) > MAX_BYTES or len(text.splitlines()) > MAX_LINES
+
+
 def budget(text: str, cwd: Path, prefix: str, keep: str = "head", *, t=None, execution_context=None) -> str:
-    """Bound `text`; if cut, save the full text and append a pointer to its output ID."""
-    t = t or Translator()
-    bounded = bound(text, cwd, prefix, keep, execution_context=execution_context)
-    if not bounded.truncated:
+    """Fit both the preview and its private output ID within the byte and line limits."""
+    if not exceeds_budget(text):
         return text
+    record = save_output(text, cwd, prefix, execution_context=execution_context)
+    t = t or Translator()
+    total = len(text.splitlines())
     where = t("tools.output.last" if keep == "tail" else "tools.output.first")
-    return t(
-        "tools.output.budget",
-        shown=bounded.text.rstrip(),
-        where=where,
-        count=len(bounded.text.splitlines()),
-        total=len(text.splitlines()),
-        path=bounded.path,
-    )
+
+    def render(shown: str, count: int) -> str:
+        return t("tools.output.budget", shown=shown, where=where, count=count, total=total, path=record)
+
+    # Reserve space for the largest possible count, the separators and the actual ID.
+    notice = render("", min(total, MAX_LINES))
+    truncate = truncate_tail if keep == "tail" else truncate_head
+    shown, _ = truncate(text, max_lines=MAX_LINES - len(notice.splitlines()),
+                        max_bytes=MAX_BYTES - len(_encode(notice)))
+    return render(shown, len(shown.splitlines()))
 
 
 def open_output(cwd: Path, prefix: str, *, execution_context=None):
