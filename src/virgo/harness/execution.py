@@ -129,11 +129,15 @@ class ModeExecutionProvider(HostExecutionProvider):
 
         def deny(reason: str):
             message = self.session.t(f"features.permission.high_risk_{reason}", risk=match.reason)
+            boundary = base.describe()
+            if base.provider != "host":
+                # The captured sandbox context describes mode defaults before grants.
+                del boundary["effective"]
             return Block(message, details={
                 "status": "high_risk_denied",
                 "category": match.category,
                 "boundary": {
-                    **base.describe(),
+                    **boundary,
                     "kind": "high_risk_denied",
                     "category": match.category,
                     "reason": reason,

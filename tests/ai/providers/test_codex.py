@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 import time
 
 import pytest
 
-from virgo.ai.providers import codex
+from virgo.ai.providers import codex, faux
 from virgo.ai.providers._http import ProviderError, _parse_events
 from virgo.ai.transform import normalize
 from virgo.ai.types import Context, Model, StreamOptions, ToolSpec, UserMessage
 
+from tests.support.harness import RecordingUI
 from tests.support.http import sse
 
 
@@ -77,6 +79,36 @@ def test_codex_read_tool_output(account_server, responses_read):
     assert (items[1]["call_id"], items[1]["id"]) == ("call_1", "fc_1")
     assert items[2:] == [expected]
     assert history == before
+
+
+def test_codex_workspace_edit_approved_read_outputs(broker_session, project, pixel_png):
+    text = project.parent / "outside-approved.txt"
+    content = "approved external text\n"
+    text.write_bytes(content.encode())
+    image = (project / "pixel.png").rename(project.parent / "pixel.png")
+    ui = RecordingUI(["y", "y"])
+    session = broker_session(
+        faux.reply(tools=[("read", {"path": str(text)}, "call_text")]),
+        faux.reply(tools=[("read", {"path": str(image)}, "call_image")]),
+        faux.reply("done"), preset="workspace-edit", ui=ui,
+    )
+    session.prompt("Read the external text and image")
+    assert len(ui.questions) == 2
+
+    model = Model("openai-codex", "reader", "openai-codex")
+    ctx = session.main.request_context(normalize(session.main.messages, model), model)
+    params = codex.build_params(model, ctx, StreamOptions())
+    assert [item for item in params["input"] if item.get("type") == "function_call_output"] == [
+        {"type": "function_call_output", "call_id": "call_text", "output": content},
+        {"type": "function_call_output", "call_id": "call_image", "output": [
+            {"type": "input_text", "text": "Image: pixel.png"},
+            {"type": "input_image", "image_url": f"data:image/png;base64,{pixel_png}", "detail": "auto"},
+        ]},
+    ]
+    boundary = params["instructions"].split("<execution_boundary>")[1].split("\n", 1)[0]
+    facts = json.loads(boundary)
+    assert "effective" not in facts and "requested" not in facts
+    assert facts["mode_defaults"]["read_paths"] == [str(project.resolve())]
 
 
 @pytest.mark.parametrize("effort", ["xhigh", "max"])

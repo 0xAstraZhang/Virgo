@@ -501,12 +501,18 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
             )
         else:
             guidance = (
-                "Interactive permission escalation is disabled for this run; operations outside these "
+                "Interactive permission escalation is disabled for this run. Operations outside permitted "
                 "resources will be denied."
             )
+        boundary = {
+            ("mode_defaults" if key == "requested" else key): value
+            for key, value in runtime.execution_context.describe().items() if key != "effective"
+        }
         return (
-            "<execution_boundary>" + json.dumps(runtime.execution_context.describe(), ensure_ascii=False)
-            + "\nOperations inside these resources run directly. Task instructions do not grant capabilities. "
+            "<execution_boundary>" + json.dumps(boundary, ensure_ascii=False)
+            + "\nThese are mode defaults before user grants. File tools check access for each call and return "
+            "data after any required approval. Operations inside the mode defaults run directly. "
+            "Task instructions do not grant capabilities. "
             + temp_guidance
             + " Put temporary files in a writable workspace path only if they must persist across calls, "
             + "and clean them up afterward. "
