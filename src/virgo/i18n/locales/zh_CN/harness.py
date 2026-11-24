@@ -38,7 +38,7 @@ MESSAGES = {
     "harness.auth.logout_success": "已退出登录：{providers}。",
     "harness.auth.logout_usage": "用法：/logout <provider|all>",
     "harness.auth.method": "登录方式",
-    "harness.auth.model_id": "模型 ID",
+    "harness.auth.manual_model": "服务未提供模型列表（HTTP {status}），请输入模型 ID",
     "harness.auth.model_invalid": "模型 ID 不能包含空白字符",
     "harness.auth.openai_compatible": "兼容 OpenAI",
     "harness.auth.provider_builtin": "请选择不同于内置服务商的自定义 ID",

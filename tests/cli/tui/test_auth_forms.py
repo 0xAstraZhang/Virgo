@@ -10,6 +10,7 @@ from textual import events
 from textual.widgets import Input, OptionList
 
 from virgo.ai.auth_presets import API_PRESETS
+from virgo.ai.catalog import CatalogModel
 from virgo.ai.providers import faux
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
@@ -134,7 +135,8 @@ def test_inline_escape_interrupt_and_next_login_preserve_draft(make_session):
 
 
 def test_real_login_wizard_reuses_command_list_and_saves_key_without_history(make_session, monkeypatch):
-    monkeypatch.setattr("virgo.harness.auth_commands.refresh_provider_catalog", lambda session, provider: None)
+    monkeypatch.setattr("virgo.harness.auth_commands.fetch_model_catalog",
+                        lambda model, signal, *, api_key: [CatalogModel("live-model"), CatalogModel("other-model")])
     async def scenario():
         ui = FullscreenUI()
         session = make_session(ui=ui)
@@ -171,9 +173,6 @@ def test_real_login_wizard_reuses_command_list_and_saves_key_without_history(mak
             field = app.query_one("#auth-value", Input)
             assert field.value == API_PRESETS["deepseek"]["config"]["baseUrl"]
             await pilot.press("enter")
-            await wait_for(pilot, lambda: form_is_ready(app, "Model ID"))
-            assert field.value == API_PRESETS["deepseek"]["model"]
-            await pilot.press("enter")
             await wait_for(pilot, lambda: form_is_ready(app, "API key"))
             assert field.password
             app.post_message(events.Paste("sk-private-wizard-key"))
@@ -181,7 +180,7 @@ def test_real_login_wizard_reuses_command_list_and_saves_key_without_history(mak
             await pilot.press("enter")
             await wait_for(pilot, lambda: not app.controller.busy and app.active_input is None)
             assert session.auth.all()["deepseek"]["key"] == "sk-private-wizard-key"
-            assert session.model.spec == f"deepseek/{API_PRESETS['deepseek']['model']}"
+            assert session.model.spec == "deepseek/live-model"
             assert not app.has_modal and app.editor.display
             assert not field.display and field.value == ""
             history = [json.loads(line) for line in app.history.path.read_text().splitlines()]

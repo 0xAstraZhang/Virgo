@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import time
 
 import pytest
@@ -41,11 +42,13 @@ class LoginUI(UI):
         self.lines.append(text)
 
 
-@pytest.fixture(autouse=True)
-def _no_live_provider_directory(request, monkeypatch):
-    """Avoid real public-internet / dead-port directory fetches except in the loopback directory test."""
-    if request.node.originalname != "test_login_fetches_the_provider_directory_once":
-        monkeypatch.setattr("virgo.harness.auth_commands.refresh_provider_catalog", lambda session, provider: None)
+@pytest.fixture
+def api_catalog(monkeypatch):
+    directories = {provider: [CatalogModel("another-model"), CatalogModel(preset["model"])]
+                   for provider, preset in API_PRESETS.items()}
+    monkeypatch.setattr("virgo.harness.auth_commands.fetch_model_catalog",
+                        lambda model, signal, *, api_key: directories[model.provider])
+    return directories
 
 
 def _assert_authenticated_after_restart(session, endpoint, key):
@@ -63,14 +66,14 @@ def _assert_authenticated_after_restart(session, endpoint, key):
 
 
 @pytest.mark.parametrize("provider", API_PRESETS)
-def test_api_login_persists_switches_and_logout_removes_only_credential(project, provider):
-    ui = LoginUI("", "", "private-api-key")
+def test_api_login_persists_switches_and_logout_removes_only_credential(project, provider, api_catalog):
+    ui = LoginUI("", "private-api-key")
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         s.prompt(f"/login api {provider}")
         assert s.model.spec == f"{provider}/{API_PRESETS[provider]['model']}"
         assert s.small_model.spec == s.model.spec
-        assert ui.inputs[-1] == ("API key", True)
+        assert ui.inputs == [("Base URL", False), ("API key", True)]
         assert s.auth.all()[provider]["key"] == "private-api-key"
         assert s.main.messages == []
         assert "private-api-key" not in "\n".join(ui.lines)
@@ -100,6 +103,7 @@ def account_login(monkeypatch):
         return {"type": "oauth", "access": "account-secret", "refresh": "refresh-secret", "expires": time.time() + 3600}
 
     monkeypatch.setattr(oauth, "login", login)
+    monkeypatch.setattr("virgo.harness.auth_commands.refresh_provider_catalog", lambda session, provider: None)
     return seen
 
 
@@ -130,12 +134,14 @@ def test_account_login_dispatches_provider_and_uses_request_only_token(project, 
         s.shutdown()
 
 
-def test_custom_api_wizard_preserves_other_settings(project):
-    ui = LoginUI("API — Connect with an API key", "Custom", "local", "OpenAI compatible", "http://localhost:1234/v1", "model/name", "secret")
+def test_custom_api_wizard_preserves_other_settings(project, api_catalog):
+    api_catalog["local"] = [CatalogModel("model/name"), CatalogModel("another-model")]
+    ui = LoginUI("API — Connect with an API key", "Custom", "local", "OpenAI compatible", "http://localhost:1234/v1", "secret")
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         s.settings.save_user({"effort": "high", "providers": {"other": {"baseUrl": "https://other.test"}}})
         s.prompt("/login")
+        assert ui.inputs == [("Provider ID", False), ("Base URL", False), ("API key", True)]
         assert s.model.spec == "local/model/name"
         assert s.model.base_url == "http://localhost:1234/v1"
         saved = json.loads((s.paths.user / "settings.json").read_text())
@@ -148,8 +154,39 @@ def test_custom_api_wizard_preserves_other_settings(project):
         s.shutdown()
 
 
-def test_custom_anthropic_uses_main_model_and_ignores_legacy_small_model_setting(project):
-    ui = LoginUI("local", "Anthropic Messages", "http://localhost:1234", "claude-test", "secret")
+def test_relogin_keeps_current_model_when_it_is_still_listed(make_session, api_catalog):
+    s = make_session(ui=LoginUI("", "secret"), refresh_models=False)
+    s.set_model("deepseek/another-model")
+    s.prompt("/login api deepseek")
+    assert s.model.spec == "deepseek/another-model"
+    assert s.auth.all()["deepseek"]["key"] == "secret"
+
+
+def test_slow_startup_directory_cannot_replace_new_logins_models(make_session, monkeypatch, api_catalog):
+    started, release = threading.Event(), threading.Event()
+
+    def startup_directory(model, signal):
+        started.set()
+        assert release.wait(5)
+        return [CatalogModel("old-account-model")]
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "old-key")
+    monkeypatch.setattr("virgo.harness.preferences.fetch_model_catalog", startup_directory)
+    s = make_session(ui=LoginUI("", "new-key"))
+    try:
+        assert started.wait(5)
+        s.prompt("/login api deepseek")
+    finally:
+        release.set()
+    assert s._catalog_refresh_done.wait(5)
+    assert [c.label for c in model_choices(s) if c.spec.startswith("deepseek/")] == [
+        item.id for item in api_catalog["deepseek"]
+    ]
+
+
+def test_custom_anthropic_uses_main_model_and_ignores_legacy_small_model_setting(project, api_catalog):
+    api_catalog["local"] = [CatalogModel("claude-test")]
+    ui = LoginUI("local", "Anthropic Messages", "http://localhost:1234", "secret")
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         s.prompt("/login api custom")
@@ -175,8 +212,8 @@ def test_custom_provider_cannot_use_logout_all_keyword(project):
         s.shutdown()
 
 
-def test_failed_settings_save_rolls_back_existing_login(project, monkeypatch):
-    ui = LoginUI("", "", "replacement")
+def test_failed_settings_save_rolls_back_existing_login(project, monkeypatch, api_catalog):
+    ui = LoginUI("", "replacement")
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         previous_model = s.model.spec
@@ -195,10 +232,10 @@ def test_failed_settings_save_rolls_back_existing_login(project, monkeypatch):
         s.shutdown()
 
 
-def test_api_login_resets_custom_endpoint_and_rolls_back_a_failed_reset(project, monkeypatch):
+def test_api_login_resets_custom_endpoint_and_rolls_back_a_failed_reset(project, monkeypatch, api_catalog):
     custom = "http://localhost:1234/v1"
     official = "https://api.deepseek.com"
-    ui = LoginUI(custom, "", "original", official + "/", "", "replacement", official, "", "replacement")
+    ui = LoginUI(custom, "original", official + "/", "replacement", official, "replacement")
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         s.prompt("/login api deepseek")
@@ -239,12 +276,12 @@ def test_api_login_resets_custom_endpoint_and_rolls_back_a_failed_reset(project,
         s.shutdown()
 
 
-def test_login_compares_protocol_and_normalized_endpoint_to_builtin(project, monkeypatch):
+def test_login_compares_protocol_and_normalized_endpoint_to_builtin(project, monkeypatch, api_catalog):
     config = API_PRESETS["deepseek"]["config"]
     monkeypatch.setitem(BUILTIN_PROVIDERS, "deepseek", {
         **config, "api": "openai-responses", "baseUrl": config["baseUrl"] + "/",
     })
-    ui = LoginUI("", "", "secret")
+    ui = LoginUI("", "secret")
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         # A user edit made since startup must also be cleared when choosing the default.
@@ -259,10 +296,10 @@ def test_login_compares_protocol_and_normalized_endpoint_to_builtin(project, mon
 
 
 @pytest.mark.parametrize("mode,provider", [("api", "deepseek"), ("auth", "xai")])
-def test_relogin_preserves_manual_settings_and_resets_conflicting_connection(project, mode, provider, account_login):
+def test_relogin_preserves_manual_settings_and_resets_conflicting_connection(project, mode, provider, account_login, api_catalog):
     preset = (API_PRESETS if mode == "api" else AUTH_PRESETS)[provider]
     endpoint = preset["config"]["baseUrl"]
-    ui = LoginUI("", "", "original", endpoint, "", "replacement")
+    ui = LoginUI("", "original", endpoint, "replacement")
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         s.prompt(f"/login {mode} {provider}")
@@ -283,12 +320,12 @@ def test_relogin_preserves_manual_settings_and_resets_conflicting_connection(pro
         s.shutdown()
 
 
-def test_project_endpoint_login_stays_consistent_after_restart(project):
+def test_project_endpoint_login_stays_consistent_after_restart(project, api_catalog):
     (project / ".virgo").mkdir()
     (project / ".virgo" / "settings.json").write_text(json.dumps({
         "providers": {"deepseek": {"baseUrl": "http://localhost:1234/v1", "apiKeyEnv": "PROJECT_API_KEY"}},
     }))
-    ui = LoginUI("", "", "secret")
+    ui = LoginUI("", "secret")
     s = AgentSession(project, ui=ui, session=None, extensions=False, trust_project_extensions=True, refresh_models=False)
     try:
         s.prompt("/login api deepseek")
@@ -298,9 +335,9 @@ def test_project_endpoint_login_stays_consistent_after_restart(project):
         }
         _assert_authenticated_after_restart(s, "http://localhost:1234/v1", "secret")
         # Explicitly selecting a conflicting endpoint fails before asking for a key.
-        s.ui = ui = LoginUI("https://api.deepseek.com", "")
+        s.ui = ui = LoginUI("https://api.deepseek.com")
         s.commands.get("login").fn(s, "api deepseek")
-        assert len(ui.inputs) == 2
+        assert ui.inputs == [("Base URL", False)]
         assert any("override deepseek.baseUrl" in line for line in ui.lines)
         assert s.auth.all()["deepseek"]["key"] == "secret"
         s.model.base_url = "https://another.invalid/v1"
@@ -311,7 +348,7 @@ def test_project_endpoint_login_stays_consistent_after_restart(project):
 
 
 def test_cancellation_and_invalid_input_do_not_save(project):
-    ui = LoginUI("", "", None)
+    ui = LoginUI("", None)
     s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
     try:
         initial = s.model.spec
@@ -347,9 +384,10 @@ def _directory_server(state):
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
-            state["paths"].append(self.path)
+            state["requests"].append((self.path, self.headers.get("Authorization")))
             body = json.dumps(state["payload"]).encode()
-            self.send_response(state["status"])
+            status = state.get("next_status", state["status"]) if "?" in self.path else state["status"]
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -362,30 +400,95 @@ def _directory_server(state):
 
 
 @pytest.mark.parametrize(
-    "status, expected_warning",
-    [(200, None), (500, "could not read the model directory")],
-    ids=["success", "failure"],
+    "status, rows, error",
+    [
+        (200, [{"id": "fresh-model", "context_length": 64000}, {"id": "other-model"}], None),
+        (401, [], "401"), (404, [], "404"), (500, [], "500"), (200, [], "no selectable models"),
+    ],
+    ids=["success", "rejected-key", "unsupported-override", "server-error", "empty-directory"],
 )
-def test_login_fetches_the_provider_directory_once(project, monkeypatch, status, expected_warning):
+def test_login_fetches_the_provider_directory_once(project, monkeypatch, status, rows, error):
     from tests.support.http import bypass_proxies, serve
 
     bypass_proxies(monkeypatch)
-    state = {"paths": [], "status": status,
-             "payload": {"data": [{"id": "fresh-model", "context_length": 64000}]}}
+    state = {"requests": [], "status": status, "payload": {"data": rows}}
     with serve(_directory_server(state)) as url:
-        ui = LoginUI("API — Connect with an API key", "Custom", "local", "OpenAI compatible",
-                     f"{url}/v1", "seed-model", "secret")
+        ui = LoginUI(f"{url}/v1", "new-secret")
         s = AgentSession(project, ui=ui, session=None, extensions=False, refresh_models=False)
         try:
-            s.prompt("/login")
-            assert s.model.spec == "local/seed-model"
-            assert state["paths"] == ["/v1/models"]
-            offered = {choice.spec for choice in model_choices(s)}
-            if status == 200:
-                assert "local/fresh-model" in offered
-                assert any("1 models available" in line for line in ui.lines)
+            s.auth.set("deepseek", {"type": "api_key", "key": "old-secret"})
+            s.settings.save_user({"model": s.model.spec})
+            previous_model = s.model.spec
+            previous_settings = (s.paths.user / "settings.json").read_bytes()
+            s.prompt("/login api deepseek")
+            assert ui.inputs == [("Base URL", False), ("API key", True)]
+            assert state["requests"] == [("/v1/models", "Bearer new-secret")]
+            if error is None:
+                assert s.model.spec == "deepseek/fresh-model"
+                assert s.model.context_window == 64000
+                assert [c.spec for c in model_choices(s) if c.spec.startswith("deepseek/")] == [
+                    "deepseek/fresh-model", "deepseek/other-model",
+                ]
+                assert any("2 models available" in line for line in ui.lines)
+                _assert_authenticated_after_restart(s, f"{url}/v1", "new-secret")
             else:
-                assert "local/fresh-model" not in offered
-                assert any(expected_warning in line for line in ui.lines)
+                assert any("Login failed" in line and error in line for line in ui.lines)
+                assert s.model.spec == previous_model
+                assert s.auth.all()["deepseek"]["key"] == "old-secret"
+                assert (s.paths.user / "settings.json").read_bytes() == previous_settings
         finally:
             s.shutdown()
+
+
+@pytest.mark.parametrize("status", [404, 405, 501, 401, 403, 429, 500, 200])
+def test_custom_login_only_prompts_when_directory_is_unsupported(make_session, monkeypatch, status):
+    from tests.support.http import bypass_proxies, serve
+
+    bypass_proxies(monkeypatch)
+    state = {"requests": [], "status": status, "payload": {"data": []}}
+    with serve(_directory_server(state)) as url:
+        ui = LoginUI("local", "OpenAI compatible", url, "secret", "manual/model")
+        s = make_session(ui=ui, refresh_models=False)
+        s.prompt("/login api custom")
+        inputs = [("Provider ID", False), ("Base URL", False), ("API key", True)]
+        assert state["requests"] == [("/models", "Bearer secret")]
+        if status in (404, 405, 501):
+            assert ui.inputs == [*inputs, (s.t("harness.auth.manual_model", status=status), False)]
+            assert s.model.spec == "local/manual/model"
+            assert s.auth.all()["local"]["key"] == "secret"
+        else:
+            assert ui.inputs == inputs
+            assert s.auth.all() == {}
+            assert any("Login failed" in line for line in ui.lines)
+
+
+def test_custom_login_does_not_prompt_for_model_if_a_later_directory_page_is_missing(make_session, monkeypatch):
+    from tests.support.http import bypass_proxies, serve
+
+    bypass_proxies(monkeypatch)
+    state = {"requests": [], "status": 200, "next_status": 404,
+             "payload": {"data": [{"id": "first"}], "last_id": "first", "has_more": True}}
+    with serve(_directory_server(state)) as url:
+        ui = LoginUI("local", "OpenAI compatible", url, "secret")
+        s = make_session(ui=ui, refresh_models=False)
+        s.prompt("/login api custom")
+        assert ui.inputs == [("Provider ID", False), ("Base URL", False), ("API key", True)]
+        assert any("Login failed" in line and "404" in line for line in ui.lines)
+        assert s.auth.all() == {}
+
+
+@pytest.mark.parametrize("answer, message", [(None, "Login cancelled"), ("two words", "whitespace")])
+def test_custom_manual_model_cancellation_and_invalid_input_keep_previous_login(make_session, monkeypatch, answer, message):
+    from tests.support.http import bypass_proxies, serve
+
+    bypass_proxies(monkeypatch)
+    state = {"requests": [], "status": 405, "payload": {}}
+    with serve(_directory_server(state)) as url:
+        ui = LoginUI("local", "OpenAI compatible", url, "new-key", answer)
+        s = make_session(ui=ui, refresh_models=False)
+        s.auth.set("local", {"type": "api_key", "key": "previous-key"})
+        original_model = s.model.spec
+        s.prompt("/login api custom")
+        assert any(message in line for line in ui.lines)
+        assert s.auth.all()["local"]["key"] == "previous-key"
+        assert s.model.spec == original_model

@@ -43,7 +43,7 @@ MESSAGES = {
     "harness.auth.logout_success": "Logged out: {providers}.",
     "harness.auth.logout_usage": "Usage: /logout <provider|all>",
     "harness.auth.method": "Login method",
-    "harness.auth.model_id": "Model ID",
+    "harness.auth.manual_model": "Model directory unavailable (HTTP {status}). Enter the model ID",
     "harness.auth.model_invalid": "Model ID cannot contain whitespace",
     "harness.auth.openai_compatible": "OpenAI compatible",
     "harness.auth.provider_builtin": "Choose a custom Provider ID that differs from the built-in providers",

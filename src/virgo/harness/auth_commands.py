@@ -7,7 +7,8 @@ import shlex
 from urllib.parse import urlsplit
 
 from ..ai.auth_presets import API_PRESETS, AUTH_PRESETS
-from ..ai.models import BUILTIN_PROVIDERS
+from ..ai.catalog import CatalogCancelled, CatalogError, CatalogUnsupported, fetch_model_catalog
+from ..ai.models import BUILTIN_PROVIDERS, resolve_model
 from .preferences import provider_name, refresh_provider_catalog
 from .settings import UserSettingsPatch
 
@@ -64,6 +65,27 @@ def _login_patch(provider, spec, config, connection):
     return UserSettingsPatch(patch, remove_provider_keys={provider: reset} if reset else {})
 
 
+def _api_login_model(session, provider, config, key):
+    configured = session.settings.get("providers", {}).get(provider, {})
+    connection = resolve_model(f"{provider}/_catalog", {provider: {**configured, **config}})
+    try:
+        models = fetch_model_catalog(connection, session.main.agent.signal, api_key=key)
+    except CatalogUnsupported as error:
+        if provider in API_PRESETS:
+            raise
+        model_id = _input(session.ui, session.t("harness.auth.manual_model", status=error.status))
+        if any(c.isspace() for c in model_id):
+            raise ValueError(session.t("harness.auth.model_invalid")) from None
+        return model_id, []
+    if not models:
+        raise CatalogError(session.t("harness.models.empty_live", provider=provider_name(provider)))
+    ids = {item.id for item in models}
+    if session.model.provider == provider and session.model.id in ids:
+        return session.model.id, models
+    preferred = API_PRESETS.get(provider, {}).get("model")
+    return (preferred if preferred in ids else models[0].id), models
+
+
 def login(session, args):
     ui = session.ui
     if not ui.interactive:
@@ -111,7 +133,6 @@ def login(session, args):
                     raise ValueError(session.t("harness.auth.provider_builtin"))
                 api = _choose(ui, session.t("harness.auth.api_protocol"), {session.t("harness.auth.openai_compatible"): "openai", "Anthropic Messages": "anthropic"})
                 config = {"api": api, "apiKeyEnv": f"VIRGO_{provider.upper().replace('-', '_')}_API_KEY"}
-                default_model = ""
             elif provider in API_PRESETS:
                 preset = API_PRESETS[provider]
                 config = dict(preset["config"])
@@ -119,15 +140,12 @@ def login(session, args):
                 for key in ("baseUrl", "apiKeyEnv"):
                     if configured.get(key):
                         config[key] = configured[key]
-                default_model = preset["model"]
             else:
                 raise ValueError(session.t("harness.auth.api_provider"))
             config["baseUrl"] = _endpoint(_input(ui, session.t("harness.auth.base_url"), default=config.get("baseUrl", "")), session.t)
-            model_id = _input(ui, session.t("harness.auth.model_id"), default=default_model)
-            if any(c.isspace() for c in model_id):
-                raise ValueError(session.t("harness.auth.model_invalid"))
             session.settings.check_provider_update(provider, config)
             key = _input(ui, session.t("harness.auth.api_key"), password=True)
+            model_id, models = _api_login_model(session, provider, config, key)
             credential = {"type": "api_key", "key": key}
         if session.main.agent.signal.is_set():
             raise _Cancelled
@@ -137,17 +155,22 @@ def login(session, args):
         session.auth.save_login(provider, credential, lambda: session.settings.save_user(patch))
         session.set_model(spec)
         ui.print(session.t("harness.auth.success", provider=provider, model=spec), "ok")
-        # Discover this provider's model directory once so /model is usable immediately.
-        # Credentials are already saved; discovery must never fail the login.
         try:
-            count = refresh_provider_catalog(session, provider)
+            if mode == "api":
+                session.remember_model_metadata(session.model, models)
+                count = len(models)
+            else:
+                count = refresh_provider_catalog(session, provider)
         except Exception as error:  # noqa: BLE001 - report and keep the successful login
             session.report_error(error, phase="catalog.login", notify=False)
             count = None
         if count:
             ui.print(session.t("harness.models.login_ready", provider=provider_name(provider), count=count), "ok")
-    except _Cancelled:
+    except (_Cancelled, CatalogCancelled):
         ui.print(session.t("harness.auth.cancelled"), "dim")
+    except CatalogError as exc:
+        session.report_error(exc, phase="catalog.login", context={"provider": provider}, notify=False)
+        ui.print(session.t("harness.auth.failed", error=exc), "error")
     except Exception as exc:  # noqa: BLE001 - OAuth errors are redacted by the auth layer.
         ui.print(session.t("harness.auth.failed", error=exc), "error")
 
