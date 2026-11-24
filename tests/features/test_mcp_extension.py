@@ -4,20 +4,25 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
 import textwrap
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
 from virgo.agent import ToolContext
 from virgo.ai.providers import faux
 from virgo.ai.types import ImageContent, TextContent, ToolResultMessage
+from virgo.execution import HostContext
 from virgo.extensions import mcp as mcp_ext
 from virgo.i18n import Translator
 from virgo.output_store import OutputPipe
@@ -25,6 +30,7 @@ from virgo.tools.output import MAX_BYTES, MAX_LINES
 
 from tests.support import SUPPORT
 from tests.support.harness import RecordingUI, calls, tool_results, wait_until
+from tests.support.terminal import PtyClient
 
 SERVER = SUPPORT / "mcp_echo_server.py"
 REPORT = "mcp__echo__report"
@@ -975,3 +981,446 @@ def test_mcp_colliding_server_names_are_order_independent_across_startup_and_rec
     after_tools = [t for t in session.tools_for("main") if t.name.startswith("mcp__prod_api__update_")]
     after_map = {t.name: t.execute({}, ctx).as_text() for t in after_tools}
     assert after_map == before_map
+
+
+class _MCPPeer(ThreadingHTTPServer):
+    """Wire peer with observable requests, TCP connections and controllable failure modes."""
+
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), _MCPHandler)
+        self.url = f"http://127.0.0.1:{self.server_port}"
+        self.requests = []
+        self.connections = set()
+        self.feeds = {}
+        self.call_started = threading.Event()
+        self.stopping = threading.Event()
+        self.mode = "ok"
+        self.error_message = ""
+
+    def config(self, transport):
+        return {"url": f"{self.url}/{transport}", "type": transport, "timeout": 4, "callTimeout": 6}
+
+
+class _MCPHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server: _MCPPeer
+
+    def log_message(self, *_):
+        pass
+
+    def handle(self):
+        self.server.connections.add(self.connection)
+        try:
+            super().handle()
+        except ConnectionError:
+            pass  # The caller can cancel an outstanding HTTP request.
+        finally:
+            self.server.connections.discard(self.connection)
+
+    def reply(self, status, body=b"", **headers):
+        self.send_response(status)
+        for key, value in headers.items():
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def event_stream(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+    def do_GET(self):
+        self.server.requests.append(("GET", self.path, {k.lower(): v for k, v in self.headers.items()}))
+        if urlsplit(self.path).path != "/sse":
+            self.reply(405)
+            return
+        feed = queue.Queue()
+        endpoint = f"/messages/{id(feed)}"
+        if query := urlsplit(self.path).query:
+            endpoint += "?" + query
+        self.server.feeds[endpoint] = feed
+        try:
+            self.event_stream()
+            self.wfile.write(f"event: endpoint\ndata: {endpoint}\n\n".encode())
+            while not self.server.stopping.is_set():
+                try:
+                    data = feed.get(timeout=0.05)
+                except queue.Empty:
+                    data = b": keepalive\n\n"
+                if data is None:
+                    break
+                self.wfile.write(data)
+        finally:
+            del self.server.feeds[endpoint]
+
+    def do_DELETE(self):
+        self.server.requests.append(("DELETE", self.path, dict(self.headers)))
+        if self.server.mode == "hang-delete":
+            self.stalled()
+        else:
+            self.reply(204)
+
+    def stalled(self):
+        self.event_stream()
+        while not self.server.stopping.wait(0.05):
+            self.wfile.write(b": waiting\n\n")
+
+    def do_POST(self):
+        req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        method = req["method"]
+        self.server.requests.append((method, self.path, {k.lower(): v for k, v in self.headers.items()}))
+        if "id" not in req:
+            self.reply(202)
+            return
+        feed = self.server.feeds.get(self.path)
+        message = {"jsonrpc": "2.0", "id": req["id"]}
+        headers = {}
+        if method == "initialize":
+            if self.server.mode == "hang-init":
+                self.stalled()
+                return
+            headers["Mcp-Session-Id"] = "stateful-test-session"
+            result = {"protocolVersion": req["params"]["protocolVersion"], "capabilities": {"tools": {}},
+                      "serverInfo": {"name": "peer", "version": "1"}}
+        elif method == "tools/list":
+            result = {"tools": [{"name": "update", "inputSchema": {"type": "object", "properties": {}}}]}
+        else:
+            assert method == "tools/call"
+            self.server.call_started.set()
+            mode = self.server.mode
+            if mode == "expire":
+                assert self.headers["Mcp-Session-Id"] == "stateful-test-session"
+                self.reply(404)
+                return
+            if mode == "redirect" and self.path != "/replayed":
+                self.reply(307, Location="/replayed")
+                return
+            if mode == "crash":
+                if feed is not None:
+                    feed.put(None)
+                self.close_connection = True
+                return
+            if mode == "hang":
+                if feed is not None:
+                    self.reply(202)
+                else:
+                    self.stalled()
+                return
+            result = {"content": [{"type": "text", "text": self.server.error_message or "updated"}],
+                      "isError": mode == "tool-error"}
+        if self.server.mode == "rpc-error" or (method == "initialize" and self.server.mode == "bad-init"):
+            message["error"] = {"code": -32602, "message": self.server.error_message}
+        else:
+            message["result"] = result
+        body = json.dumps(message).encode()
+        if feed is None:
+            self.reply(200, body, **{"Content-Type": "application/json", **headers})
+        else:
+            feed.put(b"event: message\ndata: " + body + b"\n\n")
+            self.reply(202)
+
+
+@pytest.fixture
+def mcp_peer():
+    with _MCPPeer() as peer:
+        thread = threading.Thread(target=peer.serve_forever, kwargs={"poll_interval": 0.02})
+        thread.start()
+        try:
+            yield peer
+        finally:
+            peer.stopping.set()
+            peer.shutdown()
+            thread.join()
+
+
+@pytest.mark.parametrize(("entry", "field"), [
+    ({}, "command.*url|url.*command"),
+    ({"command": "true", "url": "http://host"}, "command.*url|url.*command"),
+    ({"url": "http://host", "args": []}, "args"),
+    ({"url": "http://host", "env": None}, "env"),
+    ({"command": "true", "headers": {}}, "headers"),
+    ({"command": "true", "type": "sse"}, "type"),
+    ({"url": "http://host", "transport": "stdio"}, "transport"),
+    ({"url": "http://host", "transport": "ws"}, "transport"),
+    ({"url": "http://host", "type": None}, "type"),
+    ({"url": "http://host", "type": "http", "transport": "sse"}, "type.*transport|transport.*type"),
+    *[({"url": url}, "url") for url in (
+        None, "", "/relative", "ws://host", "https:///path", "http://localhost:no",
+        "http://localhost:65536", "http://localhost:", "http://[::1", "http://[::1]junk",
+        "http://bad host", "https://host/path#", "https://host/#fragment",
+        "http://local\nhost", "http://host/q?x=\x7f",
+    )],
+    *[({"url": "http://host", "headers": headers}, "headers") for headers in (
+        [], None, {"name": 2}, {1: "v"}, {"A": "one", "a": "two"}, {"": "x"}, {"Bad Key": "x"},
+        {"a": "x\ry"}, {"a": "x\ny"}, {"a": "x\x00y"}, {"a": "é"}, {"a": " trailing "},
+    )],
+    ({"url": "http://host", "headers": {"x": "${MCP_ABSENT_HEADER}"}}, "MCP_ABSENT_HEADER"),
+])
+def test_mcp_transport_config_fails_before_allocation(entry, field, project, monkeypatch):
+    monkeypatch.delenv("MCP_ABSENT_HEADER", raising=False)
+    ctx = HostContext.unrestricted(project)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid configuration allocated transport resources")
+
+    monkeypatch.setattr(os, "pipe", unexpected)
+    monkeypatch.setattr(threading.Thread, "start", unexpected)
+    monkeypatch.setattr(mcp_ext.asyncio, "new_event_loop", unexpected)
+    with pytest.raises(mcp_ext.MCPConnectionError, match=field):
+        mcp_ext._Connection("invalid", entry, ctx)
+
+
+@pytest.mark.parametrize("url", ["http://localhost", "https://example.org:443/path",
+                                "http://127.0.0.1:1234", "http://[::1]:8080/mcp"])
+def test_mcp_url_config_accepts_absolute_endpoints(url):
+    mcp_ext._validate_config({"url": url})
+
+
+def test_mcp_stdio_fingerprint_stays_byte_compatible(project):
+    config = {"type": "stdio", "command": "工具", "args": ["b", "a"], "env": {"Z": "1", "A": "2"}}
+    connection = mcp_ext._Connection("stdio", config, HostContext.unrestricted(project))
+    assert connection.fingerprint == (
+        "6a042056e297f88c243a880d50f4cffaa3b099fde4b3d4c0430f387c38a380cd"
+    )
+
+
+def _remote_tool(session):
+    tool = session.tool("mcp__remote__update")
+    assert tool is not None, session.tool("mcp_status").execute({}, ToolContext("s", session.cwd, threading.Event())).as_text()
+    return tool
+
+
+def _remote_state(session):
+    return session.tool("mcp_status").execute({}, ToolContext("s", session.cwd, threading.Event())).details["mcp_status"][0]["state"]
+
+
+@pytest.mark.parametrize("transport", ["streamable-http", "sse"])
+def test_mcp_url_session_lifecycle(mcp_peer, transport, make_session, monkeypatch):
+    peer = mcp_peer
+    monkeypatch.setenv("MCP_TEST_HEADER", "expanded-value")
+    config = dict(peer.config(transport), headers={"X-Identity": "${MCP_TEST_HEADER}"})
+    if transport == "streamable-http":
+        del config["type"]
+    pending = []
+    new_loop = mcp_ext.asyncio.new_event_loop
+
+    def tracked_loop():
+        loop = new_loop()
+        close = loop.close
+
+        def tracked_close():
+            pending.extend(mcp_ext.asyncio.all_tasks(loop))
+            close()
+
+        loop.close = tracked_close
+        return loop
+
+    monkeypatch.setattr(mcp_ext.asyncio, "new_event_loop", tracked_loop)
+    session = make_session(settings={"mcpServers": {"remote": config}})
+    tool = _remote_tool(session)
+    result = tool.execute({}, ToolContext("c", session.cwd, threading.Event()))
+    assert result.as_text() == "updated"
+    boundary = result.details["boundary"]
+    assert boundary["transport"] == transport
+    assert "payload_started" not in boundary and "cleanup" not in boundary
+    assert all(h["x-identity"] == "expanded-value" for _, _, h in peer.requests)
+    assert not any(t.name == "mcp-remote-stderr" for t in threading.enumerate())
+    peer.call_started.clear()
+    peer.mode = "hang"
+    signal = threading.Event()
+    with ThreadPoolExecutor(1) as pool:
+        hung = pool.submit(tool.execute, {}, ToolContext("hung", session.cwd, signal))
+        assert peer.call_started.wait(2)
+        start = time.monotonic()
+        signal.set()
+        aborted = hung.result(timeout=2)
+        assert time.monotonic() - start <= 2
+        assert aborted.is_error and aborted.details["status"] == "aborted" and aborted.details["cancelled"] is True
+    wait_until(lambda: any(m == "notifications/cancelled" for m, _, _ in peer.requests), timeout=2)
+    session.shutdown()
+    assert not pending
+    wait_until(lambda: not peer.connections)
+    assert not any(t.name.startswith("mcp-remote") for t in threading.enumerate())
+    if transport == "streamable-http":
+        assert any(method == "DELETE" for method, _, _ in peer.requests)
+
+
+@pytest.mark.parametrize(("transport", "fault"), [
+    ("streamable-http", "expire"), ("streamable-http", "crash"), ("sse", "crash"), ("sse", "idle"),
+    ("streamable-http", "redirect"), ("sse", "redirect"),
+])
+def test_mcp_url_failure_and_explicit_reconnect(mcp_peer, transport, fault, make_session):
+    peer = mcp_peer
+    session = make_session(settings={"mcpServers": {"remote": peer.config(transport)}})
+    tool = _remote_tool(session)
+    if fault == "idle":
+        next(iter(peer.feeds.values())).put(None)
+        wait_until(lambda: _remote_state(session) == "unavailable")
+    peer.mode = fault
+    ctx = ToolContext("c", session.cwd, threading.Event())
+    failed = tool.execute({}, ctx)
+    assert failed.is_error
+    assert "/mcp reconnect" in failed.as_text()
+    assert _remote_state(session) == "unavailable"
+    assert not any(path == "/replayed" for _, path, _ in peer.requests)
+    assert sum(method == "tools/call" for method, _, _ in peer.requests) == (0 if fault == "idle" else 1)
+    peer.mode = "ok"
+    session.prompt("/mcp reconnect")
+    assert _remote_tool(session).execute({}, ctx).as_text() == "updated"
+
+
+@pytest.mark.parametrize("mode", ["rpc-error", "tool-error", "bad-init"])
+def test_mcp_url_redacts_errors_and_diagnostics(mcp_peer, mode, make_session, monkeypatch):
+    peer = mcp_peer
+    values = ["cred/user", "cred%2Fuser", "pass:word", "pass%3Aword", "q+test secret", "q%2Btest+secret",
+              "custom-header-value", "opaque%3Avalue", "opaque:value", "prefix custom-header-value"]
+    peer.error_message = "peer error " + " | ".join(values)
+    url = peer.url.replace("//", "//cred%2Fuser:pass%3Aword@") + "/http?key=q%2Btest+secret"
+    monkeypatch.setenv("MCP_TEST_HEADER", "custom-header-value")
+    config = {"url": url, "headers": {"X-Custom": "prefix ${MCP_TEST_HEADER}", "X-Opaque": "opaque%3Avalue"}}
+    peer.mode = mode if mode == "bad-init" else "ok"
+    session = make_session(settings={"mcpServers": {"remote": config}})
+    if mode == "bad-init":
+        session.prompt("/mcp")
+        records = [rec for rec in session.diagnostics.recent() if rec["phase"] == "mcp.connect"]
+        assert records
+        diagnostic = json.dumps(records) + session.ui.text
+    else:
+        peer.mode = mode
+        res = _remote_tool(session).execute({}, ToolContext("c", session.cwd, threading.Event()))
+        assert res.is_error
+        diagnostic = res.as_text() + json.dumps(res.details)
+        assert _remote_state(session) == "ready"
+    assert "peer error" in diagnostic
+    for value in values:
+        assert value not in diagnostic
+
+
+def test_mcp_url_mutating_approval_tracks_endpoint_and_expanded_headers(mcp_peer, broker_session, monkeypatch):
+    cfg = Path(os.environ["VIRGO_HOME"]) / "mcp.json"
+    entry = {"url": mcp_peer.url + "/http?tenant=blue", "headers": {"X-Key": "${MCP_TEST_HEADER}", "Y": "ok"}}
+
+    def save():
+        cfg.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+
+    monkeypatch.setenv("MCP_TEST_HEADER", "first-value")
+    save()
+    ui = RecordingUI(["a", "n", "n", "a", "n"])
+    session = broker_session(ui=ui, extensions=True)
+
+    def call():
+        faux.push("test", faux.reply(tools=[("mcp__remote__update", {})]), faux.reply("done"))
+        session.prompt("Update the remote record")
+        return tool_results(session)[-1]
+
+    assert not call().is_error
+    entry.update(type="http", transport="streamable-http", headers={"y": "ok", "x-key": "${MCP_TEST_HEADER}"})
+    save()
+    session.prompt("/mcp reconnect")
+    assert not call().is_error and len(ui.questions) == 1
+    monkeypatch.setenv("MCP_TEST_HEADER", "second-value")
+    session.prompt("/mcp reconnect")
+    assert call().is_error and len(ui.questions) == 2
+    monkeypatch.setenv("MCP_TEST_HEADER", "first-value")
+    entry["url"] = mcp_peer.url + "/http?tenant=green"
+    save()
+    session.prompt("/mcp reconnect")
+    assert call().is_error and len(ui.questions) == 3
+    # At a URL that serves both protocols, changing only the transport revokes the grant.
+    entry.update(url=mcp_peer.url + "/sse", type="http")
+    save()
+    session.prompt("/mcp reconnect")
+    assert not call().is_error and len(ui.questions) == 4
+    before = _remote_tool(session).config_fingerprint
+    entry.update(type="sse", transport="sse")
+    save()
+    session.prompt("/mcp reconnect")
+    assert _remote_tool(session).config_fingerprint != before
+    assert call().is_error and len(ui.questions) == 5
+    assert sum(method == "tools/call" for method, _, _ in mcp_peer.requests) == 3
+
+
+@pytest.mark.pty
+def test_mcp_url_repl_exit_closes_connections(mcp_peer, project):
+    home = Path(os.environ["VIRGO_HOME"])
+    entries = {t: mcp_peer.config(t) for t in ("sse", "streamable-http")}
+    (home / "mcp.json").write_text(json.dumps({"mcpServers": entries}))
+    argv = [sys.executable, "-m", "virgo", "--ui", "plain", "--no-session", "--model", "faux/demo",
+            "--permission", "no-limit"]
+    with PtyClient(project, home, argv) as terminal:
+        wait_until(lambda: sum(m == "tools/list" for m, _, _ in mcp_peer.requests) == 2)
+        terminal.send(b"/exit\r")
+        assert terminal.finish() == 0
+        assert b"Task was destroyed" not in terminal.output
+    wait_until(lambda: not mcp_peer.connections)
+    assert any(m == "DELETE" for m, _, _ in mcp_peer.requests)
+
+
+def test_mcp_invalid_endpoints_start_no_workers(make_session, monkeypatch):
+    started = []
+    original = threading.Thread.start
+
+    def watch(thread):
+        started.append(thread.name)
+        original(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", watch)
+    session = make_session(settings={"mcpServers": {"invalid": {"url": "ftp://localhost"}}})
+    session.prompt("/mcp reconnect")
+    assert "url" in session.ui.text
+    assert not any(name.startswith(("mcp-", "ThreadPoolExecutor")) for name in started)
+
+
+def test_mcp_url_close_with_stalled_session_delete(mcp_peer, make_session):
+    session = make_session(settings={"mcpServers": {"remote": mcp_peer.config("http")}})
+    _remote_tool(session)
+    mcp_peer.mode = "hang-delete"
+    with ThreadPoolExecutor(1) as pool:
+        closed = pool.submit(session.shutdown)
+        try:
+            closed.result(timeout=3)
+        finally:
+            mcp_peer.stopping.set()
+    wait_until(lambda: not mcp_peer.connections)
+    assert any(m == "DELETE" for m, _, _ in mcp_peer.requests)
+    assert not any(t.name.startswith("mcp-remote") for t in threading.enumerate())
+
+
+def test_mcp_url_shutdown_during_reconnect(mcp_peer, make_session):
+    session = make_session(settings={"mcpServers": {"remote": mcp_peer.config("http")}})
+    _remote_tool(session)
+    mcp_peer.mode = "hang-init"
+    with ThreadPoolExecutor(1) as pool:
+        reconnect = pool.submit(session.commands.get("mcp").fn, session, "reconnect")
+        wait_until(lambda: sum(m == "initialize" for m, _, _ in mcp_peer.requests) == 2)
+        try:
+            session.shutdown()
+            reconnect.result(timeout=2)
+            assert not any(t.name.startswith("mcp-remote") for t in threading.enumerate())
+        finally:
+            mcp_peer.stopping.set()
+    wait_until(lambda: not mcp_peer.connections)
+
+
+def test_mcp_sse_failed_post_redacts_sdk_errors(mcp_peer, make_session, caplog):
+    config = mcp_peer.config("sse")
+    config["url"] += "?tenant=private%2Ftenant"
+    session = make_session(settings={"mcpServers": {"remote": config}})
+    mcp_peer.mode = "redirect"
+    failed = _remote_tool(session).execute({}, ToolContext("c", session.cwd, threading.Event()))
+    assert "/mcp reconnect" in failed.as_text()
+    assert "private%2Ftenant" not in caplog.text and "private/tenant" not in caplog.text
+
+
+@pytest.mark.parametrize("filename", ["mcp.json", "settings.json"])
+def test_mcp_url_rejects_repeated_header_in_json_file(mcp_peer, make_session, filename):
+    entry = '{"url": "' + mcp_peer.url + '", "headers": {"X-Key": "first", "X-Key": "second"}}'
+    (Path(os.environ["VIRGO_HOME"]) / filename).write_text('{"mcpServers": {"remote": ' + entry + '}}')
+    session = make_session()
+    assert _remote_state(session) == "unavailable"
+    session.prompt("/mcp")
+    assert "headers" in session.ui.text and "duplicate" in session.ui.text
+    assert not mcp_peer.requests

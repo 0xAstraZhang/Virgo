@@ -10,7 +10,7 @@ override a built-in extension by filename—in `~/.virgo/extensions/*.py` (or
 
 | Built-in extension | Source | Purpose |
 | --- | --- | --- |
-| `mcp` | [src/virgo/extensions/mcp.py](../../../src/virgo/extensions/mcp.py) | Connect configured stdio MCP servers on Host and expose their tools |
+| `mcp` | [src/virgo/extensions/mcp.py](../../../src/virgo/extensions/mcp.py) | Expose tools from stdio, Streamable HTTP and legacy SSE MCP servers |
 | `todo` | [src/virgo/extensions/todo.py](../../../src/virgo/extensions/todo.py) | Model-owned checklist (`todo_write`) with optional phases and compaction retention |
 
 ## Precedence and disabling
@@ -92,27 +92,47 @@ project) using the common format:
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
+    },
+    "issues": {
+      "url": "https://mcp.example.org/mcp",
+      "headers": {"Authorization": "Bearer ${ISSUES_TOKEN}"}
+    },
+    "legacy": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8000/sse"
     }
   }
 }
 ```
 
-The `mcpServers` setting is accepted as well (precedence: `~/.virgo/mcp.json` <
-`~/.virgo/settings.json` < trusted `.virgo/mcp.json` < trusted
-`.virgo/settings.json`; project-level `mcpServers` and `.virgo/mcp.json` require
-explicit project trust via `extensions.trustedProjects` or
-`--trust-project-extensions`). Server arguments and environment values expand
-`${VARIABLE}`; disabled entries are skipped. Optional per-server `callTimeout`
-overrides the default 300s tool-call timeout, and `includeTools` / `excludeTools`
-filter exposed MCP tools with glob patterns. Servers launch on Host via
-`SandboxExecutor` with bounded startup wait and one shared connection per server
-across main and subagent runtimes (including `PATH` lookup and `.cmd`/`.bat`
-wrappers such as `npx` on native Windows). Tools appear as
-`mcp__<server>__<tool>` (long or colliding names receive a deterministic hash
-suffix): read-only tools run directly, while mutating tools require approval in
-Read-Only and Workspace-Edit (with **Always allow** bound to the SHA-256
-fingerprint of the server's expanded `command`, `args`, and `env`) and run
-directly in No-Limit.
+Choose one endpoint per server.
+
+| Endpoint | Configuration |
+| --- | --- |
+| stdio | `command` launches a Host process via `SandboxExecutor`. Optional `args` and `env` support `${VARIABLE}` expansion. Native Windows supports PATH lookup and `.cmd` / `.bat` wrappers such as `npx`. |
+| Streamable HTTP | `url` connects from the Host to an absolute HTTP or HTTPS endpoint. Omit the selector or set it to `http` or `streamable-http`. |
+| Legacy HTTP+SSE | Set the selector to `sse` and `url` to the server's SSE endpoint. |
+
+Use either `type` or `transport` as the selector. If both appear, they must select the same transport.
+URL transports accept an optional `headers` object with string values. Names are case-insensitive and must
+be unique. Virgo expands `${VARIABLE}` in header values and reports missing variables before connecting.
+Loopback URLs, including bracketed IPv6, are supported. Fragments and control characters are invalid.
+Configure the final endpoint URL directly. Redirected tool calls fail and Virgo never resubmits the call.
+
+Configuration precedence, from lowest to highest, is user `mcp.json`, user `settings.json`,
+trusted project `.virgo/mcp.json`, then trusted project `.virgo/settings.json`.
+The settings files use the same `mcpServers` key. Project entries require explicit trust via
+`extensions.trustedProjects` or `--trust-project-extensions`.
+Disabled entries are skipped. Each server has a bounded startup wait and one connection shared by
+main and subagent runtimes. Use `callTimeout` to change the default 300-second tool-call timeout
+and `includeTools` / `excludeTools` to filter tools by glob.
+
+Tools appear as `mcp__<server>__<tool>`. Long or colliding names receive a deterministic hash suffix.
+Read-only tools run directly. Mutating tools require approval in Read-Only and Workspace-Edit and run
+directly in No-Limit. **Always allow** binds to a SHA-256 fingerprint. For stdio this covers the expanded
+command, arguments and environment overrides. For URLs it covers the canonical transport, the full
+configured URL (including the query), and the expanded headers sorted by lowercase name.
+Changing any of these inputs requires a new approval.
 
 Each MCP text block has its own limit of 51,200 UTF-8 bytes and 2,000 lines,
 including embedded resource text and JSON rendered as text. A block that exceeds
