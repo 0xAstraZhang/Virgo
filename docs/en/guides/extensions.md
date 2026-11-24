@@ -1,6 +1,6 @@
 # Virgo extensions
 
-[Project home](../../../README.md) · [简体中文](../../zh-CN/guides/extensions.md)
+[Documentation](../README.md) · [Project home](../../../README.md) · [简体中文](../../zh-CN/guides/extensions.md)
 
 Virgo loads Python extensions through the shared `setup(api)` interface at
 session start. Built-in extensions ship inside the package (`virgo.extensions`)
@@ -10,7 +10,7 @@ override a built-in extension by filename—in `~/.virgo/extensions/*.py` (or
 
 | Built-in extension | Source | Purpose |
 | --- | --- | --- |
-| `mcp` | [src/virgo/extensions/mcp.py](../../../src/virgo/extensions/mcp.py) | Expose tools from stdio, Streamable HTTP and legacy SSE MCP servers |
+| `mcp` | [src/virgo/extensions/mcp.py](../../../src/virgo/extensions/mcp.py) | Expose tools from stdio, Streamable HTTP, and legacy SSE MCP servers |
 | `todo` | [src/virgo/extensions/todo.py](../../../src/virgo/extensions/todo.py) | Model-owned checklist (`todo_write`) with optional phases and compaction retention |
 
 ## Precedence and disabling
@@ -42,9 +42,9 @@ Extensions resolve by filename stem with precedence:
 
 ## Todos (`todo`)
 
-Enabled by default as a built-in extension. It works directly in Read-Only and
-Workspace-Edit, and exposes `todo_write` to the main model (with no `/todos` or
-`/plan` command):
+Enabled by default as a built-in extension. It works directly in **Read-Only**
+and **Workspace-Edit**, and exposes `todo_write` to the main model (with no
+`/todos` or `/plan` command):
 
 ```json
 {
@@ -109,7 +109,7 @@ Choose one endpoint per server.
 
 | Endpoint | Configuration |
 | --- | --- |
-| stdio | `command` launches a Host process via `SandboxExecutor`. Optional `args` and `env` support `${VARIABLE}` expansion. Native Windows supports PATH lookup and `.cmd` / `.bat` wrappers such as `npx`. |
+| stdio | `command` launches a Host process via `SandboxExecutor`. `command`, optional `args`, and `env` support `${VARIABLE}` expansion. Native Windows supports PATH lookup and `.cmd` / `.bat` wrappers such as `npx`. |
 | Streamable HTTP | `url` connects from the Host to an absolute HTTP or HTTPS endpoint. Omit the selector or set it to `http` or `streamable-http`. |
 | Legacy HTTP+SSE | Set the selector to `sse` and `url` to the server's SSE endpoint. |
 
@@ -130,9 +130,9 @@ main and subagent runtimes. Use `callTimeout` to change the default 300-second t
 and `includeTools` / `excludeTools` to filter tools by glob.
 
 Tools appear as `mcp__<server>__<tool>`. Long or colliding names receive a deterministic hash suffix.
-Read-only tools run directly. Mutating tools require approval in Read-Only and Workspace-Edit and run
-directly in No-Limit. **Always allow** binds to a SHA-256 fingerprint. For stdio this covers the expanded
-command, arguments and environment overrides. For URLs it covers the canonical transport, the full
+Read-only tools run directly. Mutating tools require approval in **Read-Only** and **Workspace-Edit** and run
+directly in **No-Limit**. **Always allow** binds to a SHA-256 fingerprint. For stdio this covers the expanded
+command, arguments, and environment overrides. For URLs it covers the canonical transport, the full
 configured URL (including the query), and the expanded headers sorted by lowercase name.
 Changing any of these inputs requires a new approval.
 
@@ -145,5 +145,7 @@ Smaller blocks and images keep their original content and order.
 `/mcp` is always available to list configured servers and tool counts, and
 `/mcp reconnect` reloads `mcp.json` and `settings.json` (a failed reload keeps
 the previous connections and tools). `mcp_status` is exposed to the model
-dynamically whenever at least one server is configured and hidden otherwise to
-save tool schema tokens.
+dynamically whenever at least one server is configured (hidden otherwise to
+save tool schema tokens) and reads local state without contacting servers.
+
+See also: [Permissions & approvals](permissions.md) · [Architecture](../development/architecture.md) · [ADR 004](../decisions/004-untrusted-project-config-isolation.md)

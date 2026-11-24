@@ -1,6 +1,6 @@
 # Virgo 扩展
 
-[项目首页](../../../README.zh-CN.md) · [English](../../en/guides/extensions.md)
+[文档中心](../README.md) · [项目首页](../../../README.zh-CN.md) · [English](../../en/guides/extensions.md)
 
 Virgo 在会话启动时通过统一的 `setup(api)` 接口加载 Python 扩展。内置扩展随包分发（位于
 `virgo.extensions`），无需单独安装或复制；你也可以在 `~/.virgo/extensions/*.py`（或受信任项目的
@@ -38,7 +38,7 @@ Virgo 在会话启动时通过统一的 `setup(api)` 接口加载 Python 扩展�
 
 ## Todos（`todo`）
 
-作为内置扩展默认启用，可在 Read-Only 和 Workspace-Edit 中直接更新会话清单。主模型获得
+作为内置扩展默认启用，可在 **Read-Only** 和 **Workspace-Edit** 中直接更新会话清单。主模型获得
 `todo_write` 工具，无 `/todos` 或 `/plan` 命令：
 
 ```json
@@ -95,7 +95,7 @@ Virgo 在会话启动时通过统一的 `setup(api)` 接口加载 Python 扩展�
 
 | 端点 | 配置 |
 | --- | --- |
-| stdio | 通过 `command` 和 `SandboxExecutor` 在 Host 上启动进程。可选的 `args` 和 `env` 支持 `${VARIABLE}` 展开。原生 Windows 支持 PATH 查找与 `.cmd` / `.bat` 包装命令，例如 `npx`。 |
+| stdio | 通过 `command` 和 `SandboxExecutor` 在 Host 上启动进程。`command`、可选的 `args` 和 `env` 均支持 `${VARIABLE}` 展开。原生 Windows 支持 PATH 查找与 `.cmd` / `.bat` 包装命令，例如 `npx`。 |
 | Streamable HTTP | 通过 `url` 从 Host 连接到绝对 HTTP 或 HTTPS 地址。可省略传输类型，也可指定 `http` 或 `streamable-http`。 |
 | 旧版 HTTP+SSE | 将传输类型设为 `sse`，并将 `url` 设为服务端的 SSE 端点。 |
 
@@ -114,7 +114,7 @@ MCP 错误消息和诊断记录会隐去完整的请求头值。对于 `Authoriz
 `callTimeout` 可调整默认 300 秒的工具调用超时，`includeTools` / `excludeTools` 按 glob 模式过滤工具。
 
 工具名为 `mcp__<server>__<tool>`。超长或冲突名称会追加确定性哈希后缀。
-只读工具直接执行。可能修改状态的工具在 Read-Only 与 Workspace-Edit 下需要审批，在 No-Limit 下直接执行。
+只读工具直接执行。可能修改状态的工具在 **Read-Only** 与 **Workspace-Edit** 下需要审批，在 **No-Limit** 下直接执行。
 **始终允许**授权绑定到 SHA-256 指纹。stdio 指纹由展开后的命令、参数与环境变量覆盖项计算。
 URL 指纹由规范化的传输类型、完整配置地址（含查询字符串），以及按小写名称排序的已展开请求头计算。
 这些输入发生变化时，需要重新授权。
@@ -127,3 +127,5 @@ JSON 也按块计量。超过任一上限时，该块会显示预览和一个 `o
 `/mcp` 命令始终可用，用于列出已配置服务器与工具数量；`/mcp reconnect` 重新加载 `mcp.json`
 与 `settings.json`，失败时保留原有连接和工具。`mcp_status` 工具仅在配置了服务器时动态向模型
 暴露（未配置时隐藏以节省工具上下文），读取本地状态而不联系服务器。
+
+另见：[权限模式与审批](permissions.md) · [架构概览](../development/architecture.md) · [决策 004](../decisions/004-untrusted-project-config-isolation.md)

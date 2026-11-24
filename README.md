@@ -2,22 +2,22 @@
 
 **A coding agent that works where your code lives.**
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [Documentation](docs/en/README.md)
 
 Virgo is a lightweight, extensible coding agent for your terminal. Ask it to explore a codebase, make a change, investigate a failure, or review a diff. It can read and edit files, run commands, and work through a task while you stay in the conversation.
 
-> Virgo's sandbox is a **guardrail** against occasional model mistakes. It keeps their effects inside the current workspace, protects Virgo's private data and project control files, and asks before out-of-scope or high-risk operations. It is **not** a security boundary against malicious code, deliberate evasion, or prompt-injection attack chains. Run Virgo in a container or VM when working with untrusted repositories or content.
+> Virgo's sandbox is a **guardrail** against occasional model mistakes. It keeps writes inside the current workspace, protects private credentials and Virgo project settings, and asks before out-of-scope or high-risk operations. It is **not** a security boundary against malicious code, deliberate evasion, or prompt-injection attack chains. Run Virgo in a container or VM when working with untrusted repositories or content.
 
-On Linux, macOS, WSL2, and supported Windows 11 builds (with updated `null.sys` / Feature `60692039` granting `ALL APPLICATION PACKAGES` access on `\Device\Null`), Virgo starts in **Workspace-Edit**, using native Shell sandboxing against the live project with operation-specific approvals. Select **No-Limit** (`--permission no-limit` or `/permissions no-limit`) to use the current host account. Supported Windows 11 uses Standard AppContainer with no Administrator privileges required; older Windows 10/11 and Windows Server builds without Feature `60692039` default to **No-Limit** and prompt you to use WSL2, stay on No-Limit, or update Windows. WSL2 remains a Tier 1 option if you prefer Linux tooling, run an older Windows build, or need localhost/loopback access inside sandboxed commands. See [execution boundaries](docs/en/guides/sandbox.md), [native Windows sandbox](docs/en/guides/windows-sandbox.md), and [WSL2 setup](docs/en/guides/wsl2.md).
+On Tier 1 platforms, Virgo starts in **Workspace-Edit** by default, constraining Shell commands with a native sandbox while asking for confirmation before out-of-scope or high-risk actions. Select **No-Limit** (`--permission no-limit` or `/permissions no-limit`) to run directly with your host account rights. See [Permissions & approvals](docs/en/guides/permissions.md) and [Execution boundaries](docs/en/guides/sandbox.md).
 
 ## Platform support
 
-| Platform | Tier | Notes |
+| Platform | Tier | Default mode & notes |
 | --- | --- | --- |
-| Linux (`bubblewrap` + `libseccomp2`) | Tier 1 | Full support, default **Workspace-Edit**, blocking CI & performance gates |
-| macOS (Seatbelt) | Tier 1 | Full support, default **Workspace-Edit**, blocking CI & performance gates |
-| Native Windows 11 (Standard AppContainer, `null.sys` Feature `60692039`) | Tier 1 | Default **Workspace-Edit**, unelevated (no Administrator rights), session-level single SID, blocking CI & performance gates; older Windows builds without `\Device\Null` `S-1-15-2-1` default to **No-Limit** with WSL2 / No-Limit / Update Windows guidance; loopback (`127.0.0.1`/`[::1]`) and `$HOME` workspaces have honest platform limits ([details](docs/en/guides/windows-sandbox.md)) |
-| Windows + WSL2 (Ubuntu / Linux) | Tier 1 | Uses the Linux sandbox backend — ideal for older Windows builds, Linux toolchains, or sandboxed localhost/loopback workflows ([WSL2 guide](docs/en/guides/wsl2.md)) |
+| Linux (`bubblewrap`) | Tier 1 | **Workspace-Edit**; blocking CI and performance gates |
+| macOS (Seatbelt) | Tier 1 | **Workspace-Edit**; blocking CI and performance gates |
+| Native Windows 11 (Standard AppContainer) | Tier 1 | **Workspace-Edit** on builds with updated `null.sys` (unelevated, no Administrator rights); older Windows builds default to **No-Limit** with a one-time notice. Honest loopback and `$HOME` limits apply ([details](docs/en/guides/windows-sandbox.md)) |
+| Windows + WSL2 (Ubuntu / Linux) | Tier 1 | **Workspace-Edit** via the Linux `bubblewrap` backend; recommended for older Windows builds, Linux toolchains, or sandboxed localhost/loopback workflows ([WSL2 guide](docs/en/guides/wsl2.md)) |
 
 ## Why Virgo?
 
@@ -27,7 +27,7 @@ On Linux, macOS, WSL2, and supported Windows 11 builds (with updated `null.sys` 
 - **Make it your own.** Add project instructions, skills, prompt templates, and Python extensions, alongside built-in MCP and Todos extensions.
 - **Choose your interface language.** Switch interface messages, command help, and built-in tool descriptions with `/language 中文` or `/language English`. Virgo replies in the language of your message unless you ask for another.
 
-Virgo is inspired by [Pi](https://github.com/earendil-works/pi). Its model adapters, agent loop, and session harness are separate, so you can extend the parts you need.
+Virgo is inspired by [Pi](https://github.com/earendil-works/pi). Its model adapters, agent loop, execution layer, and session harness are separate so you can extend the parts you need.
 
 ## Get started
 
@@ -40,21 +40,17 @@ uv sync --locked
 uv run virgo
 ```
 
-In Virgo, enter `/login` to connect a supported account or configure an API. The full-width prompt shows its keyboard shortcuts inside the border. A blank line separates the box from the session status.
-
-Once connected, try a concrete task.
+In Virgo, enter `/login` to connect a supported account or configure an API. Once connected, try a concrete task:
 
 ```text
 Explain how this project starts and where I should add a new command.
 ```
 
-Want to try the interface before connecting a model? The offline demo needs no credentials:
+To try the interface before connecting a model, run the offline scripted demo (no credentials required):
 
 ```bash
 uv run virgo --model faux/demo
 ```
-
-The demo uses scripted responses; connect a real model for coding work.
 
 ## Fit it into your workflow
 
@@ -65,37 +61,26 @@ uv run virgo -C /path/to/project
 # Run a single request
 uv run virgo -p "Review the current diff for correctness issues"
 
-# Continue your most recent session
+# Continue your most recent session (or use -r <path> for a specific session)
 uv run virgo --continue
 
 # Integrate with other programs
 uv run virgo -p --format json "Summarize the README"
 ```
 
-`--continue` opens the most recently updated session file in the workspace. If its final record is incomplete and lacks a newline, Virgo keeps the saved prefix and reports how many bytes it removed. If a header or complete record is corrupt, startup stops and identifies the file and line. Use `-r <path>` to open another saved session.
+- **Full-screen UI**: `Enter` sends a message, `Ctrl+J` inserts a newline, `/` browses commands, `Shift+Tab` cycles permission modes, `Ctrl+T` expands reasoning, `Ctrl+O` expands tool details, and `Esc` interrupts a running reply. Click a tool call row (or focus it and press `Enter`) to inspect its result.
+- **Sessions & recovery**: `--continue` opens the most recently updated session in the workspace. If its final record is incomplete and lacks a trailing newline, Virgo trims the incomplete tail and keeps the valid prefix; corrupt headers or complete records halt startup with the file and line number.
+- **Status & permissions**: `/status` shows session ID, model, working directory, token usage, and active permissions. `/permissions` summarizes the active mode and boundaries (`/permissions show` or `-p /permissions` prints full JSON); switch modes with `/permissions <mode>`, `--permission <read-only|workspace-edit|no-limit>`, or `Shift+Tab`.
+- **Diagnostics**: `/diagnostics` lists the latest ten errors stored in `~/.virgo/logs/diagnostics.sqlite3` (or `$VIRGO_HOME/logs/diagnostics.sqlite3`). Use `--before <cursor>` for older pages or `/diagnostics <error-id>` for full details; review details before sharing.
 
-In the full-screen UI, Enter sends a message and Ctrl+J inserts a newline. Type `/` to browse commands. Ctrl+T expands reasoning, Ctrl+O expands tool details, and Esc interrupts a running reply. A purple spinner marks active reasoning and tool calls in the transcript. Each tool call updates in place when it finishes. Click its row to see the result, or focus it and press Enter.
+## Documentation
 
-Use `/status` for the session ID, model, working directory, token usage and active permissions, including read/write roots and Shell network access.
+Browse the full [documentation hub](docs/en/README.md):
 
-In interactive sessions, `/permissions` summarizes the active mode, approval policy, read/write roots or Host authority, and Web and Shell network access. It also shows the next task’s mode if different. Use `/permissions show`, `/permissions status`, or noninteractive `-p /permissions` for the full execution boundary in JSON.
-
-Select one of the three modes with `/permissions <mode>` or `--permission <read-only|workspace-edit|no-limit>`. See [permission modes and grants](docs/en/development/permission-profiles.md).
-
-## Inspect errors
-
-Run `/diagnostics` to list the latest ten errors and show the database path.
-Use `/diagnostics --before <cursor>` for earlier pages or
-`/diagnostics <error-id>` to view details for an exact ID or a unique prefix.
-
-Errors remain available across restarts in `~/.virgo/logs/diagnostics.sqlite3`
-(or `$VIRGO_HOME/logs/diagnostics.sqlite3`). The command incrementally imports
-older JSONL logs and leaves the source files in place. Review diagnostic details
-before sharing them.
-
-## Explore
-
-[Execution boundaries](docs/en/guides/sandbox.md) · [WSL2 guide](docs/en/guides/wsl2.md) · [Extensions (Todos & MCP)](docs/en/guides/extensions.md) · [Examples](examples/README.md) · [Report an issue](https://github.com/0xAstraZhang/Virgo/issues)
+- **Guides**: [Permissions & approvals](docs/en/guides/permissions.md) · [Execution boundaries](docs/en/guides/sandbox.md) · [Native Windows sandbox](docs/en/guides/windows-sandbox.md) · [WSL2 setup](docs/en/guides/wsl2.md) · [Extensions (Todos & MCP)](docs/en/guides/extensions.md)
+- **Development**: [Architecture](docs/en/development/architecture.md) · [Execution interface](docs/en/development/execution-interface.md) · [Execution acceptance](docs/en/development/execution-acceptance.md)
+- **Decisions**: [Architectural decisions](docs/en/decisions/README.md)
+- **Examples & community**: [Project examples](examples/README.md) · [Report an issue](https://github.com/0xAstraZhang/Virgo/issues)
 
 ## License
 
