@@ -1,6 +1,8 @@
 # Running Virgo on Windows with WSL2
 
-On Windows, both [native Windows 11 (Standard AppContainer with `null.sys` Feature `60692039`)](windows-sandbox.md) and **WSL2 (Windows Subsystem for Linux 2)** are **Tier 1** supported environments defaulting to **Workspace-Edit** without requiring Administrator privileges. Choose WSL2 when you are on Windows 10 / older Windows 11 / Windows Server builds without Feature `60692039`, prefer Linux toolchains and POSIX filesystem semantics, or need **localhost/loopback (`127.0.0.1`)** access inside sandboxed commands (which Windows blocks inside non-admin AppContainer). Inside WSL2, Virgo uses the full Linux sandbox (`bubblewrap`).
+[Documentation](../README.md) · [Project home](../../../README.md) · [简体中文](../../zh-CN/guides/wsl2.md)
+
+On Windows, both [native Windows 11 (Standard AppContainer)](windows-sandbox.md) and **WSL2 (Windows Subsystem for Linux 2)** are **Tier 1** environments defaulting to **Workspace-Edit** without requiring Administrator privileges. Choose WSL2 when you are on an older Windows build without native sandbox support, prefer Linux toolchains and POSIX filesystem semantics, or need **localhost/loopback (`127.0.0.1`)** access inside sandboxed commands. Inside WSL2, Virgo uses the Linux `bubblewrap` backend.
 
 ## 1. Install WSL2 and Ubuntu
 
@@ -59,6 +61,6 @@ From your WSL2 checkout inside the Linux filesystem, run the bundled acceptance 
 ./ci/wsl2_acceptance.sh
 ```
 
-This verifies `bubblewrap`, runs the required Linux native sandbox tests (`VIRGO_REQUIRE_SANDBOX_TESTS=1`), and checks the cold-start and `Read` performance budgets in **Workspace-Edit**.
+This verifies `bubblewrap`, runs the required Linux native sandbox tests (`VIRGO_REQUIRE_SANDBOX_TESTS=1`), validates the JUnit report with `ci/check_native_report.py`, and checks the cold-start, first-command, repeat-command, and `read` performance budgets in **Workspace-Edit**.
 
-See also: [Execution boundaries](sandbox.md) · [Native Windows sandbox](windows-sandbox.md)
+See also: [Execution boundaries](sandbox.md) · [Native Windows sandbox](windows-sandbox.md) · [Execution acceptance](../development/execution-acceptance.md)

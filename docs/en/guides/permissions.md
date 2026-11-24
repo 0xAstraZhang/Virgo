@@ -1,0 +1,31 @@
+# Permissions and approvals
+
+[Documentation](../README.md) · [Project home](../../../README.md) · [简体中文](../../zh-CN/guides/permissions.md)
+
+| Mode | File access | Public web tools | Shell network | Provider |
+| --- | --- | --- | --- | --- |
+| Read-Only | Broker file tools default to the workspace (out-of-scope paths prompt on demand). Sandboxed Shell has read-only host access excluding private credential paths on POSIX, or read-only workspace plus AAP-readable host/runtime/toolchain paths on native Windows, along with writable per-command scratch and session cache. | Allowed | Requires a resource grant | Native sandbox |
+| Workspace-Edit | Read and write the live workspace (`.git`, `AGENTS.md`, `CLAUDE.md`, and `.venv` are writable; project `.virgo` confirms on write; private credential paths are hard-denied). | Allowed | Allowed | Native sandbox |
+| No-Limit | Host account rights | Allowed | Allowed | Host |
+
+## Default mode and selection
+
+- **Supported Tier 1 platforms (Linux, macOS, updated Windows 11, and WSL2)**: default is **Workspace-Edit**. Older Windows builds that do not support unelevated Standard AppContainer default to **No-Limit** with a one-time notice and fail closed if a sandbox mode is explicitly selected (see [Native Windows sandbox](windows-sandbox.md) and [WSL2 setup](wsl2.md)).
+- Configure `execution.mode` (`read-only`, `workspace-edit`, or `no-limit`) in user settings, or pass `--permission <mode>` on the command line. Retired settings keys (`sandbox`, `execution.provider`, `permissions.preset`/`presets`/`mode`/`modes`/`readOnlyCommands`/`allow`/`deny`) fail explicitly with migration guidance, and removed CLI flags (`--execution`, `--mode`, `--sandbox`) are rejected as unrecognized arguments.
+- In the TUI, `Shift+Tab` cycles modes in order (`Read-Only → Workspace-Edit → No-Limit → Read-Only`). The footer shows the selected mode; during an active task it shows both the active mode and the selection for the next task. Running tasks and their queued children keep their captured execution context. Use `/permissions list` to list modes or `/permissions <id>` to select one directly.
+- In interactive sessions, `/permissions` summarizes the active mode and approval policy, effective read/write roots or Host authority, and Web and Shell network access (plus the next task's mode when it differs). Use `/permissions show`, `/permissions status`, or non-interactive `-p /permissions` for the full execution boundary in JSON.
+
+## Resource approvals, high-risk commands, and saved grants
+
+Core checks every tool call against deny-first `PermissionPolicy`:
+
+- **File tools** (`read`, `write`, `edit`, `glob`, `grep`) run in the Broker directly against `PermissionPolicy`. Out-of-scope paths and `.virgo` writes prompt on demand before dispatch, resolving symlinks so dialogs show the real target path, and execute immediately once approved. `read`, `write`, and `edit` prompt for the exact resolved file path; `glob` and `grep` prompt for the requested directory prefix. High-sensitivity credential paths (`~/.virgo`, `~/.ssh`, `~/.aws`, etc.) are hard-denied and cannot be granted.
+- **Shell commands** run under the OS sandbox in **Read-Only** and **Workspace-Edit** and may call `request_permissions` (with `tool`/`arguments` optional) to request additional path prefixes or Shell networking (`network_allowed: true`), including batching `request_permissions` right before the Shell call in the same turn. `request_permissions` is hidden from the model whenever interactive escalation is unavailable (**No-Limit**, `--approval never`, or non-interactive UIs).
+- **High-risk Shell commands** (`git push --force`, pushes to protected branches, `git reset --hard`, `git clean -f`, `curl | sh`, recursive deletion outside the workspace, deploy/publish, cloud resource deletion, and destructive SQL/Redis statements invoked via database/cache CLIs) require one-shot user confirmation in **all** modes. An explicit `n` returns `user_declined` and tells the model the command did not start and to retry only if the user asks. Unavailable confirmation, cancellation, expiry, and disabled approvals each report their own reason. Setting `permissions.confirmHighRisk: false` disables this confirmation **only** in **No-Limit**.
+- **Sandbox unavailable fallback**: If the native sandbox backend cannot start before payload release, Virgo fails closed and—in interactive sessions—offers an explicit one-shot **No-Limit** confirmation for that single command (leaving the session mode unchanged).
+- **Allow (`y`)**: Grants the approved `(read_paths | write_paths, canonical_path)` or `network_allowed` resource for the current `(conversation, mode)` scope in memory. Grants remain isolated per `(conversation, mode)` pair across switches and are cleared by `/permissions revoke` or `/permissions ask|never`.
+- **Decline (`n`)**: Returns `reason: user_declined` and `escalation_available: false`. Unavailable, cancelled, expired, or policy-disabled requests do not record a user decision. Exact retries and requests covered by a declined scope return `already_denied_this_turn` without prompting. Paths compare by canonical component: a parent directory covers its children, and a write scope covers reads. Sibling paths remain requestable, as does read access after a declined write. Network and external-tool denials apply only to the same grant. A new user turn or `/permissions revoke` clears turn denials.
+- **Always allow (`a`)**: Persists resource grants per `(project, mode, resource, target)` in `<VIRGO_HOME>/permission-grants.sqlite3` (`resource_grants` table). List saved grants with `/permissions grants` and remove entries with `/permissions revoke <id>`. Project settings cannot install approvals.
+- **Trusted extensions and MCP**: Trusted extensions and the MCP client run on **Host**, while the configured MCP server executes its tools. Read-only MCP/external tools run directly; mutating external tools prompt in **Read-Only** and **Workspace-Edit** and run directly in **No-Limit**. MCP **Always allow** binds to `f"{tool_name}:{config_fingerprint}"` (see [MCP configuration](extensions.md#mcp-mcp)).
+
+See also: [Execution boundaries](sandbox.md) · [Native Windows sandbox](windows-sandbox.md) · [Execution interface](../development/execution-interface.md)

@@ -1,6 +1,8 @@
 # 在 Windows 上通过 WSL2 运行 Virgo
 
-在 Windows 上，[受支持的新版原生 Windows 11（标准 AppContainer，`null.sys` Feature `60692039`）](windows-sandbox.md)与 **WSL2（Windows Subsystem for Linux 2）** 均为**一级支持**环境，默认启用 **Workspace-Edit** 且无需管理员权限。如果你使用未启用 Feature `60692039` 的 Windows 10 / 旧版 Windows 11 / Windows Server，或偏好 Linux 工具链、POSIX 文件系统语义，或需要在沙箱命令中访问**本机回环服务（`127.0.0.1`）**（非管理员 Windows AppContainer 默认阻止回环连接），推荐选择 WSL2。在 WSL2 内，Virgo 直接使用完整的 Linux 沙箱（`bubblewrap`）。
+[文档中心](../README.md) · [项目首页](../../../README.zh-CN.md) · [English](../../en/guides/wsl2.md)
+
+在 Windows 上，[原生 Windows 11（标准 AppContainer）](windows-sandbox.md)与 **WSL2（Windows Subsystem for Linux 2）** 均为**一级支持**环境，默认启用 **Workspace-Edit** 且无需管理员权限。如果你使用不支持原生沙箱的旧版 Windows、偏好 Linux 工具链和 POSIX 文件系统语义，或需要在沙箱命令中访问**本机回环服务（`127.0.0.1`）**，推荐选择 WSL2。在 WSL2 内，Virgo 直接使用 Linux `bubblewrap` 后端。
 
 ## 1. 安装 WSL2 与 Ubuntu
 
@@ -59,6 +61,6 @@ uv run virgo
 ./ci/wsl2_acceptance.sh
 ```
 
-脚本会检查 `bubblewrap`、运行带 `VIRGO_REQUIRE_SANDBOX_TESTS=1` 的 Linux 原生沙箱测试，并校验 **Workspace-Edit** 下的冷启动与 `Read` 性能门槛。
+脚本会检查 `bubblewrap`、运行带 `VIRGO_REQUIRE_SANDBOX_TESTS=1` 的 Linux 原生沙箱测试、通过 `ci/check_native_report.py` 校验 JUnit 报告，并校验 **Workspace-Edit** 下的冷启动、首次命令、重复命令与 `read` 性能门槛。
 
-另见：[执行边界与沙箱](sandbox.md) · [原生 Windows 沙箱](windows-sandbox.md)
+另见：[执行边界与沙箱](sandbox.md) · [原生 Windows 沙箱](windows-sandbox.md) · [原生执行与性能验收](../development/execution-acceptance.md)

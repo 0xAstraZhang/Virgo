@@ -1,6 +1,6 @@
 # Virgo examples
 
-[Project home](../README.md) · [简体中文](README.zh-CN.md)
+[Project home](../README.md) · [Documentation](../docs/en/README.md) · [简体中文](README.zh-CN.md)
 
 These files show how a project can extend Virgo. Copy only the parts you need into your own project, adapting paths and model IDs. Merge settings with any existing configuration.
 
@@ -9,8 +9,8 @@ These files show how a project can extend Virgo. Copy only the parts you need in
 | Example | Destination in your project | Purpose |
 | --- | --- | --- |
 | [Project instructions](project/AGENTS.example.md) | `AGENTS.md` at the project root | Shared instructions read with project context |
-| [Settings](project/.virgo/settings.json) | `.virgo/settings.json` | Language, effort, shell and an optional local API |
-| [MCP configuration](project/.virgo/mcp.json) | `.virgo/mcp.json` | Disabled placeholder for the built-in [MCP extension](../docs/en/guides/extensions.md) |
+| [Settings](project/.virgo/settings.json) | `.virgo/settings.json` | Language, effort, shell, and an optional local API |
+| [MCP configuration](project/.virgo/mcp.json) | `.virgo/mcp.json` | Disabled placeholder for the built-in [MCP extension](../docs/en/guides/extensions.md#mcp-mcp) |
 | [Secret-file guard](project/.virgo/extensions/protect_env.py) | `.virgo/extensions/protect_env.py` | A tool hook and a `/stats` command |
 | [Review template](project/.virgo/prompts/inspect.md) | `.virgo/prompts/inspect.md` | `/inspect` with arguments |
 | [Code-review skill](project/.virgo/skills/code-review/SKILL.md) | `.virgo/skills/code-review/` | A skill with a separate checklist |
@@ -26,10 +26,10 @@ mkdir -p /path/to/project/.virgo/prompts
 cp examples/project/.virgo/prompts/inspect.md /path/to/project/.virgo/prompts/inspect.md
 ```
 
-Copy the code-review skill as well if you want the review template's named skill available. Restart Virgo after adding extensions, templates, skills or agent types.
+Copy the code-review skill as well if you want the review template's named skill available. Restart Virgo after adding extensions, templates, or skills.
 
 After reviewing the Python guard, project `providers`, or `.virgo/mcp.json`, enable them by adding the project directory to user-level `extensions.trustedProjects` or passing `--trust-project-extensions`; untrusted projects cannot enable extensions, MCP servers, hooks, or custom providers.
 
-The settings example's `language` pins that project's language; use `zh-CN` for Chinese or omit the field to follow the user default. The optional `local` provider needs a real server, its installed model ID/context window, and project trust (`extensions.trustedProjects` or `--trust-project-extensions`). It does not change the selected model until you choose it. Obsolete `smallModel` overrides are intentionally absent because auxiliary models are selected by the runtime.
+The settings example's `language` pins that project's language; use `zh-CN` for Chinese or omit the field to follow the user default. The optional `local` provider needs a real server, its installed model ID and context window, and project trust (`extensions.trustedProjects` or `--trust-project-extensions`). It does not change the selected model until you choose it.
 
-The MCP example is disabled and uses a placeholder path. MCP is provided by the built-in [MCP extension](../docs/en/guides/extensions.md); replace the placeholder with your own stdio server command and arguments and trust the project before enabling it. Example instructions and prompts are authored resources; `/language` does not rewrite their content.
+The MCP example is disabled and uses a placeholder path. MCP is provided by the built-in [MCP extension](../docs/en/guides/extensions.md#mcp-mcp); replace the placeholder with your own server configuration and trust the project before enabling it. Example instructions and prompts are authored resources; `/language` does not rewrite their content.
