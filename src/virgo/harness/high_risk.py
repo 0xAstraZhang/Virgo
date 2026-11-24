@@ -2,8 +2,8 @@
 
 Guards against high-cost or irreversible mistakes (force pushes, protected-branch
 pushes, deployments, remote/database deletion, curl|sh, recursive deletion outside
-the workspace) across all execution modes. Configurable disable is allowed only in
-No-Limit mode.
+the workspace). Enforced in sandboxed modes; disabled by default in No-Limit mode
+unless permissions.confirmHighRisk is set to true.
 """
 from __future__ import annotations
 

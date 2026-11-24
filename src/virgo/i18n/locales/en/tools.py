@@ -80,8 +80,10 @@ MESSAGES = {
     "tools.fs.edit_unchanged": "No changes: new_text is identical to old_text.",
     "tools.fs.edited": "Edited {path} ({count} {replacements}).",
     "tools.fs.empty": "(empty file)",
+    "tools.fs.file_limit": "... stopped after {limit} files; refine the pattern or raise limit",
     "tools.fs.file_missing": "File not found: {path}",
     "tools.fs.image": "Image: {name}",
+    "tools.fs.invalid_mode": "Invalid grep mode: {mode}. Use 'content', 'files', or 'count'.",
     "tools.fs.is_directory": "{path} is a directory. Use glob to list files.",
     "tools.fs.large_image": "Image is larger than 5MB.",
     "tools.fs.long_line": "Line {line} exceeds {max_kb}KB. Inspect a slice of {path} with your shell tool "
@@ -98,14 +100,23 @@ MESSAGES = {
     "tools.fs.replacements": "replacements",
     "tools.fs.written": "{verb} {path} ({size} bytes).",
     "tools.glob.description": "Find files by glob pattern (e.g. '**/*.py', 'src/**/test_*.ts'), newest first. "
-    "Skips .git, node_modules, virtualenvs and caches.",
+    "Respects .gitignore and skips .git, node_modules, virtualenvs and caches unless include_ignored is true.",
     "tools.glob.label": "Glob",
+    "tools.glob.parameters.properties.include_ignored.description": "Include files ignored by .gitignore and "
+    "default skip directories (still skips .git)",
     "tools.glob.parameters.properties.path.description": "Directory to search",
-    "tools.grep.description": "Search file contents with a Python regular expression. Output lines are "
-    "'path:line:text'.",
+    "tools.grep.description": "Search file contents with a Python regular expression (or literal string when "
+    "fixed_strings=true). Respects .gitignore by default. Output depends on mode: 'content' "
+    "('path:line:text', default), 'files' (matching paths), or 'count' ('path:count').",
     "tools.grep.label": "Grep",
     "tools.grep.parameters.properties.context.description": "Lines of context around matches",
+    "tools.grep.parameters.properties.fixed_strings.description": "Treat pattern as a literal string instead of "
+    "a regular expression",
     "tools.grep.parameters.properties.glob.description": "Only search files matching this glob, e.g. '*.py'",
+    "tools.grep.parameters.properties.include_ignored.description": "Include files ignored by .gitignore and "
+    "default skip directories (still skips .git)",
+    "tools.grep.parameters.properties.mode.description": "Output mode: 'content' (matching lines, default), "
+    "'files' (matching file paths), or 'count' (match count per file)",
     "tools.grep.parameters.properties.path.description": "File or directory (default: working directory)",
     "tools.job_kill.description": "Stop a background job.",
     "tools.job_kill.label": "Stop job",
@@ -116,7 +127,8 @@ MESSAGES = {
     "tools.output.budget": "{shown}\n"
     "\n"
     "[Output truncated: showing the {where} {count} of {total} lines. Full output ID: "
-    "{path}. Use read_output with output_id and byte offset/limit to inspect it.]",
+    "{path}. Use read_output with output_id (supports pattern search, tail, line_offset/line_limit, "
+    "or byte offset/limit) to inspect it.]",
     "tools.output.empty": "(no output)",
     "tools.output.exit": "{text}\n\n[Exit code {code}]",
     "tools.output.first": "first",
@@ -136,8 +148,10 @@ MESSAGES = {
     "path is outside the sandbox boundary.]",
     "tools.output.timeout": "{text}\n\n[Command timed out after {timeout:g}s]",
     "tools.output.truncated": "[Output truncated: showing the tail (limit {max_lines} lines / {max_kb}KB; "
-    "{total} bytes total). Full output ID: {path}; use read_output]\n",
-    "tools.read.description": "Read a text file (or an image). Returns at most 2000 lines / 50KB per call; use "
+    "{total} bytes total). Full output ID: {path}; use read_output with pattern, tail, "
+    "line_offset/line_limit, or offset/limit]\n",
+    "tools.read.description": "Read a text file (or an image). Prefixes each text line with '<line>|' (omit "
+    "this prefix in edit). Returns at most 2000 lines / 50KB per call; use "
     "offset (1-based line number) and limit to page through larger files.",
     "tools.read.label": "Read",
     "tools.read.parameters.properties.limit.description": "Maximum number of lines",
@@ -148,13 +162,33 @@ MESSAGES = {
     "tools.present_file.label": "Present file",
     "tools.present_file.control": "The path contains a terminal control character and cannot be displayed verbatim.",
     "tools.present_file.failed": "Could not present the file. {error}",
-    "tools.read_output.description": "Read a private command/tool output using its output_id. offset and limit "
-    "are byte counts.",
+    "tools.read_output.cancelled": "Reading output cancelled.",
+    "tools.read_output.conflict_offset": "Byte offset cannot be combined with tail, line_offset, or line_limit.",
+    "tools.read_output.conflict_pattern": "pattern cannot be combined with offset, tail, or line_limit (use line_offset and max_matches instead).",
+    "tools.read_output.conflict_tail": "tail cannot be combined with line_offset.",
+    "tools.read_output.description": "Inspect a private command/tool output by output_id. Supports pattern "
+    "search (pattern, fixed_strings, ignore_case, context, max_matches), tail reading (tail=true, "
+    "optionally with line_limit), 1-based line paging (line_offset, line_limit), or 0-based byte paging "
+    "(offset, limit).",
+    "tools.read_output.empty_pattern": "pattern must be a nonempty string.",
     "tools.read_output.label": "Read output",
+    "tools.read_output.lines_more": "\n[Showing lines {start}-{end}. More lines follow; use line_offset={next_line} to continue.]",
+    "tools.read_output.long_line": "Line {line} exceeds {limit}. Inspect this output with byte offset/limit or pattern search.",
+    "tools.read_output.parameters.properties.context.description": "Lines of context before and after each match.",
+    "tools.read_output.parameters.properties.fixed_strings.description": "Treat pattern as a literal string instead of a regular expression.",
+    "tools.read_output.parameters.properties.ignore_case.description": "Perform case-insensitive pattern matching.",
     "tools.read_output.parameters.properties.limit.description": "Maximum number of bytes to read.",
+    "tools.read_output.parameters.properties.line_limit.description": "Maximum number of lines to return.",
+    "tools.read_output.parameters.properties.line_offset.description": "1-based line number to start reading or searching from.",
+    "tools.read_output.parameters.properties.max_matches.description": "Maximum number of matches to return when searching with pattern (default 100).",
     "tools.read_output.parameters.properties.offset.description": "0-based byte offset to start reading from.",
     "tools.read_output.parameters.properties.output_id.description": "Opaque output_id from a truncated "
     "command or tool result.",
+    "tools.read_output.parameters.properties.pattern.description": "Search output lines with a Python regular expression (or literal string with fixed_strings=true).",
+    "tools.read_output.parameters.properties.tail.description": "Read from the end of the output (last limit bytes, or last line_limit lines).",
+    "tools.read_output.pattern_required": "fixed_strings, ignore_case, context, and max_matches require pattern.",
+    "tools.read_output.search_more": "... stopped after {count} matches (at line {line}); use line_offset={next_line} to continue or refine pattern",
+    "tools.read_output.tail_lines": "\n[Showing last lines {start}-{end} of {total}.]",
     "tools.request_permissions.description": "Request session or persistent read/write path or network access "
     "for Shell/managed operations.",
     "tools.request_permissions.label": "Request resources",

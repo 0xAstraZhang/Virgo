@@ -139,7 +139,8 @@ Changing any of these inputs requires a new approval.
 Each MCP text block has its own limit of 51,200 UTF-8 bytes and 2,000 lines,
 including embedded resource text and JSON rendered as text. A block that exceeds
 either limit displays a preview with an `output_id`. Use `read_output` in the
-originating session to page through the full block with byte `offset` and `limit`.
+originating session to search (`pattern`), tail (`tail=true`), or page through the
+full block by lines (`line_offset`/`line_limit`) or bytes (`offset`/`limit`).
 Smaller blocks and images keep their original content and order.
 
 `/mcp` is always available to list configured servers and tool counts, and

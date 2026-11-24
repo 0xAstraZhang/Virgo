@@ -18,6 +18,12 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from ._gitignore import (
+    MAX_GITIGNORE_BYTES,
+    load_ancestor_scopes,
+    matches_scopes,
+    read_gitignore_rules,
+)
 from .execution import FileAccessDenied
 from .execution_policy import PermissionPolicy, lexical_path
 
@@ -210,13 +216,39 @@ def open_mutation(path: Path, policy: PermissionPolicy, *, create: bool,
 
 
 def walk_files(path: Path, policy: PermissionPolicy, ignore: set[str], *,
-               max_depth: int | None = None, max_files: int = MAX_WALK_FILES):
+               max_depth: int | None = None, max_files: int = MAX_WALK_FILES,
+               respect_gitignore: bool = False, gitignore_root: Path | None = None):
     """Yield (Path, stat_result | None) under ``path`` within read policy and file budget."""
     root_path = path.resolve()
     check_read(root_path, policy)
+    base_scopes = []
+    scope_map: dict[Path, list] = {}
+
+    def _read_ignore(file_path: Path) -> bytes | None:
+        return read_bytes(file_path, policy, max_bytes=MAX_GITIGNORE_BYTES)
+
+    if respect_gitignore:
+        def _can_descend(directory: Path) -> bool:
+            if policy.unrestricted:
+                return True
+            return not policy.denied(directory, "read") and policy.allows(directory, "read")
+
+        base_scopes = load_ancestor_scopes(
+            root_path, _read_ignore, can_descend=_can_descend, stop_root=gitignore_root
+        )
+        scope_map[root_path] = base_scopes
+
     yielded = 0
     for current_str, dirnames, filenames in os.walk(root_path, followlinks=False):
         current = Path(current_str)
+        scopes = base_scopes
+        if respect_gitignore:
+            scopes = base_scopes if current == root_path else scope_map.get(current.parent, base_scopes)
+            if current != root_path and ".gitignore" in filenames:
+                local_rules = read_gitignore_rules(current / ".gitignore", _read_ignore)
+                if local_rules:
+                    scopes = [*scopes, (current, local_rules)]
+            scope_map[current] = scopes
         kept = []
         for name in sorted(dirnames):
             if name in ignore:
@@ -230,6 +262,8 @@ def walk_files(path: Path, policy: PermissionPolicy, ignore: set[str], *,
                         continue
                 except OSError:
                     continue
+            if respect_gitignore and scopes and matches_scopes(child, True, scopes):
+                continue
             kept.append(name)
         dirnames[:] = kept
         if max_depth is not None:
@@ -240,6 +274,8 @@ def walk_files(path: Path, policy: PermissionPolicy, ignore: set[str], *,
             if yielded >= max_files:
                 return
             file = current / name
+            if respect_gitignore and scopes and matches_scopes(file, False, scopes):
+                continue
             if not policy.unrestricted:
                 try:
                     resolved = file.resolve()

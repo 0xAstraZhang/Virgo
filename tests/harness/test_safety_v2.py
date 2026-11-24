@@ -159,7 +159,10 @@ def test_high_risk_detector_allows_normal_commands(tmp_path, command):
 def test_ver10_high_risk_command_prompts_in_workspace_edit_and_no_limit(broker_session, make_session, mode):
     ui = RecordingUI(["n"])
     if mode == "no-limit":
-        session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
+        session = make_session(
+            ui=ui,
+            settings={"execution": {"mode": "no-limit"}, "permissions": {"confirmHighRisk": True}},
+        )
     else:
         session = broker_session(ui=ui, preset="workspace-edit")
     shell = selected(session).tool_name
@@ -197,7 +200,7 @@ def test_high_risk_denial_after_external_read_grant(broker_session, project, mon
     session.prompt("Read the same file again")
 
     first, denied, second = tool_results(session)
-    assert not first.is_error and not second.is_error and first.text() == second.text() == content
+    assert not first.is_error and not second.is_error and first.text() == second.text() == f"1|{content}"
     assert len(ui.questions) == 2
     assert f"Read access: {approved.resolve()}" in ui.questions[0].splitlines()
     assert "git_reset_hard" in ui.questions[1]
@@ -226,7 +229,10 @@ def test_high_risk_denial_after_external_read_grant(broker_session, project, mon
 ])
 def test_high_risk_denial_provenance_before_dispatch(broker_session, monkeypatch, mode, outcome, reason, language):
     ui = RecordingUI([None if outcome == "unanswered" else "n"])
-    session = broker_session(ui=ui, preset=mode, settings={"language": language},
+    settings = {"language": language}
+    if mode == "no-limit":
+        settings["permissions"] = {"confirmHighRisk": True}
+    session = broker_session(ui=ui, preset=mode, settings=settings,
                              approval="never" if outcome == "disabled" else "ask")
     shell = selected(session).tool_name
     dispatched = []
@@ -275,14 +281,14 @@ def test_high_risk_denial_provenance_before_dispatch(broker_session, monkeypatch
 
 
 def test_ver10_confirm_high_risk_false_only_disables_in_no_limit(broker_session, make_session, project):
-    # In no-limit with confirmHighRisk=False, high-risk confirmation is skipped.
+    # In no-limit, confirmHighRisk defaults to False so high-risk confirmation is skipped.
     ui_host = RecordingUI()
     marker = project / "ran.txt"
     disposable = project.parent / "disposable-no-confirm"
     disposable.mkdir(exist_ok=True)
     host_session = make_session(
         ui=ui_host,
-        settings={"execution": {"mode": "no-limit"}, "permissions": {"confirmHighRisk": False}},
+        settings={"execution": {"mode": "no-limit"}},
     )
     host_shell = selected(host_session).tool_name
     write_ok = python_command(host_session, f"from pathlib import Path; Path({str(marker)!r}).write_text('ok')")
@@ -323,7 +329,10 @@ def test_ver10_high_risk_approved_once_executes_and_second_call_prompts_again(ma
     disp2 = project.parent / "disposable-hr-2"
     disp1.mkdir(exist_ok=True)
     disp2.mkdir(exist_ok=True)
-    session = make_session(ui=ui, settings={"execution": {"mode": "no-limit"}})
+    session = make_session(
+        ui=ui,
+        settings={"execution": {"mode": "no-limit"}, "permissions": {"confirmHighRisk": True}},
+    )
     shell = selected(session).tool_name
     write1 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('first-ok')")
     write2 = python_command(session, f"from pathlib import Path; Path({str(marker)!r}).write_text('second-blocked')")
