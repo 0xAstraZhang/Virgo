@@ -127,6 +127,7 @@ class Runtime:
         self._prepared_run = False
         self.execution_active = False
         self._model_call_id: str | None = None
+        self._last_request_header: dict | None = None
         self._attempt_number = 0
         self.wakeups: deque = deque()
         self.diagnostic_id = uuid.uuid4().hex
@@ -536,6 +537,21 @@ class Runtime:
         self._tool_version = version
         self.rebuild_system()
 
+    def _record_request_header(self, model: ai.Model, options: StreamOptions) -> None:
+        resolution = ai.resolved_effort(model, options.effort)
+        header = {
+            "model": model.id, "provider": model.provider, "api": model.api,
+            "requested_effort": options.effort, "wire_effort": resolution.wire,
+            "effective_effort": resolution.effective,
+            **ai.output_limit_metadata(model, options.max_tokens),
+        }
+        if header != self._last_request_header:
+            try:
+                self.store.append("custom", kind="request_header", data=header)
+            except SessionSaveError as error:
+                self.session.report_save_error(error)
+            self._last_request_header = header
+
     def call_model(self, messages: list, signal: threading.Event) -> EventStream:
         if self.can_run() and not signal.is_set():
             self.session.bus.emit("runtime_request", self)
@@ -573,6 +589,7 @@ class Runtime:
             opts = StreamOptions(
                 signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort,
                 prompt_cache_key=self.diagnostic_id, io_bridge=s.io_bridge,
+                before_dispatch=self._record_request_header if self.role == "main" and self.store is not None else None,
             )
             if not self.can_run() or signal.is_set():
                 yield aborted_event(AssistantMessage())
