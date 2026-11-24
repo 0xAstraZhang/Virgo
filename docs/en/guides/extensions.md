@@ -116,6 +116,8 @@ Choose one endpoint per server.
 Use either `type` or `transport` as the selector. If both appear, they must select the same transport.
 URL transports accept an optional `headers` object with string values. Names are case-insensitive and must
 be unique. Virgo expands `${VARIABLE}` in header values and reports missing variables before connecting.
+MCP errors and diagnostics redact full header values. For `Authorization` and `Proxy-Authorization`,
+they also redact the credential following the scheme when it is at least three characters long.
 Loopback URLs, including bracketed IPv6, are supported. Fragments and control characters are invalid.
 Configure the final endpoint URL directly. Redirected tool calls fail and Virgo never resubmits the call.
 

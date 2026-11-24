@@ -329,13 +329,19 @@ def _secrets(config: dict) -> tuple[str, ...]:
     found = {_expand(value) for value in [*values, *sensitive]}
     headers = config.get("headers")
     if isinstance(headers, dict):
-        for value in headers.values():
-            if isinstance(value, str):
-                expanded = _expand(value)
-                # Peers may quote only the credential portion of a composite header.
-                components = [expanded, *(os.environ.get(var, "") for var in _ENV_VAR.findall(value))]
-                for component in components:
-                    found.update((component, unquote(component)))
+        for name, value in headers.items():
+            if not isinstance(value, str):
+                continue
+            expanded = _expand(value)
+            components = [expanded, *(os.environ.get(var, "") for var in _ENV_VAR.findall(value))]
+            for component in components:
+                found.update((component, unquote(component)))
+            if isinstance(name, str) and name.lower() in {"authorization", "proxy-authorization"}:
+                # Peers may quote the credential without its authentication scheme.
+                auth_parts = expanded.split(maxsplit=1)
+                if len(auth_parts) == 2:
+                    credential = auth_parts[1]
+                    found.update(form for form in (credential, unquote(credential)) if len(form) >= 3)
     url = config.get("url")
     if isinstance(url, str):
         try:

@@ -22,6 +22,7 @@ import pytest
 from virgo.agent import ToolContext
 from virgo.ai.providers import faux
 from virgo.ai.types import ImageContent, TextContent, ToolResultMessage
+from virgo.diagnostics import safe_text
 from virgo.execution import HostContext
 from virgo.extensions import mcp as mcp_ext
 from virgo.i18n import Translator
@@ -1272,15 +1273,31 @@ def test_mcp_url_failure_and_explicit_reconnect(mcp_peer, transport, fault, make
     assert _remote_tool(session).execute({}, ctx).as_text() == "updated"
 
 
+@pytest.mark.parametrize(("header", "scheme", "credential", "expected"), [
+    ("Authorization", "Bearer", "opaque-credential", "[redacted]"),
+    ("Proxy-AUTHORIZATION", "Basic", "dXNlcjpwYXNz", "[redacted]"),
+    ("authorization", "Token", "abc", "[redacted]"),
+    ("Authorization", "ApiKey", "opaque.key", "[redacted]"),
+    ("Authorization", "Token", "to", "to"),
+    ("X-Label", "Label", "public", "public"),
+])
+def test_mcp_literal_header_redaction(header, scheme, credential, expected):
+    value = f"{scheme}  {credential}"
+    secrets = mcp_ext._secrets({"headers": {header: value}})
+    message = f"Header ({value}), scheme ({scheme}), supplied ({credential})"
+    assert safe_text(message, secrets=secrets) == f"Header ([redacted]), scheme ({scheme}), supplied ({expected})"
+
+
 @pytest.mark.parametrize("mode", ["rpc-error", "tool-error", "bad-init"])
 def test_mcp_url_redacts_errors_and_diagnostics(mcp_peer, mode, make_session, monkeypatch):
     peer = mcp_peer
     values = ["cred/user", "cred%2Fuser", "pass:word", "pass%3Aword", "q+test secret", "q%2Btest+secret",
               "custom-header-value", "opaque%3Avalue", "opaque:value", "prefix custom-header-value"]
-    peer.error_message = "peer error " + " | ".join(values)
+    peer.error_message = "peer error " + " | ".join(values) + " | Basic dXNlcjpwYXNz | supplied dXNlcjpwYXNz"
     url = peer.url.replace("//", "//cred%2Fuser:pass%3Aword@") + "/http?key=q%2Btest+secret"
     monkeypatch.setenv("MCP_TEST_HEADER", "custom-header-value")
-    config = {"url": url, "headers": {"X-Custom": "prefix ${MCP_TEST_HEADER}", "X-Opaque": "opaque%3Avalue"}}
+    config = {"url": url, "headers": {"X-Custom": "prefix ${MCP_TEST_HEADER}", "X-Opaque": "opaque%3Avalue",
+                                      "Proxy-Authorization": "Basic dXNlcjpwYXNz"}}
     peer.mode = mode if mode == "bad-init" else "ok"
     session = make_session(settings={"mcpServers": {"remote": config}})
     if mode == "bad-init":
@@ -1295,6 +1312,8 @@ def test_mcp_url_redacts_errors_and_diagnostics(mcp_peer, mode, make_session, mo
         diagnostic = res.as_text() + json.dumps(res.details)
         assert _remote_state(session) == "ready"
     assert "peer error" in diagnostic
+    assert " | [redacted] | supplied [redacted]" in diagnostic
+    assert "dXNlcjpwYXNz" not in diagnostic
     for value in values:
         assert value not in diagnostic
 
