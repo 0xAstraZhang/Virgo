@@ -1,4 +1,4 @@
-"""Diagnostic checkpoints in the live timeline and saved history."""
+"""Notifications in the live timeline and saved history."""
 
 import asyncio
 import json
@@ -94,27 +94,53 @@ def test_compacted_permission_failures_in_live_and_reopened_transcript(broker_se
 def test_user_authored_diagnostic_xml_stays_literal():
     async def scenario():
         literal = f"{OPEN}\nhello\n{CLOSE}"
+        message = UserMessage([TextContent(literal), ImageContent("", "image/png")])
+        expected = literal + "\n[image: image/png]"
         async with TranscriptApp().run_test() as pilot:
             view = pilot.app.query_one(Transcript)
             await view.consume(AgentEvent("agent_start"))
             await view.consume(AgentEvent("turn_start"))
             for agent in ("main", "main", "explorer"):
-                await view.consume(AgentEvent("message_end", agent, message=UserMessage(literal)))
-            assert view.query_one(".user-message").content.plain == "> " + literal
+                await view.consume(AgentEvent("message_end", agent, message=message))
+            assert view.query_one(".user-message").content.plain == "> " + expected
             rows = list(view.query(EventView))
             assert [(row.kind, row.agent) for row in rows] == [("user", "main"), ("user", "explorer")]
             for row in rows:
                 row.action_toggle()
-                assert row.output.content == literal
+                assert row.output.content == expected
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("delivery", ["live", "history"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["LF", "CRLF"])
+@pytest.mark.parametrize("opening", ['<notification source="jobs">', '<notification source="calendar">', "<notification>"])
+def test_notification_envelope_unwraps_in_transcript(opening, newline, delivery):
+    async def scenario():
+        body = f"Job finished{newline}  Details follow.  {newline}"
+        message = UserMessage([TextContent(f"{opening}{newline}{body}{newline}{CLOSE}")], kind="notification")
+        async with TranscriptApp().run_test() as pilot:
+            view = pilot.app.query_one(Transcript)
+            if delivery == "live":
+                await view.consume(AgentEvent("message_end", message=message))
+            else:
+                await view.load_history([saved_entry(message)])
+            row = view.query_one(EventView)
+            assert row.kind == "notification" and not row.output.display
+            header = row.header.content.plain
+            assert header.startswith("▸ Notification · Job finished")
+            assert "<notification" not in header and CLOSE not in header
+            row.action_toggle()
+            assert row.output.display and row.output.content == body
 
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("text", [
-    "Background news", f'<notification source="jobs">\nJob finished\n{CLOSE}',
+    "Background news", f'<notification source=jobs>\nJob finished\n{CLOSE}',
     f"before {OPEN}\nhello\n{CLOSE}", f"{OPEN}\nhello\n{CLOSE}\nafter", f"{OPEN}\nunterminated",
 ])
-def test_other_notifications_stay_literal(text):
+def test_unframed_and_malformed_notifications_stay_literal(text):
     async def scenario():
         async with TranscriptApp().run_test() as pilot:
             view = pilot.app.query_one(Transcript)
