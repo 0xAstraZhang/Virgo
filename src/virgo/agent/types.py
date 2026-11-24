@@ -1,4 +1,4 @@
-"""Agent-level types (≈ pi-agent-core): tools, tool results, events, loop configuration."""
+"""Agent-level types: tools, tool results, events, loop configuration."""
 
 from __future__ import annotations
 

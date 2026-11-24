@@ -2,7 +2,7 @@
 
 Supports the subset tools actually use: type (incl. lists), properties, required, items,
 enum, additionalProperties=false, minItems/maxItems, minLength, minimum/maximum.
-Coercions (like Pi's validateToolArguments): numeric/bool strings, JSON strings for
+Coercions: numeric/bool strings, JSON strings for
 objects/arrays, and a scalar where an array is expected.
 """
 

@@ -1,4 +1,4 @@
-"""User-scoped credentials, refreshed at request time (inspired by Pi's AuthStorage)."""
+"""User-scoped credentials, refreshed at request time."""
 
 from __future__ import annotations
 

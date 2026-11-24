@@ -1,4 +1,4 @@
-"""Virgo: a lightweight, extensible coding agent harness inspired by Pi."""
+"""Virgo: a lightweight, extensible coding agent harness."""
 
 from importlib.metadata import PackageNotFoundError, version
 

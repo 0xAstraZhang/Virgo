@@ -1,7 +1,6 @@
-"""Account authentication, ported from Pi's OAuth provider contracts.
+"""Account authentication via OAuth provider contracts.
 
 Tokens stay in the caller's credential store. Expiry timestamps use seconds.
-Source: @earendil-works/pi-ai 1.5.0, dist/auth/oauth (MIT).
 """
 
 from __future__ import annotations
@@ -377,7 +376,7 @@ def _device_login(provider: str, ui, signal) -> dict:
     client = XAI_CLIENT if xai else KIMI_CLIENT
     fields = {"client_id": client}
     if xai:
-        fields.update(scope="openid profile email offline_access grok-cli:access api:access", referrer="pi")
+        fields.update(scope="openid profile email offline_access grok-cli:access api:access", referrer="virgo")
     status, body = _request(
         "https://auth.x.ai/oauth2/device/code"
         if xai

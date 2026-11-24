@@ -1,4 +1,4 @@
-"""Login presets, adapted from Pi's provider catalog and provider API documentation.
+"""Login presets from provider API documentation.
 
 Account credentials use separate provider IDs when their API differs from the
 public API. In particular, Kimi Code subscriptions and Moonshot API keys must

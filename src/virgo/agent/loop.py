@@ -1,4 +1,4 @@
-"""The agent loop: stateless, no I/O. Mirrors Pi's runLoop.
+"""The agent loop: stateless, no I/O.
 
 while there are tool calls or pending messages:
     call the model, run its tool calls, pick up steering messages

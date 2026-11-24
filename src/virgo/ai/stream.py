@@ -1,7 +1,7 @@
 """Assistant message event stream.
 
 A provider implements a generator of `StreamEvent`s ending with a `done` or `error` event.
-`EventStream` wraps it with the Pi contract: iterating never raises, and failures become an
+`EventStream` wraps it so iterating never raises, and failures become an
 `error` event whose message has `stop_reason="error"`.
 """
 
