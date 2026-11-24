@@ -158,7 +158,7 @@ def test_workspace_switch_uses_current_command_metadata(make_session, project, t
             await pilot.press(*'/custom')
             assert '[first]' in rendered(app)
             await app.change_conversation(path)
-            await wait_for(pilot, lambda: app.session.cwd == target)
+            await wait_for(pilot, lambda: app.session.cwd == target and app.editor.text == '')
             await pilot.press(*'/custom')
             assert '[second]' in rendered(app)
             assert '[first]' not in rendered(app)

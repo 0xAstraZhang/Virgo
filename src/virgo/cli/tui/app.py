@@ -464,21 +464,20 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 ):
                     self.notify(tr(self, "ui.session.other_active"), severity="warning")
                     return
-                owner.query_one(ChatEditor).clear()
-                owner.state.history.reset()
                 target = owner
         if target is None and not self.can_change_session():
             ui = FullscreenUI()
             previous = self.session
 
-            def construct():
+            def construct() -> AgentSession | None:
                 cwd = previous.cwd
                 if path != "new":
                     store = SessionStore.load(path)
-                    store.build_context()
                     cwd = store.cwd
                     if not cwd.is_dir():
-                        raise FileNotFoundError(tr(self, "ui.session.missing_workspace", path=cwd))
+                        previous.ui.warn(tr(previous, "ui.session.missing_workspace", path=cwd))
+                        return None
+                    store.build_context()
                 storage = None if path == "new" and previous.store.path is None else path
                 options = dict(previous.session_options)
                 if cwd.resolve() != previous.cwd:
@@ -489,6 +488,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 candidate = await asyncio.to_thread(construct)
             except Exception as error:  # noqa: BLE001 - retain the current live conversation
                 self.notify(tr(self, "ui.session.open_error", error=error), severity="error")
+                return
+            if candidate is None:
                 return
             if self.controller.closing or not self.is_running:
                 await asyncio.to_thread(candidate.shutdown)
@@ -510,12 +511,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.focus_composer()
             return
         if path == "new":
-            changed = self.controller.new_session(initial=initial)
+            if self.controller.new_session(initial=initial):
+                self.editor.clear()
+                self.history.reset()
         else:
-            changed = self.controller.open_session(path, initial=initial)
-        if changed:
-            self.editor.clear()
-            self.history.reset()
+            self.controller.open_session(path, initial=initial)
         self.focus_composer()
 
     async def poll(self) -> None:
@@ -542,7 +542,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 if update.kind == "language_changed":
                     self.refresh_language()
                 elif update.kind == "session_changed":
-                    self.activity.translator = self.session.translator
+                    self.editor.clear()
+                    self.history.reset()
                     self.refresh_language()
                 elif update.kind == "reset":
                     self.activity.reset()
@@ -888,7 +889,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     @on(TextArea.Changed, "#editor")
     def editor_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area is not self.editor:
+        if event.text_area is not self._pane.query_one_optional(ChatEditor):
             return
         self.resize_editor()
         self.sync_completions()

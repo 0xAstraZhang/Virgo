@@ -16,6 +16,7 @@ from virgo.harness.settings import Paths
 from virgo.harness.store import SessionStore
 
 from tests.support.harness import wait_until
+from tests.support.persistence import diagnostic_records
 from tests.support.tui import pump
 
 
@@ -55,6 +56,9 @@ def test_switch_workspace_reloads_configuration_tools_and_services(make_session,
         changed = next(i for i, event in enumerate(updates) if event.kind == "session_changed")
         assert updates[changed].payload is current
         assert updates[changed + 1].kind == "reset"
+        prompt = next(i for i, event in enumerate(updates)
+                      if event.kind == "event" and event.payload.type == "agent_start")
+        assert changed < prompt
         assert ui._signals["main"] is current.main.agent.signal
     finally:
         controller.request_close()
@@ -72,17 +76,41 @@ def test_same_workspace_open_preserves_session_and_resets_history(make_session, 
     assert controller.session is session
     assert not session._shutdown_started
     assert session.main.messages[0].text() == "saved question"
+    assert any(event.kind == "session_changed" and event.payload is session for event in updates)
     assert any(event.kind == "reset" for event in updates)
 
 
-@pytest.mark.parametrize("failure", ["missing-file", "missing-workspace", "invalid-settings"])
+@pytest.mark.parametrize("same_workspace", [False, True])
+def test_missing_workspace_warns_without_activating_or_sending_initial(make_session, project, tmp_path, same_workspace):
+    ui = FullscreenUI()
+    previous = make_session(ui=ui)
+    target = project if same_workspace else tmp_path / "target"
+    path = saved_session(target)
+    target.rmdir()
+    original = previous.store
+    controller = RunController(previous, ui)
+    controller.start()
+    controller.poll()
+
+    assert controller.open_session(path, initial="must not run")
+    updates = pump(controller)
+    assert [event.payload for event in updates if event.kind == "warning"] == [
+        f"Workspace no longer exists: {target}"
+    ]
+    assert not any(event.kind in {"session_changed", "reset"} for event in updates)
+    assert not any(event.kind == "print" and event.payload[1] == "error" for event in updates)
+    assert not any(row["phase"] == "cli.tui_worker" for row in diagnostic_records(previous.diagnostics.path))
+    assert controller.session is previous and previous.store is original and not previous._shutdown_started
+    assert not faux.CALLS["test"] and not previous.main.messages
+    assert controller.can_switch and not controller.busy
+
+
+@pytest.mark.parametrize("failure", ["missing-file", "invalid-settings"])
 def test_invalid_target_retains_previous_session_and_does_not_send_initial(make_session, tmp_path, failure):
     target = tmp_path / "target"
     path = saved_session(target)
     if failure == "missing-file":
         path.unlink()
-    elif failure == "missing-workspace":
-        target.rmdir()
     else:
         (target / ".virgo").mkdir()
         (target / ".virgo" / "settings.json").write_text("{")
