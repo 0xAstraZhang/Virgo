@@ -56,6 +56,7 @@ from .runtime_limits import ChildCancellation
 from .settings import Paths, Settings
 from .shell_commands import ShellSelection
 from .store import SessionSaveError, SessionStore
+from .subagents import SubagentStore
 from .telemetry import record_call
 from .ui import UI
 
@@ -114,12 +115,13 @@ class AgentSession:
         self._retained_sessions: dict[Path, tuple[Runtime, deque]] = {}
         self._main_runtimes: dict[str, Runtime] = {}
         self._output_stores: dict[str, OutputStore] = {}
+        self._subagent_stores: dict[str, SubagentStore] = {}
         self._pending_child_work: dict[str, tuple[Runtime, int]] = {}
         self._tool_groups: dict[tuple[str, str], tuple[tuple[AgentTool, tuple], ...]] = {}
         self._tool_version = 0
         self._plugin_cleanups: list[tuple[str, object]] = []
         self.loaded_plugins: list[str] = []
-        self._child_runtimes: dict[str, Runtime] = {}
+        self._child_runtimes: dict[tuple[str, str], Runtime] = {}
         self._notification_depth = 0
         self._lock = threading.RLock()
         self.approval_revision = 0
@@ -492,7 +494,7 @@ class AgentSession:
         if store.save_error is not None:
             self.report_save_error(store.save_error)
             raise store.save_error
-        runtime = self._child_runtimes.get(agent) or self.runtime_for_store(store)
+        runtime = self._child_runtimes.get((store.id, agent)) or self.runtime_for_store(store)
         if runtime is not None:
             runtime.request_budget.consume()
         started = time.monotonic()
@@ -538,6 +540,18 @@ class AgentSession:
                 self._output_stores[session_id] = existing
             return existing
 
+    def subagent_store_for(self, store=None) -> SubagentStore:
+        """Return the per-session SubagentStore for ``store`` (defaulting to the active store)."""
+        with self._lock:
+            target = store if store is not None else self.store
+            session_id = target.id if target is not None else "ephemeral"
+            existing = self._subagent_stores.get(session_id)
+            if existing is None:
+                persist = target is not None and target.path is not None
+                existing = SubagentStore.for_session(self.paths.user, session_id, persist=persist)
+                self._subagent_stores[session_id] = existing
+            return existing
+
     def _open_store(self, session) -> SessionStore:
         if session is None:
             return SessionStore(None, self.cwd)
@@ -577,7 +591,8 @@ class AgentSession:
                     raise ValueError("Runtime parent must belong to this session")
                 if origin_parent is not None and origin_parent is not parent.origin:
                     raise ValueError("Runtime origin must match its parent")
-                if name in self._child_runtimes or name == "main":
+                child_key = (parent.origin.root.id, name)
+                if child_key in self._child_runtimes or name == "main":
                     raise ValueError(f"Runtime name {name!r} is already in use")
                 origin_parent = parent.origin
                 kwargs["origin_parent"] = origin_parent
@@ -596,7 +611,7 @@ class AgentSession:
                 if role == "main" and runtime.store is not None:
                     self._main_runtimes[runtime.store.id] = runtime
                 elif role != "main":
-                    self._child_runtimes[name] = runtime
+                    self._child_runtimes[(runtime.origin.root.id, name)] = runtime
                 return runtime
             except Exception as error:
                 owner = kwargs.get("store") or kwargs.get("accounting_store")
@@ -606,9 +621,10 @@ class AgentSession:
 
     def release_runtime(self, runtime: Runtime) -> None:
         with self._lock:
-            if self._child_runtimes.get(runtime.name) is not runtime:
+            child_key = (runtime.origin.root.id, runtime.name)
+            if self._child_runtimes.get(child_key) is not runtime:
                 return
-            self._child_runtimes.pop(runtime.name)
+            self._child_runtimes.pop(child_key)
             for store in (runtime.store, runtime.accounting_store):
                 if store is not None:
                     with store._lock:
@@ -711,6 +727,11 @@ class AgentSession:
                     output_store.delete_all()
                 else:
                     OutputStore.delete_session(self.paths.user, store.id)
+                subagent_store = self._subagent_stores.pop(store.id, None)
+                if subagent_store is not None:
+                    subagent_store.delete_all()
+                else:
+                    SubagentStore.delete_session(self.paths.user, store.id)
             if current:
                 self._activate_store(replacement, runtime=runtime)
 
@@ -1221,11 +1242,17 @@ class AgentSession:
                     output_store = self._output_stores.pop(store.id, None)
                     if output_store is not None:
                         output_store.delete_all()
+                    subagent_store = self._subagent_stores.pop(store.id, None)
+                    if subagent_store is not None:
+                        subagent_store.delete_all()
                 else:
                     store.discard_if_empty()
                     if not store.path.exists():
                         output_store = self._output_stores.pop(store.id, None)
                         if output_store is not None:
                             output_store.delete_all()
+                        subagent_store = self._subagent_stores.pop(store.id, None)
+                        if subagent_store is not None:
+                            subagent_store.delete_all()
             except OSError as error:
                 self.report_error(error, phase="session.cleanup", store=store)

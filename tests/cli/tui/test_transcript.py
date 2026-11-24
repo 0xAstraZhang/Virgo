@@ -245,7 +245,8 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
                 )
             )
             await pilot.pause()
-            assert len(view.query(ToolView)) == 2
+            # Child agent events are isolated from the main transcript.
+            assert len(view.query(ToolView)) == 1
             calls = {(t.agent, t.call_id): t for t in view.query(ToolView) if t.kind == "tool_call"}
             main = calls[("main", "shared-id")]
             assert main.status == "error"
@@ -258,7 +259,6 @@ def test_tools_are_keyed_by_agent_and_call_and_preview_is_foldable():
             await pilot.press("enter")
             assert main.expanded
             assert main.output.content == result.as_text()
-            assert "[explorer]" in str(calls[("explorer", "shared-id")].header.content)
             assert "pwd" in str(calls[("main", "shared-id")].header.content)
             assert '"command"' not in str(calls[("main", "shared-id")].header.content)
             assert "failed" in str(main.header.content)

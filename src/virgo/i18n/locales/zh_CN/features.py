@@ -2,15 +2,18 @@
 
 MESSAGES = {
     "features.agent.aborted": "子代理已中止。",
-    "features.agent.background": "已启动后台子代理 {id}（{description}）。完成后会通知你；用 job_output 读取结果。",
+    "features.agent.background": "已启动后台子代理 {id}（{agent_id}: {description}）。完成后会通知你；用 job_output 读取结果。",
     "features.agent.background_disabled": "当前会话已禁用后台执行。",
+    "features.agent.busy": "子代理 {id} 正在运行中。",
     "features.agent.failed": "子代理失败: {error}",
+    "features.agent.list_empty": "当前会话暂无子代理。",
     "features.agent.turn_limit": "子代理达到 {turns} 轮上限，任务尚未完成。"
     "先检查已经完成的工作，再缩小任务范围或调整 subagents.maxTurns。",
     "features.agent.incomplete": "子代理未生成完整的最终回答：{reason}。"
     "请先核对错误信息和已完成的工作，再决定后续操作。",
     "features.agent.no_answer": "子代理未生成回答。",
     "features.agent.progress": "\n子代理停止前已返回 {count} 个工具结果；先前的操作可能已生效。最近结果:\n",
+    "features.agent.unknown_id": "当前会话中找不到子代理 {id!r}。",
     "features.ask_user.answered": "用户回答: {answer}",
     "features.ask_user.cancelled": "问题已取消，未得到回答。",
     "features.ask_user.chose": "用户选择了 {letter}: {answer}",
@@ -29,6 +32,7 @@ MESSAGES = {
     "features.commands.permissions": "查看或修改权限预设、审批策略和已记住的决定",
     "features.commands.search": "选择搜索服务（/search [auto|duckduckgo|deepseek|off]）",
     "features.commands.skills": "列出可用技能（用 /skill:name 调用）",
+    "features.commands.subagents": "查看当前会话的子代理轨迹",
     "features.diagnostics.failed": "诊断查询失败；原有结果未改变。",
     "features.diagnostics.runtime": "查询诊断需要可信的调用运行实例。",
     "features.diagnostics.unavailable": "此运行实例没有诊断证据集合。",

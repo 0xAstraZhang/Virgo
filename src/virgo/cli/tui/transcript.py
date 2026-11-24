@@ -11,8 +11,10 @@ from functools import partial
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
-from textual.geometry import Size
+from textual.events import Click, MouseDown
+from textual.geometry import Offset, Size
 from textual.layout import DockArrangeResult
+from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
@@ -96,9 +98,17 @@ class EventView(Foldable):
     EventView.error > .output { color: $error; }
     """
 
-    def __init__(self, kind: str, text: str = "", *, agent: str = "main", name: str = "") -> None:
+    def __init__(
+        self,
+        kind: str,
+        text: str = "",
+        *,
+        agent: str = "main",
+        primary_agent: str = "main",
+        name: str = "",
+    ) -> None:
         super().__init__()
-        self.kind, self.agent, self.tool_name = kind, agent, name
+        self.kind, self.agent, self.primary_agent, self.tool_name = kind, agent, primary_agent, name
         self.text = text
         self.expanded = False
         self.activity_phase = ""
@@ -144,7 +154,7 @@ class EventView(Foldable):
             title.append(self.activity_frame + " ", style=self.app.theme_variables["accent"])
         else:
             title.append("▾ " if self.expanded else "▸ ")
-        if self.agent != "main":
+        if self.agent != self.primary_agent:
             title.append(f"[{self.agent}] ")
         if self.tool_name:
             title.append((self.activity_phase or self.summary_status()) + " · ")
@@ -201,8 +211,8 @@ class EventView(Foldable):
 
     def render_header(self) -> None:
         if self.kind == "text":
-            self.header.display = self.agent != "main"
-            title = Text(f"[{self.agent}] " if self.agent != "main" else "")
+            self.header.display = self.agent != self.primary_agent
+            title = Text(f"[{self.agent}] " if self.agent != self.primary_agent else "")
         else:
             title = self.summary()
         width = self.header.size.width
@@ -250,21 +260,105 @@ class EventView(Foldable):
         return self.kind != "text" and super()._owns_fold_gesture(widget)
 
 
+class TraceLink(Static, can_focus=True):
+    """Clickable and keyboard-activatable action row to inspect a sub-agent trace."""
+
+    ALLOW_SELECT = False
+    BINDINGS = [("enter,space", "open_trace", "Open trace")]
+    DEFAULT_CSS = """
+    TraceLink {
+        height: 1; min-height: 1; padding-left: 2;
+        background: $background; color: $accent; text-style: bold;
+        text-wrap: nowrap; text-overflow: ellipsis;
+    }
+    TraceLink:focus { text-style: bold reverse; }
+    """
+
+    class Activated(Message):
+        def __init__(self, link: TraceLink) -> None:
+            self.link = link
+            super().__init__()
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._mouse_down: Offset | None = None
+
+    def on_mouse_down(self, event: MouseDown) -> None:
+        self._mouse_down = event.screen_offset if event.button == 1 else None
+
+    def action_open_trace(self) -> None:
+        self.post_message(self.Activated(self))
+
+    def on_click(self, event: Click) -> None:
+        if event.button == 1:
+            event.stop()
+            start, self._mouse_down = self._mouse_down, None
+            if event.chain == 1 and (start is None or start == event.screen_offset):
+                self.action_open_trace()
+
+
 class ToolView(EventView):
     """One fold for a call, updated in place when its result arrives."""
 
-    def __init__(self, agent: str, call_id: str, name: str, args: dict | None = None):
-        super().__init__("tool_call", agent=agent, name=name)
+    class TraceRequested(Message):
+        def __init__(self, agent_id: str) -> None:
+            self.agent_id = agent_id
+            super().__init__()
+
+    def __init__(
+        self,
+        agent: str,
+        call_id: str,
+        name: str,
+        args: dict | None = None,
+        *,
+        primary_agent: str = "main",
+    ):
+        super().__init__("tool_call", agent=agent, primary_agent=primary_agent, name=name)
         self.call_id = call_id
         self.status = "pending"
         self.result = ""
         self.details: dict = {}
         self.duration: float | None = None
+        self.subagent_id: str | None = None
+        self.background_active = False
+        self.background_final_status: str | None = None
+        self.trace_link = TraceLink("", markup=False)
+        self.trace_link.display = False
         self.set_args(args or {})
+
+    def compose(self) -> ComposeResult:
+        yield from super().compose()
+        yield self.trace_link
+
+    def bind_subagent(self, agent_id: str) -> None:
+        if agent_id and self.subagent_id != agent_id:
+            self.subagent_id = agent_id
+            self.render_state()
+
+    def on_trace_link_activated(self, event: TraceLink.Activated) -> None:
+        event.stop()
+        if self.subagent_id:
+            self.post_message(self.TraceRequested(self.subagent_id))
+
+    def render_state(self) -> None:
+        super().render_state()
+        show_link = self.expanded and self.tool_name == "agent" and bool(self.subagent_id)
+        if show_link:
+            update_static(
+                self.trace_link,
+                Text("▸ " + tr(self, "ui.subagent.view_trace", id=self.subagent_id), no_wrap=True, overflow="ellipsis"),
+                layout=False,
+            )
+        self.trace_link.display = show_link
 
     def set_args(self, args: dict) -> None:
         self.args = args
         self._args_text = _json(args)
+        if self.tool_name == "agent" and isinstance(args, dict):
+            raw = args.get("agent_id")
+            if isinstance(raw, str) and raw.strip() and not self.subagent_id:
+                self.subagent_id = raw.strip()
         if self.status in ("pending", "running"):
             self.set_text(self._args_text)
 
@@ -292,26 +386,57 @@ class ToolView(EventView):
                 return value
         return self._args_text
 
-    def set_result(self, text: str, *, is_error: bool = False, details=None) -> None:
+    def set_result(
+        self,
+        text: str,
+        *,
+        is_error: bool = False,
+        details=None,
+        live: bool = True,
+        background_status: str | None = None,
+    ) -> None:
         if self.tool_name == "present_file" and self.status in ("pending", "running"):
             self.expanded = True
         self.result = text
         if isinstance(details, dict):
             self.details.update(details)
+            sub_id = self.details.get("agent_id") or (
+                self.details.get("agent") if self.tool_name == "agent" else None
+            )
+            if isinstance(sub_id, str) and sub_id:
+                self.subagent_id = sub_id
         error = self.details.get("error")
-        if self.details.get("cancelled") is True:
+        is_bg_started = (
+            live
+            and not is_error
+            and self.tool_name == "agent"
+            and self.details.get("background") is True
+        )
+        resolved_bg = background_status or self.background_final_status
+        if is_bg_started and resolved_bg is None:
+            self.background_active = True
+            self.status = "running"
+        elif is_bg_started and resolved_bg is not None:
+            self.background_active = False
+            self.background_final_status = resolved_bg
+            self._apply_background_status(resolved_bg)
+        elif self.details.get("cancelled") is True:
+            self.background_active = False
             self.status = "cancelled"
         elif is_error and (
             self.details.get("status") in {"resource_denied"}
             or isinstance(error, dict) and error.get("kind") == "blocked"
         ):
+            self.background_active = False
             self.status = "blocked"
         else:
+            self.background_active = False
             self.status = "error" if is_error else "done"
         value = details.get("duration") if isinstance(details, dict) else None
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float)) and not is_bg_started:
             self.duration = value
-        self.set_class(is_error, "error")
+        if not (is_bg_started and resolved_bg is not None):
+            self.set_class(is_error, "error")
         sandbox = self.details.get("boundary")
         if is_error and isinstance(sandbox, dict):
             if sandbox.get("payload_started") is False:
@@ -321,6 +446,25 @@ class ToolView(EventView):
         if is_error and isinstance(error, dict) and error.get("error_id"):
             text += "\n" + tr(self, "harness.error.id", id=safe_text(error["error_id"]))
         self.set_text(text)
+
+    def _apply_background_status(self, status: str) -> None:
+        if status == "aborted":
+            self.status = "cancelled"
+            self.set_class(False, "error")
+        elif status == "error":
+            self.status = "error"
+            self.set_class(True, "error")
+        else:
+            self.status = "done"
+            self.set_class(False, "error")
+
+    def finish_background(self, status: str) -> None:
+        self.background_final_status = status
+        if not self.background_active:
+            return
+        self.background_active = False
+        self._apply_background_status(status)
+        self.render_state()
 
 
 class AssistantView(Vertical):
@@ -429,7 +573,7 @@ class AssistantView(Vertical):
     def _render_thinking(self) -> None:
         visible = self.activity is not None and (
             self.waiting is not None or not self.active_events or (
-                all(event.kind == "text" and event.agent == "main" for event in self.active_events)
+                all(event.kind == "text" and event.agent == self.agent for event in self.active_events)
                 and (self._text_progress_at is None or time.monotonic() - self._text_progress_at >= TEXT_STALL_SECONDS)
             )
         )
@@ -456,7 +600,7 @@ class AssistantView(Vertical):
                 event.activity_frame = self.activity.plain[0]
         else:
             self.active_events.discard(event)
-            if event.kind == "text" and event.agent == "main":
+            if event.kind == "text" and event.agent == self.agent:
                 self._text_progress_at = None
         event.render_state()
         self._render_thinking()
@@ -501,11 +645,15 @@ class Transcript(VerticalScroll, inherit_bindings=False):
     Transcript > .notice { height: auto; margin-bottom: 1; }
     """
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, target_agent: str = "main", **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.target_agent = target_agent
         self.show_tools = self.show_thinking = False
         self.activity_card: AssistantView | None = None
         self._current_calls: dict[tuple[str, str], ToolView] = {}
+        self._tool_calls_by_id: dict[str, ToolView] = {}
+        self._subagent_tools: dict[str, list[ToolView]] = {}
+        self._finished_call_status: dict[str, str] = {}
         self._blocks: dict[str, dict[int, EventView]] = {}
         self._message_open: set[str] = set()
         self._streaming: dict[str, EventView] = {}
@@ -627,9 +775,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     self.vertical_scrollbar.position = y
         return arrangement
 
-    async def _assistant(self, agent: str = "main") -> AssistantView:
+    async def _assistant(self, agent: str | None = None) -> AssistantView:
         if self._run is None:
-            self._run = AssistantView(show_thinking=self.show_thinking)
+            self._run = AssistantView(agent=self.target_agent, show_thinking=self.show_thinking)
             self._run.translator = translator_for(self)
             self.activity_card = self._run
             await self._place(self._run)
@@ -669,14 +817,52 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         key = (agent, call_id)
         card = self._current_calls.get(key)
         if card is None:
-            card = ToolView(agent, call_id, name, args)
+            card = ToolView(agent, call_id, name, args, primary_agent=self.target_agent)
             self._current_calls[key] = card
+            if call_id:
+                self._tool_calls_by_id[call_id] = card
             await self._append(card)
         else:
             card.tool_name = name or card.tool_name
             if args is not None:
                 card.set_args(args)
+        if card.subagent_id:
+            self._register_subagent_tool(card.subagent_id, card)
         return card
+
+    def _register_subagent_tool(self, agent_id: str, card: ToolView) -> None:
+        cards = self._subagent_tools.setdefault(agent_id, [])
+        if card not in cards:
+            cards.append(card)
+
+    def on_subagent_started(self, info: dict) -> None:
+        agent_id = info.get("agent_id")
+        if not isinstance(agent_id, str) or not agent_id:
+            return
+        parent_call_id = info.get("parent_tool_call_id")
+        if isinstance(parent_call_id, str) and parent_call_id:
+            self._finished_call_status.pop(parent_call_id, None)
+            if card := self._tool_calls_by_id.get(parent_call_id):
+                card.bind_subagent(agent_id)
+                self._register_subagent_tool(agent_id, card)
+
+    def on_subagent_finished(self, info: dict, status: str = "done") -> None:
+        agent_id = info.get("agent_id")
+        parent_call_id = info.get("parent_tool_call_id")
+        if isinstance(parent_call_id, str) and parent_call_id:
+            self._finished_call_status[parent_call_id] = status
+        cards: list[ToolView] = []
+        if isinstance(parent_call_id, str) and (card := self._tool_calls_by_id.get(parent_call_id)):
+            cards.append(card)
+        if isinstance(agent_id, str):
+            for card in self._subagent_tools.get(agent_id, ()):
+                if card not in cards:
+                    cards.append(card)
+        for card in cards:
+            was_active = card.background_active
+            card.finish_background(status)
+            if was_active:
+                self._set_event_activity(card, "")
 
     async def _result(self, agent: str, message: ToolResultMessage) -> ToolView:
         row = await self._tool(agent, message.tool_call_id, message.tool_name)
@@ -684,15 +870,24 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         for block in message.content:
             if isinstance(block, ImageContent):
                 text += tr(self, "ui.event.image_line", type=block.mime_type)
-        row.set_result(text, is_error=message.is_error, details=message.details)
-        self._set_event_activity(row, "")
+        row.set_result(
+            text,
+            is_error=message.is_error,
+            details=message.details,
+            live=self._staged is None,
+            background_status=self._finished_call_status.get(message.tool_call_id),
+        )
+        if row.subagent_id:
+            self._register_subagent_tool(row.subagent_id, row)
+        if not row.background_active:
+            self._set_event_activity(row, "")
         return row
 
     async def _start_message(self, agent: str) -> AssistantView:
         card = await self._assistant(agent)
         card.clear_event_activity(agent)
         self._streaming.pop(agent, None)
-        if agent == "main":
+        if agent == self.target_agent:
             await card.clear_answer()
         # IDs belong to one model message. Providers may reuse them later in
         # the same run; only lifecycle duplicates of this occurrence coalesce.
@@ -731,7 +926,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                             continue
                         row = previous
                 if row is None:
-                    row = await self._append(EventView(kind, value, agent=agent))
+                    row = await self._append(
+                        EventView(kind, value, agent=agent, primary_agent=self.target_agent)
+                    )
                 if row.kind == "text":
                     text_parts.setdefault(row, []).append(value)
                 else:
@@ -740,7 +937,12 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 row = await self._native(agent, block, row, index)
             elif isinstance(block, ImageContent) and row is None:
                 row = await self._append(
-                    EventView("image", tr(self, "ui.event.image", type=block.mime_type), agent=agent)
+                    EventView(
+                        "image",
+                        tr(self, "ui.event.image", type=block.mime_type),
+                        agent=agent,
+                        primary_agent=self.target_agent,
+                    )
                 )
             if row is not None:
                 blocks[index] = row
@@ -756,7 +958,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             card.clear_event_activity(agent)
             self._streaming.pop(agent, None)
             terminal_error = message.stop_reason in ("error", "refusal", "aborted", "length")
-            if agent == "main" and (
+            if agent == self.target_agent and (
                 terminal_error or (not message.tool_calls() and message.stop_reason != "pause_turn")
             ):
                 last_tool = max(
@@ -796,7 +998,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             )
             self._set_event_activity(row, "")
         elif row is None:
-            row = await self._append(EventView("context", _json(data), agent=agent))
+            row = await self._append(EventView("context", _json(data), agent=agent, primary_agent=self.target_agent))
         return row
 
     def _set_event_activity(self, row: EventView, phase: str) -> None:
@@ -816,7 +1018,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             self._stream_activity(agent, stream)
         row = self._streaming.get(agent)
         # The bridge can coalesce a growing snapshot into a final empty delta.
-        if agent == "main" and row is not None and row.kind == "text" and (
+        if agent == self.target_agent and row is not None and row.kind == "text" and (
             (stream.type == "text_delta" and stream.delta) or len(row.text) > previous_length
         ):
             self.activity_card.record_text_progress()
@@ -840,18 +1042,22 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                 self._set_event_activity(row, phase)
 
     async def consume(self, ev: AgentEvent) -> None:
+        if ev.agent != self.target_agent:
+            return
         message = ev.message
-        if ev.type == "agent_start" and ev.agent == "main":
+        if ev.type == "agent_start":
             self.finish_activity()
             self._running = True
-        elif ev.type == "turn_start" and ev.agent == "main":
+        elif ev.type == "turn_start":
             await self._assistant(ev.agent)
         elif ev.type == "message_start" and isinstance(message, AssistantMessage):
             await self._start_message(ev.agent)
             await self._snapshot(ev.agent, message)
         elif ev.type == "message_update" and ev.stream_event is not None:
             if ev.stream_event.type == "retry":
-                await self._append(EventView("retry", tr(self, "ui.event.retry"), agent=ev.agent))
+                await self._append(
+                    EventView("retry", tr(self, "ui.event.retry"), agent=ev.agent, primary_agent=self.target_agent)
+                )
                 await self._start_message(ev.agent)
             else:
                 await self._stream_update(ev.agent, ev.stream_event)
@@ -889,8 +1095,8 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             for image in message.content:
                 if isinstance(image, ImageContent):
                     text += tr(self, "ui.event.image_line", type=image.mime_type)
-        if agent != "main" or kind or (self._running and self._run and self._run.has_prompt):
-            await self._append(EventView(kind or "user", text, agent=agent))
+        if agent != self.target_agent or kind or (self._running and self._run and self._run.has_prompt):
+            await self._append(EventView(kind or "user", text, agent=agent, primary_agent=self.target_agent))
             return
         pending = self._run
         if pending is not None and (pending.has_prompt or pending.events):
@@ -903,6 +1109,9 @@ class Transcript(VerticalScroll, inherit_bindings=False):
     async def load_history(self, entries: list[dict]) -> None:
         self.workers.cancel_group(self, "older-history")
         self.finish_activity()
+        self._tool_calls_by_id.clear()
+        self._subagent_tools.clear()
+        self._finished_call_status.clear()
         self._older, self._older_pending, self._older_tools, self._keep_in_view = [], False, False, None
         self._prepending = False
         has_run_boundaries = any(e.get("kind") == "transcript_run_start" for e in entries)
@@ -928,7 +1137,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         A separate, never-mounted Transcript keeps its replay state, so a live
         run here is unaffected when older runs are replayed later.
         """
-        replay = Transcript()
+        replay = Transcript(target_agent=self.target_agent)
         replay.translator = translator_for(self)
         replay.show_thinking = self.show_thinking
         replay._staged = []
@@ -944,6 +1153,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
 
     async def _replay(self, entries: list[dict], has_run_boundaries: bool) -> None:
         partials: dict[str, AssistantMessage] = {}
+        target = self.target_agent
         for entry in entries:
             if entry.get("type") == "message":
                 try:
@@ -961,20 +1171,22 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     # Older stores have no run markers. A notification after a
                     # terminal answer is the best available wake-up boundary.
                     self.finish_activity()
-                await self.consume(AgentEvent("message_end", message=message))
+                await self.consume(AgentEvent("message_end", agent=target, message=message))
                 if isinstance(message, AssistantMessage):
-                    partials.pop("main", None)
+                    partials.pop(target, None)
             elif _is_run_start(entry):
                 partials.clear()
-                await self.consume(AgentEvent("agent_start"))
-                await self.consume(AgentEvent("turn_start"))
+                await self.consume(AgentEvent("agent_start", agent=target))
+                await self.consume(AgentEvent("turn_start", agent=target))
             elif entry.get("type") == "custom" and entry.get("kind") == "transcript_run_end":
                 partials.clear()
                 self.finish_activity()
             elif entry.get("type") == "custom" and entry.get("kind") == "transcript_stream":
                 data = entry.get("data", {})
                 try:
-                    agent, kind = data.get("agent", "main"), data["stream_type"]
+                    agent, kind = data.get("agent", target), data["stream_type"]
+                    if agent != target:
+                        continue
                     if kind == "retry":
                         partials.pop(agent, None)
                         await self.consume(
@@ -1004,9 +1216,12 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             elif entry.get("type") == "custom" and entry.get("kind") == "transcript_tool_result":
                 data = entry.get("data", {})
                 try:
+                    agent = data.get("agent", target)
+                    if agent != target:
+                        continue
                     message = message_from_dict(data["message"])
                     if isinstance(message, ToolResultMessage):
-                        await self._result(data.get("agent", "main"), message)
+                        await self._result(agent, message)
                 except (KeyError, TypeError, ValueError):
                     await self.add_notice(tr(self, "ui.event.saved_tool_error"), "warn")
             elif entry.get("type") == "compaction":
@@ -1014,7 +1229,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
 
     async def add_notice(self, text: str, style: str | None = None) -> None:
         if self._run is not None:
-            row = EventView("notice", text)
+            row = EventView("notice", text, agent=self.target_agent, primary_agent=self.target_agent)
             row.output.add_class("notice")
             row.set_class(style == "error", "error")
             await self._append(row)

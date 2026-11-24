@@ -2,8 +2,9 @@
 
 MESSAGES = {
     "tools.agent.background": "设置 background=true 可在其运行期间继续工作。",
-    "tools.agent.description": "把独立任务委派给具有全新上下文的子代理。它无法看到本段对话，请提供必要上下文；仅返回最终回答。同一次回复中的多个调用会并行执行。子代理继承来源任务的执行边界。{background}",
+    "tools.agent.description": "把独立任务委派给子代理。省略 agent_id 会创建全新上下文；传入本次会话中返回的 agent_id 可复用该子代理并延续其历史上下文。它无法看到本段主对话，请提供必要上下文；仅返回最终回答及 [agent_id: ...]。同一次回复中的多个调用会并行执行。子代理继承来源任务的执行边界。{background}",
     "tools.agent.label": "子代理",
+    "tools.agent.parameters.properties.agent_id.description": "可选，传入当前会话中已有子代理的 ID 以复用其上下文",
     "tools.agent.parameters.properties.background.description": "在后台运行；使用 job_output/job_kill 管理任务。",
     "tools.agent.parameters.properties.description.description": "简短的任务标签",
     "tools.agent.parameters.properties.prompt.description": "给子代理的完整指令",

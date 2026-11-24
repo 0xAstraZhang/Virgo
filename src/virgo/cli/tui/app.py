@@ -34,7 +34,8 @@ from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
-from .transcript import EventView, Transcript, update_static
+from .subagents import SubagentPicker, SubagentTraceScreen
+from .transcript import EventView, ToolView, Transcript, update_static
 
 PURPLE = "#7C3AED"
 
@@ -220,6 +221,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.pick_session = pick_session
         self.session_grouped = session.settings.get("tui.sessionGrouping", "workspace") != "none"
         self._session_picker: SessionPicker | None = None
+        self._subagent_picker: SubagentPicker | None = None
+        self._trace_screen: SubagentTraceScreen | None = None
         self.exit_code = 0
         history = InputHistory(session.paths.user)
         self.register_theme(terminal_theme())
@@ -324,6 +327,50 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         )
         self._session_picker = picker
         self.push_screen(picker, self.session_picked)
+
+    def action_subagents(self) -> None:
+        if self.controller.closing or self.has_modal:
+            return
+        if self.active_input is None:
+            self.hide_completions()
+        items = self.session.subagent_store_for().list()
+        picker = SubagentPicker(items)
+        self._subagent_picker = picker
+        self.push_screen(picker, self._subagent_picked)
+
+    def _subagent_picked(self, agent_id: str | None) -> None:
+        self._subagent_picker = None
+        if agent_id:
+            self.open_subagent_trace(agent_id)
+        else:
+            self.focus_composer()
+
+    def open_subagent_trace(self, agent_id: str) -> None:
+        if self.controller.closing or self.has_modal:
+            return
+        store = self.session.subagent_store_for()
+        handle = store.get(agent_id)
+        if handle is None:
+            self.notify(tr(self, "features.agent.unknown_id", id=agent_id), severity="warning")
+            return
+        summary = handle.summary()
+        screen = SubagentTraceScreen(
+            agent_id,
+            store.entries(agent_id),
+            description=summary.get("description", ""),
+            status=summary.get("status", "done"),
+        )
+        self._trace_screen = screen
+        self.push_screen(screen, self._trace_closed)
+
+    def _trace_closed(self, _result=None) -> None:
+        self._trace_screen = None
+        self.focus_composer()
+
+    @on(ToolView.TraceRequested)
+    def trace_requested(self, event: ToolView.TraceRequested) -> None:
+        event.stop()
+        self.open_subagent_trace(event.agent_id)
 
     def session_browser_items(self) -> list[dict]:
         items = SessionStore.list_all(self.session.paths.user / "sessions")
@@ -570,6 +617,42 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                 elif update.kind == "event":
                     self.activity.consume(update.payload)
                     await self.transcript.consume(update.payload)
+                    if (
+                        self._trace_screen is not None
+                        and self._trace_screen.is_mounted
+                        and update.payload.agent == self._trace_screen.agent_id
+                    ):
+                        await self._trace_screen.consume_event(update.payload)
+                elif update.kind == "subagent_started":
+                    owner_id = update.payload.get("session_id")
+                    if owner_id is not None and owner_id != self.session.store.id:
+                        continue
+                    self.transcript.on_subagent_started(update.payload)
+                    agent_id = update.payload.get("agent_id")
+                    if (
+                        self._trace_screen is not None
+                        and self._trace_screen.is_mounted
+                        and agent_id == self._trace_screen.agent_id
+                    ):
+                        self._trace_screen.set_status("running", description=update.payload.get("description", ""))
+                    if self._subagent_picker is not None and self._subagent_picker.is_mounted:
+                        self._subagent_picker.refresh_items(self.session.subagent_store_for().list())
+                elif update.kind == "subagent_finished":
+                    owner_id = update.payload.get("session_id")
+                    if owner_id is not None and owner_id != self.session.store.id:
+                        continue
+                    agent_id = update.payload.get("agent_id")
+                    handle = self.session.subagent_store_for().get(agent_id) if isinstance(agent_id, str) else None
+                    status = handle.summary()["status"] if handle is not None else "done"
+                    self.transcript.on_subagent_finished(update.payload, status=status)
+                    if (
+                        self._trace_screen is not None
+                        and self._trace_screen.is_mounted
+                        and agent_id == self._trace_screen.agent_id
+                    ):
+                        self._trace_screen.set_status(status)
+                    if self._subagent_picker is not None and self._subagent_picker.is_mounted:
+                        self._subagent_picker.refresh_items(self.session.subagent_store_for().list())
                 elif update.kind == "warning":
                     self.notify(update.payload, severity="warning")
                 elif update.kind == "print":
@@ -879,9 +962,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
     @on(ChatEditor.Submitted)
     def submitted(self, event: ChatEditor.Submitted) -> None:
         self.hide_completions()
-        if event.text.strip() == "/sessions":
+        stripped = event.text.strip()
+        if stripped == "/sessions":
             self.action_sessions()
-        elif event.text.strip() == "/new":
+        elif stripped == "/subagents":
+            self.action_subagents()
+        elif stripped == "/new":
             self._pending_switch = ("new", None)
         else:
             self.controller.submit(event.text)
@@ -967,7 +1053,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.accept_completion()
 
     def action_escape(self) -> None:
-        if isinstance(self.screen, SessionPicker):
+        if isinstance(self.screen, (SessionPicker, SubagentPicker, SubagentTraceScreen)):
             self.screen.dismiss(None)
         elif self.active_confirmation is not None:
             self.finish_confirmation("n")

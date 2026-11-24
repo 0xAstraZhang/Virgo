@@ -92,11 +92,17 @@ class Runtime:
         request_budget: RequestBudget | None = None,
         approval_policy: str | None = None,
         execution_context=None,
+        parent_tool_call_id: str | None = None,
+        description: str = "",
+        job_id: str | None = None,
     ):
         self.session = session
         self.request_budget = request_budget or RequestBudget(session.settings.get("budget.maxModelCalls"))
         self.name = name
         self.role = role
+        self.parent_tool_call_id = parent_tool_call_id
+        self.description = description
+        self.job_id = job_id
         self.cwd = Path(cwd or session.cwd)
         self.store = store
         self.accounting_store = accounting_store if accounting_store is not None else (store if role == "main" and store is not None else session.store)
@@ -252,10 +258,11 @@ class Runtime:
         self.session.bus.emit("agent_event", ev, self)
         if ev.type == "turn_end":
             self.session.bus.emit("turn_end", ev, self)
-        self.session.ui.on_event(ev)
+        if self.role == "main" or self.accounting_store is None or self.accounting_store.id == self.session.store.id:
+            self.session.ui.on_event(ev)
 
     def diagnostic_context(self, **extra) -> dict:
-        owner = self.store if self.store is not None else self.accounting_store
+        owner = self.store if self.role == "main" and self.store is not None else self.accounting_store
         return {
             "agent": self.name,
             "role": self.role,
@@ -270,8 +277,9 @@ class Runtime:
         }
 
     def report_error(self, error, *, phase: str, context=None, notify=True, kind="fatal", code=None) -> dict:
+        owner = self.store if self.role == "main" and self.store is not None else self.accounting_store
         details = self.session.report_error(
-            error, phase=phase, store=self.store if self.store is not None else self.accounting_store,
+            error, phase=phase, store=owner,
             context=self.diagnostic_context(**(context or {})), notify=notify, kind=kind, code=code,
         )
         self.recovery.safely("remember", details)
@@ -330,14 +338,14 @@ class Runtime:
                     self.recovery.safely("remember", details["error"])
 
     def _record_event(self, ev: AgentEvent) -> None:
-        if ev.type in ("agent_start", "agent_end") and self.role == "main" and self.store is not None:
+        if ev.type in ("agent_start", "agent_end") and self.store is not None:
             self.store.append(
                 "custom",
                 kind="transcript_run_start" if ev.type == "agent_start" else "transcript_run_end",
                 data={"agent": ev.agent},
             )
         elif (
-            ev.type == "message_update" and self.role == "main" and self.store is not None
+            ev.type == "message_update" and self.store is not None
             and ev.stream_event is not None and ev.stream_event.type in _TRANSCRIPT_STREAM_TYPES
         ):
             stream = ev.stream_event

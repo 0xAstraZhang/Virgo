@@ -113,7 +113,7 @@ def test_disabled_background_capability_runs_an_agent_synchronously(make_session
     result = session.tool("agent").execute(
         {"description": "private label", "prompt": "private prompt"}, ctx
     )
-    assert not result.is_error and result.as_text() == "foreground result"
+    assert not result.is_error and result.as_text() == "foreground result\n\n[agent_id: subagent-1]"
     assert not session.services["jobs"].jobs
 
 
