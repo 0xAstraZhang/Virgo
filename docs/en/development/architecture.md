@@ -27,7 +27,7 @@ Virgo separates runtime capabilities into three tiers with distinct override and
 
 | Tier | Wiring & inventory | Disabling & overriding | Failure isolation |
 | --- | --- | --- | --- |
-| **Core tools** | Registered directly in `AgentSession.__init__`: `read`, `write`, `edit`, `glob`, `grep`, `read_output`, `bash`/`powershell`, and `request_permissions` (hidden automatically when interactive escalation is unavailable) | Cannot be overridden by filename | Core initialization errors fail startup |
+| **Core tools** | Registered directly in `AgentSession.__init__`: `read`, `write`, `edit`, `glob`, `grep`, `present_file` (displays the verified absolute path of a readable local file), `read_output`, `bash`/`powershell`, and `request_permissions` (hidden automatically when interactive escalation is unavailable) | Cannot be overridden by filename | Core initialization errors fail startup |
 | **Built-in plugins** (`virgo.plugins`) | Loaded by `load_builtin_features()` via `setup(api)`: `diagnostic_get`, `skills`, `ask_user`, `subagent`, `background`, `web` | Controlled per ID via `plugins.<id>.enabled` (`false` skips import); unaffected by `--no-extensions`; cannot be overridden by filename | Loaded in a rollback transaction; failure degrades only that plugin (if `background` degrades, `shell` and `subagent` drop their `background` argument) |
 | **Built-in & custom extensions** (`virgo.extensions` + user/project files) | Loaded by `load_extensions()` via `setup(api)`: built-in `mcp` and `todo`, plus `~/.virgo/extensions/*.py` and trusted `.virgo/extensions/*.py` | Resolved by filename stem (`built-in < user < trusted project`); disable individually via `extensions.disabled` or skip all extensions via `--no-extensions` | Same transactional rollback via `setup(api)` |
 
@@ -52,6 +52,8 @@ By default, Virgo stores user state under `~/.virgo` (overrideable via `VIRGO_HO
 | `permission-grants.sqlite3` | Saved **Always allow** resource grants (`resource_grants` table keyed by `(project, mode, resource, target)`) |
 
 The main agent can use `session_info` to obtain the same session ID and transcript path as `/session`. A memory-only conversation returns a null path.
+
+Main model requests append a `custom/request_header` before adapter dispatch on first use (including resume) and whenever the resolved configuration changes. It records provider, model, API, requested/wire/effective reasoning effort and output limits. Usage remains on the assistant message.
 
 On native Windows, AppContainer session lease journals live separately under `%LOCALAPPDATA%\Virgo\sandbox-sessions\` (overrideable via `VIRGO_WINDOWS_SANDBOX_STATE_DIR`).
 

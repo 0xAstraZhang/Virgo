@@ -217,7 +217,7 @@ def test_run_boundaries_preserve_notification_runs_without_entering_context(make
     assert session.run_pending()
     restored = SessionStore.load(session.store.path)
     assert [entry.get("kind", entry["type"]) for entry in restored.branch()] == [
-        "transcript_run_start", "message", "transcript_stream", "message", "transcript_run_end",
+        "transcript_run_start", "message", "request_header", "transcript_stream", "message", "transcript_run_end",
         "transcript_run_start", "message", "transcript_stream", "message", "transcript_run_end",
     ]
     assert restored.custom("transcript_run_start") == [{"agent": "main"}, {"agent": "main"}]

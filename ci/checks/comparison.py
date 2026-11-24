@@ -88,6 +88,30 @@ def main():
         target_path.write_text(json.dumps(target))
         summarize(0, "--target", str(target_path))
 
+        # A partial rerun replaces only the retried platform, including a later failure
+        # or an incomplete upload. Summary-only retries re-use the same selection.
+        attempts = root / "attempts"
+        linux = attempts / "results-local-attempt-2"
+        other = attempts / "results-other-attempt-1"
+        latest = attempts / "results-local-attempt-10"
+        for directory in (linux, other, latest):
+            directory.mkdir(parents=True)
+        failing = {**valid, "counts": {"failed": 1}, "exit_code": 1,
+                   "tests": {"test_cases::test_ok": {"status": "failed"}}}
+        (linux / "results.json").write_text(json.dumps(failing))
+        (other / "results.json").write_text(json.dumps({**valid, "platform": "other"}))
+        current = latest / "results.json"
+        options = ("--target", str(target_path), "--platforms", "local", "other", "--run-attempt", "11")
+        current.write_text(json.dumps(valid))
+        assert summarize(0, *options, reports_dir=attempts)["counts"] == {"passed": 1}
+        (linux / "results.json").write_text(json.dumps(valid))
+        current.write_text(json.dumps(failing))
+        assert summarize(1, *options, reports_dir=attempts)["failures"] == ["test_cases::test_ok"]
+        current.unlink()
+        assert summarize(1, *options, reports_dir=attempts)["problems"]
+        current.write_text(json.dumps({**valid, "platform": "other"}))
+        summarize(1, *options, reports_dir=attempts)
+
         bad_reports = [
             {**valid, "complete": False, "exit_code": 2, "problems": []},
             {**valid, "complete": False},

@@ -9,7 +9,7 @@ from threading import Event
 from ..agent import Block, ToolContext
 from ..execution import HostContext, SandboxExecutor
 from ..execution_policy import DEFAULT_MODES, HOST_MODE
-from ..tools.fs import EDIT, GLOB, GREP, READ, WRITE, make_file_tool
+from ..tools.fs import EDIT, GLOB, GREP, PRESENT_FILE, READ, WRITE, make_file_tool
 from ..tools.output import make_read_output_tool
 from .high_risk import detect_high_risk_command
 from .resource_approvals import HostExecutionProvider
@@ -329,6 +329,7 @@ def install_execution(session):
     for tool in (READ, GLOB, GREP, WRITE, EDIT):
         session.replace_tools(f"tool:{tool.name}", [(make_file_tool(tool, provider.for_context), ("main", "subagent"))],
                               owner="core")
+    session.register_tool(make_file_tool(PRESENT_FILE, provider.for_context), owner="core")
     session.replace_tools("tool:read_output", [(make_read_output_tool(provider.for_context), ("main", "subagent"))],
                           owner="core")
     session.commands.register("permissions", provider.command, "show execution boundary and resource permissions",

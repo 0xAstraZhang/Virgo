@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -226,3 +227,4 @@ class StreamOptions:
     effort: str | None = None
     prompt_cache_key: str | None = None
     io_bridge: Any = field(default=None, repr=False, compare=False)
+    before_dispatch: Callable[[Model, StreamOptions], None] | None = field(default=None, repr=False, compare=False)

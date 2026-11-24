@@ -27,7 +27,7 @@ Virgo 将运行时能力划分为三层，对应不同的覆盖优先级与故�
 
 | 层级 | 加载方式与清单 | 禁用与覆盖规则 | 故障隔离 |
 | --- | --- | --- | --- |
-| **核心工具** | 在 `AgentSession.__init__` 中直接装配：`read`、`write`、`edit`、`glob`、`grep`、`read_output`、`bash`/`powershell`，以及 `request_permissions`（无法交互审批时自动隐藏） | 不允许按文件名覆盖 | 核心初始化失败直接中止启动 |
+| **核心工具** | 在 `AgentSession.__init__` 中直接装配：`read`、`write`、`edit`、`glob`、`grep`、`present_file`（显示可读本地文件经核验的绝对路径）、`read_output`、`bash`/`powershell`，以及 `request_permissions`（无法交互审批时自动隐藏） | 不允许按文件名覆盖 | 核心初始化失败直接中止启动 |
 | **内置插件**（`virgo.plugins`） | 由 `load_builtin_features()` 通过 `setup(api)` 加载：`diagnostic_get`、`skills`、`ask_user`、`subagent`、`background`、`web` | 按 ID 通过 `plugins.<id>.enabled` 控制（设为 `false` 时不导入）；不受 `--no-extensions` 影响；不允许按文件名覆盖 | 在可回滚事务中加载；单插件失败仅降级该插件（如 `background` 降级时，`shell` 与 `subagent` 自动去掉 `background` 参数） |
 | **内置与自定义扩展**（`virgo.extensions` + 用户/项目扩展） | 由 `load_extensions()` 通过 `setup(api)` 加载：内置 `mcp`、`todo`，以及 `~/.virgo/extensions/*.py` 和受信任 `.virgo/extensions/*.py` | 按文件主名（stem）解析覆盖：`内置 < 用户 < 受信任项目`；可用 `extensions.disabled` 按名禁用，或用 `--no-extensions` 跳过全部扩展 | 同样通过 `setup(api)` 的可回滚事务隔离故障 |
 
@@ -52,6 +52,8 @@ Virgo 将运行时能力划分为三层，对应不同的覆盖优先级与故�
 | `permission-grants.sqlite3` | 持久化的**始终允许**资源授权（`resource_grants` 表，按 `(project, mode, resource, target)` 索引） |
 
 主代理可通过 `session_info` 获取与 `/session` 相同的会话 ID 和轨迹文件路径。仅保存在内存中的会话返回空路径（`null`）。
+
+主模型首次请求（含恢复会话后）和配置变化时，在适配器分派前追加 `custom/request_header`，记录提供方、模型、API、请求的推理强度、协议发送值、解析后的有效值及输出上限。用量继续记在助手消息上。
 
 在原生 Windows 上，AppContainer 会话租约日志单独保存在 `%LOCALAPPDATA%\Virgo\sandbox-sessions\`（可通过 `VIRGO_WINDOWS_SANDBOX_STATE_DIR` 覆盖）。
 

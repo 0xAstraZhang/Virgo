@@ -140,6 +140,10 @@ MESSAGES = {
     "tools.read.parameters.properties.offset.description": "1-based line to start from",
     "tools.read.parameters.properties.path.description": "File path, relative to the working directory or "
     "absolute",
+    "tools.present_file.description": "Present a finished local file to the user. Pass its exact path after saving and verifying it. The UI displays the confirmed absolute path.",
+    "tools.present_file.label": "Present file",
+    "tools.present_file.control": "The path contains a terminal control character and cannot be displayed verbatim.",
+    "tools.present_file.failed": "Could not present the file. {error}",
     "tools.read_output.description": "Read a private command/tool output using its output_id. offset and limit "
     "are byte counts.",
     "tools.read_output.label": "Read output",
