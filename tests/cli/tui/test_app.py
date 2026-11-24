@@ -700,6 +700,9 @@ def test_topbar_renders_correct_cwd_immediately_on_shrink_and_grow(make_session,
                     app.update_status()
                     assert str(label.content) == expected
                 await pilot.resize_terminal(width, 24)
+                refreshed = asyncio.Event()
+                app.call_after_refresh(refreshed.set)
+                await asyncio.wait_for(refreshed.wait(), timeout=4)
                 assert str(label.content) == expected
                 assert label.render_line(0).text == expected
 
