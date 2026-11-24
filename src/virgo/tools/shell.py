@@ -384,14 +384,30 @@ def _tmp_is_writable(write_paths: list[str] | tuple[str, ...]) -> bool:
     return False
 
 
-def sandbox_failure_hint(
+@dataclass(frozen=True)
+class SandboxHint:
+    code: str
+    dimension: str
+    message_key: str
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "dimension": self.dimension,
+            "message_key": self.message_key,
+            "message": self.message,
+        }
+
+
+def sandbox_failure_details(
     command: str,
     output_text: str,
     boundary: dict | None,
     *,
     t=None,
-) -> str | None:
-    """Return a concise sandbox write-boundary hint when a sandboxed command hits a write denial."""
+) -> SandboxHint | None:
+    """Classify a sandbox write-boundary denial into a structured hint."""
     if not isinstance(boundary, dict) or boundary.get("provider") != "sandbox":
         return None
     effective = (boundary.get("effective") or {}).get("native_process") or boundary.get("requested") or {}
@@ -404,10 +420,26 @@ def sandbox_failure_hint(
     write_paths = effective.get("write_paths") or []
     is_posix = boundary.get("backend") != "windows-appcontainer"
     if is_posix and not _tmp_is_writable(write_paths) and _TMP_PATH_RE.search(evidence):
-        return t("tools.output.sandbox_tmp_hint")
-    if not write_paths:
-        return t("tools.output.sandbox_readonly_hint" if is_posix else "tools.output.sandbox_windows_readonly_hint")
-    return t("tools.output.sandbox_write_hint" if is_posix else "tools.output.sandbox_windows_write_hint")
+        code, key = "tmp_read_only", "tools.output.sandbox_tmp_hint"
+    elif not write_paths:
+        code = "read_only_mode"
+        key = "tools.output.sandbox_readonly_hint" if is_posix else "tools.output.sandbox_windows_readonly_hint"
+    else:
+        code = "write_outside_boundary"
+        key = "tools.output.sandbox_write_hint" if is_posix else "tools.output.sandbox_windows_write_hint"
+    return SandboxHint(code=code, dimension="write_paths", message_key=key, message=t(key))
+
+
+def sandbox_failure_hint(
+    command: str,
+    output_text: str,
+    boundary: dict | None,
+    *,
+    t=None,
+) -> str | None:
+    """Return a concise sandbox write-boundary hint when a sandboxed command hits a write denial."""
+    hint = sandbox_failure_details(command, output_text, boundary, t=t)
+    return hint.message if hint is not None else None
 
 
 @dataclass(frozen=True)
@@ -727,12 +759,14 @@ def make_shell_tool(shell: Shell, jobs=None, *, execution=None, on_unavailable=N
         result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name, t=ctx.t)
         result.details.update(shell=shell.kind, executable=shell.executable, version=shell.version)
         if out.boundary is not None:
-            result.details["boundary"] = out.boundary
+            result.details["boundary"] = dict(out.boundary)
         if status == "ok" and code:
             effective_boundary = {**(policy.describe() if policy is not None else {}), **(out.boundary or {})}
-            hint = sandbox_failure_hint(args["command"], out.text, effective_boundary, t=ctx.t)
-            if hint:
-                result = ToolResult.error(f"{result.as_text()}\n{hint}", result.details)
+            hint = sandbox_failure_details(args["command"], out.text, effective_boundary, t=ctx.t)
+            if hint is not None:
+                boundary = dict(result.details.get("boundary") or {})
+                boundary["hint"] = hint.to_dict()
+                result.details["boundary"] = boundary
         return result
 
     params = {**BASH_PARAMS, "properties": {**BASH_PARAMS["properties"]}}

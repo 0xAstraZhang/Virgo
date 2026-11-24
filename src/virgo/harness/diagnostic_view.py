@@ -153,9 +153,23 @@ def diagnostic_summary(details: dict, *, max_bytes=MAX_DIAGNOSTIC_BYTES, executi
     return _render(payload)
 
 
-def _boundary_summary(sandbox: dict) -> str:
+def should_project_boundary(sandbox: object) -> bool:
+    """Return True when boundary facts explain a block, fault, cleanup error, or sandbox hint."""
+    return isinstance(sandbox, dict) and bool(
+        sandbox.get("kind")
+        or sandbox.get("payload_started") is not True
+        or sandbox.get("cleanup") == "failed"
+        or isinstance(sandbox.get("hint"), dict)
+    )
+
+
+def boundary_summary(sandbox: dict, *, max_bytes: int = MAX_DIAGNOSTIC_BYTES) -> str:
+    if not isinstance(max_bytes, int) or max_bytes <= 0 or not isinstance(sandbox, dict):
+        return ""
     boundary = {}
     capsule = {"boundary": boundary, "omitted": True}
+    if len(_render(capsule).encode("utf-8")) > max_bytes:
+        return ""
     omitted = False
 
     def include(target, key, raw):
@@ -166,7 +180,7 @@ def _boundary_summary(sandbox: dict) -> str:
             omitted |= clipped != value
             value = clipped
         target[key] = value
-        if len(_render(capsule).encode()) <= MAX_DIAGNOSTIC_BYTES:
+        if len(_render(capsule).encode("utf-8")) <= max_bytes:
             return True
         del target[key]
         omitted = True
@@ -177,6 +191,22 @@ def _boundary_summary(sandbox: dict) -> str:
         raw = sandbox.get(key)
         if type(raw) in (str, int, float, bool):
             include(boundary, key, raw)
+
+    hint = sandbox.get("hint")
+    if isinstance(hint, dict):
+        projected_hint = {}
+        for key, limit in (("code", 64), ("dimension", 64), ("message_key", 96), ("message", 512)):
+            raw = hint.get(key)
+            if isinstance(raw, str) and raw:
+                cleaned = sanitize(raw)
+                if isinstance(cleaned, str) and cleaned:
+                    clipped = _clip(cleaned, limit)
+                    omitted |= clipped != cleaned
+                    projected_hint[key] = clipped
+        if projected_hint and not include(boundary, "hint", projected_hint):
+            compact_hint = {key: projected_hint[key] for key in ("code", "dimension") if key in projected_hint}
+            if compact_hint:
+                include(boundary, "hint", compact_hint)
 
     effective = sandbox.get("effective")
     if isinstance(effective, str):
@@ -221,10 +251,9 @@ def project_tool_result(call: ToolCall, result: ToolResult, *, query_available=T
     content = list(result.content)
     details = result.details if isinstance(result.details, dict) else {}
     sandbox = details.get("boundary")
-    if result.is_error and isinstance(sandbox, dict) and (
-        sandbox.get("kind") or sandbox.get("payload_started") is not True or sandbox.get("cleanup") == "failed"
-    ):
-        content.append(TextContent(_boundary_summary(sandbox)))
+    if result.is_error and should_project_boundary(sandbox):
+        if summary := boundary_summary(sandbox):
+            content.append(TextContent(summary))
     error = details.get("error")
     # A result hook may have recovered an earlier error. Retain that historical
     # evidence in metadata without presenting the successful result as failed.

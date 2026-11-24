@@ -154,3 +154,49 @@ def test_unrecognized_metadata_is_not_evaluated_or_copied():
     record["context"]["http"] = {"headers": Private()}
     capsule = diagnostic_summary(record)
     assert "private" not in capsule
+
+
+def test_boundary_hint_projects_full_structured_hint_and_respects_budget():
+    from virgo.harness.diagnostic_view import boundary_summary
+
+    message = (
+        "[Sandbox hint: Sandboxed commands can only write to allowed write_paths, "
+        "$env:TMPDIR ($TMPDIR in Bash), and $env:TEMP (%TEMP% in cmd) "
+        "(private credential directories and unapproved .virgo are write-denied). "
+        "Check whether the target path is outside the sandbox.]"
+    )
+    boundary = {
+        "provider": "sandbox",
+        "backend": "windows-appcontainer",
+        "state": "established",
+        "payload_started": True,
+        "side_effects": "possible",
+        "cleanup": "executor_completed",
+        "hint": {
+            "code": "write_outside_boundary",
+            "dimension": "write_paths",
+            "message_key": "tools.output.sandbox_windows_write_hint",
+            "message": message,
+        },
+        "effective": {
+            "native_process": {
+                "write_paths": [f"C:/very/long/path/{i}/" + ("x" * 60) for i in range(40)],
+                "unrestricted": False,
+            }
+        },
+    }
+    result = ToolResult.error("Access is denied.\n\n[Exit code 1]", details={"boundary": boundary})
+    content = project_tool_result(ToolCall("call", "powershell", {}), result)
+    assert len(content) == 2
+    payload = _payload(content[-1].text)["boundary"]
+    assert payload["hint"]["code"] == "write_outside_boundary"
+    assert payload["hint"]["dimension"] == "write_paths"
+    assert payload["hint"]["message_key"] == "tools.output.sandbox_windows_write_hint"
+    assert payload["hint"]["message"] == message
+
+    for budget in (1, 64, 200, 512, 2048):
+        capsule = boundary_summary(boundary, max_bytes=budget)
+        assert len(capsule.encode("utf-8")) <= budget
+        if capsule:
+            parsed = _payload(capsule)["boundary"]
+            assert isinstance(parsed, dict)

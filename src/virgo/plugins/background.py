@@ -12,11 +12,53 @@ import time
 from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..diagnostics import error_summary
 from ..execution import FileAccessDenied
+from ..harness.diagnostic_view import (
+    MAX_DIAGNOSTIC_BYTES,
+    boundary_summary,
+    diagnostic_summary,
+    should_project_boundary,
+)
 from ..harness.extensions import ExtensionAPI
 from ..harness.jobs import Job, JobManager
 from ..tools.output import bound, display_output, read_output
 
 JOB_OUTPUT_PREVIEW_BYTES = 8 * 1024
+
+
+def _failed_job_capsules(
+    job: Job,
+    details: dict,
+    *,
+    query_available: bool,
+    budget: int,
+) -> list[str]:
+    if job.status != "failed" or budget <= 0:
+        return []
+    want_boundary = should_project_boundary(job.boundary)
+    want_error = isinstance(job.error_details, dict)
+    count = int(want_boundary) + int(want_error)
+    if not count:
+        return []
+    available = budget - (count - 1)
+    if available <= 0:
+        return []
+    per_capsule = min(MAX_DIAGNOSTIC_BYTES, available // count)
+    capsules: list[str] = []
+    if want_boundary:
+        if summary := boundary_summary(job.boundary, max_bytes=per_capsule):
+            capsules.append(summary)
+    if want_error:
+        used = sum(len(item.encode("utf-8")) for item in capsules) + len(capsules)
+        error_budget = min(MAX_DIAGNOSTIC_BYTES, budget - used)
+        if summary := diagnostic_summary(
+            job.error_details,
+            max_bytes=error_budget,
+            facts=details,
+            related_errors=job.related_errors,
+            query_available=query_available,
+        ):
+            capsules.append(summary)
+    return capsules
 
 
 def setup(api: ExtensionAPI) -> None:
@@ -46,6 +88,7 @@ def setup(api: ExtensionAPI) -> None:
         job = find(args, ctx)
         if isinstance(job, ToolResult):
             return job
+        runtime = api.runtime_for_context(ctx)
         wait = min(float(args.get("wait") or 0), 600)
         end = time.time() + wait
         while job.status == "running" and time.time() < end and not ctx.signal.is_set():
@@ -58,7 +101,13 @@ def setup(api: ExtensionAPI) -> None:
         if job.error_details is not None:
             details.update(error=job.error_details, related_errors=job.related_errors)
             head += "\n" + error_summary(job.error_details, t=api.t)
-        heading = head.encode("utf-8")
+        query_available = runtime is not None and any(tool.name == "diagnostic_get" for tool in runtime.tools)
+        capsules = _failed_job_capsules(
+            job, details, query_available=query_available, budget=MAX_DIAGNOSTIC_BYTES * 2,
+        )
+        capsule_text = "\n".join(capsules)
+        full_head = f"{head}\n{capsule_text}" if capsule_text else head
+        heading = full_head.encode("utf-8")
         # A long diagnostic can use any space left after the output ID and tail are rendered.
         reserved_bytes = min(len(heading) + 1, JOB_OUTPUT_PREVIEW_BYTES // 2)
         body_bytes = JOB_OUTPUT_PREVIEW_BYTES - reserved_bytes
@@ -83,8 +132,25 @@ def setup(api: ExtensionAPI) -> None:
             )
         heading_limit = JOB_OUTPUT_PREVIEW_BYTES - len(displayed.encode("utf-8")) - 1
         heading_cut = len(heading) > heading_limit
-        if heading_cut:
-            head = heading[:heading_limit - len("…".encode())].decode("utf-8", errors="ignore") + "…"
+        if not heading_cut:
+            head = full_head
+        else:
+            if capsule_text and len(capsule_text.encode("utf-8")) > heading_limit // 2:
+                capsules = _failed_job_capsules(
+                    job, details, query_available=query_available, budget=heading_limit // 2,
+                )
+                capsule_text = "\n".join(capsules)
+            capsule_bytes = len(capsule_text.encode("utf-8")) + 1 if capsule_text else 0
+            base_limit = max(0, heading_limit - capsule_bytes)
+            raw_base = head.encode("utf-8")
+            if len(raw_base) > base_limit:
+                ellipsis = "…".encode()
+                head = (
+                    raw_base[: max(0, base_limit - len(ellipsis))].decode("utf-8", errors="ignore")
+                    + ("…" if base_limit >= len(ellipsis) else "")
+                )
+            if capsule_text:
+                head = f"{head}\n{capsule_text}" if head else capsule_text
         return ToolResult.text(
             head + "\n" + displayed,
             {
