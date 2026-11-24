@@ -8,6 +8,8 @@
 | Workspace-Edit | 可读写真实工作区（开放 `.git`、`AGENTS.md`、`CLAUDE.md` 与 `.venv`；修改项目 `.virgo` 时弹窗确认；高敏凭据路径硬性禁读写）。 | 允许 | 允许 | 原生沙箱 |
 | No-Limit | 使用宿主账户权限 | 允许 | 允许 | Host |
 
+`web_fetch` 直连时收到 HTTP 429，表示目标网站对本次请求限流。DeepSeek 网页读取服务返回 HTTP 错误时，目标页面的状态仍未知。读取超时表示未收到完整页面。
+
 ## 默认模式与选择方式
 
 - **受支持的一级平台（Linux、macOS、已更新的新版 Windows 11 与 WSL2）**：默认 **Workspace-Edit**。不支持非提权标准 AppContainer 的旧版 Windows 默认以 **No-Limit** 启动并显示一次性提示，显式选择沙箱模式时 fail-closed（详见[原生 Windows 沙箱](windows-sandbox.md)与 [WSL2 使用指南](wsl2.md)）。

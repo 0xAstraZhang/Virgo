@@ -39,7 +39,7 @@ MESSAGES = {
     "tools.fetch.backend": "fetch.backend must be http or deepseek.",
     "tools.fetch.cancelled": "Web fetch cancelled.",
     "tools.fetch.content_type": "Unsupported page content type: {type}; HTML, text and Markdown are supported.",
-    "tools.fetch.deepseek_http": "DeepSeek fetch returned HTTP {status}; no backend fallback was attempted.",
+    "tools.fetch.deepseek_http": "The DeepSeek page reader returned HTTP {status}. The target page status is unknown.",
     "tools.fetch.deepseek_invalid": "DeepSeek returned an invalid fetch response.",
     "tools.fetch.dns": "Could not resolve the page hostname.",
     "tools.fetch.dns_nonpublic": "DNS resolved the hostname to a non-public address. This can happen on a "
@@ -48,7 +48,8 @@ MESSAGES = {
     "Fake-IP DNS if enabled.",
     "tools.fetch.empty": "No readable page content was retrieved.",
     "tools.fetch.encoding": "Unsupported HTTP content encoding.",
-    "tools.fetch.http": "Web page returned HTTP {status}.",
+    "tools.fetch.rate_limited": "The target site rate-limited this request (HTTP 429).",
+    "tools.fetch.http": "The target site returned HTTP {status}.",
     "tools.fetch.incomplete": "Incomplete compressed page response.",
     "tools.fetch.key": "DeepSeek fetch requires an official API key; use /login api deepseek or "
     "DEEPSEEK_API_KEY.",
@@ -60,7 +61,7 @@ MESSAGES = {
     "tools.fetch.public_only": "Web fetch only supports public Internet addresses.",
     "tools.fetch.redirects": "Web fetch exceeded the 5 redirect limit.",
     "tools.fetch.size_config": "fetch.maxBytes must be an integer from 1 to 16777216.",
-    "tools.fetch.timeout": "Web fetch timed out.",
+    "tools.fetch.timeout": "Web fetch timed out before a complete page was received.",
     "tools.fetch.timeout_config": "fetch.timeout must be positive and at most 60 seconds.",
     "tools.fetch.unknown": "unknown",
     "tools.fetch.url_format": "url must be HTTP(S), have a valid host/port and contain no username or password.",

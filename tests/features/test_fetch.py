@@ -281,3 +281,30 @@ def test_shared_web_budget_spans_search_and_fetch_and_resets_on_user_request(mak
     session.settings.set("fetch.mode", "auto")
     session.main.model = Model("anthropic", "claude-sonnet-4-6", "anthropic")
     assert not session.main.request_context(session.main.messages).web_tools
+
+
+@pytest.mark.parametrize(("backend", "status", "expected"), [
+    ("deepseek", 404, "target page status is unknown"),
+    ("http", 429, "rate-limited"),
+])
+def test_fetch_failure_identifies_evidence_in_next_model_request(make_session, monkeypatch, http, backend, status, expected):
+    session = make_session(settings={"fetch": {"mode": "builtin", "backend": backend}})
+    if backend == "deepseek":
+        session.auth.set("deepseek", {"type": "api_key", "key": "official-test-key"})
+        session.main.model = Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com")
+    http["status"] = status
+    result, seen = fetch(session, monkeypatch)
+    assert result.is_error
+    assert expected in seen[1][1].messages[-1].text()
+    assert len(http["requests"]) == 1
+
+
+def test_timeout_distinguishes_incomplete_page_from_http_status(make_session, monkeypatch, http):
+    def timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("private request context")
+
+    monkeypatch.setattr(web_fetch, "_http", timeout)
+    result, seen = fetch(make_session(), monkeypatch)
+    evidence = seen[1][1].messages[-1].text()
+    assert result.is_error and "timed out before a complete page" in evidence
+    assert "private request context" not in evidence
