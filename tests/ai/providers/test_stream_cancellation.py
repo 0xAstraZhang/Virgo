@@ -7,8 +7,10 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
+import traceback
 from concurrent.futures import Future
 from contextlib import ExitStack, contextmanager
 from functools import partial
@@ -400,10 +402,20 @@ def test_session_reuses_client_and_keeps_sibling_alive(server, make_session, mon
     assert not pending_tasks() - idle_tasks
     assert not any(thread.is_alive() for thread in set(workers) - idle_workers)
     assert pools and all(not pool._requests for pool in pools)
+    executor = calls[0][1].get_loop()._default_executor
+    warm_pool_workers = idle_workers.intersection(executor._threads) if executor is not None else set()
     session.shutdown()
     assert client.is_closed()
     assert not loop_thread.is_alive()
-    assert not any(thread.is_alive() for thread in workers)
+    assert not any(thread.is_alive() for thread in set(workers) - warm_pool_workers)
+    # loop.close() signals the default executor to stop without joining its idle threads.
+    deadline = time.monotonic() + 2
+    for thread in warm_pool_workers:
+        thread.join(remaining(deadline))
+        if thread.is_alive():
+            frame = sys._current_frames().get(thread.ident)
+            stack = "".join(traceback.format_stack(frame)) if frame else "(stack unavailable)"
+            pytest.fail(f"Default executor thread {thread.name} survived shutdown:\n{stack}")
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX subprocess SIGINT delivery")

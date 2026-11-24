@@ -110,3 +110,46 @@ def test_revalidation_reports_argument_change_without_review(broker_session, tmp
     denied = session._before_tool_execute(event)
     assert denied is not None and denied.details["boundary"]["target"] == str(tmp_path / "outside")
     assert not session.ui.questions
+
+
+def test_main_request_header_is_persisted_before_dispatch_on_change(make_session, monkeypatch):
+    session = make_session(persist=True)
+    stream = faux.stream
+    snapshots = []
+
+    def observed_stream(model, context, options):
+        snapshots.append(SessionStore.load(session.store.path).custom("request_header"))
+        return stream(model, context, options)
+
+    monkeypatch.setattr(faux, "stream", observed_stream)
+    for effort in ("low", "low", "max"):
+        session.effort = effort
+        session.prompt("hello")
+    assert [[h["requested_effort"] for h in batch] for batch in snapshots] == [
+        ["low"], ["low"], ["low", "max"],
+    ]
+    assert all("usage" not in h for h in snapshots[-1])
+    assert session.store.total_usage()["input"] == sum(
+        m.usage.input for m in session.main.messages if isinstance(m, AssistantMessage)
+    )
+
+
+def test_main_request_header_distinguishes_omitted_effort_from_default(make_session, monkeypatch):
+    from virgo.ai.providers import openai
+
+    session = make_session(persist=True)
+    session.set_model("openai/test")
+    model = session.main.model
+    model.reasoning = True
+    model.default_reasoning_level = "high"
+    model.options["reasoningEffortMap"] = {"medium": None, "max": "max"}
+    monkeypatch.setattr(openai, "stream", faux.stream)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    for effort in ("medium", "max"):
+        session.effort = effort
+        session.prompt("hello")
+    first, second = session.store.custom("request_header")
+    assert (first["api"], first["requested_effort"], first["wire_effort"], first["effective_effort"]) == (
+        "openai", "medium", None, "high",
+    )
+    assert second["wire_effort"] == second["effective_effort"] == "max"

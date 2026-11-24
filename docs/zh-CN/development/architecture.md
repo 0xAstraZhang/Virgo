@@ -51,6 +51,8 @@ Virgo 将运行时能力划分为三层，对应不同的覆盖优先级与故�
 | `logs/diagnostics.sqlite3` | WAL 模式持久化诊断错误库（与会话存储故障隔离；通过 `diagnostic_get` 向模型暴露当前运行时范围的诊断证据） |
 | `permission-grants.sqlite3` | 持久化的**始终允许**资源授权（`resource_grants` 表，按 `(project, mode, resource, target)` 索引） |
 
+主模型首次请求（含恢复会话后）和配置变化时，在适配器分派前追加 `custom/request_header`，记录提供方、模型、API、请求的推理强度、协议发送值、解析后的有效值及输出上限。用量继续记在助手消息上。
+
 在原生 Windows 上，AppContainer 会话租约日志单独保存在 `%LOCALAPPDATA%\Virgo\sandbox-sessions\`（可通过 `VIRGO_WINDOWS_SANDBOX_STATE_DIR` 覆盖）。
 
 另见：[执行接口](execution-interface.md) · [原生执行与性能验收](execution-acceptance.md) · [架构决策索引](../decisions/README.md)
