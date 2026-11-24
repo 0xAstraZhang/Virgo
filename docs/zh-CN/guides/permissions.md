@@ -8,7 +8,7 @@
 | Workspace-Edit | 可读写真实工作区（开放 `.git`、`AGENTS.md`、`CLAUDE.md` 与 `.venv`；修改项目 `.virgo` 时弹窗确认；高敏凭据路径硬性禁读写）。 | 允许 | 允许 | 原生沙箱 |
 | No-Limit | 使用宿主账户权限 | 允许 | 允许 | Host |
 
-`web_fetch` 直连时收到 HTTP 429，表示目标网站对本次请求限流。DeepSeek 网页读取服务返回 HTTP 错误时，目标页面的状态仍未知。读取超时表示未收到完整页面。
+`web_fetch` 直连时收到 HTTP 429，表示目标网站对本次请求限流。在 `auto` 模式下，如果 DeepSeek 网页读取服务拉取失败（如 HTTP 404、429、5xx、响应无效或超时），`web_fetch` 会自动回退到 HTTP 直连；凭据/余额错误（HTTP 401/402/403）或显式 `/fetch deepseek` 模式下不做回退，直接报告 DeepSeek 读取服务的错误（此时目标页面状态仍未知）。读取超时表示未收到完整页面。
 
 ## 默认模式与选择方式
 
