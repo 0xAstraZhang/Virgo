@@ -1,4 +1,4 @@
-"""Built-in MCP extension: connect configured stdio servers on Host and expose their tools.
+"""Built-in MCP extension: connect configured stdio and HTTP servers and expose their tools.
 
 Loaded automatically as a built-in extension. Disable with
 ``extensions.disabled: ["mcp"]`` or ``--no-extensions``, or override with
@@ -14,10 +14,9 @@ trusted project), or under the ``mcpServers`` setting, using the common format::
 The official MCP Python SDK is imported lazily only when at least one server is
 configured, so sessions without MCP servers incur zero SDK import overhead.
 
-MCP servers are trusted local Host integrations (Principle R4): they run on
-Host via ``HostContext.unrestricted`` + ``SandboxExecutor`` with one shared
-connection per server across main and subagent runtimes, while mutating MCP
-tools remain subject to permission approvals bound to the server's config
+The Host integration launches stdio servers via SandboxExecutor and connects
+to configured HTTP endpoints. Main and subagent runtimes share each connection.
+Mutating MCP tools remain subject to permission approvals bound to the server's config
 fingerprint. Tools become ``mcp__<server>__<tool>``. ``/mcp`` shows connection
 state and ``/mcp reconnect`` reloads the configuration; ``mcp_status`` is
 exposed dynamically whenever servers are configured.
@@ -29,6 +28,7 @@ import asyncio
 import fnmatch
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -39,13 +39,14 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeout
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, unquote_plus, urlsplit
 
-from virgo import __version__
+from virgo import __version__, diagnostics
 from virgo.agent import AgentTool, ToolResult
 from virgo.ai.types import ImageContent, TextContent
 from virgo.ai.validate import valid_schema
@@ -62,6 +63,7 @@ STARTUP_WAIT = 2.0
 MAX_TOOL_PAGES = 100
 _STDERR_LIMIT = 8192
 _MESSAGE_LIMIT = 8 * 1024 * 1024
+_ENV_VAR = re.compile(r"\$\{(\w+)\}")
 _SECRET_NAME = re.compile(r"token|password|secret|credential|api[-_]?key|authorization", re.I)
 
 
@@ -118,7 +120,7 @@ class MCPCallCancelled(Exception):
 
 
 def _expand(value: str) -> str:
-    return re.sub(r"\$\{(\w+)\}", lambda match: os.environ.get(match.group(1), ""), value)
+    return _ENV_VAR.sub(lambda match: os.environ.get(match.group(1), ""), value)
 
 
 def _validate_tool_patterns(value, field: str) -> tuple[str, ...] | None:
@@ -129,24 +131,28 @@ def _validate_tool_patterns(value, field: str) -> tuple[str, ...] | None:
     return tuple(item.strip() for item in value)
 
 
-def _validate_options(config: dict) -> tuple[float, tuple[str, ...] | None, tuple[str, ...]]:
-    raw_call_timeout = config.get("callTimeout", CALL_TIMEOUT)
-    if (
-        isinstance(raw_call_timeout, bool)
-        or not isinstance(raw_call_timeout, (int, float))
-        or not math.isfinite(raw_call_timeout)
-        or raw_call_timeout <= 0
-    ):
-        raise MCPConnectionError("MCP server callTimeout must be a positive number")
-    include_tools = _validate_tool_patterns(config.get("includeTools"), "includeTools")
-    exclude_tools = _validate_tool_patterns(config.get("excludeTools"), "excludeTools") or ()
-    return float(raw_call_timeout), include_tools, exclude_tools
+@dataclass(frozen=True)
+class _StdioEndpoint:
+    command: str
+    args: list[str]
+    env: dict[str, str]
 
 
-def _validate_config(config: dict) -> tuple[str, list[str], dict[str, str], float]:
-    """Validate and expand MCP server config strictly (S4-07)."""
-    if not isinstance(config, dict):
-        raise MCPConnectionError("MCP server configuration must be a JSON object")
+@dataclass(frozen=True)
+class _URLEndpoint:
+    transport: str
+    url: str
+    headers: dict[str, str]
+
+
+def _timeout(config: dict, field: str, default: float) -> float:
+    value = config.get(field, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        raise MCPConnectionError(f"MCP server {field} must be a positive number")
+    return float(value)
+
+
+def _stdio_endpoint(config: dict) -> _StdioEndpoint:
     raw_command = config.get("command")
     if not isinstance(raw_command, str) or not raw_command.strip():
         raise MCPConnectionError("MCP server command must be a nonempty string")
@@ -172,22 +178,108 @@ def _validate_config(config: dict) -> tuple[str, list[str], dict[str, str], floa
     else:
         env = {key: _expand(value) for key, value in raw_env.items()}
 
-    raw_timeout = config.get("timeout", 30.0)
-    if (
-        isinstance(raw_timeout, bool)
-        or not isinstance(raw_timeout, (int, float))
-        or not math.isfinite(raw_timeout)
-        or raw_timeout <= 0
-    ):
-        raise MCPConnectionError("MCP server timeout must be a positive number")
-    _validate_options(config)
-    return command, args, env, float(raw_timeout)
+    return _StdioEndpoint(command, args, env)
 
 
-def _config_fingerprint(command: str, args: list[str], env: dict[str, str]) -> str:
-    """Hash expanded command, args, and env overrides without persisting secrets (S4-02)."""
+class _RepeatedKeys(dict):
+    """A JSON object that contained duplicate member names before conversion to a dict."""
+
+
+def _json_object(pairs):
+    obj = dict(pairs)
+    return obj if len(obj) == len(pairs) else _RepeatedKeys(obj)
+
+
+def _url_endpoint(config: dict, transport: str) -> _URLEndpoint:
+    url = config["url"]
+    if not isinstance(url, str) or not url or re.search(r"[\s\x00-\x1f\x7f-\x9f#]", url):
+        raise MCPConnectionError("MCP server url must be an absolute HTTP(S) URL without whitespace, controls or fragments")
+    try:
+        parts = urlsplit(url)
+        authority = parts.netloc.rsplit("@", 1)[-1]
+        if (
+            parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or "\\" in authority
+            or not re.fullmatch(r"(?:\[[^\]]+\]|[^:\[\]]+)(?::[0-9]+)?", authority)
+        ):
+            raise ValueError
+        _ = parts.port  # urlsplit validates the port range on access.
+        parts.hostname.encode("idna")
+        url.encode("utf-8")
+    except ValueError:
+        raise MCPConnectionError("MCP server url requires an HTTP(S) scheme, hostname and valid port") from None
+
+    raw = config.get("headers", {})
+    if not isinstance(raw, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in raw.items()):
+        raise MCPConnectionError("MCP server headers must be an object mapping strings to strings")
+    if isinstance(raw, _RepeatedKeys):
+        raise MCPConnectionError("MCP server headers contain a duplicate name")
+    headers = {}
+    variables = {var for value in raw.values() for var in _ENV_VAR.findall(value)}
+    missing = sorted(variables.difference(os.environ))
+    if missing:
+        raise MCPConnectionError(f"MCP server headers reference unset environment variables: {', '.join(missing)}")
+    for name, value in raw.items():
+        if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise MCPConnectionError("MCP server headers contain an invalid HTTP field name")
+        if name.lower() in headers:
+            raise MCPConnectionError(f"MCP server headers contain a duplicate name: {name}")
+        expanded = _expand(value)
+        if not re.fullmatch(r"[\t\x20-\x7e]*", expanded) or expanded != expanded.strip(" \t"):
+            raise MCPConnectionError(f"MCP server headers contain an invalid HTTP field value for {name}")
+        headers[name.lower()] = expanded
+    return _URLEndpoint(transport, url, headers)
+
+
+@dataclass(frozen=True)
+class _ServerConfig:
+    endpoint: _StdioEndpoint | _URLEndpoint
+    timeout: float
+    call_timeout: float
+    include_tools: tuple[str, ...] | None
+    exclude_tools: tuple[str, ...]
+
+
+def _validate_config(config: dict) -> _ServerConfig:
+    if not isinstance(config, dict):
+        raise MCPConnectionError("MCP server configuration must be a JSON object")
+    if ("command" in config) == ("url" in config):
+        raise MCPConnectionError("MCP server requires exactly one of command and url")
+    stdio = "command" in config
+    selectors = {}
+    for key in ("type", "transport"):
+        if key in config:
+            value = config[key]
+            if not isinstance(value, str) or value not in {"stdio", "http", "streamable-http", "sse"}:
+                raise MCPConnectionError(f"MCP server {key} is not a supported transport")
+            selectors[key] = "streamable-http" if value == "http" else value
+    if len(set(selectors.values())) > 1:
+        raise MCPConnectionError("MCP server type and transport disagree")
+    transport = next(iter(selectors.values()), "stdio" if stdio else "streamable-http")
+    if (transport == "stdio") != stdio:
+        raise MCPConnectionError(f"MCP server {'/'.join(selectors)} conflicts with the configured endpoint")
+    for field in (("headers",) if stdio else ("args", "env")):
+        if field in config:
+            raise MCPConnectionError(f"MCP server {field} is incompatible with {transport}")
+    endpoint = _stdio_endpoint(config) if stdio else _url_endpoint(config, transport)
+    return _ServerConfig(
+        endpoint=endpoint,
+        timeout=_timeout(config, "timeout", 30.0),
+        call_timeout=_timeout(config, "callTimeout", CALL_TIMEOUT),
+        include_tools=_validate_tool_patterns(config.get("includeTools"), "includeTools"),
+        exclude_tools=_validate_tool_patterns(config.get("excludeTools"), "excludeTools") or (),
+    )
+
+
+def _config_fingerprint(endpoint: _StdioEndpoint | _URLEndpoint) -> str:
+    if isinstance(endpoint, _StdioEndpoint):
+        # Preserve the serialization used for existing persistent approvals.
+        fields = {"command": endpoint.command, "args": endpoint.args, "env": sorted(endpoint.env.items())}
+    else:
+        fields = {"transport": endpoint.transport, "url": endpoint.url, "headers": sorted(endpoint.headers.items())}
     payload = json.dumps(
-        {"command": command, "args": args, "env": sorted(env.items())},
+        fields,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -234,7 +326,36 @@ def _secrets(config: dict) -> tuple[str, ...]:
         if separator and _SECRET_NAME.search(name):
             sensitive.append(data)
         previous = value if value.startswith("-") else ""
-    return tuple(expanded for value in [*values, *sensitive] if (expanded := _expand(value)))
+    found = {_expand(value) for value in [*values, *sensitive]}
+    headers = config.get("headers")
+    if isinstance(headers, dict):
+        for name, value in headers.items():
+            if not isinstance(value, str):
+                continue
+            expanded = _expand(value)
+            components = [expanded, *(os.environ.get(var, "") for var in _ENV_VAR.findall(value))]
+            for component in components:
+                found.update((component, unquote(component)))
+            if isinstance(name, str) and name.lower() in {"authorization", "proxy-authorization"}:
+                # Peers may quote the credential without its authentication scheme.
+                auth_parts = expanded.split(maxsplit=1)
+                if len(auth_parts) == 2:
+                    credential = auth_parts[1]
+                    found.update(form for form in (credential, unquote(credential)) if len(form) >= 3)
+    url = config.get("url")
+    if isinstance(url, str):
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            pass  # URL validation errors never include the supplied URL.
+        else:
+            for value in (parts.username, parts.password):
+                if value:
+                    found.update((value, unquote(value)))
+            for pair in parts.query.split("&"):
+                value = pair.partition("=")[2]
+                found.update((value, unquote(value), unquote_plus(value)))
+    return tuple(found - {""})
 
 
 def _host_base_env() -> dict[str, str]:
@@ -242,66 +363,49 @@ def _host_base_env() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if not value.startswith("()")}
 
 
-class _Connection:
-    """One shared Host stdio MCP server owned by a dedicated asyncio loop thread.
+class _StdioTransport:
+    """Own the Host child and all three process pipes for one stdio connection."""
 
-    Launched through ``HostContext.unrestricted`` + ``SandboxExecutor`` so
-    process-tree cleanup, cancellation, and Windows Job Objects are uniform
-    across Virgo (S4-01).
-    """
-
-    def __init__(self, name: str, config: dict, context: HostContext, *, signal=None):
-        self.name = name
-        self.config = config
+    def __init__(self, endpoint: _StdioEndpoint, context: HostContext):
+        self.endpoint = endpoint
         self.context = context
-        self.cwd = context.workspace
-        self._secrets = _secrets(config)
-        self._command, self._args, self._env, self.timeout = _validate_config(config)
-        self.call_timeout, self.include_tools, self.exclude_tools = _validate_options(config)
-        self.fingerprint = _config_fingerprint(self._command, self._args, self._env)
-
-        self.tools: list = []
-        self.error: BaseException | None = None
-        self.inflight = 0
-        self.retired = False
-        self._closed = False
-        self._lock = threading.Lock()
-        self._process_lock = threading.Lock()
-        self._stderr_close_lock = threading.Lock()
         self._process = None
         self._process_cleaned = False
-        self._launch_signal = signal
-        self._cancel = threading.Event()
-        self._ready = threading.Event()
-        self._done = threading.Event()
-        self._stop: asyncio.Event | None = None
-        self._owner = None
-        self._session: ClientSession | None = None
-
-        # S4-07: Initialize stderr pipe and reader thread BEFORE starting the event loop thread.
-        self._stderr_read, stderr_write = os.pipe()
-        self._stderr = os.fdopen(stderr_write, "wb", buffering=0)
-        self._stderr_closed = False
         self._stderr_buffer = bytearray()
         self._stderr_lock = threading.Lock()
-        self._stderr_thread = threading.Thread(
-            target=self._drain_stderr, args=(self._stderr_read,), daemon=True, name=f"mcp-{name}-stderr"
-        )
-        self._stderr_thread.start()
 
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run, daemon=True, name=f"mcp-{name}")
-        self._thread.start()
+    @property
+    def running(self):
+        return self._process is not None and self._process.poll() is None
 
-    def _run(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_forever()
-        finally:
+    @property
+    def boundary(self):
+        return getattr(self._process, "_virgo_boundary", None) or {
+            **self.context.describe(),
+            "payload_started": self._process is not None,
+            "side_effects": "possible" if self._process is not None else "none",
+            "cleanup": "executor_completed" if self._process_cleaned else "pending",
+        }
+
+    def stderr_tail(self):
+        with self._stderr_lock:
+            return bytes(self._stderr_buffer).decode("utf-8", errors="replace")
+
+    @asynccontextmanager
+    async def open(self, name, cancel, disconnected):
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(write_fd, "wb", buffering=0) as stderr:
+            reader = threading.Thread(target=self._drain_stderr, args=(read_fd,), daemon=True, name=f"mcp-{name}-stderr")
+            reader.start()
             try:
-                self._loop.close()
-            except RuntimeError:
-                pass
+                request = self._request(stderr)
+                self._process = self.context.run_process(request, cancel)
+                async with self._streams(disconnected) as streams:
+                    yield streams
+            finally:
+                self._terminate()
+                stderr.close()
+                reader.join()
 
     def _drain_stderr(self, fd: int) -> None:
         """Keep only a bounded tail; a noisy server must not grow memory forever."""
@@ -315,36 +419,25 @@ class _Connection:
         except (OSError, ValueError):
             pass
 
-    def _close_stderr_writer(self) -> None:
-        with self._stderr_close_lock:
-            if self._stderr_closed:
-                return
-            self._stderr_closed = True
-            try:
-                self._stderr.close()
-            except (OSError, ValueError):
-                pass
-
-    def _request(self) -> ProcessRequest:
+    def _request(self, stderr) -> ProcessRequest:
         base_env = _host_base_env()
-        merged_for_lookup = {**base_env, **self._env}
-        argv = _resolve_host_argv(self._command, self._args, merged_for_lookup)
+        merged_for_lookup = {**base_env, **self.endpoint.env}
+        argv = _resolve_host_argv(self.endpoint.command, self.endpoint.args, merged_for_lookup)
         return ProcessRequest(
             argv=argv,
-            cwd=self.cwd,
+            cwd=self.context.workspace,
             env=base_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=self._stderr,
-            env_overrides=self._env,
+            stderr=stderr,
+            env_overrides=self.endpoint.env,
         )
 
     def _terminate(self) -> None:
-        with self._process_lock:
-            process = self._process
-            if process is None or self._process_cleaned:
-                return
-            self._process_cleaned = True
+        process = self._process
+        if process is None or self._process_cleaned:
+            return
+        self._process_cleaned = True
         try:
             cleanup_process(process)
         finally:
@@ -360,15 +453,13 @@ class _Connection:
                         pass
 
     @asynccontextmanager
-    async def _transport(self):
+    async def _streams(self, disconnected):
         """Bounded newline JSON-RPC framing bridged over SandboxExecutor pipes."""
         sdk = _sdk()
         received, read = sdk.anyio.create_memory_object_stream(0)
         write, outgoing = sdk.anyio.create_memory_object_stream(0)
         process = self._process
         assert process is not None and process.stdin is not None and process.stdout is not None
-        stop_event = self._stop
-        assert stop_event is not None
 
         async def receive():
             pending = bytearray()
@@ -391,14 +482,9 @@ class _Connection:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                with self._lock:
-                    if self.error is None:
-                        self.error = error
-            finally:
-                with self._lock:
-                    if not self._closed and self.error is None:
-                        self.error = MCPConnectionError("MCP server closed its transport")
-                stop_event.set()
+                disconnected(error)
+            else:
+                disconnected(MCPConnectionError("MCP server closed its transport"))
 
         def send_bytes(data: bytes) -> None:
             view = memoryview(data)
@@ -420,15 +506,12 @@ class _Connection:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                with self._lock:
-                    if self.error is None:
-                        self.error = error
-                stop_event.set()
+                disconnected(error)
                 await received.aclose()
 
         tasks = [asyncio.create_task(receive()), asyncio.create_task(send())]
         try:
-            yield read, write
+            yield {"read_stream": read, "write_stream": write}
         finally:
             try:
                 await asyncio.to_thread(self._terminate)
@@ -439,40 +522,146 @@ class _Connection:
                 for stream in (read, write, received, outgoing):
                     await stream.aclose()
 
-    async def _serve(self) -> None:
-        session = None
+
+# The SDK and httpx2 log URLs and exception tracebacks before control returns
+# to Virgo. Each connection owns its loop thread, so concurrent servers use
+# their own credentials even for SDK background tasks.
+_http_log_context = threading.local()
+
+
+def _redact_http_log(record: logging.LogRecord) -> bool:
+    secrets = getattr(_http_log_context, "secrets", None)
+    if secrets is not None:
+        record.msg = safe_text(record.getMessage(), secrets=secrets)
+        record.args = ()
+        if record.exc_info:
+            record.exc_text = safe_text(logging.Formatter().formatException(record.exc_info), secrets=secrets)
+            record.exc_info = None
+    return True
+
+
+@asynccontextmanager
+async def _url_transport(config: _ServerConfig, secrets: tuple[str, ...], disconnected):
+    import httpx2
+    from mcp.client.sse import sse_client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
+
+    endpoint = config.endpoint
+    assert isinstance(endpoint, _URLEndpoint)
+    read_timeout = max(config.call_timeout, CALL_TIMEOUT)
+
+    _http_log_context.secrets = secrets
+    for name in ("httpx2", "mcp.client.sse", "mcp.client.streamable_http", "mcp.shared.jsonrpc_dispatcher", "client"):
+        logging.getLogger(name).addFilter(_redact_http_log)
+
+    # Legacy SSE's SDK writer logs POST failures without resolving the request.
+    # Observe dispatch failures before the writer consumes them.
+    class HTTPClient(httpx2.AsyncClient):
+        async def send(self, request, **kwargs):
+            try:
+                response = await super().send(request, **kwargs)
+            except httpx2.RequestError as error:
+                if request.method == "POST":
+                    disconnected(error)
+                raise
+            if request.method == "POST" and (
+                response.is_redirect or (endpoint.transport == "sse" and not response.is_success)
+            ):
+                disconnected(MCPConnectionError(f"MCP POST returned HTTP {response.status_code}"))
+            return response
+
+    def client_factory(**kwargs):
+        return HTTPClient(max_redirects=0, **kwargs)
+
+    class Dispatcher(JSONRPCDispatcher):
+        async def run(self, *args, **kwargs):
+            # The SDK resolves pending calls on EOF. Also retire an idle connection.
+            await super().run(*args, **kwargs)
+            disconnected(MCPConnectionError("MCP server closed its transport"))
+
+    async with AsyncExitStack() as stack:
+        if endpoint.transport == "sse":
+            transport = sse_client(
+                endpoint.url, headers=endpoint.headers, timeout=config.timeout,
+                sse_read_timeout=read_timeout, httpx_client_factory=client_factory,
+            )
+        else:
+            timeout = httpx2.Timeout(config.timeout, read=read_timeout)
+            client = await stack.enter_async_context(client_factory(headers=endpoint.headers, timeout=timeout))
+            transport = streamable_http_client(endpoint.url, http_client=client)
+        read, write = await stack.enter_async_context(transport)
+        yield {"dispatcher": Dispatcher(read, write)}
+
+
+class _Connection:
+    """One shared session. Its loop thread owns and unwinds the SDK contexts."""
+
+    def __init__(self, name: str, config: dict, context: HostContext, *, signal=None):
+        self.name = name
+        self.config = _validate_config(config)
+        endpoint = self.config.endpoint
+        self.fingerprint = _config_fingerprint(endpoint)
+        self._secrets = _secrets(config)
+        self._stdio = _StdioTransport(endpoint, context) if isinstance(endpoint, _StdioEndpoint) else None
+        self.tools: list = []
+        self.error: BaseException | None = None
+        self.inflight = 0
+        self.retired = False
+        self._closed = False
+        self._lock = threading.Lock()
+        self._launch_signal = signal
+        self._cancel = threading.Event()
+        self._ready = threading.Event()
+        self._done = threading.Event()
+        self._session: ClientSession | None = None
+        self._thread = None
+        self._loop = None
+        self._owner = None
+        self._stop = None
+
+    def _run(self):
         try:
+            with asyncio.Runner(loop_factory=asyncio.new_event_loop) as runner:
+                runner.run(self._serve())
+        finally:
+            self._ready.set()
+            self._done.set()
+
+    def _disconnected(self, error):
+        if not self._closed and self.error is None:
+            self.error = error
+            self._stop.set()
+            if not self._ready.is_set():
+                self._owner.cancel()
+
+    async def _serve(self) -> None:
+        try:
+            self._loop = asyncio.get_running_loop()
+            self._owner = asyncio.current_task()
             self._stop = asyncio.Event()
-            request = self._request()
-            process = await asyncio.to_thread(self.context.run_process, request, self._cancel)
-            with self._process_lock:
-                self._process = process
-            if self._cancel.is_set() or self._closed:
-                raise MCPCallCancelled(f"{self.name}: connection cancelled during startup")
+            if self._cancelled():
+                return
             sdk = _sdk()
-            async with self._transport() as (read, write):
-                session = sdk.client_session(
-                    read, write, client_info=sdk.implementation(name="virgo", version=__version__)
-                )
+            if self._stdio:
+                transport = self._stdio.open(self.name, self._cancel, self._disconnected)
+            else:
+                transport = _url_transport(self.config, self._secrets, self._disconnected)
+            async with transport as session_args:
+                session = sdk.client_session(**session_args, client_info=sdk.implementation(name="virgo", version=__version__))
                 async with session:
                     await session.initialize()
-                    self._session = session
                     self.tools = await self._list_tools(session)
-                    if self._stop.is_set() or self.error is not None:
-                        raise self.error or MCPConnectionError("MCP server terminated during initialization")
+                    if self.error:
+                        raise self.error
+                    self._session = session
                     self._ready.set()
                     await self._stop.wait()
         except BaseException as error:
-            with self._lock:
-                if self.error is None:
-                    self.error = error
-            self._ready.set()
-        finally:
-            self._terminate()
-            self._done.set()
-            # S4-05: Automatically reap stderr pipe and event loop thread when server exits spontaneously.
-            self._close_stderr_writer()
-            self._loop.call_soon(self._loop.stop)
+            if self.error is None:
+                while isinstance(error, BaseExceptionGroup) and len(error.exceptions) == 1:
+                    error = error.exceptions[0]
+                self.error = error
 
     @staticmethod
     async def _list_tools(session: ClientSession) -> list:
@@ -492,12 +681,13 @@ class _Connection:
         return self._cancel.is_set() or (self._launch_signal is not None and self._launch_signal.is_set())
 
     def connect(self, timeout: float | None = None) -> None:
-        wait_timeout = self.timeout if timeout is None else timeout
+        wait_timeout = self.config.timeout if timeout is None else timeout
         try:
             with self._lock:
                 if self._closed or self._cancelled():
                     raise MCPCallCancelled(f"{self.name}: connection cancelled before start")
-                self._owner = asyncio.run_coroutine_threadsafe(self._serve(), self._loop)
+                self._thread = threading.Thread(target=self._run, daemon=True, name=f"mcp-{self.name}")
+                self._thread.start()
             deadline = time.monotonic() + wait_timeout
             while not self._ready.wait(0.05):
                 if self._cancelled():
@@ -513,11 +703,7 @@ class _Connection:
             if self._closed or self._cancelled():
                 raise MCPCallCancelled(f"{self.name}: connection cancelled during initialization")
             # S4-05: Never accept a server that errored or exited even if tools were already listed.
-            exited = False
-            with self._process_lock:
-                if self._process is None or self._process.poll() is not None:
-                    exited = True
-            if self.error is not None or self._done.is_set() or exited:
+            if not self.ready:
                 cause = self.error or MCPConnectionError("MCP server exited during initialization")
                 self.close()
                 stderr = self.stderr_tail()
@@ -540,52 +726,29 @@ class _Connection:
         """The handshake finished and the transport has not exited or closed."""
         if self._session is None or self.error is not None or self._closed or self._done.is_set():
             return False
-        with self._process_lock:
-            if self._process is None:
-                return False
-            try:
-                return self._process.poll() is None
-            except Exception:
-                return False
+        return self._stdio is None or self._stdio.running
 
     @property
     def boundary(self) -> dict:
-        with self._process_lock:
-            process = self._process
-            cleaned = self._process_cleaned
-        return getattr(process, "_virgo_boundary", None) or {
-            **self.context.describe(),
-            "payload_started": process is not None,
-            "side_effects": "possible" if process is not None else "none",
-            "cleanup": "executor_completed" if cleaned else "pending",
-        }
+        if self._stdio:
+            return self._stdio.boundary
+        return {"provider": "host", "transport": self.config.endpoint.transport}
 
     def stderr_tail(self) -> str:
-        """The server's bounded stderr tail, with configured secrets redacted (S4-06)."""
-        if self._done.is_set() and threading.current_thread() is not self._stderr_thread:
-            self._stderr_thread.join(0.5)
-        with self._stderr_lock:
-            text = bytes(self._stderr_buffer).decode("utf-8", errors="replace")
-        return safe_text(text, secrets=self._secrets) if text else ""
+        return safe_text(self._stdio.stderr_tail(), secrets=self._secrets) if self._stdio else ""
 
     def _is_transport_failure(self, error: BaseException) -> bool:
-        """Distinguish JSON-RPC application errors from broken transports (S4-03)."""
-        if self._done.is_set() or self._closed:
+        """Distinguish JSON-RPC application errors from broken transports."""
+        if not self.ready:
             return True
-        with self._process_lock:
-            process = self._process
-            if process is None:
-                return True
-            try:
-                if process.poll() is not None:
-                    return True
-            except Exception:
-                return True
         sdk = _sdk()
         if isinstance(error, sdk.mcp_error):
             err_data = getattr(error, "error", None)
             code = getattr(err_data, "code", None)
-            return code == sdk.types.CONNECTION_CLOSED
+            return code == sdk.types.CONNECTION_CLOSED or (
+                isinstance(self.config.endpoint, _URLEndpoint) and self.config.endpoint.transport == "streamable-http"
+                and code == sdk.types.INVALID_REQUEST and err_data.message == "Session terminated"
+            )
         return isinstance(
             error,
             (
@@ -611,26 +774,26 @@ class _Connection:
                     stderr=self.stderr_tail(),
                     boundary=self.boundary,
                 )
-            if self.retired:
-                raise MCPConnectionError(
-                    f"{self.name}: connection replaced; retry with the refreshed tool set",
-                    boundary=self.boundary,
-                )
             if self.error is not None:
                 raise MCPConnectionError(
                     f"{self.name}: {safe_text(self.error, secrets=self._secrets)}. Run /mcp reconnect to restart it.",
                     stderr=self.stderr_tail(),
                     boundary=self.boundary,
                 )
+            if self.retired:
+                raise MCPConnectionError(
+                    f"{self.name}: connection replaced; retry with the refreshed tool set",
+                    boundary=self.boundary,
+                )
             self.inflight += 1
         transport_failed = False
         try:
             assert self._session is not None
+            coroutine = self._session.call_tool(tool, arguments)
             try:
-                future = asyncio.run_coroutine_threadsafe(
-                    self._session.call_tool(tool, arguments), self._loop
-                )
+                future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
             except RuntimeError as error:
+                coroutine.close()
                 transport_failed = True
                 with self._lock:
                     if not self._closed:
@@ -641,7 +804,7 @@ class _Connection:
                     stderr=self.stderr_tail(),
                     boundary=self.boundary,
                 ) from error
-            deadline = time.monotonic() + self.call_timeout
+            deadline = time.monotonic() + self.config.call_timeout
             while True:
                 if signal is not None and signal.is_set():
                     future.cancel()
@@ -649,11 +812,14 @@ class _Connection:
                 try:
                     return future.result(0.05)
                 except FutureTimeout:
+                    if self._done.is_set():
+                        transport_failed = True
+                        raise MCPConnectionError(f"{self.name}: connection closed. Run /mcp reconnect.") from None
                     if time.monotonic() >= deadline:
                         future.cancel()
                         transport_failed = True
                         error = TimeoutError(
-                            f"{self.name}: tool call timed out after {self.call_timeout:g}s; "
+                            f"{self.name}: tool call timed out after {self.config.call_timeout:g}s; "
                             "connection closed. Run /mcp reconnect to restart it."
                         )
                         with self._lock:
@@ -669,6 +835,9 @@ class _Connection:
                             if not self._closed and self.error is None:
                                 self.error = error
                             self.retired = True
+                        raise MCPConnectionError(
+                            f"{safe_text(self.error or error, secrets=self._secrets)}. Run /mcp reconnect."
+                        ) from error
                     raise
         finally:
             with self._lock:
@@ -686,33 +855,33 @@ class _Connection:
 
     def close(self) -> None:
         with self._lock:
-            if self._closed:
-                return
             self._closed = True
-        self._cancel.set()
-        if not self._ready.is_set():
-            # Interrupting startup/handshake: terminate the child process immediately so
-            # blocked stdout reads and session.initialize() unwind instead of waiting 10s.
-            self._terminate()
-        if self._owner is not None:
+            self._cancel.set()
+            thread = self._thread
+        if thread is None or thread is threading.current_thread():
+            return
+
+        def stop():
+            if self._ready.is_set():
+                self._stop.set()
+            else:
+                self._owner.cancel()
+
+        loop = self._loop
+        if loop is not None and not self._done.is_set():
             try:
-                if self._ready.is_set() and self._stop is not None:
-                    self._loop.call_soon_threadsafe(self._stop.set)
-                else:
-                    self._loop.call_soon_threadsafe(self._owner.cancel)
+                loop.call_soon_threadsafe(stop)
             except RuntimeError:
-                pass
-            self._done.wait(10)
-        self._terminate()
-        try:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        except RuntimeError:
-            pass
-        if threading.current_thread() is not self._thread:
-            self._thread.join(5)
-        self._close_stderr_writer()
-        if threading.current_thread() is not self._stderr_thread:
-            self._stderr_thread.join(2)
+                pass  # The loop already closed.
+        thread.join(1)
+        if thread.is_alive():
+            # An unresponsive stateful peer can also hang the SDK's final DELETE.
+            if self._loop is not None and self._owner is not None:
+                try:
+                    self._loop.call_soon_threadsafe(self._owner.cancel)
+                except RuntimeError:
+                    pass
+            thread.join()
 
 
 def _norm(value: str) -> str:
@@ -736,17 +905,24 @@ def tool_name(server: str, tool: str) -> str:
 
 
 def _tool_allowed(connection: _Connection, raw_name: str) -> bool:
-    if connection.include_tools is not None and not any(
-        fnmatch.fnmatchcase(raw_name, pattern) for pattern in connection.include_tools
+    if connection.config.include_tools is not None and not any(
+        fnmatch.fnmatchcase(raw_name, pattern) for pattern in connection.config.include_tools
     ):
         return False
-    return not any(fnmatch.fnmatchcase(raw_name, pattern) for pattern in connection.exclude_tools)
+    return not any(fnmatch.fnmatchcase(raw_name, pattern) for pattern in connection.config.exclude_tools)
 
 
-def _content(result: types.CallToolResult, cwd: Path, name: str, *, t, execution_context) -> ToolResult:
+def _content(result: types.CallToolResult, cwd: Path, name: str, *, t, execution_context, secrets) -> ToolResult:
     converted = ToolResult([], is_error=bool(result.is_error))
+    sensitive = diagnostics._secrets(secrets) if result.is_error else ()
 
     def add_text(text: str) -> None:
+        if result.is_error:
+            # Redact the full block before budgeting so read_output is safe and complete.
+            try:
+                text = diagnostics._redact(text, sensitive)
+            except Exception:
+                text = "[text unavailable: diagnostic redaction failed]"
         if execution_context is None:
             if exceeds_budget(text):
                 text = "The MCP tool already ran. Storing its oversized output requires an originating runtime."
@@ -789,6 +965,7 @@ class _Manager:
         self.failures: dict[str, str] = {}
         self.configured: list[str] = []
         self.retired: list[_Connection] = []
+        self._reconnecting: set[_Connection] = set()
         self._connecting: set[str] = set()
         self._published_counts: dict[str, int] = {}
         self._warned_collisions: set[tuple[str, str, str]] = set()
@@ -823,7 +1000,7 @@ class _Manager:
         if not path.is_file():
             return {}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_json_object)
             if not isinstance(data, dict):
                 raise ValueError("configuration must be a JSON object")
             if from_settings and "mcpServers" not in data:
@@ -875,41 +1052,41 @@ class _Manager:
             valid[name] = config
         return valid
 
-    def _connect(self, name: str, config: dict, *, signal=None) -> _Connection:
-        connection = _Connection(name, config, self._host_context(), signal=signal)
-        connection.connect()
-        return connection
-
-    def _connect_one(self, name: str, server, *, signal=None) -> tuple[str, _Connection | None, str | None]:
-        try:
-            return name, self._connect(name, server, signal=signal), None
-        except Exception as error:
-            secrets = _secrets(server) if isinstance(server, dict) else ()
+    def _report_failure(self, name: str, error: Exception, secrets: tuple[str, ...]) -> str:
+        if not isinstance(error, MCPCallCancelled):
             context = {"server": name}
             if isinstance(error, MCPConnectionError):
                 if error.stderr:
                     context["stderr"] = error.stderr
                 if error.boundary is not None:
                     context["boundary"] = error.boundary
-            if not isinstance(error, MCPCallCancelled):
-                self.api.report_error(error, phase="mcp.connect", context=context, notify=False)
-            return name, None, safe_text(error, secrets=secrets)
+            record = capture_error(error, phase="mcp.connect", context=context, secrets=secrets)
+            self.api.report_error(record, phase="mcp.connect", notify=False)
+        return safe_text(error, secrets=secrets)
 
-    def _connect_all(self, config: dict, *, signal=None) -> tuple[dict[str, _Connection], dict[str, str]]:
-        connections: dict[str, _Connection] = {}
-        failures: dict[str, str] = {}
-        if not config:
-            return connections, failures
+    def _prepare(self, config: dict, signal) -> tuple[list[_Connection], dict[str, str]]:
+        pending = []
+        failures = {}
+        for name, fields in config.items():
+            try:
+                pending.append(_Connection(name, fields, self._host_context(), signal=signal))
+            except Exception as error:
+                failures[name] = self._report_failure(name, error, _secrets(fields))
+        return pending, failures
 
-        with ThreadPoolExecutor(max_workers=min(8, len(config))) as pool:
-            for name, connection, failure in pool.map(
-                lambda item: self._connect_one(item[0], item[1], signal=signal), config.items()
-            ):
-                if connection is not None:
-                    connections[name] = connection
-                else:
-                    failures[name] = failure or "connection failed"
-        return connections, failures
+    def _connect_one(self, connection: _Connection) -> tuple[str, _Connection | None, str | None]:
+        try:
+            connection.connect()
+            return connection.name, connection, None
+        except Exception as error:
+            return connection.name, None, self._report_failure(connection.name, error, connection._secrets)
+
+    def _connect_all(self, pending: list[_Connection]):
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
+                futures = [pool.submit(self._connect_one, conn) for conn in pending]
+                for future in as_completed(futures):
+                    yield future.result()
 
     def _publish(self) -> None:
         with self._publish_lock:
@@ -1020,6 +1197,7 @@ class _Manager:
                     converted = _content(
                         result, ctx.cwd, _name, t=ctx.translator or self.api.translator,
                         execution_context=runtime.execution_context if runtime is not None else None,
+                        secrets=_connection._secrets,
                     )
                     converted.details = {
                         "mcp": True,
@@ -1078,61 +1256,48 @@ class _Manager:
 
     def start(self, *, signal=None, wait: float | None = STARTUP_WAIT) -> None:
         config = self.load_config()
-        if not config:
-            with self._lock:
-                self._generation += 1
-                self.configured = []
-                self.connections = {}
-                self.failures = {}
-                self._connecting.clear()
-                self._published_counts = {}
-                self._startup_done.set()
-            self._publish()
-            return
-
         cancel = threading.Event()
+        pending, failures = self._prepare(config, cancel)
         done = threading.Event()
         with self._lock:
             self._generation += 1
             generation = self._generation
             self.configured = list(config)
             self.connections = {}
-            self.failures = {}
-            self._connecting = set(config)
+            self.failures = failures
+            self._connecting = {conn.name for conn in pending}
             self._published_counts = {}
             self._startup_cancel = cancel
             self._startup_done = done
 
         def worker() -> None:
             try:
-                with ThreadPoolExecutor(max_workers=min(8, len(config))) as pool:
-                    futures = [
-                        pool.submit(self._connect_one, name, server, signal=cancel)
-                        for name, server in config.items()
-                    ]
-                    for future in as_completed(futures):
-                        name, connection, failure = future.result()
-                        stale = False
-                        with self._lock:
-                            if self._closed or self._generation != generation:
-                                stale = True
-                            else:
-                                self._connecting.discard(name)
-                                if connection is not None:
-                                    self.connections[name] = connection
-                                else:
-                                    self.failures[name] = failure or "connection failed"
-                        if stale:
-                            if connection is not None:
-                                connection.close()
+                for name, connection, failure in self._connect_all(pending):
+                    stale = False
+                    with self._lock:
+                        if self._closed or self._generation != generation:
+                            stale = True
                         else:
-                            self._publish()
+                            self._connecting.discard(name)
+                            if connection is not None:
+                                self.connections[name] = connection
+                            else:
+                                self.failures[name] = failure or "connection failed"
+                    if stale:
+                        if connection is not None:
+                            connection.close()
+                    else:
+                        self._publish()
             finally:
                 with self._lock:
                     if self._generation == generation:
                         self._connecting.clear()
                 done.set()
 
+        if not pending:
+            done.set()
+            self._publish()
+            return
         thread = threading.Thread(target=worker, daemon=True, name="mcp-startup")
         with self._lock:
             self._startup_thread = thread
@@ -1152,23 +1317,38 @@ class _Manager:
         # S4-04: Never hold self._lock across _connect_all(), retire(), or close().
         self._cancel_startup()
         config = self.load_config()
-        candidates, failures = self._connect_all(config, signal=signal)
-        if failures:
+        pending, failures = self._prepare(config, signal)
+        with self._lock:
+            if self._closed:
+                return False
+            self._reconnecting.update(pending)
+        candidates = {}
+        try:
+            if not failures:
+                for name, connection, failure in self._connect_all(pending):
+                    if connection is None:
+                        failures[name] = failure or "connection failed"
+                    else:
+                        candidates[name] = connection
             with self._lock:
+                if self._closed:
+                    return False  # close() took ownership of the pending connections.
                 self.configured = list(config)
                 self.failures = failures
-            for connection in candidates.values():
-                connection.close()
-            self._sync_status_tool()
-            return False
-        with self._lock:
-            self._generation += 1
-            previous = list(self.connections.values())
-            self.connections = candidates
-            self.configured = list(config)
-            self.failures = {}
-            self._connecting.clear()
-            self.retired = [conn for conn in self.retired if not conn.closed] + previous
+                if not failures:
+                    self._generation += 1
+                    previous = list(self.connections.values())
+                    self.connections = candidates
+                    self._connecting.clear()
+                    self.retired = [conn for conn in self.retired if not conn.closed] + previous
+            if failures:
+                for connection in candidates.values():
+                    connection.close()
+                self._sync_status_tool()
+                return False
+        finally:
+            with self._lock:
+                self._reconnecting.difference_update(pending)
         self._publish()
         for connection in previous:
             connection.retire()
@@ -1263,7 +1443,8 @@ class _Manager:
             self._generation += 1
             cancel = self._startup_cancel
             thread = self._startup_thread
-            to_close = [*self.connections.values(), *self.retired]
+            to_close = {*self.connections.values(), *self.retired, *self._reconnecting}
+            self._reconnecting.clear()
             self.connections.clear()
             self.retired.clear()
             self._connecting.clear()

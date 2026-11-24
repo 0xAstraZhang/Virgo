@@ -8,7 +8,7 @@ Virgo 在会话启动时通过统一的 `setup(api)` 接口加载 Python 扩展�
 
 | 内置扩展 | 源码 | 用途 |
 | --- | --- | --- |
-| `mcp` | [src/virgo/extensions/mcp.py](../../../src/virgo/extensions/mcp.py) | 在 Host 上连接已配置的 stdio MCP 服务器并暴露其工具 |
+| `mcp` | [src/virgo/extensions/mcp.py](../../../src/virgo/extensions/mcp.py) | 通过 stdio、Streamable HTTP 或旧版 SSE 连接 MCP 服务器并提供其工具 |
 | `todo` | [src/virgo/extensions/todo.py](../../../src/virgo/extensions/todo.py) | 模型维护的清单（`todo_write`），支持可选执行阶段与压缩保留 |
 
 ## 优先级与禁用方式
@@ -78,22 +78,46 @@ Virgo 在会话启动时通过统一的 `setup(api)` 接口加载 Python 扩展�
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
+    },
+    "issues": {
+      "url": "https://mcp.example.org/mcp",
+      "headers": {"Authorization": "Bearer ${ISSUES_TOKEN}"}
+    },
+    "legacy": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8000/sse"
     }
   }
 }
 ```
 
-也接受 `mcpServers` 配置项（优先级：`~/.virgo/mcp.json` < `~/.virgo/settings.json` <
-受信任 `.virgo/mcp.json` < 受信任 `.virgo/settings.json`；项目级的 `mcpServers` 与
-`.virgo/mcp.json` 需通过 `extensions.trustedProjects` 或 `--trust-project-extensions`
-显式信任）。服务器参数和环境值支持 `${VARIABLE}` 展开；禁用条目会被跳过。每个服务器支持
-可选的 `callTimeout`（覆盖默认 300s 单次调用超时）及 `includeTools` / `excludeTools`
-（按 glob 模式过滤暴露的工具）。MCP 服务器通过 `SandboxExecutor` 在 Host 启动，启动期
-采用有界等待以避免阻塞冷启动，主会话与所有子 Agent 共享同一个连接（原生 Windows 支持通过
-`PATH` 查找命令与 `.cmd`/`.bat`，如 `npx`）。工具名为 `mcp__<server>__<tool>`（超长或
-冲突名称会自动追加确定性哈希后缀）：只读工具直接执行，可能修改宿主状态的工具在 Read-Only
-与 Workspace-Edit 下需经审批（“始终允许”绑定服务器展开后的 `command`、`args`、`env`
-的 SHA-256 指纹），在 No-Limit 下直接执行。
+每个服务器选择一种端点。
+
+| 端点 | 配置 |
+| --- | --- |
+| stdio | 通过 `command` 和 `SandboxExecutor` 在 Host 上启动进程。可选的 `args` 和 `env` 支持 `${VARIABLE}` 展开。原生 Windows 支持 PATH 查找与 `.cmd` / `.bat` 包装命令，例如 `npx`。 |
+| Streamable HTTP | 通过 `url` 从 Host 连接到绝对 HTTP 或 HTTPS 地址。可省略传输类型，也可指定 `http` 或 `streamable-http`。 |
+| 旧版 HTTP+SSE | 将传输类型设为 `sse`，并将 `url` 设为服务端的 SSE 端点。 |
+
+用 `type` 或 `transport` 指定传输类型。两者同时出现时，必须指向同一种传输。
+URL 端点可通过 `headers` 对象设置字符串请求头。请求头名称不区分大小写，且必须唯一。
+Virgo 在连接前展开请求头值中的 `${VARIABLE}`，并报告缺失的环境变量。
+MCP 错误消息和诊断记录会隐去完整的请求头值。对于 `Authorization` 和 `Proxy-Authorization`，
+如果认证方案名后的凭据至少有三个字符，单独出现的凭据也会被隐去。
+支持回环地址，包括用方括号包围的 IPv6 地址。URL 中不能含有片段或控制字符。
+请直接填写最终端点地址。工具调用遇到重定向会失败，Virgo 不会自动重新提交调用。
+
+配置优先级从低到高依次为用户 `mcp.json`、用户 `settings.json`、受信任项目的
+`.virgo/mcp.json` 与 `.virgo/settings.json`。设置文件使用同一 `mcpServers` 键。
+项目级条目需通过 `extensions.trustedProjects` 或 `--trust-project-extensions` 显式信任。
+禁用的条目会被跳过。启动等待有时间上限，主会话与子 Agent 共享每个服务器的连接。
+`callTimeout` 可调整默认 300 秒的工具调用超时，`includeTools` / `excludeTools` 按 glob 模式过滤工具。
+
+工具名为 `mcp__<server>__<tool>`。超长或冲突名称会追加确定性哈希后缀。
+只读工具直接执行。可能修改状态的工具在 Read-Only 与 Workspace-Edit 下需要审批，在 No-Limit 下直接执行。
+**始终允许**授权绑定到 SHA-256 指纹。stdio 指纹由展开后的命令、参数与环境变量覆盖项计算。
+URL 指纹由规范化的传输类型、完整配置地址（含查询字符串），以及按小写名称排序的已展开请求头计算。
+这些输入发生变化时，需要重新授权。
 
 每个 MCP 文本块的上限为 51,200 个 UTF-8 字节和 2,000 行，嵌入资源中的文本及渲染为文本的
 JSON 也按块计量。超过任一上限时，该块会显示预览和一个 `output_id`。在发起调用的会话中，
