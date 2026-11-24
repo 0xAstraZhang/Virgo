@@ -437,23 +437,24 @@ while not Path('child-ready').exists():
 
 
 def test_background_cancel_preserves_other_job_and_origin_after_switch(native, project):
-    cmd = python_command(
-        native,
-        "import time\n"
-        "with open('ready', 'w'):\n"
-        f"    time.sleep({2 * _BACKGROUND_CLEANUP_TIMEOUT})",
-    )
-    result = run(native, cmd, background=True)
-    assert not result.is_error, result.text()
     jobs = native.services["jobs"]
-    first = list(jobs.jobs.values())[-1]
-    wait_until((project / "ready").exists)
-    (project / "ready").unlink()
-    result = run(native, cmd, background=True)
-    assert not result.is_error, result.text()
-    second = list(jobs.jobs.values())[-1]
+
+    def start_job(marker):
+        cmd = python_command(
+            native,
+            "import time\n"
+            f"with open({marker!r}, 'w'):\n"
+            f"    time.sleep({2 * _BACKGROUND_CLEANUP_TIMEOUT})",
+        )
+        result = run(native, cmd, background=True)
+        assert not result.is_error, result.text()
+        return list(jobs.jobs.values())[-1]
+
+    first = start_job("first-ready")
+    wait_until((project / "first-ready").exists)
+    second = start_job("second-ready")
     try:
-        wait_until((project / "ready").exists)
+        wait_until((project / "second-ready").exists)
         native.new_session()
         jobs.kill(first)
         assert first.done.wait(_BACKGROUND_CLEANUP_TIMEOUT), first.result
