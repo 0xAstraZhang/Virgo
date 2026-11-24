@@ -3,9 +3,25 @@
 from __future__ import annotations
 
 import os
+import re
 
 from .io import read_json, write_json
 from .reports import BAD, validate_report
+
+
+def _attempt_reports(args, problems):
+    # A partial retry only uploads the jobs that ran again. Choose a directory
+    # before reading its contents so an incomplete retry cannot revive an old pass.
+    latest = {}
+    for artifact in args.reports.glob("*"):
+        match = re.fullmatch(r"results-(.+)-attempt-([1-9][0-9]*)", artifact.name)
+        if not match or match[1] not in args.platforms or int(match[2]) > args.run_attempt:
+            problems.append(f"Unexpected test artifact: {artifact.name}")
+            continue
+        platform, attempt = match[1], int(match[2])
+        if platform not in latest or latest[platform][0] < attempt:
+            latest[platform] = (attempt, artifact)
+    return [(artifact / "results.json", platform) for platform, (_, artifact) in latest.items()]
 
 
 def summarize(args):
@@ -36,12 +52,18 @@ def summarize(args):
         if status is not None and status != expected:
             problems.append(f"{job} job: {status} (expected {expected})")
 
-    for path in args.reports.rglob("results.json"):
+    paths = (_attempt_reports(args, problems) if args.run_attempt is not None
+             else ((path, None) for path in args.reports.rglob("results.json")))
+    for path, expected_platform in paths:
+        if expected_platform is not None:
+            print(f"Using {path.parent.name}")
         data = None
         try:
             data = read_json(path)
             validate_report(data)
             operating_system = data["platform"]
+            if expected_platform is not None and operating_system != expected_platform:
+                raise ValueError(f"Expected a {expected_platform} report, got {operating_system}")
             if skipped or operating_system not in args.platforms:
                 raise ValueError(f"Unexpected run report: {operating_system}")
             if operating_system in reports:

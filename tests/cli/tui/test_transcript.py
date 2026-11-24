@@ -533,3 +533,29 @@ def test_markdown_code_blocks_keep_native_terminal_colors(theme):
             assert view.query_one(".notice").region.y == final_label.region.bottom + 1
 
     asyncio.run(scenario())
+
+
+def test_presented_path_visible_in_full_during_run_and_replay(make_session, project):
+    from virgo.ai.providers import faux
+
+    name = "a long label " * 5 + "[v1]_KV-cache.pdf"
+    paper = project / name
+    paper.write_bytes(b"paper")
+    session = make_session(faux.reply(tools=[("present_file", {"path": name})]), faux.reply("Done"), persist=True)
+    session.prompt("Present the file.")
+
+    async def scenario():
+        app = TranscriptApp()
+        async with app.run_test(size=(50, 20)) as pilot:
+            view = app.query_one(Transcript)
+            for event in session.ui.events:
+                await view.consume(event)
+            for replay in (False, True):
+                if replay:
+                    await view.load_history(session.store.entries)
+                await pilot.pause()
+                row = view.query_one(ToolView)
+                assert row.output.display
+                assert str(row.output.content) == str(paper.resolve())
+
+    asyncio.run(scenario())
