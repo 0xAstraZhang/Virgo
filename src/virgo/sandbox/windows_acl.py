@@ -1,4 +1,4 @@
-"""Session-level Windows NTFS ACL helpers using single-call OS inheritance.
+"""Session-level Windows NTFS/ReFS ACL helpers using single-call OS inheritance.
 
 Uses GetNamedSecurityInfoW / SetNamedSecurityInfoW (SE_FILE_OBJECT,
 DACL_SECURITY_INFORMATION) with an explicit canonical binary ACL builder.
@@ -9,11 +9,11 @@ Key Windows kernel invariants enforced here:
 - Workspace writable grants omit FILE_DELETE_CHILD (0x40) and apply DELETE
   (0x10000) inherit-only so the workspace root cannot be deleted and protected
   children cannot be deleted/renamed via parent directory rights.
-- Protected control metadata (.git, .virgo, AGENTS.md, CLAUDE.md, read-only
-  subpaths) uses SE_DACL_PROTECTED with explicit non-session host ACEs
-  preserved and session SID restricted to READ_EXECUTE (0x001200A9), because
-  Windows' AppContainer access check ignores ACCESS_DENIED_ACE targeting
-  AppContainer SIDs (S-1-15-2-*).
+- Protected subpaths (such as unapproved project ``.virgo`` metadata and
+  read-only subpaths) use SE_DACL_PROTECTED with explicit non-session host
+  ACEs preserved and the session SID restricted to READ_EXECUTE (0x001200A9),
+  because Windows' AppContainer access check ignores ACCESS_DENIED_ACE
+  targeting AppContainer SIDs (S-1-15-2-*).
 """
 from __future__ import annotations
 
