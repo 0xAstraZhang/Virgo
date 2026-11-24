@@ -29,7 +29,7 @@ DEFAULTS: dict[str, Any] = {
     "effort": None,
     "maxTokens": None,
     "providers": {},
-    "permissions": {"approval": "ask", "confirmHighRisk": True},
+    "permissions": {"approval": "ask", "confirmHighRisk": False},
     "hooks": {},
     "shell": {"executable": "auto"},
     "plugins": {},

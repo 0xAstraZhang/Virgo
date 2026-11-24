@@ -119,8 +119,8 @@ class ModeExecutionProvider(HostExecutionProvider):
         """Enforce high-risk shell command confirmation across all modes (S5-01)."""
         if event.tool is None or event.tool.execution_scope != "process":
             return None
-        # Disable knob is honored ONLY in No-Limit mode.
-        if base.provider == "host" and self.session.settings.get("permissions.confirmHighRisk", True) is False:
+        # In No-Limit mode, high-risk confirmation is disabled by default unless opted in.
+        if base.provider == "host" and self.session.settings.get("permissions.confirmHighRisk", False) is False:
             return None
         command = event.args.get("command", "") if isinstance(event.args, dict) else ""
         match = detect_high_risk_command(command, event.cwd, base.workspace)

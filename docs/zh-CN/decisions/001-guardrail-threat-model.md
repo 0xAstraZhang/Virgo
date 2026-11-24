@@ -12,7 +12,7 @@
 
 - Virgo 的沙箱明确定位为**防止对齐良好的模型偶发失误的护栏**，而不是抵御恶意代码、主动绕过或提示词注入攻击链的安全边界（不可信仓库与内容需交给外部容器或虚拟机）。
 - 防护工作按实际误操作风险排序（见 `AGENTS.md` 中的 R1–R8）：
-  1. 不可逆或远程变更命令（强推、推送受保护分支、`git reset --hard`、`git clean -f`、`curl | sh`、工作区外递归删除、部署/发布、云资源删除、通过数据库/缓存 CLI 执行破坏性语句）在所有模式下均要求逐次确认（`virgo.harness.high_risk`）。
+  1. 不可逆或远程变更命令（强推、推送受保护分支、`git reset --hard`、`git clean -f`、`curl | sh`、工作区外递归删除、部署/发布、云资源删除、通过数据库/缓存 CLI 执行破坏性语句）在沙箱模式下均要求逐次确认，在 **No-Limit** 模式下默认关闭、可通过 `permissions.confirmHighRisk: true` 开启（`virgo.harness.high_risk`）。
   2. 高敏凭据目录与文件（`$VIRGO_HOME` 及 `virgo.execution_policy` 中的 13 个 `PRIVATE_HOME_RELATIVES` 路径）硬性禁止读写且不可通过 `request_permissions` 放行；沙箱 Shell 自动剥离凭据型与加载器注入型环境变量。
   3. **Workspace-Edit** 下仅对项目 `.virgo`（`PROTECTED_NAMES = (".virgo",)`）触发写确认，同时保持 `.git`、`AGENTS.md`、`CLAUDE.md` 与项目 `.venv` 可写，确保日常提交、文档维护和装包无阻。
   4. 工作区外读写按需弹窗确认，既不静默放行，也不一刀切阻断正常跨目录协作。
