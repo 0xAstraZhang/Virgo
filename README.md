@@ -87,4 +87,4 @@ Browse the full [documentation hub](docs/en/README.md):
 
 ## License
 
-[MIT](LICENSE). Third-party acknowledgements are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+[MIT](LICENSE).

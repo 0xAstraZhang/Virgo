@@ -87,4 +87,4 @@ uv run virgo -p --format json "总结 README"
 
 ## 许可证
 
-[MIT](LICENSE)。第三方许可与致谢见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)。
+[MIT](LICENSE)。
