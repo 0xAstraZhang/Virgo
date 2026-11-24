@@ -108,7 +108,7 @@ def _read(args: dict, ctx: ToolContext, *, access=None) -> ToolResult:
         formatted = f"{lineno}|{line}"
         line_bytes = len(formatted.encode("utf-8"))
         reserve = footer_bytes if lineno < total else 0
-        if size + line_bytes + reserve > MAX_BYTES and (chunk or line_bytes > MAX_BYTES):
+        if size + line_bytes + reserve > MAX_BYTES:
             break
         size += line_bytes
         chunk.append(formatted)

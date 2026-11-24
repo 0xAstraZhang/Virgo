@@ -47,6 +47,16 @@ def test_read_line_numbered_output_stays_within_byte_budget(project):
     assert "Use offset=" in result.as_text()
 
 
+def test_read_first_line_near_budget_with_following_lines_never_exceeds_max_bytes(project):
+    from virgo.tools.output import MAX_BYTES
+
+    f = project / "near_limit.txt"
+    f.write_text(("a" * (MAX_BYTES - 4)) + "\nsecond line\n", newline="\n")
+    result = READ.execute({"path": "near_limit.txt"}, ctx(project))
+    assert len(result.as_text().encode("utf-8")) <= MAX_BYTES
+    assert result.is_error
+
+
 @pytest.mark.parametrize("tool,arguments", [
     (READ, {"path": "secret.txt"}),
     (GREP, {"path": ".", "pattern": "private"}),

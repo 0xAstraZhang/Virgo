@@ -5,7 +5,6 @@ Children receive a pipe, never the private spool descriptor or filesystem path.
 
 from __future__ import annotations
 
-import io
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -151,11 +150,37 @@ MAX_OUTPUT_CONTEXT = 20
 MAX_OUTPUT_MATCHES = 500
 DEFAULT_OUTPUT_MATCHES = 100
 _SEARCH_LINE_CHARS = 500
+_SCAN_CHUNK_BYTES = 64 * 1024
+_MAX_SCAN_LINE_BYTES = 1024 * 1024
 
 
 def _clip_line(line: str) -> str:
     stripped = line.rstrip("\r\n")
     return stripped if len(stripped) <= _SEARCH_LINE_CHARS else stripped[:_SEARCH_LINE_CHARS] + "…"
+
+
+def _limit_label(byte_limit: int) -> str:
+    return (
+        f"{byte_limit // 1024}KB"
+        if byte_limit >= 1024 and byte_limit % 1024 == 0
+        else f"{byte_limit} bytes"
+    )
+
+
+def _iter_bounded_lines(stream, *, max_line_bytes: int = _MAX_SCAN_LINE_BYTES):
+    """Yield (1-based lineno, text) while capping per-line memory on wide lines."""
+    lineno = 0
+    while True:
+        raw = stream.readline(max_line_bytes)
+        if not raw:
+            break
+        lineno += 1
+        if not raw.endswith(b"\n"):
+            while True:
+                extra = stream.readline(_SCAN_CHUNK_BYTES)
+                if not extra or extra.endswith(b"\n"):
+                    break
+        yield lineno, raw.decode("utf-8", errors="replace")
 
 
 def _search_output(
@@ -185,7 +210,7 @@ def _search_output(
             ctx.t("tools.read_output.search_more", count=max_matches, line=999_999_999, next_line=1_000_000_000)
         )
     ) + 2
-    body_budget = max(1, byte_limit - footer_reserve)
+    body_budget = byte_limit - footer_reserve if byte_limit > footer_reserve else byte_limit
 
     out: list[str] = []
     out_bytes = 0
@@ -208,7 +233,7 @@ def _search_output(
         chunk_bytes = len(_encode(chunk))
         if out and out_bytes + chunk_bytes > body_budget:
             return False
-        if not out and chunk_bytes > byte_limit:
+        if not out and chunk_bytes > body_budget:
             clipped = _cut_bytes(pieces[-1], max(1, body_budget), from_end=False)
             pieces[-1] = clipped
             chunk = "\n".join(pieces)
@@ -219,45 +244,41 @@ def _search_output(
         return True
 
     with store.open_read(record) as (raw_stream, total_bytes):
-        text_stream = io.TextIOWrapper(raw_stream, encoding="utf-8", errors="replace", newline="")
-        try:
-            for lineno, raw_line in enumerate(text_stream, 1):
-                if lineno % 4096 == 0 and ctx.signal.is_set():
-                    return ToolResult.error(ctx.t("tools.read_output.cancelled"), details={"cancelled": True})
-                if lineno < start_line:
-                    continue
-                clipped = _clip_line(raw_line)
-                if rx.search(raw_line.rstrip("\r\n")):
-                    if matches >= max_matches:
+        for lineno, raw_line in _iter_bounded_lines(raw_stream):
+            if lineno % 4096 == 0 and ctx.signal.is_set():
+                return ToolResult.error(ctx.t("tools.read_output.cancelled"), details={"cancelled": True})
+            if lineno < start_line:
+                continue
+            clipped = _clip_line(raw_line)
+            if rx.search(raw_line.rstrip("\r\n")):
+                if matches >= max_matches:
+                    truncated = True
+                    stop_line = lineno - 1
+                    break
+                for prev_no, prev_text in before:
+                    if not try_emit(prev_no, "-", prev_text):
                         truncated = True
-                        stop_line = lineno - 1
+                        stop_line = prev_no - 1
                         break
-                    for prev_no, prev_text in before:
-                        if not try_emit(prev_no, "-", prev_text):
-                            truncated = True
-                            stop_line = prev_no - 1
-                            break
-                    if truncated:
-                        break
-                    before.clear()
-                    if not try_emit(lineno, ":", clipped):
-                        truncated = True
-                        stop_line = lineno - 1
-                        break
-                    matches += 1
-                    after_remaining = context_lines
-                    stop_line = lineno
-                elif after_remaining > 0:
-                    if not try_emit(lineno, "-", clipped):
-                        truncated = True
-                        stop_line = lineno - 1
-                        break
-                    after_remaining -= 1
-                    stop_line = lineno
-                elif context_lines > 0:
-                    before.append((lineno, clipped))
-        finally:
-            text_stream.detach()
+                if truncated:
+                    break
+                before.clear()
+                if not try_emit(lineno, ":", clipped):
+                    truncated = True
+                    stop_line = lineno - 1
+                    break
+                matches += 1
+                after_remaining = context_lines
+                stop_line = lineno
+            elif after_remaining > 0:
+                if not try_emit(lineno, "-", clipped):
+                    truncated = True
+                    stop_line = lineno - 1
+                    break
+                after_remaining -= 1
+                stop_line = lineno
+            elif context_lines > 0:
+                before.append((lineno, clipped))
 
     if not out:
         return ToolResult.text(
@@ -273,7 +294,9 @@ def _search_output(
         )
     if truncated:
         next_line = max(start_line, stop_line + 1)
-        out.append(ctx.t("tools.read_output.search_more", count=matches, line=stop_line, next_line=next_line))
+        notice = ctx.t("tools.read_output.search_more", count=matches, line=stop_line, next_line=next_line)
+        if out_bytes + 1 + len(_encode(notice)) <= byte_limit:
+            out.append(notice)
     else:
         next_line = None
     return ToolResult.text(
@@ -289,6 +312,36 @@ def _search_output(
     )
 
 
+def _skip_to_line(stream, start_line: int, signal) -> tuple[bool, int]:
+    """Advance ``stream`` to 1-based ``start_line`` in bounded chunks; return (reached, total_lines_if_eof)."""
+    if start_line <= 1:
+        return True, 0
+    needed = start_line - 1
+    seen = 0
+    last_byte = b""
+    chunks = 0
+    while True:
+        chunks += 1
+        if chunks % 64 == 0 and signal.is_set():
+            raise InterruptedError
+        chunk = stream.read(_SCAN_CHUNK_BYTES)
+        if not chunk:
+            total = seen + (1 if last_byte and last_byte != b"\n" else 0)
+            return False, total
+        last_byte = chunk[-1:]
+        count = chunk.count(b"\n")
+        if seen + count >= needed:
+            # Find the exact byte position right after the (needed - seen)-th newline in chunk.
+            pos = -1
+            for _ in range(needed - seen):
+                pos = chunk.find(b"\n", pos + 1)
+            back = len(chunk) - (pos + 1)
+            if back:
+                stream.seek(-back, 1)
+            return True, 0
+        seen += count
+
+
 def _read_output_lines(
     store,
     record: OutputRecord,
@@ -300,61 +353,71 @@ def _read_output_lines(
 ):
     from ..agent import ToolResult
 
-    footer_reserve = len(
-        _encode(ctx.t("tools.read_output.lines_more", start=start_line, end=999_999_999, next_line=1_000_000_000))
-    )
     chunk: list[str] = []
     size = 0
-    total_lines = 0
     has_more = False
     end_line = start_line - 1
 
     with store.open_read(record) as (raw_stream, total_bytes):
-        text_stream = io.TextIOWrapper(raw_stream, encoding="utf-8", errors="replace", newline="")
+        if total_bytes == 0:
+            return ToolResult.text(
+                ctx.t("tools.output.empty"),
+                details={
+                    "output_id": record.id,
+                    "mode": "lines",
+                    "lines": [0, 0],
+                    "next_line_offset": None,
+                    "total_bytes": 0,
+                },
+            )
         try:
-            for lineno, raw_line in enumerate(text_stream, 1):
-                if lineno % 4096 == 0 and ctx.signal.is_set():
-                    return ToolResult.error(ctx.t("tools.read_output.cancelled"), details={"cancelled": True})
-                total_lines = lineno
-                if lineno < start_line:
-                    continue
-                if len(chunk) >= max_lines:
+            reached, eof_total = _skip_to_line(raw_stream, start_line, ctx.signal)
+        except InterruptedError:
+            return ToolResult.error(ctx.t("tools.read_output.cancelled"), details={"cancelled": True})
+        if not reached or raw_stream.tell() >= total_bytes:
+            total_lines = eof_total if not reached else start_line - 1
+            return ToolResult.error(ctx.t("tools.fs.offset", offset=start_line, total=total_lines))
+
+        lineno = start_line
+        while True:
+            if (lineno - start_line) % 4096 == 0 and ctx.signal.is_set():
+                return ToolResult.error(ctx.t("tools.read_output.cancelled"), details={"cancelled": True})
+            if len(chunk) >= max_lines:
+                has_more = raw_stream.tell() < total_bytes
+                break
+            raw_bytes = raw_stream.readline(byte_limit + 1)
+            if not raw_bytes:
+                break
+            line_exceeds_raw = len(raw_bytes) > byte_limit or (
+                not raw_bytes.endswith(b"\n") and raw_stream.tell() < total_bytes
+            )
+            if line_exceeds_raw:
+                if chunk:
                     has_more = True
                     break
-                formatted = f"{lineno}|{raw_line}"
-                line_bytes = len(_encode(formatted))
-                if size + line_bytes + footer_reserve > byte_limit:
-                    if chunk:
-                        has_more = True
-                        break
-                    if line_bytes > byte_limit:
-                        limit_label = (
-                            f"{byte_limit // 1024}KB"
-                            if byte_limit >= 1024 and byte_limit % 1024 == 0
-                            else f"{byte_limit} bytes"
-                        )
-                        return ToolResult.error(
-                            ctx.t("tools.read_output.long_line", line=lineno, limit=limit_label)
-                        )
-                size += line_bytes
-                chunk.append(formatted)
-                end_line = lineno
-        finally:
-            text_stream.detach()
+                return ToolResult.error(
+                    ctx.t("tools.read_output.long_line", line=lineno, limit=_limit_label(byte_limit))
+                )
+            formatted = f"{lineno}|{raw_bytes.decode('utf-8', errors='replace')}"
+            line_bytes = len(_encode(formatted))
+            has_following = raw_stream.tell() < total_bytes
+            reserve = (
+                len(_encode(ctx.t("tools.read_output.lines_more", start=start_line, end=lineno, next_line=lineno + 1)))
+                if has_following
+                else 0
+            )
+            if size + line_bytes + reserve > byte_limit:
+                if chunk:
+                    has_more = True
+                    break
+                return ToolResult.error(
+                    ctx.t("tools.read_output.long_line", line=lineno, limit=_limit_label(byte_limit))
+                )
+            size += line_bytes
+            chunk.append(formatted)
+            end_line = lineno
+            lineno += 1
 
-    if total_lines == 0:
-        return ToolResult.text(
-            ctx.t("tools.output.empty"),
-            details={
-                "output_id": record.id,
-                "mode": "lines",
-                "lines": [0, 0],
-                "next_line_offset": None,
-                "total_bytes": total_bytes,
-            },
-        )
-    if start_line > total_lines:
-        return ToolResult.error(ctx.t("tools.fs.offset", offset=start_line, total=total_lines))
     text = "".join(chunk)
     if has_more:
         text += ctx.t("tools.read_output.lines_more", start=start_line, end=end_line, next_line=end_line + 1)
@@ -380,52 +443,105 @@ def _read_output_tail_lines(
 ):
     from ..agent import ToolResult
 
-    ring: deque[tuple[int, str]] = deque(maxlen=line_limit)
-    total_lines = 0
     with store.open_read(record) as (raw_stream, total_bytes):
-        text_stream = io.TextIOWrapper(raw_stream, encoding="utf-8", errors="replace", newline="")
-        try:
-            for lineno, raw_line in enumerate(text_stream, 1):
-                if lineno % 4096 == 0 and ctx.signal.is_set():
-                    return ToolResult.error(ctx.t("tools.read_output.cancelled"), details={"cancelled": True})
-                total_lines = lineno
-                ring.append((lineno, raw_line))
-        finally:
-            text_stream.detach()
+        if total_bytes == 0:
+            return ToolResult.text(
+                ctx.t("tools.output.empty"),
+                details={
+                    "output_id": record.id,
+                    "mode": "tail_lines",
+                    "lines": [0, 0],
+                    "total_lines": 0,
+                    "total_bytes": 0,
+                },
+            )
+        tail_start = max(0, total_bytes - byte_limit)
+        lines_before = 0
+        prev_byte_is_nl = True
+        remaining = tail_start
+        chunks = 0
+        while remaining > 0:
+            chunks += 1
+            if chunks % 64 == 0 and ctx.signal.is_set():
+                return ToolResult.error(ctx.t("tools.read_output.cancelled"), details={"cancelled": True})
+            block = raw_stream.read(min(_SCAN_CHUNK_BYTES, remaining))
+            if not block:
+                break
+            lines_before += block.count(b"\n")
+            prev_byte_is_nl = block[-1:] == b"\n"
+            remaining -= len(block)
+        raw_window = raw_stream.read(total_bytes - tail_start)
 
-    if total_lines == 0:
+    partial_first = tail_start > 0 and not prev_byte_is_nl
+    if partial_first and raw_window:
+        skip = 0
+        while skip < len(raw_window) and skip < 3 and (raw_window[skip] & 0xC0) == 0x80:
+            skip += 1
+        if skip and skip < len(raw_window):
+            raw_window = raw_window[skip:]
+
+    window_lines = raw_window.decode("utf-8", errors="replace").splitlines(keepends=True)
+    if not window_lines:
         return ToolResult.text(
             ctx.t("tools.output.empty"),
             details={
                 "output_id": record.id,
                 "mode": "tail_lines",
                 "lines": [0, 0],
-                "total_lines": 0,
+                "total_lines": lines_before,
                 "total_bytes": total_bytes,
             },
         )
+    total_lines = lines_before + len(window_lines)
+    start_idx = max(0, len(window_lines) - line_limit)
+    candidates = [
+        (lines_before + 1 + idx, window_lines[idx], partial_first and idx == 0)
+        for idx in range(start_idx, len(window_lines))
+    ]
 
-    footer_reserve = len(
-        _encode(ctx.t("tools.read_output.tail_lines", start=total_lines, end=total_lines, total=total_lines))
-    )
     selected: list[tuple[int, str]] = []
     size = 0
-    for lineno, raw_line in reversed(ring):
+    clipped_single = False
+    for lineno, raw_line, is_partial in reversed(candidates):
+        needs_footer = lineno > 1 or is_partial
+        footer = (
+            ctx.t("tools.read_output.tail_lines", start=lineno, end=total_lines, total=total_lines)
+            if needs_footer
+            else ""
+        )
+        footer_bytes = len(_encode(footer))
         formatted = f"{lineno}|{raw_line}"
         line_bytes = len(_encode(formatted))
-        reserve = footer_reserve if lineno > 1 else 0
-        if size + line_bytes + reserve > byte_limit and selected:
-            break
-        if not selected and line_bytes > byte_limit:
-            formatted = _cut_bytes(formatted, max(1, byte_limit - reserve), from_end=True)
+        if selected:
+            if is_partial or size + line_bytes + footer_bytes > byte_limit:
+                break
+            selected.append((lineno, formatted))
+            size += line_bytes
+            continue
+        if is_partial or line_bytes + footer_bytes > byte_limit:
+            available = byte_limit - footer_bytes
+            if available <= 0:
+                return ToolResult.error(
+                    ctx.t("tools.read_output.long_line", line=lineno, limit=_limit_label(byte_limit))
+                )
+            prefix = f"{lineno}|…"
+            prefix_bytes = len(_encode(prefix))
+            if available > prefix_bytes:
+                formatted = prefix + _cut_bytes(raw_line, available - prefix_bytes, from_end=True)
+            else:
+                formatted = _cut_bytes(formatted, available, from_end=True)
             line_bytes = len(_encode(formatted))
+            clipped_single = True
         selected.append((lineno, formatted))
         size += line_bytes
+        if clipped_single:
+            break
+
     selected.reverse()
     first_no = selected[0][0]
     last_no = selected[-1][0]
     text = "".join(item for _, item in selected)
-    if first_no > 1:
+    if first_no > 1 or clipped_single:
         text += ctx.t("tools.read_output.tail_lines", start=first_no, end=last_no, total=total_lines)
     return ToolResult.text(
         text,

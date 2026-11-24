@@ -213,14 +213,37 @@ def test_environment_git_detached_head_and_sandboxed_external_worktree_fail_clos
     assert "Git branch: secret-branch" in host_env
 
 
-def test_environment_caps_top_level_entries_and_hides_private_paths(make_session, tmp_path, monkeypatch):
+def test_environment_caps_top_level_entries_and_hides_denied_paths(broker_session, project):
+    from virgo.harness.prompt import _workspace_entries
+
+    from tests.support.execution import file_policy
+
+    for idx in range(35):
+        (project / f"file_{idx:02d}.txt").write_text("x", encoding="utf-8")
+    env = broker_session(preset="workspace-edit").main.request_context([]).system.split("<environment>")[1].split(
+        "</environment>"
+    )[0]
+    assert "(+5 more)" in env
+
+    private_dir = project / "private_vault"
+    private_dir.mkdir()
+    (private_dir / "secret.json").write_text("{}", encoding="utf-8")
+    policy = file_policy(project, private_paths=(private_dir,))
+    entries = _workspace_entries(project, project.resolve(), policy)
+    assert entries is not None and "private_vault" not in entries
+
+
+def test_environment_hides_enclosed_private_virgo_dir_on_posix(make_session, tmp_path, monkeypatch):
+    import os
+
+    if os.name != "posix":
+        pytest.skip("POSIX $HOME workspace")
     fake_home = tmp_path / "home-ws"
     fake_home.mkdir()
     private_dir = fake_home / ".virgo"
     private_dir.mkdir(mode=0o700)
     (private_dir / "auth.json").write_text("{}", encoding="utf-8")
-    for idx in range(35):
-        (fake_home / f"file_{idx:02d}.txt").write_text("x", encoding="utf-8")
+    (fake_home / "notes.txt").write_text("x", encoding="utf-8")
 
     monkeypatch.setenv("VIRGO_HOME", str(private_dir))
     session = make_session(
@@ -233,6 +256,6 @@ def test_environment_caps_top_level_entries_and_hides_private_paths(make_session
     try:
         env = session.main.request_context([]).system.split("<environment>")[1].split("</environment>")[0]
         assert ".virgo" not in env
-        assert "(+5 more)" in env
+        assert "notes.txt" in env
     finally:
         session.shutdown()
