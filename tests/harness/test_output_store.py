@@ -178,3 +178,110 @@ def test_s309_utf8_pagination_and_ttl_and_cross_session_isolation(tmp_path):
     assert removed == 1
     assert not old_dir.exists()
     assert (outputs_root / "session-a").exists()
+
+
+def test_read_output_search_tail_and_line_paging(make_session, project):
+    lines = [f"line-{i:03d} payload" for i in range(1, 26)]
+    lines[4] = "line-005 ERROR: failed on item[0]"
+    lines[11] = "line-012 warning: retry later"
+    lines[19] = "line-020 error: second item[0] failure"
+    payload = "\n".join(lines) + "\n"
+
+    session = make_session(session="new", extensions=False, refresh_models=False)
+    try:
+        record = save_output(payload, project, "pytest", execution_context=session.main.execution_context)
+        oid = str(record)
+        faux.script(
+            "test",
+            faux.reply(tools=[
+                ("read_output", {"output_id": oid, "pattern": "item[0]", "fixed_strings": True, "context": 1}),
+                ("read_output", {"output_id": oid, "pattern": "error", "ignore_case": True, "max_matches": 1}),
+                ("read_output", {"output_id": oid, "pattern": "error", "ignore_case": True, "line_offset": 6}),
+                ("read_output", {"output_id": oid, "tail": True, "line_limit": 3}),
+                ("read_output", {"output_id": oid, "line_offset": 10, "line_limit": 3}),
+                ("read_output", {"output_id": oid, "pattern": "nonexistent-needle"}),
+            ]),
+            faux.reply("done"),
+        )
+        session.prompt("inspect saved test output")
+        lit, first_hit, second_hit, tail_res, page_res, miss = tool_results(session)[-6:]
+
+        assert not lit.is_error
+        assert lit.text().splitlines() == [
+            "4-line-004 payload",
+            "5:line-005 ERROR: failed on item[0]",
+            "6-line-006 payload",
+            "--",
+            "19-line-019 payload",
+            "20:line-020 error: second item[0] failure",
+            "21-line-021 payload",
+        ]
+        assert lit.details["matches"] == 2 and lit.details["truncated"] is False
+
+        assert not first_hit.is_error
+        assert "5:line-005 ERROR" in first_hit.text()
+        assert first_hit.details["truncated"] is True
+        assert first_hit.details["next_line_offset"] == 20
+
+        assert not second_hit.is_error
+        assert second_hit.text() == "20:line-020 error: second item[0] failure"
+        assert second_hit.details["truncated"] is False
+
+        assert not tail_res.is_error
+        assert tail_res.text().startswith("23|line-023 payload\n24|line-024 payload\n25|line-025 payload\n")
+        assert "23-25 of 25" in tail_res.text()
+        assert tail_res.details["lines"] == [23, 25]
+
+        assert not page_res.is_error
+        assert page_res.text().startswith("10|line-010 payload\n11|line-011 payload\n12|line-012 warning: retry later\n")
+        assert page_res.details["next_line_offset"] == 13
+
+        assert not miss.is_error and miss.text() == "(no matches)"
+    finally:
+        session.shutdown()
+
+
+def test_read_output_tail_bytes_aligns_utf8_and_validates_conflicts(make_session, project):
+    payload = "开头" + ("中文测试🚀" * 100)
+    session = make_session(session="new", extensions=False, refresh_models=False)
+    try:
+        record = save_output(payload, project, "utf8", execution_context=session.main.execution_context)
+        oid = str(record)
+        faux.script(
+            "test",
+            faux.reply(tools=[
+                ("read_output", {"output_id": oid, "tail": True, "limit": 17}),
+                ("read_output", {"output_id": oid, "pattern": "测试", "tail": True}),
+                ("read_output", {"output_id": oid, "offset": 0, "tail": True}),
+                ("read_output", {"output_id": oid, "tail": True, "line_offset": 2}),
+                ("read_output", {"output_id": oid, "ignore_case": True}),
+            ]),
+            faux.reply("done"),
+        )
+        session.prompt("check tail utf8 and parameter validation")
+        tail_bytes, bad_pat, bad_off, bad_tail, bad_flags = tool_results(session)[-5:]
+
+        assert not tail_bytes.is_error
+        assert "\ufffd" not in tail_bytes.text()
+        assert payload.endswith(tail_bytes.text()) and tail_bytes.details["tail"] is True
+        assert bad_pat.is_error and "pattern" in bad_pat.text()
+        assert bad_off.is_error and "offset" in bad_off.text()
+        assert bad_tail.is_error and "tail" in bad_tail.text()
+        assert bad_flags.is_error and "pattern" in bad_flags.text()
+    finally:
+        session.shutdown()
+
+
+def test_p0_tool_descriptions_and_params_localize_to_chinese(broker_session):
+    session = broker_session(preset="read-only")
+    en, zh = Translator("en"), Translator("zh-CN")
+    for name in ("read", "glob", "grep", "read_output"):
+        tool = session.tool(name)
+        assert tool is not None
+        en_spec, zh_spec = tool.spec(en), tool.spec(zh)
+        assert zh_spec.description != en_spec.description, f"{name}.description was not localized"
+        for prop, schema in en_spec.parameters["properties"].items():
+            if "description" in schema:
+                assert zh_spec.parameters["properties"][prop]["description"] != schema["description"], (
+                    f"{name}.{prop} description was not localized"
+                )

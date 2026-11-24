@@ -121,7 +121,7 @@ URL 指纹由规范化的传输类型、完整配置地址（含查询字符串�
 
 每个 MCP 文本块的上限为 51,200 个 UTF-8 字节和 2,000 行，嵌入资源中的文本及渲染为文本的
 JSON 也按块计量。超过任一上限时，该块会显示预览和一个 `output_id`。在发起调用的会话中，
-可用 `read_output` 按字节指定 `offset` 和 `limit`，分页读取该块的完整内容。限额内的文本块
+可用 `read_output` 通过 `pattern` 搜索、`tail=true` 读尾，或按行（`line_offset`/`line_limit`）/ 字节（`offset`/`limit`）分页查看该块的完整内容。限额内的文本块
 和图像保留原始内容及顺序。
 
 `/mcp` 命令始终可用，用于列出已配置服务器与工具数量；`/mcp reconnect` 重新加载 `mcp.json`

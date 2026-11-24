@@ -28,10 +28,23 @@ def test_read_pages_large_files(project):
     f = project / "big.txt"
     f.write_text("".join(f"line {i}\n" for i in range(1, MAX_LINES + 501)), newline="\n")
     r = READ.execute({"path": "big.txt"}, ctx(project))
+    assert r.as_text().startswith("1|line 1\n2|line 2\n")
     assert f"Use offset={MAX_LINES + 1}" in r.as_text()
     r2 = READ.execute({"path": "big.txt", "offset": MAX_LINES + 1, "limit": 3}, ctx(project))
-    assert r2.as_text().startswith(f"line {MAX_LINES + 1}\n")
+    assert r2.as_text().startswith(f"{MAX_LINES + 1}|line {MAX_LINES + 1}\n")
     assert READ.execute({"path": "missing.txt"}, ctx(project)).is_error
+
+
+def test_read_line_numbered_output_stays_within_byte_budget(project):
+    from virgo.tools.output import MAX_BYTES
+
+    f = project / "wide.txt"
+    f.write_text("".join(f"{'x' * 120}\n" for _ in range(600)), newline="\n")
+    result = READ.execute({"path": "wide.txt"}, ctx(project))
+    assert not result.is_error
+    assert len(result.as_text().encode("utf-8")) <= MAX_BYTES
+    assert result.as_text().startswith("1|")
+    assert "Use offset=" in result.as_text()
 
 
 @pytest.mark.parametrize("tool,arguments", [
@@ -176,3 +189,127 @@ def test_glob_patterns_respect_path_segments(project):
     assert searched("src/**/*.py") == nested
     assert searched("src/*.py") == {"src/top.py"}
     assert searched("*.md") == {"src/pkg/notes.md"}
+
+
+def test_glob_and_grep_respect_gitignore_and_include_ignored(project):
+    (project / ".git" / "info").mkdir(parents=True)
+    (project / ".git" / "info" / "exclude").write_text("excluded.txt\n")
+    (project / ".git" / "config").write_text("needle\n")
+    (project / ".gitignore").write_text(
+        "# comment\n"
+        "*.log\n"
+        "!important.log\n"
+        "/root_only.txt\n"
+        "generated/\n"
+        "docs/**/*.tmp\n"
+    )
+    files = {
+        "keep.py": "needle\n",
+        "debug.log": "needle\n",
+        "important.log": "needle\n",
+        "root_only.txt": "needle\n",
+        "sub/root_only.txt": "needle\n",
+        "sub/.gitignore": "local_skip.py\n",
+        "sub/local_skip.py": "needle\n",
+        "sub/local_keep.py": "needle\n",
+        "generated/out.py": "needle\n",
+        "docs/a.tmp": "needle\n",
+        "docs/nested/b.tmp": "needle\n",
+        "excluded.txt": "needle\n",
+        "dist/bundle.js": "needle\n",
+    }
+    for rel, content in files.items():
+        path = project / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    def glob_set(**kwargs):
+        out = GLOB.execute({"pattern": "**/*", **kwargs}, ctx(project)).as_text()
+        return {Path(line).as_posix() for line in out.splitlines()}
+
+    default_files = glob_set()
+    assert {"keep.py", "important.log", "sub/root_only.txt", "sub/local_keep.py"} <= default_files
+    for ignored in ("debug.log", "root_only.txt", "sub/local_skip.py", "generated/out.py",
+                    "docs/a.tmp", "docs/nested/b.tmp", "excluded.txt", "dist/bundle.js", ".git/config"):
+        assert ignored not in default_files
+
+    # Subdirectory search still inherits ancestor .gitignore rules.
+    sub_files = glob_set(path="sub")
+    assert "sub/root_only.txt" in sub_files and "sub/local_keep.py" in sub_files
+    assert "sub/local_skip.py" not in sub_files
+
+    # include_ignored=True exposes gitignored and default-ignored dirs while still skipping .git.
+    all_files = glob_set(include_ignored=True)
+    for ignored in ("debug.log", "root_only.txt", "sub/local_skip.py", "generated/out.py",
+                    "docs/a.tmp", "docs/nested/b.tmp", "excluded.txt", "dist/bundle.js"):
+        assert ignored in all_files
+    assert ".git/config" not in all_files
+
+    # grep mirrors default .gitignore filtering and include_ignored opt-in.
+    grep_default = GREP.execute({"pattern": "needle", "mode": "files"}, ctx(project)).as_text().splitlines()
+    assert set(Path(p).as_posix() for p in grep_default) == {
+        "keep.py", "important.log", "sub/root_only.txt", "sub/local_keep.py",
+    }
+    grep_all = GREP.execute(
+        {"pattern": "needle", "mode": "files", "include_ignored": True}, ctx(project)
+    ).as_text().splitlines()
+    assert "generated/out.py" in {Path(p).as_posix() for p in grep_all}
+    assert ".git/config" not in {Path(p).as_posix() for p in grep_all}
+
+    # Explicit single-file grep still searches a file even if .gitignore ignores it.
+    direct = GREP.execute({"pattern": "needle", "path": "debug.log"}, ctx(project)).as_text()
+    assert direct == "debug.log:1:needle"
+
+
+def test_grep_modes_and_fixed_strings(project):
+    (project / "a.py").write_text("foo(bar[0])\nfoo(bar[0]) + 1\nother\n")
+    (project / "b.py").write_text("foo(bar[0])\n")
+    (project / "c.py").write_text("foo_regex_only\n")
+
+    # fixed_strings=True matches regex metacharacters literally.
+    lit = GREP.execute({"pattern": "foo(bar[0])", "fixed_strings": True, "mode": "files"}, ctx(project))
+    assert not lit.is_error
+    assert [Path(p).as_posix() for p in lit.as_text().splitlines()] == ["a.py", "b.py"]
+    assert lit.details == {"files": 2, "mode": "files"}
+
+    # mode="count" reports per-file match line counts and total in details.
+    counted = GREP.execute({"pattern": "foo(bar[0])", "fixed_strings": True, "mode": "count"}, ctx(project))
+    assert not counted.is_error
+    assert counted.as_text().splitlines() == ["a.py:2", "b.py:1"]
+    assert counted.details == {"files": 2, "matches": 3, "mode": "count"}
+
+    # limit in files/count mode caps files and appends the file-limit notice.
+    limited = GREP.execute({"pattern": "foo", "mode": "files", "limit": 2}, ctx(project))
+    lines = limited.as_text().splitlines()
+    assert len(lines) == 3 and "stopped after 2 files" in lines[-1]
+
+    # Invalid mode returns a clear error.
+    bad = GREP.execute({"pattern": "foo", "mode": "bogus"}, ctx(project))
+    assert bad.is_error and "Invalid grep mode" in bad.as_text()
+
+
+def test_gitignore_rule_edge_cases():
+    from virgo._gitignore import matches_scopes, parse_gitignore
+
+    base = Path("/repo")
+    rules = parse_gitignore(
+        "\\#literal-hash\n"
+        "\\!literal-bang\n"
+        "trailing\\ \n"
+        "a/**/b\n"
+        "cache/**\n"
+        "*.[oa]\n"
+        "![z].o\n"
+    )
+    scopes = [(base, rules)]
+    assert matches_scopes(base / "#literal-hash", False, scopes)
+    assert matches_scopes(base / "!literal-bang", False, scopes)
+    assert matches_scopes(base / "trailing ", False, scopes)
+    assert not matches_scopes(base / "trailing", False, scopes)
+    assert matches_scopes(base / "a/b", False, scopes)
+    assert matches_scopes(base / "a/x/y/b", False, scopes)
+    assert matches_scopes(base / "cache/item.bin", False, scopes)
+    assert not matches_scopes(base / "cache", True, scopes)
+    assert matches_scopes(base / "x.o", False, scopes)
+    assert matches_scopes(base / "x.a", False, scopes)
+    assert not matches_scopes(base / "z.o", False, scopes)

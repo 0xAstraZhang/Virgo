@@ -16,8 +16,8 @@
 
 ## Broker 文件工具、OutputStore 与 Host MCP
 
-- **文件工具**（`virgo.tools.fs` + `virgo.file_access`）直接在 Broker 进程内按 `PermissionPolicy` 强制执行权限校验，配合末级组件 `O_NOFOLLOW` 与临时文件原子 `os.replace`，不引入独立的 OS 沙箱辅助进程（见[决策 002](../decisions/002-execution-boundaries-and-broker-tools.md)）。
-- **命令输出**（`virgo.output_store.OutputStore`）通过管道回传 Broker，按会话持久化在 `<VIRGO_HOME>/outputs/session-<id>` 下，使用紧凑的 16 字符 ID（`out_<12-hex>`，兼容旧版 48 位十六进制 ID），提供按 UTF-8 字符边界对齐的分页读取（`read_output`）、会话回收清理与 7 天 TTL。未截断的前台命令会立即删除临时落盘文件。
+- **文件工具**（`virgo.tools.fs` + `virgo.file_access`）直接在 Broker 进程内按 `PermissionPolicy` 强制执行权限校验，配合末级组件 `O_NOFOLLOW` 与临时文件原子 `os.replace`，不引入独立的 OS 沙箱辅助进程（见[决策 002](../decisions/002-execution-boundaries-and-broker-tools.md)）。`read` 为文本行附加从 1 开始的 `<行号>|` 前缀；`glob` 与 `grep` 默认通过受策略约束的纯 Python 匹配器遵守 `.gitignore`（可用 `include_ignored=true` 关闭），`grep` 支持 `content`/`files`/`count` 模式及 `fixed_strings` 字面量搜索。
+- **命令输出**（`virgo.output_store.OutputStore`）通过管道回传 Broker，按会话持久化在 `<VIRGO_HOME>/outputs/session-<id>` 下，使用紧凑的 16 字符 ID（`out_<12-hex>`，兼容旧版 48 位十六进制 ID），通过 `read_output` 提供模式搜索、尾部读取、按行分页与 UTF-8 字符边界对齐的字节分页，支持会话回收清理与 7 天 TTL。未截断的前台命令会立即删除临时落盘文件。
 - **MCP 服务器**在主会话与子 Agent 间共享连接。Virgo 通过 `HostContext.unrestricted` 和 `SandboxExecutor` 启动 stdio 服务器；URL 端点由 Host 客户端连接。两类端点均执行项目信任校验与配置指纹绑定的工具授权（见 [MCP 配置](../guides/extensions.md#mcpmcp)）。
 - 每个 POSIX Host 命令拥有独立的进程组（`HostProcess`）；Windows Host 命令运行在关闭即终止的 Job Object（`WindowsProcess`）中。
 

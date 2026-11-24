@@ -197,7 +197,7 @@ def test_high_risk_denial_after_external_read_grant(broker_session, project, mon
     session.prompt("Read the same file again")
 
     first, denied, second = tool_results(session)
-    assert not first.is_error and not second.is_error and first.text() == second.text() == content
+    assert not first.is_error and not second.is_error and first.text() == second.text() == f"1|{content}"
     assert len(ui.questions) == 2
     assert f"Read access: {approved.resolve()}" in ui.questions[0].splitlines()
     assert "git_reset_hard" in ui.questions[1]

@@ -99,7 +99,7 @@ def test_codex_workspace_edit_approved_read_outputs(broker_session, project, pix
     ctx = session.main.request_context(normalize(session.main.messages, model), model)
     params = codex.build_params(model, ctx, StreamOptions())
     assert [item for item in params["input"] if item.get("type") == "function_call_output"] == [
-        {"type": "function_call_output", "call_id": "call_text", "output": content},
+        {"type": "function_call_output", "call_id": "call_text", "output": f"1|{content}"},
         {"type": "function_call_output", "call_id": "call_image", "output": [
             {"type": "input_text", "text": "Image: pixel.png"},
             {"type": "input_image", "image_url": f"data:image/png;base64,{pixel_png}", "detail": "auto"},

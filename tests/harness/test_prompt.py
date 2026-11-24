@@ -66,7 +66,7 @@ def test_session_read_grant_keeps_mode_defaults_in_request_prefix(broker_session
     first, after_read, _, after_reread, after_decline = requests
     for request in (after_read, after_reread):
         result = request.messages[-1]
-        assert not result.is_error and result.text() == content
+        assert not result.is_error and result.text() == f"1|{content}"
     denied = after_decline.messages[-1]
     assert denied.is_error and denied.details["boundary"]["reason"] == "user_declined"
     assert "unapproved sibling content" not in denied.text()
@@ -168,3 +168,71 @@ def test_permission_switch_updates_requests_and_restores_the_original_prefix(bro
     restored = session.main.request_context([])
     assert '"write_paths": [' in restored.system
     assert restored.tools == original.tools
+
+
+def test_environment_includes_git_branch_and_bounded_top_level_entries(broker_session, project):
+    git_dir = project / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/feat/info-gathering\n", encoding="utf-8")
+    (project / ".gitignore").write_text("ignored_dir/\n*.tmp\n", encoding="utf-8")
+    (project / "src").mkdir()
+    (project / "ignored_dir").mkdir()
+    (project / "node_modules").mkdir()
+    (project / "README.md").write_text("hi\n", encoding="utf-8")
+    (project / "scratch.tmp").write_text("skip\n", encoding="utf-8")
+
+    session = broker_session(preset="workspace-edit")
+    env = session.main.request_context([]).system.split("<environment>")[1].split("</environment>")[0]
+    assert "Git branch: feat/info-gathering" in env
+    assert "Top-level entries: src/, .gitignore, README.md" in env
+    assert "ignored_dir" not in env
+    assert "node_modules" not in env
+    assert "scratch.tmp" not in env
+
+
+def test_environment_git_detached_head_and_sandboxed_external_worktree_fail_closed(broker_session, project, tmp_path):
+    # Detached HEAD inside workspace is reported concisely.
+    git_dir = project / ".git"
+    git_dir.mkdir()
+    sha = "a1b2c3d4e5f6" + "0" * 28
+    (git_dir / "HEAD").write_text(f"{sha}\n", encoding="utf-8")
+    env = broker_session(preset="workspace-edit").main.request_context([]).system
+    assert "Git branch: detached at a1b2c3d4e5f6" in env
+
+    # External worktree gitdir outside workspace must not be read under sandboxed policy.
+    external_git = tmp_path / "external-gitdir"
+    external_git.mkdir()
+    (external_git / "HEAD").write_text("ref: refs/heads/secret-branch\n", encoding="utf-8")
+    (git_dir / "HEAD").unlink()
+    git_dir.rmdir()
+    (project / ".git").write_text(f"gitdir: {external_git}\n", encoding="utf-8")
+
+    sandbox_env = broker_session(preset="workspace-edit").main.request_context([]).system
+    assert "secret-branch" not in sandbox_env
+    host_env = broker_session(preset="no-limit").main.request_context([]).system
+    assert "Git branch: secret-branch" in host_env
+
+
+def test_environment_caps_top_level_entries_and_hides_private_paths(make_session, tmp_path, monkeypatch):
+    fake_home = tmp_path / "home-ws"
+    fake_home.mkdir()
+    private_dir = fake_home / ".virgo"
+    private_dir.mkdir(mode=0o700)
+    (private_dir / "auth.json").write_text("{}", encoding="utf-8")
+    for idx in range(35):
+        (fake_home / f"file_{idx:02d}.txt").write_text("x", encoding="utf-8")
+
+    monkeypatch.setenv("VIRGO_HOME", str(private_dir))
+    session = make_session(
+        cwd=fake_home,
+        home=private_dir,
+        settings={"execution": {"mode": "workspace-edit"}},
+        extensions=False,
+        refresh_models=False,
+    )
+    try:
+        env = session.main.request_context([]).system.split("<environment>")[1].split("</environment>")[0]
+        assert ".virgo" not in env
+        assert "(+5 more)" in env
+    finally:
+        session.shutdown()
