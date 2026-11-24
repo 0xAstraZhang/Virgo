@@ -87,14 +87,16 @@ class RunController:
             target = previous.live_store(path)
             if target is None:
                 target = SessionStore.load(Path(path))
+                if not target.cwd.is_dir():
+                    self.ui.warn(tr(self, "ui.session.missing_workspace", path=target.cwd))
+                    return
                 target.build_context()  # Validate before starting another workspace's services.
             if target.cwd.resolve() == previous.cwd:
                 if self.closing:
                     return
                 previous.open_session(path)
+                self.ui.push("session_changed", previous)
             else:
-                if not target.cwd.is_dir():
-                    raise FileNotFoundError(tr(self, "ui.session.missing_workspace", path=target.cwd))
                 candidate = AgentSession(
                     target.cwd, ui=StagedFullscreenUI(self.ui), session=path,
                     **{**previous.session_options, "trust_project_extensions": False},

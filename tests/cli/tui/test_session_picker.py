@@ -48,6 +48,22 @@ def row_ids(picker):
     return [option.id for option in picker.query_one(OptionList).options if option.id]
 
 
+@pytest.mark.parametrize("grouped", [True, False])
+def test_current_path_missing_from_list_selects_first_session(grouped):
+    async def scenario():
+        picker = SessionPicker([
+            saved("/older", "/workspace", 100, 10),
+            saved("/newer", "/workspace", 200, 10),
+        ], current_path=Path("/missing"), grouped=grouped)
+        app = PickerApp(picker)
+        async with app.run_test() as pilot:
+            assert picker.selected_path == Path("/newer")
+            await pilot.press("enter")
+            assert app.result == Path("/newer")
+
+    asyncio.run(scenario())
+
+
 def test_grouping_sorts_by_workspace_creation_then_update_and_keeps_selection():
     async def scenario():
         picker = SessionPicker([

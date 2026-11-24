@@ -172,7 +172,7 @@ class SessionPicker(SelectionScreenMixin, ModalScreen[Path | str | None]):
             yield Static(id="session-footer")
 
     def on_mount(self) -> None:
-        self._rebuild()
+        self._rebuild(self.current_path)
         self.query_one("#session-list", OptionList).focus()
 
     def _row(self, item: dict, *, selected: bool = False) -> SessionRow:

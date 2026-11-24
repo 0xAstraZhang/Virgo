@@ -11,12 +11,15 @@ import pytest
 from textual.widgets import Input, OptionList, Static
 
 from virgo.ai.providers import faux
+from virgo.ai.types import UserMessage
 from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.dialogs import SessionPicker
 from virgo.cli.tui.sessions import workspace_name
+from virgo.harness.settings import Paths
 from virgo.harness.store import SessionStore
 
+from tests.support.persistence import diagnostic_records
 from tests.support.tui import has_reply, wait_for
 
 
@@ -27,6 +30,53 @@ def test_workspace_name_abbreviates_home_at_directory_boundary(monkeypatch, home
     assert workspace_name(home / "project") == str(type(home)("~") / "project")
     sibling = home.with_name("zhang2") / "project"
     assert workspace_name(sibling) == str(sibling)
+
+
+@pytest.mark.parametrize("grouped", [True, False])
+@pytest.mark.parametrize("other_status", ["Saved", "Ready"])
+def test_browser_opens_on_active_pane_when_another_session_sorts_first(make_session, tmp_path, grouped, other_status):
+    async def scenario():
+        ui = FullscreenUI()
+        grouping = "workspace" if grouped else "none"
+        session = make_session(ui=ui, persist=True, settings={"tui": {"sessionGrouping": grouping}})
+        session.store.append_message(UserMessage("active question"))
+        active_path = session.store.path
+        app = VirgoApp(session, ui)
+        async with app.run_test() as pilot:
+            original = app._pane
+            if other_status == "Saved":
+                other = tmp_path / "other-workspace"
+                other.mkdir()
+                other_store = SessionStore.new(Paths(other).sessions, other)
+                other_store.append_message(UserMessage("other question"))
+            else:
+                # Pending work keeps the original pane alive when opening a new one.
+                unsubscribe = session.bus.on("pending_work", lambda *_: True)
+                await app.change_conversation("new")
+                unsubscribe()
+                other_store = app.session.store
+                other_store.append_message(UserMessage("other question"))
+                await app.change_conversation(active_path)
+
+            await pilot.press("ctrl+r")
+            picker = app.screen
+            choices = picker.query_one(OptionList)
+            rows = [option for option in choices.options if option.id]
+            assert picker.grouped == grouped
+            assert [(row.id, row.prompt.status) for row in rows] == [
+                (str(other_store.path), other_status), (str(active_path), "Ready"),
+            ]
+            assert picker.selected_path == active_path
+            assert choices.get_option_at_index(choices.highlighted).id == str(active_path)
+            lines = [choices.render_line(y).text for y in range(choices.size.height)]
+            marked, = [line for line in lines if "›" in line]
+            assert marked.startswith("› ○ active question ")
+            await pilot.press("enter")
+            assert not app.has_modal and app._pane is original and app.session is session
+            assert session.store.path == active_path
+            assert app.focused is app.editor
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("entry", ["/sessions", "ctrl+r"])
@@ -433,7 +483,9 @@ def test_browser_opens_other_workspace_and_updates_directory(make_session, tmp_p
         session = make_session(ui=ui, persist=True)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.press("ctrl+r")
+            app.history.add("earlier question")
+            app.editor.load_text("draft")
+            await pilot.press("up", "ctrl+r")
             await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
             assert {row["cwd"] for row in app.screen.sessions} == {session.cwd, other}
             app.screen.dismiss(path)
@@ -441,7 +493,50 @@ def test_browser_opens_other_workspace_and_updates_directory(make_session, tmp_p
             assert app.session is app.controller.session
             assert app.session.store.path == path
             assert has_reply(app, "other answer")
+            await wait_for(pilot, lambda: app.editor.text == "")
+            assert app.history.draft == "" and app.history.index == len(app.history.entries)
             assert "other-workspace" in str(app.screen_stack[0].query_one("#cwd").content)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("busy", [False, True], ids=["idle", "running"])
+def test_browser_missing_workspace_preserves_conversation_and_draft(make_session, tmp_path, busy):
+    async def scenario():
+        target = tmp_path / "deleted-workspace"
+        target.mkdir()
+        saved = SessionStore.new(Paths(target).sessions, target)
+        saved.append_message(UserMessage("stale question"))
+        ui = FullscreenUI()
+        session = make_session(faux.reply("original answer"), faux.reply("later", delay=30),
+                               ui=ui, persist=True, settings={"language": "zh-CN"})
+        app = VirgoApp(session, ui, initial="original question")
+        async with app.run_test() as pilot:
+            await wait_for(pilot, lambda: has_reply(app, "original answer") and app.controller.can_switch)
+            pane, store, editor = app._pane, session.store, app.editor
+            if busy:
+                app.controller.submit("continue running")
+                await wait_for(pilot, lambda: session.busy)
+            app.history.add("earlier question")
+            editor.load_text("unfinished draft")
+            await pilot.press("up", "ctrl+r")
+            choices = app.screen.query_one(OptionList)
+            choices.highlighted = choices.get_option_index(str(saved.path))
+            transcript_rows = list(app.transcript.children)
+            target.rmdir()
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: bool(app._notifications) and app.controller.busy == busy)
+
+            assert not app.has_modal and app._pane is pane and app.session is session and session.store is store
+            assert list(app.transcript.children) == transcript_rows and has_reply(app, "original answer")
+            assert editor.text == "earlier question" and app.history.index == len(app.history.entries) - 1
+            assert app.focused is editor
+            notices = [(notice.message, notice.severity) for notice in app._notifications]
+            assert notices == [(f"工作目录已不存在：{target}", "warning")]
+            assert not any(row["phase"] == "cli.tui_worker" for row in diagnostic_records(session.diagnostics.path))
+            assert session.busy == busy and not session.main.agent.signal.is_set()
+            await pilot.press("down")
+            assert editor.text == "unfinished draft"
 
     asyncio.run(scenario())
 
@@ -534,8 +629,6 @@ def test_background_approval_remains_pending_and_shutdown_releases_every_session
 
 @pytest.mark.parametrize("invalid", [False, True])
 def test_open_saved_workspace_while_running_keeps_old_session_alive(make_session, tmp_path, invalid):
-    from virgo.ai.types import UserMessage
-
     target = tmp_path / "other"
     target.mkdir()
     (target / "AGENTS.md").write_text("Other workspace instructions.")
