@@ -17,13 +17,16 @@ from tests.support.harness import install_responses, tool_results
 def http(monkeypatch):
     state = {"requests": [], "status": 200, "body": "<html><title>论文</title><nav>noise</nav>"
              "<main><h1>Evidence</h1><p>Only the page knows: 42.</p><a href='/details'>More</a>"
-             "<script>steal()</script><pre>x = 1\nprint(x)</pre></main></html>", "headers": {"content-type": "text/html"}}
+             "<script>steal()</script><pre>x = 1\nprint(x)</pre></main></html>", "headers": {"content-type": "text/html"},
+             "deepseek_handler": None}
 
     real_client = httpx.Client
 
     def handler(request):
         state["requests"].append(request)
         if request.url.host == "api.deepseek.com":
+            if state["deepseek_handler"] is not None:
+                return state["deepseek_handler"](request)
             payload = json.dumps({"title": "论文", "content": "# Evidence\nOnly the page knows: 42."}).encode()
             return httpx.Response(state["status"], stream=httpx.ByteStream(payload),
                                   headers={"content-type": "application/json"})
@@ -74,7 +77,7 @@ def test_fetch_result_reaches_model_and_persisted_history(make_session, monkeypa
         assert "https://example.com/details" in data["content"]
 
 
-@pytest.mark.parametrize("status", [401, 402, 403, 404, 429, 500])
+@pytest.mark.parametrize("status", [401, 402, 403])
 def test_deepseek_errors_are_not_capability_fallbacks(make_session, monkeypatch, http, status):
     s = make_session(settings={"compaction": {"enabled": False}})
     s.main.model = Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com")
@@ -83,6 +86,57 @@ def test_deepseek_errors_are_not_capability_fallbacks(make_session, monkeypatch,
     result, _ = fetch(s, monkeypatch)
     assert result.is_error and str(status) in result.text()
     assert len(http["requests"]) == 1
+
+
+@pytest.mark.parametrize("failure", [404, 429, 500, "invalid", "timeout"])
+def test_deepseek_auto_retrieval_failure_falls_back_to_http(make_session, monkeypatch, http, failure):
+    s = make_session(settings={"compaction": {"enabled": False}})
+    s.main.model = Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com")
+    s.auth.set("deepseek", {"type": "api_key", "key": "key"})
+
+    def deepseek_fail(_request):
+        if failure == "timeout":
+            raise httpx.ReadTimeout("deepseek reader timed out")
+        if failure == "invalid":
+            return httpx.Response(200, stream=httpx.ByteStream(b"{}"),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(failure, stream=httpx.ByteStream(b"upstream error"),
+                              headers={"content-type": "text/plain"})
+
+    http["deepseek_handler"] = deepseek_fail
+    result, _ = fetch(s, monkeypatch, "https://arxiv.org/search/?query=KV+cache&order=-announced_date_first")
+    assert not result.is_error, result.text()
+    data = json.loads(result.text())
+    assert data["backend"] == "http"
+    assert "42" in data["content"]
+    assert [r.url.host for r in http["requests"]] == ["api.deepseek.com", "93.184.216.34"]
+
+
+def test_deepseek_explicit_builtin_does_not_fallback_to_http(make_session, monkeypatch, http):
+    s = make_session(settings={"compaction": {"enabled": False},
+                               "fetch": {"mode": "builtin", "backend": "deepseek"}})
+    s.main.model = Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com")
+    s.auth.set("deepseek", {"type": "api_key", "key": "key"})
+    http["status"] = 404
+    result, _ = fetch(s, monkeypatch)
+    assert result.is_error and "404" in result.text()
+    assert len(http["requests"]) == 1
+
+
+@pytest.mark.parametrize(("media_type", "body"), [
+    ("application/atom+xml", "<feed><title>arXiv Query</title></feed>"),
+    ("application/xml", "<OAI-PMH><record>ok</record></OAI-PMH>"),
+    ("text/xml", "<root><item>42</item></root>"),
+    ("application/json", '{"papers": [{"id": "2611.31105"}]}'),
+    ("application/ld+json", '{"@type": "ScholarlyArticle"}'),
+])
+def test_http_fetch_accepts_structured_text_types(make_session, monkeypatch, http, media_type, body):
+    http.update(body=body, headers={"content-type": f"{media_type}; charset=utf-8"})
+    result, _ = fetch(make_session(), monkeypatch, "https://export.arxiv.org/api/query?search_query=all:kv")
+    assert not result.is_error, result.text()
+    data = json.loads(result.text())
+    assert data["backend"] == "http"
+    assert data["content"] == body
 
 
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "https://user:password@example.com", "https://127.0.0.1/", "https://[::1]/", "https://169.254.169.254/", "https://example.com/" + "a" * 8192])

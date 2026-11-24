@@ -8,7 +8,7 @@
 | Workspace-Edit | Read and write the live workspace (`.git`, `AGENTS.md`, `CLAUDE.md`, and `.venv` are writable; project `.virgo` confirms on write; private credential paths are hard-denied). | Allowed | Allowed | Native sandbox |
 | No-Limit | Host account rights | Allowed | Allowed | Host |
 
-A direct HTTP 429 from `web_fetch` means the target site rate-limited the request. An HTTP error from the DeepSeek page reader leaves the target page status unknown. A timeout means the reader did not receive a complete page.
+A direct HTTP 429 from `web_fetch` means the target site rate-limited the request. In `auto` mode, if the DeepSeek page reader fails to retrieve a page (such as HTTP 404, 429, 5xx, invalid response, or timeout), `web_fetch` falls back to direct HTTP; credential/balance errors (HTTP 401/402/403) and explicit `/fetch deepseek` mode report the DeepSeek reader error directly without fallback, leaving the target page status unknown. A timeout means the reader did not receive a complete page.
 
 ## Default mode and selection
 

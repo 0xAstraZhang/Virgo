@@ -128,3 +128,32 @@ def test_fetch_command_persists_without_chat_message(make_session):
     assert "web_fetch" not in {t.name for t in s.main.request_context([]).tools}
     s.prompt("/fetch auto")
     assert "web_fetch" in {t.name for t in s.main.request_context([]).tools}
+
+
+def test_web_guidance_injected_for_client_and_hosted_tools_and_omitted_when_off(make_session):
+    from virgo.plugins.web import GUIDANCE
+
+    # DeepSeek client-side tools
+    s_ds = make_session()
+    s_ds.auth.set("deepseek", {"type": "api_key", "key": "official-key"})
+    ctx_ds = context(s_ds, Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com"))
+    assert not ctx_ds.web_tools
+    assert {"web_search", "web_fetch"} <= {t.name for t in ctx_ds.tools}
+    assert GUIDANCE in ctx_ds.system
+    assert "Prefer available web tools over shell commands" in ctx_ds.system
+
+    # Only web_fetch enabled (client-side)
+    s_fetch = make_session(settings={"search": {"mode": "off"}})
+    ctx_fetch = context(s_fetch, Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com"))
+    assert GUIDANCE in ctx_fetch.system
+
+    # Hosted web tools
+    s_hosted = make_session()
+    ctx_hosted = context(s_hosted, Model("anthropic", "claude-sonnet-4-6", "anthropic"))
+    assert ctx_hosted.web_tools
+    assert GUIDANCE in ctx_hosted.system
+
+    # Both disabled: guidance omitted
+    s_off = make_session(settings={"search": {"mode": "off"}, "fetch": {"mode": "off"}})
+    ctx_off = context(s_off, Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com"))
+    assert GUIDANCE not in ctx_off.system
