@@ -4,24 +4,30 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from virgo.agent import ToolContext
 from virgo.ai.providers import faux
-from virgo.ai.types import ToolResultMessage
+from virgo.ai.types import ImageContent, TextContent, ToolResultMessage
 from virgo.extensions import mcp as mcp_ext
+from virgo.i18n import Translator
+from virgo.output_store import OutputPipe
+from virgo.tools.output import MAX_BYTES, MAX_LINES
 
 from tests.support import SUPPORT
 from tests.support.harness import RecordingUI, calls, tool_results, wait_until
 
 SERVER = SUPPORT / "mcp_echo_server.py"
+REPORT = "mcp__echo__report"
 
 
 def configure(path: Path, command: str = sys.executable, args: list[str] | None = None,
@@ -36,6 +42,184 @@ def configure(path: Path, command: str = sys.executable, args: list[str] | None 
     if timeout is not None:
         entry["timeout"] = timeout
     path.write_text(json.dumps({"mcpServers": {"echo": entry}}), encoding="utf-8")
+
+
+@pytest.fixture
+def report_session(make_session, project):
+    """Serve a supplied CallToolResult over stdio and count remote dispatches."""
+    server = project / "report.py"
+    server.write_text(textwrap.dedent("""
+        import json, sys
+        from pathlib import Path
+
+        for line in sys.stdin:
+            req = json.loads(line)
+            if "id" not in req:
+                continue
+            if req["method"] == "initialize":
+                result = {"protocolVersion": req["params"]["protocolVersion"], "capabilities": {"tools": {}},
+                          "serverInfo": {"name": "report", "version": "1"}}
+            elif req["method"] == "tools/list":
+                result = {"tools": [{"name": "report", "description": "Read the report",
+                                     "inputSchema": {"type": "object", "properties": {}}}]}
+            else:
+                with Path("dispatches").open("a") as log:
+                    print(req["params"]["name"], file=log)
+                result = json.loads(Path("response.json").read_text(encoding="utf-8"))
+            print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": result}), flush=True)
+    """), encoding="utf-8")
+    configure(project / ".virgo" / "mcp.json", args=[str(server)])
+    session = make_session()
+    wait_until(lambda: session.tool(REPORT) is not None)
+    return session
+
+
+def set_report(session, *content, **fields):
+    (session.cwd / "response.json").write_text(json.dumps({"content": content, **fields}), encoding="utf-8")
+
+
+def context(runtime, **kwargs):
+    return ToolContext("report", runtime.cwd, runtime.agent.signal, runtime.name, origin=runtime.origin, **kwargs)
+
+
+def output_id(preview):
+    assert len(preview.encode()) <= MAX_BYTES and len(preview.splitlines()) <= MAX_LINES
+    assert "read_output" in preview
+    [identifier] = re.findall(r"\bout_[0-9a-f]+\b", preview)
+    return identifier
+
+
+def test_mcp_bounds_mixed_error_result_before_session_hook(report_session):
+    session = report_session
+    large = "x" * (MAX_BYTES + 1)
+    small = "  keep this\n\n"
+    set_report(session, {"type": "text", "text": small}, {"type": "image", "mimeType": "image/png", "data": "AQ=="},
+               {"type": "text", "text": large}, {"type": "image", "mimeType": "image/jpeg", "data": "Ag=="},
+               isError=True)
+    observed = []
+    session.bus.on("tool_result", lambda res, *_: observed.append(list(res.content)))
+    faux.script("test", faux.reply(tools=[(REPORT, {})]), faux.reply("done"))
+    session.prompt("get the report")
+    [result] = tool_results(session)
+    [blocks] = observed
+    assert result.is_error and result.details["mcp"] and result.details["server"] == "echo"
+    assert result.details["tool"] == REPORT and result.details["boundary"]["provider"] == "host"
+    assert blocks == result.content
+    first, png, preview, jpeg = blocks
+    assert (first, png, jpeg) == (TextContent(small), ImageContent("AQ==", "image/png"), ImageContent("Ag==", "image/jpeg"))
+    identifier = output_id(preview.text)
+    store = session.main.execution_context.outputs
+    assert [path.stem for path in store.directory.glob("*.log")] == [identifier]
+    read = session.tool("read_output")
+    page = read.execute({"output_id": identifier}, context(session.main))
+    assert page.as_text() == large[:MAX_BYTES] and page.details["next_offset"] == MAX_BYTES
+    last = read.execute({"output_id": identifier, "offset": MAX_BYTES}, context(session.main))
+    assert last.as_text() == large[MAX_BYTES:] and last.details["next_offset"] is None
+
+
+def test_mcp_each_large_block_uses_originating_subagent_store(report_session):
+    session = report_session
+    child = session.create_runtime("worker", "subagent", parent=session.main)
+    try:
+        session.new_session()
+        lines = "ok\n" * (MAX_LINES + 1)
+        resource = "資" * (MAX_BYTES // 3 + 1)
+        set_report(session, {"type": "text", "text": lines},
+                   {"type": "resource", "resource": {"uri": "file:///report", "text": resource}})
+        caller = context(child, translator=Translator("zh-CN"))
+        result = session.tool(REPORT).execute({}, caller)
+        assert not result.is_error
+        store = child.execution_context.outputs
+        identifiers = []
+        for block, original in zip(result.content, (lines, resource), strict=True):
+            assert "输出已截断" in block.text
+            identifier = output_id(block.text)
+            identifiers.append(identifier)
+            assert store.read(store.lookup(identifier), limit=len(original.encode()))[0] == original.encode()
+            foreign = session.tool("read_output").execute({"output_id": identifier}, context(session.main))
+            assert foreign.is_error
+        assert len(set(identifiers)) == 2
+        assert {path.stem for path in store.directory.glob("*.log")} == set(identifiers)
+        assert not list(session.main.execution_context.outputs.directory.glob("*.log"))
+    finally:
+        session.release_runtime(child)
+
+
+def test_mcp_bounds_structured_only_result(report_session):
+    session = report_session
+    data = {"title": "測試 " * MAX_LINES * 4}
+    set_report(session, structuredContent=data)
+    result = session.tool(REPORT).execute({}, context(session.main))
+    assert not result.is_error
+    store = session.main.execution_context.outputs
+    rec = store.lookup(output_id(result.as_text()))
+    rendered = json.dumps(data, ensure_ascii=False).encode()
+    assert store.read(rec, limit=len(rendered))[0] == rendered
+
+
+def test_mcp_bounds_unknown_sdk_block_rendered_as_json(report_session, monkeypatch):
+    # The current wire schema rejects unknown types. Exercise the adapter's fallback
+    # with the interface a future SDK content type would expose.
+    session = report_session
+    data = {"type": "future", "body": "界" * MAX_BYTES}
+    block = SimpleNamespace(type="future", model_dump=lambda **kwargs: data)
+    reply = SimpleNamespace(content=[block], is_error=False)
+    monkeypatch.setattr(mcp_ext._Connection, "call", lambda *args: reply)
+    result = session.tool(REPORT).execute({}, context(session.main))
+    assert not result.is_error
+    store = session.main.execution_context.outputs
+    rec = store.lookup(output_id(result.as_text()))
+    rendered = json.dumps(data, ensure_ascii=False).encode()
+    assert store.read(rec, limit=len(rendered))[0] == rendered
+
+
+def test_mcp_exact_limits_and_empty_results_do_not_spill(report_session):
+    session = report_session
+    exact = " \n" * (MAX_LINES - 1)
+    exact += " " * (MAX_BYTES - len(exact))
+    direct = ToolContext("direct", session.cwd, threading.Event())
+    set_report(session, {"type": "text", "text": exact}, {"type": "text", "text": ""},
+               {"type": "resource", "resource": {"uri": "file:///empty", "text": ""}})
+    for caller in (direct, context(session.main)):
+        result = session.tool(REPORT).execute({}, caller)
+        assert not result.is_error and result.content == [TextContent(exact), TextContent(""), TextContent("")]
+    set_report(session)
+    assert session.tool(REPORT).execute({}, direct).content == [TextContent("(no content)")]
+    assert not list((Path(os.environ["VIRGO_HOME"]) / "outputs").rglob("*.log"))
+
+
+@pytest.mark.parametrize("failure", ["no origin", "invalid origin", "storage error", "partial write"])
+def test_mcp_spill_failure_reports_completed_dispatch(report_session, monkeypatch, failure):
+    session = report_session
+    caller = context(session.main)
+    if failure == "storage error":
+        def fail_create(prefix):
+            raise OSError("disk full")
+        monkeypatch.setattr(session.main.execution_context.outputs, "create", fail_create)
+    elif failure == "partial write":
+        write = OutputPipe.write
+
+        def fail_write(stream, data):
+            write(stream, data[:100])
+            raise OSError("disk full")
+
+        monkeypatch.setattr(OutputPipe, "write", fail_write)
+    elif failure == "invalid origin":
+        caller.agent = "wrong-runtime"
+    else:
+        caller.origin = None
+    set_report(session, {"type": "text", "text": "first"}, {"type": "text", "text": "private response " * 4000},
+               {"type": "image", "mimeType": "image/png", "data": "AQ=="})
+    result = session.tool(REPORT).execute({}, caller)
+    assert result.is_error
+    first, error, image = result.content
+    assert first == TextContent("first") and image == ImageContent("AQ==", "image/png")
+    message = error.text.lower()
+    assert "already ran" in message and "private response" not in message and len(message.encode()) <= MAX_BYTES
+    assert ("originating runtime" if "origin" in failure else "stor") in message
+    assert result.details["tool"] == REPORT and result.details["boundary"]["payload_started"]
+    assert (session.cwd / "dispatches").read_text().splitlines() == ["report"]
+    assert not list((Path(os.environ["VIRGO_HOME"]) / "outputs").rglob("*.log"))
 
 
 def test_mcp_builtin_lazy_sdk_and_dynamic_status(make_session, project, tmp_path):

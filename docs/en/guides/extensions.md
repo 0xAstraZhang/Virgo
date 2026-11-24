@@ -114,6 +114,12 @@ Read-Only and Workspace-Edit (with **Always allow** bound to the SHA-256
 fingerprint of the server's expanded `command`, `args`, and `env`) and run
 directly in No-Limit.
 
+Each MCP text block has its own limit of 51,200 UTF-8 bytes and 2,000 lines,
+including embedded resource text and JSON rendered as text. A block that exceeds
+either limit displays a preview with an `output_id`. Use `read_output` in the
+originating session to page through the full block with byte `offset` and `limit`.
+Smaller blocks and images keep their original content and order.
+
 `/mcp` is always available to list configured servers and tool counts, and
 `/mcp reconnect` reloads `mcp.json` and `settings.json` (a failed reload keeps
 the previous connections and tools). `mcp_status` is exposed to the model

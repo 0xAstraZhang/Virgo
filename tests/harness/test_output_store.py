@@ -7,9 +7,10 @@ import time
 import pytest
 
 from virgo.ai.providers import faux
+from virgo.execution import HostContext
 from virgo.i18n import Translator
 from virgo.output_store import OutputStore
-from virgo.tools.output import MAX_BYTES, CommandOutput, display_output, save_output
+from virgo.tools.output import MAX_BYTES, MAX_LINES, CommandOutput, budget, display_output, save_output
 
 from tests.support.harness import tool_results
 from tests.support.sandbox import python_command, run
@@ -23,6 +24,27 @@ def test_display_output_reports_custom_byte_budget(language, notice):
     heading, tail = preview.split("\n", 1)
     assert notice in heading and "4KB" in heading
     assert len(preview.encode()) <= 4096 and tail and output.text.endswith(tail)
+
+
+@pytest.mark.parametrize("language", ["en", "zh-CN"])
+@pytest.mark.parametrize("keep", ["head", "tail"])
+@pytest.mark.parametrize("original", [
+    "row \n" * (MAX_LINES + 1),
+    "🚀界" * (MAX_BYTES // 7 + 1),
+], ids=["lines", "utf8-bytes"])
+def test_budget_includes_localized_notice_and_id(tmp_path, original, keep, language):
+    ctx = HostContext.unrestricted(tmp_path, outputs=OutputStore(tmp_path / "records"))
+    t = Translator(language)
+    preview = budget(original, tmp_path, "test", keep, t=t, execution_context=ctx)
+    assert len(preview.encode()) <= MAX_BYTES
+    assert len(preview.splitlines()) <= MAX_LINES
+    [path] = ctx.outputs.directory.glob("*.log")
+    assert path.read_bytes() == original.encode()
+    body, _ = preview.rsplit("\n\n", 1)
+    assert body and (original.startswith(body) if keep == "head" else body in original)
+    assert preview == t("tools.output.budget", shown=body, count=len(body.splitlines()),
+                        where=t("tools.output.first" if keep == "head" else "tools.output.last"),
+                        total=len(original.splitlines()), path=path.stem)
 
 
 def test_ver08_read_output_survives_session_resume(make_session, project):
