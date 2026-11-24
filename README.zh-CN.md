@@ -27,7 +27,7 @@ Virgo 是一个轻量、可扩展的终端编程 Agent。你可以让它理解�
 - **适应你的项目。** 用项目指令、技能、提示模板和 Python 扩展定制行为，并开箱内置 MCP 和 Todos 扩展。
 - **选择界面语言。** 输入 `/language 中文` 或 `/language English`，切换界面提示、命令帮助和内置工具描述。Virgo 默认用你当前消息的语言回答，你也可以指定回复语言。
 
-Virgo 的设计参考了 [Pi](https://github.com/earendil-works/pi)。模型适配、Agent 循环、执行层和会话运行时彼此分离，便于按需扩展。
+Virgo 将模型适配、Agent 循环、执行层和会话运行时彼此分离，便于按需扩展。
 
 ## 开始使用
 
