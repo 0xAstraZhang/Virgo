@@ -7,6 +7,7 @@ becomes ``/explain``. Arguments: ``$1`` ``$2`` …, ``$@`` / ``$ARGUMENTS`` (all
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from collections.abc import Callable
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from ..agent.types import AgentTool, ToolResult
 from ..i18n import Translator, available_languages
 from .preferences import configure_preference, effort_label, effort_levels
 
@@ -266,9 +268,22 @@ def register_builtins(session: AgentSession) -> None:
                 messages=len(s.main.messages), tokens=s.context_tokens())
         )
 
-    def diagnostics(s, args):
-        import json
+    def session_info(_args, ctx):
+        runtime = session.runtime_for_context(ctx)
+        if runtime is None or runtime.role != "main" or runtime.store is None:
+            return ToolResult.error(ctx.t("tools.session_info.unavailable"))
+        store = runtime.store
+        location = {"session_id": store.id, "transcript_path": str(store.path) if store.path else None}
+        return ToolResult.text(json.dumps(location, ensure_ascii=False))
 
+    session.register_tool(AgentTool(
+        name="session_info", label="Current session",
+        description="Return the current session ID and authoritative transcript path from Virgo. For location requests, report this value directly. A null path means the session is in memory.",
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        execute=session_info, side_effect="read", execution_scope="broker", i18n_key="tools.session_info",
+    ), owner="core")
+
+    def diagnostics(s, args):
         try:
             arguments = shlex.split(args)
             before = None
