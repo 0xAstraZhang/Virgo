@@ -22,7 +22,8 @@ def test_shell_request_budget(make_session, code, kind):
         stdout = f"'x\\n' * {MAX_LINES + 5}"
     else:
         stdout = f"'x' * {MAX_BYTES + 500}"
-    result = run(session, python_command(session, f"print({stdout}, end=''); raise SystemExit({code})"))
+    command = python_command(session, f"print({stdout}, end='')")
+    result = run(session, f"{command}; exit {code}")
     wire = wire_result()
     preview = "\n".join(block["text"] for block in wire["content"])
     assert result.text() == preview
@@ -102,7 +103,9 @@ def log_settings(trigger, **overrides):
 
 
 def shell_reply(session, text, call_id, *, code=0):
-    command = python_command(session, f"print({text}); raise SystemExit({code})")
+    command = python_command(session, f"print({text})")
+    if code:
+        command += f"; exit {code}"
     return faux.reply(tools=[(selected(session).tool_name, {"command": command}, call_id)])
 
 
@@ -292,8 +295,9 @@ def test_manual_summary_retained_tail_reapplies_original_message_record(make_ses
 
 def test_parallel_results_keep_failures_and_rewritten_tool_results(make_session):
     session = make_session()
-    base = session.main.context_tokens(estimate_only=True)
-    for key, value in log_settings(base + 31_000)["compaction"].items():
+    # Keep layer three out of this test and request all eligible shortening.
+    # The provider's estimate can otherwise vary with the parallel result metadata.
+    for key, value in log_settings(150_000, startTokens=1, reserveTokens=150_000)["compaction"].items():
         session.settings.set(f"compaction.{key}", value)
 
     def result_hook(result, event, _session):
@@ -316,6 +320,9 @@ def test_parallel_results_keep_failures_and_rewritten_tool_results(make_session)
     results = {m.tool_call_id: m for m in tool_results(session)}
     assert results["rewritten"].details["output_id"]
     assert not results["rewritten"].is_error
+    assert results["eligible"].details["foreground_shell_output"]
+    decisions = session.store.custom("compaction_decision")
+    assert decisions[-1]["candidate_count"] == decisions[-1]["shortened_count"] == 1, decisions
     for call_id in ("nonzero", "no-id", "rewritten", "latest"):
         assert wire_text(ordinary[-1], call_id) == results[call_id].text()
     assert "Earlier output shortened" in wire_text(ordinary[-1], "eligible")
