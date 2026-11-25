@@ -39,7 +39,7 @@ def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consu
             AssistantMessage([TextContent("Current work. " * 100)]),
         ])
         faux.script("small", faux.reply("## Goal\nFinish the current request."))
-        assert session.compact() is not None
+        assert session.main.compact(reason="overflow") is not None
         assert session.main.messages[0].kind == "summary"
 
     assert requests == [("faux/small", expected, [])]

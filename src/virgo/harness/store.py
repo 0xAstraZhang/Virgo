@@ -30,6 +30,7 @@ from ..ai.transform import strip_thinking
 from ..ai.types import (
     AssistantMessage,
     Message,
+    TextContent,
     ToolResultMessage,
     Usage,
     UserMessage,
@@ -240,15 +241,22 @@ def _validate_record(record: dict, *, header: bool, ids: set[str], absent_parent
         _validate_message(record.get("message"))
     elif kind == "compaction":
         if "context" in record:
-            if not isinstance(record["context"], list):
-                raise ValueError("invalid compaction context")
-            for message in record["context"]:
-                _validate_message(message)
-        elif not isinstance(record.get("summary"), str):
-            raise ValueError("missing compaction summary")
-        kept = record.get("kept_ids", [])
-        if not isinstance(kept, list) or not all(isinstance(key, str) for key in kept):
-            raise ValueError("invalid compaction kept_ids")
+            raise ValueError("legacy native compaction records are no longer supported; start a new session")
+        mode = record.get("mode", "summary")
+        if mode == "prune":
+            pruned = record.get("pruned")
+            if not isinstance(pruned, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in pruned.items()
+            ):
+                raise ValueError("invalid compaction pruned map")
+        elif mode == "summary":
+            if not isinstance(record.get("summary"), str):
+                raise ValueError("missing compaction summary")
+            kept = record.get("kept_ids", [])
+            if not isinstance(kept, list) or not all(isinstance(key, str) for key in kept):
+                raise ValueError("invalid compaction kept_ids")
+        else:
+            raise ValueError(f"unknown compaction mode {mode!r}")
     elif kind == "custom" and "data" not in record:
         raise ValueError("missing custom entry data")
     ids.add(record["id"])
@@ -609,34 +617,46 @@ class SessionStore:
     def build_context(self) -> tuple[list, list]:
         """Messages to send for the active branch, with their entry ids."""
         path = self.branch()
-        comp_i = max((i for i, e in enumerate(path) if e["type"] == "compaction"), default=None)
+        comp_i = max(
+            (i for i, e in enumerate(path) if e["type"] == "compaction" and e.get("mode", "summary") == "summary"),
+            default=None,
+        )
+        pruned_map: dict[str, str] = {}
+        tail_entries = path if comp_i is None else path[comp_i + 1 :]
+        for e in tail_entries:
+            if e["type"] == "compaction" and e.get("mode") == "prune":
+                pruned_map.update(e.get("pruned", {}))
+
+        def _maybe_prune(msg: Message, entry_id: str) -> Message:
+            if isinstance(msg, ToolResultMessage) and entry_id in pruned_map:
+                return compacted_message(replace(msg, content=[TextContent(pruned_map[entry_id])]))
+            return msg
+
         if comp_i is None:
-            return self.build_full_context()
+            messages, ids = self.build_full_context()
+            if not pruned_map:
+                return messages, ids
+            return [_maybe_prune(m, eid) for m, eid in zip(messages, ids, strict=True)], ids
+
         comp = path[comp_i]
-        if "context" in comp:
-            messages = [compacted_message(message_from_dict(m)) for m in comp["context"]]
-        else:
-            timestamp = comp.get("summary_timestamp", _created_at(comp, 0.0))
-            messages = [summary_message(comp["summary"], timestamp=timestamp)]
-        ids = [comp["id"]] * len(messages)
+        timestamp = comp.get("summary_timestamp", _created_at(comp, 0.0))
+        messages: list = [summary_message(comp["summary"], timestamp=timestamp)]
+        ids: list = [comp["id"]]
         for i in comp.get("kept_ids", []):
             e = self.by_id.get(i)
             if not e or e["type"] != "message":
                 continue
-            kept = [message_from_dict(e["message"])]
-            if not comp.get("preserve_thinking", False):
-                kept = strip_thinking(kept)
-            for m in kept:
-                messages.append(compacted_message(m))
+            for m in strip_thinking([message_from_dict(e["message"])]):
+                messages.append(_maybe_prune(compacted_message(m), i))
                 ids.append(i)
         for e in path[comp_i + 1 :]:
             if e["type"] == "message":
-                messages.append(message_from_dict(e["message"]))
+                messages.append(_maybe_prune(message_from_dict(e["message"]), e["id"]))
                 ids.append(e["id"])
         return messages, ids
 
     def build_full_context(self) -> tuple[list, list]:
-        """Original messages on this branch, for switching away from native compaction."""
+        """Original uncompacted messages on this branch."""
         pairs = [
             (message_from_dict(e["message"]), e["id"])
             for e in self.branch()
@@ -647,9 +667,9 @@ class SessionStore:
     def custom(self, kind: str) -> list:
         return [e["data"] for e in self.branch() if e["type"] == "custom" and e.get("kind") == kind]
 
-    def last_compaction(self) -> dict | None:
+    def last_compaction(self, *, mode: str | None = "summary") -> dict | None:
         for e in reversed(self.branch()):
-            if e["type"] == "compaction":
+            if e["type"] == "compaction" and (mode is None or e.get("mode", "summary") == mode):
                 return e
         return None
 

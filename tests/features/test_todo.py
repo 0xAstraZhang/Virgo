@@ -10,10 +10,8 @@ from pathlib import Path
 import pytest
 
 from virgo.agent import AgentTool, ToolResult
-from virgo.ai.compaction import native_api
 from virgo.ai.providers import faux
-from virgo.ai.types import AssistantMessage, RawContent, TextContent, ToolCall, ToolResultMessage, UserMessage
-from virgo.harness import compaction
+from virgo.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from virgo.harness.extensions import ExtensionAPI
 
 from tests.support.harness import calls, tool_results
@@ -227,36 +225,20 @@ def test_todos_survive_automatic_and_overflow_compaction(make_session, reason):
 
 
 @pytest.mark.parametrize("spec", ["openai/test", "openai-codex/test", "anthropic/claude-opus-5-5"])
-def test_todos_survive_native_compaction_and_provider_switch(make_session, monkeypatch, spec):
-    current = {"todos": [item("native state survives")], "explanation": "exact explanation"}
+def test_todos_survive_compaction_and_provider_switch(make_session, spec):
+    current = {"todos": [item("portable state survives")], "explanation": "exact explanation"}
     session = make_session(
         faux.reply(tools=[("todo_write", current)]), faux.reply("work " * 1000),
         persist=True, settings={"compaction": {"keepRecentTokens": 1}},
     )
     session.prompt("record work")
-    session.set_model(spec)
-    api = native_api(session.model)
-    payload = {"type": "compaction", **({"content": "Summary without todos", "signature": "signed"}
-                                          if api == "anthropic" else {"encrypted_content": "opaque", "id": "cmp_1"})}
-
-    def native(model, *args, **kwargs):
-        return AssistantMessage(api=api, provider=model.provider, model=model.id, stop_reason="compaction",
-                                content=[RawContent(api, copy.deepcopy(payload))])
-
-    monkeypatch.setattr(compaction, "native_compact", native)
-    assert session.compact() is not None
+    summarize(session)
     assert retained(session.main) == current
-    assert session.main.messages[0].content[0].data == payload
     restored = make_session(session=session.store.path, settings={"compaction": {"keepRecentTokens": 1}})
     restored.set_model(spec)
     assert retained(restored.main) == current
-    assert restored.compact() is not None or api != "anthropic"
-    assert retained(restored.main) == current
-    assert restored.main.messages[0].content[0].data == payload
     restored.set_model("faux/test")
-    assert restored.main.restore_native_context()
-    assert retained(restored.main) is None
-    assert any(m.details.get("todos") == current["todos"] for m in tool_results(restored))
+    assert retained(restored.main) == current
 
 
 def test_todos_follow_conversation_and_active_branch(make_session):

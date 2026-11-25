@@ -9,9 +9,9 @@ Virgo is organized into unidirectional package layers under `src/virgo/`. Lower 
 | Layer | Packages / modules | Primary responsibility |
 | --- | --- | --- |
 | **0. Leaf foundations** | `i18n`, `diagnostics`, `execution_policy`, `output_store` | Session-scoped localization (`en`, `zh-CN`), no-I/O error capture and redaction, deny-first `PermissionPolicy` and built-in execution modes, and session-persisted Broker output storage |
-| **1. Model & agent core** | `ai`, `agent` | Unified streaming LLM adapters (`anthropic`, `openai`, `openai-responses`, `openai-codex`, `faux`), OAuth/API auth, model catalog, native compaction, and stateless `run_loop` / `Agent` / `AgentTool` orchestration (including bounded parallel execution of non-sequential tool batches) |
+| **1. Model & agent core** | `ai`, `agent` | Unified streaming LLM adapters (`anthropic`, `openai`, `openai-responses`, `openai-codex`, `faux`), OAuth/API auth, model catalog, and stateless `run_loop` / `Agent` / `AgentTool` orchestration (including bounded parallel execution of non-sequential tool batches) |
 | **2. Execution & tools** | `execution`, `file_access`, `sandbox`, `tools` | Unified `SandboxExecutor` and immutable `HostContext`/`SandboxContext`, Broker file I/O (`O_NOFOLLOW` + atomic `os.replace`), native OS sandbox adapters (`bubblewrap`, macOS Seatbelt, Windows Standard AppContainer), and built-in tool implementations (`fs`, `shell`, `bash`, `output`, `web`, `web_fetch`) |
-| **3. Session harness** | `harness` | `AgentSession`, `Runtime`, `EventBus`/`ExtensionAPI`, JSONL `SessionStore`, `ModeExecutionProvider`, `ResourceApprovals`/`ResourceRules`, `high_risk` checks, Core-owned `JobManager`, SQLite `DiagnosticLog`, settings/trust loading, context compaction, prompt assembly, and slash commands |
+| **3. Session harness** | `harness` | `AgentSession`, `Runtime`, `EventBus`/`ExtensionAPI`, JSONL `SessionStore`, `ModeExecutionProvider`, `ResourceApprovals`/`ResourceRules`, `high_risk` checks, Core-owned `JobManager`, SQLite `DiagnosticLog`, settings/trust loading, unified three-layer context compaction (`CompactionController`), prompt assembly, and slash commands |
 | **4. Capabilities** | `plugins`, `extensions` | Six built-in plugins (`diagnostic_get`, `skills`, `ask_user`, `subagent`, `background`, `web`) and two built-in extensions (`mcp`, `todo`) loaded via `setup(api)` |
 | **5. Presentation** | `cli` | Entry point (`virgo.cli.main:main`), plain REPL, Textual full-screen TUI (`cli/tui/`), and print/JSON output UI |
 
@@ -39,7 +39,7 @@ Virgo separates runtime capabilities into three tiers with distinct override and
 
 Each subagent can use up to `subagents.maxTurns` assistant turns per run (default 20) and `subagents.maxTotalTurns` across all runs of the same `agent_id` in a session (default 40). Compaction and session resume preserve the count. Set `subagents.effort` to a supported reasoning level to override the parent's effort for child requests. The default is `null`, which inherits the parent's setting.
 
-The Codex account adapter shares a session HTTP connection pool for streaming and native compaction. It replays only the `__oailb` and `__cflb` routing cookies for the same account, origin and exact endpoint path. Turn state is further scoped to the runtime. Each I/O task reads its own HTTPS event stream and closes the response. A terminal protocol event can arrive before HTTP EOF. The adapter waits for that request to finish cleanup before returning the result or completing cancellation.
+The Codex account adapter shares a session HTTP connection pool across requests. It replays only the `__oailb` and `__cflb` routing cookies for the same account, origin and exact endpoint path. Turn state is further scoped to the runtime. Each I/O task reads its own HTTPS event stream and closes the response. A terminal protocol event can arrive before HTTP EOF. The adapter waits for that request to finish cleanup before returning the result or completing cancellation.
 
 ## Local state layout
 

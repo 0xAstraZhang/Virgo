@@ -9,7 +9,7 @@ import pytest
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, Model
 from virgo.cli.console import event_json
-from virgo.harness import compaction, preferences
+from virgo.harness import preferences
 
 
 def test_startup_and_end_hooks_belong_to_the_new_run(make_session):
@@ -90,7 +90,11 @@ def test_retry_reports_stderr_fallback_when_its_log_cannot_be_written(make_sessi
 
 
 @pytest.mark.parametrize("running", [False, True])
-def test_native_compaction_uses_its_own_call_id_and_actual_api(make_session, monkeypatch, running):
+def test_in_context_compaction_uses_its_own_call_id_and_actual_api(make_session, monkeypatch, running):
+    from virgo import ai
+
+    from tests.support.harness import response_stream
+
     session = make_session(faux.reply("earlier answer"), refresh_models=False)
     session.prompt("earlier request")
     runtime = session.main
@@ -99,12 +103,14 @@ def test_native_compaction_uses_its_own_call_id_and_actual_api(make_session, mon
     model = Model("openai", "test", "openai")
 
     def failed(*args, **kwargs):
-        return AssistantMessage(provider="openai", model="test", api="openai-responses",
-                                stop_reason="error", error_message="native compaction failed")
+        return response_stream(AssistantMessage(
+            provider="openai", model="test", api="openai-responses",
+            stop_reason="error", error_message="compaction failed",
+        ))
 
-    monkeypatch.setattr(compaction, "native_compact", failed)
+    monkeypatch.setattr(ai, "stream", failed)
     monkeypatch.setattr(runtime.agent, "running", running)
-    assert runtime.compact(model=model, reason="overflow" if running else "manual") is None
+    assert runtime.compact(model=model, reason="auto" if running else "manual") is None
     record = session.diagnostics.recent()[0]
     context = record["context"]
     assert context["purpose"] == "compaction"

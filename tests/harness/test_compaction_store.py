@@ -1,4 +1,4 @@
-"""Compaction round trips keep provider state intact without reusing old usage."""
+"""Compaction round trips keep portable summaries and L1 prune stubs intact on disk."""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ import pytest
 from virgo.ai.providers import faux
 from virgo.ai.types import (
     AssistantMessage,
-    RawContent,
     TextContent,
     ThinkingContent,
+    ToolCall,
+    ToolResultMessage,
     Usage,
     UserMessage,
     message_to_dict,
@@ -43,8 +44,9 @@ def test_retained_result_supersedes_evicted_status(make_session, project, tool, 
     session.prompt(owner)
     assert path.read_text(encoding="utf-8") == content
     assert session.compact()["summary"] == status
-    evicted = calls()[-1]["messages"][0]["content"].split("</conversation>")[0]
-    assert status in evicted and "solution.py" not in evicted
+    evicted_msgs = calls()[-1]["messages"][:-1]
+    evicted_text = "\n".join(str(m.get("content", "")) for m in evicted_msgs)
+    assert status in evicted_text and "solution.py" not in evicted_text
 
     live = (session.main.messages, session.main.ids)
     assert live == session.store.build_context() == SessionStore.load(session.store.path).build_context()
@@ -57,61 +59,8 @@ def test_retained_result_supersedes_evicted_status(make_session, project, tool, 
     assert call.tool_calls()[0].id == result.tool_call_id == "apply-solution"
     assert result.tool_name == tool and not result.is_error and path.name in result.text()
 
-@pytest.mark.parametrize("api", ["anthropic", "openai-responses"])
-@pytest.mark.parametrize("preserve_thinking", [False, True])
-def test_native_context_survives_disk_roundtrip(tmp_path, api, preserve_thinking):
-    store = SessionStore.new(tmp_path / "sessions", tmp_path)
-    store.append_message(UserMessage("Original request"))
-    kept = AssistantMessage(
-        api=api,
-        content=[ThinkingContent("retained reasoning", "signed-thinking"), TextContent("Recent answer")],
-        usage=Usage(input=180000, output=200, cache_read=10000, cache_write=100),
-    )
-    kept_id = store.append_message(kept)
-    thinking_id = store.append_message(AssistantMessage(
-        api=api, content=[ThinkingContent("thinking only", "thinking-only-signature")],
-        usage=Usage(input=190000),
-    ))
-    items = (
-        [{"type": "compaction", "content": "Summary", "signature": "signed-summary", "extra": {"v": [1, 2]}}]
-        if api == "anthropic"
-        else [
-            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Request"}]},
-            {"type": "compaction", "id": "cmp-1", "encrypted_content": "encrypted-state", "extra": ["keep"]},
-        ]
-    )
-    native = AssistantMessage(
-        api=api,
-        provider="anthropic" if api == "anthropic" else "openai",
-        content=[RawContent(api, item) for item in items],
-        stop_reason="compaction",
-        usage=Usage(input=190000, output=1000),
-    )
-    compaction = store.append(
-        "compaction", summary="Display summary", context=[message_to_dict(native)],
-        kept_ids=[kept_id, thinking_id], preserve_thinking=preserve_thinking,
-    )
-    later = AssistantMessage(api=api, content=[TextContent("Continued")], usage=Usage(input=350, output=25))
-    later_id = store.append_message(later)
-    saved_bytes = store.path.read_bytes()
-    loaded = SessionStore.load(store.path)
-    before = copy.deepcopy(loaded.entries)
 
-    messages, ids = loaded.build_context()
-
-    assert messages[0].stop_reason == "compaction"
-    assert [block.data for block in messages[0].content] == items
-    assert ids == [compaction["id"], kept_id, *([thinking_id] if preserve_thinking else []), later_id]
-    assert messages[1].text() == "Recent answer"
-    assert any(isinstance(block, ThinkingContent) for block in messages[1].content) is preserve_thinking
-    assert all(message.usage.total == 0 for message in messages[:-1])
-    assert messages[-1].usage == later.usage
-    assert estimate_tokens(messages, 1) == later.usage.total
-    assert loaded.entries == before
-    assert store.path.read_bytes() == saved_bytes
-
-
-def test_legacy_compaction_remains_readable_and_discards_pre_compaction_usage(tmp_path):
+def test_legacy_summary_compaction_remains_readable_and_discards_pre_compaction_usage(tmp_path):
     store = SessionStore(None, tmp_path)
     store.append_message(UserMessage("Original request"))
     kept_id = store.append_message(AssistantMessage(
@@ -132,6 +81,63 @@ def test_legacy_compaction_remains_readable_and_discards_pre_compaction_usage(tm
     assert store.entries == before
 
 
+def test_legacy_native_compaction_record_is_rejected_on_load(tmp_path):
+    store = SessionStore.new(tmp_path / "sessions", tmp_path)
+    store.append_message(UserMessage("Original request"))
+    # Manually write a legacy native compaction record with a "context" field.
+    with store.path.open("a", encoding="utf-8") as handle:
+        import json
+
+        handle.write(json.dumps({
+            "type": "compaction",
+            "id": "deadbeef",
+            "parent_id": store.leaf,
+            "timestamp": "2026-01-01T00:00:00",
+            "summary": "Legacy native",
+            "context": [message_to_dict(AssistantMessage([TextContent("opaque")]))],
+            "kept_ids": [],
+        }) + "\n")
+
+    with pytest.raises(ValueError, match="legacy native compaction records are no longer supported"):
+        SessionStore.load(store.path)
+
+
+def test_prune_compaction_persists_composes_and_resets_after_summary(tmp_path):
+    store = SessionStore.new(tmp_path / "sessions", tmp_path)
+    u1 = store.append_message(UserMessage("Inspect files"))
+    a1 = store.append_message(AssistantMessage([ToolCall("c1", "read", {"path": "a.py"})]))
+    r1 = store.append_message(ToolResultMessage("c1", "read", [TextContent("A" * 5000)]))
+    a2 = store.append_message(AssistantMessage([ToolCall("c2", "read", {"path": "b.py"})]))
+    r2 = store.append_message(ToolResultMessage("c2", "read", [TextContent("B" * 5000)]))
+
+    store.append("compaction", mode="prune", pruned={r1: "[Pruned tool result: read(path='a.py')]"}, reason="auto")
+    store.append("compaction", mode="prune", pruned={r2: "[Pruned tool result: read(path='b.py')]"}, reason="auto")
+
+    loaded = SessionStore.load(store.path)
+    messages, ids = loaded.build_context()
+    assert ids == [u1, a1, r1, a2, r2]
+    assert messages[2].text() == "[Pruned tool result: read(path='a.py')]"
+    assert messages[4].text() == "[Pruned tool result: read(path='b.py')]"
+    # Original full context on disk is untouched.
+    full_msgs, _ = loaded.build_full_context()
+    assert full_msgs[2].text() == "A" * 5000
+    assert full_msgs[4].text() == "B" * 5000
+
+    # A later summary compaction supersedes earlier prune records, and post-summary prunes still apply.
+    a3 = store.append_message(AssistantMessage([ToolCall("c3", "read", {"path": "c.py"})]))
+    r3 = store.append_message(ToolResultMessage("c3", "read", [TextContent("C" * 5000)]))
+    summary_entry = store.append("compaction", mode="summary", summary="Summary", kept_ids=[a3, r3])
+    store.append("compaction", mode="prune", pruned={r3: "[Pruned tool result: read(path='c.py')]"}, reason="auto")
+
+    reloaded = SessionStore.load(store.path)
+    msgs2, ids2 = reloaded.build_context()
+    assert ids2 == [summary_entry["id"], a3, r3]
+    assert msgs2[0].kind == "summary"
+    assert msgs2[2].text() == "[Pruned tool result: read(path='c.py')]"
+    assert reloaded.last_compaction(mode="summary")["id"] == summary_entry["id"]
+    assert reloaded.last_compaction(mode="prune")["mode"] == "prune"
+
+
 def test_full_context_restores_original_active_branch_after_multiple_compactions(tmp_path):
     store = SessionStore.new(tmp_path / "sessions", tmp_path)
     originals = [
@@ -139,14 +145,10 @@ def test_full_context_restores_original_active_branch_after_multiple_compactions
         AssistantMessage([TextContent("First answer")], usage=Usage(input=100, output=20)),
     ]
     original_ids = [store.append_message(message) for message in originals]
-    store.append("compaction", summary="Earlier summary", kept_ids=[])
+    store.append("compaction", mode="summary", summary="Earlier summary", kept_ids=[])
     newer = UserMessage("Second request")
     newer_id = store.append_message(newer)
-    native = AssistantMessage(
-        api="openai-responses", provider="openai", stop_reason="compaction",
-        content=[RawContent("openai-responses", {"type": "compaction", "encrypted_content": "latest-state"})],
-    )
-    store.append("compaction", summary="Native summary", context=[message_to_dict(native)], kept_ids=[])
+    store.append("compaction", mode="summary", summary="Latest summary", kept_ids=[])
     branch_point = store.leaf
     store.append_message(UserMessage("Discarded branch"))
     store.leaf = branch_point
@@ -163,22 +165,6 @@ def test_full_context_restores_original_active_branch_after_multiple_compactions
     assert ids == [*original_ids, newer_id, final_id]
     assert loaded.entries == before
     compacted, compacted_ids = loaded.build_context()
-    assert [block.data for block in compacted[0].content] == [block.data for block in native.content]
+    assert compacted[0].kind == "summary" and "Latest summary" in compacted[0].text()
     assert len(compacted) == 2
     assert compacted_ids == [branch_point, final_id]
-
-
-def test_native_context_can_contain_multiple_messages_without_losing_order(tmp_path):
-    store = SessionStore(None, tmp_path)
-    store.append_message(UserMessage("Original"))
-    native = AssistantMessage(
-        api="openai-responses", stop_reason="compaction",
-        content=[RawContent("openai-responses", {"type": "compaction", "encrypted_content": "state"})],
-    )
-    context = [UserMessage("Retained by provider"), native]
-    entry = store.append("compaction", summary="", context=[message_to_dict(m) for m in context], kept_ids=[])
-
-    messages, ids = store.build_context()
-
-    assert [message_to_dict(message) for message in messages] == [message_to_dict(message) for message in context]
-    assert ids == [entry["id"], entry["id"]]

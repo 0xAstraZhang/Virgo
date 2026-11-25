@@ -1224,7 +1224,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                         await self._result(agent, message)
                 except (KeyError, TypeError, ValueError):
                     await self.add_notice(tr(self, "ui.event.saved_tool_error"), "warn")
-            elif entry.get("type") == "compaction":
+            elif entry.get("type") == "compaction" and entry.get("mode", "summary") == "summary":
                 await self.add_notice(tr(self, "ui.event.compacted"), "dim")
 
     async def add_notice(self, text: str, style: str | None = None) -> None:

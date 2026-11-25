@@ -12,13 +12,11 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent
-from ..ai.compaction import compatible_context, context_binding, is_native_context
 from ..ai.stream import EventStream, StreamEvent, aborted_event
-from ..ai.transform import strip_thinking
 from ..ai.types import (
     AssistantMessage,
     Context,
@@ -29,7 +27,7 @@ from ..ai.types import (
 from ..diagnostics import capture_error, safe_text
 from ..execution_policy import normalize_approval_policy
 from ..tools.shell import ShellTool
-from . import compaction
+from . import compaction as compaction_mod
 from .diagnostic_view import project_tool_result
 from .origin_context import ExecutionOrigin
 from .prompt import RuntimeContext, build_system
@@ -118,7 +116,7 @@ class Runtime:
         self.ids: list = list(ids or [])
         self._model = model or session.model
         self._effort = effort
-        self._reset_auto_compaction()
+        self.compactor = compaction_mod.CompactionController(self)
         self.system_extra = system_extra
         self.tools = tools if tools is not None else session.tools_for(role)
         self._dynamic_tools = tools is None
@@ -126,10 +124,7 @@ class Runtime:
         self._tool_version, registered = session.tool_snapshot(role)
         self._registered_tools = {tool.name: tool for tool in registered}
         self.compaction = compaction
-        self.compacted_at = 1 if messages and (
-            getattr(messages[0], "kind", None) == "summary" or is_native_context(messages[0])
-        ) else 0
-        self._native_source: list | None = None
+        self.compacted_at = 1 if messages and getattr(messages[0], "kind", None) == "summary" else 0
         self._call_started: float | None = None  # set per model call; None for loop-made messages
         self.run_id: str | None = None
         self._prepared_run = False
@@ -141,7 +136,6 @@ class Runtime:
         self.diagnostic_id = uuid.uuid4().hex
         self.recovery = RuntimeDiagnostics(self, messages or ())
         self.diagnostic_access = self.recovery.access
-        self.native_binding = (store.last_compaction() or {}).get("context_binding") if store else None
         self.system = ""
         if execution_context is not None:
             self.execution_context = execution_context
@@ -185,7 +179,7 @@ class Runtime:
 
     @model.setter
     def model(self, model: ai.Model) -> None:
-        self._reset_auto_compaction(unless_model=model)
+        self.compactor.reset(unless_model=model)
         self._model = model
 
     def rebuild_system(self) -> None:
@@ -226,7 +220,7 @@ class Runtime:
     def prepare_run(self) -> None:
         """Bind startup hooks to this run before its first model request exists."""
         self.refresh_permission_snapshot()
-        self._length_recovery = None
+        self.compactor.prepare_run()
         self.run_id = uuid.uuid4().hex
         self._model_call_id = None
         self._attempt_number = 0
@@ -234,22 +228,8 @@ class Runtime:
         self.execution_active = True
 
     def _on_event(self, ev: AgentEvent) -> None:
-        if (
-            self._awaiting_compaction_usage and ev.type == "message_end"
-            and isinstance(ev.message, AssistantMessage) and ev.message.usage.total > 0
-            and ev.message.stop_reason not in ("error", "aborted", "compaction")
-            and self._auto_compaction_model is not None
-            and self._auto_compaction_model[0] == f"{ev.message.provider}/{ev.message.model}"
-        ):
-            # Input measures the replacement prompt. This reply's output already counts as growth.
-            baseline = ev.message.usage.input_total
-            window = self._auto_compaction_model[1]
-            keep = int(self.session.settings.get("compaction.keepRecentTokens", 20000))
-            if window > 0:
-                keep = min(max(0, keep), window // 4)
-            growth = max(1, keep, min(baseline // 4, 2048))
-            self._auto_compaction_floor = self._cap_compaction_floor(baseline + growth, window)
-            self._awaiting_compaction_usage = False
+        if ev.type == "message_end" and isinstance(ev.message, AssistantMessage):
+            self.compactor.on_usage(ev.message)
         if ev.type == "agent_end":
             self.execution_active = False
         if ev.type == "agent_start":
@@ -397,8 +377,6 @@ class Runtime:
             self.ids.append(entry_id)
             if isinstance(ev.message, ToolResultMessage):
                 self.recovery.safely("presented", message_diagnostics(ev.message))
-            if self._native_source is not None:
-                self._native_source.append(ev.message)
             if self.role != "main" and isinstance(ev.message, AssistantMessage) and self._call_started is not None:
                 # Loop notices (turn limit, paused search) are not model calls.
                 record_call(
@@ -407,96 +385,14 @@ class Runtime:
                 )
                 self._call_started = None
 
-    @staticmethod
-    def _cap_compaction_floor(floor: int, window: int) -> int:
-        """Cap the growth floor to reserve 10% of a known window, up to 4096 tokens."""
-        if window <= 0:
-            return floor
-        reserve = min(max(1, window // 10), 4096)
-        return min(floor, max(1, window - reserve))
-
-    def _reset_auto_compaction(self, *, unless_model: ai.Model | None = None) -> None:
-        if unless_model is not None and self._auto_compaction_model == (unless_model.spec, unless_model.context_window):
-            return
-        self._auto_compaction_model: tuple[str, int] | None = None
-        self._auto_compaction_floor = 0
-        self._awaiting_compaction_usage = False
-        self._length_recovery: Literal["pending", "exhausted"] | None = None
-
     def compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
-        outcome = self._compact(focus, reason, model=model)
-        return outcome if isinstance(outcome, dict) else None
-
-    def _compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> compaction.CompactOutcome:
-        if not self.can_run():
-            return None
-        target_model = model or self.model
-        if reason == "manual" and not self.agent.running:
-            self.agent.signal.clear()
-        self.restore_native_context(target_model)
-        automatic = reason in ("auto", "overflow")
-        concise = automatic and self._length_recovery is not None
-        if concise:
-            if self._length_recovery == "exhausted" or (reason == "auto" and not self._compaction_due(target_model)):
-                return None
-            self._length_recovery = "exhausted"
-        result = compaction.compact_context(self, focus, reason, model=target_model, concise=concise)
-        if result == "length" and automatic and not concise:
-            self._auto_compaction_model = (target_model.spec, target_model.context_window)
-            self._length_recovery = "pending"
-        if isinstance(result, dict):
-            self._reset_auto_compaction()
-            self.recovery.after_compaction()
-            if reason == "auto":
-                # Use a local floor until the provider measures the replacement prompt.
-                after = self.context_tokens(estimate_only=True)
-                self._auto_compaction_model = (target_model.spec, target_model.context_window)
-                floor = after + max(1, min(after // 10, 1024))
-                self._auto_compaction_floor = self._cap_compaction_floor(floor, target_model.context_window)
-                self._awaiting_compaction_usage = True
-        return result
-
-    def restore_native_context(self, model=None) -> bool:
-        """Provider-owned state cannot replace portable history after a provider switch."""
-        target_model = model or self.model
-        if compatible_context(target_model, self.messages):
-            self._reset_auto_compaction(unless_model=target_model)
-            return False
-        if self.store is not None:
-            messages, ids = self.store.build_full_context()
-        elif self._native_source is not None:
-            messages, ids = list(self._native_source), [None] * len(self._native_source)
-        else:
-            raise ValueError("Cannot restore original history for this native compacted context.")
-        self.messages[:] = messages
-        self.ids[:] = ids
-        self.compacted_at = len(messages)
-        self._reset_auto_compaction()
-        self._native_source = None
-        self.native_binding = None
-        return True
+        return self.compactor.compact(focus, reason, model=model)
 
     def context_tokens(self, *, estimate_only: bool = False) -> int:
         # Status refreshes must not invoke extension hooks or search approvals.
         context = self._base_context(self.messages)
         valid_from = len(context.messages) if estimate_only else self.compacted_at
-        return compaction.estimate_tokens(context.messages, valid_from, system=context.system, tools=context.tools)
-
-    def _compaction_due(self, model=None) -> bool:
-        target_model = model or self.model
-        self._reset_auto_compaction(unless_model=target_model)
-        s = self.session.settings
-        if not self.compaction or not s.get("compaction.enabled", True):
-            return False
-        window = target_model.context_window
-        if self._length_recovery is not None:
-            return (self._length_recovery == "pending" and window > 0
-                    and self.context_tokens() >= self._cap_compaction_floor(window, window))
-        trigger = s.get("compaction.triggerTokens")
-        if trigger is None:
-            trigger = int(window * float(s.get("compaction.triggerRatio", 0.8)))
-        floor = self._cap_compaction_floor(self._auto_compaction_floor, window)
-        return self.context_tokens() >= max(trigger, floor)
+        return compaction_mod.estimate_tokens(context.messages, valid_from, system=context.system, tools=context.tools)
 
     def _base_context(self, messages: list, *, report_errors: bool = False) -> Context:
         """Assemble instructions and schemas; only actual requests report formatting failures."""
@@ -530,8 +426,6 @@ class Runtime:
         web = s.services.get("web")
         if web is not None:
             web.prepare(self, context, model or self.model)
-        if any(is_native_context(message) for message in messages) and self.native_binding != context_binding(model or self.model, context):
-            context.messages = strip_thinking(view)
         return context
 
     # -- model calls ---------------------------------------------------------
@@ -591,8 +485,8 @@ class Runtime:
                 yield aborted_event(AssistantMessage())
                 return
             model_key = (model.spec, model.context_window)
-            if (self.restore_native_context(model) or model_key != checked_model) and self._compaction_due(model):
-                if self._compact(reason="auto", model=model) == "cancelled":
+            if model_key != checked_model:
+                if self.compactor.before_request(model) == "cancelled":
                     yield aborted_event(AssistantMessage())
                     return
             checked_model = model_key
@@ -641,14 +535,14 @@ class Runtime:
                 yield StreamEvent("error", failed)
                 return
             if (failed.error_kind == "overflow" and not overflow_done and self.compaction
-                    and self._length_recovery != "exhausted" and not signal.is_set()):
+                    and not signal.is_set()):
                 overflow_done = True
                 yield StreamEvent("retry", failed)
-                outcome = self._compact(reason="overflow", model=model)
+                outcome = self.compactor.on_overflow(model)
                 if outcome == "cancelled":
                     yield aborted_event(AssistantMessage())
                     return
-                if isinstance(outcome, dict):
+                if outcome:
                     record_call(self.accounting_store, request_model, failed, purpose="retry",
                                 started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
                     continue

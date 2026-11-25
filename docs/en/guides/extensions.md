@@ -69,7 +69,7 @@ updated.` in English, `Todos 状态更新成功` in Chinese). Full state stays i
 details and follows the originating conversation and active branch. If compaction
 removes the latest complete call/result pair while any item remains unfinished, a
 request section retains the entire latest state, including completed items and
-the explanation. It survives summary/native compaction and resume without
+the explanation. It survives context compaction and resume without
 repeatedly appending snapshots to history. A finished or cleared list is not
 pinned, and unfinished work does not force another model turn. Old results
 without steps remain readable without inferred grouping.

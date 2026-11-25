@@ -14,7 +14,6 @@ import json
 import os
 import re
 import threading
-from dataclasses import replace
 
 from ..search import is_search_unsupported, is_web_unsupported
 from ..stream import EventStream, StreamEvent
@@ -35,11 +34,10 @@ from ..types import (
 from ..validate import parse_tool_arguments
 from ..web import declarations
 from ._errors import attach_error
-from ._http import ProviderError, run_cancellable, sdk_stream
+from ._http import ProviderError, sdk_stream
 
 BETA_FALLBACK = "server-side-fallback-2026-07-01"
 BETA_BINDING = "thinking-binding-controls-2026-08-01"
-BETA_COMPACTION = "compact-2026-09-04"
 BETA_OAUTH = ("claude-code-20250219", "oauth-2025-04-20")
 # models that accept server-side refusal fallbacks
 FALLBACK_MODELS = {
@@ -54,7 +52,6 @@ _STOP = {
     "end_turn": "stop",
     "stop_sequence": "stop",
     "pause_turn": "pause_turn",
-    "compaction": "compaction",
     "tool_use": "tool_use",
     "max_tokens": "length",
     "model_context_window_exceeded": "length",
@@ -205,12 +202,6 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
     for declaration in declarations(ctx):
         params.setdefault("tools", []).append(declaration)
     betas: list[str] = list(BETA_OAUTH) if oauth else []
-    if any(
-        isinstance(b, RawContent) and b.api == "anthropic" and b.data.get("type") == "compaction"
-        for m in ctx.messages if isinstance(m, AssistantMessage)
-        for b in m.content
-    ):
-        betas.append(BETA_COMPACTION)
     if model.reasoning:
         thinking: dict = {"type": "adaptive", "display": o.get("thinkingDisplay", "summarized")}
         if o.get("thinkingBinding", True):
@@ -225,68 +216,6 @@ def build_params(model: Model, ctx: Context, opts: StreamOptions) -> dict:
     if betas:
         params["betas"] = betas
     return params
-
-
-def compact(
-    model: Model, ctx: Context, opts: StreamOptions, *, focus: str | None = None
-) -> AssistantMessage:
-    """Summarize the submitted history into an unmodified, signed API block."""
-    out = AssistantMessage(api="anthropic", provider=model.provider, model=model.id)
-    response = None
-    key = _api_key(model)
-    try:
-        params = build_params(model, replace(ctx, web_tools=[], web_offers=[]), opts)
-        params["max_tokens"] = opts.max_tokens or min(model.max_tokens, 8000)
-        betas = params.setdefault("betas", [])
-        if BETA_COMPACTION not in betas:
-            betas.append(BETA_COMPACTION)
-        params["compaction"] = {"type": "summarize"}
-        if focus:
-            params["compaction"]["instructions"] = (
-                "Summarize this conversation so the assistant can continue the work. "
-                "Preserve the user's latest request, constraints and preferences, completed and ongoing work, "
-                "blockers, key decisions, next steps, and exact paths, identifiers, commands and errors needed "
-                "to continue. Update any earlier summary and omit obsolete details. "
-                "Do not continue the conversation, answer its questions, or call tools; return only the summary. "
-                f"Pay special attention to: {focus}"
-            )
-        response = run_cancellable(
-            lambda: _client(model).beta.messages.create(**params, stream=False), opts.signal
-        )
-        data = response.model_dump(mode="json", exclude_none=True)
-        usage = data.get("usage") or {}
-        iterations = usage.get("iterations") or [usage]
-        out.usage = Usage(
-            input=sum(u.get("input_tokens", 0) or 0 for u in iterations),
-            output=sum(u.get("output_tokens", 0) or 0 for u in iterations),
-            cache_read=sum(u.get("cache_read_input_tokens", 0) or 0 for u in iterations),
-            cache_write=sum(u.get("cache_creation_input_tokens", 0) or 0 for u in iterations),
-        )
-        out.stop_reason = _STOP.get(data.get("stop_reason"), "error")
-        blocks = data.get("content") or []
-        if (
-            out.stop_reason == "compaction"
-            and len(blocks) == 1
-            and blocks[0].get("type") == "compaction"
-            and isinstance(blocks[0].get("content"), str)
-            and blocks[0]["content"].strip()
-            and isinstance(blocks[0].get("signature"), str)
-            and blocks[0]["signature"]
-        ):
-            out.content = [RawContent("anthropic", blocks[0])]
-        elif out.stop_reason == "refusal":
-            out.error_message = "The model declined the compaction request."
-        elif out.stop_reason == "length":
-            out.error_message = "Compaction reached the output token limit without a complete summary."
-        else:
-            out.stop_reason, out.error_kind = "error", "fatal"
-            out.error_message = "The provider did not return a complete signed compaction block."
-            attach_error(out, None, model, phase="provider.compact", token=key, response=response)
-    except Exception as error:  # noqa: BLE001 - leave the caller's history intact on failure
-        out.error_kind, out.error_message = classify_error(error)
-        out.stop_reason = "aborted" if opts.signal is not None and opts.signal.is_set() else "error"
-        attach_error(out, error, model, phase="provider.compact", token=key)
-    return out
 
 
 # ---------------------------------------------------------------------------

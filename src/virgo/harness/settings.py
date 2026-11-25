@@ -34,7 +34,7 @@ DEFAULTS: dict[str, Any] = {
     "shell": {"executable": "auto"},
     "plugins": {},
     "budget": {"maxModelCalls": None},
-    "compaction": {"enabled": True, "triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": None},
+    "compaction": {"enabled": True, "pruneRatio": 0.6, "triggerRatio": 0.8, "keepRecentTokens": 20000, "triggerTokens": None},
     "retry": {"maxRetries": 3, "fallbackModel": None, "maxWaitSeconds": 120},
     "anthropic": {"fallbacks": True, "thinkingDisplay": "summarized", "thinkingBinding": True},
     "fetch": {"mode": "auto", "backend": "http", "timeout": 20, "maxBytes": 2097152, "maxUses": None, "maxContentTokens": 8000},
