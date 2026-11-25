@@ -175,12 +175,11 @@ class _SDKRequest:
     capacity = 64
     end = object()
 
-    def __init__(self, bridge, signal, get_client, create):
+    def __init__(self, bridge, signal, open_stream):
         self.bridge = bridge
         self.signal = signal
         self.aborted = threading.Event()
-        self.get_client = get_client
-        self.create = create
+        self.open_stream = open_stream
         self.items = queue.Queue(self.capacity + 1)
         self.finished = threading.Event()
         self.handshake = _HandshakeGuard()
@@ -215,10 +214,7 @@ class _SDKRequest:
             self.scope = anyio.CancelScope()
             with self.scope:
                 self.check_signal()
-                self.client = self.get_client(self.bridge)
-                self.check_signal()
-                stream = await resources.enter_async_context(await self.create(self.client))
-                self.response = stream.response
+                stream = await self.open_stream(self, resources)
                 async for item in stream:
                     while self.items.qsize() >= self.capacity:
                         self.check_signal()
@@ -260,9 +256,16 @@ class _SDKRequest:
 
 def sdk_stream(out, opts, get_client, create, parse, on_error):
     """Run the SDK on its loop and the existing parser on the synchronous caller."""
+    async def open_stream(request, resources):
+        request.client = get_client(request.bridge)
+        request.check_signal()
+        stream = await resources.enter_async_context(await create(request.client))
+        request.response = stream.response
+        return stream
+
     def events():
         bridge = opts.io_bridge or AsyncSDKBridge()
-        request = _SDKRequest(bridge, opts.signal, get_client, create)
+        request = _SDKRequest(bridge, opts.signal, open_stream)
         failure = terminal = None
         try:
             request.check_signal()
@@ -391,82 +394,41 @@ def _parse_events(lines) -> Iterator[dict]:
             yield event
 
 
-def json_events(url: str, headers: dict, body: dict, signal=None) -> Iterator[dict]:
-    """Read SSE on a worker so a stalled server cannot hold up user cancellation.
+def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=None) -> Iterator[dict]:
+    """Keep the TLS read and response close on the same I/O task, including early SSE termination."""
+    async def open_stream(request, resources):
+        client = await resources.enter_async_context(httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=15.0),
+            event_hooks={"request": [_trace_request]},
+        ))
+        request.check_signal()
+        response = await resources.enter_async_context(client.stream("POST", url, headers=headers, json=body))
+        request.response = response
+        if response.status_code >= 400:
+            await response.aread()
+            raise _response_error(response)
+        return response.aiter_lines()
 
-    The queue bounds read-ahead. Closing the iterator stops the worker and closes
-    its socket; connection attempts also have a finite timeout.
-    """
-    if cancelled(signal):
-        raise ProviderError("Aborted by user.", "aborted")
-    events: queue.Queue = queue.Queue(maxsize=64)
-    stopped = threading.Event()
-    response_ready: list[httpx.Response] = []
-
-    def publish(kind, payload=None):
-        while not stopped.is_set():
-            try:
-                events.put((kind, payload), timeout=0.05)
-                return
-            except queue.Full:
-                continue
-
-    def read():
-        try:
-            with httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
-                with client.stream("POST", url, headers=headers, json=body) as response:
-                    response_ready.append(response)
-                    if stopped.is_set():
-                        return
-                    if response.status_code >= 400:
-                        response.read()
-                        raise _response_error(response)
-                    for event in _parse_events(response.iter_lines()):
-                        if stopped.is_set():
-                            return
-                        publish("event", event)
-        except Exception as error:  # provider contract: failures become error events
-            if response_ready:
-                response = response_ready[-1]
-                # A malformed event or dropped body still belongs to this HTTP
-                # request. Preserve its safe correlation fields across the worker.
-                for name, value in {
-                    "status_code": response.status_code,
-                    "request_id": response.headers.get("x-request-id") or response.headers.get("request-id")
-                    or response.headers.get("x-goog-request-id"),
-                    "retry_after": response.headers.get("retry-after"),
-                    "endpoint": str(response.request.url),
-                }.items():
-                    if getattr(error, name, None) is None:
-                        setattr(error, name, value)
-            publish("error", error)
-        finally:
-            publish("done")
-
-    worker = threading.Thread(target=read, name="virgo-provider-sse", daemon=True)
-    worker.start()
+    bridge = io_bridge or AsyncSDKBridge()
+    request = _SDKRequest(bridge, signal, open_stream)
     try:
-        while True:
-            if cancelled(signal):
-                raise ProviderError("Aborted by user.", "aborted")
-            try:
-                kind, payload = events.get(timeout=0.05)
-            except queue.Empty:
-                continue
-            if kind == "done":
-                return
-            if kind == "error":
-                raise payload
-            yield payload
+        with closing(iter(request)) as lines:
+            yield from _parse_events(lines)
+    except _StreamAborted as error:
+        raise ProviderError("Aborted by user.", "aborted") from error
+    except Exception as error:
+        response = request.response
+        if response is not None:
+            for name, value in {
+                "status_code": response.status_code,
+                "request_id": response.headers.get("x-request-id") or response.headers.get("request-id")
+                or response.headers.get("x-goog-request-id"),
+                "retry_after": response.headers.get("retry-after"),
+                "endpoint": str(response.request.url),
+            }.items():
+                if getattr(error, name, None) is None:
+                    setattr(error, name, value)
+        raise
     finally:
-        stopped.set()
-        if response_ready and not response_ready[0].is_closed:
-            # Closing a connection must not hold up the UI, even for a broken
-            # transport. The network worker also owns a context-manager close.
-            def close():
-                try:
-                    response_ready[0].close()
-                except Exception:
-                    pass
-
-            threading.Thread(target=close, name="virgo-provider-close", daemon=True).start()
+        if io_bridge is None:
+            bridge.close()

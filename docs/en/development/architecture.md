@@ -37,6 +37,8 @@ Virgo separates runtime capabilities into three tiers with distinct override and
 - **Immutable execution context**: Every task captures its originating `HostContext` or `SandboxContext` along with its `ExecutionOrigin` (anchored at the active branch leaf). Child subagents and background jobs inherit that captured context and branch accounting even if the user switches mode, branch, or active UI session later.
 - **Core-owned job supervision**: `JobManager` owns background job lifecycle, completion notifications, and cleanup; the `background` and `subagent` plugins only expose model tools (`job_output`, `job_kill`, `agent`) and `/jobs`.
 
+The Codex account adapter reads each HTTPS event stream and closes its response on the same I/O task. A terminal protocol event can arrive before HTTP EOF. The adapter waits for that request to finish cleanup before returning the result or completing cancellation.
+
 ## Local state layout
 
 By default, Virgo stores user state under `~/.virgo` (overrideable via `VIRGO_HOME`):
