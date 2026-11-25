@@ -10,18 +10,17 @@ Maintaining separate native compaction paths for Anthropic, OpenAI Responses, an
 
 ## Decision
 
-- **Remove provider-native compaction completely**: Retire `virgo.ai.compaction` and provider-specific `compact()` endpoints (`anthropic`, `responses`, `codex`), `restore_native_context`, and `preserve_thinking`. Legacy session files containing native compaction `context` records are rejected on load with an explicit error prompting a new session.
+- **Portable summaries across providers.** Virgo removed provider-native compaction from Anthropic, OpenAI Responses, and Codex. Session files with legacy native compaction `context` records raise an error on load that prompts the user to start a new session.
 - **Three-layer progressive pipeline owned by `CompactionController`** (`src/virgo/harness/compaction.py`):
-  - **L0 (`tools/output.py`)**: Per-tool output budgets spill oversized outputs (>50 KB / 2000 lines) to `OutputStore` with opaque `output_id`s.
-  - **L1 (Batch Micro-Compaction)**: Normal turns remain strictly append-only to preserve prompt-cache prefixes. When usage reaches `compaction.pruneRatio` (default `0.6`) or before triggering L2, stale bulky `ToolResultMessage` payloads outside the protected tail are batch-collapsed into compact semantic stubs (retaining tool name, target path/command/pattern/URL, `output_id`, exit status, and size) only when the reclaimed token count meets a minimum cache-amortization threshold. L1 prunes are persisted as lightweight `mode="prune"` compaction entries in `SessionStore` so resume reproduces the exact live context without mutating original history.
-  - **L2 (Structured Full Compaction)**: At `compaction.triggerRatio` (default `0.8`) or manual `/compact [focus]`, generate a 4-section structured summary (`Goal & Constraints`, `Completed Work & Decisions`, `Current State & Open Issues`, `Next Steps`) plus deterministic `<read-files>` / `<modified-files>` lists. Proactive runs default to cache-warm in-context summarization on the active model (reusing `system + tools + messages[:cut]`), automatically falling back to out-of-band serialized summarization on `overflow` or unexpected `tool_use`.
-  - **L3 (Reactive Overflow Recovery)**: On provider context-overflow errors, first run aggressive L1 pruning; if usage drops below the context window, retry immediately without paying for an LLM summary; otherwise run serialized L2 (with optional concise retry on `length`).
+  - **L0 (Tool output limits).** Tools using the shared output budget save text beyond 50 KiB or 2,000 lines to `OutputStore` and return a bounded preview with an `output_id`.
+  - **L1 (Batch pruning).** At `compaction.pruneRatio` (default `0.6`) or before automatic summarization, replace bulky old tool results outside the protected tail with short descriptions if the batch reclaims enough tokens. The descriptions retain available tool name, target, output ID, exit status, and size. `SessionStore` appends `mode="prune"` records. Rebuilding the context reapplies those records to retained results, including results kept by a later summary.
+  - **L2 (Structured summaries).** At `compaction.triggerRatio` (default `0.8`) or on manual `/compact [focus]`, summarize older turns under `Goal & Constraints`, `Completed Work & Decisions`, `Current State & Open Issues`, and `Next Steps`. The harness adds deterministic `<read-files>` and `<modified-files>` lists. Automatic and manual compaction reuse the current model's prompt prefix when possible. A context overflow or unexpected tool call during summarization switches to a separate request with a serialized transcript.
+  - **L3 (Overflow recovery).** On context overflow, try aggressive pruning first. If pruning brings estimated usage below the window, retry the request. If pruning is insufficient or the pruned request also overflows, run L2 with a serialized transcript. A summary that hits its output limit can qualify for one shorter attempt.
 - **ASCII / non-ASCII weighted token estimation**: When no post-compaction provider usage is available, estimate ASCII at ~4 chars/token and non-ASCII/CJK at ~1.5 chars/token.
 
 ## Tradeoffs and constraints
 
-- **No silent migration for legacy native compaction sessions**: Existing JSONL files with native `context` blocks fail loudly on load rather than silently dropping provider-owned state.
-- **Batched vs. per-turn pruning**: L1 deliberately avoids per-turn sliding-window mutation so prompt caching stays hot between batch prunes.
+- **Prompt caching.** Ordinary turns append to the prompt between batches, allowing the provider to reuse its cached prefix.
 
 ## Related
 

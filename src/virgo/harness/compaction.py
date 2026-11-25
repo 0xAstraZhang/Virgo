@@ -9,9 +9,10 @@
   ``/compact [focus]``, generate a 4-section structured summary. Proactive runs use
   cache-warm in-context summarization on the active model (reusing the ``system + tools +
   messages[:cut]`` prefix), falling back to out-of-band serialized summarization on
-  overflow or tool-call/overflow failure.
+  context overflow or an unexpected tool call.
 - L3 (Reactive Overflow Recovery): on provider context overflow, first try aggressive
-  L1 pruning; if still over budget, run serialized L2 (with optional concise retry).
+  L1 pruning. Run serialized L2 if pruning cannot fit the request or the pruned
+  request also overflows.
 """
 
 from __future__ import annotations
@@ -335,7 +336,7 @@ def prune_tool_results(
                 calls_by_id[c.id] = c
 
     min_chars = AGGRESSIVE_PRUNE_MIN_CHARS if aggressive else PRUNE_MIN_CHARS
-    candidates: list[tuple[int, ToolResultMessage, str, int]] = []
+    candidates: list[tuple[int, ToolResultMessage, str]] = []
     reclaimed = 0
     for i in range(protect_from):
         m = messages[i]
@@ -348,7 +349,7 @@ def prune_tool_results(
         saved = _message_tokens(m) - _text_tokens(stub)
         if saved <= 0:
             continue
-        candidates.append((i, m, stub, saved))
+        candidates.append((i, m, stub))
         reclaimed += saved
 
     if not candidates:
@@ -360,7 +361,7 @@ def prune_tool_results(
 
     tokens_before = rt.context_tokens()
     pruned_by_id: dict[str, str] = {}
-    for i, m, stub, _saved in candidates:
+    for i, m, stub in candidates:
         messages[i] = compacted_message(replace(m, content=[TextContent(stub)]))
         entry_id = rt.ids[i] if i < len(rt.ids) else None
         if entry_id is not None:
@@ -550,7 +551,6 @@ def summarize_context(
             rt, to_summarize=to_summarize, prev_text=prev_text,
             instruction=ser_instruction, max_tokens=max_tokens,
         )
-        strategy = "serialized"
 
     summary = _FILE_BLOCK.sub("", msg.text()).strip()
     if failure := _report_failure(rt, msg, complete=msg.stop_reason == "stop" and bool(summary), limit=max_tokens):
@@ -588,14 +588,6 @@ def summarize_context(
         "summary": summary,
         "kept": len(kept_msgs),
     }
-
-
-def compact_context(rt: Runtime, focus: str | None, reason: str, *, model, concise: bool = False) -> CompactOutcome:
-    return summarize_context(rt, focus, reason, model=model, concise=concise)
-
-
-def compact(rt: Runtime, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
-    return rt.compact(focus, reason, model=model)
 
 
 # ---------------------------------------------------------------------------
