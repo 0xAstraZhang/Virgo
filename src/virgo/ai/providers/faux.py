@@ -122,6 +122,7 @@ def _events(responder: Responder, ctx: Context, out: AssistantMessage, opts: Str
     chars = len(ctx.system) + sum(len(json.dumps(asdict(m), default=str)) for m in ctx.messages)
     chars += sum(len(json.dumps(asdict(t), ensure_ascii=False)) for t in ctx.tools)
     out.usage = Usage(input=chars // 4)
+    out.input_usage_reported = True
     yield StreamEvent("start", out)
     if r.delay:
         end = time.time() + r.delay

@@ -41,6 +41,16 @@ Each subagent can use up to `subagents.maxTurns` assistant turns per run (defaul
 
 The Codex account adapter shares a session HTTP connection pool for streaming and native compaction. It replays only the `__oailb` and `__cflb` routing cookies for the same account, origin and exact endpoint path. Turn state is further scoped to the runtime. Each I/O task reads its own HTTPS event stream and closes the response. A terminal protocol event can arrive before HTTP EOF. The adapter waits for that request to finish cleanup before returning the result or completing cancellation.
 
+### Context compaction
+
+Virgo bounds a foreground Shell preview by 2,000 lines and 50 KiB including the truncation and exit notices. When a command exceeds those limits, its complete output remains in the session's output store and can be read with `read_output` while the record is available.
+
+For controlled trials, set `compaction.shellLogs` to an object with positive integers `startTokens`, `reserveTokens`, and `excerptChars`. The start watermark must be at most the active automatic compaction threshold. Parameter defaults are left unset. At that watermark Virgo can shorten the oldest successful, readable foreground Shell logs. It retains unfinished batches and the latest completed batch in full. The reserve controls how many logs to shorten. The resulting request size determines whether the normal automatic threshold still calls for a provider checkpoint.
+
+The append-only session tree records each short version against the original result entry on its branch. The provider sees the projection, and the persisted transcript keeps the initial preview. Resume rebuilds the active protocol window before projecting records that still have a matching call and result. If the output is gone, Virgo restores the preview and adds an availability notice. If a retained signature depends on the short version, Virgo instead replays that version and appends the notice outside the signed prefix. Original commands are never rerun to recover output.
+
+`/compact` and overflow recovery go directly to provider compaction or a portable summary. Session `compaction_decision` records capture the reasons and estimated sizes. Provider-reported input and cache token buckets measure actual usage. A call without a reported input count cannot establish a token saving.
+
 ## Local state layout
 
 By default, Virgo stores user state under `~/.virgo` (overrideable via `VIRGO_HOME`):

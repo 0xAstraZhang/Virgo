@@ -101,7 +101,7 @@ def test_responses_compact_http_roundtrip_preserves_entire_window(compact_server
     assert next_params["input"] == [*OUTPUT, {"role": "user", "content": "Continue"}]
 
 
-@pytest.mark.parametrize("output", [[], [RETAINED], [{**COMPACTION, "encrypted_content": ""}]])
+@pytest.mark.parametrize("output", [[], [RETAINED], [{**COMPACTION, "encrypted_content": ""}], [COMPACTION, {}]])
 def test_responses_rejects_missing_compaction_state(compact_server, output):
     compact_server["body"] = json.dumps(_compact_payload(output)).encode()
     result = responses.compact(_model(compact_server), _context(), StreamOptions())

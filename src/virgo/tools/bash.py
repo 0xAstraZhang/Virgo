@@ -11,7 +11,15 @@ from pathlib import Path
 
 from ..agent.types import ToolResult
 from ..i18n import Translator
-from .output import MAX_BYTES, CommandOutput, bound, display_output, open_output, read_output
+from .output import (
+    CommandOutput,
+    bound,
+    display_output,
+    exceeds_budget,
+    open_output,
+    read_output,
+    save_output,
+)
 
 DEFAULT_TIMEOUT = 300
 MAX_TIMEOUT = 3600
@@ -54,7 +62,7 @@ def kill_tree(proc) -> None:
 
 
 def run_command(
-    command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter, execution_context
+    command: str, cwd: Path, timeout: float, signal: threading.Event, *, interpreter, execution_context, t=None
 ) -> tuple[CommandOutput, int | None, str]:
     """Spool stdout/stderr directly to disk, returning only a bounded tail and metadata."""
     if signal.is_set():
@@ -104,11 +112,20 @@ def run_command(
         }
     captured = read_output(record, execution_context=execution_context)
     # S3-09: Normal un-truncated foreground commands must not leak spool files on disk.
-    needs_record = captured.truncated or len(captured.text.rstrip().encode("utf-8", errors="replace")) > MAX_BYTES - 256
+    suffix = _status_suffix(proc.returncode, status, timeout, t or Translator())
+    needs_record = captured.truncated or exceeds_budget(captured.text.rstrip() + suffix)
     if not needs_record:
         record.unlink(missing_ok=True)
         captured = replace(captured, path=None)
     return replace(captured, boundary=boundary), proc.returncode, status
+
+
+def _status_suffix(code, status, timeout, t) -> str:
+    if status == "timeout":
+        return t("tools.output.timeout", text="", timeout=timeout)
+    if status == "aborted":
+        return t("tools.output.aborted", text="")
+    return t("tools.output.exit", text="", code=code) if code else ""
 
 
 def format_output(
@@ -122,23 +139,24 @@ def format_output(
     t=None,
 ) -> ToolResult:
     t = t or Translator()
+    suffix = _status_suffix(code, status, timeout, t)
     if isinstance(output, str):
         # Compatibility for extensions that format a pre-existing in-memory result.
         output = bound(output, cwd, prefix, keep="tail")
-    text = display_output(output, reserved_bytes=256, t=t)
+        if not output.path and exceeds_budget(output.text.rstrip() + suffix):
+            output = replace(output, path=save_output(output.text, cwd, prefix))
+    body = output.text.rstrip() or t("tools.output.empty")
+    text = display_output(output, reserved_bytes=len(suffix.encode()), reserved_lines=len(suffix.splitlines()),
+                          t=t) + suffix
     details = {
         "exit_code": code,
         "status": status,
-        "truncated": output.truncated
-        or len((output.text.rstrip() or t("tools.output.empty")).encode("utf-8", errors="replace")) > MAX_BYTES - 256,
+        "truncated": output.truncated or exceeds_budget(body + suffix),
         "output_bytes": output.total_bytes,
         "output_id": str(output.path) if output.path else None,
     }
-    if status == "timeout":
-        return ToolResult.error(t("tools.output.timeout", text=text, timeout=timeout), details)
     if status == "aborted":
         details["cancelled"] = True
-        return ToolResult.error(t("tools.output.aborted", text=text), details)
-    if code:
-        return ToolResult.error(t("tools.output.exit", text=text, code=code), details)
+    if status in {"aborted", "timeout"} or code:
+        return ToolResult.error(text, details)
     return ToolResult.text(text, details)

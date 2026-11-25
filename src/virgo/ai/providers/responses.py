@@ -184,7 +184,10 @@ def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | Non
         if not isinstance(data, dict):
             raise ProviderError("The provider returned an invalid compacted context.")
         items = data.get("output")
-        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        if not isinstance(items, list) or not all(
+            isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"].strip()
+            for item in items
+        ):
             raise ProviderError("The provider returned an invalid compacted context.")
         if not any(
             item.get("type") == "compaction"
@@ -194,7 +197,9 @@ def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | Non
         ):
             raise ProviderError("The provider returned no encrypted compaction item.")
         out.content = [RawContent(model.api, copy.deepcopy(item)) for item in items]
-        out.usage = _usage(data.get("usage") or {})
+        usage = data.get("usage") or {}
+        out.input_usage_reported = type(usage.get("input_tokens")) is int
+        out.usage = _usage(usage)
         out.stop_reason = "compaction"
     except Exception as error:  # provider contract: failures are data
         if isinstance(error, ProviderError):
@@ -368,7 +373,9 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             response = event.get("response") or {}
             for i, item in enumerate(response.get("output") or []):
                 yield from finish(i, item)
-            out.usage = _usage(response.get("usage") or {})
+            usage = response.get("usage") or {}
+            out.input_usage_reported = type(usage.get("input_tokens")) is int
+            out.usage = _usage(usage)
             status = response.get("status") or kind.removeprefix("response.")
             reason = (response.get("incomplete_details") or {}).get("reason")
             if status == "failed":

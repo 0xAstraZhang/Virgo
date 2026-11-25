@@ -19,6 +19,7 @@ def record_call(store, model, message, *, purpose, started, effort=None, agent="
         "duration": round(time.monotonic() - started if duration is None else duration, 6),
         "stop_reason": message.stop_reason,
         "usage": asdict(message.usage),
+        "input_usage_reported": message.input_usage_reported,
     }
     if request_metadata is not None:
         data.update(request_metadata)

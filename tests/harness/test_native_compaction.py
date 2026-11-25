@@ -192,7 +192,7 @@ def test_native_failure_preserves_history_and_never_calls_summary(make_session, 
     assert session.store.entries[:len(before[2])] == before[2]
     appended = session.store.entries[len(before[2]):]
     assert all(entry["type"] == "custom" for entry in appended)
-    assert {entry["kind"] for entry in appended} == {"model_call", "runtime_diagnostic"}
+    assert {entry["kind"] for entry in appended} == {"model_call", "runtime_diagnostic", "compaction_decision"}
     assert session.store.last_compaction() is None
     assert session.store.custom("model_call")[-1]["stop_reason"] == "error"
     evidence = session.main.diagnostic_access.recent()

@@ -1,6 +1,9 @@
 """Harness commands, preferences and runtime messages."""
 
 MESSAGES = {
+    "harness.compact.shell_short": "[Shell 退出码为 0。较早的输出已缩短。"
+    "完整日志可用 read_output，output_id={output_id}。]\n{excerpt}",
+    "harness.compact.shell_unavailable": "[完整日志不可用，output_id={output_id}。]",
     "harness.agent.aborted": "用户已中止",
     "harness.agent.hook_failed": "工具调用钩子执行失败：{error}",
     "harness.agent.invalid_args": "参数无效：\n{errors}",

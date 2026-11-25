@@ -29,6 +29,13 @@ from .types import (
 )
 
 
+def request_model(model: Model, context: Context) -> Model:
+    model = context_model(model, context.messages)
+    if context.web_tools and model.api == "openai":
+        model = replace(model, api="openai-responses")
+    return model
+
+
 def stream(model: Model, context: Context, options: StreamOptions | None = None) -> EventStream:
     """Stream one assistant message. Never raises: failures arrive as an `error` event."""
     options = options or StreamOptions()
@@ -39,9 +46,7 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
         from .auth import authenticated_model
 
         model = authenticated_model(model, options.signal)
-        model = context_model(model, context.messages)
-        if context.web_tools and model.api == "openai":
-            model = replace(model, api="openai-responses")
+        model = request_model(model, context)
         context = replace(context, messages=normalize(context.messages, model))
         if model.api == "anthropic":
             from .providers import anthropic as impl

@@ -754,7 +754,7 @@ def make_shell_tool(shell: Shell, jobs=None, *, execution=None, on_unavailable=N
                 ctx.t("tools.shell.job_started", id=job.id, kind=shell.kind, version=shell.version),
                 details={"job_id": job.id, "boundary": dict(job.boundary or {})},
             )
-        out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell,
+        out, code, status = run_command(args["command"], ctx.cwd, timeout, ctx.signal, interpreter=shell, t=ctx.t,
                                         **({"execution_context": policy} if policy is not None else {}))
         result = format_output(out, code, status, ctx.cwd, timeout, prefix=shell.tool_name, t=ctx.t)
         result.details.update(shell=shell.kind, executable=shell.executable, version=shell.version)

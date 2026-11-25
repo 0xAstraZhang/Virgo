@@ -124,12 +124,14 @@ def read_output(record: OutputRecord, *, max_bytes: int = MAX_BYTES, max_lines: 
     return CommandOutput(text, record, start > 0 or cut, total)
 
 
-def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, reserved_bytes: int = 0, t=None) -> str:
+def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, reserved_bytes: int = 0,
+                   reserved_lines: int = 0, t=None) -> str:
     """Render within the total preview budget, allowing for caller-supplied text."""
     t = t or Translator()
     available = max(0, max_bytes - reserved_bytes)
     text = output.text.rstrip() or t("tools.output.empty")
-    if not output.truncated and len(_encode(text)) <= available:
+    lines = MAX_LINES - reserved_lines
+    if not output.truncated and len(_encode(text)) <= available and len(text.splitlines()) <= lines:
         return text
     header = t(
         "tools.output.truncated",
@@ -140,9 +142,12 @@ def display_output(output: CommandOutput, *, max_bytes: int = MAX_BYTES, reserve
     )
     # Include the pointer in the budget so the harness won't truncate the tail again.
     body_bytes = available - len(_encode(header))
-    if body_bytes <= 0:
-        return _encode(header)[:available].decode("utf-8", errors="ignore")
-    text, _ = truncate_tail(text, max_bytes=body_bytes)
+    body_lines = lines - len(header.splitlines())
+    if lines <= 0 or available <= 0:
+        return ""
+    if body_bytes <= 0 or body_lines <= 0:
+        return truncate_head(header, max_lines=lines, max_bytes=available)[0]
+    text, _ = truncate_tail(text, max_lines=body_lines, max_bytes=body_bytes)
     return header + text
 
 

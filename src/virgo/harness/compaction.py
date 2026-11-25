@@ -20,7 +20,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Literal
 
 from ..ai import native_compact
@@ -28,6 +28,7 @@ from ..ai.compaction import context_binding, is_native_context, native_api
 from ..ai.transform import is_user_like, strip_thinking
 from ..ai.types import (
     AssistantMessage,
+    Context,
     RawContent,
     StreamOptions,
     ToolResultMessage,
@@ -103,8 +104,12 @@ def estimate_tokens(
             return m.usage.total + sum(_chars(x) for x in messages[i + 1 :]) // 4
     # Reported usage already includes the system prompt and tool definitions.
     # Add them only when no valid usage exists (new, legacy or compacted context).
+    return estimate_chars(messages, system=system, tools=tools) // 4
+
+
+def estimate_chars(messages, *, system: str, tools: list[ToolSpec] | None) -> int:
     overhead = len(system) + sum(len(json.dumps(asdict(tool), ensure_ascii=False)) for tool in tools or [])
-    return (overhead + sum(_chars(m) for m in messages)) // 4
+    return overhead + sum(_chars(m) for m in messages)
 
 
 def find_cut(messages: list, keep_tokens: int) -> int:
@@ -219,11 +224,13 @@ def _report_failure(rt: Runtime, msg: AssistantMessage, *, complete: bool, limit
     return reason
 
 
-def compact_context(rt: Runtime, focus: str | None, reason: str, *, model, concise: bool) -> CompactOutcome:
+def compact_context(rt: Runtime, focus: str | None, reason: str, *, model, concise: bool,
+                    estimate=None) -> CompactOutcome:
     if api := native_api(model):
-        return _native_compact(rt, model, api, focus, reason, concise)
+        return _native_compact(rt, model, api, focus, reason, concise, estimate)
     session = rt.session
     messages = rt.messages
+    view = rt.shell_logs.project(Context("", messages, []), model)
     window = model.context_window
     keep = int(session.settings.get("compaction.keepRecentTokens", 20000))
     target = SUMMARY_TOKENS
@@ -232,14 +239,14 @@ def compact_context(rt: Runtime, focus: str | None, reason: str, *, model, conci
         target = min(SUMMARY_TOKENS, max(256, window // 32))
     if reason == "overflow":
         keep //= 2
-    cut = find_cut(messages, keep)
+    cut = find_cut(view.messages, keep)
     prev = messages[0] if messages and getattr(messages[0], "kind", None) == "summary" else None
     start = 1 if prev else 0
-    to_summarize = messages[start:cut]
+    to_summarize = view.messages[start:cut]
     if not to_summarize:
         return None
     session.bus.emit("before_compact", rt)
-    tokens_before = rt.context_tokens()
+    tokens_before = rt.context_tokens() if estimate is None else estimate
 
     read, modified = _files(to_summarize)
 
@@ -299,16 +306,18 @@ def compact_context(rt: Runtime, focus: str | None, reason: str, *, model, conci
     return {"tokens_before": tokens_before, "summary": summary, "kept": len(kept_msgs)}
 
 
-def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str, concise: bool) -> CompactOutcome:
+def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str, concise: bool,
+                    estimate=None) -> CompactOutcome:
     messages = rt.messages
     if not messages or (len(messages) == 1 and is_native_context(messages[0])):
         return None
     session = rt.session
+    view = rt.shell_logs.project(Context("", messages, []), replace(model, api=api))
     keep = int(session.settings.get("compaction.keepRecentTokens", 20000))
     if reason == "overflow":
         keep //= 2
     # OpenAI returns the canonical complete next window; never split or prune it.
-    cut = find_cut(messages, keep) if api == "anthropic" else len(messages)
+    cut = find_cut(view.messages, keep) if api == "anthropic" else len(messages)
     if not cut or (cut == 1 and is_native_context(messages[0])):
         return None
     if concise:
@@ -316,10 +325,10 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
             return None  # These endpoints cannot accept a shorter summary target.
         focus = RECOVERY_INSTRUCTION
     session.bus.emit("before_compact", rt)
-    tokens_before = rt.context_tokens()
+    tokens_before = rt.context_tokens() if estimate is None else estimate
     if focus and api != "anthropic":
         session.ui.print(session.t("harness.compact.native_focus"), "warn")
-    context = rt.request_context(messages[:cut], model)
+    context = rt.request_context(view.messages[:cut], model)
     binding = context_binding(model, context)
     started = time.monotonic()
     rt.request_budget.consume()

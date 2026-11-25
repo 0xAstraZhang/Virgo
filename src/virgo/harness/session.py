@@ -37,7 +37,7 @@ from ..execution_policy import is_native_windows, is_windows_sandbox_supported, 
 from ..i18n import Translator, normalize_language
 from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget
-from ..tools.shell import Shell
+from ..tools.shell import Shell, ShellTool
 from .commands import Commands, expand_template, load_templates, parse_frontmatter, register_builtins
 from .diagnostics import DiagnosticLog
 from .execution import install_execution
@@ -55,6 +55,7 @@ from .runtime import Runtime
 from .runtime_limits import ChildCancellation
 from .settings import Paths, Settings
 from .shell_commands import ShellSelection
+from .shell_log_compaction import foreground_success
 from .store import SessionSaveError, SessionStore
 from .subagents import SubagentStore
 from .telemetry import record_call
@@ -889,6 +890,9 @@ class AgentSession:
         return self._check_policy("before_execute", ev)
 
     def _after_tool(self, ev: ToolCallEvent, res: ToolResult) -> ToolResult:
+        shell_output = None
+        if isinstance(ev.tool, ShellTool) and not ev.args.get("background") and foreground_success(res.details, res.is_error):
+            shell_output = res.details["output_id"], res.as_text()
         res = self.bus.chain("tool_result", res, ev, self)
         bounded = []
         for b in res.content:
@@ -897,6 +901,11 @@ class AgentSession:
                                        execution_context=ev.origin.runtime.execution_context))
             bounded.append(b)
         res.content = bounded
+        if isinstance(res.details, dict):
+            res.details.pop("foreground_shell_output", None)
+            if shell_output is not None and foreground_success(res.details, res.is_error):
+                if shell_output == (res.details["output_id"], res.as_text()):
+                    res.details["foreground_shell_output"] = True
         return res
 
     # -- running -----------------------------------------------------------------

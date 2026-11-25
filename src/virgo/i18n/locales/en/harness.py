@@ -1,6 +1,9 @@
 """Harness commands, preferences and runtime messages."""
 
 MESSAGES = {
+    "harness.compact.shell_short": "[Shell exited with code 0. Earlier output shortened. "
+    "Use read_output with output_id={output_id} for the full log.]\n{excerpt}",
+    "harness.compact.shell_unavailable": "[Full Shell log is unavailable for output_id={output_id}.]",
     "harness.agent.aborted": "aborted by user",
     "harness.agent.hook_failed": "Tool call hook failed: {error}",
     "harness.agent.invalid_args": "Invalid arguments:\n{errors}",

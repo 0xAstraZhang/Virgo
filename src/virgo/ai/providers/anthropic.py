@@ -256,6 +256,7 @@ def compact(
         data = response.model_dump(mode="json", exclude_none=True)
         usage = data.get("usage") or {}
         iterations = usage.get("iterations") or [usage]
+        out.input_usage_reported = all(type(u.get("input_tokens")) is int for u in iterations)
         out.usage = Usage(
             input=sum(u.get("input_tokens", 0) or 0 for u in iterations),
             output=sum(u.get("output_tokens", 0) or 0 for u in iterations),
@@ -331,6 +332,7 @@ def _events(items, out: AssistantMessage):
         t = ev.type
         if t == "message_start":
             u = ev.message.usage
+            out.input_usage_reported = type(u.input_tokens) is int
             out.usage = Usage(
                 input=u.input_tokens or 0,
                 output=u.output_tokens or 0,
@@ -427,8 +429,9 @@ def _events(items, out: AssistantMessage):
                     )
             if ev.usage is not None:
                 out.usage.output = ev.usage.output_tokens or out.usage.output
-                if getattr(ev.usage, "input_tokens", None):
+                if type(getattr(ev.usage, "input_tokens", None)) is int:
                     out.usage.input = ev.usage.input_tokens
+                    out.input_usage_reported = True
         elif t == "message_stop":
             completed = True
     if not completed:
