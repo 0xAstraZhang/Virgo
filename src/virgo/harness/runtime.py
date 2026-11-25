@@ -476,7 +476,8 @@ class Runtime:
         max_retries = int(s.settings.get("retry.maxRetries", 3))
         wait_budget = max(0.0, float(s.settings.get("retry.maxWaitSeconds", 120)))
         retries = overloaded = 0
-        overflow_done = False
+        overflow_pruned = False
+        overflow_summarized = False
         web_fallbacks = 0
         model = self.model
         checked_model = None
@@ -534,18 +535,24 @@ class Runtime:
                 # and let the user resume rather than silently replaying the turn.
                 yield StreamEvent("error", failed)
                 return
-            if (failed.error_kind == "overflow" and not overflow_done and self.compaction
+            if (failed.error_kind == "overflow" and not overflow_summarized and self.compaction
                     and not signal.is_set()):
-                overflow_done = True
                 yield StreamEvent("retry", failed)
-                outcome = self.compactor.on_overflow(model)
+                outcome = self.compactor.on_overflow(model, allow_prune=not overflow_pruned)
                 if outcome == "cancelled":
                     yield aborted_event(AssistantMessage())
                     return
-                if outcome:
+                if outcome == "pruned":
+                    overflow_pruned = True
                     record_call(self.accounting_store, request_model, failed, purpose="retry",
                                 started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
                     continue
+                if outcome == "summarized":
+                    overflow_summarized = True
+                    record_call(self.accounting_store, request_model, failed, purpose="retry",
+                                started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
+                    continue
+                overflow_summarized = True
             elif failed.error_kind == "retryable" and retries < max_retries and not signal.is_set():
                 retries += 1
                 text = (failed.error_message or "").lower()
