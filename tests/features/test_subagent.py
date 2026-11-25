@@ -345,3 +345,71 @@ def test_trashing_session_detaches_active_background_subagent_writer(make_sessio
 
     # Late events and handle release must not recreate the deleted trace directory.
     assert not trace_dir.exists()
+
+
+def test_subagent_default_budget(make_session):
+    settings = make_session().settings
+    assert settings.get("subagents.maxTurns") == 20
+    assert settings.get("subagents.maxTotalTurns") == 40
+    assert settings.get("subagents.effort") is None
+
+
+def test_subagent_zero_total_turns_starts_no_model_request(make_session):
+    session = make_session(settings={"subagents": {"maxTotalTurns": 0}})
+    result = session.services["subagents"].run("inspect", "inspect", None)
+    assert result.is_error and result.details["status"] == "turn_limit"
+    assert not faux.CALLS["test"]
+
+
+def test_subagent_total_turns_survive_compaction_and_session_resume(make_session):
+    settings = {"subagents": {"maxTurns": 2, "maxTotalTurns": 3}}
+    first = make_session(persist=True, settings=settings)
+    # Give the parent a durable transcript before reopening it.
+    first.prompt("start")
+    lookup = faux.reply(tools=[("glob", {"pattern": "*"})])
+    faux.handler("test", lambda _: lookup)
+    child = first.services["subagents"].run("look", "first", None)
+    assert child.details["status"] == "turn_limit"
+    handle = first.subagent_store_for().get(child.details["agent_id"])
+    handle.store.append("compaction", summary="Previous findings", kept_ids=[])
+    first.shutdown()
+
+    resumed = make_session(session=first.store.path, settings=settings)
+    calls = []
+
+    def respond(ctx):
+        calls.append(ctx)
+        return lookup
+
+    faux.handler("test", respond)
+    run = resumed.services["subagents"].run
+    limited = run("continue", "second", None, agent_id=handle.id)
+    assert limited.is_error and limited.details["status"] == "turn_limit"
+    assert len(calls) == 1
+    for _ in range(2):
+        exhausted = run("continue", "third", None, agent_id=handle.id)
+        assert exhausted.is_error and exhausted.details["status"] == "turn_limit"
+        assert "subagents.maxTotalTurns" in exhausted.as_text()
+    assert len(calls) == 1
+    assert not resumed.subagent_store_for().get(handle.id).active
+    faux.push("test", faux.reply("fresh"))
+    assert not run("another task", "fourth", None).is_error
+
+
+@pytest.mark.parametrize("override,expected", [(None, "high"), ("low", "low")])
+def test_subagent_effort_reaches_provider_and_usage(make_session, monkeypatch, override, expected):
+    session = make_session(settings={"effort": "high", "subagents": {"effort": override}})
+    requests = []
+    stream = faux.stream
+
+    def observe(model, ctx, opts):
+        requests.append(opts.effort)
+        return stream(model, ctx, opts)
+
+    monkeypatch.setattr(faux, "stream", observe)
+    faux.push("test", faux.reply(tools=[("agent", {"description": "look", "prompt": "find files"})]),
+              faux.reply("child done"), faux.reply("main done"))
+    session.prompt("delegate")
+    assert requests == ["high", expected, "high"]
+    usage = [e["data"] for e in session.store.entries if e.get("kind") == "model_call"]
+    assert [call["effort"] for call in usage if call["agent"] == "subagent-1"] == [expected]

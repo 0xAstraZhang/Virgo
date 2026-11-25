@@ -36,6 +36,17 @@ KNOWN_MODELS = {
     # The directory may omit limits; do not mistake pricing thresholds for capacity.
     "grok-4.7": {"contextWindow": 500_000},
     "grok-4.7-fast": {"contextWindow": 500_000},
+    **{
+        model_id: {
+            "contextWindow": window, "maxTokens": 128_000, "reasoning": True,
+            "supportedReasoningLevels": ("low", "medium", "high", "xhigh"),
+            "defaultReasoningLevel": "medium",
+        }
+        for model_id, window in (
+            ("gpt-6.2-sol", 500_000), ("gpt-6.2-astra", 272_000),
+            ("gpt-6.1-sol", 500_000), ("gpt-6-sol", 272_000),
+        )
+    },
     "gpt-6-luna": {
         "contextWindow": 1_050_000,
         "maxTokens": 128_000,

@@ -12,6 +12,7 @@ from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from ..diagnostics import safe_text
 from ..harness.extensions import ExtensionAPI
+from ..harness.preferences import effort_levels
 from ..harness.subagents import SubagentBusyError, SubagentHandle, SubagentLookupError
 
 
@@ -43,31 +44,38 @@ class Subagents:
         final_status = "error"
         prompt_message = UserMessage(prompt)
         try:
-            messages, ids = handle.store.build_context()
+            total_limit = api.settings.get("subagents.maxTotalTurns")
+            remaining = total_limit - handle.assistant_turns()
             registry.record_run(
                 handle,
                 description=description,
                 parent_tool_call_id=parent_tool_call_id,
                 job_id=job_id,
             )
-            rt = api.create_runtime(
-                name,
-                "subagent",
-                parent=parent,
-                cwd=cwd,
-                store=handle.store,
-                messages=messages,
-                ids=ids,
-                max_turns=int(api.settings.get("subagents.maxTurns", 50)),
-                signal=signal,
-                compaction=True,
-                origin_parent=origin_parent,
-                execution_context=execution_context,
-                parent_tool_call_id=parent_tool_call_id,
-                description=description,
-                job_id=job_id,
-            )
-            rt.agent.prompt([prompt_message])
+            if remaining > 0:
+                effort = api.settings.get("subagents.effort")
+                if effort is not None and effort not in effort_levels(api.session.model):
+                    raise ValueError(f"Unsupported subagents.effort {effort!r} for {api.session.model.spec}")
+                messages, ids = handle.store.build_context()
+                rt = api.create_runtime(
+                    name,
+                    "subagent",
+                    parent=parent,
+                    cwd=cwd,
+                    store=handle.store,
+                    messages=messages,
+                    ids=ids,
+                    max_turns=min(int(api.settings.get("subagents.maxTurns", 20)), remaining),
+                    effort=effort,
+                    signal=signal,
+                    compaction=True,
+                    origin_parent=origin_parent,
+                    execution_context=execution_context,
+                    parent_tool_call_id=parent_tool_call_id,
+                    description=description,
+                    job_id=job_id,
+                )
+                rt.agent.prompt([prompt_message])
         except Exception as error:
             failure = api.report_error(
                 error, phase="subagent.run", store=owner, context={"agent": name, "role": "subagent"}
@@ -188,6 +196,11 @@ class Subagents:
                     f"{api.t('features.agent.aborted')}\n\n[agent_id: {name}]",
                     details={**details, "status": "aborted", "cancelled": True},
                 )
+            if remaining <= 0 or (last is not None and last.stop_reason == "turn_limit"):
+                details["status"] = "turn_limit"
+                if remaining <= 0 or remaining == rt.agent.cfg.max_turns:
+                    return failed(api.t("features.agent.total_turn_limit", turns=total_limit))
+                return failed(api.t("features.agent.turn_limit", turns=rt.agent.cfg.max_turns))
             if last is None:
                 details["error"] = api.report_error(
                     api.t("features.agent.no_answer"),
@@ -209,9 +222,6 @@ class Subagents:
                     f"{api.t('features.agent.aborted')}\n\n[agent_id: {name}]",
                     details={**details, "status": "aborted", "cancelled": True},
                 )
-            if last.stop_reason == "turn_limit":
-                details["status"] = "turn_limit"
-                return failed(api.t("features.agent.turn_limit", turns=rt.agent.cfg.max_turns))
             if last.stop_reason != "stop":
                 details["status"] = "incomplete"
                 reason = safe_text(last.error_message or last.text() or last.stop_reason)[:500]

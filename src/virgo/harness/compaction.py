@@ -324,13 +324,13 @@ def _native_compact(rt: Runtime, model, api: str, focus: str | None, reason: str
     started = time.monotonic()
     rt.request_budget.consume()
     max_tokens = min(RECOVERY_TOKENS if concise else 8000, model.max_tokens)
-    effort = session.effort_for(model)
+    effort = rt.effort_for(model)
     result = native_compact(
         model,
         context,
         StreamOptions(
             signal=rt.agent.signal, max_tokens=max_tokens, effort=effort,
-            prompt_cache_key=rt.diagnostic_id,
+            prompt_cache_key=rt.diagnostic_id, io_bridge=session.io_bridge,
         ),
         focus=focus,
     )

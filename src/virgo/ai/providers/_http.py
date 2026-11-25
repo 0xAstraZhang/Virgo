@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from concurrent.futures import Future
 from contextlib import AsyncExitStack, closing
 from contextvars import ContextVar
+from http.cookiejar import CookieJar
 
 import anyio
 import httpx
@@ -87,6 +88,43 @@ async def _trace_request(request):
     request.extensions["trace"] = _request.get().handshake.trace
 
 
+class _NoClientCookies(CookieJar):
+    def extract_cookies(self, response, request):
+        """The shared connection pool must never retain response cookies."""
+
+
+class _CodexRoute:
+    # RFC 6265 cookie-octet, optionally quoted. Reject combined or malformed values.
+    _cookie_pair = re.compile(rb'(__oailb|__cflb)=("?)[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*\2')
+
+    def __init__(self):
+        self.cookies = httpx.Cookies()
+        self.turn_states = {}
+
+    def apply(self, request, session):
+        request.headers.pop("Cookie", None)
+        request.headers.pop("Cookie2", None)
+        self.cookies.set_cookie_header(request)
+        if session in self.turn_states:
+            request.headers.update([(b"x-codex-turn-state", self.turn_states[session])])
+
+    def capture(self, response, session):
+        allowed = []
+        for name, value in response.headers.raw:
+            if name.lower() == b"x-codex-turn-state":
+                self.turn_states[session] = value
+            elif (name.lower() == b"set-cookie" and len(value) <= 8192
+                  and self._cookie_pair.fullmatch(value.partition(b";")[0].strip())):
+                allowed.append((name, value))
+        # Only the whitelisted fields may enter the endpoint's cookie jar. The
+        # standard jar handles Domain, Path, Secure, Max-Age and Expires.
+        response.headers.pop("set-cookie", None)
+        response.headers.pop("set-cookie2", None)
+        if allowed:
+            response.headers.update(allowed)
+            self.cookies.extract_cookies(response)
+
+
 class AsyncSDKBridge:
     """One lazy I/O thread and SDK client pool shared by a session's requests."""
 
@@ -96,7 +134,26 @@ class AsyncSDKBridge:
         self._thread = None
         self._closed = False
         self._clients = {}
+        self._http_client = None
+        self._codex_routes = {}
         self._requests = set()
+
+    def http_client(self):
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(60.0, connect=15.0),
+                event_hooks={"request": [_trace_request]},
+                cookies=_NoClientCookies(),
+            )
+        return self._http_client
+
+    def codex_route(self, request):
+        url = request.url
+        key = (url.scheme, url.host, url.port, url.raw_path.partition(b"?")[0],
+               request.headers.get("chatgpt-account-id"))
+        if key not in self._codex_routes:
+            self._codex_routes[key] = _CodexRoute()
+        return self._codex_routes[key]
 
     def client(self, key, sdk, factory, kwargs):
         # Only called by request tasks on the owner loop. Use the SDK's transport
@@ -151,6 +208,10 @@ class AsyncSDKBridge:
             request.cancel()
         await asyncio.gather(*(r.task for r in requests), return_exceptions=True)
         async with AsyncExitStack() as clients:
+            if self._http_client is not None:
+                clients.push_async_callback(self._http_client.aclose)
+                self._http_client = None
+            self._codex_routes.clear()
             for client in self._clients.values():
                 clients.push_async_callback(client.close)
             self._clients.clear()
@@ -394,16 +455,22 @@ def _parse_events(lines) -> Iterator[dict]:
             yield event
 
 
-def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=None) -> Iterator[dict]:
+def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=None,
+                codex_session: str | None = None) -> Iterator[dict]:
     """Keep the TLS read and response close on the same I/O task, including early SSE termination."""
     async def open_stream(request, resources):
-        client = await resources.enter_async_context(httpx.AsyncClient(
-            timeout=httpx.Timeout(60.0, connect=15.0),
-            event_hooks={"request": [_trace_request]},
-        ))
         request.check_signal()
-        response = await resources.enter_async_context(client.stream("POST", url, headers=headers, json=body))
+        client = bridge.http_client()
+        outgoing = client.build_request("POST", url, headers=headers, json=body)
+        route = bridge.codex_route(outgoing) if codex_session is not None else None
+        if route is not None:
+            session = codex_session or outgoing.headers.get("thread-id") or outgoing.headers.get("session-id")
+            route.apply(outgoing, session)
+        response = await client.send(outgoing, stream=True, follow_redirects=False)
+        resources.push_async_callback(response.aclose)
         request.response = response
+        if route is not None:
+            route.capture(response, session)
         if response.status_code >= 400:
             await response.aread()
             raise _response_error(response)

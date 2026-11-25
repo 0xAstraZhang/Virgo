@@ -8,6 +8,8 @@ MESSAGES = {
     "features.agent.busy": "Sub-agent {id} is already running.",
     "features.agent.failed": "Sub-agent failed: {error}",
     "features.agent.list_empty": "No sub-agents in this session.",
+    "features.agent.total_turn_limit": "This sub-agent has used all {turns} assistant turns allowed by "
+    "subagents.maxTotalTurns in this session. Inspect its completed work before continuing.",
     "features.agent.turn_limit": "Sub-agent stopped at its {turns}-turn limit without finishing. "
     "Inspect completed work before delegating a smaller task or increasing subagents.maxTurns.",
     "features.agent.incomplete": "Sub-agent stopped without a completed answer: {reason}. "

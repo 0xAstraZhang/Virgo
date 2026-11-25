@@ -63,6 +63,18 @@ def test_native_routing_is_provider_specific(model, expected):
     assert native_api(model) == expected
 
 
+def test_codex_sol_default_compaction_threshold(make_session):
+    runtime = make_session().main
+    runtime.model = ai.resolve_model("openai-codex/gpt-6.2-sol")
+    message = AssistantMessage([TextContent("reply")], usage=Usage(input=102_400))
+    runtime.messages.append(message)
+    assert not runtime._compaction_due()
+    message.usage.input = 399_999
+    assert not runtime._compaction_due()
+    message.usage.input = 400_000
+    assert runtime._compaction_due()
+
+
 @pytest.mark.parametrize("provider,api", [
     ("openai", "openai"), ("anthropic", "anthropic"), ("deepseek", "openai"),
     ("xai", "openai-responses"),
@@ -103,6 +115,9 @@ def test_openai_compaction_uses_complete_window_and_roundtrips(make_session, mon
     monkeypatch.setattr(session, "complete", lambda *a, **kw: pytest.fail("must use native compaction"))
     session.compact()
     assert requests[0][0] is session.model
+    if session.model.api == "openai-codex":
+        assert requests[0][2].io_bridge is session.io_bridge
+        assert requests[0][2].prompt_cache_key == session.main.diagnostic_id
     assert requests[0][1].messages == original
     assert len(session.main.messages) == 1
     assert session.main.messages[0].usage.total == 0

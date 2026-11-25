@@ -7,6 +7,8 @@ MESSAGES = {
     "features.agent.busy": "子代理 {id} 正在运行中。",
     "features.agent.failed": "子代理失败: {error}",
     "features.agent.list_empty": "当前会话暂无子代理。",
+    "features.agent.total_turn_limit": "此子代理已用完 subagents.maxTotalTurns 允许的 {turns} 轮会话总额度。"
+    "请先检查已完成的工作再继续。",
     "features.agent.turn_limit": "子代理达到 {turns} 轮上限，任务尚未完成。"
     "先检查已经完成的工作，再缩小任务范围或调整 subagents.maxTurns。",
     "features.agent.incomplete": "子代理未生成完整的最终回答：{reason}。"

@@ -39,7 +39,7 @@ DEFAULTS: dict[str, Any] = {
     "anthropic": {"fallbacks": True, "thinkingDisplay": "summarized", "thinkingBinding": True},
     "fetch": {"mode": "auto", "backend": "http", "timeout": 20, "maxBytes": 2097152, "maxUses": None, "maxContentTokens": 8000},
     "search": {"mode": "auto", "backend": "duckduckgo", "timeout": 15, "maxUses": None},
-    "subagents": {"maxTurns": 50},
+    "subagents": {"maxTurns": 20, "maxTotalTurns": 40, "effort": None},
 }
 
 
@@ -240,6 +240,15 @@ def _validate(data: dict) -> None:
     calls = budget.get("maxModelCalls")
     if calls is not None and (type(calls) is not int or calls < 1):
         raise ValueError("budget.maxModelCalls must be null or a positive integer")
+    subagents = data["subagents"]
+    if not isinstance(subagents, dict):
+        raise ValueError("subagents must be an object")
+    total_turns = subagents.get("maxTotalTurns")
+    if type(total_turns) is not int or total_turns < 0:
+        raise ValueError("subagents.maxTotalTurns must be a nonnegative integer")
+    effort = subagents.get("effort")
+    if effort is not None and (not isinstance(effort, str) or not effort.strip()):
+        raise ValueError("subagents.effort must be null or a reasoning level")
 
 
 def same_directory(left: Path, right: Path) -> bool:
@@ -363,7 +372,7 @@ class Settings:
 
     def set(self, dotted: str, value: Any) -> None:
         parts = dotted.split(".")
-        checked = parts[0] in {"permissions", "execution", "sandbox", "extensions"}
+        checked = parts[0] in {"permissions", "execution", "sandbox", "extensions", "subagents"}
         data = copy.deepcopy(self.data) if checked else self.data
         cur = data
         for part in parts[:-1]:
