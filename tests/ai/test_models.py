@@ -97,7 +97,7 @@ def test_existing_builtin_reasoning_transports_advertise_low(spec):
 
 
 def test_gpt6_family_is_recognized_as_reasoning_without_inventing_levels():
-    model = resolve_model("openai/gpt-6.1-sol")
+    model = resolve_model("openai/gpt-6-unknown")
     assert model.reasoning and model.supported_reasoning_levels is None
 
 
@@ -169,3 +169,14 @@ def test_catalog_default_alone_overrides_preset_effort_fallback(make_session, sp
     assert model.default_reasoning_level == "medium"
     params = openai.build_params(model, Context("", []), StreamOptions(effort="medium"))
     assert params["reasoning_effort"] == "medium"
+
+
+@pytest.mark.parametrize("model_id, window", [
+    ("gpt-6.2-sol", 500_000), ("gpt-6.2-astra", 272_000),
+    ("gpt-6.1-sol", 500_000), ("gpt-6-sol", 272_000),
+])
+def test_codex_known_limits_and_effort(model_id, window):
+    model = resolve_model(f"openai-codex/{model_id}")
+    assert (model.context_window, model.max_tokens) == (window, 128_000)
+    assert model.reasoning and model.supported_reasoning_levels == ("low", "medium", "high", "xhigh")
+    assert model.default_reasoning_level == "medium"

@@ -37,7 +37,9 @@ Virgo 将运行时能力划分为三层，对应不同的覆盖优先级与故�
 - **不可变执行上下文**：每次任务启动时捕获原始的 `HostContext` 或 `SandboxContext` 以及锚定在当前分支叶节点的 `ExecutionOrigin`。子 Agent 与后台任务沿用该捕获上下文和分支归属，不受后续 UI 切换模式、分支或会话的影响。
 - **Core 托管后台任务**：`JobManager` 统一负责后台任务的生命周期、完成通知与清理；`background` 和 `subagent` 插件只提供模型工具（`job_output`、`job_kill`、`agent`）和 `/jobs` 命令。
 
-Codex 账号适配器在同一个 I/O 任务中读取 HTTPS 事件流并关闭响应。协议终态事件可能先于 HTTP 响应体结束。适配器会等本次请求清理完成，再返回结果或结束取消操作。
+每个子代理单次运行最多使用 `subagents.maxTurns` 个 assistant 轮次（默认 20）。同一会话中，同一 `agent_id` 的所有运行合计最多使用 `subagents.maxTotalTurns` 轮（默认 40）。上下文压缩和会话恢复都会保留累计轮数。`subagents.effort` 默认为 `null`，即继承父级推理强度，也可以指定模型支持的档位。
+
+Codex 账号适配器的流式请求与原生压缩请求共享会话 HTTP 连接池。只有在账号、源和端点路径均相同时，才会回传 `__oailb` 和 `__cflb` 路由 Cookie。轮次状态还按运行时隔离。每个 I/O 任务读取自己的 HTTPS 事件流并关闭响应。协议终态事件可能先于 HTTP 响应体结束。适配器会等本次请求清理完成，再返回结果或结束取消操作。
 
 ## 本地状态目录布局
 

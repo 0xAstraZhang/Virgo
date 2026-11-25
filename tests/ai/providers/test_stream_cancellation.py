@@ -29,7 +29,10 @@ from tests.support.sdk_streams import PARTIAL, POST_PATH, PROVIDERS, api_name, c
 
 
 def model(provider, url):
-    return ai.Model("local", "test", api_name(provider), base_url=url, options={"apiKey": "local-test-key"})
+    options = {"apiKey": "local-test-key"}
+    if provider == "openai-codex":
+        options["authMetadata"] = {"accountId": "local-account"}
+    return ai.Model("local", "test", api_name(provider), base_url=url, options=options)
 
 
 def stream(provider, url, cancel):
@@ -134,7 +137,7 @@ def test_cancel_stalled_sdk_stream(server, make_session, provider, phase):
         assert session.diagnostics.recent() == []
 
 
-@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("provider", (*PROVIDERS, "openai-codex"))
 @pytest.mark.parametrize("proxy", [False, True], ids=["direct", "proxy"])
 def test_cancel_stalled_tls_handshake(monkeypatch, provider, proxy):
     bypass_proxies(monkeypatch)

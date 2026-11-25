@@ -84,6 +84,7 @@ class Runtime:
         tools: list[AgentTool] | None = None,
         system_extra: str | None = None,
         model: ai.Model | None = None,
+        effort: str | None = None,
         max_turns: int | None = None,
         signal: threading.Event | None = None,
         compaction: bool = True,
@@ -116,6 +117,7 @@ class Runtime:
         self.construction_context = RuntimeContext(role, self.cwd, store, self.accounting_store, origin_parent)
         self.ids: list = list(ids or [])
         self._model = model or session.model
+        self._effort = effort
         self._reset_auto_compaction()
         self.system_extra = system_extra
         self.tools = tools if tools is not None else session.tools_for(role)
@@ -192,6 +194,11 @@ class Runtime:
         self.construction_context = replace(self.construction_context, execution_context=self.execution_context)
         self.system = build_system(self.session, self.role, self.system_extra, self.cwd,
                                    tools=self.tools, context=self.construction_context, runtime=self)
+
+    def effort_for(self, model: ai.Model) -> str | None:
+        if self._effort is not None:
+            return self._effort
+        return (self.parent or self.session).effort_for(model)
 
     def can_run(self) -> bool:
         errors = [bound.save_error for bound in (self.store, self.accounting_store)
@@ -396,7 +403,7 @@ class Runtime:
                 # Loop notices (turn limit, paused search) are not model calls.
                 record_call(
                     self.accounting_store, self.model, ev.message, purpose="agent",
-                    started=self._call_started, effort=self.session.effort_for(self.model), agent=self.name,
+                    started=self._call_started, effort=self.effort_for(self.model), agent=self.name,
                 )
                 self._call_started = None
 
@@ -595,7 +602,7 @@ class Runtime:
                 return
             ctx = self.request_context(messages, model)
             opts = StreamOptions(
-                signal=signal, max_tokens=s.settings.get("maxTokens"), effort=s.effort_for(model),
+                signal=signal, max_tokens=s.settings.get("maxTokens"), effort=self.effort_for(model),
                 prompt_cache_key=self.diagnostic_id, io_bridge=s.io_bridge,
                 before_dispatch=self._record_request_header if self.role == "main" and self.store is not None else None,
             )

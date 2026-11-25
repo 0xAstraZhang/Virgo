@@ -50,6 +50,15 @@ class SubagentHandle:
     parent_tool_call_id: str | None = None
     job_id: str | None = None
 
+    def assistant_turns(self) -> int:
+        # Compaction only replaces the model-visible context. The full trace
+        # keeps earlier turns, including after reopening the parent session.
+        messages = (entry["message"] for entry in self.store.entries if entry["type"] == "message")
+        return sum(
+            message.get("role") == "assistant" and message.get("stop_reason") not in ("turn_limit", "search_paused")
+            for message in messages
+        )
+
     def summary(self) -> dict:
         return {
             "id": self.id,
