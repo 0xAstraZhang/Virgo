@@ -24,13 +24,7 @@ System layout, internal contracts, and verification:
 
 ## Architectural decisions
 
-Landed decisions with lasting constraints and tradeoffs — see the [decision records index](decisions/README.md):
-
-- [001 — Guardrail-not-fortress threat model](decisions/001-guardrail-threat-model.md)
-- [002 — Layered execution boundaries and Broker file tools](decisions/002-execution-boundaries-and-broker-tools.md)
-- [003 — Tier 1 native sandbox backends and platform tradeoffs](decisions/003-native-sandbox-backends.md)
-- [004 — Untrusted project configuration isolation and approval binding](decisions/004-untrusted-project-config-isolation.md)
-- [005 — Runtime layering, extensibility boundaries, and durable state](decisions/005-runtime-layering-and-durable-state.md)
+The [decision records index](decisions/README.md) lists adopted decisions, their tradeoffs, and the constraints they establish.
 
 ## Examples
 

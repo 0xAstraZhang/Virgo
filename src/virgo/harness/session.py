@@ -5,7 +5,7 @@ Per model call, in order:
   1. steering messages and notifications are appended by the loop
   2. auto-compaction check (at a turn boundary)
   3. `context` handlers and request sections build the request view without changing tool availability
-  4. stream with retries (backoff, optional fallback model) and one reactive compaction on overflow
+  4. stream with retries (backoff, optional fallback model) and reactive pruning or summarization on overflow
 Per tool call: ordered extensions and explicit permission preflight -> execution recheck -> tool -> results.
 When the agent would stop: queued follow-ups, then `agent_stop` extension handlers.
 """

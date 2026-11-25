@@ -24,13 +24,7 @@
 
 ## 架构决策
 
-已落地且对后续工作有实质影响的架构与约束记录，见[决策记录索引](decisions/README.md)：
-
-- [001 — 护栏而非堡垒的威胁模型](decisions/001-guardrail-threat-model.md)
-- [002 — 分层执行边界与 Broker 直连文件工具](decisions/002-execution-boundaries-and-broker-tools.md)
-- [003 — 一级平台原生沙箱后端选型与平台取舍](decisions/003-native-sandbox-backends.md)
-- [004 — 不可信项目配置隔离与授权指纹绑定](decisions/004-untrusted-project-config-isolation.md)
-- [005 — 运行时分层、扩展机制边界与本地持久化存储](decisions/005-runtime-layering-and-durable-state.md)
+[决策记录索引](decisions/README.md)汇总已落地的架构决定及其取舍与约束。
 
 ## 示例
 
