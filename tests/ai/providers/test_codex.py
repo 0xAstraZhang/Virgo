@@ -7,6 +7,7 @@ import json
 import threading
 import time
 
+import httpx
 import pytest
 
 from virgo.ai.providers import codex, faux
@@ -145,6 +146,38 @@ def test_codex_cancel_does_not_wait_for_stalled_stream(account_server):
     thread.join(1)
     assert result.stop_reason == "aborted"
     assert time.monotonic() - start < 1.5
+    assert account_server["peer_closed"].wait(1), "cancelled request left a live connection"
+
+
+def test_codex_terminal_event_releases_open_response(account_server, monkeypatch):
+    # Record ownership on the real transport while the peer holds the body open.
+    owners = []
+    closes = []
+    init = httpx.Response.__init__
+    close = httpx.Response.close
+    aclose = httpx.Response.aclose
+
+    def record_init(response, *args, **kwargs):
+        init(response, *args, **kwargs)
+        owners.append(threading.get_ident())
+
+    def record_close(response):
+        closes.append(threading.get_ident())
+        return close(response)
+
+    async def record_aclose(response):
+        closes.append(threading.get_ident())
+        await aclose(response)
+
+    monkeypatch.setattr(httpx.Response, "__init__", record_init)
+    monkeypatch.setattr(httpx.Response, "close", record_close)
+    monkeypatch.setattr(httpx.Response, "aclose", record_aclose)
+    terminal = {"type": "response.completed", "response": {"status": "completed", "output": []}}
+    account_server.update(stall=True, stall_at="delta", prefix=sse([terminal], done=False), stall_timeout=10)
+    result = codex.stream(_model(account_server), Context("", []), StreamOptions()).result()
+    assert result.stop_reason == "stop"
+    assert len(owners) == 1 and set(closes) == set(owners), "response closed outside its I/O owner"
+    assert account_server["peer_closed"].wait(1), "terminal response left a live connection"
 
 
 def test_codex_missing_login_never_sends_request(account_server):

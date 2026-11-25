@@ -37,6 +37,8 @@ Virgo 将运行时能力划分为三层，对应不同的覆盖优先级与故�
 - **不可变执行上下文**：每次任务启动时捕获原始的 `HostContext` 或 `SandboxContext` 以及锚定在当前分支叶节点的 `ExecutionOrigin`。子 Agent 与后台任务沿用该捕获上下文和分支归属，不受后续 UI 切换模式、分支或会话的影响。
 - **Core 托管后台任务**：`JobManager` 统一负责后台任务的生命周期、完成通知与清理；`background` 和 `subagent` 插件只提供模型工具（`job_output`、`job_kill`、`agent`）和 `/jobs` 命令。
 
+Codex 账号适配器在同一个 I/O 任务中读取 HTTPS 事件流并关闭响应。协议终态事件可能先于 HTTP 响应体结束。适配器会等本次请求清理完成，再返回结果或结束取消操作。
+
 ## 本地状态目录布局
 
 默认情况下，Virgo 将用户数据保存在 `~/.virgo`（可通过 `VIRGO_HOME` 覆盖）：
