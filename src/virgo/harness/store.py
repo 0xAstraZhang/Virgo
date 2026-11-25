@@ -622,8 +622,7 @@ class SessionStore:
             default=None,
         )
         pruned_map: dict[str, str] = {}
-        tail_entries = path if comp_i is None else path[comp_i + 1 :]
-        for e in tail_entries:
+        for e in path:
             if e["type"] == "compaction" and e.get("mode") == "prune":
                 pruned_map.update(e.get("pruned", {}))
 

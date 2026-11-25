@@ -138,6 +138,21 @@ def test_prune_compaction_persists_composes_and_resets_after_summary(tmp_path):
     assert reloaded.last_compaction(mode="prune")["mode"] == "prune"
 
 
+def test_summary_retaining_previously_pruned_tool_result_preserves_stub_on_resume(tmp_path):
+    store = SessionStore.new(tmp_path / "sessions", tmp_path)
+    store.append_message(UserMessage("Inspect large file"))
+    a1 = store.append_message(AssistantMessage([ToolCall("c1", "read", {"path": "big.py"})]))
+    r1 = store.append_message(ToolResultMessage("c1", "read", [TextContent("X" * 8000)]))
+    stub = "[Pruned tool result: read(path='big.py'), 1 lines (~8KB). Re-read with read() if needed.]"
+    store.append("compaction", mode="prune", pruned={r1: stub}, reason="auto")
+    # Later L2 summary retains the already-pruned tool call/result pair in kept_ids.
+    store.append("compaction", mode="summary", summary="Summary", kept_ids=[a1, r1])
+
+    loaded = SessionStore.load(store.path)
+    messages, _ids = loaded.build_context()
+    assert messages[2].text() == stub
+
+
 def test_full_context_restores_original_active_branch_after_multiple_compactions(tmp_path):
     store = SessionStore.new(tmp_path / "sessions", tmp_path)
     originals = [

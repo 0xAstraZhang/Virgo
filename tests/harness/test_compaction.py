@@ -292,6 +292,28 @@ def test_l3_overflow_recovery_prunes_before_summarizing(make_session, project):
     assert session.store.last_compaction(mode="summary") is None
 
 
+def test_l3_overflow_falls_back_to_serialized_summary_when_prune_retry_still_overflows(make_session, project):
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (project / name).write_text((f"{name} payload\n") * 500, encoding="utf-8")
+    session = make_session(
+        faux.reply(tools=[("read", {"path": "a.txt"}, "r1")]),
+        faux.reply(tools=[("read", {"path": "b.txt"}, "r2")]),
+        faux.reply(tools=[("read", {"path": "c.txt"}, "r3")]),
+        faux.error("prompt is too long", kind="overflow"),
+        # Prune-only retry still overflows on token-dense input -> must fall back to L2 serialized summary.
+        faux.error("still too long after prune", kind="overflow"),
+        scripted(),
+        faux.reply("recovered after serialized summary"),
+        persist=True,
+        settings={"compaction": {"pruneRatio": 0.0, "keepRecentTokens": 50}},
+    )
+    session.prompt("Read three files.")
+    assert session.main.agent.last_text == "recovered after serialized summary"
+    assert session.store.last_compaction(mode="prune")["reason"] == "overflow"
+    summary = session.store.last_compaction(mode="summary")
+    assert summary is not None and summary["reason"] == "overflow" and summary["strategy"] == "serialized"
+
+
 def test_reactive_compaction_on_overflow(make_session):
     s = make_session()
     faux.push("test", scripted(faux.reply("long " * 2000)))

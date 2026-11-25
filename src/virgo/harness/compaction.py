@@ -723,21 +723,24 @@ class CompactionController:
                 self._arm_post_compaction_floor(target)
         return "ok"
 
-    def on_overflow(self, model=None) -> bool | Literal["cancelled"]:
+    def on_overflow(
+        self, model=None, *, allow_prune: bool = True,
+    ) -> Literal["pruned", "summarized", "cancelled", "failed"]:
         """L3: Reactive overflow recovery — aggressive L1 first, then serialized L2."""
         target = model or self.rt.model
         if not self.rt.compaction or self._length_recovery == "exhausted" or not self.rt.can_run():
-            return False
-        pruned = prune_tool_results(self.rt, model=target, reason="overflow", aggressive=True)
-        if pruned is not None:
-            window = target.context_window
-            if window <= 0 or self.rt.context_tokens(estimate_only=True) < window:
-                self._arm_post_compaction_floor(target)
-                return True
+            return "failed"
+        if allow_prune:
+            pruned = prune_tool_results(self.rt, model=target, reason="overflow", aggressive=True)
+            if pruned is not None:
+                window = target.context_window
+                if window <= 0 or self.rt.context_tokens(estimate_only=True) < window:
+                    self._arm_post_compaction_floor(target)
+                    return "pruned"
         outcome = self.compact_outcome(reason="overflow", model=target)
         if outcome == "cancelled":
             return "cancelled"
-        return isinstance(outcome, dict)
+        return "summarized" if isinstance(outcome, dict) else "failed"
 
     def compact(self, focus: str | None = None, reason: str = "manual", *, model=None) -> dict | None:
         outcome = self.compact_outcome(focus, reason, model=model)
