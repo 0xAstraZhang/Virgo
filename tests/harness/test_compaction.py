@@ -664,13 +664,13 @@ def summary_calls(session):
     pytest.param(32_800, 1025, 1024, True, 32_768, id="above-recovery-cap"),
     pytest.param(32_768, 1024, 512, True, 32_768, id="at-recovery-cap"),
     pytest.param(16_384, 512, 256, True, 32_768, id="16k"),
-    pytest.param(4096, 256, 128, False, 32_768, id="target-floor"),
+    pytest.param(4096, 256, 256, False, 32_768, id="target-floor"),
     pytest.param(0, 8000, 1024, True, 32_768, id="unknown"),
     pytest.param(-1, 8000, 1024, False, 32_768, id="negative"),
 ])
 def test_prose_and_completion_budgets(make_session, monkeypatch, window, normal, recovery, reasoning, model_max):
     session = make_session(faux.reply("Earlier work"))
-    session.prompt("Original request")
+    session.prompt("Original request. " * 20_000)
     target = replace(session.resolve("faux/fallback"), context_window=window, max_tokens=model_max, reasoning=reasoning)
     session.small_model = replace(session.resolve("faux/small"), context_window=200_000, reasoning=reasoning,
                                   supported_reasoning_levels=("low",) if reasoning else (), max_tokens=model_max)
@@ -690,7 +690,7 @@ def test_prose_and_completion_budgets(make_session, monkeypatch, window, normal,
         assert "## goal & constraints" in instructions and "## next steps" in instructions
         assert "earlier evicted turns" in instructions and "retained recent messages" in instructions
     ordinary, retry = summary_calls(session)
-    assert ordinary["max_tokens"] == min(12_096, model_max)
+    assert ordinary["max_tokens"] == min(4096 + min(8000, max(1024, normal * 2)), model_max)
     assert retry["max_tokens"] == recovery + 4096 < ordinary["max_tokens"]
 
 
@@ -743,7 +743,8 @@ def test_chained_checkpoint_budgets_evicted_prefix(make_session, project):
 
     sent = calls()[-1]["messages"]
     instructions = sent[-1]["content"].lower()
-    for phrase in ("2048 visible tokens", "~8192 characters", "earlier evicted turns", "retained recent messages",
+    for phrase in ("256 visible tokens", "~1024 characters", "earlier evicted turns", "retained recent messages",
+                   "rewrite and merge the earlier summary", "drop superseded status",
                    "## goal & constraints", "## next steps", "exact file paths", "validated decisions"):
         assert phrase in instructions
     checkpoint, pinned, call, result, _ = session.main.messages
@@ -768,7 +769,7 @@ def test_length_diagnostic_and_accounting(make_session, monkeypatch, locale, lim
     assert row["stop_reason"] == "length"
     assert row["usage"] == dict(input=33_209, cache_read=384, output=reply.usage.output, cache_write=0)
     diagnostic = session.ui.lines[-1].lower().replace(",", "")
-    assert "length" in diagnostic and limit_label in diagnostic and "12096" in diagnostic
+    assert "length" in diagnostic and limit_label in diagnostic and str(row["max_tokens"]) in diagnostic
     assert session.t("harness.compact.empty_summary") not in diagnostic
 
 
@@ -826,7 +827,7 @@ def test_length_then_tool_turn_bounds_recovery(make_session, monkeypatch, projec
     assert requests == (["summary", "main", "summary", "main"] if at_reserve
                         else ["summary", "main", "main", "summary"])
     ordinary, recovery = summary_calls(session)
-    assert ordinary["max_tokens"] == 12_096 and recovery["max_tokens"] < ordinary["max_tokens"]
+    assert ordinary["max_tokens"] == 5120 and recovery["max_tokens"] < ordinary["max_tokens"]
     assert instructions[0] != instructions[1]
     assert re.search(r"\b\d[\d,]* (?:visible )?tokens\b", instructions[1])
     assert model_contexts[0][:-1] == original
@@ -892,7 +893,7 @@ def test_compaction_success_clears_length_failure(after_length, monkeypatch, rea
     assert rt.compactor.compaction_due()
     install_responses(monkeypatch, length_limited())
     rt.compact(reason="auto")
-    assert [c["max_tokens"] for c in summary_calls(session)][-1] == 12_096
+    assert [c["max_tokens"] for c in summary_calls(session)][-1] == 5120
 
 
 @pytest.mark.parametrize("reset", ["set_model", "window_only", "prepare_run", "new_prompt"])
@@ -913,7 +914,7 @@ def test_length_failure_resets_at_runtime_boundaries(after_length, monkeypatch, 
         install_responses(monkeypatch, length_limited(), AssistantMessage([TextContent("done")]))
         session.prompt("Continue")
         assert session.main.agent.last_text == "done"
-        assert [row["max_tokens"] for row in summary_calls(session)] == [12_096, 12_096]
+        assert [row["max_tokens"] for row in summary_calls(session)] == [5120, 5120]
         return
     assert rt.compactor.compaction_due()
 
@@ -930,7 +931,7 @@ def test_length_failure_resets_on_retry_fallback(make_session, monkeypatch):
                              AssistantMessage([TextContent("checkpoint")]), AssistantMessage([TextContent("done")]))
     session.prompt("Original task")
     assert session.main.agent.last_text == "done" and seen[-1][0].spec == "faux/fallback"
-    assert [row["max_tokens"] for row in summary_calls(session)] == [12_096, 8192]
+    assert [row["max_tokens"] for row in summary_calls(session)] == [5120, 5120]
 
 
 def test_successful_length_recovery_keeps_one_reactive_overflow_guard(make_session, monkeypatch):
@@ -942,3 +943,57 @@ def test_successful_length_recovery_keeps_one_reactive_overflow_guard(make_sessi
     assert session.store.last_compaction()["reason"] == "overflow"
     ordinary, recovery = summary_calls(session)
     assert recovery["max_tokens"] < ordinary["max_tokens"]
+
+
+@pytest.mark.parametrize(("input_tokens", "target"), [(1500, 375), (80_000, 8000)])
+def test_summary_budget_tracks_evicted_input(make_session, monkeypatch, input_tokens, target):
+    session = make_session(faux.reply("acknowledged"), settings={"compaction": {"keepRecentTokens": 0}})
+    session.prompt("x" * (input_tokens * 4))
+    model = replace(session.model, context_window=1_000_000, max_tokens=32_768)
+    seen = install_responses(monkeypatch, AssistantMessage([TextContent("verified state")]))
+    assert session.main.compact(model=model)
+    [(sent_model, ctx)] = seen
+    assert sent_model is model
+    prompt = ctx.messages[-1].text()
+    assert f"{target} visible tokens" in prompt
+    assert "Omit step-by-step history and verification narration." in prompt
+    assert "Do NOT restate system/developer instructions, sandbox boundaries" in prompt
+    assert "only when explicitly reported by a tool output marker" in prompt
+
+
+@pytest.mark.parametrize("scenario", ["sufficient", "insufficient", "prune-only"])
+def test_auto_compaction_plans_prune_before_persisting(make_session, monkeypatch, scenario):
+    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 40}})
+    runtime = session.main
+    runtime.model = replace(runtime.model, context_window=64_000)
+    needle = "The exact rejected receipt is PAX-38M7."
+    messages = [UserMessage("Investigate the rejected delivery.")]
+    for i in range(4):
+        path = f"log-{i}"
+        content = ("history " * 2800 + needle) if i == 0 else ("data " * 4500 if i == 1 else "ok")
+        messages.extend([
+            AssistantMessage([ToolCall(path, "read", {"path": path})], stop_reason="tool_use"),
+            ToolResultMessage(path, "read", [TextContent(content)]),
+        ])
+    messages.append(AssistantMessage([TextContent("Ready for the next instruction. " * 30)]))
+    for message in messages:
+        runtime.messages.append(message)
+        runtime.ids.append(session.store.append_message(message))
+    offset = {"sufficient": -2000, "insufficient": -12_000, "prune-only": 3000}[scenario]
+    session.settings.set("compaction.triggerTokens", runtime.context_tokens() + offset)
+    assert runtime.compactor.compaction_due() is (scenario != "prune-only")
+    seen = install_responses(monkeypatch, AssistantMessage([TextContent(needle)]))
+
+    assert runtime.compactor.before_request() == "ok"
+    reopened = SessionStore.load(session.store.path)
+    prunes = [entry for entry in reopened.entries if entry.get("mode") == "prune"]
+    if scenario == "insufficient":
+        assert prunes == []
+        _, ctx = seen[0]
+        assert any(needle in message.text() for message in ctx.messages if isinstance(message, ToolResultMessage))
+        assert needle in reopened.last_compaction(mode="summary")["summary"]
+    else:
+        assert len(prunes) == 1
+        assert len(prunes[0]["pruned"]) == 2
+        assert not seen
+        assert reopened.last_compaction(mode="summary") is None
