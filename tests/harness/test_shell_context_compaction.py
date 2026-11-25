@@ -326,3 +326,32 @@ def test_invalid_start_watermark_is_reported(make_session):
     session.prompt("Check compaction settings.")
     assert "startTokens exceeds" in session.main.messages[-1].error_message
     assert not calls()
+
+
+def test_reported_overage_still_shortens_when_local_baseline_already_has_reserve(make_session, monkeypatch):
+    session = make_session()
+    base = session.main.context_tokens(estimate_only=True)
+    trigger = base + 34_000
+    for key, value in log_settings(trigger)["compaction"].items():
+        session.settings.set(f"compaction.{key}", value)
+    faux_events = faux._events
+
+    def inflate_usage(responder, context, result, options):
+        for event in faux_events(responder, context, result, options):
+            if event.type == "done" and any(call.id == "second" for call in result.tool_calls()):
+                result.usage.input = trigger + 1000
+            yield event
+
+    monkeypatch.setattr(faux, "_events", inflate_usage)
+    respond = summary_or(
+        shell_reply(session, "'old tail ' * 7000", "first"),
+        shell_reply(session, "'new tail ' * 7000", "second"),
+        faux.reply("done"),
+    )
+    faux.script("test", *([respond] * 4))
+    session.prompt("Run both checks.")
+    [decision] = session.store.custom("compaction_decision")
+    assert decision["estimated_before"] < trigger - decision["reserve_tokens"]
+    assert decision["shortened_count"] == 1
+    assert decision["request_type"] == "ordinary"
+    assert "Earlier output shortened" in wire_text(calls()[-1], "first")

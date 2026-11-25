@@ -249,8 +249,11 @@ class ShellLogHistory:
                 if len(short.encode()) >= len(original.encode()) or not self._readable(oid):
                     continue
                 candidates.append((index, key, short))
+            target = max(0, threshold - settings.reserve_tokens)
             for index, key, short in candidates:
-                if after <= max(0, threshold - settings.reserve_tokens):
+                # The active estimate can use real usage. Only switch entirely to
+                # the local estimate once a replacement invalidates that sample.
+                if (after if selected else projection.estimate) <= target:
                     break
                 original = originals[index]
                 oid = original.details["output_id"]
