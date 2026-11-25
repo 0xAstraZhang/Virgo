@@ -80,7 +80,6 @@ MESSAGES = {
     "harness.compact.length": "length（已达到 {limit:,} 个 token 的输出上限）",
     "harness.compact.length_output": "length（已达到服务商的输出上限，报告的输出用量为 {output:,} 个 token）",
     "harness.compact.failed": "[上下文压缩失败：{error}]",
-    "harness.compact.native_focus": "[OpenAI 原生压缩使用服务商的摘要指令，不会应用 focus 参数。]",
     "harness.diagnostics.empty": "尚无诊断历史；首次出现错误时会创建数据库。",
     "harness.diagnostics.help": "使用 /diagnostics <error-id> 查看历史错误详情，或 /diagnostics --before <cursor> 查看更早的错误。",
     "harness.diagnostics.path": "诊断日志：{path}",

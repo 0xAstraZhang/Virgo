@@ -15,7 +15,6 @@ import threading
 from weakref import WeakKeyDictionary
 
 from virgo.agent import AgentTool, ToolResult
-from virgo.ai.compaction import is_native_context
 from virgo.ai.types import AssistantMessage, ToolResultMessage
 
 STATUSES = ("pending", "in_progress", "completed")
@@ -144,7 +143,7 @@ def setup(api):
         if current is None or not runtime.messages:
             return None
         first = runtime.messages[0]
-        if getattr(first, "kind", None) != "summary" and not is_native_context(first):
+        if getattr(first, "kind", None) != "summary":
             return None
         call_id, value = current
         if not any(item["status"] != "completed" for item in value["todos"]):

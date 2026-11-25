@@ -86,8 +86,6 @@ MESSAGES = {
     "harness.compact.length": "length (output token limit of {limit:,} tokens reached)",
     "harness.compact.length_output": "length (provider output token limit reached after {output:,} reported output tokens)",
     "harness.compact.failed": "[compaction failed: {error}]",
-    "harness.compact.native_focus": "[OpenAI native compaction uses the provider's summary instructions; focus "
-    "is not applied.]",
     "harness.diagnostics.empty": "No diagnostic history found. The database is created on the first error.",
     "harness.diagnostics.help": "Use /diagnostics <error-id> for full historical details, or /diagnostics --before <cursor> for older errors.",
     "harness.diagnostics.path": "Diagnostics: {path}",

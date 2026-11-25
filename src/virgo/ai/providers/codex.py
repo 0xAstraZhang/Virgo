@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import copy
-from dataclasses import replace
-
 from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent
-from ..types import AssistantMessage, Context, Model, RawContent, StreamOptions
+from ..types import AssistantMessage, Context, Model, StreamOptions
 from ..web import declarations
 from . import responses
 from ._errors import attach_error
@@ -61,41 +58,6 @@ def _normalize_events(events):
 def stream(model: Model, ctx: Context, opts: StreamOptions) -> EventStream:
     out = AssistantMessage(api=model.api, provider=model.provider, model=model.id)
     return EventStream(_events(model, ctx, opts, out), out)
-
-
-def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | None = None) -> AssistantMessage:
-    """Use Codex's Responses compaction trigger, preserving user inputs.
-
-    The account API uses its ordinary SSE endpoint rather than the public
-    standalone compact endpoint. Its trigger is transient request control.
-    """
-    out = AssistantMessage(api=model.api, provider=model.provider, model=model.id)
-    try:
-        if cancelled(opts.signal):
-            raise ProviderError("Aborted by user.", "aborted")
-        # Compaction is maintenance, never a request to run hosted search.
-        params = build_params(model, replace(ctx, web_tools=[], web_offers=[]), opts)
-        retained = [copy.deepcopy(item) for item in params["input"] if item.get("role") == "user"]
-        params["input"].append({"type": "compaction_trigger"})
-        out = EventStream(_events(model, ctx, opts, out, params=params), out).result()
-        if out.stop_reason in ("error", "aborted", "refusal"):
-            return out
-        blocks = [b.data for b in out.content if isinstance(b, RawContent) and b.data.get("type") == "compaction"]
-        if (
-            out.stop_reason != "stop"
-            or len(blocks) != 1
-            or not isinstance(blocks[0].get("encrypted_content"), str)
-            or not blocks[0]["encrypted_content"]
-        ):
-            raise ProviderError("The provider did not complete exactly one encrypted compaction item.")
-        out.content = [RawContent(model.api, item) for item in [*retained, copy.deepcopy(blocks[0])]]
-        out.stop_reason = "compaction"
-    except Exception as error:
-        kind, message = classify_error(error, model.options.get("apiKey", ""))
-        out.stop_reason = "aborted" if kind == "aborted" or cancelled(opts.signal) else "error"
-        out.error_kind, out.error_message = kind, message
-        attach_error(out, error, model, phase="provider.compact", token=model.options.get("apiKey", ""))
-    return out
 
 
 def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessage, *, params: dict | None = None):

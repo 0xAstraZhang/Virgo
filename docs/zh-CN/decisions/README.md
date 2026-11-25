@@ -11,3 +11,4 @@
 | [003](003-native-sandbox-backends.md) | 一级平台原生沙箱后端选型与平台取舍 | 采用各平台最简可靠的原生机制（`bubblewrap`、直接 Seatbelt + `HostProcess`、非提权 Windows 标准 AppContainer、WSL2），并如实记录平台差异 |
 | [004](004-untrusted-project-config-isolation.md) | 不可信项目配置隔离与授权指纹绑定 | 禁止项目覆盖执行权限、合并前剥离不可信项目活跃配置、拒绝符号链接项目提示词文件，并将 MCP 授权绑定配置指纹 |
 | [005](005-runtime-layering-and-durable-state.md) | 运行时分层、扩展机制边界与本地持久化存储 | 保持单向包依赖分层、区分核心工具 / 内置插件 / 延迟内置扩展、由 Core 统一托管后台任务，并隔离各持久化存储的故障域 |
+| [006](006-three-layer-provider-agnostic-compaction.md) | 三层渐进式、与服务商无关的上下文压缩 | 移除各服务商原生压缩，统一由 `CompactionController` 驱动 L1 批量微压缩、L2 缓存复用结构化摘要与 L3 溢出降级恢复 |

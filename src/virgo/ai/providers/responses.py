@@ -28,7 +28,7 @@ from ..types import (
 from ..validate import parse_tool_arguments
 from ..web import declarations
 from ._errors import attach_error
-from ._http import ProviderError, cancelled, run_cancellable, sdk_stream
+from ._http import ProviderError, sdk_stream
 from .openai import _client, classify_error
 from .reasoning import responses_effort
 
@@ -157,55 +157,6 @@ def _usage(value: dict) -> Usage:
     )
 
 
-def compact(model: Model, ctx: Context, opts: StreamOptions, *, focus: str | None = None) -> AssistantMessage:
-    """Return the standalone endpoint's entire replacement window verbatim.
-
-    OpenAI's compaction contract omits instructions. Neither the system prompt
-    nor a custom focus is injected into input, which would change its prefix.
-    """
-    out = AssistantMessage(api=model.api, provider=model.provider, model=model.id)
-    token = model.options.get("apiKey", "")
-    try:
-        if cancelled(opts.signal):
-            raise ProviderError("Aborted by user.", "aborted")
-        client = _client(model)
-        token = token or getattr(client, "api_key", "")
-        result = run_cancellable(
-            lambda: client.responses.with_raw_response.compact(
-                model=model.id,
-                input=convert_messages(ctx.messages, api=model.api),
-                timeout=600.0,
-            ),
-            opts.signal,
-        )
-        # The compacted window can contain input messages and newer item types
-        # outside the SDK's output union. Read JSON to preserve their wire shape.
-        data = json.loads(result.content)
-        if not isinstance(data, dict):
-            raise ProviderError("The provider returned an invalid compacted context.")
-        items = data.get("output")
-        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-            raise ProviderError("The provider returned an invalid compacted context.")
-        if not any(
-            item.get("type") == "compaction"
-            and isinstance(item.get("encrypted_content"), str)
-            and item["encrypted_content"]
-            for item in items
-        ):
-            raise ProviderError("The provider returned no encrypted compaction item.")
-        out.content = [RawContent(model.api, copy.deepcopy(item)) for item in items]
-        out.usage = _usage(data.get("usage") or {})
-        out.stop_reason = "compaction"
-    except Exception as error:  # provider contract: failures are data
-        if isinstance(error, ProviderError):
-            out.error_kind, out.error_message = error.kind, str(error)
-        else:
-            out.error_kind, out.error_message = classify_error(error)
-        out.stop_reason = "aborted" if cancelled(opts.signal) or out.error_kind == "aborted" else "error"
-        attach_error(out, error, model, phase="provider.compact", token=token)
-    return out
-
-
 def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: StreamOptions, *, web_search: bool = False):
     """Convert SDK objects or decoded SSE dictionaries into Virgo stream events."""
     yield StreamEvent("start", out)
@@ -264,11 +215,9 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             block = ToolCall(f"{call_id}|{item_id}" if item_id else call_id, item.get("name", ""), {})
             buffers[index] = item.get("arguments") or ""
             event_kind = "toolcall_start"
-        elif kind in ("compaction", "web_search_call"):
-            block, event_kind = RawContent(model.api, copy.deepcopy(item)), None
-            if kind == "web_search_call":
-                out.native_started = True
-                event_kind = "native_tool_start"
+        elif kind == "web_search_call":
+            block, event_kind = RawContent(model.api, copy.deepcopy(item)), "native_tool_start"
+            out.native_started = True
         else:
             return
         slots[index] = len(out.content)

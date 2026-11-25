@@ -6,8 +6,6 @@ import os
 from dataclasses import replace
 
 from ..diagnostics import capture_error, safe_text
-from .compaction import compact as native_compact
-from .compaction import context_model
 from .models import resolve_model
 from .providers.reasoning import resolved_effort
 from .stream import EventStream, StreamEvent, aborted_event, error_message
@@ -39,7 +37,6 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
         from .auth import authenticated_model
 
         model = authenticated_model(model, options.signal)
-        model = context_model(model, context.messages)
         if context.web_tools and model.api == "openai":
             model = replace(model, api="openai-responses")
         context = replace(context, messages=normalize(context.messages, model))
@@ -169,7 +166,6 @@ __all__ = [
     "UserMessage",
     "complete",
     "error_message",
-    "native_compact",
     "resolve_model",
     "resolved_effort",
     "stream",

@@ -168,8 +168,7 @@ def test_compaction_retains_empty_aborted_turn_for_projection(tmp_path):
     aborted = AssistantMessage([ThinkingContent("unfinished")], stop_reason="aborted")
     aborted_id = store.append_message(aborted)
     length_id = store.append_message(AssistantMessage([ThinkingContent("budget exhausted")], stop_reason="length"))
-    store.append("compaction", summary="Earlier turns", kept_ids=[prompt_id, aborted_id, length_id],
-                 preserve_thinking=False)
+    store.append("compaction", summary="Earlier turns", kept_ids=[prompt_id, aborted_id, length_id])
     follow_up_id = store.append_message(UserMessage("Follow-up"))
 
     restored = SessionStore.load(store.path)

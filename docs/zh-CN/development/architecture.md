@@ -9,9 +9,9 @@ Virgo 在 `src/virgo/` 下按单向依赖分层组织。底层模块不依赖会
 | 层级 | 包 / 模块 | 核心职责 |
 | --- | --- | --- |
 | **0. 叶子基础层** | `i18n`、`diagnostics`、`execution_policy`、`output_store` | 会话级本地化（`en`、`zh-CN`）、无 I/O 错误采集与脱敏、deny 优先的 `PermissionPolicy` 与内置执行模式，以及 Broker 管理的会话级输出存储 |
-| **1. 模型与 Agent 核心** | `ai`、`agent` | 统一流式 LLM 适配层（`anthropic`、`openai`、`openai-responses`、`openai-codex`、`faux`）、OAuth/API 认证、模型目录、原生压缩，以及无状态 `run_loop` / `Agent` / `AgentTool` 编排（含非顺序工具批次的有界并发执行） |
+| **1. 模型与 Agent 核心** | `ai`、`agent` | 统一流式 LLM 适配层（`anthropic`、`openai`、`openai-responses`、`openai-codex`、`faux`）、OAuth/API 认证、模型目录，以及无状态 `run_loop` / `Agent` / `AgentTool` 编排（含非顺序工具批次的有界并发执行） |
 | **2. 执行层与基础工具** | `execution`、`file_access`、`sandbox`、`tools` | 统一 `SandboxExecutor` 与不可变 `HostContext`/`SandboxContext`、Broker 文件 I/O（末级 `O_NOFOLLOW` + 原子 `os.replace`）、各平台原生沙箱适配器（`bubblewrap`、macOS Seatbelt、Windows 标准 AppContainer），以及核心工具实现（`fs`、`shell`、`bash`、`output`、`web`、`web_fetch`） |
-| **3. 会话运行时** | `harness` | `AgentSession`、`Runtime`、`EventBus`/`ExtensionAPI`、JSONL `SessionStore`、`ModeExecutionProvider`、`ResourceApprovals`/`ResourceRules`、`high_risk` 检查、Core 托管的 `JobManager`、SQLite `DiagnosticLog`、配置与信任加载、上下文压缩、提示词组装及斜杠命令 |
+| **3. 会话运行时** | `harness` | `AgentSession`、`Runtime`、`EventBus`/`ExtensionAPI`、JSONL `SessionStore`、`ModeExecutionProvider`、`ResourceApprovals`/`ResourceRules`、`high_risk` 检查、Core 托管的 `JobManager`、SQLite `DiagnosticLog`、配置与信任加载、统一三层上下文压缩（`CompactionController`）、提示词组装及斜杠命令 |
 | **4. 能力扩展层** | `plugins`、`extensions` | 通过 `setup(api)` 加载的 6 个内置插件（`diagnostic_get`、`skills`、`ask_user`、`subagent`、`background`、`web`）与 2 个内置扩展（`mcp`、`todo`） |
 | **5. 交互呈现层** | `cli` | 命令行入口（`virgo.cli.main:main`）、逐行 REPL、Textual 全屏 TUI（`cli/tui/`）及非交互/JSON 输出界面 |
 
@@ -39,7 +39,7 @@ Virgo 将运行时能力划分为三层，对应不同的覆盖优先级与故�
 
 每个子代理单次运行最多使用 `subagents.maxTurns` 个 assistant 轮次（默认 20）。同一会话中，同一 `agent_id` 的所有运行合计最多使用 `subagents.maxTotalTurns` 轮（默认 40）。上下文压缩和会话恢复都会保留累计轮数。`subagents.effort` 默认为 `null`，即继承父级推理强度，也可以指定模型支持的档位。
 
-Codex 账号适配器的流式请求与原生压缩请求共享会话 HTTP 连接池。只有在账号、源和端点路径均相同时，才会回传 `__oailb` 和 `__cflb` 路由 Cookie。轮次状态还按运行时隔离。每个 I/O 任务读取自己的 HTTPS 事件流并关闭响应。协议终态事件可能先于 HTTP 响应体结束。适配器会等本次请求清理完成，再返回结果或结束取消操作。
+Codex 账号适配器的请求共享会话 HTTP 连接池。只有在账号、源和端点路径均相同时，才会回传 `__oailb` 和 `__cflb` 路由 Cookie。轮次状态还按运行时隔离。每个 I/O 任务读取自己的 HTTPS 事件流并关闭响应。协议终态事件可能先于 HTTP 响应体结束。适配器会等本次请求清理完成，再返回结果或结束取消操作。
 
 ## 本地状态目录布局
 

@@ -1,4 +1,4 @@
-"""Summary compaction: where to cut, size estimates, and manual, automatic and reactive runs."""
+"""Three-layer context compaction: L1 micro-compaction, L2 structured summary, and L3 overflow recovery."""
 
 from __future__ import annotations
 
@@ -21,16 +21,41 @@ from virgo.ai.types import (
     Usage,
     UserMessage,
 )
-from virgo.harness.compaction import estimate_tokens, find_cut
+from virgo.harness.compaction import (
+    PRUNE_PREFIX,
+    estimate_tokens,
+    find_cut,
+    prune_tool_results,
+)
 from virgo.harness.session import AgentSession
 from virgo.harness.store import SessionStore
 
 from tests.support.harness import RecordingUI, calls, install_responses, response_stream
 
 
-def summarizer(ctx):
+def _is_summary_request(ctx) -> bool:
     if "context summarization assistant" in ctx.system:
-        return faux.reply("## Goal\nbuild the thing\n## Next Steps\n1. finish")
+        return True
+    if ctx.messages and isinstance(ctx.messages[-1], UserMessage):
+        return ctx.messages[-1].kind == "compaction_prompt"
+    return False
+
+
+def _is_summary_call(call: dict) -> bool:
+    if "context summarization assistant" in call["system"]:
+        return True
+    msgs = call.get("messages") or []
+    return bool(msgs and msgs[-1].get("kind") == "compaction_prompt")
+
+
+def summarizer(ctx):
+    if _is_summary_request(ctx):
+        return faux.reply(
+            "## Goal & Constraints\nbuild the thing\n"
+            "## Completed Work & Decisions\nnone\n"
+            "## Current State & Open Issues\nin progress\n"
+            "## Next Steps\n1. finish"
+        )
     return None
 
 
@@ -63,6 +88,14 @@ def test_estimate_includes_system_and_tool_definitions_without_usage():
     assert with_tools > 110
     tool.description += "t" * 400
     assert estimate_tokens(messages, system="s" * 400, tools=[tool]) == with_tools + 100
+
+
+def test_estimate_tokens_weights_cjk_higher_than_ascii():
+    ascii_est = estimate_tokens([UserMessage("a" * 300)])
+    cjk_est = estimate_tokens([UserMessage("中" * 300)])
+    assert ascii_est == 75
+    assert cjk_est == 200
+    assert cjk_est > ascii_est * 2
 
 
 def test_reported_usage_already_includes_system_and_cached_input():
@@ -98,7 +131,7 @@ def test_manual_compaction_keeps_recent_and_strips_thinking(make_session, projec
         s.prompt(f"question {i}")
     faux.push("test", scripted())
     res = s.compact(focus="the API")
-    assert res is not None and res["tokens_before"] > 0
+    assert res is not None and res["tokens_before"] > 0 and res["strategy"] == "in_context"
     msgs = s.main.messages
     assert msgs[0].kind == "summary" and "build the thing" in msgs[0].text()
     assert not any(
@@ -107,12 +140,10 @@ def test_manual_compaction_keeps_recent_and_strips_thinking(make_session, projec
     assert any(
         isinstance(m, UserMessage) and m.text() == "question 2" for m in msgs
     )  # current request pinned/kept
-    # the summarizer saw the focus and the transcript
-    summary_req = [c for c in calls() if "context summarization assistant" in c["system"]][0]
-    assert (
-        "the API" in summary_req["messages"][0]["content"]
-        and "question 0" in summary_req["messages"][0]["content"]
-    )
+    # In-context summarizer saw the prefix messages and the focus instruction at the end.
+    summary_req = [c for c in calls() if _is_summary_call(c)][0]
+    assert "the API" in summary_req["messages"][-1]["content"]
+    assert any("question 0" in str(m.get("content", "")) for m in summary_req["messages"][:-1])
     # reloading the session file rebuilds the same compacted context
     s2 = AgentSession(
         project, ui=RecordingUI(), model="faux/test", session=s.store.path, approval_policy="never"
@@ -153,6 +184,135 @@ def test_portable_compaction_reloads_image_in_kept_tail(make_session, pixel_png)
     ]
 
 
+# ---------------------------------------------------------------------------
+# L1: Batch Micro-Compaction tests
+# ---------------------------------------------------------------------------
+
+
+def test_l1_micro_compaction_prunes_old_tool_results_and_skips_l2(make_session, project):
+    for name in ("a.txt", "b.txt", "c.txt", "d.txt"):
+        (project / name).write_text((f"{name} line\n") * 400, encoding="utf-8")
+    session = make_session(
+        faux.reply(tools=[("read", {"path": "a.txt"}, "r1")]),
+        faux.reply(tools=[("read", {"path": "b.txt"}, "r2")]),
+        faux.reply(tools=[("read", {"path": "c.txt"}, "r3")]),
+        faux.reply(tools=[("read", {"path": "d.txt"}, "r4")]),
+        faux.reply("all read"),
+        persist=True,
+        settings={
+            "providers": {"faux": {"models": {"test": {"contextWindow": 10_000}}}},
+            "compaction": {"pruneRatio": 0.6, "triggerRatio": 0.8, "keepRecentTokens": 1500},
+        },
+    )
+    session.prompt("Read four files.")
+    assert session.main.agent.last_text == "all read"
+    # L1 pruned older tool results (a.txt / b.txt) without triggering an L2 LLM summary call.
+    assert summary_calls(session) == []
+    assert session.store.last_compaction(mode="summary") is None
+    prune_entry = session.store.last_compaction(mode="prune")
+    assert prune_entry is not None and prune_entry["pruned"]
+    pruned_texts = [m.text() for m in session.main.messages if isinstance(m, ToolResultMessage) and m.text().startswith(PRUNE_PREFIX)]
+    assert pruned_texts and any("a.txt" in t and "Re-read with read()" in t for t in pruned_texts)
+    # Reloading from disk matches the pruned live context (tool policy metadata is compacted on disk).
+    loaded_msgs, loaded_ids = SessionStore.load(session.store.path).build_context()
+    assert loaded_ids == session.main.ids
+    assert [m.text() for m in loaded_msgs] == [m.text() for m in session.main.messages]
+
+
+def test_l1_micro_compaction_skips_tiny_reclaim_to_preserve_cache(make_session, project):
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (project / name).write_text("short content\n" * 20, encoding="utf-8")
+    session = make_session(
+        faux.reply(tools=[("read", {"path": "a.txt"}, "r1")]),
+        faux.reply(tools=[("read", {"path": "b.txt"}, "r2")]),
+        faux.reply(tools=[("read", {"path": "c.txt"}, "r3")]),
+        faux.reply("done"),
+        settings={"compaction": {"keepRecentTokens": 50}},
+    )
+    session.prompt("Read three short files.")
+    assert prune_tool_results(session.main, model=session.model, reason="auto") is None
+
+
+# ---------------------------------------------------------------------------
+# L2: Cache-Warm In-Context Summarization + Fallback tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("failure_reply", [
+    pytest.param(AssistantMessage([ToolCall("t1", "read", {"path": "x"})], stop_reason="tool_use"), id="tool_use"),
+    pytest.param(AssistantMessage(stop_reason="error", error_kind="overflow", error_message="too long"), id="overflow"),
+])
+def test_l2_in_context_falls_back_to_serialized_on_tool_use_or_overflow(make_session, monkeypatch, failure_reply):
+    session = make_session(faux.reply("earlier work"))
+    session.prompt("Build the parser")
+    seen = install_responses(
+        monkeypatch,
+        failure_reply,
+        AssistantMessage([TextContent("## Goal & Constraints\nBuild parser\n## Next Steps\nTest it")]),
+    )
+    res = session.compact(focus="parser rules")
+    assert res is not None and res["strategy"] == "serialized"
+    assert "Build parser" in res["summary"]
+    assert len(seen) == 2
+    # First attempt was in-context on the main model with the conversation prefix + compaction_prompt.
+    in_ctx_model, in_ctx = seen[0]
+    assert in_ctx_model is session.model
+    assert in_ctx.messages[-1].kind == "compaction_prompt"
+    assert "## Goal & Constraints" in in_ctx.messages[-1].text()
+    assert "parser rules" in in_ctx.messages[-1].text()
+    # Second attempt fell back to out-of-band serialized summary on small_model.
+    ser_model, ser_ctx = seen[1]
+    assert ser_model is session.small_model
+    assert "context summarization assistant" in ser_ctx.system
+    assert "<conversation>" in ser_ctx.messages[0].text()
+
+
+# ---------------------------------------------------------------------------
+# L3: Reactive Overflow Recovery tests
+# ---------------------------------------------------------------------------
+
+
+def test_l3_overflow_recovery_prunes_before_summarizing(make_session, project):
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (project / name).write_text((f"{name} payload\n") * 500, encoding="utf-8")
+    session = make_session(
+        faux.reply(tools=[("read", {"path": "a.txt"}, "r1")]),
+        faux.reply(tools=[("read", {"path": "b.txt"}, "r2")]),
+        faux.reply(tools=[("read", {"path": "c.txt"}, "r3")]),
+        faux.error("prompt is too long", kind="overflow"),
+        faux.reply("recovered after prune"),
+        persist=True,
+        settings={"compaction": {"pruneRatio": 0.0, "keepRecentTokens": 50}},
+    )
+    session.prompt("Read three files.")
+    assert session.main.agent.last_text == "recovered after prune"
+    # Aggressive L1 prune resolved the overflow without calling L2 summarization.
+    assert summary_calls(session) == []
+    assert session.store.last_compaction(mode="prune")["reason"] == "overflow"
+    assert session.store.last_compaction(mode="summary") is None
+
+
+def test_reactive_compaction_on_overflow(make_session):
+    s = make_session()
+    faux.push("test", scripted(faux.reply("long " * 2000)))
+    s.prompt("first")
+    faux.push(
+        "test",
+        faux.error("prompt is too long: 2000000 tokens > 1000000", kind="overflow"),
+        scripted(),
+        scripted(faux.reply("fits now")),
+    )
+    s.prompt("second")
+    assert s.main.agent.last_text == "fits now"
+    assert s.main.messages[0].kind == "summary"
+    assert s.store.last_compaction()["strategy"] == "serialized"
+
+
+# ---------------------------------------------------------------------------
+# CompactionController state machine & budget tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize("usage", [
     pytest.param(Usage(input=4800, output=150), id="below-trigger"),
     pytest.param(Usage(input=800, cache_read=4000, cache_write=400, output=150), id="cached-above-trigger"),
@@ -162,7 +322,10 @@ def test_auto_compaction_waits_for_growth_from_first_reported_input(make_session
     previous.prompt("Start the task.")
     assert previous.main.compact(reason="auto")
     previous.shutdown()
-    session = make_session(session="continue", settings={"compaction": {"triggerTokens": 5000, "keepRecentTokens": 250}})
+    session = make_session(
+        session="continue",
+        settings={"compaction": {"triggerTokens": 5000, "pruneRatio": 0.0, "keepRecentTokens": 250}},
+    )
     runtime = session.main
     assert runtime.compacted_at == 1
     (project / "small.txt").write_text("s" * 200)
@@ -180,7 +343,7 @@ def test_auto_compaction_waits_for_growth_from_first_reported_input(make_session
 
     def after_turn(event, rt):
         if event.tool_results:
-            decisions.append(rt._compaction_due())
+            decisions.append(rt.compactor.compaction_due())
 
     session.bus.on("compact", lambda rt, _: estimates.append(rt.context_tokens(estimate_only=True)))
     session.bus.on("turn_end", after_turn)
@@ -206,15 +369,15 @@ def test_auto_compaction_growth_respects_context_budget(make_session, monkeypatc
     install_responses(monkeypatch, AssistantMessage(provider="faux", model="test", usage=Usage(input=baseline)))
     session.prompt("Continue.")
 
-    assert runtime._auto_compaction_floor == floor
-    assert not runtime._compaction_due()
+    assert runtime.compactor._auto_floor == floor
+    assert not runtime.compactor.compaction_due()
     usage = runtime.messages[-1].usage
     usage.output = due_at - baseline - 1
-    assert not runtime._compaction_due()
+    assert not runtime.compactor.compaction_due()
     usage.output += 1
-    assert runtime._compaction_due()
+    assert runtime.compactor.compaction_due()
     usage.output = window + 1 - baseline
-    assert runtime._compaction_due()
+    assert runtime.compactor.compaction_due()
 
 
 @pytest.mark.parametrize("settings, due_at", [
@@ -233,13 +396,14 @@ def test_auto_compaction_caps_estimated_floor_and_respects_trigger(make_session,
     tokens = 15_900
     monkeypatch.setattr(runtime, "context_tokens", lambda *, estimate_only=False: tokens)
 
+    faux.push("fallback", faux.reply("summary"))
     assert runtime.compact(reason="auto", model=target)
-    assert runtime._auto_compaction_floor == 14_400
-    assert runtime._compaction_due(target) == (tokens >= due_at)
+    assert runtime.compactor._auto_floor == 14_400
+    assert runtime.compactor.compaction_due(target) == (tokens >= due_at)
     tokens = due_at - 1
-    assert not runtime._compaction_due(target)
+    assert not runtime.compactor.compaction_due(target)
     tokens = due_at
-    assert runtime._compaction_due(target)
+    assert runtime.compactor.compaction_due(target)
 
 
 @pytest.mark.parametrize("switch", ["set_model", "window_only", "fallback"])
@@ -255,45 +419,46 @@ def test_auto_compaction_floor_resets_on_model_switch(make_session, monkeypatch,
     ))
     session.prompt("Continue.")
     assert runtime.context_tokens() == 17_000
-    assert runtime._auto_compaction_floor == 32_000
+    assert runtime.compactor._auto_floor == 32_000
 
     if switch == "set_model":
         session.set_model("faux/small")
-        assert runtime._compaction_due()
+        assert runtime.compactor.compaction_due()
     elif switch == "window_only":
         runtime.model = replace(runtime.model, context_window=16_000)
-        assert runtime._compaction_due()
+        assert runtime.compactor.compaction_due()
     else:
-        assert runtime._compaction_due(session.resolve("faux/small"))
+        assert runtime.compactor.compaction_due(session.resolve("faux/small"))
 
 
 @pytest.mark.parametrize("window, expected_floor", [(200_000, 32_000), (16_000, 14_400)])
 def test_post_compaction_usage_belongs_to_target_model(make_session, window, expected_floor):
-    session = make_session(faux.reply("started"), faux.reply("summary"))
+    session = make_session(faux.reply("started"))
     session.prompt("Start the task.")
     runtime = session.main
     fallback = replace(session.resolve("faux/fallback"), context_window=window)
+    faux.push("fallback", faux.reply("summary"))
     assert runtime.compact(reason="auto", model=fallback)
-    estimate_floor = runtime._auto_compaction_floor
+    estimate_floor = runtime.compactor._auto_floor
 
     def report(model):
         reply = AssistantMessage(provider=model.provider, model=model.id, usage=Usage(input=12_000))
         runtime._on_event(AgentEvent("message_end", "main", message=reply))
 
     report(runtime.model)
-    assert runtime._auto_compaction_floor == estimate_floor
+    assert runtime.compactor._auto_floor == estimate_floor
     report(fallback)
-    assert runtime._auto_compaction_floor == expected_floor
+    assert runtime.compactor._auto_floor == expected_floor
     session.settings.set("compaction.triggerTokens", 1)
-    assert not runtime._compaction_due(fallback)
-    assert runtime._compaction_due()  # Switching back to the primary model clears the floor.
+    assert not runtime.compactor.compaction_due(fallback)
+    assert runtime.compactor.compaction_due()  # Switching back to the primary model clears the floor.
 
 
 def test_retry_compacts_portable_history_before_smaller_model_call(make_session, monkeypatch):
     session = make_session(
         faux.reply("started"), faux.reply("initial summary"),
         faux.error("overloaded", kind="retryable"), faux.error("overloaded", kind="retryable"),
-        faux.reply("fallback summary"), settings={
+        settings={
             "providers": {"faux": {"models": {"small": {"contextWindow": 16_000}}}},
             "retry": {"fallbackModel": "faux/small"},
         },
@@ -301,25 +466,10 @@ def test_retry_compacts_portable_history_before_smaller_model_call(make_session,
     monkeypatch.setattr(session.main.agent.signal, "wait", lambda _: False)
     session.prompt("Start the task.")
     assert session.main.compact(reason="auto")
-    faux.push("small", faux.reply("done"))
+    faux.push("small", faux.reply("fallback summary"), faux.reply("done"))
     session.prompt("x" * 68_000)
     assert session.main.agent.last_text == "done"
-    assert "fallback summary" in calls("small")[0]["messages"][0]["content"]
-
-
-def test_reactive_compaction_on_overflow(make_session):
-    s = make_session()
-    faux.push("test", scripted(faux.reply("long " * 2000)))
-    s.prompt("first")
-    faux.push(
-        "test",
-        faux.error("prompt is too long: 2000000 tokens > 1000000", kind="overflow"),
-        scripted(),
-        scripted(faux.reply("fits now")),
-    )
-    s.prompt("second")
-    assert s.main.agent.last_text == "fits now"
-    assert s.main.messages[0].kind == "summary"
+    assert "fallback summary" in calls("small")[-1]["messages"][0]["content"]
 
 
 def test_serialization_keeps_complete_tool_arguments_and_tail_evidence_within_budget():
@@ -365,9 +515,9 @@ def test_freeform_summary_restores_and_can_be_compacted_incrementally(make_sessi
     restored.prompt("continue that work")
     result = restored.compact()
     assert result is not None and "verification still pending" in result["summary"]
-    request = calls()[-1]["messages"][0]["content"]
-    assert "<previous-summary>" in request and "user corrected the target" in request
-    assert "continue that work" in request
+    sent = calls()[-1]["messages"]
+    assert "user corrected the target" in sent[0]["content"]
+    assert any("continue that work" in str(m.get("content", "")) for m in sent[:-1])
     assert any("new progress" in m.text() for m in restored.main.messages)
     assert any(m.text() == "continue that work" for m in restored.main.messages)
 
@@ -375,7 +525,6 @@ def test_freeform_summary_restores_and_can_be_compacted_incrementally(make_sessi
 def test_incremental_compaction_rebuilds_file_lists_once(make_session):
     blocks = "<read-files>\nspec.md\n</read-files>\n\n<modified-files>\nresult.py\n</modified-files>"
     original = make_session(persist=True)
-    # Resume a session written before deduplication, then simulate a summarizer emitting its own lists.
     original.store.append("compaction", summary=f"Earlier progress\n\n{blocks}\n\n{blocks}", kept_ids=[],
                           details={"read_files": ["spec.md"], "modified_files": ["result.py"]})
     session = make_session(session=original.store.path, settings={"compaction": {"keepRecentTokens": 1}})
@@ -383,9 +532,6 @@ def test_incremental_compaction_rebuilds_file_lists_once(make_session):
         faux.push("test", faux.reply("recent answer"), faux.reply(f"Earlier progress, step {i}\n\n{blocks}"))
         session.prompt(f"next step {i}")
         result = session.compact()
-        previous = calls()[-1]["messages"][0]["content"].split("</previous-summary>")[0]
-        assert "<previous-summary>" in previous and "Earlier progress" in previous
-        assert "<read-files>" not in previous and "<modified-files>" not in previous
         expected = f"Earlier progress, step {i}\n\n{blocks}"
         assert result["summary"] == session.store.last_compaction()["summary"] == expected
         assert expected in session.main.messages[0].text()
@@ -405,7 +551,7 @@ def test_stripping_a_thinking_only_tail_does_not_leave_a_bare_request(make_sessi
 def test_full_mid_turn_compaction_continues_after_tool_result(make_session, project, reason):
     (project / "spec.md").write_text("important facts\n" * 1200, encoding="utf-8")
     request = "Read spec.md and report its conclusion."
-    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1}})
+    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1, "pruneRatio": 0.0}})
     if reason == "auto":
         session.settings.set("compaction.triggerTokens", session.context_tokens() + 500)
     faux.push("test", faux.reply(tools=[("read", {"path": "spec.md"})]))
@@ -425,7 +571,7 @@ def test_full_mid_turn_compaction_continues_after_tool_result(make_session, proj
 
 
 def test_auto_compaction_waits_for_growth_after_nonshrinking_summary(make_session):
-    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1}})
+    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1, "pruneRatio": 0.0}})
     runtime = session.main
     trigger = runtime.context_tokens()
     session.settings.set("compaction.triggerTokens", trigger)
@@ -452,10 +598,9 @@ def test_auto_compaction_waits_for_growth_after_nonshrinking_summary(make_sessio
 
 
 def test_reported_usage_after_compaction_does_not_count_as_new_content(make_session):
-    session = make_session(settings={"compaction": {"keepRecentTokens": 1}})
+    session = make_session(settings={"compaction": {"keepRecentTokens": 1, "pruneRatio": 0.0}})
     trigger = session.context_tokens()
     session.settings.set("compaction.triggerTokens", trigger)
-    # The provider counts escaped Unicode in its request. The local estimate uses character length.
     faux.push("test", faux.reply("已读完文件。" * 300), faux.reply("ok"))
     session.prompt("read the file")
     first = session.store.last_compaction()
@@ -472,9 +617,9 @@ def test_reported_usage_after_compaction_does_not_count_as_new_content(make_sess
     session.settings.set("compaction.triggerTokens", trigger + 10_000)
     reply = session.main.messages[-1]
     reply.usage = Usage(input=trigger + 9999)
-    assert not session.main._compaction_due()
+    assert not session.main.compactor.compaction_due()
     reply.usage.input += 1
-    assert session.main._compaction_due()
+    assert session.main.compactor.compaction_due()
 
 
 OC_PROVIDERS = {"faux": {"models": {"test": {"contextWindow": 65_536, "maxTokens": 32_768}}}}
@@ -501,51 +646,44 @@ def summary_calls(session):
     pytest.param(0, 8000, 1024, True, 32_768, id="unknown"),
     pytest.param(-1, 8000, 1024, False, 32_768, id="negative"),
 ])
-def test_portable_prose_and_completion_budgets(make_session, monkeypatch, window, normal, recovery, reasoning, model_max):
+def test_prose_and_completion_budgets(make_session, monkeypatch, window, normal, recovery, reasoning, model_max):
     session = make_session(faux.reply("Earlier work"))
     session.prompt("Original request")
-    # The checkpoint has to fit the active fallback window. The auxiliary model generates it.
-    target = replace(session.resolve("faux/fallback"), context_window=window)
+    target = replace(session.resolve("faux/fallback"), context_window=window, max_tokens=model_max, reasoning=reasoning)
     session.small_model = replace(session.resolve("faux/small"), context_window=200_000, reasoning=reasoning,
                                   supported_reasoning_levels=("low",) if reasoning else (), max_tokens=model_max)
-    allowances = []
-    complete = session.complete
-
-    def record(purpose, system, prompt, **kwargs):
-        allowances.append(kwargs["max_tokens"])
-        return complete(purpose, system, prompt, **kwargs)
-
-    monkeypatch.setattr(session, "complete", record)
     seen = install_responses(monkeypatch, length_limited(), AssistantMessage([TextContent("Recovered")]))
     assert session.main.compact(reason="auto", model=target) is None
     assert session.main.compact(reason="overflow", model=target)["summary"] == "Recovered"
 
-    for (model, context), budget in zip(seen, (normal, recovery), strict=True):
-        assert model is session.small_model
-        instructions = context.messages[0].text().split("</conversation>")[-1].lower()
+    # First call (auto) ran in-context on target; second call (overflow) ran serialized on small_model.
+    (m1, ctx1), (m2, ctx2) = seen
+    assert m1 is target
+    assert m2 is session.small_model
+    for instructions, budget in (
+        (ctx1.messages[-1].text().lower(), normal),
+        (ctx2.messages[0].text().split("</conversation>")[-1].lower(), recovery),
+    ):
         assert f"{budget} visible tokens" in instructions and f"~{budget * 4} characters" in instructions
+        assert "## goal & constraints" in instructions and "## next steps" in instructions
         assert "earlier evicted turns" in instructions and "retained recent messages" in instructions
-        assert "obsolete" in instructions and "inventories" in instructions
-    assert allowances == [8000, recovery]
     ordinary, retry = summary_calls(session)
     assert ordinary["max_tokens"] == min(12_096, model_max)
     assert retry["max_tokens"] == recovery + 4096 < ordinary["max_tokens"]
-    assert ordinary["effort"] == retry["effort"] == ("low" if reasoning else None)
 
 
-@pytest.mark.parametrize("window,configured,reason,expected,native", [
-    pytest.param(65_536, 20_000, "manual", 16_384, False, id="64k"),
-    pytest.param(1_000_000, 20_000, "manual", 20_000, False, id="1m"),
-    pytest.param(65_536, 4000, "manual", 4000, False, id="smaller-setting"),
-    pytest.param(65_536, 20_000, "overflow", 8192, False, id="overflow"),
-    pytest.param(3, 20_000, "manual", 0, False, id="tiny"),
-    pytest.param(0, 20_000, "manual", 20_000, False, id="unknown"),
-    pytest.param(65_536, 20_000, "manual", 20_000, True, id="native-anthropic"),
+@pytest.mark.parametrize("window,configured,reason,expected", [
+    pytest.param(65_536, 20_000, "manual", 16_384, id="64k"),
+    pytest.param(1_000_000, 20_000, "manual", 20_000, id="1m"),
+    pytest.param(65_536, 4000, "manual", 4000, id="smaller-setting"),
+    pytest.param(65_536, 20_000, "overflow", 8192, id="overflow"),
+    pytest.param(3, 20_000, "manual", 0, id="tiny"),
+    pytest.param(0, 20_000, "manual", 20_000, id="unknown"),
 ])
-def test_initial_tail_budget(make_session, monkeypatch, window, configured, reason, expected, native):
+def test_initial_tail_budget(make_session, monkeypatch, window, configured, reason, expected):
     session = make_session(faux.reply("Earlier work"), settings={"compaction": {"keepRecentTokens": configured}})
     session.prompt("Original request")
-    model = replace(session.resolve("anthropic/test" if native else "faux/fallback"), context_window=window)
+    model = replace(session.resolve("faux/fallback"), context_window=window)
     budgets = []
 
     def record(messages, keep):
@@ -553,17 +691,16 @@ def test_initial_tail_budget(make_session, monkeypatch, window, configured, reas
         return find_cut(messages, keep)
 
     monkeypatch.setattr("virgo.harness.compaction.find_cut", record)
-    monkeypatch.setattr("virgo.harness.compaction.native_compact", lambda *args, **kwargs: length_limited())
+    install_responses(monkeypatch, length_limited())
     session.main.compact(reason=reason, model=model)
     assert budgets == [expected]
 
 
-def test_chained_portable_checkpoint_budgets_evicted_prefix(make_session, project):
+def test_chained_checkpoint_budgets_evicted_prefix(make_session, project):
     constraint = "Preserve the public identifiers in spec.md."
     inventory = "No code changes made yet.\n\n" + "Candidates: alpha, beta, gamma.\n" * 40
     first_prose = f"{constraint}\n\n{inventory}".strip()
     forged_lists = "<read-files>invented</read-files>\n<modified-files>invented</modified-files>"
-    # Even a complete reply longer than the prose target must keep its last identifier and sentence.
     final_prose = constraint + "\n\n" + "Verified predicate. " * 410 + "Pending: validate exact_query_v2."
     (project / "spec.md").write_text("stable names", encoding="utf-8")
     session = make_session(
@@ -582,14 +719,11 @@ def test_chained_portable_checkpoint_budgets_evicted_prefix(make_session, projec
         final_prose + "\n\n<read-files>\nspec.md\n</read-files>\n\n<modified-files>\ndraft.py\n</modified-files>"
     )
 
-    request = calls()[-1]["messages"][0]["content"]
-    previous, transcript = request.split("</previous-summary>\n\n")
-    assert previous == f"<previous-summary>\n{first_prose}\n"
-    evicted, instructions = transcript.split("</conversation>")
-    assert inventory.strip() in evicted and "draft.py" in evicted and "solution.py" not in evicted
+    sent = calls()[-1]["messages"]
+    instructions = sent[-1]["content"].lower()
     for phrase in ("2048 visible tokens", "~8192 characters", "earlier evicted turns", "retained recent messages",
-                   "obsolete", "inventories", "exact paths", "validated decisions", "unfinished deliverables"):
-        assert phrase in instructions.lower()
+                   "## goal & constraints", "## next steps", "exact file paths", "validated decisions"):
+        assert phrase in instructions
     checkpoint, pinned, call, result, _ = session.main.messages
     assert constraint in checkpoint.text() and pinned.text() == owner
     assert call.tool_calls()[0].id == result.tool_call_id == "latest-write"
@@ -598,19 +732,11 @@ def test_chained_portable_checkpoint_budgets_evicted_prefix(make_session, projec
 
 
 @pytest.mark.parametrize("locale,limit_label", [("en", "output token limit"), ("zh_CN", "上限")])
-@pytest.mark.parametrize("native", [False, True], ids=["portable", "anthropic"])
-def test_length_diagnostic_and_accounting(make_session, monkeypatch, locale, limit_label, native):
+def test_length_diagnostic_and_accounting(make_session, monkeypatch, locale, limit_label):
     session = make_session(faux.reply("prior work"), persist=True, settings={"language": locale, "providers": OC_PROVIDERS})
     session.prompt("Original task")
-    if native:
-        session.set_model("anthropic/test")
-        reply = length_limited(output=7900)
-        monkeypatch.setattr("virgo.harness.compaction.native_compact", lambda *a, **kw: reply)
-        ceiling = 8000
-    else:
-        reply = length_limited()
-        install_responses(monkeypatch, reply)
-        ceiling = 12_096
+    reply = length_limited()
+    install_responses(monkeypatch, reply)
     rt = session.main
     before = list(rt.messages), list(rt.ids)
     assert rt.compact(reason="auto") is None
@@ -620,26 +746,21 @@ def test_length_diagnostic_and_accounting(make_session, monkeypatch, locale, lim
     assert row["stop_reason"] == "length"
     assert row["usage"] == dict(input=33_209, cache_read=384, output=reply.usage.output, cache_write=0)
     diagnostic = session.ui.lines[-1].lower().replace(",", "")
-    assert "length" in diagnostic and limit_label in diagnostic and str(ceiling) in diagnostic
+    assert "length" in diagnostic and limit_label in diagnostic and "12096" in diagnostic
     assert session.t("harness.compact.empty_summary") not in diagnostic
 
 
-@pytest.mark.parametrize("native", [False, True], ids=["portable", "anthropic"])
 @pytest.mark.parametrize("stop,text,error,expected", [
     ("stop", "  ", None, "empty summary"),
     ("error", "", "provider unavailable", "provider unavailable"),
     ("stop", "partial", "provider unavailable", "provider unavailable"),
     ("aborted", "partial", None, "cancel"),
 ])
-def test_compaction_distinguishes_other_failures(make_session, monkeypatch, native, stop, text, error, expected):
+def test_compaction_distinguishes_other_failures(make_session, monkeypatch, stop, text, error, expected):
     session = make_session(faux.reply("prior work"))
     session.prompt("Original task")
     reply = AssistantMessage([TextContent(text)], stop_reason=stop, error_message=error)
-    if native:
-        session.set_model("anthropic/test")
-        monkeypatch.setattr("virgo.harness.compaction.native_compact", lambda *a, **kw: reply)
-    else:
-        install_responses(monkeypatch, reply)
+    install_responses(monkeypatch, reply)
     assert session.compact() is None
     assert expected in session.ui.lines[-1].lower()
     assert session.store.last_compaction() is None
@@ -654,13 +775,12 @@ def test_compaction_distinguishes_other_failures(make_session, monkeypatch, nati
     pytest.param(57_196, 59_956, 61_440, True, id="at-reserve"),
 ])
 def test_length_then_tool_turn_bounds_recovery(make_session, monkeypatch, project, before, main_input, after, at_reserve):
-    session = make_session(persist=True, settings={"providers": OC_PROVIDERS})
+    session = make_session(persist=True, settings={"providers": OC_PROVIDERS, "compaction": {"pruneRatio": 0.0}})
     rt = session.main
     (project / "spec").write_text("fact", encoding="utf-8")
     install_responses(monkeypatch, AssistantMessage([TextContent("prior work")], usage=Usage(input=before - 1)))
     session.prompt("Original task")
     original = list(rt.messages)
-    # "Read" and the real tool result "1|fact" each add one token to the preceding reported usage.
     tool_turn = AssistantMessage([ToolCall("read-spec", "read", {"path": "spec"})], stop_reason="tool_use",
                                 usage=Usage(input=main_input, output=after - main_input - 1))
     overflow = AssistantMessage(stop_reason="error", error_kind="overflow", error_message="context is too long")
@@ -668,9 +788,10 @@ def test_length_then_tool_turn_bounds_recovery(make_session, monkeypatch, projec
     requests, instructions, model_contexts = [], [], []
 
     def stream(model, ctx, opts):
-        if "context summarization assistant" in ctx.system:
+        if _is_summary_request(ctx):
             requests.append("summary")
-            instructions.append(ctx.messages[0].text().split("</conversation>")[-1])
+            prompt_text = ctx.messages[-1].text() if ctx.messages[-1].kind == "compaction_prompt" else ctx.messages[0].text().split("</conversation>")[-1]
+            instructions.append(prompt_text)
             if len(instructions) == 2 and after == 61_440:
                 return response_stream(AssistantMessage())  # An empty recovery also exhausts the attempt.
             return response_stream(length_limited(output=opts.max_tokens))
@@ -693,7 +814,6 @@ def test_length_then_tool_turn_bounds_recovery(make_session, monkeypatch, projec
     assert rt.messages == [*model_contexts[1], overflow]
     restored, ids = SessionStore.load(session.store.path).build_context()
     assert ids == rt.ids and restored[:-2] == rt.messages[:-2] and restored[-1] == overflow
-    # The store compacts tool policy metadata on disk. All tool message fields sent to the model survive.
     assert replace(restored[-2], details=None) == replace(result, details=None)
     assert session.store.last_compaction() is None
 
@@ -701,12 +821,12 @@ def test_length_then_tool_turn_bounds_recovery(make_session, monkeypatch, projec
 @pytest.mark.parametrize("reactive", [False, True], ids=["auto", "overflow"])
 @pytest.mark.parametrize("cancellation", ["signal-and-length", "aborted"])
 def test_cancelled_compaction_ends_run_without_retry(make_session, monkeypatch, cancellation, reactive):
-    session = make_session(settings={"compaction": {"triggerTokens": 1}})
+    session = make_session(settings={"compaction": {"triggerTokens": 1, "pruneRatio": 0.0}})
     rt = session.main
     requests = []
 
     def stream(model, ctx, opts):
-        if "context summarization assistant" in ctx.system:
+        if _is_summary_request(ctx):
             requests.append("summary")
             if reactive and requests.count("summary") == 1:
                 return response_stream(length_limited())
@@ -724,12 +844,12 @@ def test_cancelled_compaction_ends_run_without_retry(make_session, monkeypatch, 
     assert "cancel" in session.ui.lines[-1].lower()
     assert session.store.last_compaction() is None
     if not reactive:
-        assert rt._compaction_due()  # Even a racing length response did not arm the length guard.
+        assert rt.compactor.compaction_due()  # Even a racing length response did not arm the length guard.
 
 
 @pytest.fixture
 def after_length(make_session, monkeypatch):
-    session = make_session(settings={"providers": OC_PROVIDERS})
+    session = make_session(settings={"providers": OC_PROVIDERS, "compaction": {"pruneRatio": 0.0}})
     install_responses(monkeypatch, AssistantMessage([TextContent("work")], usage=Usage(input=57_196)), length_limited())
     session.prompt("Original task")
     assert session.main.compact(reason="auto") is None
@@ -740,24 +860,24 @@ def after_length(make_session, monkeypatch):
 def test_compaction_success_clears_length_failure(after_length, monkeypatch, reason):
     session = after_length
     rt = session.main
-    assert not rt._compaction_due()
+    assert not rt.compactor.compaction_due()
     rt.messages[-1].usage.input = 61_440
-    assert rt._compaction_due()
+    assert rt.compactor.compaction_due()
     install_responses(monkeypatch, AssistantMessage([TextContent("complete checkpoint")]))
     assert rt.compact(reason=reason)["summary"] == "complete checkpoint"
     # Growth in this same run must allow ordinary compaction again, below the safety reserve.
     rt.messages.append(AssistantMessage(usage=Usage(input=57_196)))
-    assert rt._compaction_due()
+    assert rt.compactor.compaction_due()
     install_responses(monkeypatch, length_limited())
     rt.compact(reason="auto")
     assert [c["max_tokens"] for c in summary_calls(session)][-1] == 12_096
 
 
-@pytest.mark.parametrize("reset", ["set_model", "window_only", "restore_native_context", "prepare_run", "new_prompt"])
+@pytest.mark.parametrize("reset", ["set_model", "window_only", "prepare_run", "new_prompt"])
 def test_length_failure_resets_at_runtime_boundaries(after_length, monkeypatch, reset):
     session = after_length
     rt = session.main
-    assert not rt._compaction_due()
+    assert not rt.compactor.compaction_due()
     if reset == "set_model":
         session.set_model("faux/other")
         session.set_model("faux/test")
@@ -765,8 +885,6 @@ def test_length_failure_resets_at_runtime_boundaries(after_length, monkeypatch, 
         original = rt.model
         rt.model = replace(original, context_window=original.context_window - 1)
         rt.model = original
-    elif reset == "restore_native_context":
-        rt.restore_native_context(session.resolve("faux/other"))
     elif reset == "prepare_run":
         rt.prepare_run()
     else:
@@ -775,13 +893,13 @@ def test_length_failure_resets_at_runtime_boundaries(after_length, monkeypatch, 
         assert session.main.agent.last_text == "done"
         assert [row["max_tokens"] for row in summary_calls(session)] == [12_096, 12_096]
         return
-    assert rt._compaction_due()
+    assert rt.compactor.compaction_due()
 
 
 def test_length_failure_resets_on_retry_fallback(make_session, monkeypatch):
     session = make_session(settings={
         "providers": OC_PROVIDERS,
-        "compaction": {"triggerTokens": 1},
+        "compaction": {"triggerTokens": 1, "pruneRatio": 0.0},
         "retry": {"fallbackModel": "faux/fallback"},
     })
     monkeypatch.setattr(session.main.agent.signal, "wait", lambda _: False)
@@ -790,33 +908,11 @@ def test_length_failure_resets_on_retry_fallback(make_session, monkeypatch):
                              AssistantMessage([TextContent("checkpoint")]), AssistantMessage([TextContent("done")]))
     session.prompt("Original task")
     assert session.main.agent.last_text == "done" and seen[-1][0].spec == "faux/fallback"
-    assert [row["max_tokens"] for row in summary_calls(session)] == [12_096, 12_096]
-
-
-@pytest.mark.parametrize("api", ["anthropic", "openai"])
-def test_native_length_recovery_requires_shorter_request(make_session, monkeypatch, api):
-    session = make_session(faux.reply("prior work"))
-    session.prompt("Original task")
-    session.set_model(f"{api}/test")
-    rt = session.main
-    requests = []
-
-    def native(model, context, opts, *, focus):
-        requests.append((opts.max_tokens, focus))
-        return length_limited(output=opts.max_tokens)
-
-    monkeypatch.setattr("virgo.harness.compaction.native_compact", native)
-    assert rt.compact(reason="auto") is None
-    assert rt.compact(reason="overflow") is None
-    if api == "anthropic":
-        ordinary, recovery = requests
-        assert recovery[0] < ordinary[0] and recovery[1] and "tokens" in recovery[1]
-    else:
-        assert len(requests) == 1  # The standalone endpoint accepts neither focus nor an output limit.
+    assert [row["max_tokens"] for row in summary_calls(session)] == [12_096, 8192]
 
 
 def test_successful_length_recovery_keeps_one_reactive_overflow_guard(make_session, monkeypatch):
-    session = make_session(settings={"compaction": {"triggerTokens": 1}})
+    session = make_session(settings={"compaction": {"triggerTokens": 1, "pruneRatio": 0.0}})
     overflow = AssistantMessage(stop_reason="error", error_kind="overflow", error_message="context is too long")
     install_responses(monkeypatch, length_limited(), overflow, AssistantMessage([TextContent("checkpoint")]), overflow)
     session.prompt("Original task")

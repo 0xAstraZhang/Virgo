@@ -9,7 +9,6 @@ import threading
 import httpx
 import pytest
 
-from virgo.ai import compaction
 from virgo.ai.providers import anthropic, codex, openai, responses
 from virgo.ai.providers._errors import attach_error
 from virgo.ai.types import AssistantMessage, Context, Model, StreamOptions, UserMessage, message_to_dict
@@ -121,20 +120,6 @@ def test_user_cancellation_is_not_reported_as_fatal(adapter, api):
     result = adapter.stream(model_for(api), Context("", []), StreamOptions(signal=signal)).result()
     assert result.stop_reason == "aborted"
     assert result.error_details is None and result.error_kind != "fatal"
-
-
-def test_compaction_setup_exception_keeps_diagnostics(monkeypatch):
-    model = model_for("openai")
-
-    def fail(*args, **kwargs):
-        raise ValueError(f"Invalid authenticated configuration {TOKEN}")
-
-    monkeypatch.setattr("virgo.ai.auth.authenticated_model", fail)
-    result = compaction.compact(model, Context("private-system", []))
-    assert result.stop_reason == "error"
-    assert result.error_details["phase"] == "provider.compact.setup"
-    assert "ValueError" in result.error_details["exception_type"]
-    assert TOKEN not in json.dumps(message_to_dict(result))
 
 
 @pytest.mark.parametrize("transport_name", ["httpx", "httpx2"])
