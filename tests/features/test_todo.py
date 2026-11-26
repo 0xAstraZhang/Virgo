@@ -112,12 +112,54 @@ def test_todos_replace_restore_and_display(make_session):
     restored.prompt("/todos")
     assert "removed" in restored.ui.text.lower()
     assert calls() == []
+    expected_before_compact = current
     for todos in ([item("finished", "completed")], []):
         faux.push("test", faux.reply(tools=[("todo_write", {"todos": todos})]), faux.reply("updated " * 1000))
         restored.prompt("update the list")
-        assert retained(restored.main) is None
+        assert retained(restored.main) == expected_before_compact
         summarize(restored)
         assert retained(restored.main) is None
+        expected_before_compact = None
+
+
+def test_post_compaction_todo_update_keeps_system_prompt_frozen_until_next_compaction(make_session):
+    v1 = {"todos": [item("step one", "in_progress"), item("step two", "pending", "StepB")]}
+    v2 = {"todos": [item("step one", "completed"), item("step two", "in_progress", "StepB")]}
+    done = {"todos": [item("step one", "completed"), item("step two", "completed", "StepB")]}
+    session = make_session(
+        faux.reply(tools=[("todo_write", v1)]), faux.reply("initial work " * 1000),
+        settings={"compaction": {"keepRecentTokens": 1}},
+    )
+    session.prompt("start work")
+    summarize(session)
+    assert retained(session.main) == v1
+
+    # Updating todos mid-epoch must not mutate system prompt (preserves prompt cache prefix).
+    faux.push("test", faux.reply(tools=[("todo_write", v2)]), faux.reply("mid work " * 1000))
+    session.prompt("advance checklist")
+    before_update_system = calls()[-2]["system"]
+    after_update_system = calls()[-1]["system"]
+    assert after_update_system == before_update_system
+    assert retained(session.main) == v1
+
+    # Subsequent turn in the same epoch and the next compaction request stay byte-identical.
+    faux.push("test", faux.reply("more work " * 1000))
+    session.prompt("continue")
+    assert calls()[-1]["system"] == before_update_system
+    summarize(session)
+    assert calls()[-1]["system"] == before_update_system
+    # After the new compaction commits, the retained section refreshes to v2.
+    assert retained(session.main) == v2
+
+    # Completing all todos also stays frozen until the next compaction clears it.
+    faux.push("test", faux.reply(tools=[("todo_write", done)]), faux.reply("all done " * 1000))
+    session.prompt("finish checklist")
+    v2_system = calls()[-2]["system"]
+    assert calls()[-1]["system"] == v2_system
+    assert retained(session.main) == v2
+    summarize(session)
+    assert calls()[-1]["system"] == v2_system
+    assert retained(session.main) is None
 
 
 def test_todo_extension_loading_and_permissions(make_session, broker_session, project):
