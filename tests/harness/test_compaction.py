@@ -1109,3 +1109,56 @@ def test_auto_compaction_preserves_unread_tool_results_and_prevents_thrashing(ma
     entry = session.store.last_compaction(mode="summary")
     assert entry is not None and len(entry["kept_ids"]) >= 2
     assert rt.agent.last_text == "Saw KEY=ALPHA-99"
+
+
+@pytest.mark.parametrize("settings", [
+    {"search": {"mode": "native"}},
+    {"search": {"mode": "builtin", "backend": "deepseek", "apiKeyEnv": "VIRGO_TEST_MISSING_WEB_KEY"}},
+    {"fetch": {"mode": "builtin", "backend": "deepseek", "apiKeyEnv": "VIRGO_TEST_MISSING_WEB_KEY"}},
+])
+def test_compaction_uses_serialized_when_web_prefix_unavailable(make_session, monkeypatch, settings):
+    session = make_session(
+        faux.reply("Earlier work"), settings={"compaction": {"enabled": False}},
+    )
+    session.prompt("Build the parser")
+    monkeypatch.delenv("VIRGO_TEST_MISSING_WEB_KEY", raising=False)
+    for capability, config in settings.items():
+        for key, value in config.items():
+            session.settings.set(f"{capability}.{key}", value)
+
+    # Ordinary requests still honor the configured route and report its failure.
+    with pytest.raises(ValueError):
+        session.main.request_context(session.main.messages)
+
+    seen = install_responses(monkeypatch, AssistantMessage([TextContent("## Goal & Constraints\nBuild the parser")]))
+    result = session.compact()
+
+    assert result is not None and result["strategy"] == "serialized"
+    assert len(seen) == 1
+    assert seen[0][0] is session.small_model
+    assert not seen[0][1].tools
+    assert not seen[0][1].web_tools
+
+
+def test_compaction_does_not_rebind_web_execution_for_the_agent(make_session, monkeypatch):
+    from virgo.agent.types import ToolContext
+    from virgo.ai.types import Model
+
+    session = make_session(
+        faux.reply("Earlier work"), settings={"compaction": {"enabled": False}},
+    )
+    session.prompt("Build the parser")
+    runtime = session.main
+    search = session.services["search"]
+    tool_context = ToolContext("search", runtime.cwd, runtime.agent.signal, origin=runtime.origin)
+    assert search.execution_backend(tool_context) == "duckduckgo"
+
+    # A summary may use a different model with hosted search while the agent
+    # still needs its own client-side search backend.
+    summary_model = Model("openai-codex", "gpt-6.2-sol", "openai-codex", reasoning=True)
+    seen = install_responses(monkeypatch, AssistantMessage([TextContent("## Goal & Constraints\nBuild the parser")]))
+    result = runtime.compact(model=summary_model)
+
+    assert result is not None and result["strategy"] == "in_context"
+    assert seen[0][1].web_tools == [{"type": "web_search"}]
+    assert search.execution_backend(tool_context) == "duckduckgo"
