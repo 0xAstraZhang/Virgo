@@ -166,7 +166,7 @@ def test_child_created_before_mode_change_keeps_its_origin_permissions(broker_se
 
 
 def test_default_profile_is_workspace_edit_with_resource_approval(project):
-    from virgo.execution_policy import default_execution_mode
+    from virgo.execution import default_execution_mode
 
     expected = default_execution_mode()
     session = AgentSession(project, model="faux/test", session=None, extensions=False, refresh_models=False)

@@ -71,7 +71,7 @@ def run_repl(
             version=__version__,
             model=session.model.spec,
             effort=effort_label(session.model, session.effort, session.t),
-            sandbox=session.services["execution"].effective_mode(session.main),
+            sandbox=session.effective_permission_mode(),
             cwd=session.cwd,
         ),
         "dim",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .service import web_service
+
 _CHOICES = (
     ("harness.fetch.choice.auto", "auto"),
     ("harness.fetch.choice.http", "http"),
@@ -22,7 +24,7 @@ def configure_fetch(api, args):
     if not choice:
         if not api.ui.interactive:
             runtime = api.current_runtime() if hasattr(api, "current_runtime") else None
-            paths = getattr(runtime, "_web_paths", {})
+            paths = web_service(api).paths_for(runtime)
             detail = "\n" + api.t("harness.fetch.paths", paths=paths) if paths else ""
             api.ui.print(api.t("harness.fetch.current", selection=service.selection, detail=detail, usage=usage))
             return

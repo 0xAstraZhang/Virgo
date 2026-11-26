@@ -4,40 +4,24 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
-from dataclasses import dataclass, field
 
-from .types import Model
-
-
-@dataclass(frozen=True)
-class WebOffer:
-    id: str
-    covers: frozenset[str]
-    declaration: dict | None = None
-    backend: str | None = None
-    native: bool = True
-    # Provider parameter -> (logical capability, setting). No parameter-name guesses in the planner.
-    controls: dict[str, tuple[str, str]] = field(default_factory=dict)
-    evidence: str = "actions_and_citations"
-
-    @property
-    def hosted(self) -> bool:
-        return self.declaration is not None
-
-    @property
-    def capabilities(self) -> frozenset[str]:
-        # Page finding is controlled by the reading permission, not a new user setting.
-        return frozenset("fetch" if c == "find" else c for c in self.covers)
-
-
-def _builtin(model):
-    from .providers.web import offers
-
-    return offers(model)
-
+from .providers.web import deepseek_endpoint, endpoint
+from .providers.web import offers as _builtin
+from .types import Model, WebOffer
 
 # Extensions can append an adapter, without changing selection or permission logic.
 ADAPTERS: list[Callable[[Model], list[WebOffer]]] = [_builtin]
+
+__all__ = [
+    "ADAPTERS",
+    "WebOffer",
+    "declarations",
+    "deepseek_endpoint",
+    "endpoint",
+    "native_event",
+    "offers_for",
+    "started",
+]
 
 
 def offers_for(model: Model) -> list[WebOffer]:

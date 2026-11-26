@@ -42,8 +42,8 @@ from typing import TYPE_CHECKING, Any
 from ..agent.types import AgentTool, Block, Continue, ToolResult
 from ..ai.types import TextContent
 from ..diagnostics import capture_error, emergency_write, safe_text
-from ..extensions import BUILTIN_EXTENSIONS
-from .settings import PLUGIN_IDS, same_directory
+from ..file_access import same_directory
+from .settings import BUILTIN_EXTENSIONS, PLUGIN_IDS
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -96,8 +96,11 @@ class EventBus:
                 return result
         return None
 
-    def has_handlers(self, event: str, *, exclude=None) -> bool:
-        return any(fn != exclude for _, _, fn in self._handlers.get(event, []))
+    def has_handlers(self, event: str, *, exclude=None, exclude_owners: tuple[str, ...] = ()) -> bool:
+        return any(
+            fn != exclude and self._owners.get((event, seq)) not in exclude_owners
+            for _, seq, fn in self._handlers.get(event, [])
+        )
 
     def _call(self, event: str, fn: Callable, args: tuple) -> Any:
         try:
@@ -254,6 +257,14 @@ class ExtensionAPI:
         """
         self._add_section(self._session.request_sections, name, fn, order)
 
+    def add_request_preparer(self, name: str, fn: Callable, order: int = 50) -> None:
+        """fn(Runtime, Context, Model) -> None invoked before every model or compaction request."""
+        self._add_section(self._session.request_preparers, name, fn, order)
+
+    def add_request_fallback(self, name: str, fn: Callable, order: int = 50) -> None:
+        """fn(Runtime, Model, Context, AssistantMessage) -> purpose | None on failed model requests."""
+        self._add_section(self._session.request_fallbacks, name, fn, order)
+
     def _add_section(self, sections, name, fn, order):
         key = f"{self.name}:{name}"
         if any(existing == key for _, existing, _ in sections):
@@ -269,12 +280,15 @@ class ExtensionAPI:
         self._session.register_cleanup(self.name, callback)
 
     def current_runtime(self):
-        with self._session._lock:
+        with self._session.state_lock:
             return self._session.main
 
     def current_store(self):
-        with self._session._lock:
+        with self._session.state_lock:
             return self._session.store
+
+    def subagent_store_for(self, store=None):
+        return self._session.subagent_store_for(store)
 
     def runtime_for_context(self, context):
         return self._session.runtime_for_context(context)
@@ -307,10 +321,10 @@ class ExtensionAPI:
         return self._session._before_tool(event) or self._session._before_tool_execute(event)
 
     def has_tool_hooks(self):
-        router = self._session.services.get("execution")
-        sandbox = getattr(router, "sandbox", None)
-        return (self._session.bus.has_handlers("tool_call")
-                or self._session.bus.has_handlers("tool_result", exclude=getattr(sandbox, "_result", None)))
+        return (
+            self._session.bus.has_handlers("tool_call")
+            or self._session.bus.has_handlers("tool_result", exclude_owners=("core:execution",))
+        )
 
     def report_error(self, error, **kwargs):
         return self._session.report_error(error, **kwargs)
@@ -322,7 +336,7 @@ class ExtensionAPI:
                diagnostics=()) -> None:
         self.session.notify(text, mode=mode, source=source or self.name, store=store, diagnostics=diagnostics)
 
-    def _rollback(self):
+    def rollback(self):
         self._session.cleanup_plugins(owner=self.name)
         for undo in reversed(self._undos):
             undo()
@@ -340,16 +354,15 @@ BUILTIN_PLUGINS = PLUGIN_IDS
 def _setup(session: AgentSession, name: str, setup: Callable[[ExtensionAPI], None], *, context=None) -> None:
     api = ExtensionAPI(session, name)
     services = dict(session.services)
-    tools = dict(session._tool_groups)
+    tools = session.checkpoint_tools()
     try:
         setup(api)
         session.loaded_plugins.append(name)
     except Exception as error:
-        api._rollback()
+        api.rollback()
         # A capability may ask a Core adapter to rebuild its owned tools (shell
         # background mode). Restore that adapter's registration too on failure.
-        session._tool_groups = tools
-        session._tool_version += 1
+        session.restore_tools(tools)
         session.services.clear()
         session.services.update(services)
         session.report_error(error, phase="extension.load", code="PLUGIN_DEGRADED",

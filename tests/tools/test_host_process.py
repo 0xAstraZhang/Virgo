@@ -167,7 +167,7 @@ def test_native_process_cleanup_releases_scratch_after_drain_error():
 def test_native_process_wraps_popen_with_host_process_and_keeps_scratch_until_drained(monkeypatch):
     from types import SimpleNamespace
 
-    from virgo import execution as execution_mod
+    from virgo import process as process_mod
     from virgo.execution import ExecutionFailed
     from virgo.sandbox.native import NativeProcess
 
@@ -204,7 +204,7 @@ def test_native_process_wraps_popen_with_host_process_and_keeps_scratch_until_dr
 
     ticks = iter([0.0, 2.0])
     monkeypatch.setattr(
-        execution_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks, 2.0), sleep=lambda _s: None)
+        process_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks, 2.0), sleep=lambda _s: None)
     )
     p_poll_timeout = Mock(pid=204, returncode=None)
     p_poll_timeout.wait.side_effect = lambda: setattr(p_poll_timeout, "returncode", 1) or 1
@@ -230,7 +230,7 @@ def test_native_process_wraps_popen_with_host_process_and_keeps_scratch_until_dr
     )
     ticks_native = iter([0.0, 2.0])
     monkeypatch.setattr(
-        execution_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks_native, 2.0), sleep=lambda _s: None)
+        process_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks_native, 2.0), sleep=lambda _s: None)
     )
     with pytest.raises(ExecutionFailed, match="busy"):
         native_undrained.cleanup_tree()

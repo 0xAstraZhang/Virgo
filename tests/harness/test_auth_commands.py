@@ -14,7 +14,7 @@ from virgo.ai.auth import authenticated_model
 from virgo.ai.auth_presets import API_PRESETS, AUTH_PRESETS
 from virgo.ai.catalog import CatalogModel
 from virgo.ai.models import BUILTIN_PROVIDERS
-from virgo.execution_policy import default_execution_mode
+from virgo.execution import default_execution_mode
 from virgo.harness.preferences import model_choices
 from virgo.harness.session import AgentSession
 from virgo.harness.ui import UI
@@ -178,7 +178,7 @@ def test_slow_startup_directory_cannot_replace_new_logins_models(make_session, m
         s.prompt("/login api deepseek")
     finally:
         release.set()
-    assert s._catalog_refresh_done.wait(5)
+    assert s.models.refresh_done.wait(5)
     assert [c.label for c in model_choices(s) if c.spec.startswith("deepseek/")] == [
         item.id for item in api_catalog["deepseek"]
     ]

@@ -8,7 +8,8 @@ import threading
 import weakref
 from pathlib import Path
 
-from ..execution import ExecutionFailed, ExecutionUnavailable, HostProcess
+from ..execution_types import ExecutionFailed, ExecutionUnavailable
+from ..process import HostProcess
 from .platform import NativePolicy, _CommandScratch, platform_backend
 
 _LIVE_POSIX_SCRATCHES: weakref.WeakSet[_CommandScratch] = weakref.WeakSet()

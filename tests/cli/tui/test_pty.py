@@ -296,7 +296,7 @@ def test_fullscreen_pty_cancel_stalled_sdk_stream(project, tmp_path, monkeypatch
         # Isolate model discovery from user-configured account environment variables.
         script = """
 from virgo.harness import preferences
-preferences.start_model_refresh = lambda session: session._catalog_refresh_done.set()
+preferences.start_model_refresh = lambda session: session.models.refresh_done.set()
 """
         if submit_while_cancelling:
             script += STEERING_GATE

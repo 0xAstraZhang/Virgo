@@ -24,25 +24,61 @@ import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import Any, Literal, Protocol
 
 from .. import ai
+from ..ai.providers._errors import retry_after_seconds
 from ..ai.transform import strip_thinking
 from ..ai.types import (
     AssistantMessage,
     RawContent,
     StreamOptions,
-    TextContent,
     ToolCall,
     ToolResultMessage,
     ToolSpec,
     UserMessage,
 )
-from .store import compacted_message, summary_message
+from .compaction_records import compacted_message
 from .telemetry import record_call
 
-if TYPE_CHECKING:
-    from .runtime import Runtime
+
+class CompactionHost(Protocol):
+    """Narrow runtime contract consumed by CompactionController without importing Runtime."""
+
+    name: str
+    messages: list
+    ids: list
+    model: Any
+    compaction: bool
+    run_id: str | None
+    diagnostic_id: str
+    accounting_store: Any
+    request_budget: Any
+    agent: Any
+    session: Any
+
+    def can_run(self) -> bool: ...
+    def context_tokens(self, *, estimate_only: bool = False) -> int: ...
+    def effort_for(self, model: Any) -> str | None: ...
+    def request_context(self, messages: list, model: Any = None) -> Any: ...
+    def record_model_error(self, message: Any, *, purpose: str = "agent", notify: bool = False, context: dict | None = None) -> dict | None: ...
+    def previous_summary_files(self) -> tuple[list[str], list[str]] | None: ...
+    def on_compaction_before(self) -> None: ...
+    def on_compaction_error(self, detail: str) -> None: ...
+    def commit_prune(self, updates: list[tuple[int, str]], *, tokens_before: int, reclaimed: int, reason: str) -> dict: ...
+    def commit_summary(
+        self,
+        summary: str,
+        timestamp: float,
+        kept_msgs: list,
+        kept_ids: list,
+        *,
+        tokens_before: int,
+        reason: str,
+        strategy: str,
+        read_files: list[str],
+        modified_files: list[str],
+    ) -> dict: ...
 
 SUMMARY_SYSTEM = (
     "You are a context summarization assistant. You read a transcript of a coding session between a user and an "
@@ -228,7 +264,7 @@ def _files(messages: list) -> tuple[set, set]:
     return read, modified
 
 
-def _retained_tail(rt: Runtime, cut: int) -> tuple[list, list]:
+def _retained_tail(rt: CompactionHost, cut: int) -> tuple[list, list]:
     messages = rt.messages
     tail = messages[cut:]
     if not tail:
@@ -251,7 +287,7 @@ def _retained_tail(rt: Runtime, cut: int) -> tuple[list, list]:
     return kept, ids
 
 
-def _report_failure(rt: Runtime, msg: AssistantMessage, *, complete: bool, limit: int | None) -> FailureReason | None:
+def _report_failure(rt: CompactionHost, msg: AssistantMessage, *, complete: bool, limit: int | None) -> FailureReason | None:
     t = rt.session.t
     reason: FailureReason
     if rt.agent.signal.is_set() or msg.stop_reason == "aborted":
@@ -273,7 +309,7 @@ def _report_failure(rt: Runtime, msg: AssistantMessage, *, complete: bool, limit
         detail = t("harness.compact.empty_summary")
     else:
         return None
-    rt.session.ui.print(t("harness.compact.failed", error=detail), "error")
+    rt.on_compaction_error(detail)
     return reason
 
 
@@ -330,7 +366,7 @@ class _PrunePlan:
     reclaimed: int
 
 
-def _plan_prune_tool_results(rt: Runtime, *, model, aggressive: bool = False) -> _PrunePlan | None:
+def _plan_prune_tool_results(rt: CompactionHost, *, model, aggressive: bool = False) -> _PrunePlan | None:
     """Identify reclaimable tool outputs without changing live or persisted history."""
     messages = rt.messages
     if not messages:
@@ -385,34 +421,13 @@ def _plan_prune_tool_results(rt: Runtime, *, model, aggressive: bool = False) ->
     return _PrunePlan(candidates, reclaimed)
 
 
-def _apply_prune_plan(rt: Runtime, plan: _PrunePlan, *, reason: str) -> dict:
+def _apply_prune_plan(rt: CompactionHost, plan: _PrunePlan, *, reason: str) -> dict:
     tokens_before = rt.context_tokens()
-    pruned_by_id: dict[str, str] = {}
-    for i, m, stub in plan.candidates:
-        rt.messages[i] = compacted_message(replace(m, content=[TextContent(stub)]))
-        entry_id = rt.ids[i] if i < len(rt.ids) else None
-        if entry_id is not None:
-            pruned_by_id[entry_id] = stub
-
-    if rt.store is not None and pruned_by_id:
-        rt.store.append(
-            "compaction",
-            mode="prune",
-            pruned=pruned_by_id,
-            tokens_before=tokens_before,
-            tokens_reclaimed=plan.reclaimed,
-            reason=reason,
-        )
-    rt.compacted_at = len(rt.messages)
-    return {
-        "mode": "prune",
-        "tokens_before": tokens_before,
-        "tokens_reclaimed": plan.reclaimed,
-        "pruned_count": len(plan.candidates),
-    }
+    updates = [(i, stub) for i, _m, stub in plan.candidates]
+    return rt.commit_prune(updates, tokens_before=tokens_before, reclaimed=plan.reclaimed, reason=reason)
 
 
-def prune_tool_results(rt: Runtime, *, model, reason: str = "auto", aggressive: bool = False) -> dict | None:
+def prune_tool_results(rt: CompactionHost, *, model, reason: str = "auto", aggressive: bool = False) -> dict | None:
     """L1: Batch-collapse stale bulky ToolResultMessages into semantic stubs."""
     plan = _plan_prune_tool_results(rt, model=model, aggressive=aggressive)
     return _apply_prune_plan(rt, plan, reason=reason) if plan else None
@@ -441,7 +456,7 @@ def _build_summary_instruction(*, target: int, focus: str | None, concise: bool,
 
 
 def _in_context_summarize(
-    rt: Runtime,
+    rt: CompactionHost,
     *,
     model,
     prefix_messages: list,
@@ -454,8 +469,6 @@ def _in_context_summarize(
     in-context attempt cannot be used (e.g. overflow, unexpected tool/web call, or
     exhausted retryable provider errors).
     """
-    from .runtime import retry_after_seconds
-
     session = rt.session
     ctx = rt.request_context(prefix_messages, model)
     # Keep hosted web_tools/web_offers identical to normal requests so provider
@@ -536,7 +549,7 @@ def _in_context_summarize(
 
 
 def _serialized_summarize(
-    rt: Runtime,
+    rt: CompactionHost,
     *,
     to_summarize: list,
     prev_text: str | None,
@@ -556,7 +569,7 @@ def _serialized_summarize(
 
 
 def summarize_context(
-    rt: Runtime,
+    rt: CompactionHost,
     focus: str | None,
     reason: str,
     *,
@@ -583,17 +596,17 @@ def summarize_context(
     if not to_summarize:
         return None
 
-    session.bus.emit("before_compact", rt)
+    rt.on_compaction_before()
     tokens_before = rt.context_tokens()
 
     read, modified = _files(to_summarize)
     prev_text: str | None = None
     if prev:
         raw_prev = prev.text().split("\n\n", 1)[-1].removesuffix("</conversation_summary>")
-        prev_entry = rt.store.by_id.get(rt.ids[0], {}) if rt.store and rt.ids else {}
-        if details := prev_entry.get("details"):
-            read.update(details.get("read_files", []))
-            modified.update(details.get("modified_files", []))
+        prev_files = rt.previous_summary_files()
+        if prev_files is not None:
+            read.update(prev_files[0])
+            modified.update(prev_files[1])
         else:
             for tag, paths in _FILE_BLOCK.findall(raw_prev):
                 (read if tag == "read-files" else modified).update(paths.strip("\n").splitlines())
@@ -640,33 +653,17 @@ def summarize_context(
         summary += "\n\n<modified-files>\n" + "\n".join(sorted(modified)) + "\n</modified-files>"
 
     kept_msgs, kept_ids = _retained_tail(rt, cut)
-    entry_id = None
-    if rt.store is not None:
-        entry = rt.store.append(
-            "compaction",
-            mode="summary",
-            summary=summary,
-            summary_timestamp=msg.timestamp,
-            kept_ids=[k for k in kept_ids if k],
-            tokens_before=tokens_before,
-            reason=reason,
-            strategy=strategy,
-            details={"read_files": sorted(read), "modified_files": sorted(modified)},
-        )
-        entry_id = entry["id"]
-    messages[:] = [summary_message(summary, timestamp=msg.timestamp), *kept_msgs]
-    rt.ids[:] = [entry_id, *kept_ids]
-    rt.compacted_at = len(messages)
-    rt.rebuild_system()
-    session.bus.emit("compact", rt, summary)
-    return {
-        "mode": "summary",
-        "strategy": strategy,
-        "tokens_before": tokens_before,
-        "summary": summary,
-        "kept": len(kept_msgs),
-    }
-
+    return rt.commit_summary(
+        summary,
+        msg.timestamp,
+        kept_msgs,
+        kept_ids,
+        tokens_before=tokens_before,
+        reason=reason,
+        strategy=strategy,
+        read_files=sorted(read),
+        modified_files=sorted(modified),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +674,7 @@ def summarize_context(
 class CompactionController:
     """Owns automatic L1/L2 thresholds, growth floors, and L3 overflow recovery for a Runtime."""
 
-    def __init__(self, runtime: Runtime):
+    def __init__(self, runtime: CompactionHost):
         self.rt = runtime
         self._model_key: tuple[str, int] | None = None
         self._auto_floor = 0
@@ -838,7 +835,6 @@ class CompactionController:
             self._length_recovery = "pending"
         if isinstance(result, dict):
             self.reset()
-            self.rt.recovery.after_compaction()
             if reason == "auto":
                 self._arm_post_compaction_floor(target)
         return result

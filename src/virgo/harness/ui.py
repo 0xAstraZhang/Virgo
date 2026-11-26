@@ -3,10 +3,69 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from ..agent.types import AgentEvent
+from ..ai import resolved_effort
+from ..ai.types import Model
 from ..i18n import Translator
-from .preferences import PreferenceChoice, PreferenceRequest
+
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def effort_levels(model: Model) -> tuple[str, ...]:
+    if model.supported_reasoning_levels is None and model.default_reasoning_level:
+        return tuple(dict.fromkeys((*EFFORT_LEVELS, model.default_reasoning_level)))
+    if not model.reasoning or model.supported_reasoning_levels is None:
+        return EFFORT_LEVELS
+    return model.supported_reasoning_levels
+
+
+@dataclass(frozen=True)
+class ModelChoice:
+    spec: str
+    label: str
+    description: str
+    released_at: float | None = None
+    effort_levels: tuple[str, ...] = EFFORT_LEVELS
+    preferred_effort: str | None = "high"
+    reasoning: bool = False
+
+    @classmethod
+    def from_model(
+        cls, model: Model, description: str, requested: str | None, released_at: float | None = None
+    ) -> ModelChoice:
+        levels = effort_levels(model)
+        effective = resolved_effort(model, requested).effective
+        candidates = (effective, requested, model.automatic_effort, "high")
+        preferred = next((level for level in candidates if level in levels), levels[0] if levels else requested)
+        return cls(model.spec, model.id, description, released_at, levels, preferred, model.reasoning)
+
+
+@dataclass(frozen=True)
+class PreferenceRequest:
+    kind: str
+    models: tuple[ModelChoice, ...]
+    model: str
+    effort: str | None
+
+    def offers(self, choice: PreferenceChoice) -> bool:
+        model = next((item for item in self.models if item.spec == choice.model), None)
+        if model is None or (self.kind == "effort" and choice.model != self.model):
+            return False
+        if self.kind == "model" and choice.effort is None:
+            return True
+        if not model.effort_levels:
+            # Selecting the model alone must preserve the saved preference.
+            return self.kind == "model" and choice.effort == model.preferred_effort
+        return choice.effort in model.effort_levels
+
+
+@dataclass(frozen=True)
+class PreferenceChoice:
+    model: str
+    effort: str | None
+    persist: bool
 
 
 class _TimedOut:
@@ -27,6 +86,8 @@ class UI:
 
     interactive = False
     supports_preferences = False
+    supports_confirm = False
+    supports_confirm_once = False
 
     def set_translator(self, translator: Translator) -> None:
         self.translator = translator
@@ -111,13 +172,12 @@ class UI:
         """Called when a notification arrives while the session is idle."""
         pass
 
-
-def confirm_callable(ui, *, prefer_persistent: bool = True):
-    """Return the active confirmation callable if ``ui`` overrides confirm/confirm_once."""
-    confirm = getattr(ui, "confirm", None)
-    has_confirm = callable(confirm) and getattr(confirm, "__func__", None) is not UI.confirm
-    once = getattr(ui, "confirm_once", None)
-    has_once = callable(once) and getattr(once, "__func__", None) is not UI.confirm_once
-    if prefer_persistent:
-        return confirm if has_confirm else (once if has_once else None)
-    return once if has_once else (confirm if has_confirm else None)
+    def confirmation_handler(self, *, prefer_persistent: bool = True):
+        """Return the active confirmation callable declared by this UI, or None."""
+        confirm = getattr(self, "confirm", None) if self.supports_confirm else None
+        once = getattr(self, "confirm_once", None) if self.supports_confirm_once else None
+        confirm = confirm if callable(confirm) else None
+        once = once if callable(once) else None
+        if prefer_persistent:
+            return confirm or once
+        return once or confirm

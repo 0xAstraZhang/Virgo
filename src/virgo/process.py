@@ -1,0 +1,459 @@
+"""Platform process-tree supervision primitives (POSIX process group & Windows Job Object)."""
+from __future__ import annotations
+
+import errno
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import weakref
+from contextlib import ExitStack, closing
+
+from .execution_types import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable
+
+
+class HostProcess:
+    """Own a POSIX process group until its leader is reaped."""
+
+    def __init__(self, process):
+        self._process = process
+        self.pid = process.pid
+        self.stdin = process.stdin
+        self.stdout = process.stdout
+        self.stderr = process.stderr
+        self._lock = threading.RLock()
+        self._cleanup_error = None
+        self._drained = False
+
+    @property
+    def tree_drained(self) -> bool:
+        return self._drained
+
+    @property
+    def returncode(self):
+        return self._process.returncode
+
+    def _leader_exited(self):
+        # Leave the child waitable. Its PID pins the group ID until our sole
+        # reaper has signalled surviving members, including on normal exit.
+        if hasattr(os, "waitid"):
+            return os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None
+
+        # Python 3.11/3.12 on macOS do not expose waitid. kqueue observes
+        # exit without reaping and reports ESRCH if the child is already dead.
+        import select
+
+        event = select.kevent(
+            self.pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD, fflags=select.KQ_NOTE_EXIT
+        )
+        with closing(select.kqueue()) as queue:
+            ready = queue.control([event], 1, 0)
+        if ready and ready[0].flags & select.KQ_EV_ERROR and ready[0].data != errno.ESRCH:
+            raise OSError(ready[0].data, os.strerror(ready[0].data))
+        return bool(ready)
+
+    def poll(self):
+        with self._lock:
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
+            if self.returncode is not None or not self._leader_exited():
+                return self.returncode
+            try:
+                os.killpg(self.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                # Darwin can report EPERM while an exiting group is still
+                # observable. After reaping the leader, only probe for exit.
+                self._process.wait()
+                deadline = time.monotonic() + 1
+                while True:
+                    try:
+                        os.killpg(self.pid, 0)
+                    except ProcessLookupError:
+                        self._drained = True
+                        return self.returncode
+                    except PermissionError:
+                        pass
+                    if time.monotonic() >= deadline:
+                        self._cleanup_error = error
+                        raise
+                    time.sleep(0.01)
+            code = self._process.wait()
+            self._drained = True
+            return code
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self._process.args, timeout)
+            time.sleep(0.01)
+        return self.returncode
+
+    def _signal_running(self, sig):
+        with self._lock:
+            if self.poll() is not None:
+                return
+            try:
+                os.killpg(self.pid, sig)
+            except (ProcessLookupError, PermissionError) as error:
+                # Darwin can stop accepting signals before a dying child is
+                # waitable, including when a concurrent caller already killed it.
+                try:
+                    self.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    raise error from None
+
+    def kill_tree(self):
+        self._signal_running(signal.SIGTERM)
+        try:
+            self.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            self._signal_running(signal.SIGKILL)
+
+    def cleanup_tree(self):
+        if self.poll() is None:
+            self.kill_tree()
+            self.wait(timeout=5)
+
+
+if sys.platform == "win32":  # pragma: no cover - Windows-only Job Object process supervision
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes as w
+
+    from ._win32 import (
+        CloseHandle,
+        GetCurrentProcess,
+        bind_api,
+    )
+    from ._win32 import (
+        check_win32 as _check,
+    )
+    from ._win32 import (
+        kernel32 as kernel,
+    )
+
+    SIZE_T = ctypes.c_size_t
+    HANDLE = w.HANDLE
+    _DRAIN_TIMEOUT = 5.0
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", w.DWORD), ("MinimumWorkingSetSize", SIZE_T), ("MaximumWorkingSetSize", SIZE_T),
+            ("ActiveProcessLimit", w.DWORD), ("Affinity", SIZE_T), ("PriorityClass", w.DWORD),
+            ("SchedulingClass", w.DWORD),
+        ]
+
+    class IOCounters(ctypes.Structure):
+        _fields_ = [
+            (name, ctypes.c_uint64)
+            for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+            )
+        ]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimits), ("IoInfo", IOCounters),
+            ("ProcessMemoryLimit", SIZE_T), ("JobMemoryLimit", SIZE_T),
+            ("PeakProcessMemoryUsed", SIZE_T), ("PeakJobMemoryUsed", SIZE_T),
+        ]
+
+    class BasicAccounting(ctypes.Structure):
+        _fields_ = [
+            ("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+            ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+            ("TotalPageFaultCount", w.DWORD), ("TotalProcesses", w.DWORD),
+            ("ActiveProcesses", w.DWORD), ("TotalTerminatedProcesses", w.DWORD),
+        ]
+
+    class StartupInfo(ctypes.Structure):
+        _fields_ = [
+            ("cb", w.DWORD), ("lpReserved", w.LPWSTR), ("lpDesktop", w.LPWSTR), ("lpTitle", w.LPWSTR),
+            ("dwX", w.DWORD), ("dwY", w.DWORD), ("dwXSize", w.DWORD), ("dwYSize", w.DWORD),
+            ("dwXCountChars", w.DWORD), ("dwYCountChars", w.DWORD), ("dwFillAttribute", w.DWORD),
+            ("dwFlags", w.DWORD), ("wShowWindow", w.WORD), ("cbReserved2", w.WORD),
+            ("lpReserved2", ctypes.c_void_p), ("hStdInput", HANDLE), ("hStdOutput", HANDLE),
+            ("hStdError", HANDLE),
+        ]
+
+    class StartupInfoEx(ctypes.Structure):
+        _fields_ = [("StartupInfo", StartupInfo), ("lpAttributeList", ctypes.c_void_p)]
+
+    class ProcessInfo(ctypes.Structure):
+        _fields_ = [("hProcess", HANDLE), ("hThread", HANDLE), ("dwProcessId", w.DWORD), ("dwThreadId", w.DWORD)]
+
+    def _api(name, args, result=w.BOOL):
+        return bind_api(kernel, name, args, result)
+
+    CreateJob = _api("CreateJobObjectW", [ctypes.c_void_p, w.LPCWSTR], HANDLE)
+    SetJob = _api("SetInformationJobObject", [HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD])
+    QueryJob = _api(
+        "QueryInformationJobObject",
+        [HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD)],
+    )
+    TerminateJob = _api("TerminateJobObject", [HANDLE, w.UINT])
+    DuplicateHandle = _api(
+        "DuplicateHandle",
+        [HANDLE, HANDLE, HANDLE, ctypes.POINTER(HANDLE), w.DWORD, w.BOOL, w.DWORD],
+    )
+    InitializeAttributes = _api(
+        "InitializeProcThreadAttributeList",
+        [ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(SIZE_T)],
+    )
+    UpdateAttribute = _api(
+        "UpdateProcThreadAttribute",
+        [ctypes.c_void_p, w.DWORD, SIZE_T, ctypes.c_void_p, SIZE_T, ctypes.c_void_p, ctypes.c_void_p],
+    )
+    DeleteAttributes = _api("DeleteProcThreadAttributeList", [ctypes.c_void_p], None)
+    CreateProcess = _api(
+        "CreateProcessW",
+        [
+            w.LPCWSTR, w.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, w.BOOL, w.DWORD,
+            ctypes.c_void_p, w.LPCWSTR, ctypes.POINTER(StartupInfoEx), ctypes.POINTER(ProcessInfo),
+        ],
+    )
+    WaitForSingleObject = _api("WaitForSingleObject", [HANDLE, w.DWORD], w.DWORD)
+    GetExitCode = _api("GetExitCodeProcess", [HANDLE, ctypes.POINTER(w.DWORD)])
+
+    def _close_handles(job, process):
+        # Closing the last job handle kills descendants, including after the root exits.
+        CloseHandle(job)
+        CloseHandle(process)
+
+    class WindowsProcess:
+        """Small Popen-compatible surface used by foreground and background commands."""
+
+        def __init__(
+            self,
+            argv,
+            *,
+            cwd,
+            env,
+            stdout,
+            sandbox=None,
+            stdin=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        ):
+            self.args = argv
+            self.returncode = None
+            self.stdin = self.stdout = self.stderr = None
+            self._lock = threading.RLock()
+            self._sandbox = sandbox
+            self._released = False
+            self._drained = False
+            self._process = None
+            self._job = None
+            self._finalizer = None
+            try:
+                self._check_cancelled()
+                with ExitStack() as resources, ExitStack() as ownership:
+                    job = _check(CreateJob(None, None))
+                    ownership.callback(CloseHandle, job)
+                    limits = ExtendedLimits()
+                    limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                    _check(SetJob(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)))
+
+                    def stream_file(value, name, number, reading=False):
+                        if value == subprocess.PIPE:
+                            read_fd, write_fd = os.pipe()
+                            child, parent = (read_fd, write_fd) if reading else (write_fd, read_fd)
+                            child_file = resources.enter_context(
+                                os.fdopen(child, "rb" if reading else "wb", buffering=0)
+                            )
+                            setattr(self, name, os.fdopen(parent, "wb" if reading else "rb", buffering=0))
+                            return child_file
+                        if value == subprocess.DEVNULL:
+                            return resources.enter_context(open(os.devnull, "rb" if reading else "wb"))
+                        return number if value is None else value
+
+                    input_file = stream_file(stdin, "stdin", 0, reading=True)
+                    output_file = stream_file(stdout, "stdout", 1)
+                    error_file = output_file if stderr == subprocess.STDOUT else stream_file(stderr, "stderr", 2)
+
+                    def inherit(file):
+                        duplicate = HANDLE()
+                        owner = GetCurrentProcess()
+                        descriptor = file if isinstance(file, int) else file.fileno()
+                        _check(
+                            DuplicateHandle(
+                                owner, msvcrt.get_osfhandle(descriptor), owner,
+                                ctypes.byref(duplicate), 0, True, 2,  # DUPLICATE_SAME_ACCESS
+                            )
+                        )
+                        resources.callback(CloseHandle, duplicate.value)
+                        return duplicate.value
+
+                    input_handle, output_handle = inherit(input_file), inherit(output_file)
+                    error_handle = output_handle if stderr == subprocess.STDOUT else inherit(error_file)
+                    extra_attributes = list(sandbox.process_attributes()) if sandbox is not None else []
+                    attribute_count = 2 + len(extra_attributes)
+                    size = SIZE_T()
+                    InitializeAttributes(None, attribute_count, 0, ctypes.byref(size))
+                    if not size.value:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    attributes = ctypes.create_string_buffer(size.value)
+                    _check(InitializeAttributes(attributes, attribute_count, 0, ctypes.byref(size)))
+                    resources.callback(DeleteAttributes, attributes)
+                    handles = tuple(dict.fromkeys((input_handle, output_handle, error_handle)))
+                    inherited = (HANDLE * len(handles))(*handles)
+                    jobs = (HANDLE * 1)(job)
+                    _check(UpdateAttribute(attributes, 0, 0x20002, inherited, ctypes.sizeof(inherited), None, None))
+                    _check(UpdateAttribute(attributes, 0, 0x2000D, jobs, ctypes.sizeof(jobs), None, None))
+                    for attribute, value in extra_attributes:
+                        _check(
+                            UpdateAttribute(
+                                attributes, 0, attribute, ctypes.byref(value), ctypes.sizeof(value), None, None
+                            )
+                        )
+                    startup = StartupInfoEx()
+                    startup.StartupInfo.cb = ctypes.sizeof(startup)
+                    startup.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
+                    if sandbox is not None:
+                        startup.StartupInfo.lpDesktop = sandbox.desktop
+                    startup.StartupInfo.hStdInput = input_handle
+                    startup.StartupInfo.hStdOutput = output_handle
+                    startup.StartupInfo.hStdError = error_handle
+                    startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
+                    command = subprocess.list2cmdline(argv) if isinstance(argv, (list, tuple)) else argv
+                    command_buffer = ctypes.create_unicode_buffer(command)
+                    deduped = {}
+                    for key, value in env.items():
+                        deduped[key.upper()] = (key, value)
+                    environment = ctypes.create_unicode_buffer(
+                        "\0".join(f"{key}={value}" for _, (key, value) in sorted(deduped.items())) + "\0"
+                    )
+                    info = ProcessInfo()
+                    flags = 0x08000000 | 0x00080000 | 0x00000400  # NO_WINDOW | EXTENDED_STARTUPINFO | UNICODE_ENVIRONMENT
+                    self._check_cancelled()
+                    _check(
+                        CreateProcess(
+                            None, command_buffer, None, None, True, flags, environment, str(cwd),
+                            ctypes.byref(startup), ctypes.byref(info),
+                        )
+                    )
+                    ownership.callback(CloseHandle, info.hProcess)
+                    resources.callback(CloseHandle, info.hThread)
+                    self.pid = info.dwProcessId
+                    self._process, self._job = info.hProcess, job
+                    self._released = True
+                    if sandbox is not None:
+                        sandbox.process = self
+                    self._finalizer = weakref.finalize(self, _close_handles, job, info.hProcess)
+                    ownership.pop_all()
+            except BaseException as error:
+                try:
+                    if sandbox is not None and self._finalizer is not None:
+                        self.cleanup_tree()
+                except BaseException as cleanup_error:
+                    raise self._failure(
+                        f"Windows sandbox launch failed ({error}); cleanup failed: {cleanup_error}",
+                        uncertain=True,
+                    ) from cleanup_error
+                finally:
+                    for stream in (self.stdin, self.stdout, self.stderr):
+                        if stream is not None:
+                            stream.close()
+                if sandbox is not None and isinstance(error, Exception):
+                    if not isinstance(error, (ExecutionCancelled, ExecutionFailed, ExecutionUnavailable)):
+                        raise self._failure(f"Could not create Windows sandbox process: {error}") from error
+                raise
+
+        @property
+        def tree_drained(self):
+            return self._drained
+
+        def _check_cancelled(self):
+            if self._sandbox is not None and self._sandbox.cancellation is not None:
+                if self._sandbox.cancellation.is_set():
+                    raise ExecutionCancelled("Windows sandbox command cancelled before release")
+
+        def _failure(self, message, *, uncertain=False):
+            error = (ExecutionFailed if self._released or uncertain else ExecutionUnavailable)(message)
+            if self._process is not None or self._finalizer is not None:
+                error.process = self
+            return error
+
+        def poll(self):
+            with self._lock:
+                if self.returncode is not None:
+                    return self.returncode
+                try:
+                    status = WaitForSingleObject(self._process, 0)
+                    if status == 258:  # WAIT_TIMEOUT
+                        return None
+                    if status != 0:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    code = w.DWORD()
+                    _check(GetExitCode(self._process, ctypes.byref(code)))
+                except OSError as error:
+                    raise self._failure(f"Could not observe Windows process: {error}", uncertain=True) from error
+                self.returncode = code.value
+                return self.returncode
+
+        def wait(self, timeout=None):
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            while self.poll() is None:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(self.args, timeout)
+                time.sleep(0.01)
+            return self.returncode
+
+        def kill(self):
+            self.kill_tree()
+
+        terminate = kill
+
+        def _active_processes(self):
+            if self._job is None:
+                return 0
+            accounting = BasicAccounting()
+            _check(QueryJob(self._job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
+            return accounting.ActiveProcesses
+
+        def kill_tree(self):
+            with self._lock:
+                if self._drained:
+                    return
+                if self._job is None:
+                    self._drained = True
+                    return
+                try:
+                    deadline = time.monotonic() + _DRAIN_TIMEOUT
+                    if self._active_processes():
+                        _check(TerminateJob(self._job, 1))
+                    while self._active_processes():
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("Windows job still has active processes")
+                        time.sleep(0.01)
+                    self.wait(timeout=max(0, deadline - time.monotonic()))
+                    self._drained = True
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    raise self._failure(f"Could not drain Windows job: {error}", uncertain=True) from error
+
+        def cleanup_tree(self):
+            with self._lock:
+                self.kill_tree()
+                if self._finalizer is not None:
+                    self._finalizer()
+
+        def communicate(self, input=None, timeout=None):
+            if input is not None:
+                raise ValueError("Command stdin is closed")
+            chunks = []
+            reader = None
+            if self.stdout is not None:
+                reader = threading.Thread(target=lambda: chunks.append(self.stdout.read()), daemon=True)
+                reader.start()
+            self.wait(timeout)
+            self.cleanup_tree()
+            if reader is not None:
+                reader.join()
+                self.stdout.close()
+            return (b"".join(chunks) if reader is not None else None), None

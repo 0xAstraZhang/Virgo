@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import threading
 
-from ..agent.types import AgentEvent
 from ..ai.types import UserMessage
 from ..diagnostics import emergency_write
 from .diagnostic_access import DiagnosticAccess
@@ -112,9 +111,7 @@ class RuntimeDiagnostics:
     def _append(self, text):
         runtime = self.runtime
         message = UserMessage(f'<notification source="diagnostics">\n{text}\n</notification>', kind="notification")
-        runtime.agent._emit(AgentEvent("message_start", runtime.name, message=message))
-        runtime.messages.append(message)
-        runtime.agent._emit(AgentEvent("message_end", runtime.name, message=message))
+        runtime.agent.append_message(message)
 
     def before_request(self):
         """Append evidence only when a model request is already going to happen."""

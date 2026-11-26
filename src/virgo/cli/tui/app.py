@@ -417,7 +417,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             and not self.state.input_requests
             and not self.state.confirmations
             and not self.session.has_save_failure
-            and not any(self.session.bus.emit("pending_work", self.session))
+            and not self.session.has_pending_work()
         )
 
     def session_browser_status(self) -> str:
@@ -526,10 +526,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                         return None
                     store.build_context()
                 storage = None if path == "new" and previous.store.path is None else path
-                options = dict(previous.session_options)
-                if cwd.resolve() != previous.cwd:
-                    options["trust_project_extensions"] = False
-                return AgentSession(cwd, ui=ui, session=storage, **options)
+                return AgentSession(cwd, ui=ui, session=storage, **previous.clone_options(cwd))
 
             try:
                 candidate = await asyncio.to_thread(construct)
@@ -909,15 +906,10 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         update_static(root.query_one("#metrics", Static), metrics, layout=False)
         self._update_status_line()
 
-    def _active_mode(self):
-        manager = self.session.services["execution"]
-        snapshot = self.session.main.permission_snapshot
-        return snapshot.mode if snapshot is not None else manager.mode_for(self.session.main)
-
     def _update_status_line(self) -> None:
         width = max(1, self.size.width - 2)
-        active = self._active_mode()
-        selected = self.session.services["execution"].selected_mode
+        active = self.session.active_permission_mode()
+        selected = self.session.selected_permission_mode
         footer = Text(no_wrap=True, overflow="ellipsis")
         if self.session.store.save_error is not None:
             footer.append(tr(self, "ui.state.unsaved_footer"), style="bold red")
@@ -1093,12 +1085,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     async def action_cycle_permission_mode(self) -> None:
         session = self.session
-        manager = session.services["execution"]
-        modes = list(manager.modes)
-        next_mode = modes[(modes.index(manager.selected_mode_id) + 1) % len(modes)]
         try:
             # Finish selecting before dispatching the next keystroke (which may submit a task).
-            await asyncio.to_thread(manager.select_mode, next_mode)
+            await asyncio.to_thread(session.cycle_permission_mode)
         except Exception as error:
             session.report_error(error, phase="cli.command", context={"command": "permissions"})
 

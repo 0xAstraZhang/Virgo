@@ -76,14 +76,14 @@ def test_startup_refresh_and_cached_picker(tmp_path, mode):
             session, app = create()
             try:
                 async with app.run_test(size=(80, 24)) as pilot:
-                    assert not session._catalog_refresh_done.is_set(), "Startup must not wait for a slow directory."
+                    assert not session.models.refresh_done.is_set(), "Startup must not wait for a slow directory."
                     assert session.model.context_window == (250000 if mode == "override" else 500000)
                     app.controller.submit("/model")
                     await wait_for(pilot, lambda: len(requests) == 2)
                     panel = app.query_one(PreferencePicker)
                     assert app.controller.busy and not panel.display
                     gate.set()
-                    await wait_for(pilot, session._catalog_refresh_done.is_set)
+                    await wait_for(pilot, session.models.refresh_done.is_set)
                     if mode != "unavailable":
                         await wait_for(pilot, lambda: panel.display)
                         assert "local/grok-4.7" in {model.spec for model in panel.request.models}
@@ -121,7 +121,7 @@ def test_startup_refresh_and_cached_picker(tmp_path, mode):
                     assert restarted.model.context_window == value
                     assert f"/{value / 1000:.1f}k" in str(app.query_one("#metrics", Static).content)
                     gate.set()
-                    await wait_for(pilot, restarted._catalog_refresh_done.is_set)
+                    await wait_for(pilot, restarted.models.refresh_done.is_set)
                     if empty:
                         assert not model_choices(restarted)
                         assert restarted.model.context_window == 500000

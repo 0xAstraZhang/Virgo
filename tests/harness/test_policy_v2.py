@@ -351,8 +351,10 @@ def test_ver13_native_windows_defaults_to_workspace_edit_and_prechecks_appcontai
     monkeypatch.setattr(sb, "windows_sandbox", fake_ws, raising=False)
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
     monkeypatch.setattr(hs, "is_native_windows", lambda: True)
-    assert ep.is_windows_sandbox_supported() is True
-    assert ep.default_execution_mode() == "workspace-edit"
+    import virgo.execution as ex
+
+    assert ex.is_windows_sandbox_supported() is True
+    assert ex.default_execution_mode() == "workspace-edit"
 
     ui = RecordingUI()
     session = AgentSession(
@@ -430,8 +432,10 @@ def test_ver13_unsupported_native_windows_defaults_to_no_limit_with_guidance(pro
     monkeypatch.setattr(ep, "is_native_windows", lambda: True)
     monkeypatch.setattr(hs, "is_native_windows", lambda: True)
 
-    assert ep.is_windows_sandbox_supported() is False
-    assert ep.default_execution_mode() == "no-limit"
+    import virgo.execution as ex
+
+    assert ex.is_windows_sandbox_supported() is False
+    assert ex.default_execution_mode() == "no-limit"
 
     # Explicit No-Limit does not probe Windows AppContainer support or emit the default-downgrade notice.
     explicit_ui = RecordingUI()

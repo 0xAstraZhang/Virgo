@@ -139,15 +139,15 @@ def test_catalog_cache_write_failure_keeps_the_refresh_owner_after_switch(make_s
 
     monkeypatch.setattr(preferences, "BUILTIN_PROVIDERS", {})
     monkeypatch.setattr(preferences, "fetch_model_catalog", fetch)
-    monkeypatch.setattr("virgo.harness.session.write_metadata", fail_save)
-    session._catalog_refresh_done.clear()
+    monkeypatch.setattr("virgo.harness.model_registry.write_metadata", fail_save)
+    session.models.refresh_done.clear()
     preferences.start_model_refresh(session)
     try:
         assert entered.wait(3)
         session.new_session()
     finally:
         release.set()
-    assert session._catalog_refresh_done.wait(3)
+    assert session.models.refresh_done.wait(3)
     records = [record for record in session.diagnostics.recent() if record["phase"] == "catalog.save"]
     assert len(records) == 1
     assert records[0]["context"]["session_id"] == owner.id != session.store.id

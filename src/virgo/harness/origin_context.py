@@ -1,11 +1,12 @@
 """Bind execution and accounting to the originating conversation and branch."""
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import threading
 import uuid
+
+from .store import SessionSaveError
 
 
 class BranchSource:
@@ -18,42 +19,23 @@ class BranchSource:
         self.lock = threading.RLock()
 
     def entries(self) -> list[dict]:
-        with self.lock, self.store._lock:
-            current = self.store.branch()
-            if self.anchor is None or any(e["id"] == self.anchor for e in current):
-                self.anchor = self.store.leaf
-                return copy.deepcopy(current)
-            path, node = [], self.anchor
-            while node is not None:
-                entry = self.store.by_id.get(node)
-                if entry is None:
-                    break
-                path.append(entry)
-                node = entry.get("parent_id")
-            return copy.deepcopy(list(reversed(path)))
+        with self.lock:
+            self.anchor, items = self.store.branch_entries(self.anchor)
+            return items
 
     def __getattr__(self, name):
         return getattr(self.store, name)
 
     def append(self, type: str, **data) -> dict:
         """Write task accounting to its task even when another branch is active."""
-        try:
-            with self.lock, self.store._lock:
-                self.entries()
-                active = self.store.leaf
-                detached = self.anchor != active
-                self.store.leaf = self.anchor
-                try:
-                    if detached:
-                        data["active_leaf"] = active
-                    return self.store._append_locked(type, **data)
-                finally:
-                    # Failed writes still allocated a logical entry on this branch.
-                    self.anchor = self.store.leaf
-                    if detached:
-                        self.store.leaf = active
-        finally:
-            self.store.notify_save_failure()
+        with self.lock:
+            try:
+                self.anchor, entry = self.store.append_on_branch(self.anchor, type, **data)
+                return entry
+            except SessionSaveError as error:
+                # Failed writes still allocated a logical entry on this branch.
+                self.anchor = error.entry["id"]
+                raise
 
 
 class ExecutionOrigin:

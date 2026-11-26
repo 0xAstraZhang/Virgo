@@ -34,9 +34,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .. import _win32
 from ..execution_policy import filter_sandbox_environment
-from . import _win32, windows_acl
-from .platform import SandboxCancelled, SandboxProcessError, SandboxUnavailable
+from ..execution_types import ExecutionCancelled as SandboxCancelled
+from ..execution_types import ExecutionFailed as SandboxProcessError
+from ..execution_types import ExecutionUnavailable as SandboxUnavailable
+from . import windows_acl
 from .windows_acl import (
     acl_state_lock,
     ancestor_lacks_aap,
@@ -1686,7 +1689,7 @@ def spawn(
     session_pool: WindowsSessionPool | None = None,
 ):
     """Launch a command inside a session-scoped Standard AppContainer via WindowsProcess."""
-    from ..tools.windows_process import WindowsProcess
+    from ..process import WindowsProcess
 
     envelope = None
     proc = None

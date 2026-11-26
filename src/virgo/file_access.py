@@ -24,10 +24,18 @@ from ._gitignore import (
     matches_scopes,
     read_gitignore_rules,
 )
-from .execution import FileAccessDenied
 from .execution_policy import PermissionPolicy, lexical_path
+from .execution_types import FileAccessDenied
 
 MAX_WALK_FILES = 100_000
+
+
+def same_directory(left: Path, right: Path) -> bool:
+    """Report whether two filesystem directories resolve to the same location."""
+    try:
+        return left.resolve() == right.resolve()
+    except (OSError, RuntimeError):
+        return False
 
 
 def resolve_read_path(raw: str | Path, cwd: Path) -> Path:

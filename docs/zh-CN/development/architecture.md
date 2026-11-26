@@ -8,18 +8,22 @@ Virgo 在 `src/virgo/` 下按单向依赖分层组织。底层模块不依赖会
 
 | 层级 | 包 / 模块 | 核心职责 |
 | --- | --- | --- |
-| **0. 叶子基础层** | `i18n`、`diagnostics`、`execution_policy`、`output_store` | 会话级本地化（`en`、`zh-CN`）、无 I/O 错误采集与脱敏、deny 优先的 `PermissionPolicy` 与内置执行模式，以及 Broker 管理的会话级输出存储 |
-| **1. 模型与 Agent 核心** | `ai`、`agent` | 统一流式 LLM 适配层（`anthropic`、`openai`、`openai-responses`、`openai-codex`、`faux`）、OAuth/API 认证、模型目录，以及无状态 `run_loop` / `Agent` / `AgentTool` 编排（含非顺序工具批次的有界并发执行） |
-| **2. 执行层与基础工具** | `execution`、`file_access`、`sandbox`、`tools` | 统一 `SandboxExecutor` 与不可变 `HostContext`/`SandboxContext`、Broker 文件 I/O（末级 `O_NOFOLLOW` + 原子 `os.replace`）、各平台原生沙箱适配器（`bubblewrap`、macOS Seatbelt、Windows 标准 AppContainer），以及核心工具实现（`fs`、`shell`、`bash`、`output`、`web`、`web_fetch`） |
-| **3. 会话运行时** | `harness` | `AgentSession`、`Runtime`、`EventBus`/`ExtensionAPI`、JSONL `SessionStore`、`ModeExecutionProvider`、`ResourceApprovals`/`ResourceRules`、`high_risk` 检查、Core 托管的 `JobManager`、SQLite `DiagnosticLog`、配置与信任加载、统一三层上下文压缩（`CompactionController`）、提示词组装及斜杠命令 |
+| **0. 叶子基础层** | `_gitignore`、`_win32`、`i18n`、`diagnostics`、`execution_policy` | 纯 Python `.gitignore` 匹配、共享 Win32 绑定、会话级本地化（`en`、`zh-CN`）、无 I/O 错误采集与脱敏，以及不依赖沙箱或运行时的 deny 优先 `PermissionPolicy` 与内置执行模式 |
+| **1. 契约、进程与核心层** | `execution_types`、`process`、`ai`、`agent` | 执行契约与异常类型（`ExecutionContext`、`ProcessRequest`、`ProcessHandle`）、POSIX `HostProcess` 与 Windows `WindowsProcess` 原语、统一流式 LLM 适配层（`anthropic`、`openai`、`openai-responses`、`openai-codex`、`faux`）、OAuth/API 认证、模型目录，以及无状态 `run_loop` / `Agent` / `AgentTool` 编排（含非顺序工具批次的有界并发执行） |
+| **2a. 执行叶子组件** | `file_access`、`output_store`、`sandbox` | 彼此独立的 Broker 文件 I/O（末级 `O_NOFOLLOW` + 原子 `os.replace`）、会话级 Broker 输出存储（`OutputStore`），以及各平台原生沙箱适配器（`bubblewrap`、macOS Seatbelt、Windows 标准 AppContainer） |
+| **2b. 执行装配门面与工具** | `execution`、`tools` | 统一组合门面（`HostContext`、`SandboxContext`、`SandboxExecutor`、`is_windows_sandbox_supported`、`default_execution_mode`）及核心工具实现（`fs`、`shell_env`/`shell`/`bash`、`output`、`web`、`web_fetch`） |
+| **3. 会话运行时** | `harness` | `AgentSession`（组合 `ToolRegistry` 与 `ModelRegistry`）、`Runtime`、`EventBus`/`ExtensionAPI`（含通用请求预处理与回退钩子）、JSONL `SessionStore`、`ModeExecutionProvider`、`ResourceApprovals`/`ResourceRules`、`high_risk` 检查、Core 托管的 `JobManager`、SQLite `DiagnosticLog`、配置与信任加载、统一三层上下文压缩（`CompactionController` + `compaction_records`）、提示词组装、显式能力声明的 `UI` 接口及斜杠命令 |
 | **4. 能力扩展层** | `plugins`、`extensions` | 通过 `setup(api)` 加载的 6 个内置插件（`diagnostic_get`、`skills`、`ask_user`、`subagent`、`background`、`web`）与 2 个内置扩展（`mcp`、`todo`） |
-| **5. 交互呈现层** | `cli` | 命令行入口（`virgo.cli.main:main`）、逐行 REPL、Textual 全屏 TUI（`cli/tui/`）及非交互/JSON 输出界面 |
+| **5. 交互呈现层** | `cli`、`__main__` | 命令行入口（`virgo.cli.main:main`）、逐行 REPL、Textual 全屏 TUI（`cli/tui/`）及非交互/JSON 输出界面 |
 
 ### 依赖边界约束
 
-- `virgo.ai` 与 `virgo.agent` 不导入 `execution*`、`sandbox`、`tools`、`harness`、`plugins`、`extensions` 或 `cli`。
-- `virgo.execution_policy`、`virgo.execution`、`virgo.file_access`、`virgo.output_store`、`virgo.sandbox` 与 `virgo.tools` 不反向依赖 `harness` 或 `cli`（`virgo.sandbox` 不依赖 `virgo.harness` 由 `tests/harness/test_permission_modes_e2e.py` 进行 AST 强制校验）。
-- `virgo.execution_policy` 保持不依赖 harness；仅在原生 Windows 上，`is_windows_sandbox_supported()` 延迟导入 `virgo.sandbox.windows_acl` 完成能力探测。
+通过 `tests/test_architecture_matrix.py`（覆盖顶层与函数内局部导入）及 `tests/harness/test_permission_modes_e2e.py` 的 AST 校验强制执行：
+
+- **严格下三角无环 DAG**：`src/virgo/` 内包级与模块级运行时依赖均零环；低层绝不反向导入高层，且 Layer 0 叶子包不出现任何 `TYPE_CHECKING` 向上导入。
+- **纯策略与核心叶子**：`virgo.execution_policy` 不依赖 `virgo.sandbox`、`virgo.execution` 或 `virgo.harness`（Windows 沙箱能力探测归属 `virgo.execution`）；`virgo.ai` 与 `virgo.agent` 不导入 `execution*`、`process`、`file_access`、`output_store`、`sandbox`、`tools`、`harness`、`plugins`、`extensions` 或 `cli`。
+- **同级模块对角独立**：同级 AI 提供商家族（`anthropic`、OpenAI 系、`faux`）、执行叶子组件（`file_access`、`output_store`、`sandbox`）、内置工具族（`fs`、`shell`/`bash`、`web`、`web_fetch`）以及各插件与扩展之间互不导入。
+- **显式跨边界契约**：插件与扩展仅通过 `ExtensionAPI` 与核心交互（不使用 `api.session` 逃生口或读写私有 `runtime._*`/`session._*` 状态）；`harness` 核心不硬编码可选插件服务或穿透存储/Agent 私有状态；`cli` 仅通过 `AgentSession` 公共门面方法查询与切换状态，不直接调用 `session.bus.emit` 或访问 `session.services["execution"]`。
 
 ## 核心工具、内置插件与内置扩展
 

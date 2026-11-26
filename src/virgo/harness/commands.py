@@ -194,21 +194,18 @@ def configure_language(session: AgentSession, args: str) -> None:
 
 
 def show_status(session: AgentSession, args: str) -> None:
-    from ..ai.types import Usage
-
     t = session.t
-    with session._lock:
-        runtime = session.main
-        provider = session.services["execution"]
-        usage = Usage(**session.store.total_usage())
-        rows = [
-            t("harness.status.model", model=runtime.model.spec, effort=effort_label(runtime.model, session.effort_for(runtime.model), t)),
-            t("harness.status.directory", path=runtime.execution_context.workspace),
-            *provider.permission_summary_rows(),
-            t("harness.status.session", id=session.store.id),
-            t("harness.status.usage", input=usage.input_total, output=usage.output),
-            t("harness.status.context", used=session.context_tokens(), window=runtime.model.context_window),
-        ]
+    snapshot = session.status_snapshot()
+    runtime = snapshot["runtime"]
+    usage = snapshot["usage"]
+    rows = [
+        t("harness.status.model", model=runtime.model.spec, effort=effort_label(runtime.model, session.effort_for(runtime.model), t)),
+        t("harness.status.directory", path=runtime.execution_context.workspace),
+        *snapshot["permission_rows"],
+        t("harness.status.session", id=snapshot["session_id"]),
+        t("harness.status.usage", input=usage.input_total, output=usage.output),
+        t("harness.status.context", used=snapshot["context_tokens"], window=runtime.model.context_window),
+    ]
     session.ui.command_result("\n".join(rows))
 
 

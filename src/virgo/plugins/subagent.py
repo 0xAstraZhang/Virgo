@@ -37,7 +37,7 @@ class Subagents:
         api = self.api
         parent = origin_parent.runtime
         owner = origin_parent.root
-        registry = api.session.subagent_store_for(owner)
+        registry = api.subagent_store_for(owner)
         name = handle.id
         rt = None
         failure = cleanup_error = None
@@ -54,8 +54,8 @@ class Subagents:
             )
             if remaining > 0:
                 effort = api.settings.get("subagents.effort")
-                if effort is not None and effort not in effort_levels(api.session.model):
-                    raise ValueError(f"Unsupported subagents.effort {effort!r} for {api.session.model.spec}")
+                if effort is not None and effort not in effort_levels(api.model):
+                    raise ValueError(f"Unsupported subagents.effort {effort!r} for {api.model.spec}")
                 messages, ids = handle.store.build_context()
                 rt = api.create_runtime(
                     name,
@@ -259,7 +259,7 @@ class Subagents:
         origin_parent = origin_parent or api.current_runtime().origin
         owner = origin_parent.root
         if handle is None:
-            registry = api.session.subagent_store_for(owner)
+            registry = api.subagent_store_for(owner)
             try:
                 handle, resumed = registry.acquire(
                     agent_id,
@@ -320,7 +320,7 @@ def setup(api: ExtensionAPI) -> None:
         if args.get("background"):
             if not background_enabled:
                 return ToolResult.error(ctx.t("features.agent.background_disabled"))
-            registry = api.session.subagent_store_for(origin_parent.root)
+            registry = api.subagent_store_for(origin_parent.root)
             try:
                 handle, resumed = registry.acquire(
                     agent_id,
@@ -448,5 +448,6 @@ def setup(api: ExtensionAPI) -> None:
         session.ui.print("\n".join(lines))
 
     api.register_command("subagents", cmd_subagents, "features.commands.subagents", concurrent=True)
+    api.on("background_capability_changed", lambda _enabled: install_tools())
     subs.install_tools = install_tools
     install_tools()

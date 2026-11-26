@@ -14,10 +14,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from string import Formatter
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import Any, Protocol, TypeVar
 
-if TYPE_CHECKING:
-    from ..agent.types import AgentTool
+
+class _LocalizableTool(Protocol):
+    i18n_key: str
+    i18n_values: Any
+    label: str
+    description: str
+    parameters: dict
+
+
+_ToolT = TypeVar("_ToolT", bound=_LocalizableTool)
 
 DEFAULT_LANGUAGE = "en"
 _DOMAINS = ("core", "harness", "ui", "features", "tools")
@@ -158,7 +166,7 @@ class Translator:
     text = __call__
 
 
-def localize_tool(tool: AgentTool, translator: Translator) -> AgentTool:
+def localize_tool(tool: _ToolT, translator: Translator) -> _ToolT:
     """Copy declared tool metadata, leaving shared tools and schema identifiers intact."""
     source = getattr(tool, "_i18n_source", tool)
     prefix = source.i18n_key

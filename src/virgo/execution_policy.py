@@ -1,9 +1,7 @@
 """Immutable execution permission policies and built-in execution modes.
 
-This core module has no harness imports and no top-level OS-backend imports
-(``is_windows_sandbox_supported()`` lazily probes ``virgo.sandbox.windows_acl``
-on native Windows). Rules follow deny-first precedence with a boolean network
-toggle.
+This pure Layer-0 module has no sandbox, execution, or harness imports.
+Rules follow deny-first precedence with a boolean network toggle.
 """
 from __future__ import annotations
 
@@ -155,22 +153,6 @@ def filter_sandbox_environment(env: dict[str, str]) -> dict[str, str]:
 def is_native_windows() -> bool:
     """Return True only for native Windows (WSL2 runs Linux Python)."""
     return sys.platform == "win32"
-
-
-def is_windows_sandbox_supported() -> bool:
-    """Return True when native Windows supports unelevated Standard AppContainer (Win11 null.sys Feature 60692039)."""
-    if not is_native_windows():
-        return False
-    from .sandbox.windows_acl import is_windows_appcontainer_supported
-
-    return bool(is_windows_appcontainer_supported())
-
-
-def default_execution_mode() -> str:
-    """Default execution mode: Workspace-Edit on supported Tier 1 hosts, No-Limit on unsupported Windows."""
-    if is_native_windows() and not is_windows_sandbox_supported():
-        return "no-limit"
-    return "workspace-edit"
 
 
 def parse_network(value: object) -> bool:

@@ -31,17 +31,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ._win32 import (
+from .._win32 import (
     BOOL,
     DWORD,
     HANDLE,
     PSID,
     WORD,
 )
-from ._win32 import (
+from .._win32 import (
     bind_api as _api,
 )
-from ._win32 import (
+from .._win32 import (
     is_reparse_point as _is_reparse_point,
 )
 
@@ -152,22 +152,22 @@ _MUTEX_INIT_LOCK = threading.Lock()
 _ACL_STATE_MUTEX_HANDLE: HANDLE | None = None
 
 if sys.platform == "win32":
-    from ._win32 import (
+    from .._win32 import (
         CloseHandle as _CloseHandle,
     )
-    from ._win32 import (
+    from .._win32 import (
         GetCurrentProcess as _GetCurrentProcess,
     )
-    from ._win32 import (
+    from .._win32 import (
         IsWow64Process2 as _IsWow64Process2,
     )
-    from ._win32 import (
+    from .._win32 import (
         LocalFree as _LocalFree,
     )
-    from ._win32 import (
+    from .._win32 import (
         kernel32 as _kernel32,
     )
-    from ._win32 import (
+    from .._win32 import (
         system_dll as _system_dll,
     )
 

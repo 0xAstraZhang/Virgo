@@ -64,7 +64,7 @@ def test_routine_tool_error_keeps_text_and_metadata_without_a_diagnostic():
 def test_diagnostic_size_limit_does_not_truncate_tool_result_content():
     output = "large failing command output\n" * 2000
     tool = AgentTool("failure", "", {"type": "object"},
-                     lambda *args: ToolResult.error(output, details={"status": "execution_failed"}))
+                     lambda *args: ToolResult.error(output, error_kind="fatal"))
     agent, _ = make_agent([tool], faux.reply(tools=[("failure", {})]), faux.reply("done"))
     agent.prompt("go")
     result = next(m for m in agent.messages if isinstance(m, ToolResultMessage))

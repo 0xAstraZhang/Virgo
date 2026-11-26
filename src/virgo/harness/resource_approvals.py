@@ -20,7 +20,6 @@ from ..execution_policy import (
 from ..file_access import resolve_read_path, resolve_write_path
 from .origin_context import source_for
 from .resource_rules import ResourceRules, external_tool_target
-from .ui import confirm_callable
 
 
 class HostExecutionProvider:
@@ -146,7 +145,7 @@ class ResourceApprovals:
         if rules.path.exists():
             saved.extend(rules.match(project, mode_id))
         om_key = self._origin_mode_key(context, base)
-        with self.session._lock:
+        with self.session.state_lock:
             session_items = list(self._session_grants.get(om_key, ())) if om_key is not None else []
         return tuple(dict.fromkeys([*saved, *session_items]))
 
@@ -222,7 +221,7 @@ class ResourceApprovals:
         run_id = getattr(runtime, "run_id", None) if runtime is not None else None
         if not run_id:
             return False
-        with self.session._lock:
+        with self.session.state_lock:
             denied = self._run_denials.get(run_id)
             if not denied:
                 return False
@@ -272,7 +271,7 @@ class ResourceApprovals:
             missing = ((dimension, "true" if dimension == "network_allowed" else boundary["target"]),)
         else:
             return block
-        caller = confirm_callable(self.session.ui)
+        caller = self.session.ui.confirmation_handler()
         blocker = self._confirmation_blocker(base, event.signal, caller)
         if blocker or event.signal is None:
             return self._approval_error(policy, blocker or "confirmation_unavailable", missing,
@@ -296,7 +295,7 @@ class ResourceApprovals:
         return _as_block(self._admit(event, consume=True))
 
     def revoke(self):
-        with self.session._lock:
+        with self.session.state_lock:
             self.revision += 1
             self._session_grants.clear()
             self._run_denials.clear()
@@ -350,7 +349,7 @@ class ResourceApprovals:
         missing = tuple(dict.fromkeys(item for item in requested if not _covered(current, *item)))
         if self._run_denied(context, missing):
             return self._approval_error(base, "already_denied_this_turn", missing)
-        if missing and confirm_callable(self.session.ui) is None:
+        if missing and self.session.ui.confirmation_handler() is None:
             return self._approval_error(base, "confirmation_unavailable", missing)
         candidate = _extend(current, missing)
         if for_process:
@@ -386,15 +385,15 @@ class ResourceApprovals:
     def _ask(self, context, base, missing, question, *, persistent=True, audit_tool=None):
         runtime = self.session.runtime_for_context(context)
         signal = context.signal
-        caller = confirm_callable(self.session.ui, prefer_persistent=persistent)
-        with self.session._lock:
+        caller = self.session.ui.confirmation_handler(prefer_persistent=persistent)
+        with self.session.state_lock:
             if runtime is None or signal is None or base is not runtime.execution_context:
                 return self._approval_error(base, "cancelled_or_expired", missing)
             if blocker := self._confirmation_blocker(base, signal, caller):
                 return self._approval_error(base, blocker, missing)
             rev_before = self.revision
         answer = caller(question, context.agent)
-        with self.session._lock:
+        with self.session.state_lock:
             if expired := self._confirmation_expiry(runtime, base, signal, rev_before):
                 return self._approval_error(base, expired, missing)
             if audit_tool is not None:
@@ -474,7 +473,7 @@ class SandboxExecutionProvider(ResourceApprovals, HostExecutionProvider):
             snapshot is not None
             and snapshot.approval != "never"
             and self.session.approval_policy != "never"
-            and confirm_callable(self.session.ui) is not None
+            and self.session.ui.confirmation_handler() is not None
         )
 
     def instructions(self, runtime):

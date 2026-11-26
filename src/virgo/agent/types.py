@@ -19,14 +19,15 @@ class ToolResult:
     details: Any = None  # UI / state only, never sent to the model
     is_error: bool = False
     terminate: bool = False
+    error_kind: str | None = field(default=None, kw_only=True)  # "fatal" | "blocked" | None
 
     @staticmethod
     def text(text: str, details: Any = None, **kw) -> ToolResult:
         return ToolResult([TextContent(text)], details=details, **kw)
 
     @staticmethod
-    def error(text: str, details: Any = None) -> ToolResult:
-        return ToolResult([TextContent(text)], details=details, is_error=True)
+    def error(text: str, details: Any = None, *, error_kind: str | None = None) -> ToolResult:
+        return ToolResult([TextContent(text)], details=details, is_error=True, error_kind=error_kind)
 
     def as_text(self) -> str:
         return "\n".join(b.text for b in self.content if isinstance(b, TextContent))
@@ -168,6 +169,8 @@ class AgentConfig:
     on_error: Callable[[dict], None] | None = None
     # Pure, optional view applied once before a result enters model history.
     project_tool_result: Callable[[ToolCall, ToolResult], list] | None = None
+    # Optional upper-layer classifier mapping a returned error ToolResult to a diagnostic kind ("fatal" | "blocked" | None).
+    classify_tool_error: Callable[[ToolResult, str | None], str | None] | None = None
     translator: Translator | None = field(default=None, kw_only=True)
 
     def t(self, key: str, /, **values: object) -> str:

@@ -11,7 +11,6 @@ session JSONL small and failure-isolated while allowing:
 
 from __future__ import annotations
 
-import copy
 import re
 import shutil
 import threading
@@ -126,8 +125,7 @@ class SubagentStore:
             handles = list(self._handles.values())
             self._handles.clear()
             for handle in handles:
-                with handle.store._lock:
-                    handle.store.path = None
+                handle.store.detach()
             shutil.rmtree(self.directory, ignore_errors=True)
 
     @staticmethod
@@ -256,8 +254,7 @@ class SubagentStore:
             handle = self._load_handle_locked(agent_id, writable=False)
             if handle is None:
                 return []
-            with handle.store._lock:
-                return copy.deepcopy(handle.store.branch())
+            return handle.store.branch_snapshot()
 
     def list(self) -> list[dict]:
         with self._lock:

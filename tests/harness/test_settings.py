@@ -98,7 +98,7 @@ def test_permission_defaults_and_saved_mode_migration(project, configured):
         return
     session = AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False)
     try:
-        from virgo.execution_policy import default_execution_mode
+        from virgo.execution import default_execution_mode
 
         expected_mode = default_execution_mode()
         assert session.approval_policy == "ask"
@@ -237,7 +237,7 @@ def test_native_settings_migrate_from_the_effective_main_policy(project, config,
 
 @pytest.mark.parametrize("previous", [{}, {"language": "zh-CN", "model": "faux/old"}])
 def test_upgraded_user_keeps_previous_implicit_workspace_boundary(project, previous):
-    from virgo.execution_policy import default_execution_mode
+    from virgo.execution import default_execution_mode
 
     expected = default_execution_mode()
     paths = Paths(project)
@@ -250,7 +250,7 @@ def test_upgraded_user_keeps_previous_implicit_workspace_boundary(project, previ
 
 
 def test_first_user_save_preserves_fresh_default_across_projects_and_cli_overrides(project, tmp_path):
-    from virgo.execution_policy import default_execution_mode
+    from virgo.execution import default_execution_mode
 
     expected = default_execution_mode()
     paths = Paths(project)

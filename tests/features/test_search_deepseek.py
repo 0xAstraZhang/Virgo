@@ -60,7 +60,7 @@ def test_startup_catalog_refresh_does_not_count_as_search(broker_session, search
     session.set_model("deepseek/deepseek-flash")
     # Force the background request to finish before any search assertion. This
     # must exercise startup discovery, rather than win a race against its thread.
-    assert session._catalog_refresh_done.wait(3)
+    assert session.models.refresh_done.wait(3)
     assert not search_http["requests"]
     assert session.model.context_window == 123456
     query = "private information" if denied else "Python docs"
@@ -239,7 +239,7 @@ def test_interleaved_agents_use_their_own_request_model(make_session, search_htt
         # It must not invalidate the request binding of the unchanged main model.
         session.main.request_context([], ds)
         release_catalog.set()
-        assert session._catalog_refresh_done.wait(3)
+        assert session.models.refresh_done.wait(3)
         assert json.loads(execute_search(session).as_text())["backend"] == "deepseek"
         session.set_model("faux/other")
         session.main.request_context([])
@@ -248,7 +248,7 @@ def test_interleaved_agents_use_their_own_request_model(make_session, search_htt
         assert next(t for t in session.main.request_context([]).tools if t.name == "web_search").parameters["properties"]["query"]["maxLength"] == 2000
     finally:
         release_catalog.set()
-        assert session._catalog_refresh_done.wait(3)
+        assert session.models.refresh_done.wait(3)
 
 
 @pytest.mark.parametrize("status", [200, 401, 429, 503])

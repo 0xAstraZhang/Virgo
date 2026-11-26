@@ -221,6 +221,27 @@ class Context:
     web_offers: list = field(default_factory=list)  # request-local routing metadata, not sent
 
 
+@dataclass(frozen=True)
+class WebOffer:
+    id: str
+    covers: frozenset[str]
+    declaration: dict | None = None
+    backend: str | None = None
+    native: bool = True
+    # Provider parameter -> (logical capability, setting). No parameter-name guesses in the planner.
+    controls: dict[str, tuple[str, str]] = field(default_factory=dict)
+    evidence: str = "actions_and_citations"
+
+    @property
+    def hosted(self) -> bool:
+        return self.declaration is not None
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        # Page finding is controlled by the reading permission, not a new user setting.
+        return frozenset("fetch" if c == "find" else c for c in self.covers)
+
+
 @dataclass
 class StreamOptions:
     signal: Any = None  # threading.Event

@@ -79,8 +79,15 @@ class JobManager:
         session.bus.on("runtime_abort", self._abort_runtime, owner="core.jobs")
         session.bus.on("pending_work", lambda _session: bool(self.unreported()), owner="core.jobs")
 
+    def set_background_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self.background_enabled == enabled:
+            return
+        self.background_enabled = enabled
+        self.session.bus.emit("background_capability_changed", enabled)
+
     def current_store(self):
-        with self.session._lock:
+        with self.session.state_lock:
             return self.session.store
 
     def get(self, job_id: str) -> Job | None:
@@ -250,7 +257,7 @@ class JobManager:
         shell = shell or self.session.services["shell"].current
         if shell is None:
             raise ValueError(self.session.t("features.jobs.no_shell"))
-        with self.session._lock:
+        with self.session.state_lock:
             owner = store if store is not None else self.current_store()
             runtime = self.session.runtime_for_store(owner)
             if execution_context is None:
