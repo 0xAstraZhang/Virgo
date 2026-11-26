@@ -157,6 +157,23 @@ def _usage(value: dict) -> Usage:
     )
 
 
+_RETRYABLE_ERROR_CODES = frozenset({
+    "server_error",
+    "rate_limit_exceeded",
+    "server_is_overloaded",
+    "overloaded",
+    "service_unavailable",
+    "slow_down",
+    "too_many_requests",
+})
+_RETRYABLE_ERROR_TYPES = frozenset({
+    "server_error",
+    "service_unavailable_error",
+    "rate_limit_error",
+    "overloaded_error",
+})
+
+
 def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: StreamOptions, *, web_search: bool = False):
     """Convert SDK objects or decoded SSE dictionaries into Virgo stream events."""
     yield StreamEvent("start", out)
@@ -188,16 +205,25 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
         refusal = refusal or any(part.get("type") == "refusal" for part in parts)
 
     def fail(error: dict, default: str):
+        payload = error.get("error") if isinstance(error.get("error"), dict) else error
         out.stop_reason = "error"
-        out.error_message = error.get("message") or default
-        code = error.get("code")
-        out.error_kind = "retryable" if code in ("server_error", "rate_limit_exceeded") else "fatal"
+        out.error_message = payload.get("message") or default
+        code = payload.get("code")
+        err_type = payload.get("type")
+        lower = out.error_message.lower()
+        retryable = (
+            code in _RETRYABLE_ERROR_CODES
+            or err_type in _RETRYABLE_ERROR_TYPES
+            or "overload" in lower
+            or "try again later" in lower
+        )
+        out.error_kind = "retryable" if retryable else "fatal"
         if web_search and code in ("invalid_request_error", "unsupported_tool", "unsupported_value", "unknown_tool"):
-            exception = ProviderError(out.error_message, body=error)
+            exception = ProviderError(out.error_message, body=payload)
             if is_search_unsupported(exception):
                 out.error_kind = "search_unsupported"
         attach_error(
-            out, ProviderError(out.error_message, out.error_kind, body=error), model,
+            out, ProviderError(out.error_message, out.error_kind, body=payload), model,
             phase="provider.response",
         )
 

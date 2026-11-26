@@ -195,11 +195,28 @@ class AsyncSDKBridge:
         request.task = asyncio.create_task(request.produce())
         request.task.add_done_callback(request.complete)
 
-    def stop_request(self, request):
+    def stop_request(self, request, *, drain_timeout: float = 0.0):
         with self._lock:
             if not self._closed and not request.finished.is_set():
-                self._ready.result().call_soon_threadsafe(request.cancel)
+                loop = self._ready.result()
+                if drain_timeout > 0 and not cancelled(request.signal):
+                    request.draining.set()
+                    loop.call_soon_threadsafe(self._schedule_drain, request, drain_timeout)
+                else:
+                    loop.call_soon_threadsafe(request.cancel)
+        if drain_timeout > 0:
+            while not request.finished.wait(0.02):
+                if cancelled(request.signal):
+                    with self._lock:
+                        if not self._closed and not request.finished.is_set():
+                            self._ready.result().call_soon_threadsafe(request.cancel)
+                    break
         request.finished.wait()
+
+    def _schedule_drain(self, request, timeout: float):
+        if request.finished.is_set():
+            return
+        request._drain_timer = asyncio.get_running_loop().call_later(timeout, request.cancel)
 
     async def _drain(self):
         requests = list(self._requests)
@@ -235,11 +252,15 @@ class _SDKRequest:
     # Reserve the last slot for the task's completion, even under backpressure.
     capacity = 64
     end = object()
+    drain_timeout = 0.2
 
     def __init__(self, bridge, signal, open_stream):
         self.bridge = bridge
         self.signal = signal
         self.aborted = threading.Event()
+        self.draining = threading.Event()
+        self._drain_timeout = 0.0
+        self._drain_timer = None
         self.open_stream = open_stream
         self.items = queue.Queue(self.capacity + 1)
         self.finished = threading.Event()
@@ -248,6 +269,9 @@ class _SDKRequest:
         self.scope = self.task = None
         self.error = None
         self.client = self.response = None
+
+    def allow_drain(self, timeout: float | None = None):
+        self._drain_timeout = self.drain_timeout if timeout is None else timeout
 
     def check_signal(self):
         if cancelled(self.signal):
@@ -277,11 +301,21 @@ class _SDKRequest:
                 self.check_signal()
                 stream = await self.open_stream(self, resources)
                 async for item in stream:
+                    if self.draining.is_set():
+                        continue
                     while self.items.qsize() >= self.capacity:
                         self.check_signal()
+                        if self.draining.is_set():
+                            break
                         await asyncio.sleep(0.01)
-                    self.items.put_nowait(item)
-        if self.scope.cancel_called:
+                    if not self.draining.is_set():
+                        self.items.put_nowait(item)
+                # SDK decoders can break on [DONE] before HTTP/1.1 chunked EOF arrives.
+                if (self.draining.is_set() and self.response is not None
+                        and not getattr(self.response, "is_stream_consumed", True)):
+                    async for _ in self.response.aiter_bytes():
+                        pass
+        if self.scope.cancel_called and not self.draining.is_set():
             raise _StreamAborted()
 
     def cancel(self):
@@ -291,6 +325,9 @@ class _SDKRequest:
             self.scope.cancel()
 
     def complete(self, task):
+        if self._drain_timer is not None:
+            self._drain_timer.cancel()
+            self._drain_timer = None
         self.error = _StreamAborted() if task.cancelled() else task.exception()
         self.bridge._requests.discard(self)
         self.items.put_nowait(self.end)
@@ -312,7 +349,7 @@ class _SDKRequest:
                     return
                 yield item
         finally:
-            self.bridge.stop_request(self)
+            self.bridge.stop_request(self, drain_timeout=self._drain_timeout)
 
 
 def sdk_stream(out, opts, get_client, create, parse, on_error):
@@ -334,6 +371,8 @@ def sdk_stream(out, opts, get_client, create, parse, on_error):
                 for event in parsed:
                     request.check_signal()
                     if event.type in ("done", "error"):
+                        if event.type == "done":
+                            request.allow_drain()
                         terminal = event
                         break
                     yield event
@@ -455,8 +494,31 @@ def _parse_events(lines) -> Iterator[dict]:
             yield event
 
 
+class _JsonEvents:
+    def __init__(self, request: _SDKRequest, iterator: Iterator[dict]):
+        self._request = request
+        self._iterator = iterator
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> dict:
+        return next(self._iterator)
+
+    def close(self, *, drain: bool = False) -> None:
+        if drain:
+            self._request.allow_drain()
+        self._iterator.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+
 def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=None,
-                codex_session: str | None = None) -> Iterator[dict]:
+                codex_session: str | None = None) -> _JsonEvents:
     """Keep the TLS read and response close on the same I/O task, including early SSE termination."""
     async def open_stream(request, resources):
         request.check_signal()
@@ -478,24 +540,28 @@ def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=N
 
     bridge = io_bridge or AsyncSDKBridge()
     request = _SDKRequest(bridge, signal, open_stream)
-    try:
-        with closing(iter(request)) as lines:
-            yield from _parse_events(lines)
-    except _StreamAborted as error:
-        raise ProviderError("Aborted by user.", "aborted") from error
-    except Exception as error:
-        response = request.response
-        if response is not None:
-            for name, value in {
-                "status_code": response.status_code,
-                "request_id": response.headers.get("x-request-id") or response.headers.get("request-id")
-                or response.headers.get("x-goog-request-id"),
-                "retry_after": response.headers.get("retry-after"),
-                "endpoint": str(response.request.url),
-            }.items():
-                if getattr(error, name, None) is None:
-                    setattr(error, name, value)
-        raise
-    finally:
-        if io_bridge is None:
-            bridge.close()
+
+    def iterate() -> Iterator[dict]:
+        try:
+            with closing(iter(request)) as lines:
+                yield from _parse_events(lines)
+        except _StreamAborted as error:
+            raise ProviderError("Aborted by user.", "aborted") from error
+        except Exception as error:
+            response = request.response
+            if response is not None:
+                for name, value in {
+                    "status_code": response.status_code,
+                    "request_id": response.headers.get("x-request-id") or response.headers.get("request-id")
+                    or response.headers.get("x-goog-request-id"),
+                    "retry_after": response.headers.get("retry-after"),
+                    "endpoint": str(response.request.url),
+                }.items():
+                    if getattr(error, name, None) is None:
+                        setattr(error, name, value)
+            raise
+        finally:
+            if io_bridge is None:
+                bridge.close()
+
+    return _JsonEvents(request, iterate())
