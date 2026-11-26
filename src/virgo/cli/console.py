@@ -478,6 +478,11 @@ class PrintUI(UI):
                     )
                 )
 
+    def telemetry_event(self, event: dict) -> None:
+        with self._lock:
+            sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
     def on_event(self, ev: AgentEvent) -> None:
         if (not self.json_mode and ev.type == "tool_execution_end" and ev.agent == "main"
                 and ev.tool_name == "present_file" and ev.result is not None):

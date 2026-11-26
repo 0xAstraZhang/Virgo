@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import time
+import uuid
 from dataclasses import replace
 
 from ..diagnostics import capture_error, safe_text
 from .models import resolve_model
+from .observed_usage import empty_usage
 from .providers.reasoning import resolved_effort
 from .stream import EventStream, StreamEvent, aborted_event, error_message
 from .transform import normalize
@@ -57,6 +60,26 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
             if options.signal is not None and options.signal.is_set():
                 fallback = AssistantMessage(api=model.api, provider=model.provider, model=model.id)
                 return EventStream(iter([aborted_event(fallback)]), fallback)
+        observer = options.request_observer
+        started = None
+        request_id = uuid.uuid4().hex if observer is not None else None
+
+        def dispatch():
+            nonlocal started
+            if started is not None:
+                return
+            started = time.monotonic()
+            observer({
+                "id": request_id, "phase": "start", "api": model.api,
+                "provider": model.provider, "model": model.id,
+                "effort": resolved_effort(model, options.effort).wire,
+                "billing": "account" if model.api == "openai-codex" or
+                model.options.get("authType") == "oauth" else "api",
+                "usage_source": "synthetic" if model.api == "faux" else "provider",
+            })
+
+        if observer is not None:
+            options = replace(options, on_dispatch=dispatch)
         result = impl.stream(model, context, options)
     except Exception as e:  # noqa: BLE001 - e.g. optional dependency missing
         msg = AssistantMessage(api=model.api, provider=model.provider, model=model.id, stop_reason="error")
@@ -75,9 +98,11 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
     def events():
         from .search import add_source_links
 
+        terminal = None
         try:
             for event in result:
                 if event.type in ("done", "error"):
+                    terminal = event.partial
                     count = len(event.partial.content)
                     add_source_links(event.partial)
                     for i in range(count, len(event.partial.content)):
@@ -90,7 +115,17 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
                         return
                 yield event
         finally:
-            result.close()
+            try:
+                result.close()
+            finally:
+                if observer is not None and started is not None:
+                    observer({
+                        "id": request_id, "phase": "end",
+                        "duration_s": round(time.monotonic() - started, 6),
+                        "stop_reason": terminal.stop_reason if terminal is not None else "incomplete",
+                        "usage": getattr(terminal, "reported_usage", None) or empty_usage(),
+                        "provider_reported_cost_usd": None,
+                    })
 
     return EventStream(events(), AssistantMessage(api=model.api, provider=model.provider, model=model.id))
 
@@ -133,6 +168,7 @@ def complete(
     max_tokens: int | None = None,
     effort: str | None = "low",
     signal=None,
+    request_observer=None,
 ) -> AssistantMessage:
     """One-shot, tool-free completion (used for compaction summaries).
 
@@ -142,7 +178,8 @@ def complete(
     """
     limit = completion_token_limit(model, max_tokens)
     ctx = Context(system=system, messages=[UserMessage(prompt)], tools=[])
-    message = stream(model, ctx, StreamOptions(signal=signal, max_tokens=limit, effort=effort)).result()
+    message = stream(model, ctx, StreamOptions(signal=signal, max_tokens=limit, effort=effort,
+                                               request_observer=request_observer)).result()
     # Internal request metadata is deliberately not a dataclass field or model-visible content.
     message.request_metadata = completion_request_metadata(model, effort, limit)
     return message

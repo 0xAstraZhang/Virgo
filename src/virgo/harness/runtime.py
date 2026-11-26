@@ -336,6 +336,8 @@ class Runtime:
         self.execution_active = True
 
     def _on_event(self, ev: AgentEvent) -> None:
+        if self.session.run_telemetry is not None and ev.type in ("tool_execution_start", "tool_execution_end"):
+            self.session.run_telemetry.tool_event(ev)
         if ev.type == "message_end" and isinstance(ev.message, AssistantMessage):
             self.compactor.on_usage(ev.message)
         if ev.type == "agent_end":
@@ -608,6 +610,7 @@ class Runtime:
                 signal=signal, max_tokens=s.settings.get("maxTokens"), effort=self.effort_for(model),
                 prompt_cache_key=self.diagnostic_id, io_bridge=s.io_bridge,
                 before_dispatch=self._record_request_header if self.role == "main" and self.store is not None else None,
+                request_observer=s.run_telemetry.observer("agent", self.name) if s.run_telemetry is not None else None,
             )
             if not self.can_run() or signal.is_set():
                 yield aborted_event(AssistantMessage())

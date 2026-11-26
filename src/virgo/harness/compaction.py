@@ -486,6 +486,8 @@ def _in_context_summarize(
         effort=effort,
         prompt_cache_key=rt.diagnostic_id,
         io_bridge=session.io_bridge,
+        request_observer=session.run_telemetry.observer("compaction", rt.name)
+        if session.run_telemetry is not None else None,
     )
     max_retries = min(2, max(0, int(session.settings.get("retry.maxRetries", 3))))
     wait_budget = max(0.0, float(session.settings.get("retry.maxWaitSeconds", 120)))

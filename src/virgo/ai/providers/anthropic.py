@@ -16,6 +16,7 @@ import re
 import threading
 
 from ..search import is_search_unsupported, is_web_unsupported
+from ..observed_usage import anthropic_usage
 from ..stream import EventStream, StreamEvent
 from ..types import (
     AssistantMessage,
@@ -256,10 +257,13 @@ def _events(items, out: AssistantMessage):
     json_bufs: dict[int, str] = {}
     index_map: dict[int, int] = {}  # api block index -> out.content index
     completed = False
+    reported = {}
     for ev in items:
         t = ev.type
         if t == "message_start":
             u = ev.message.usage
+            for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                reported[key] = getattr(u, key, None)
             out.usage = Usage(
                 input=u.input_tokens or 0,
                 output=u.output_tokens or 0,
@@ -355,6 +359,10 @@ def _events(items, out: AssistantMessage):
                         + (f": {expl}" if expl else ".")
                     )
             if ev.usage is not None:
+                for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"):
+                    value = getattr(ev.usage, key, None)
+                    if value is not None:
+                        reported[key] = value
                 out.usage.output = ev.usage.output_tokens or out.usage.output
                 if getattr(ev.usage, "input_tokens", None):
                     out.usage.input = ev.usage.input_tokens
@@ -362,6 +370,7 @@ def _events(items, out: AssistantMessage):
             completed = True
     if not completed:
         raise ProviderError("Anthropic stream ended before message_stop.", "retryable")
+    out.reported_usage = anthropic_usage(reported)
     if out.stop_reason == "refusal":
         yield StreamEvent("error", out)
     else:

@@ -66,3 +66,7 @@ Main model requests append a `custom/request_header` before adapter dispatch on 
 On native Windows, AppContainer session lease journals live separately under `%LOCALAPPDATA%\Virgo\sandbox-sessions\` (overrideable via `VIRGO_WINDOWS_SANDBOX_STATE_DIR`).
 
 See also: [Functional requirements & Axiomatic Design](axiomatic-design.md) · [Execution interface](execution-interface.md) · [Native execution & performance acceptance](execution-acceptance.md) · [Architectural decisions](../decisions/README.md)
+
+## Evaluation telemetry
+
+Print mode (`-p --format json`) appends a versioned `run_telemetry` record after shutdown. It observes model dispatch attempts at the provider boundary through the unified AI streaming interface, including subagents, retries and compaction, independently of stored conversation history. Each call has an ID, purpose, agent, provider, API, model, effort, duration, stop reason and provider-reported usage (or null fields). Faux calls are synthetic and have no reported tokens. Input counts include cache reads and writes; reasoning is a subset of output when reported. Costs are not inferred. The local tool call count includes rejected calls; the execution count excludes those that did not start. Provider-hosted tools are outside these local counts. An incomplete or missing final record cannot establish complete trial totals. Setup and execution times measure session creation and prompt processing in the CLI, not the entire external trial. The existing session-history usage remains a separate UI estimate.

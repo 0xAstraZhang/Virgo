@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 from .. import __version__
@@ -15,6 +16,7 @@ from ..harness.diagnostics import DiagnosticLog
 from ..harness.session import AgentSession
 from ..harness.settings import Paths, Settings
 from ..harness.store import SessionStore
+from ..harness.telemetry import RunTelemetry
 from ..i18n import Translator, normalize_language
 from .console import ConsoleBroker, PrintUI, TerminalUI
 from .i18n import tr
@@ -265,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         overrides["execution"] = {"mode": args.permission}
     if args.no_extensions:
         print(t("ui.cli.no_extensions_warning"), file=sys.stderr)
+    run_telemetry = RunTelemetry() if args.print and args.format == "json" else None
+    setup_started = time.monotonic()
     try:
         if args.print:
             ui = PrintUI(json_mode=args.format == "json")
@@ -285,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             extensions=not args.no_extensions,
             trust_project_extensions=args.trust_project_extensions,
             refresh_models=not args.print,
+            run_telemetry=run_telemetry,
         )
     except KeyboardInterrupt:
         return 130
@@ -312,10 +317,15 @@ def main(argv: list[str] | None = None) -> int:
             _shutdown(session)
             return 1
 
+    setup_s = round(time.monotonic() - setup_started, 6)
+    execution_started = time.monotonic()
+    complete = False
     exit_code = 0
     try:
         session.prompt(prompt)
         session.wait_idle()
+        if run_telemetry is not None:
+            complete = not session.has_pending_work() and not session.has_runnable_wakeups() and not session.has_save_failure
     except KeyboardInterrupt:
         session.abort()
         exit_code = 130
@@ -323,8 +333,12 @@ def main(argv: list[str] | None = None) -> int:
         session.report_error(error, phase="cli.run")
         exit_code = 1
     finally:
+        execution_s = round(time.monotonic() - execution_started, 6)
         if not _shutdown(session) and not exit_code:
             exit_code = 1
+            complete = False
+        if run_telemetry is not None:
+            ui.telemetry_event(run_telemetry.snapshot(complete=complete, setup_s=setup_s, execution_s=execution_s))
     if exit_code:
         return exit_code
     if session.has_save_failure:

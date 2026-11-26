@@ -11,6 +11,7 @@ import os
 import re
 import threading
 
+from ..observed_usage import chat_usage
 from ..stream import EventStream, StreamEvent
 from ..types import (
     AssistantMessage,
@@ -179,6 +180,7 @@ def _events(items, out: AssistantMessage):
     for chunk in items:
         if getattr(chunk, "usage", None):
             u = chunk.usage
+            out.reported_usage = chat_usage(u)
             cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", None)
             if cached is None:
                 cached = getattr(u, "prompt_cache_hit_tokens", 0) or 0
