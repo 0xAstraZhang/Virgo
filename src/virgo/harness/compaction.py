@@ -1,8 +1,9 @@
 """Three-layer provider-agnostic context compaction.
 
 - L0 (tools/output.py): per-result output budgets spill large outputs to OutputStore.
-- L1 (Batch Micro-Compaction): at ``pruneRatio`` (default 60% of window) or before L2,
-  batch-collapse stale bulky ``ToolResultMessage`` payloads into compact semantic stubs.
+- L1 (Batch Micro-Compaction): at ``pruneRatio`` (default 60% of window), batch-collapse
+  stale bulky ``ToolResultMessage`` payloads into compact semantic stubs. When L2 is
+  due in the same turn, apply L1 only if it is projected to bring usage below L2.
   Persisted as lightweight ``mode="prune"`` entries so resume matches live context while
   keeping normal turns strictly append-only for prompt caching.
 - L2 (Structured Full Compaction): at ``triggerRatio`` (default 80%) or manual
@@ -21,7 +22,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from .. import ai
@@ -64,6 +65,9 @@ SUMMARY_FORMAT = (
     "Preserve the original goal, user corrections, binding constraints, validated decisions, "
     "exact file paths, symbol names, commands, test outcomes, errors, and unfinished deliverables. "
     "Replace obsolete status claims and long inventories with current verified state. "
+    "Omit step-by-step history and verification narration. "
+    "Do NOT restate system/developer instructions, sandbox boundaries, tool policies, or compaction/checkpoint meta-events. "
+    "Record file truncation only when explicitly reported by a tool output marker; do not infer truncation from content formatting. "
     "Limit the prose to {target} visible tokens (~{chars} characters). "
     "Omit file lists. The harness appends them separately. "
     "Do NOT call any tools or continue the conversation; output only the summary."
@@ -78,7 +82,7 @@ SUMMARY_TOKENS = 8000
 RECOVERY_TOKENS = 1024
 RECOVERY_FOCUS = (
     "Keep only the current goal, binding constraints, "
-    "essential findings and immediate next steps. Omit the step-by-step history."
+    "essential findings and immediate next steps."
 )
 
 PRUNE_PREFIX = "[Pruned tool result:"
@@ -297,14 +301,14 @@ def _is_pruned(msg: ToolResultMessage) -> bool:
     return msg.text().startswith(PRUNE_PREFIX)
 
 
-def prune_tool_results(
-    rt: Runtime,
-    *,
-    model,
-    reason: str = "auto",
-    aggressive: bool = False,
-) -> dict | None:
-    """L1: Batch-collapse stale bulky ToolResultMessages into semantic stubs."""
+@dataclass
+class _PrunePlan:
+    candidates: list[tuple[int, ToolResultMessage, str]]
+    reclaimed: int
+
+
+def _plan_prune_tool_results(rt: Runtime, *, model, aggressive: bool = False) -> _PrunePlan | None:
+    """Identify reclaimable tool outputs without changing live or persisted history."""
     messages = rt.messages
     if not messages:
         return None
@@ -352,17 +356,17 @@ def prune_tool_results(
         candidates.append((i, m, stub))
         reclaimed += saved
 
-    if not candidates:
-        return None
-
     min_reclaim = 1 if aggressive else (min(10_000, max(512, window // 10)) if window > 0 else 2048)
     if reclaimed < min_reclaim:
         return None
+    return _PrunePlan(candidates, reclaimed)
 
+
+def _apply_prune_plan(rt: Runtime, plan: _PrunePlan, *, reason: str) -> dict:
     tokens_before = rt.context_tokens()
     pruned_by_id: dict[str, str] = {}
-    for i, m, stub in candidates:
-        messages[i] = compacted_message(replace(m, content=[TextContent(stub)]))
+    for i, m, stub in plan.candidates:
+        rt.messages[i] = compacted_message(replace(m, content=[TextContent(stub)]))
         entry_id = rt.ids[i] if i < len(rt.ids) else None
         if entry_id is not None:
             pruned_by_id[entry_id] = stub
@@ -373,16 +377,22 @@ def prune_tool_results(
             mode="prune",
             pruned=pruned_by_id,
             tokens_before=tokens_before,
-            tokens_reclaimed=reclaimed,
+            tokens_reclaimed=plan.reclaimed,
             reason=reason,
         )
-    rt.compacted_at = len(messages)
+    rt.compacted_at = len(rt.messages)
     return {
         "mode": "prune",
         "tokens_before": tokens_before,
-        "tokens_reclaimed": reclaimed,
-        "pruned_count": len(candidates),
+        "tokens_reclaimed": plan.reclaimed,
+        "pruned_count": len(plan.candidates),
     }
+
+
+def prune_tool_results(rt: Runtime, *, model, reason: str = "auto", aggressive: bool = False) -> dict | None:
+    """L1: Batch-collapse stale bulky ToolResultMessages into semantic stubs."""
+    plan = _plan_prune_tool_results(rt, model=model, aggressive=aggressive)
+    return _apply_prune_plan(rt, plan, reason=reason) if plan else None
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +405,10 @@ def _build_summary_instruction(*, target: int, focus: str | None, concise: bool,
     if in_context:
         parts.append(IN_CONTEXT_INSTRUCTION.strip())
     if has_prev:
-        parts.append("Rewrite and update the earlier summary to incorporate the additional turns, replacing any outdated status.")
+        parts.append(
+            "Rewrite and merge the earlier summary with the additional turns into a single compact state. "
+            "Drop superseded status, completed verification steps, and redundant narrative."
+        )
     if focus:
         parts.append(f"Pay special attention to: {focus}")
     if concise:
@@ -493,10 +506,10 @@ def summarize_context(
     messages = rt.messages
     window = model.context_window
     keep = int(session.settings.get("compaction.keepRecentTokens", 20000))
-    target = SUMMARY_TOKENS
+    window_cap = SUMMARY_TOKENS
     if window > 0:
         keep = min(max(0, keep), window // 4)
-        target = min(SUMMARY_TOKENS, max(256, window // 32))
+        window_cap = min(SUMMARY_TOKENS, max(256, window // 32))
     if reason == "overflow":
         keep //= 2
     cut = find_cut(messages, keep)
@@ -522,10 +535,12 @@ def summarize_context(
                 (read if tag == "read-files" else modified).update(paths.strip("\n").splitlines())
         prev_text = _FILE_BLOCK.sub("", raw_prev).strip()
 
-    max_tokens = SUMMARY_TOKENS
+    evicted_tokens = sum(_message_tokens(message) for message in messages[:cut])
+    target = min(window_cap, max(256, evicted_tokens // 4))
     if concise:
-        target = RECOVERY_TOKENS if target > RECOVERY_TOKENS else target // 2
-        max_tokens = target
+        target = RECOVERY_TOKENS if target > RECOVERY_TOKENS else max(256, target // 2)
+    # The completion adapters also reserve room for reasoning tokens.
+    max_tokens = target if concise else min(SUMMARY_TOKENS, max(1024, target * 2))
 
     strategy = "serialized"
     msg: AssistantMessage | None = None
@@ -551,7 +566,6 @@ def summarize_context(
             rt, to_summarize=to_summarize, prev_text=prev_text,
             instruction=ser_instruction, max_tokens=max_tokens,
         )
-
     summary = _FILE_BLOCK.sub("", msg.text()).strip()
     if failure := _report_failure(rt, msg, complete=msg.stop_reason == "stop" and bool(summary), limit=max_tokens):
         return failure
@@ -588,6 +602,7 @@ def summarize_context(
         "summary": summary,
         "kept": len(kept_msgs),
     }
+
 
 
 # ---------------------------------------------------------------------------
@@ -672,9 +687,11 @@ class CompactionController:
                 and window > 0
                 and self.rt.context_tokens() >= self.cap_floor(window, window)
             )
-        _, summary_threshold = self._thresholds(target)
-        floor = self.cap_floor(self._auto_floor, window)
-        return self.rt.context_tokens() >= max(summary_threshold, floor)
+        return self.rt.context_tokens() >= self._summary_trigger(target)
+
+    def _summary_trigger(self, model) -> int:
+        _, threshold = self._thresholds(model)
+        return max(threshold, self.cap_floor(self._auto_floor, model.context_window))
 
     def _prune_due(self, model) -> bool:
         s = self.rt.session.settings
@@ -701,12 +718,13 @@ class CompactionController:
         if not self.rt.can_run():
             return "ok"
         if self.compaction_due(target):
-            # Try L1 micro-compaction first before paying for an L2 summary.
             if self._length_recovery is None:
-                pruned = prune_tool_results(self.rt, model=target, reason="auto")
-                if pruned is not None and not self.compaction_due(target):
+                plan = _plan_prune_tool_results(self.rt, model=target)
+                if plan and self.rt.context_tokens() - plan.reclaimed < self._summary_trigger(target):
+                    _apply_prune_plan(self.rt, plan, reason="auto")
                     self._arm_post_compaction_floor(target)
                     return "ok"
+            # Summarize intact tool results when pruning would still leave L2 due.
             outcome = self.compact_outcome(reason="auto", model=target)
             return "cancelled" if outcome == "cancelled" else "ok"
         if self._prune_due(target):
