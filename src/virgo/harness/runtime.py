@@ -9,7 +9,6 @@ import uuid
 from collections import deque
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent
@@ -28,6 +27,7 @@ from ..execution_policy import normalize_approval_policy
 from ..tools.shell import ShellTool
 from . import compaction as compaction_mod
 from .compaction_records import compacted_message, summary_message
+from .contracts import RuntimeHost
 from .diagnostic_view import project_tool_result
 from .origin_context import ExecutionOrigin
 from .prompt import RuntimeContext, build_system
@@ -35,9 +35,6 @@ from .recovery import RuntimeDiagnostics, message_diagnostics
 from .runtime_limits import RequestBudget
 from .store import SessionSaveError, SessionStore
 from .telemetry import record_call
-
-if TYPE_CHECKING:
-    from .session import AgentSession
 
 _TRANSCRIPT_STREAM_TYPES = {
     "text_start", "thinking_start", "toolcall_start",
@@ -69,7 +66,7 @@ class Runtime:
 
     def __init__(
         self,
-        session: AgentSession,
+        session: RuntimeHost,
         name: str,
         role: str,
         *,
@@ -296,13 +293,29 @@ class Runtime:
             self.session.report_save_error(error)
         return not errors
 
+    @property
+    def cancel_signal(self) -> threading.Event:
+        """Cancellation signal governing this runtime's active or next turn."""
+        return self.agent.signal
+
+    def has_diagnostic_query_tool(self) -> bool:
+        """Return whether a declared diagnostic-query tool is exposed on this runtime."""
+        names = self.session.diagnostic_query_tool_names()
+        return bool(names) and any(tool.name in names for tool in self.tools)
+
+    def matches_request_fallback(self, context: Context, failed: AssistantMessage) -> bool:
+        """Return whether any registered request fallback recognizes ``failed`` without side effects."""
+        for _order, _name, _handler, matches in sorted(self.session.request_fallbacks, key=lambda item: item[0]):
+            if matches is not None and matches(context, failed):
+                return True
+        return False
+
     def _before_tool(self, ev: ToolCallEvent):
         ev.origin = self.origin
         return self.session._before_tool(ev)
 
     def _project_tool_result(self, call, result):
-        return project_tool_result(call, result,
-                                   query_available=any(tool.name == "diagnostic_get" for tool in self.tools))
+        return project_tool_result(call, result, query_available=self.has_diagnostic_query_tool())
 
     @property
     def permission_snapshot(self):
@@ -573,7 +586,7 @@ class Runtime:
         retries = overloaded = 0
         overflow_pruned = False
         overflow_summarized = False
-        web_fallbacks = 0
+        request_fallbacks = 0
         model = self.model
         checked_model = None
         while True:
@@ -618,13 +631,13 @@ class Runtime:
                 "max_retries": max_retries, "duration": round(duration, 6),
             })
             fallback_purpose = None
-            if web_fallbacks < 2 and not signal.is_set():
-                for _order, _name, handler in sorted(s.request_fallbacks, key=lambda item: item[0]):
+            if request_fallbacks < 2 and not signal.is_set():
+                for _order, _name, handler, _matches in sorted(s.request_fallbacks, key=lambda item: item[0]):
                     if purpose := handler(self, request_model, ctx, failed):
                         fallback_purpose = purpose
                         break
             if fallback_purpose is not None:
-                web_fallbacks += 1
+                request_fallbacks += 1
                 record_call(self.accounting_store, request_model, failed, purpose=fallback_purpose,
                             started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
                 yield StreamEvent("retry", failed)

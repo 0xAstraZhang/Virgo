@@ -101,7 +101,7 @@ def setup(api: ExtensionAPI) -> None:
         if job.error_details is not None:
             details.update(error=job.error_details, related_errors=job.related_errors)
             head += "\n" + error_summary(job.error_details, t=api.t)
-        query_available = runtime is not None and any(tool.name == "diagnostic_get" for tool in runtime.tools)
+        query_available = runtime is not None and runtime.has_diagnostic_query_tool()
         capsules = _failed_job_capsules(
             job, details, query_available=query_available, budget=MAX_DIAGNOSTIC_BYTES * 2,
         )
@@ -211,3 +211,4 @@ def setup(api: ExtensionAPI) -> None:
     api.register_command(
         "jobs", cmd, "list background jobs", concurrent=True, description_key="features.commands.jobs"
     )
+    jobs.set_background_enabled(True)

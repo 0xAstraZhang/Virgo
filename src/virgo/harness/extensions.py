@@ -37,16 +37,14 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..agent.types import AgentTool, Block, Continue, ToolResult
 from ..ai.types import TextContent
 from ..diagnostics import capture_error, emergency_write, safe_text
 from ..file_access import same_directory
+from .contracts import ExtensionHost
 from .settings import BUILTIN_EXTENSIONS, PLUGIN_IDS
-
-if TYPE_CHECKING:
-    from .session import AgentSession
 
 ROLES_ALL = ("main", "subagent")
 
@@ -150,7 +148,7 @@ class ExtensionAPI:
     New extensions use this facade. Python extensions are trusted code, not a security sandbox.
     """
 
-    def __init__(self, session: AgentSession, name: str):
+    def __init__(self, session: ExtensionHost, name: str):
         self._session = session
         self.name = name
         self._undos: list[Callable] = []
@@ -257,13 +255,33 @@ class ExtensionAPI:
         """
         self._add_section(self._session.request_sections, name, fn, order)
 
+    def declare_diagnostic_query_tool(self, tool_name: str) -> None:
+        """Declare a registered tool as a runtime diagnostic-query capability."""
+        undo = self._session.declare_diagnostic_query_tool(self.name, tool_name)
+        self._undos.append(undo)
+
     def add_request_preparer(self, name: str, fn: Callable, order: int = 50) -> None:
         """fn(Runtime, Context, Model) -> None invoked before every model or compaction request."""
         self._add_section(self._session.request_preparers, name, fn, order)
 
-    def add_request_fallback(self, name: str, fn: Callable, order: int = 50) -> None:
-        """fn(Runtime, Model, Context, AssistantMessage) -> purpose | None on failed model requests."""
-        self._add_section(self._session.request_fallbacks, name, fn, order)
+    def add_request_fallback(
+        self, name: str, fn: Callable, order: int = 50, *, matches: Callable | None = None
+    ) -> None:
+        """fn(Runtime, Model, Context, AssistantMessage) -> purpose | None on failed model requests.
+
+        Optional ``matches(Context, AssistantMessage) -> bool`` identifies request-extension errors
+        for read-only fallback decisions (such as in-context compaction) without mutating state.
+        """
+        key = f"{self.name}:{name}"
+        if any(entry[1] == key for entry in self._session.request_fallbacks):
+            raise ValueError(f"Request fallback {key!r} is already registered")
+        entry = (order, key, fn, matches)
+        self._session.request_fallbacks.append(entry)
+        self._undos.append(
+            lambda: self._session.request_fallbacks.remove(entry)
+            if entry in self._session.request_fallbacks
+            else None
+        )
 
     def _add_section(self, sections, name, fn, order):
         key = f"{self.name}:{name}"
@@ -351,7 +369,7 @@ class ExtensionAPI:
 BUILTIN_PLUGINS = PLUGIN_IDS
 
 
-def _setup(session: AgentSession, name: str, setup: Callable[[ExtensionAPI], None], *, context=None) -> None:
+def _setup(session: ExtensionHost, name: str, setup: Callable[[ExtensionAPI], None], *, context=None) -> None:
     api = ExtensionAPI(session, name)
     services = dict(session.services)
     tools = session.checkpoint_tools()
@@ -370,7 +388,7 @@ def _setup(session: AgentSession, name: str, setup: Callable[[ExtensionAPI], Non
         session.ui.print(session.t("harness.plugins.degraded", name=name), "warn")
 
 
-def load_builtin_features(session: AgentSession) -> None:
+def load_builtin_features(session: ExtensionHost) -> None:
     for name in BUILTIN_PLUGINS:
         if not session.settings.plugin_enabled(name):
             continue
@@ -390,7 +408,7 @@ def _file_loader(path: Path) -> Callable[[ExtensionAPI], None]:
     return load
 
 
-def load_extensions(session: AgentSession) -> None:
+def load_extensions(session: ExtensionHost) -> None:
     """Load built-in, user, and trusted project extensions with stem-based override."""
     entries: dict[str, tuple[str, Callable[[ExtensionAPI], None], dict[str, str]]] = {
         name: (
@@ -491,7 +509,7 @@ def _with_feedback(res: ToolResult, note: str) -> ToolResult:
     return replace(res, content=content)
 
 
-def install_command_hooks(session: AgentSession) -> None:
+def install_command_hooks(session: ExtensionHost) -> None:
     raw_hooks = session.settings.get("hooks", {})
     if raw_hooks is None:
         return

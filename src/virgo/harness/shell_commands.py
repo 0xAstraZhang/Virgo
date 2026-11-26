@@ -4,14 +4,22 @@ from __future__ import annotations
 import os
 
 from ..tools.shell import Shell, default_shell, discover_shells, make_shell_tool, probe_shell
+from .contracts import BackgroundLauncher
 from .extensions import ROLES_ALL
 
 USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)'
 
 
 class ShellSelection:
-    def __init__(self, session, catalog: tuple[Shell, ...] | None = None):
+    def __init__(
+        self,
+        session,
+        catalog: tuple[Shell, ...] | None = None,
+        *,
+        background_launcher: BackgroundLauncher | None = None,
+    ):
         self.session = session
+        self._background_launcher = background_launcher
         # Startup authority is a ceiling; later probes also check the current
         # policy so neither direction of a mode change broadens authority.
         self._probe_versions = session.settings.get("execution.mode") == "no-limit"
@@ -28,7 +36,13 @@ class ShellSelection:
         except (ValueError, TypeError) as error:
             self.current = None
             session.ui.print(session.t("harness.shell.unavailable", error=error), "warn")
-        session.bus.on("background_capability_changed", lambda _enabled: self.install_tools(), owner="core.shell")
+
+    def set_background_launcher(self, launcher: BackgroundLauncher | None) -> None:
+        """Bind or clear optional background command execution and refresh shell tools."""
+        if self._background_launcher is launcher:
+            return
+        self._background_launcher = launcher
+        self.install_tools()
 
     def probe(self, value: str) -> Shell:
         execute = self._probe_versions and self.session.services["execution"].name == "host"
@@ -47,7 +61,7 @@ class ShellSelection:
         if self.current is None:
             s.replace_tools("shell", tools, owner="core.shell")
             return
-        jobs = s.services["jobs"]
+        launcher = self._background_launcher
 
         def execution(ctx):
             return s.services["execution"].for_context(ctx)
@@ -57,10 +71,10 @@ class ShellSelection:
             handler = getattr(provider, "confirm_no_limit_once", None)
             return handler(ctx, args, error) if callable(handler) else None
 
-        if jobs.background_enabled:
+        if launcher is not None:
             # Children keep a foreground-only shell; the main runtime may background a command.
             tools.append((make_shell_tool(self.current, execution=execution, on_unavailable=on_unavailable), ("subagent",)))
-            tools.append((make_shell_tool(self.current, jobs, execution=execution, on_unavailable=on_unavailable), ("main",)))
+            tools.append((make_shell_tool(self.current, launcher, execution=execution, on_unavailable=on_unavailable), ("main",)))
         else:
             tools.append((make_shell_tool(self.current, execution=execution, on_unavailable=on_unavailable), ROLES_ALL))
         s.replace_tools("shell", tools, owner="core.shell")

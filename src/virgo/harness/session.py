@@ -116,6 +116,7 @@ class AgentSession:
         self.request_sections: list = []
         self.request_preparers: list = []
         self.request_fallbacks: list = []
+        self._diagnostic_query_tools: list[tuple[str, str]] = []
         self._permission_boundary = None
         self._reported_save_errors: set[int] = set()
         self._failed_stores: list = []
@@ -149,14 +150,20 @@ class AgentSession:
         self.small_model = self._small_model(self.model)
 
         install_execution(self)
-        self.services["shell"] = ShellSelection(self, shell_catalog)
-        # Core owns background supervision, so the shell capability and the
-        # background plugin both depend on this service instead of on each other.
-        self.services["jobs"] = JobManager(
-            self, background_enabled=self.settings.plugin_enabled("background")
+        shell_service = ShellSelection(self, shell_catalog)
+        self.services["shell"] = shell_service
+        # Core owns background supervision with unidirectional wiring:
+        # ShellSelection receives an optional launcher pushed from JobManager,
+        # while JobManager resolves a default shell only via injected callback.
+        jobs = JobManager(
+            self,
+            background_enabled=False,
+            default_shell=lambda: shell_service.current,
+            on_background_changed=lambda enabled: shell_service.set_background_launcher(jobs if enabled else None),
         )
-        self.session_options["shell_catalog"] = self.services["shell"].catalog
-        self.services["shell"].install_tools()
+        self.services["jobs"] = jobs
+        self.session_options["shell_catalog"] = shell_service.catalog
+        shell_service.install_tools()
         register_builtins(self)
         self.store = self._open_store(session)
         self._visited_stores = [self.store]
@@ -725,6 +732,93 @@ class AgentSession:
             self.report_error(error, phase="ui.language_changed")
 
     # -- presentation / permission facade --------------------------------------
+    def observe_events(
+        self,
+        *,
+        on_session_start=None,
+        on_agent_event=None,
+        on_runtime_created=None,
+        on_runtime_closed=None,
+        on_permission_mode_changed=None,
+    ):
+        """Subscribe a presentation client to lifecycle events and return one unsubscribe callback."""
+        unsubs = []
+        if on_session_start is not None:
+            unsubs.append(self.bus.on("session_start", on_session_start, priority=-100))
+        if on_agent_event is not None:
+            unsubs.append(self.bus.on("agent_event", on_agent_event, priority=100))
+        if on_runtime_created is not None:
+            unsubs.append(self.bus.on("runtime_created", on_runtime_created, priority=100))
+        if on_runtime_closed is not None:
+            unsubs.append(self.bus.on("runtime_closed", on_runtime_closed))
+        if on_permission_mode_changed is not None:
+            unsubs.append(self.bus.on("permission_mode_changed", on_permission_mode_changed))
+
+        def unsubscribe() -> None:
+            for fn in unsubs:
+                fn()
+            unsubs.clear()
+
+        return unsubscribe
+
+    def attach_ui(self, ui: UI) -> None:
+        """Attach a presentation UI and synchronize its translator."""
+        self.ui = ui
+        ui.set_translator(self.translator)
+
+    def detach_ui(self) -> None:
+        """Detach the active presentation UI back to a silent headless sink."""
+        self.ui = UI()
+        self.ui.set_translator(self.translator)
+
+    @property
+    def cancel_signal(self) -> threading.Event:
+        """Cancellation signal for the active main runtime."""
+        return self.main.cancel_signal
+
+    def reset_cancel_signal(self) -> None:
+        """Clear the active main runtime's cancellation signal before starting work."""
+        self.main.cancel_signal.clear()
+
+    def is_aborted(self) -> bool:
+        """Return whether the active main runtime's cancellation signal is set."""
+        return self.main.cancel_signal.is_set()
+
+    def has_runnable_wakeups(self) -> bool:
+        """Return whether queued wakeups can execute on the active main runtime."""
+        with self._lock:
+            return bool(self.wakeups) and self.main.can_run()
+
+    def unsaved_wakeup_texts(self) -> list[str]:
+        """Return queued wakeup texts stranded after a session persistence failure."""
+        with self._lock:
+            if self.store.save_error is None:
+                return []
+            return [message.text() for message in self.wakeups]
+
+    def run_concurrent_command(self, cmd, args: str) -> None:
+        """Run a read-only concurrent slash command within the UI command scope."""
+        with self.ui.command_scope():
+            cmd.fn(self, args)
+
+    def declare_diagnostic_query_tool(self, owner: str, tool_name: str):
+        """Register a tool name as a diagnostic-query capability with rollback support."""
+        entry = (owner, tool_name)
+        with self._lock:
+            self._diagnostic_query_tools.append(entry)
+
+        def undo() -> None:
+            with self._lock:
+                if entry in self._diagnostic_query_tools:
+                    self._diagnostic_query_tools.remove(entry)
+
+        return undo
+
+    def diagnostic_query_tool_names(self) -> frozenset[str]:
+        """Return tool names currently declared as runtime diagnostic-query tools."""
+        with self._lock:
+            return frozenset(name for _, name in self._diagnostic_query_tools)
+
     def set_permission_boundary(self, boundary: tuple[int, int]) -> None:
         self._permission_boundary = boundary
 

@@ -20,17 +20,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ..agent.types import ToolResult
 from ..diagnostics import capture_error, error_summary, safe_text
 from ..execution import ExecutionCancelled, ExecutionFailed, ExecutionUnavailable, cleanup_process
 from ..tools.bash import kill_tree, spawn
 from ..tools.output import open_output, read_output
-from ..tools.shell import sandbox_failure_details
-
-if TYPE_CHECKING:
-    from .session import AgentSession
+from ..tools.shell import Shell, sandbox_failure_details
+from .contracts import JobHost
 
 
 @dataclass
@@ -64,12 +61,21 @@ class Job:
 class JobManager:
     """Core-owned supervision for background shell commands and agent children."""
 
-    def __init__(self, session: AgentSession, *, background_enabled: bool):
+    def __init__(
+        self,
+        session: JobHost,
+        *,
+        background_enabled: bool,
+        default_shell: Callable[[], Shell | None] | None = None,
+        on_background_changed: Callable[[bool], None] | None = None,
+    ):
         self.session = session
         # The background capability stays a plugin switch: disabling the
         # background plugin removes the model-facing capability exactly as
         # before, while Core still owns and supervises every started job.
         self.background_enabled = background_enabled
+        self._default_shell = default_shell
+        self._on_background_changed = on_background_changed
         self.jobs: dict[str, Job] = {}
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
@@ -84,6 +90,8 @@ class JobManager:
         if self.background_enabled == enabled:
             return
         self.background_enabled = enabled
+        if self._on_background_changed is not None:
+            self._on_background_changed(enabled)
         self.session.bus.emit("background_capability_changed", enabled)
 
     def current_store(self):
@@ -254,7 +262,7 @@ class JobManager:
         execution_context=None,
         cancellation=None,
     ) -> Job:
-        shell = shell or self.session.services["shell"].current
+        shell = shell or (self._default_shell() if self._default_shell is not None else None)
         if shell is None:
             raise ValueError(self.session.t("features.jobs.no_shell"))
         with self.session.state_lock:

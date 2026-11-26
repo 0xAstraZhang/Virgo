@@ -8,7 +8,6 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from ..ai import resolved_effort
@@ -16,6 +15,7 @@ from ..ai.auth_presets import API_PRESETS, AUTH_PRESETS
 from ..ai.catalog import CatalogCancelled, CatalogError, fetch_model_catalog
 from ..ai.models import BUILTIN_PROVIDERS, base_url
 from ..ai.types import Model
+from .contracts import PreferenceHost
 from .ui import (
     EFFORT_LEVELS as EFFORT_LEVELS,
 )
@@ -28,9 +28,6 @@ from .ui import (
     effort_levels as effort_levels,
 )
 
-if TYPE_CHECKING:
-    from .session import AgentSession
-
 
 def effort_label(model: Model, requested: str | None, t, *, show_requested: bool = True) -> str:
     effective = resolved_effort(model, requested).effective
@@ -38,7 +35,7 @@ def effort_label(model: Model, requested: str | None, t, *, show_requested: bool
     return f"{requested}→{label}" if show_requested and requested and requested != label else label
 
 
-def _catalog_connections(session: AgentSession, providers: set[str]) -> Iterator[Model]:
+def _catalog_connections(session: PreferenceHost, providers: set[str]) -> Iterator[Model]:
     for provider in sorted(providers):
         try:
             yield session.resolve(f"{provider}/_catalog")
@@ -46,7 +43,7 @@ def _catalog_connections(session: AgentSession, providers: set[str]) -> Iterator
             continue
 
 
-def _connected_remote_models(session: AgentSession) -> list[Model]:
+def _connected_remote_models(session: PreferenceHost) -> list[Model]:
     credentials = session.auth.all()
     providers = set(BUILTIN_PROVIDERS) | set(session.settings.get("providers", {})) | set(credentials)
     return [
@@ -55,11 +52,11 @@ def _connected_remote_models(session: AgentSession) -> list[Model]:
     ]
 
 
-def _has_uncached_remote_provider(session: AgentSession) -> bool:
+def _has_uncached_remote_provider(session: PreferenceHost) -> bool:
     return any(not session.cached_model_catalog(connection) for connection in _connected_remote_models(session))
 
 
-def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
+def model_choices(session: PreferenceHost) -> tuple[ModelChoice, ...]:
     """Read the latest local directory snapshot without a network request."""
     configured = session.settings.get("providers", {})
     choices: dict[str, ModelChoice] = {}
@@ -95,7 +92,7 @@ def model_choices(session: AgentSession) -> tuple[ModelChoice, ...]:
     return tuple(sorted(ordered, key=lambda choice: (choice.released_at is None, -(choice.released_at or 0))))
 
 
-def start_model_refresh(session: AgentSession) -> None:
+def start_model_refresh(session: PreferenceHost) -> None:
     """One bounded, background lookup per connected provider at process startup."""
     connections = _connected_remote_models(session)
     if not connections:
@@ -139,7 +136,7 @@ def start_model_refresh(session: AgentSession) -> None:
     threading.Thread(target=run, daemon=True, name="virgo-startup-catalog").start()
 
 
-def _publish_catalog(session: AgentSession, connection: Model, models: list, owner, *, revision: int | None = None) -> int | None:
+def _publish_catalog(session: PreferenceHost, connection: Model, models: list, owner, *, revision: int | None = None) -> int | None:
     """Publish one connection's directory snapshot after the endpoint still matches."""
     count = session.publish_model_catalog(connection, models, owner, revision=revision)
     if count == 0:
@@ -147,7 +144,7 @@ def _publish_catalog(session: AgentSession, connection: Model, models: list, own
     return count
 
 
-def refresh_provider_catalog(session: AgentSession, provider: str) -> int | None:
+def refresh_provider_catalog(session: PreferenceHost, provider: str) -> int | None:
     """Fetch one provider's live directory exactly once and publish it for /model."""
     try:
         connection = session.resolve(f"{provider}/_catalog")
@@ -255,7 +252,7 @@ def _model_available(model: Model, credentials: dict) -> bool:
     return True
 
 
-def configure_preference(session: AgentSession, kind: str) -> None:
+def configure_preference(session: PreferenceHost, kind: str) -> None:
     """Apply an explicit picker result; cancellation and previews do not mutate state."""
     if kind not in ("model", "effort"):
         raise ValueError(f"unknown preference kind: {kind}")
