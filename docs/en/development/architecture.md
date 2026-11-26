@@ -8,18 +8,22 @@ Virgo is organized into unidirectional package layers under `src/virgo/`. Lower 
 
 | Layer | Packages / modules | Primary responsibility |
 | --- | --- | --- |
-| **0. Leaf foundations** | `i18n`, `diagnostics`, `execution_policy`, `output_store` | Session-scoped localization (`en`, `zh-CN`), no-I/O error capture and redaction, deny-first `PermissionPolicy` and built-in execution modes, and session-persisted Broker output storage |
-| **1. Model & agent core** | `ai`, `agent` | Unified streaming LLM adapters (`anthropic`, `openai`, `openai-responses`, `openai-codex`, `faux`), OAuth/API auth, model catalog, and stateless `run_loop` / `Agent` / `AgentTool` orchestration (including bounded parallel execution of non-sequential tool batches) |
-| **2. Execution & tools** | `execution`, `file_access`, `sandbox`, `tools` | Unified `SandboxExecutor` and immutable `HostContext`/`SandboxContext`, Broker file I/O (`O_NOFOLLOW` + atomic `os.replace`), native OS sandbox adapters (`bubblewrap`, macOS Seatbelt, Windows Standard AppContainer), and built-in tool implementations (`fs`, `shell`, `bash`, `output`, `web`, `web_fetch`) |
-| **3. Session harness** | `harness` | `AgentSession`, `Runtime`, `EventBus`/`ExtensionAPI`, JSONL `SessionStore`, `ModeExecutionProvider`, `ResourceApprovals`/`ResourceRules`, `high_risk` checks, Core-owned `JobManager`, SQLite `DiagnosticLog`, settings/trust loading, unified three-layer context compaction (`CompactionController`), prompt assembly, and slash commands |
+| **0. Leaf foundations** | `_gitignore`, `_win32`, `i18n`, `diagnostics`, `execution_policy` | Pure `.gitignore` matching, shared Win32 bindings, session-scoped localization (`en`, `zh-CN`), no-I/O error capture and redaction, and deny-first `PermissionPolicy` / built-in execution modes with zero sandbox or harness imports |
+| **1. Contracts, processes & core** | `execution_types`, `process`, `ai`, `agent` | Execution data/error contracts (`ExecutionContext`, `ProcessRequest`, `ProcessHandle`), POSIX `HostProcess` and Windows `WindowsProcess` primitives, unified streaming LLM adapters (`anthropic`, `openai`, `openai-responses`, `openai-codex`, `faux`), OAuth/API auth, model catalog, and stateless `run_loop` / `Agent` / `AgentTool` orchestration (including bounded parallel execution of non-sequential tool batches) |
+| **2a. Execution leaves** | `file_access`, `output_store`, `sandbox` | Mutually independent Broker file I/O (`O_NOFOLLOW` + atomic `os.replace`), session-persisted Broker output storage (`OutputStore`), and native OS sandbox adapters (`bubblewrap`, macOS Seatbelt, Windows Standard AppContainer) |
+| **2b. Execution facade & tools** | `execution`, `tools` | Composition facade (`HostContext`, `SandboxContext`, `SandboxExecutor`, `is_windows_sandbox_supported`, `default_execution_mode`) and built-in tool implementations (`fs`, `shell_env`/`shell`/`bash`, `output`, `web`, `web_fetch`) |
+| **3. Session harness** | `harness` | `AgentSession` (composing `ToolRegistry` and `ModelRegistry`), `Runtime`, `EventBus`/`ExtensionAPI` (including generic request preparers/fallbacks), JSONL `SessionStore`, `ModeExecutionProvider`, `ResourceApprovals`/`ResourceRules`, `high_risk` checks, Core-owned `JobManager`, SQLite `DiagnosticLog`, settings/trust loading, unified three-layer context compaction (`CompactionController` + `compaction_records`), prompt assembly, explicit-capability `UI` interface, and slash commands |
 | **4. Capabilities** | `plugins`, `extensions` | Six built-in plugins (`diagnostic_get`, `skills`, `ask_user`, `subagent`, `background`, `web`) and two built-in extensions (`mcp`, `todo`) loaded via `setup(api)` |
-| **5. Presentation** | `cli` | Entry point (`virgo.cli.main:main`), plain REPL, Textual full-screen TUI (`cli/tui/`), and print/JSON output UI |
+| **5. Presentation** | `cli`, `__main__` | Entry point (`virgo.cli.main:main`), plain REPL, Textual full-screen TUI (`cli/tui/`), and print/JSON output UI |
 
 ### Dependency invariants
 
-- `virgo.ai` and `virgo.agent` do not import `execution*`, `sandbox`, `tools`, `harness`, `plugins`, `extensions`, or `cli`.
-- `virgo.execution_policy`, `virgo.execution`, `virgo.file_access`, `virgo.output_store`, `virgo.sandbox`, and `virgo.tools` do not import `harness` or `cli` (`virgo.sandbox` independence from `virgo.harness` is AST-verified in `tests/harness/test_permission_modes_e2e.py`).
-- `virgo.execution_policy` remains free of harness dependencies; on native Windows only, `is_windows_sandbox_supported()` lazily probes `virgo.sandbox.windows_acl`.
+Enforced via AST checks in `tests/test_architecture_matrix.py` (covering both top-level and function-local imports) and `tests/harness/test_permission_modes_e2e.py`:
+
+- **Strict lower-triangular DAG**: Zero package-level and zero module-level runtime dependency cycles across `src/virgo/`. No lower layer imports a higher layer, and Layer 0 leaf packages carry zero `TYPE_CHECKING` upward imports.
+- **Pure policy and core leaves**: `virgo.execution_policy` never imports `virgo.sandbox`, `virgo.execution`, or `virgo.harness` (Windows sandbox capability probing lives in `virgo.execution`). `virgo.ai` and `virgo.agent` do not import `execution*`, `process`, `file_access`, `output_store`, `sandbox`, `tools`, `harness`, `plugins`, `extensions`, or `cli`.
+- **Block-diagonal peer independence**: Peer AI provider families (`anthropic` vs OpenAI family vs `faux`), execution leaf components (`file_access`, `output_store`, `sandbox`), built-in tool families (`fs`, `shell`/`bash`, `web`, `web_fetch`), and peer plugins/extensions never import each other.
+- **Explicit cross-boundary contracts**: Plugins and extensions act through `ExtensionAPI` (without reaching into `api.session` or private `runtime._*`/`session._*` state), harness core avoids hardcoding optional plugin services or private store/agent internals, and `cli` interacts with `AgentSession` through public façade methods instead of emitting on `session.bus` or reading `session.services["execution"]`.
 
 ## Core tools, built-in plugins, and built-in extensions
 

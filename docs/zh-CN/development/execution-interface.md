@@ -2,11 +2,12 @@
 
 [文档中心](../README.md) · [项目首页](../../../README.zh-CN.md) · [English](../../en/development/execution-interface.md)
 
-执行层是横跨 `virgo.execution_policy`、`virgo.execution`、`virgo.file_access`、`virgo.output_store` 与 `virgo.sandbox` 的核心基础设施。会话负责选择 **Read-Only**、**Workspace-Edit** 或 **No-Limit**（`execution.mode`），并为发起任务捕获不可变的执行上下文（`HostContext` 或 `SandboxContext`）。子任务与延迟任务沿用该捕获上下文，而非读取当前活跃的 UI 会话状态。
+执行层是分层组织的核心基础设施，由基础模块 `virgo._win32`、`virgo.execution_policy`、`virgo.execution_types`、`virgo.process`，彼此独立的执行叶子（`virgo.file_access`、`virgo.output_store`、`virgo.sandbox`）以及统一装配门面 `virgo.execution` 组成。会话负责选择 **Read-Only**、**Workspace-Edit** 或 **No-Limit**（`execution.mode`），并为发起任务捕获不可变的执行上下文（`HostContext` 或 `SandboxContext`）。子任务与延迟任务沿用该捕获上下文，而非读取当前活跃的 UI 会话状态。
 
 ## 策略与进程启动
 
-- `virgo.execution_policy.PermissionPolicy` 是 Broker 文件工具与原生 Shell 沙箱共用的单一 deny-first 策略数据模型。核心策略定义（`ExecutionMode`、`DEFAULT_MODES`、`HOST_MODE`、`PermissionSnapshot`、`PROTECTED_NAMES = (".virgo",)`、`PRIVATE_HOME_RELATIVES`、`default_private_paths`、`default_deny_rules`、`filter_sandbox_environment`）与 `virgo.sandbox` 原生后端全部位于核心模块，不反向依赖 `virgo.harness`。针对私有凭据路径的硬性读拒绝不可覆盖（`hard_denied`），而针对项目 `.virgo` 的可确认写拒绝可在用户明确授权后通过 `policy.grant(...)` 放行。
+- `virgo.execution_policy.PermissionPolicy` 是 Broker 文件工具与原生 Shell 沙箱共用的单一 deny-first 策略数据模型。核心策略定义（`ExecutionMode`、`DEFAULT_MODES`、`HOST_MODE`、`PermissionSnapshot`、`PROTECTED_NAMES = (".virgo",)`、`PRIVATE_HOME_RELATIVES`、`default_private_paths`、`default_deny_rules`、`filter_sandbox_environment`）作为纯叶子模块不导入 `virgo.sandbox`、`virgo.execution` 或 `virgo.harness`；平台默认模式探测（`is_windows_sandbox_supported()`、`default_execution_mode()`）与 `HostContext`/`SandboxContext`/`SandboxExecutor` 装配位于 `virgo.execution`。针对私有凭据路径的硬性读拒绝不可覆盖（`hard_denied`），而针对项目 `.virgo` 的可确认写拒绝可在用户明确授权后通过 `policy.grant(...)` 放行。
+- `virgo.execution_types` 定义共享执行契约（`ExecutionContext`、`ProcessRequest`、`ProcessHandle`、`ExecutionUnavailable`、`ExecutionFailed`、`ExecutionCancelled`、`FileAccessDenied` 及环境辅助函数），`virgo.process` 提供 POSIX `HostProcess` 与 Windows `WindowsProcess` 托管原语，避免与 `virgo.execution` 或 `virgo.tools` 产生循环依赖。
 - `SandboxExecutor.run_process(request, context, cancellation)` 是本地进程的统一启动入口。`ProcessRequest` 显式声明 `argv`、`cwd`、基础 `env`、经过校验的可选 `env_overrides` 与标准流。无限制上下文（包括 No-Limit Shell 与通过 `HostContext.unrestricted` 启动的 Host stdio MCP 服务器）直接在宿主执行，不探测原生沙箱后端。
 - 原生 Shell 适配器将 `PermissionPolicy` 编译到各平台后端：
   - **Linux（`bubblewrap`）**：`--ro-bind / /` 宽只读宿主视图、遮蔽 `private_paths`、丢弃 Linux capabilities、`--info-fd` 启动确认，且不依赖 `libseccomp`。

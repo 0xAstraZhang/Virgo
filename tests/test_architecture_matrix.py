@@ -1,13 +1,12 @@
-"""MIT Axiomatic Design architecture matrix gates.
+"""Architecture dependency matrix gates.
 
 Enforces two structural invariants across ``src/virgo``:
-1. Macro lower-triangular layering (unidirectional DAG across layers, including
-   function-local lazy imports, with zero runtime cycles).
-2. Block-diagonal peer independence across sibling plugins, extensions, tools,
-   execution leaf components, and AI provider families.
-
-Known baseline violations are tracked as exact sets so each decoupling phase
-must shrink them monotonically until they reach empty.
+1. Macro strict lower-triangular layering (unidirectional DAG across package
+   layers, including function-local imports, with zero package or module
+   runtime cycles).
+2. Block-diagonal peer independence across sibling plugins, extensions, built-in
+   tool families, execution leaf components, and AI provider families, plus
+   explicit cross-boundary interfaces.
 """
 
 from __future__ import annotations
@@ -48,18 +47,6 @@ PACKAGE_LAYERS: dict[str, int] = {
     "virgo.cli": 6,
     "virgo.__main__": 6,
 }
-
-# --- Exact baseline violation sets (shrunk to empty across Phases 1-5) ------
-
-KNOWN_PACKAGE_RUNTIME_SCCS: set[tuple[str, ...]] = set()
-
-KNOWN_MODULE_RUNTIME_SCCS: set[tuple[str, ...]] = set()
-
-KNOWN_LAYER_VIOLATIONS: set[tuple[str, str]] = set()
-
-KNOWN_TC_REVERSE_EDGES: set[tuple[str, str]] = set()
-
-KNOWN_PRIVATE_INTRUSIONS: set[str] = set()
 
 
 def _collect_modules() -> dict[str, Path]:
@@ -198,11 +185,7 @@ def test_package_runtime_graph_is_acyclic() -> None:
         if ps != pd:
             adj[ps].add(pd)
     actual = _tarjan_sccs(pkgs, adj)
-    assert actual == KNOWN_PACKAGE_RUNTIME_SCCS, (
-        f"Package runtime SCCs diverged.\n"
-        f"  Unexpected new cycles: {sorted(actual - KNOWN_PACKAGE_RUNTIME_SCCS)}\n"
-        f"  Resolved (remove from KNOWN_PACKAGE_RUNTIME_SCCS): {sorted(KNOWN_PACKAGE_RUNTIME_SCCS - actual)}"
-    )
+    assert not actual, f"Package runtime cycles detected: {sorted(actual)}"
 
 
 def test_module_runtime_graph_is_acyclic() -> None:
@@ -213,11 +196,7 @@ def test_module_runtime_graph_is_acyclic() -> None:
         if kinds & {"TOP", "LOCAL"}:
             adj[src].add(dst)
     actual = _tarjan_sccs(set(modules), adj)
-    assert actual == KNOWN_MODULE_RUNTIME_SCCS, (
-        f"Module runtime SCCs diverged.\n"
-        f"  Unexpected new cycles: {sorted(actual - KNOWN_MODULE_RUNTIME_SCCS)}\n"
-        f"  Resolved (remove from KNOWN_MODULE_RUNTIME_SCCS): {sorted(KNOWN_MODULE_RUNTIME_SCCS - actual)}"
-    )
+    assert not actual, f"Module runtime cycles detected: {sorted(actual)}"
 
 
 def test_package_layer_hierarchy_is_lower_triangular() -> None:
@@ -230,11 +209,7 @@ def test_package_layer_hierarchy_is_lower_triangular() -> None:
         ps, pd = _top_package(src), _top_package(dst)
         if ps != pd and PACKAGE_LAYERS[pd] > PACKAGE_LAYERS[ps]:
             violations.add((ps, pd))
-    assert violations == KNOWN_LAYER_VIOLATIONS, (
-        f"Layer hierarchy violations diverged.\n"
-        f"  Unexpected upward imports: {sorted(violations - KNOWN_LAYER_VIOLATIONS)}\n"
-        f"  Resolved (remove from KNOWN_LAYER_VIOLATIONS): {sorted(KNOWN_LAYER_VIOLATIONS - violations)}"
-    )
+    assert not violations, f"Upward layer imports detected: {sorted(violations)}"
 
 
 def test_leaf_packages_have_no_type_checking_upward_imports() -> None:
@@ -247,11 +222,7 @@ def test_leaf_packages_have_no_type_checking_upward_imports() -> None:
         ps, pd = _top_package(src), _top_package(dst)
         if PACKAGE_LAYERS[ps] == 0 and PACKAGE_LAYERS[pd] > 0:
             actual.add((src, dst))
-    assert actual == KNOWN_TC_REVERSE_EDGES, (
-        f"Leaf TYPE_CHECKING upward imports diverged.\n"
-        f"  Unexpected: {sorted(actual - KNOWN_TC_REVERSE_EDGES)}\n"
-        f"  Resolved: {sorted(KNOWN_TC_REVERSE_EDGES - actual)}"
-    )
+    assert not actual, f"Leaf TYPE_CHECKING upward imports detected: {sorted(actual)}"
 
 
 def test_peer_diagonal_blocks_are_mutually_independent() -> None:
@@ -383,7 +354,20 @@ def test_no_implicit_cross_boundary_intrusions() -> None:
                 ):
                     if attr in src:
                         found.add(f"{rel}:{attr}")
-            if rel == "harness/ui.py":
+            if rel != "harness/store.py":
+                for node in ast.walk(tree):
+                    if (
+                        isinstance(node, ast.Attribute)
+                        and node.attr == "_lock"
+                        and not (isinstance(node.value, ast.Name) and node.value.id == "self")
+                    ):
+                        found.add(f"{rel}:{ast.unparse(node)}")
+            if rel in {
+                "harness/ui.py",
+                "harness/tool_registry.py",
+                "harness/model_registry.py",
+                "harness/compaction_records.py",
+            }:
                 for node in ast.walk(tree):
                     if isinstance(node, ast.ImportFrom) and node.level == 1:
                         found.add(f"{rel}:sibling_import.{node.module}")
@@ -395,8 +379,4 @@ def test_no_implicit_cross_boundary_intrusions() -> None:
             if 'services["execution"]' in src or 'services.get("execution")' in src:
                 found.add(f"{rel}:services.execution")
 
-    assert found == KNOWN_PRIVATE_INTRUSIONS, (
-        f"Implicit cross-boundary intrusions diverged.\n"
-        f"  Unexpected new intrusions: {sorted(found - KNOWN_PRIVATE_INTRUSIONS)}\n"
-        f"  Resolved (remove from KNOWN_PRIVATE_INTRUSIONS): {sorted(KNOWN_PRIVATE_INTRUSIONS - found)}"
-    )
+    assert not found, f"Implicit cross-boundary intrusions detected: {sorted(found)}"
