@@ -45,6 +45,25 @@ _TRANSCRIPT_STREAM_TYPES = {
 }
 
 
+def _classify_tool_error(res, default_kind: str | None) -> str | None:
+    """Classify execution/permission/sub-agent error details without coupling Layer 1 loop."""
+    details = res.details if isinstance(res.details, dict) else {}
+    status, boundary = details.get("status"), details.get("boundary")
+    kind = default_kind
+    if (
+        status in ("execution_unavailable", "execution_failed")
+        or isinstance(boundary, dict) and boundary.get("cleanup") == "failed"
+    ):
+        kind = "fatal"
+    elif status in ("resource_denied", "high_risk_denied"):
+        kind = "blocked"
+    elif details.get("related_errors") and kind is None:
+        kind = "fatal"
+    if kind == "blocked" and res.as_text().strip().lower() == "sub-agent was aborted.":
+        return None
+    return kind
+
+
 def retry_after_seconds(details: dict | None, *, now: float | None = None) -> float | None:
     context = details.get("context", {}) if isinstance(details, dict) else {}
     http = context.get("http", {}) if isinstance(context, dict) else {}
@@ -154,6 +173,7 @@ class Runtime:
             can_run=self.can_run,
             on_error=lambda details: self.report_error(details, phase="agent.listener"),
             project_tool_result=self._project_tool_result,
+            classify_tool_error=_classify_tool_error,
             translator=session.translator,
         )
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)

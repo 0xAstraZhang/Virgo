@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import copy
 
-from ...ai.providers.web import deepseek_endpoint as deepseek_endpoint
-from ...ai.providers.web import endpoint as endpoint
+from ...ai.web import deepseek_endpoint as deepseek_endpoint
+from ...ai.web import endpoint as endpoint
 from ...harness.extensions import ROLES_ALL
 from ...tools.web import make_web_search
 from .access import WebAccess

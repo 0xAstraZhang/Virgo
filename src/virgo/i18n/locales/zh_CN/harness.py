@@ -1,19 +1,6 @@
 """Harness commands, preferences and runtime messages."""
 
 MESSAGES = {
-    "harness.agent.aborted": "用户已中止",
-    "harness.agent.hook_failed": "工具调用钩子执行失败：{error}",
-    "harness.agent.invalid_args": "参数无效：\n{errors}",
-    "harness.agent.invalid_json": "工具参数不是有效的 JSON 对象，请重新调用。",
-    "harness.agent.length_continue": "上次回复因达到输出 token 上限而中断。请从中断处继续，直接调用所需工具或简明地补全回答，避免重复已有文字或推理。",
-    "harness.agent.length_continue_empty": "上次回复在给出可见答案前已达到输出 token 上限。请直接调用所需工具或给出简明回答，避免重复推理。",
-    "harness.agent.operation_aborted": "操作已中止。",
-    "harness.agent.permission_failed": "执行权限检查失败：{error}",
-    "harness.agent.result_hook_failed": "工具结果钩子执行失败：{error}",
-    "harness.agent.search_paused": "[搜索连续续接三次后已暂停。发送新消息可继续。]",
-    "harness.agent.truncated_arguments": "响应达到输出 token 上限，工具参数可能不完整。请重新调用，并将大段内容拆分为较小步骤。",
-    "harness.agent.turn_limit": "[已停止：达到 {turns} 轮上限。]",
-    "harness.agent.unknown_tool": "未知工具：{name}。可用工具：{tools}",
     "harness.auth.api_key": "API 密钥",
     "harness.auth.api_label": "API — 使用 API 密钥接入",
     "harness.auth.api_picker": "API — 选择服务商",

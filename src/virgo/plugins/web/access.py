@@ -6,8 +6,7 @@ import hashlib
 import json
 import os
 
-from ...ai.providers.web import deepseek_endpoint, endpoint
-from ...ai.web import offers_for
+from ...ai.web import deepseek_endpoint, endpoint, offers_for
 
 
 class WebAccess:

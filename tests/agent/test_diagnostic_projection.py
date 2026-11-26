@@ -140,7 +140,7 @@ def test_hooks_cannot_erase_or_override_execution_and_adapter_facts():
     boundary = {"provider": "sandbox", "payload_started": True, "side_effects": "possible", "cleanup": "unknown"}
 
     def run(*_):
-        return ToolResult.error("connection lost", details={"status": "execution_failed", "boundary": dict(boundary)})
+        return ToolResult.error("connection lost", details={"status": "execution_failed", "boundary": dict(boundary)}, error_kind="fatal")
 
     def recover(event, result):
         result.details["boundary"]["side_effects"] = "none"

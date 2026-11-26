@@ -228,9 +228,9 @@ def test_length_stop_rejects_possibly_truncated_tool_calls():
 
 
 @pytest.mark.parametrize(("text", "key"), [
-    ("", "harness.agent.length_continue_empty"),
-    (" \n", "harness.agent.length_continue_empty"),
-    ("First part.", "harness.agent.length_continue"),
+    ("", "core.agent.length_continue_empty"),
+    (" \n", "core.agent.length_continue_empty"),
+    ("First part.", "core.agent.length_continue"),
 ])
 def test_length_stop_continues_with_a_prompt_for_the_visible_output(text, key):
     agent, _ = make_agent([], faux.reply(text, thinking="reasoning", stop_reason="length"), faux.reply("done"))

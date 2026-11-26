@@ -7,7 +7,7 @@ import re
 from dataclasses import replace
 from urllib.parse import urlsplit
 
-from ..web import WebOffer
+from ..types import WebOffer
 
 
 def endpoint(model) -> str:

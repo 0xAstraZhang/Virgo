@@ -1,23 +1,6 @@
 """Harness commands, preferences and runtime messages."""
 
 MESSAGES = {
-    "harness.agent.aborted": "aborted by user",
-    "harness.agent.hook_failed": "Tool call hook failed: {error}",
-    "harness.agent.invalid_args": "Invalid arguments:\n{errors}",
-    "harness.agent.invalid_json": "Tool arguments were not a valid JSON object. Re-issue the call.",
-    "harness.agent.length_continue": "The output token limit cut your reply short. Pick up where you left off. "
-    "Make the required tool call or finish the answer concisely without repeating earlier text or reasoning.",
-    "harness.agent.length_continue_empty": "You reached the output token limit before giving a visible answer. "
-    "Go directly to the required tool call or give a concise answer without repeating your reasoning.",
-    "harness.agent.operation_aborted": "Operation aborted.",
-    "harness.agent.permission_failed": "Execution permission check failed: {error}",
-    "harness.agent.result_hook_failed": "Tool result hook failed: {error}",
-    "harness.agent.search_paused": "[Search paused after three continuations. Send another message to resume.]",
-    "harness.agent.truncated_arguments": "The response hit the output token limit, so these tool arguments may "
-    "be truncated. Re-issue the call (split large content into smaller "
-    "steps).",
-    "harness.agent.turn_limit": "[Stopped: reached the {turns}-turn limit.]",
-    "harness.agent.unknown_tool": "Unknown tool: {name}. Available: {tools}",
     "harness.auth.api_key": "API key",
     "harness.auth.api_label": "API — Connect with an API key",
     "harness.auth.api_picker": "API — Choose a provider",
