@@ -68,7 +68,7 @@ def sse(events: list[dict], *, named: bool = False, done: bool | None = None) ->
 
 
 @contextlib.contextmanager
-def fake_api(**overrides) -> Iterator[dict]:
+def fake_api(*, replies=None, **overrides) -> Iterator[dict]:
     """Record each POSTed JSON request and answer it with the reply scripted in the yielded state.
 
     Tests change these keys between requests:
@@ -88,8 +88,10 @@ def fake_api(**overrides) -> Iterator[dict]:
         Send the body as one chunk, then cut the connection before the terminating chunk.
 
     Each recorded request is ``{"path", "headers" (lower-case names), "json"}``.
+    If supplied, ``replies`` overrides the default state in POST order.
     """
     release = threading.Event()
+    scripted = iter(replies) if replies is not None else None
     state = {
         "requests": [], "status": 200, "body": b"", "content_type": None,
         "stall": False, "stall_at": "body", "drop": False,
@@ -105,6 +107,8 @@ def fake_api(**overrides) -> Iterator[dict]:
             self.close_connection = True
             length = int(self.headers.get("content-length", 0))
             reply = state.copy()
+            if scripted is not None:
+                reply.update(next(scripted, {"status": 418, "body": b"Unexpected request"}))
             state["requests"].append({
                 "path": self.path,
                 "headers": {key.lower(): value for key, value in self.headers.items()},
