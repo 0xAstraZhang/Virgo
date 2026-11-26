@@ -79,6 +79,13 @@ class JobManager:
         session.bus.on("runtime_abort", self._abort_runtime, owner="core.jobs")
         session.bus.on("pending_work", lambda _session: bool(self.unreported()), owner="core.jobs")
 
+    def set_background_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self.background_enabled == enabled:
+            return
+        self.background_enabled = enabled
+        self.session.bus.emit("background_capability_changed", enabled)
+
     def current_store(self):
         with self.session._lock:
             return self.session.store

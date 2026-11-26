@@ -173,8 +173,9 @@ def test_unmapped_explicit_max_uses_falls_back_to_client_tools(make_session, mod
     ctx = context(s, model)
     assert ctx.web_tools == []
     assert {"web_search", "web_fetch"} <= {t.name for t in ctx.tools}
-    assert expected_setting in s.main._web_paths["search"]
-    assert expected_setting in s.main._web_paths["fetch"]
+    paths = s.services["web"].paths_for(s.main)
+    assert expected_setting in paths["search"]
+    assert expected_setting in paths["fetch"]
 
 
 def test_unmapped_max_uses_only_rejects_hosted_offers_covering_that_capability(make_session):

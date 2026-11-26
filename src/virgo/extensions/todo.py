@@ -171,16 +171,12 @@ def setup(api):
         )
 
     def retained_state(runtime):
-        if not runtime.messages:
+        epoch = runtime.compaction_epoch
+        if epoch is None:
             with state_lock:
                 epoch_sections.pop(runtime, None)
             return None
-        first = runtime.messages[0]
-        if getattr(first, "kind", None) != "summary":
-            with state_lock:
-                epoch_sections.pop(runtime, None)
-            return None
-        first_id = runtime.ids[0] if runtime.ids else None
+        first, first_id = epoch
         with state_lock:
             cached = epoch_sections.get(runtime)
             if cached is not None and cached[0] is first and cached[1] == first_id:

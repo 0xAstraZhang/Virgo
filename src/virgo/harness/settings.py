@@ -12,10 +12,12 @@ from typing import Any
 
 from ..execution import default_execution_mode
 from ..execution_policy import DEFAULT_MODES, normalize_approval_policy
+from ..file_access import same_directory
 
 PLUGIN_IDS = (
     "diagnostic_get", "skills", "ask_user", "subagent", "background", "web",
 )
+BUILTIN_EXTENSIONS: tuple[str, ...] = ("mcp", "todo")
 REMOVED_FEATURES = frozenset({
     "schedule", "workflow", "team", "tasks", "memory", "goal", "plan", "code_review", "workMode", "profile",
 })
@@ -250,17 +252,6 @@ def _validate(data: dict) -> None:
     effort = subagents.get("effort")
     if effort is not None and (not isinstance(effort, str) or not effort.strip()):
         raise ValueError("subagents.effort must be null or a reasoning level")
-
-
-def same_directory(left: Path, right: Path) -> bool:
-    """Report whether two configuration directories are the same place.
-
-    An unresolvable path cannot be proven shared, so it keeps the deny-only guard.
-    """
-    try:
-        return left.resolve() == right.resolve()
-    except (OSError, RuntimeError):
-        return False
 
 
 def _trusted_projects(user: dict) -> set[Path]:

@@ -52,7 +52,7 @@ from virgo.ai.types import ImageContent, TextContent
 from virgo.ai.validate import valid_schema
 from virgo.diagnostics import capture_error, safe_text
 from virgo.execution import HostContext, ProcessRequest, cleanup_process
-from virgo.harness.settings import same_directory
+from virgo.file_access import same_directory
 from virgo.tools.output import budget, exceeds_budget
 
 if TYPE_CHECKING:

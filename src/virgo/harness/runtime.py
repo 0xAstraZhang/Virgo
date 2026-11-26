@@ -518,9 +518,9 @@ class Runtime:
         s = self.session
         view = s.bus.chain("context", list(messages), self)
         context = self._base_context(view, report_errors=True)
-        web = s.services.get("web")
-        if web is not None:
-            web.prepare(self, context, model or self.model)
+        target_model = model or self.model
+        for _order, _name, prepare in sorted(s.request_preparers, key=lambda item: item[0]):
+            prepare(self, context, target_model)
         return context
 
     # -- model calls ---------------------------------------------------------
@@ -617,11 +617,15 @@ class Runtime:
                 "model": request_model.spec, "api": failed.api or request_model.api,
                 "max_retries": max_retries, "duration": round(duration, 6),
             })
-            web = s.services.get("web")
-            if (web_fallbacks < 2 and not signal.is_set() and web
-                    and web.fallback(request_model, ctx, failed)):
+            fallback_purpose = None
+            if web_fallbacks < 2 and not signal.is_set():
+                for _order, _name, handler in sorted(s.request_fallbacks, key=lambda item: item[0]):
+                    if purpose := handler(self, request_model, ctx, failed):
+                        fallback_purpose = purpose
+                        break
+            if fallback_purpose is not None:
                 web_fallbacks += 1
-                record_call(self.accounting_store, request_model, failed, purpose="fetch-fallback" if failed.error_kind == "fetch_unsupported" else "search-fallback",
+                record_call(self.accounting_store, request_model, failed, purpose=fallback_purpose,
                             started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
                 yield StreamEvent("retry", failed)
                 continue

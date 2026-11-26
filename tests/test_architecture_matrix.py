@@ -51,34 +51,15 @@ PACKAGE_LAYERS: dict[str, int] = {
 
 # --- Exact baseline violation sets (shrunk to empty across Phases 1-5) ------
 
-KNOWN_PACKAGE_RUNTIME_SCCS: set[tuple[str, ...]] = {
-    ("virgo.extensions", "virgo.harness"),
-}
+KNOWN_PACKAGE_RUNTIME_SCCS: set[tuple[str, ...]] = set()
 
-KNOWN_MODULE_RUNTIME_SCCS: set[tuple[str, ...]] = {
-    (
-        "virgo.plugins.web",
-        "virgo.plugins.web.access",
-        "virgo.plugins.web.fetch",
-        "virgo.plugins.web.search",
-    ),
-}
+KNOWN_MODULE_RUNTIME_SCCS: set[tuple[str, ...]] = set()
 
-KNOWN_LAYER_VIOLATIONS: set[tuple[str, str]] = {
-    ("virgo.harness", "virgo.extensions"),
-}
+KNOWN_LAYER_VIOLATIONS: set[tuple[str, str]] = set()
 
 KNOWN_TC_REVERSE_EDGES: set[tuple[str, str]] = set()
 
 KNOWN_PRIVATE_INTRUSIONS: set[str] = {
-    "plugins/web/__init__.py:runtime._web_backend_config",
-    "plugins/web/__init__.py:runtime._web_backends",
-    "plugins/web/__init__.py:runtime._web_models",
-    "plugins/web/__init__.py:runtime._web_paths",
-    "harness/runtime.py:services.web",
-    "harness/session.py:services.subagents",
-    "harness/extensions.py:sandbox._result",
-    "extensions/todo.py:compaction_internals",
     "cli/tui/app.py:bus.emit",
     "cli/tui/app.py:services.execution",
     "cli/repl.py:services.execution",

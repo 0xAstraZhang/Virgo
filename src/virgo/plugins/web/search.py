@@ -9,6 +9,7 @@ from ...ai.web import endpoint as endpoint
 from ...harness.extensions import ROLES_ALL
 from ...tools.web import make_web_search
 from .access import WebAccess
+from .service import web_service
 
 DEEPSEEK_SETUP = (
     "DeepSeek search requires an official API key. Use /login api deepseek with https://api.deepseek.com "
@@ -60,8 +61,6 @@ class Search(WebAccess):
             patch["apiKeyEnv"] = None
         self.api.settings.save_user({"search": patch})
         self._legacy_backend = False
-        from . import web_service
-
         web_service(self.api).clear()
 
     def client_available(self, backend, model):
@@ -85,8 +84,6 @@ def setup(api) -> None:
 
     search = Search(api)
     api.services["search"] = search
-    from . import web_service
-
     web_service(api)
     # Keep the tool in runtime registries so /search can enable an initially
     # disabled service; prepare() controls what each model request can see.

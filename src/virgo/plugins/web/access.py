@@ -7,6 +7,7 @@ import json
 import os
 
 from ...ai.web import deepseek_endpoint, endpoint, offers_for
+from .service import web_service
 
 
 class WebAccess:
@@ -28,8 +29,6 @@ class WebAccess:
         return runtime
 
     def consume(self, ctx):
-        from . import web_service
-
         web_service(self.api).consume(self._runtime(ctx), self.operation, self.max_uses)
 
     def deepseek_key(self, model=None) -> str:
@@ -60,7 +59,8 @@ class WebAccess:
         runtime = self._runtime(ctx)
         # Retries can use a different model without changing runtime.model. Keep
         # that request's choice local to its runtime, including parallel agents.
-        original, request = getattr(runtime, "_web_models", (runtime.model, runtime.model))
+        state = web_service(self.api).state_for(runtime)
+        original, request = state.models if state is not None else (runtime.model, runtime.model)
         return request if original is runtime.model else runtime.model
 
     def key(self, model) -> tuple:
@@ -78,13 +78,14 @@ class WebAccess:
     def execution_backend(self, ctx):
         runtime = self._runtime(ctx)
         model = self._model_for(ctx)
-        binding = getattr(runtime, "_web_models", None)
-        backends = getattr(runtime, "_web_backends", {})
-        config = getattr(runtime, "_web_backend_config", {})
+        state = web_service(self.api).state_for(runtime)
+        binding = state.models if state is not None else None
+        backends = state.backends if state is not None else {}
+        config = state.backend_config if state is not None else {}
         if binding and binding[0] is runtime.model and config.get(self.operation) == self.config and self.operation in backends:
             backend = backends[self.operation]
             if backend is None:
-                raise ValueError(self.api.t('features.web.client_disabled', operation=self.operation))
+                raise ValueError(self.api.t("features.web.client_disabled", operation=self.operation))
             return backend
         return self.backend_for(model)
 

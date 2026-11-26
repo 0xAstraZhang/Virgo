@@ -448,5 +448,6 @@ def setup(api: ExtensionAPI) -> None:
         session.ui.print("\n".join(lines))
 
     api.register_command("subagents", cmd_subagents, "features.commands.subagents", concurrent=True)
+    api.on("background_capability_changed", lambda _enabled: install_tools())
     subs.install_tools = install_tools
     install_tools()

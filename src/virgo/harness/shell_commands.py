@@ -28,6 +28,7 @@ class ShellSelection:
         except (ValueError, TypeError) as error:
             self.current = None
             session.ui.print(session.t("harness.shell.unavailable", error=error), "warn")
+        session.bus.on("background_capability_changed", lambda _enabled: self.install_tools(), owner="core.shell")
 
     def probe(self, value: str) -> Shell:
         execute = self._probe_versions and self.session.services["execution"].name == "host"

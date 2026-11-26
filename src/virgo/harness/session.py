@@ -110,6 +110,8 @@ class AgentSession:
         self.sections: list = []
         self.runtime_sections: list = []
         self.request_sections: list = []
+        self.request_preparers: list = []
+        self.request_fallbacks: list = []
         self._permission_boundary = None
         self._reported_save_errors: set[int] = set()
         self._failed_stores: list = []
@@ -163,11 +165,7 @@ class AgentSession:
             # must not outlive the capability that exposes its tools.
             jobs = self.services["jobs"]
             if jobs.background_enabled and "background" not in self.loaded_plugins:
-                jobs.background_enabled = False
-                self.services["shell"].install_tools()
-                subagents = self.services.get("subagents")
-                if subagents is not None and callable(getattr(subagents, "install_tools", None)):
-                    subagents.install_tools()
+                jobs.set_background_enabled(False)
             install_command_hooks(self)
             def warn(message: str) -> None:
                 self.ui.print(message, "warn")
