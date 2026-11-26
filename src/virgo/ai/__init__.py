@@ -98,9 +98,10 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
     def events():
         from .search import add_source_links
 
-        terminal = None
+        terminal = last = None
         try:
             for event in result:
+                last = event.partial
                 if event.type in ("done", "error"):
                     terminal = event.partial
                     count = len(event.partial.content)
@@ -119,11 +120,12 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
                 result.close()
             finally:
                 if observer is not None and started is not None:
+                    observed = terminal if terminal is not None else last
                     observer({
                         "id": request_id, "phase": "end",
                         "duration_s": round(time.monotonic() - started, 6),
                         "stop_reason": terminal.stop_reason if terminal is not None else "incomplete",
-                        "usage": getattr(terminal, "reported_usage", None) or empty_usage(),
+                        "usage": getattr(observed, "reported_usage", None) or empty_usage(),
                         "provider_reported_cost_usd": None,
                     })
 

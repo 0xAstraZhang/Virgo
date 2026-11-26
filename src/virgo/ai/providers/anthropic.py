@@ -264,6 +264,7 @@ def _events(items, out: AssistantMessage):
             u = ev.message.usage
             for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
                 reported[key] = getattr(u, key, None)
+            out.reported_usage = anthropic_usage(reported)
             out.usage = Usage(
                 input=u.input_tokens or 0,
                 output=u.output_tokens or 0,
@@ -363,6 +364,7 @@ def _events(items, out: AssistantMessage):
                     value = getattr(ev.usage, key, None)
                     if value is not None:
                         reported[key] = value
+                out.reported_usage = anthropic_usage(reported)
                 out.usage.output = ev.usage.output_tokens or out.usage.output
                 if getattr(ev.usage, "input_tokens", None):
                     out.usage.input = ev.usage.input_tokens
@@ -370,7 +372,6 @@ def _events(items, out: AssistantMessage):
             completed = True
     if not completed:
         raise ProviderError("Anthropic stream ended before message_stop.", "retryable")
-    out.reported_usage = anthropic_usage(reported)
     if out.stop_reason == "refusal":
         yield StreamEvent("error", out)
     else:
