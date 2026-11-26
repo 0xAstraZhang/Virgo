@@ -199,6 +199,18 @@ def test_module_runtime_graph_is_acyclic() -> None:
     assert not actual, f"Module runtime cycles detected: {sorted(actual)}"
 
 
+def test_module_all_imports_graph_is_acyclic() -> None:
+    """Zero module-level import cycles across src/virgo, including TYPE_CHECKING."""
+    modules = _collect_modules()
+    edges = _extract_edges(modules)
+    adj: dict[str, set[str]] = defaultdict(set)
+    for (src, dst), kinds in edges.items():
+        if kinds & {"TOP", "LOCAL", "TC"}:
+            adj[src].add(dst)
+    actual = _tarjan_sccs(set(modules), adj)
+    assert not actual, f"Module all-import (including TYPE_CHECKING) cycles detected: {sorted(actual)}"
+
+
 def test_package_layer_hierarchy_is_lower_triangular() -> None:
     modules = _collect_modules()
     edges = _extract_edges(modules)
@@ -363,6 +375,7 @@ def test_no_implicit_cross_boundary_intrusions() -> None:
                     ):
                         found.add(f"{rel}:{ast.unparse(node)}")
             if rel in {
+                "harness/contracts.py",
                 "harness/ui.py",
                 "harness/tool_registry.py",
                 "harness/model_registry.py",
@@ -371,12 +384,49 @@ def test_no_implicit_cross_boundary_intrusions() -> None:
                 for node in ast.walk(tree):
                     if isinstance(node, ast.ImportFrom) and node.level == 1:
                         found.add(f"{rel}:sibling_import.{node.module}")
+            if rel == "harness/shell_commands.py":
+                if 'services["jobs"]' in src or 'services.get("jobs")' in src:
+                    found.add(f"{rel}:services.jobs")
+                if '"background_capability_changed"' in src or "'background_capability_changed'" in src:
+                    found.add(f"{rel}:background_capability_changed")
+            if rel == "harness/jobs.py":
+                if 'services["shell"]' in src or 'services.get("shell")' in src:
+                    found.add(f"{rel}:services.shell")
+            if rel in {"harness/compaction.py", "harness/runtime.py"}:
+                for tok in ('"search_unsupported"', '"fetch_unsupported"', "web_fallbacks"):
+                    if tok in src:
+                        found.add(f"{rel}:{tok}")
+            if rel in {"harness/runtime.py", "harness/recovery.py"}:
+                if '"diagnostic_get"' in src or "'diagnostic_get'" in src:
+                    found.add(f"{rel}:hardcoded_diagnostic_get")
 
-        # 5. CLI must not directly emit on session.bus or reach into session.services["execution"].
+        if rel == "plugins/background.py":
+            if '"diagnostic_get"' in src or "'diagnostic_get'" in src:
+                found.add(f"{rel}:hardcoded_diagnostic_get")
+
+        # 5. CLI must interact through AgentSession/Runtime facades rather than
+        #    direct EventBus hooks, internal signals/wakeups, UI replacement, or execution service lookups.
         if rel.startswith("cli/"):
-            if '.bus.emit(' in src:
+            if ".bus.emit(" in src:
                 found.add(f"{rel}:bus.emit")
+            if ".bus.on(" in src:
+                found.add(f"{rel}:bus.on")
             if 'services["execution"]' in src or 'services.get("execution")' in src:
                 found.add(f"{rel}:services.execution")
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute):
+                    if node.attr == "wakeups":
+                        found.add(f"{rel}:{ast.unparse(node)}")
+                    elif node.attr == "signal" and isinstance(node.value, ast.Attribute) and node.value.attr == "agent":
+                        found.add(f"{rel}:{ast.unparse(node)}")
+                elif isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if (
+                            isinstance(target, ast.Attribute)
+                            and target.attr == "ui"
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id in {"session", "previous", "candidate"}
+                        ):
+                            found.add(f"{rel}:assign.{ast.unparse(target)}")
 
     assert not found, f"Implicit cross-boundary intrusions detected: {sorted(found)}"

@@ -14,8 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from virgo.agent import AgentTool
 from virgo.ai.providers import faux
-from virgo.ai.types import ToolResultMessage
+from virgo.ai.types import AssistantMessage, TextContent, ToolResultMessage
 from virgo.harness.extensions import ExtensionAPI
 from virgo.harness.store import SessionStore
 
@@ -172,3 +173,60 @@ def test_candidate_context_and_failed_activation_keep_active_pair(make_session, 
         s._activate_store(target)
     assert (s.store, s.main) == (old_store, old_main)
     assert target not in s._visited_stores
+
+
+def test_generic_request_fallback_matcher_triggers_compaction_fallback_without_mutation(make_session, monkeypatch):
+    from tests.support.harness import install_responses
+
+    session = make_session(faux.reply("earlier work"))
+    session.prompt("Build the parser")
+    mutated = []
+    api = ExtensionAPI(session, "custom_capability")
+    api.add_request_fallback(
+        "custom",
+        lambda _rt, _model, _ctx, _failed: mutated.append("called") or "custom-fallback",
+        matches=lambda _ctx, failed: failed.stop_reason == "error" and failed.error_kind == "custom_unsupported",
+    )
+    install_responses(
+        monkeypatch,
+        AssistantMessage(stop_reason="error", error_kind="custom_unsupported", error_message="capability rejected"),
+        AssistantMessage([TextContent("## Goal & Constraints\nFallback summary")]),
+    )
+    result = session.compact()
+    assert result is not None and result["strategy"] == "serialized"
+    assert "Fallback summary" in result["summary"]
+    assert not mutated
+
+
+def test_diagnostic_query_declaration_rolls_back_on_plugin_failure(make_session):
+    session = make_session(settings={"plugins": {"diagnostic_get": {"enabled": False}}})
+    assert not session.main.has_diagnostic_query_tool()
+    api = ExtensionAPI(session, "custom_diag")
+    tool = AgentTool("custom_diag_query", "diag", {"type": "object"}, lambda _a, _c: "{}")
+    api.register_tool(tool, roles=("main",))
+    api.declare_diagnostic_query_tool("custom_diag_query")
+    session.main.refresh_tools()
+    assert session.main.has_diagnostic_query_tool()
+    api.rollback()
+    session.main.refresh_tools()
+    assert not session.main.has_diagnostic_query_tool()
+
+
+def test_background_capability_toggle_updates_shell_tool_and_session_facade(make_session):
+    from tests.support.shell import selected
+
+    session = make_session()
+    shell_name = selected(session).tool_name
+    assert "background" in session.tool(shell_name).parameters["properties"]
+    session.services["jobs"].set_background_enabled(False)
+    assert "background" not in session.tool(shell_name).parameters["properties"]
+    session.services["jobs"].set_background_enabled(True)
+    assert "background" in session.tool(shell_name).parameters["properties"]
+
+    seen = []
+    unsub = session.observe_events(on_session_start=lambda s: seen.append(s.store.id))
+    session.new_session()
+    assert len(seen) == 1
+    unsub()
+    session.new_session()
+    assert len(seen) == 1
