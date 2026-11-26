@@ -56,12 +56,13 @@ def _render(value: dict) -> str:
 
 
 def diagnostic_summary(details: dict, *, max_bytes=MAX_DIAGNOSTIC_BYTES, execution=None,
-                       facts=None, related_errors=(), query_available=True) -> str:
+                       facts=None, related_errors=(), query_tool: str | None = None) -> str:
     """Return a UTF-8-budgeted capsule from an error record and named facts.
 
     Extra metadata, frames, paths to raw logs, arguments and request bodies are
     never copied. Small budgets fall back to a reference rather than cutting
     through JSON. Normal callers should leave at least 512 bytes for a summary.
+    A lookup reference requires an explicitly selected, exposed query tool.
     """
     if not isinstance(max_bytes, int) or max_bytes <= 0:
         return ""
@@ -82,7 +83,7 @@ def diagnostic_summary(details: dict, *, max_bytes=MAX_DIAGNOSTIC_BYTES, executi
         payload["execution"] = execution
     if error_id:
         payload["evidence"] = (
-            {"tool": "diagnostic_get", "error_id": error_id, "section": "summary"} if query_available
+            {"tool": query_tool, "error_id": error_id, "section": "summary"} if query_tool
             else {"error_id": error_id, "availability": "query_tool_not_exposed"}
         )
 
@@ -99,7 +100,7 @@ def diagnostic_summary(details: dict, *, max_bytes=MAX_DIAGNOSTIC_BYTES, executi
             return rendered
         # A tiny caller budget cannot hold even an ID and lookup tool. Keep
         # valid text, never half a JSON object or a partial diagnostic ID.
-        notice = ("Diagnostic evidence omitted; use diagnostic_get." if query_available
+        notice = (f"Diagnostic evidence omitted; use {query_tool}." if query_tool
                   else "Diagnostic evidence omitted; query tool is not exposed.")
         return notice if len(notice.encode()) <= max_bytes else ""
 
@@ -246,7 +247,7 @@ def boundary_summary(sandbox: dict, *, max_bytes: int = MAX_DIAGNOSTIC_BYTES) ->
     return _render(capsule)
 
 
-def project_tool_result(call: ToolCall, result: ToolResult, *, query_available=True) -> list:
+def project_tool_result(call: ToolCall, result: ToolResult, *, query_tool: str | None = None) -> list:
     """Preserve content and images, appending evidence only for a final failure."""
     content = list(result.content)
     details = result.details if isinstance(result.details, dict) else {}
@@ -264,6 +265,6 @@ def project_tool_result(call: ToolCall, result: ToolResult, *, query_available=T
         execution=details.get("execution"),
         facts=details,
         related_errors=details.get("related_errors") or (),
-        query_available=query_available,
+        query_tool=query_tool,
     )))
     return content

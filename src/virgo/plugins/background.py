@@ -29,7 +29,7 @@ def _failed_job_capsules(
     job: Job,
     details: dict,
     *,
-    query_available: bool,
+    query_tool: str | None,
     budget: int,
 ) -> list[str]:
     if job.status != "failed" or budget <= 0:
@@ -55,7 +55,7 @@ def _failed_job_capsules(
             max_bytes=error_budget,
             facts=details,
             related_errors=job.related_errors,
-            query_available=query_available,
+            query_tool=query_tool,
         ):
             capsules.append(summary)
     return capsules
@@ -101,9 +101,9 @@ def setup(api: ExtensionAPI) -> None:
         if job.error_details is not None:
             details.update(error=job.error_details, related_errors=job.related_errors)
             head += "\n" + error_summary(job.error_details, t=api.t)
-        query_available = runtime is not None and runtime.has_diagnostic_query_tool()
+        query_tool = runtime.diagnostic_query_tool_name() if runtime is not None else None
         capsules = _failed_job_capsules(
-            job, details, query_available=query_available, budget=MAX_DIAGNOSTIC_BYTES * 2,
+            job, details, query_tool=query_tool, budget=MAX_DIAGNOSTIC_BYTES * 2,
         )
         capsule_text = "\n".join(capsules)
         full_head = f"{head}\n{capsule_text}" if capsule_text else head
@@ -137,7 +137,7 @@ def setup(api: ExtensionAPI) -> None:
         else:
             if capsule_text and len(capsule_text.encode("utf-8")) > heading_limit // 2:
                 capsules = _failed_job_capsules(
-                    job, details, query_available=query_available, budget=heading_limit // 2,
+                    job, details, query_tool=query_tool, budget=heading_limit // 2,
                 )
                 capsule_text = "\n".join(capsules)
             capsule_bytes = len(capsule_text.encode("utf-8")) + 1 if capsule_text else 0

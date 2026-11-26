@@ -65,7 +65,7 @@ def test_projection_sees_final_hooks_and_recorded_evidence_once_in_provider_cont
         assert result.details["error"]["context"]["recorded"]
         assert result.details["related_errors"][0]["exception_type"] == "RuntimeError"
         rendered.append(call.id)
-        return project_tool_result(call, result)
+        return project_tool_result(call, result, query_tool="diagnostic_get")
 
     tool = AgentTool("failing", "", {"type": "object"}, failure)
     agent, events = make_agent([tool], faux.reply(tools=[("failing", {}, "failure-call")]), faux.reply("recovered"),

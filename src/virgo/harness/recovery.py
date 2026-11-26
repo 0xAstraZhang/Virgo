@@ -117,7 +117,7 @@ class RuntimeDiagnostics:
         """Append evidence only when a model request is already going to happen."""
         if not self.runtime.can_run() or self.runtime.agent.signal.is_set():
             return
-        query_available = self.runtime.has_diagnostic_query_tool()
+        query_tool = self.runtime.diagnostic_query_tool_name()
         with self._lock:
             checkpoint = self._checkpoint
             self._checkpoint = False
@@ -142,7 +142,7 @@ class RuntimeDiagnostics:
                          ". The original outcomes have not been reclassified.")
         if records and self.runtime.can_run():
             self._append("Runtime failure observations:\n" + "\n\n".join(
-                diagnostic_summary(record, max_bytes=1536, query_available=query_available) for record in records
+                diagnostic_summary(record, max_bytes=1536, query_tool=query_tool) for record in records
             ))
             self.presented(records)
         if checkpoint:
@@ -156,8 +156,8 @@ class RuntimeDiagnostics:
                     f"{record['error_id']}: {record.get('phase', 'unknown')} / {record.get('code', 'ERROR')}"
                     for record in recent
                 )
-                if query_available:
-                    lines.append("Use diagnostic_get(error_id, section) for scoped evidence.")
+                if query_tool:
+                    lines.append(f"Use {query_tool}(error_id, section) for scoped evidence.")
                 self._append("\n".join(lines))
                 store = self.runtime.store
                 if store is not None and store.save_error is None:

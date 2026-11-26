@@ -2,7 +2,7 @@
 
 [文档中心](../README.md) · [项目首页](../../../README.zh-CN.md) · [English](../../en/development/architecture.md)
 
-Virgo 在 `src/virgo/` 下按单向依赖分层组织。底层模块不依赖会话状态或终端界面，使模型适配、Agent 循环、执行护栏和会话运行时可以独立演进与测试。
+Virgo 在 `src/virgo/` 下按包层级组织静态可见的导入关系。这些边界支持模型适配、Agent 循环、执行护栏和会话运行时分别实现与测试。运行时装配、回调和共享资源仍需行为契约；导入图无环不等于功能独立。
 
 ## 包依赖分层
 
@@ -18,12 +18,14 @@ Virgo 在 `src/virgo/` 下按单向依赖分层组织。底层模块不依赖会
 
 ### 依赖边界约束
 
-通过 `tests/test_architecture_matrix.py`（覆盖顶层与函数内局部导入）及 `tests/harness/test_permission_modes_e2e.py` 的 AST 校验强制执行：
+通过 `tests/test_architecture_matrix.py` 及 `tests/harness/test_permission_modes_e2e.py` 的 AST 校验强制执行。导入提取覆盖 `Import` 和 `ImportFrom`，包括函数局部与 `TYPE_CHECKING` 语句，不解析动态导入、回调或共享状态依赖：
 
-- **严格下三角无环 DAG**：`src/virgo/` 内包级与模块级导入依赖（同时覆盖顶层、函数局部及 `TYPE_CHECKING` 导入）均零环；低层绝不反向导入高层，Layer 0 叶子包不出现任何 `TYPE_CHECKING` 向上导入，`virgo.harness.contracts` 作为零同级导入的 Layer-3 窄协议叶子，避免 `harness/` 子模块反向导入 `session` 或 `runtime`。
+- **可拓扑排序的静态 DSM**：运行时包图和模块图无环，模块图加入 `TYPE_CHECKING` 边后仍无环。顶层与函数局部的运行时导入遵守包层级，Layer 0 额外禁止 `TYPE_CHECKING` 向上导入。`virgo.harness.contracts` 的 Layer-3 协议无同级导入。这些性质允许对提取的图作下三角排序，不覆盖全部运行时交互。
 - **纯策略与核心叶子**：`virgo.execution_policy` 不依赖 `virgo.sandbox`、`virgo.execution` 或 `virgo.harness`（Windows 沙箱能力探测归属 `virgo.execution`）；`virgo.ai` 与 `virgo.agent` 不导入 `execution*`、`process`、`file_access`、`output_store`、`sandbox`、`tools`、`harness`、`plugins`、`extensions` 或 `cli`。
-- **同级模块对角独立**：同级 AI 提供商家族（`anthropic`、OpenAI 系、`faux`）、执行叶子组件（`file_access`、`output_store`、`sandbox`）、内置工具族（`fs`、`shell`/`bash`、`web`、`web_fetch`）以及各插件与扩展之间互不导入。
-- **显式跨边界契约**：插件与扩展仅通过 `ExtensionAPI` 与核心交互（不使用 `api.session` 逃生口或读写私有 `runtime._*`/`session._*` 状态）；`ShellSelection` 仅接收由 `JobManager` 推送的可选 `BackgroundLauncher`，`JobManager` 仅经注入回调解析默认 Shell（零互查 `services`）；`CompactionController` 与 `Runtime` 分别通过 `ExtensionAPI.add_request_fallback(..., matches=...)` 与 `ExtensionAPI.declare_diagnostic_query_tool(...)` 解耦插件错误码与诊断查询工具名；`cli` 仅通过 `AgentSession`/`Runtime` 公共门面（`observe_events`、`attach_ui`/`detach_ui`、`cancel_signal`、`has_runnable_wakeups`、`run_concurrent_command`）交互，不直接接触 `session.bus`、`session.wakeups`、`agent.signal` 或 `session.services["execution"]`。完整的 FR–DP 设计矩阵与有界运行时闭环见[功能需求与公理设计分析](axiomatic-design.md)。
+- **特定同级导入边界**：在提取的图中，同级 AI 提供商家族（`anthropic`、OpenAI 系、`faux`）、执行叶子组件（`file_access`、`output_store`、`sandbox`）、内置工具族（`fs`、`shell`/`bash`、`web`、`web_fetch`）以及同级插件/扩展之间无跨族运行时导入。这不宣称行为独立。
+- **显式跨边界契约**：受检查的仓库内插件/扩展使用 `ExtensionAPI`，不直接访问 `api.session` 或私有 `runtime._*`/`session._*`；受信任第三方 Python 扩展不受此源码扫描隔离。`ShellSelection` 接收 `JobManager` 推送的可选 `BackgroundLauncher`，后者经注入回调解析默认 Shell。请求扩展回退使用 `ExtensionAPI.add_request_fallback(..., matches=...)`。诊断查询声明提供候选名称；新工具结果、待投递通知、检查点与后台投影从当前运行时实际暴露工具中选择名称，不重写历史引用。`cli` 使用 `AgentSession`/`Runtime` 公共门面（`observe_events`、`attach_ui`/`detach_ui`、`cancel_signal`、`has_runnable_wakeups`、`run_concurrent_command`）。
+
+[`harness/extensions.py`](../../../src/virgo/harness/extensions.py)在装配时动态加载插件和扩展，此类加载不在导入提取器范围内。[公理设计](axiomatic-design.md)说明宏观关系表的耦合性质，[叶级需求](functional-requirements.md)定义可观察结果，[功能验收](functional-acceptance.md)记录行为证据与适用边界。
 
 ## 核心工具、内置插件与内置扩展
 
