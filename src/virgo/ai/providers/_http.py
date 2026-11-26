@@ -85,7 +85,11 @@ def _track_sdk_iterators():
 
 
 async def _trace_request(request):
-    request.extensions["trace"] = _request.get().handshake.trace
+    active = _request.get()
+    active.check_signal()
+    request.extensions["trace"] = active.handshake.trace
+    if active.on_dispatch is not None:
+        active.on_dispatch()
 
 
 class _NoClientCookies(CookieJar):
@@ -254,7 +258,7 @@ class _SDKRequest:
     end = object()
     drain_timeout = 0.2
 
-    def __init__(self, bridge, signal, open_stream):
+    def __init__(self, bridge, signal, open_stream, on_dispatch=None):
         self.bridge = bridge
         self.signal = signal
         self.aborted = threading.Event()
@@ -262,6 +266,7 @@ class _SDKRequest:
         self._drain_timeout = 0.0
         self._drain_timer = None
         self.open_stream = open_stream
+        self.on_dispatch = on_dispatch
         self.items = queue.Queue(self.capacity + 1)
         self.finished = threading.Event()
         self.handshake = _HandshakeGuard()
@@ -357,16 +362,13 @@ def sdk_stream(out, opts, get_client, create, parse, on_error):
     async def open_stream(request, resources):
         request.client = get_client(request.bridge)
         request.check_signal()
-        pending = create(request.client)
-        if opts.on_dispatch is not None:
-            opts.on_dispatch()
-        stream = await resources.enter_async_context(await pending)
+        stream = await resources.enter_async_context(await create(request.client))
         request.response = stream.response
         return stream
 
     def events():
         bridge = opts.io_bridge or AsyncSDKBridge()
-        request = _SDKRequest(bridge, opts.signal, open_stream)
+        request = _SDKRequest(bridge, opts.signal, open_stream, opts.on_dispatch)
         failure = terminal = None
         try:
             request.check_signal()
@@ -531,8 +533,6 @@ def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=N
         if route is not None:
             session = codex_session or outgoing.headers.get("thread-id") or outgoing.headers.get("session-id")
             route.apply(outgoing, session)
-        if on_dispatch is not None:
-            on_dispatch()
         response = await client.send(outgoing, stream=True, follow_redirects=False)
         resources.push_async_callback(response.aclose)
         request.response = response
@@ -544,7 +544,7 @@ def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=N
         return response.aiter_lines()
 
     bridge = io_bridge or AsyncSDKBridge()
-    request = _SDKRequest(bridge, signal, open_stream)
+    request = _SDKRequest(bridge, signal, open_stream, on_dispatch)
 
     def iterate() -> Iterator[dict]:
         try:
