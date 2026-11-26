@@ -39,7 +39,7 @@ Virgo separates runtime capabilities into three tiers with distinct override and
 
 Each subagent can use up to `subagents.maxTurns` assistant turns per run (default 20) and `subagents.maxTotalTurns` across all runs of the same `agent_id` in a session (default 40). Compaction and session resume preserve the count. Set `subagents.effort` to a supported reasoning level to override the parent's effort for child requests. The default is `null`, which inherits the parent's setting.
 
-The Codex account adapter shares a session HTTP connection pool across requests. It replays only the `__oailb` and `__cflb` routing cookies for the same account, origin and exact endpoint path. Turn state is further scoped to the runtime. Each I/O task reads its own HTTPS event stream and closes the response. A terminal protocol event can arrive before HTTP EOF. The adapter waits for that request to finish cleanup before returning the result or completing cancellation.
+The Codex account adapter shares a session HTTP connection pool across requests. It replays only the `__oailb` and `__cflb` routing cookies for the same account, origin and exact endpoint path. Turn state is further scoped to the runtime. Each I/O task reads its own HTTPS event stream and closes the response. A terminal protocol event can arrive before HTTP EOF; on normal completion the adapter briefly drains the trailing chunk/EOF within a bounded cancel-aware window so the keep-alive connection can be reused, and waits for cleanup before returning the result or completing cancellation.
 
 ## Local state layout
 

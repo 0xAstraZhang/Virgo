@@ -93,7 +93,9 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         ):
             if out.error_message:
                 attach_error(out, None, model, token=token)
-            if event.type in ("done", "error"):
+            if event.type == "done":
+                events.close(drain=True)
+            elif event.type == "error":
                 events.close()
             yield event
     except Exception as error:

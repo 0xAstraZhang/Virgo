@@ -238,3 +238,124 @@ def test_responses_stream_error_redacts_access_token(server):
     out = responses.stream(model(server["url"]), Context("", [UserMessage("x")]), StreamOptions()).result()
     assert out.stop_reason == "error"
     assert out.error_message == "Rejected [redacted]"
+
+
+@pytest.mark.parametrize(
+    ("event", "expected_kind", "expected_message"),
+    [
+        pytest.param(
+            {
+                "type": "response.failed",
+                "response": {
+                    "status": "failed",
+                    "error": {
+                        "type": "service_unavailable_error",
+                        "code": "server_is_overloaded",
+                        "message": "Our servers are currently overloaded. Please try again later.",
+                    },
+                },
+            },
+            "retryable",
+            "Our servers are currently overloaded. Please try again later.",
+            id="response-failed-overloaded",
+        ),
+        pytest.param(
+            {
+                "type": "error",
+                "code": "server_is_overloaded",
+                "message": "Our servers are currently overloaded. Please try again later.",
+            },
+            "retryable",
+            "Our servers are currently overloaded. Please try again later.",
+            id="flat-error-overloaded",
+        ),
+        pytest.param(
+            {
+                "type": "error",
+                "error": {
+                    "type": "service_unavailable_error",
+                    "code": "server_is_overloaded",
+                    "message": "Our servers are currently overloaded. Please try again later.",
+                },
+            },
+            "retryable",
+            "Our servers are currently overloaded. Please try again later.",
+            id="nested-error-overloaded",
+        ),
+        pytest.param(
+            {
+                "type": "error",
+                "error": {"code": "server_error", "message": "temporary upstream failure"},
+            },
+            "retryable",
+            "temporary upstream failure",
+            id="nested-error-server-error",
+        ),
+        pytest.param(
+            {
+                "type": "error",
+                "error": {"type": "invalid_request_error", "code": "invalid_request_error", "message": "bad param"},
+            },
+            "fatal",
+            "bad param",
+            id="nested-error-fatal",
+        ),
+    ],
+)
+def test_responses_sse_error_classification_and_nested_unwrap(event, expected_kind, expected_message):
+    out = AssistantMessage()
+    parsed = list(responses.parse_events([event], model(), out, StreamOptions()))
+    assert parsed[-1].type == "error"
+    assert out.stop_reason == "error"
+    assert out.error_kind == expected_kind
+    assert out.error_message == expected_message
+
+
+def test_responses_reuses_connection_across_chunked_sse_tail_delay():
+    import time
+    from contextlib import closing
+    from http.server import BaseHTTPRequestHandler
+
+    from virgo.ai.providers._http import AsyncSDKBridge
+
+    from tests.support.http import serve
+
+    peers = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            peers.append(self.client_address)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            def write_chunk(chunk: bytes) -> None:
+                self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+                self.wfile.flush()
+
+            write_chunk(b"event: response.output_text.delta\n"
+                        b'data: {"type":"response.output_text.delta","output_index":0,"delta":"ok"}\n\n')
+            write_chunk(
+                b"event: response.completed\n"
+                b'data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":'
+                b'[{"type":"message","id":"m1","role":"assistant","status":"completed",'
+                b'"content":[{"type":"output_text","text":"ok","annotations":[]}]}]}}\n\n'
+            )
+            time.sleep(0.01)
+            write_chunk(b"data: [DONE]\n\n")
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+
+        def log_message(self, *_args):
+            pass
+
+    with serve(Handler) as url, closing(AsyncSDKBridge()) as bridge:
+        opts = StreamOptions(io_bridge=bridge)
+        for _ in range(4):
+            result = responses.stream(model(url), Context("", [UserMessage("hi")]), opts).result()
+            assert result.stop_reason == "stop" and result.text() == "ok"
+        assert len(peers) == 4 and len(set(peers)) == 1
