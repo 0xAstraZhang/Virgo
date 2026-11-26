@@ -10,6 +10,10 @@ from ...ai.providers.web import deepseek_endpoint, endpoint
 from ...ai.web import offers_for
 
 
+class WebRouteUnavailable(ValueError):
+    """The configured web route cannot be prepared for this model."""
+
+
 class WebAccess:
     operation: str
     default_backend: str

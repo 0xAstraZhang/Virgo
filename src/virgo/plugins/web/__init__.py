@@ -8,6 +8,7 @@ import weakref
 
 from ...ai.types import UserMessage
 from ...ai.web import offers_for, started
+from .access import WebRouteUnavailable
 
 GUIDANCE = (
     "Prefer available web tools over shell commands for searching the web and reading public pages; "
@@ -56,7 +57,18 @@ class Web:
             self.unavailable.clear()
 
     def prepare(self, runtime, context, model):
-        runtime._web_models = (runtime.model, model)
+        """Prepare and bind routes for an ordinary agent request."""
+        self._prepare(runtime, context, model, bind=True)
+
+    def preview(self, runtime, context, model) -> bool:
+        """Reproduce the prompt prefix without changing active execution bindings."""
+        try:
+            self._prepare(runtime, context, model, bind=False)
+        except WebRouteUnavailable:
+            return False
+        return True
+
+    def _prepare(self, runtime, context, model, *, bind: bool):
         services = {}
         paths = {}
         backends = {}
@@ -135,7 +147,7 @@ class Web:
             if capability in chosen:
                 continue
             if service.mode == "native":
-                raise ValueError(
+                raise WebRouteUnavailable(
                     self.api.t(
                         "features.web.native_unavailable",
                         capability=capability,
@@ -147,9 +159,11 @@ class Web:
             service._prepare_client(context, model, backend)
             backends[capability] = backend
             paths[capability] = backend + (f" ({reasons[capability]})" if capability in reasons else "")
-        runtime._web_paths = paths
-        runtime._web_backends = backends
-        runtime._web_backend_config = {c: copy.deepcopy(s.config) for c, s in services.items()}
+        if bind:
+            runtime._web_models = (runtime.model, model)
+            runtime._web_paths = paths
+            runtime._web_backends = backends
+            runtime._web_backend_config = {c: copy.deepcopy(s.config) for c, s in services.items()}
         if context.web_tools or any(t.name in {"web_search", "web_fetch"} for t in context.tools):
             context.system += "\n\n" + GUIDANCE
 

@@ -6,7 +6,7 @@ from ...agent.types import ToolCallEvent
 from ...harness.extensions import ROLES_ALL
 from ...tools.web_fetch import FetchError, make_web_fetch
 from . import web_service
-from .access import WebAccess
+from .access import WebAccess, WebRouteUnavailable
 
 
 class Fetch(WebAccess):
@@ -45,9 +45,9 @@ class Fetch(WebAccess):
     def _prepare_client(self, context, model, backend=None):
         backend = backend or self.backend_for(model)
         if backend not in {"http", "deepseek"}:
-            raise ValueError(self.api.t("features.fetch.backend"))
+            raise WebRouteUnavailable(self.api.t("features.fetch.backend"))
         if not self.client_available(backend, model):
-            raise ValueError(self.api.t("features.fetch.key"))
+            raise WebRouteUnavailable(self.api.t("features.fetch.key"))
 
     def set_selection(self, choice):
         if choice not in {"auto", "http", "deepseek", "off"}:

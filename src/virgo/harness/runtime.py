@@ -418,14 +418,25 @@ class Runtime:
                 system += "\n\n" + instructions
         return Context(system, messages, tools)
 
+    def _request_prefix(self, messages: list) -> Context:
+        """Build the shared instruction, tool schema and extension message view."""
+        view = self.session.bus.chain("context", list(messages), self)
+        return self._base_context(view, report_errors=True)
+
     def request_context(self, messages: list, model=None) -> Context:
-        """Use the same instructions, tools and extension view for generation and compaction."""
-        s = self.session
-        view = s.bus.chain("context", list(messages), self)
-        context = self._base_context(view, report_errors=True)
-        web = s.services.get("web")
+        """Prepare an agent request and bind its actual execution routes."""
+        context = self._request_prefix(messages)
+        web = self.session.services.get("web")
         if web is not None:
             web.prepare(self, context, model or self.model)
+        return context
+
+    def compaction_context(self, messages: list, model=None) -> Context | None:
+        """Preview a cache-compatible prefix without binding tool execution routes."""
+        context = self._request_prefix(messages)
+        web = self.session.services.get("web")
+        if web is not None and not web.preview(self, context, model or self.model):
+            return None
         return context
 
     # -- model calls ---------------------------------------------------------

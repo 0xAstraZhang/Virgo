@@ -447,17 +447,20 @@ def _in_context_summarize(
     prefix_messages: list,
     instruction: str,
     max_tokens: int,
-) -> tuple[AssistantMessage, bool]:
+) -> tuple[AssistantMessage | None, bool]:
     """Run summarization on the active model reusing the cached system+tools+messages prefix.
 
     Returns ``(message, should_fallback)`` where ``should_fallback`` is True when the
-    in-context attempt cannot be used (e.g. overflow, unexpected tool/web call, or
-    exhausted retryable provider errors).
+    in-context attempt cannot be used (e.g. unavailable prefix, overflow, unexpected
+    tool/web call, or exhausted retryable provider errors). The message is None if
+    no cache-compatible request could be prepared.
     """
     from .runtime import retry_after_seconds
 
     session = rt.session
-    ctx = rt.request_context(prefix_messages, model)
+    ctx = rt.compaction_context(prefix_messages, model)
+    if ctx is None:
+        return None, True
     # Keep hosted web_tools/web_offers identical to normal requests so provider
     # prompt caches stay warm; guard against unexpected execution via native_started.
     ctx = replace(

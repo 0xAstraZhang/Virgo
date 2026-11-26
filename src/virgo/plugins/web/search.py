@@ -8,7 +8,7 @@ from ...ai.providers.web import deepseek_endpoint as deepseek_endpoint
 from ...ai.providers.web import endpoint as endpoint
 from ...harness.extensions import ROLES_ALL
 from ...tools.web import make_web_search
-from .access import WebAccess
+from .access import WebAccess, WebRouteUnavailable
 
 DEEPSEEK_SETUP = (
     "DeepSeek search requires an official API key. Use /login api deepseek with https://api.deepseek.com "
@@ -70,7 +70,7 @@ class Search(WebAccess):
     def _prepare_client(self, context, model, backend=None) -> None:
         backend = backend or self.backend_for(model)
         if backend == "deepseek" and not self.deepseek_key(model):
-            raise ValueError(self.api.t("features.search.key"))
+            raise WebRouteUnavailable(self.api.t("features.search.key"))
         limit = 128 if backend == "deepseek" else 2000
         for tool in context.tools:
             if tool.name == "web_search":
