@@ -165,6 +165,40 @@ def test_auto_compaction_triggers_before_model_call(make_session):
     assert s.main.agent.last_text == "after compaction"
 
 
+@pytest.mark.parametrize("trigger, budget, expected_requests", [
+    pytest.param(1_000_000, 2, ["task", "task"], id="deferred-summary"),
+    pytest.param(1, 1, ["task"], id="no-budget-for-summary"),
+    pytest.param(1, 2, ["task", "summary"], id="summary-spends-last-call"),
+    pytest.param(1, 3, ["task", "summary", "task"], id="summary-and-task-fit"),
+])
+def test_auto_compaction_and_task_share_request_budget(make_session, trigger, budget, expected_requests):
+    session = make_session(
+        faux.reply("Prior findings. " * 300),
+        persist=True,
+        refresh_models=False,
+        settings={
+            "budget": {"maxModelCalls": budget},
+            "compaction": {"triggerTokens": 1_000_000, "keepRecentTokens": 50, "pruneRatio": 0.0},
+        },
+    )
+    session.prompt("Inspect the task before continuing.")
+    session.settings.set("compaction.triggerTokens", trigger)
+    faux.handler("test", scripted(faux.reply("Task finished.")))
+
+    session.prompt("Continue the task.")
+
+    assert ["summary" if _is_summary_call(call) else "task" for call in calls()] == expected_requests
+    checkpoint = SessionStore.load(session.store.path).last_compaction(mode="summary")
+    assert (checkpoint is not None) == ("summary" in expected_requests)
+    if expected_requests[-1] == "task" and len(expected_requests) > 1:
+        assert session.main.agent.last_text == "Task finished."
+    else:
+        failure = session.main.messages[-1]
+        assert failure.stop_reason == "error"
+        assert "budget" in failure.error_message.lower()
+    assert len(calls()) <= budget
+
+
 def test_portable_compaction_reloads_image_in_kept_tail(make_session, pixel_png):
     session = make_session(faux.reply("earlier answer"), persist=True, settings={"compaction": {"keepRecentTokens": 1250}})
     session.prompt("earlier request")

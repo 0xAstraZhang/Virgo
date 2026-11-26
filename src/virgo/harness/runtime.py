@@ -298,10 +298,10 @@ class Runtime:
         """Cancellation signal governing this runtime's active or next turn."""
         return self.agent.signal
 
-    def has_diagnostic_query_tool(self) -> bool:
-        """Return whether a declared diagnostic-query tool is exposed on this runtime."""
+    def diagnostic_query_tool_name(self) -> str | None:
+        """Select a declared query tool from this runtime's current tool snapshot."""
         names = self.session.diagnostic_query_tool_names()
-        return bool(names) and any(tool.name in names for tool in self.tools)
+        return next((tool.name for tool in self.tools if tool.name in names), None)
 
     def matches_request_fallback(self, context: Context, failed: AssistantMessage) -> bool:
         """Return whether any registered request fallback recognizes ``failed`` without side effects."""
@@ -315,7 +315,7 @@ class Runtime:
         return self.session._before_tool(ev)
 
     def _project_tool_result(self, call, result):
-        return project_tool_result(call, result, query_available=self.has_diagnostic_query_tool())
+        return project_tool_result(call, result, query_tool=self.diagnostic_query_tool_name())
 
     @property
     def permission_snapshot(self):

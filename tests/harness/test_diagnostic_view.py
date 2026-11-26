@@ -36,7 +36,9 @@ def test_root_evidence_is_added_without_mutating_text_images_or_details():
         "execution": {"started": True, "outcome": "unknown", "side_effects": "unknown", "result_hook": "not_run"},
     }, is_error=True)
     before = copy.deepcopy(result)
-    content = project_tool_result(ToolCall("call", "read", {"password": "private arguments"}), result)
+    content = project_tool_result(
+        ToolCall("call", "read", {"password": "private arguments"}), result, query_tool="inspect_failure",
+    )
     assert result == before and content[:2] == result.content and content[1] is image
     capsule = content[-1].text
     assert len(capsule.encode()) <= MAX_DIAGNOSTIC_BYTES
@@ -45,7 +47,7 @@ def test_root_evidence_is_added_without_mutating_text_images_or_details():
     assert payload["causes"][-1]["exception_type"] == "FileNotFoundError"
     assert payload["causes"][-1]["message"] == "missing required config file"
     assert payload["facts"]["exit_code"] == 7
-    assert payload["evidence"] == {"tool": "diagnostic_get", "error_id": record["error_id"], "section": "summary"}
+    assert payload["evidence"] == {"tool": "inspect_failure", "error_id": record["error_id"], "section": "summary"}
     assert all(value not in capsule for value in ("traceback", "frames", "private arguments", "secret input", "hidden"))
 
 
@@ -90,12 +92,26 @@ def test_boundary_projection_selects_and_redacts_effective_policy(dimension):
 def test_restricted_runtime_keeps_reference_without_advertising_unavailable_tool():
     record = _failure()
     result = ToolResult.error("failed", details={"error": record})
-    content = project_tool_result(ToolCall("call", "work", {}), result, query_available=False)
+    content = project_tool_result(ToolCall("call", "work", {}), result)
     capsule = content[-1].text
     payload = _payload(capsule)
     assert payload["evidence"] == {"error_id": record["error_id"], "availability": "query_tool_not_exposed"}
     assert "diagnostic_get" not in capsule and content[:-1] == result.content
-    assert "diagnostic_get" not in diagnostic_summary(record, max_bytes=80, query_available=False)
+    assert "diagnostic_get" not in diagnostic_summary(record, max_bytes=80)
+
+
+@pytest.mark.parametrize("budget", [1, 80, 256, 2048])
+def test_explicit_query_name_is_preserved_within_the_byte_budget(budget):
+    record = _failure()
+    capsule = diagnostic_summary(record, max_bytes=budget, query_tool="inspect_failure")
+    assert len(capsule.encode("utf-8")) <= budget
+    assert "diagnostic_get" not in capsule
+    if capsule.startswith("[Diagnostic evidence;"):
+        assert _payload(capsule)["evidence"] == {
+            "tool": "inspect_failure", "error_id": record["error_id"], "section": "summary",
+        }
+    elif capsule:
+        assert capsule == "Diagnostic evidence omitted; use inspect_failure."
 
 
 def test_capsule_redacts_named_and_environment_secrets_before_projection(monkeypatch):

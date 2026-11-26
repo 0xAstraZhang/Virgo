@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from virgo.ai.providers import faux
+from virgo.cli.console import ConsoleBroker, TerminalUI
 from virgo.harness.session import AgentSession
 
 from tests.support.harness import RecordingUI, calls, tool_results
@@ -36,7 +37,24 @@ def test_explicit_permission_request_persists_in_session_and_does_not_change_mod
     assert "write" in calls()[0]["tools"]
 
 
-def test_direct_file_approval_persists_in_session_and_preserves_the_mode(broker_session, tmp_path):
+@pytest.mark.parametrize("ui_adapter", ["recording", "terminal"])
+def test_direct_file_approval_persists_in_session_and_preserves_the_mode(
+    broker_session, tmp_path, monkeypatch, ui_adapter,
+):
+    if ui_adapter == "recording":
+        ui = RecordingUI(["y", "n"])
+        questions = ui.questions
+    else:
+        broker = ConsoleBroker()
+        ui = TerminalUI(broker)
+        questions = []
+        answers = iter(["y", "n"])
+
+        def read_value(question, write):
+            questions.append(question)
+            return next(answers)
+
+        monkeypatch.setattr(broker, "read_value", read_value)
     target = tmp_path / "result.txt"
     other = tmp_path / "other.txt"
     session = broker_session(
@@ -45,15 +63,16 @@ def test_direct_file_approval_persists_in_session_and_preserves_the_mode(broker_
         faux.reply(tools=[("write", {"path": str(other), "content": "blocked"})]),
         faux.reply("done"),
         preset="read-only",
-        ui=RecordingUI(["y", "n"]),
+        ui=ui,
     )
     session.prompt("Write the requested result")
     assert [result.is_error for result in tool_results(session)] == [False, False, True]
     assert target.read_text() == "two"
     assert not other.exists()
-    assert len(session.ui.questions) == 2
-    for question, path in zip(session.ui.questions, (target, other), strict=True):
-        assert f"Write access: {path.resolve()}" in question.splitlines()
+    assert session.main.agent.last_text == "done"
+    assert len(questions) == 2
+    for question, path in zip(questions, (target, other), strict=True):
+        assert f"Write access: {path.resolve()}" in question.removeprefix("? ").splitlines()
         assert str(session.cwd) in question and "Reason:" in question
     assert session.main.permission_snapshot.mode.id == "read-only"
 

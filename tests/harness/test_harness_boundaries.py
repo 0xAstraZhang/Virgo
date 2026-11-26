@@ -200,16 +200,16 @@ def test_generic_request_fallback_matcher_triggers_compaction_fallback_without_m
 
 def test_diagnostic_query_declaration_rolls_back_on_plugin_failure(make_session):
     session = make_session(settings={"plugins": {"diagnostic_get": {"enabled": False}}})
-    assert not session.main.has_diagnostic_query_tool()
+    assert session.main.diagnostic_query_tool_name() is None
     api = ExtensionAPI(session, "custom_diag")
     tool = AgentTool("custom_diag_query", "diag", {"type": "object"}, lambda _a, _c: "{}")
     api.register_tool(tool, roles=("main",))
     api.declare_diagnostic_query_tool("custom_diag_query")
     session.main.refresh_tools()
-    assert session.main.has_diagnostic_query_tool()
+    assert session.main.diagnostic_query_tool_name() == "custom_diag_query"
     api.rollback()
     session.main.refresh_tools()
-    assert not session.main.has_diagnostic_query_tool()
+    assert session.main.diagnostic_query_tool_name() is None
 
 
 def test_background_capability_toggle_updates_shell_tool_and_session_facade(make_session):
