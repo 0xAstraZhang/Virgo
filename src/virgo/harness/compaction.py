@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 import uuid
@@ -162,6 +163,28 @@ def find_cut(messages: list, keep_tokens: int) -> int:
     while cut < len(messages) and isinstance(messages[cut], ToolResultMessage):
         cut += 1
     return cut
+
+
+def _unread_tool_batch_start(messages: list) -> int | None:
+    """Start index of a trailing tool-call/result turn not yet seen by the assistant."""
+    if not messages or not isinstance(messages[-1], ToolResultMessage):
+        return None
+    i = len(messages) - 1
+    while i > 0 and isinstance(messages[i - 1], ToolResultMessage):
+        i -= 1
+    if i > 0 and isinstance(messages[i - 1], AssistantMessage) and messages[i - 1].tool_calls():
+        return i - 1
+    return i
+
+
+def _protect_unread_tool_batch(messages: list, cut: int, start: int) -> int:
+    """Keep the newest unread tool batch out of proactive L2 eviction while below window."""
+    unread_start = _unread_tool_batch_start(messages)
+    if unread_start is None or cut <= unread_start:
+        return cut
+    if any(isinstance(m, AssistantMessage) for m in messages[start:unread_start]):
+        return unread_start
+    return start
 
 
 def serialize(messages: list) -> str:
@@ -428,15 +451,18 @@ def _in_context_summarize(
     """Run summarization on the active model reusing the cached system+tools+messages prefix.
 
     Returns ``(message, should_fallback)`` where ``should_fallback`` is True when the
-    in-context attempt cannot be used (e.g. overflow or model attempted tool_use).
+    in-context attempt cannot be used (e.g. overflow, unexpected tool/web call, or
+    exhausted retryable provider errors).
     """
+    from .runtime import retry_after_seconds
+
     session = rt.session
     ctx = rt.request_context(prefix_messages, model)
+    # Keep hosted web_tools/web_offers identical to normal requests so provider
+    # prompt caches stay warm; guard against unexpected execution via native_started.
     ctx = replace(
         ctx,
         messages=[*ctx.messages, UserMessage(instruction, kind="compaction_prompt")],
-        web_tools=[],
-        web_offers=[],
     )
     limit = ai.completion_token_limit(model, max_tokens)
     effort = rt.effort_for(model)
@@ -447,30 +473,66 @@ def _in_context_summarize(
         prompt_cache_key=rt.diagnostic_id,
         io_bridge=session.io_bridge,
     )
-    started = time.monotonic()
-    rt.request_budget.consume()
-    msg = ai.stream(model, ctx, opts).result()
-    msg.request_metadata = ai.completion_request_metadata(model, effort, limit)
+    max_retries = min(2, max(0, int(session.settings.get("retry.maxRetries", 3))))
+    wait_budget = max(0.0, float(session.settings.get("retry.maxWaitSeconds", 120)))
+    retries = 0
+    attempt = 0
+    while True:
+        attempt += 1
+        started = time.monotonic()
+        rt.request_budget.consume()
+        msg = ai.stream(model, ctx, opts).result()
+        msg.request_metadata = ai.completion_request_metadata(model, effort, limit)
 
-    # Fallback triggers: overflow or unexpected tool call despite prompt instruction.
-    if msg.stop_reason == "tool_use" or (msg.stop_reason == "error" and msg.error_kind == "overflow"):
+        # Fallback triggers: overflow, unsupported hosted web tools, or unexpected tool/web use.
+        if (
+            msg.stop_reason == "tool_use"
+            or msg.native_started
+            or (
+                msg.stop_reason == "error"
+                and msg.error_kind in ("overflow", "search_unsupported", "fetch_unsupported")
+            )
+        ):
+            record_call(
+                rt.accounting_store, model, msg, purpose="compaction", started=started,
+                effort=effort, agent=rt.name, request_metadata=msg.request_metadata,
+            )
+            return msg, True
+
+        if msg.stop_reason == "error" and msg.error_kind == "retryable" and not rt.agent.signal.is_set():
+            if retries < max_retries:
+                retries += 1
+                delay = min(8.0, 0.5 * 2**retries) * (1 + random.random() * 0.25)
+                minimum_delay = retry_after_seconds(msg.error_details)
+                if minimum_delay is not None:
+                    delay = max(delay, minimum_delay)
+                if delay <= wait_budget:
+                    wait_budget -= delay
+                    record_call(
+                        rt.accounting_store, model, msg, purpose="retry", started=started,
+                        effort=effort, agent=rt.name, request_metadata=msg.request_metadata,
+                    )
+                    if rt.agent.signal.wait(delay):
+                        msg.stop_reason = "aborted"
+                        return msg, False
+                    continue
+            record_call(
+                rt.accounting_store, model, msg, purpose="compaction", started=started,
+                effort=effort, agent=rt.name, request_metadata=msg.request_metadata,
+            )
+            return msg, True
+
+        rt.record_model_error(msg, purpose="compaction", notify=True, context={
+            "model": model.spec, "api": msg.api or model.api,
+            "model_call_id": uuid.uuid4().hex, "attempt": attempt,
+            "run_id": rt.run_id if rt.agent.running else None,
+            "duration": round(time.monotonic() - started, 6),
+        })
         record_call(
             rt.accounting_store, model, msg, purpose="compaction", started=started,
             effort=effort, agent=rt.name, request_metadata=msg.request_metadata,
         )
-        return msg, True
-
-    rt.record_model_error(msg, purpose="compaction", notify=True, context={
-        "model": model.spec, "api": msg.api or model.api,
-        "model_call_id": uuid.uuid4().hex, "attempt": 1,
-        "run_id": rt.run_id if rt.agent.running else None,
-        "duration": round(time.monotonic() - started, 6),
-    })
-    record_call(
-        rt.accounting_store, model, msg, purpose="compaction", started=started,
-        effort=effort, agent=rt.name, request_metadata=msg.request_metadata,
-    )
-    return msg, False
+        return msg, False
 
 
 def _serialized_summarize(
@@ -515,6 +577,8 @@ def summarize_context(
     cut = find_cut(messages, keep)
     prev = messages[0] if messages and getattr(messages[0], "kind", None) == "summary" else None
     start = 1 if prev else 0
+    if reason == "auto" and (window <= 0 or rt.context_tokens() < window):
+        cut = _protect_unread_tool_batch(messages, cut, start)
     to_summarize = messages[start:cut]
     if not to_summarize:
         return None

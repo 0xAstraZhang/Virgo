@@ -573,7 +573,12 @@ def test_stripping_a_thinking_only_tail_does_not_leave_a_bare_request(make_sessi
 def test_full_mid_turn_compaction_continues_after_tool_result(make_session, project, reason):
     (project / "spec.md").write_text("important facts\n" * 1200, encoding="utf-8")
     request = "Read spec.md and report its conclusion."
-    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 1, "pruneRatio": 0.0}})
+    settings = {"compaction": {"keepRecentTokens": 1, "pruneRatio": 0.0}}
+    if reason == "auto":
+        # When even a single unread tool result already exceeds the context window,
+        # proactive auto-compaction must still evict it instead of letting the request overflow.
+        settings["providers"] = {"faux": {"models": {"test": {"contextWindow": 2_000}}}}
+    session = make_session(persist=True, settings=settings)
     if reason == "auto":
         session.settings.set("compaction.triggerTokens", session.context_tokens() + 500)
     faux.push("test", faux.reply(tools=[("read", {"path": "spec.md"})]))
@@ -997,3 +1002,110 @@ def test_auto_compaction_plans_prune_before_persisting(make_session, monkeypatch
         assert len(prunes[0]["pruned"]) == 2
         assert not seen
         assert reopened.last_compaction(mode="summary") is None
+
+
+def test_in_context_compaction_preserves_hosted_web_tools_and_falls_back_if_invoked(make_session, monkeypatch):
+    from virgo.ai.types import Model
+
+    session = make_session(settings={"compaction": {"enabled": False}})
+    codex_model = Model("openai-codex", "gpt-6.2-sol", "openai-codex", reasoning=True)
+    session.main.model = session.model = codex_model
+    session.small_model = Model("openai-codex", "gpt-6-luna", "openai-codex", reasoning=True)
+    session.main.messages.extend([UserMessage("Inspect repo"), AssistantMessage([TextContent("Inspected")])])
+
+    expected_web_tools = session.main.request_context(session.main.messages, codex_model).web_tools
+    assert expected_web_tools == [{"type": "web_search"}]
+
+    # 1. Normal in-context summary must keep the exact hosted web_tools prefix to stay cache-warm.
+    seen = install_responses(monkeypatch, AssistantMessage([TextContent("## Goal & Constraints\nKept")]))
+    res = session.compact()
+    assert res is not None and res["strategy"] == "in_context"
+    assert seen[0][1].web_tools == expected_web_tools
+
+    # 2. If the model unexpectedly triggers a hosted web tool during in-context summarization, fall back.
+    session.main.messages.append(UserMessage("More work"))
+    session.main.messages.append(AssistantMessage([TextContent("More progress")]))
+    seen_fallback = install_responses(
+        monkeypatch,
+        AssistantMessage([TextContent("Searched")], native_started=True),
+        AssistantMessage([TextContent("## Goal & Constraints\nSerialized fallback")]),
+    )
+    res2 = session.compact()
+    assert res2 is not None and res2["strategy"] == "serialized"
+    assert "Serialized fallback" in res2["summary"]
+    assert seen_fallback[0][1].web_tools == expected_web_tools
+    assert seen_fallback[1][0] is session.small_model
+
+
+def test_in_context_compaction_retries_retryable_errors_and_falls_back(make_session, monkeypatch):
+    session = make_session(
+        faux.reply("earlier work"),
+        settings={"compaction": {"enabled": False}, "retry": {"maxRetries": 2}},
+    )
+    session.prompt("Build the parser")
+    monkeypatch.setattr(session.main.agent.signal, "wait", lambda _: False)
+
+    # 1. Transient retryable overload recovers on retry without recording persistent diagnostic pollution.
+    overload = AssistantMessage(
+        stop_reason="error", error_kind="retryable",
+        error_message="Our servers are currently overloaded. Please try again later.",
+    )
+    seen = install_responses(monkeypatch, overload, AssistantMessage([TextContent("## Goal & Constraints\nRecovered")]))
+    res = session.compact()
+    assert res is not None and res["strategy"] == "in_context"
+    assert len(seen) == 2
+    assert session.diagnostics.recent() == []
+
+    # 2. Exhausted retryable errors fall back to serialized summary cleanly.
+    session.main.messages.extend([UserMessage("Next step"), AssistantMessage([TextContent("Step done")])])
+    seen2 = install_responses(
+        monkeypatch,
+        overload, overload, overload,
+        AssistantMessage([TextContent("## Goal & Constraints\nFallback summary")]),
+    )
+    res2 = session.compact()
+    assert res2 is not None and res2["strategy"] == "serialized"
+    assert "Fallback summary" in res2["summary"]
+    assert len(seen2) == 4
+    assert seen2[-1][0] is session.small_model
+    assert session.diagnostics.recent() == []
+
+
+def test_auto_compaction_preserves_unread_tool_results_and_prevents_thrashing(make_session, project, monkeypatch):
+    (project / "spec.txt").write_text("KEY=ALPHA-99\n" + ("filler line\n" * 1000), encoding="utf-8")
+    session = make_session(
+        persist=True,
+        settings={
+            "providers": {"faux": {"models": {"test": {"contextWindow": 128_000}}}},
+            "compaction": {"keepRecentTokens": 250, "pruneRatio": 0.0},
+        },
+    )
+    rt = session.main
+    # Trigger right above baseline so a single large read crosses triggerTokens while staying well below window.
+    session.settings.set("compaction.triggerTokens", rt.context_tokens() + 500)
+    seen = install_responses(
+        monkeypatch,
+        AssistantMessage([ToolCall("r1", "read", {"path": "spec.txt"})], stop_reason="tool_use"),
+        AssistantMessage([ToolCall("r2", "read", {"path": "spec.txt"})], stop_reason="tool_use"),
+        AssistantMessage([TextContent("## Goal & Constraints\nEarlier read summarized")]),
+        AssistantMessage([TextContent("Saw KEY=ALPHA-99")]),
+    )
+    session.prompt("Read spec.txt and report KEY.")
+
+    # Call 0: first turn invokes read(spec.txt).
+    # Before Call 1: only the unread read batch exists -> auto-compaction defers so Call 1 is a main
+    # turn that sees KEY=ALPHA-99 directly!
+    assert not _is_summary_request(seen[1][1])
+    assert any(
+        isinstance(m, ToolResultMessage) and "KEY=ALPHA-99" in m.text() for m in seen[1][1].messages
+    )
+    # Call 1 invokes a second read -> now [r1, ToolRes1] is already read and gets summarized (Call 2),
+    # while the unread [r2, ToolRes2] batch is retained intact for Call 3!
+    assert _is_summary_request(seen[2][1])
+    assert any(
+        isinstance(m, ToolResultMessage) and m.tool_call_id == "r2" and "KEY=ALPHA-99" in m.text()
+        for m in seen[3][1].messages
+    )
+    entry = session.store.last_compaction(mode="summary")
+    assert entry is not None and len(entry["kept_ids"]) >= 2
+    assert rt.agent.last_text == "Saw KEY=ALPHA-99"
