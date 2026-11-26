@@ -32,7 +32,11 @@ def web_service(api):
         service = Web(api)
         api.services["web"] = service
         api.add_request_preparer("web", service.prepare)
-        api.add_request_fallback("web", lambda _runtime, model, context, failed: service.fallback(model, context, failed))
+        api.add_request_fallback(
+            "web",
+            lambda _runtime, model, context, failed: service.fallback(model, context, failed),
+            matches=service.matches_error,
+        )
     return api.services["web"]
 
 
@@ -198,6 +202,13 @@ class Web:
             self._runtime_states[runtime] = state
         if context.web_tools or any(t.name in {"web_search", "web_fetch"} for t in context.tools):
             context.system += "\n\n" + GUIDANCE
+
+    def matches_error(self, _context, failed) -> bool:
+        """Identify hosted-web rejection errors without mutating capability state."""
+        return (
+            failed.stop_reason == "error"
+            and failed.error_kind in {"search_unsupported", "fetch_unsupported"}
+        )
 
     def fallback(self, model, context, failed) -> str | None:
         if started(failed) or failed.error_kind not in {"search_unsupported", "fetch_unsupported"}:

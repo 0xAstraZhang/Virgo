@@ -117,7 +117,7 @@ class RuntimeDiagnostics:
         """Append evidence only when a model request is already going to happen."""
         if not self.runtime.can_run() or self.runtime.agent.signal.is_set():
             return
-        query_available = any(tool.name == "diagnostic_get" for tool in self.runtime.tools)
+        query_available = self.runtime.has_diagnostic_query_tool()
         with self._lock:
             checkpoint = self._checkpoint
             self._checkpoint = False

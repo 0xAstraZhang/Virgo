@@ -61,6 +61,7 @@ class CompactionHost(Protocol):
     def context_tokens(self, *, estimate_only: bool = False) -> int: ...
     def effort_for(self, model: Any) -> str | None: ...
     def request_context(self, messages: list, model: Any = None) -> Any: ...
+    def matches_request_fallback(self, context: Any, failed: Any) -> bool: ...
     def record_model_error(self, message: Any, *, purpose: str = "agent", notify: bool = False, context: dict | None = None) -> dict | None: ...
     def previous_summary_files(self) -> tuple[list[str], list[str]] | None: ...
     def on_compaction_before(self) -> None: ...
@@ -497,13 +498,13 @@ def _in_context_summarize(
         msg = ai.stream(model, ctx, opts).result()
         msg.request_metadata = ai.completion_request_metadata(model, effort, limit)
 
-        # Fallback triggers: overflow, unsupported hosted web tools, or unexpected tool/web use.
+        # Fallback triggers: overflow, unsupported request-extension features, or unexpected tool/native use.
         if (
             msg.stop_reason == "tool_use"
             or msg.native_started
             or (
                 msg.stop_reason == "error"
-                and msg.error_kind in ("overflow", "search_unsupported", "fetch_unsupported")
+                and (msg.error_kind == "overflow" or rt.matches_request_fallback(ctx, msg))
             )
         ):
             record_call(

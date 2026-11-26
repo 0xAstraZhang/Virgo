@@ -85,7 +85,7 @@ def run_repl(
         return worker[0] is not None and worker[0].is_alive()
 
     def start(fn) -> None:
-        session.main.agent.signal.clear()
+        session.reset_cancel_signal()
 
         def wrap():
             try:
@@ -144,8 +144,7 @@ def run_repl(
                 break
             if action == "concurrent":
                 try:
-                    with session.ui.command_scope():
-                        cmd.fn(session, line.partition(" ")[2])  # concurrent commands enforce their own admission
+                    session.run_concurrent_command(cmd, line.partition(" ")[2])
                 except Exception as e:  # noqa: BLE001 - a failing command must not end the REPL
                     session.report_error(e, phase="cli.command", context={"command": cmd.name})
                 if not busy():
@@ -173,12 +172,12 @@ def run_repl(
             if cmd is None:
                 broker.resume_reading()
         elif kind == "wake":
-            if not busy() and session.wakeups and session.main.can_run():
+            if not busy() and session.has_runnable_wakeups():
                 start(session.run_pending)
         elif kind == "done":
             if deferred:
                 start(lambda line=deferred.pop(0): session.prompt(line))
-            elif session.wakeups and session.main.can_run():
+            elif session.has_runnable_wakeups():
                 start(session.run_pending)
             else:
                 ui.prompt()

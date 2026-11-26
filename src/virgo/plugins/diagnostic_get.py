@@ -56,3 +56,4 @@ def setup(api: ExtensionAPI) -> None:
         ),
         roles=ROLES_ALL,
     )
+    api.declare_diagnostic_query_tool("diagnostic_get")

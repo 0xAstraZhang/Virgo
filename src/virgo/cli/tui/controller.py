@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from ...ai.types import UserMessage
 from ...harness.session import AgentSession
 from ...harness.store import SessionStore
-from ...harness.ui import UI
 from ..i18n import tr
 from ..repl import classify_input
 from .activity import RunActivity
@@ -56,14 +55,17 @@ class RunController:
         self._ids = itertools.count(1)
         self._initial_reset: Update | None = None
         self._shutdown_worker: threading.Thread | None = None
-        self._unsubscribers = [
-            session.bus.on("session_start", self._session_reset, priority=-100),
-            session.bus.on("agent_event", self._agent_event, priority=100),
-            session.bus.on("runtime_created", self._runtime_created, priority=100),
-            session.bus.on("runtime_closed", self._runtime_closed),
-            session.bus.on("permission_mode_changed", self._state_changed),
-        ]
-        ui.bind_signal("main", session.main.agent.signal)
+        self._unsubscribe: Callable[[], None] | None = self._subscribe(session)
+        ui.bind_signal("main", session.cancel_signal)
+
+    def _subscribe(self, session: AgentSession) -> Callable[[], None]:
+        return session.observe_events(
+            on_session_start=self._session_reset,
+            on_agent_event=self._agent_event,
+            on_runtime_created=self._runtime_created,
+            on_runtime_closed=self._runtime_closed,
+            on_permission_mode_changed=self._state_changed,
+        )
 
     @property
     def browsing(self) -> bool:
@@ -112,23 +114,16 @@ class RunController:
                     previous.shutdown()
                     # Child runtimes can finish emitting after their abort signal.
                     # Persist their final messages without painting the next conversation.
-                    previous.ui = UI()
+                    previous.detach_ui()
                     with self._lifecycle_lock:
                         if self.closing:
                             closing = True
                         else:
-                            for unsubscribe in self._unsubscribers:
-                                unsubscribe()
+                            if self._unsubscribe is not None:
+                                self._unsubscribe()
                             self.session = candidate
-                            candidate.ui = self.ui
-                            self.ui.set_translator(candidate.translator)
-                            self._unsubscribers = [
-                                candidate.bus.on("session_start", self._session_reset, priority=-100),
-                                candidate.bus.on("agent_event", self._agent_event, priority=100),
-                                candidate.bus.on("runtime_created", self._runtime_created, priority=100),
-                                candidate.bus.on("runtime_closed", self._runtime_closed),
-                                candidate.bus.on("permission_mode_changed", self._state_changed),
-                            ]
+                            candidate.attach_ui(self.ui)
+                            self._unsubscribe = self._subscribe(candidate)
                             self.ui.push("session_changed", candidate)
                             self._session_reset(candidate)
                     if closing:
@@ -162,11 +157,10 @@ class RunController:
 
     @property
     def pending(self) -> list[str]:
-        unsaved = (
-            [tr(self, "ui.controller.unprocessed", text=message.text()) for message in self.session.wakeups]
-            if self.session.store.save_error is not None
-            else []
-        )
+        unsaved = [
+            tr(self, "ui.controller.unprocessed", text=text)
+            for text in self.session.unsaved_wakeup_texts()
+        ]
         return [
             *[tr(self, "ui.controller.steering", text=text) for text in self.state.steering],
             *[tr(self, "ui.controller.deferred", text=text) for text in self.state.deferred],
@@ -183,14 +177,14 @@ class RunController:
         return count
 
     def _session_reset(self, session: AgentSession) -> None:
-        self.ui.bind_signal("main", session.main.agent.signal)
+        self.ui.bind_signal("main", session.cancel_signal)
         self.ui.push("reset", copy.deepcopy(session.store.branch()))
 
     def _runtime_created(self, runtime) -> None:
         if runtime.session is self.session:
             owner_id = runtime.accounting_store.id if runtime.accounting_store is not None else self.session.store.id
             if runtime.role == "main" or owner_id == self.session.store.id:
-                self.ui.bind_signal(runtime.name, runtime.agent.signal)
+                self.ui.bind_signal(runtime.name, runtime.cancel_signal)
             if runtime.role == "subagent":
                 self.ui.push(
                     "subagent_started",
@@ -206,7 +200,7 @@ class RunController:
     def _runtime_closed(self, runtime) -> None:
         if runtime.session is self.session:
             owner_id = runtime.accounting_store.id if runtime.accounting_store is not None else self.session.store.id
-            self.ui.unbind_signal(runtime.name, runtime.agent.signal)
+            self.ui.unbind_signal(runtime.name, runtime.cancel_signal)
             if runtime.role == "subagent":
                 self.ui.push(
                     "subagent_finished",
@@ -223,7 +217,7 @@ class RunController:
             return
         owner_id = runtime.accounting_store.id if runtime.accounting_store is not None else self.session.store.id
         if runtime.role == "main" or owner_id == self.session.store.id:
-            self.ui.bind_signal(event.agent, runtime.agent.signal)
+            self.ui.bind_signal(event.agent, runtime.cancel_signal)
         if event.agent == "main" and event.type == "agent_start" and (self.closing or self._interrupted):
             # Agent.prompt resets its own signal. An interrupt may have arrived
             # after scheduling but before that reset on the worker thread.
@@ -250,7 +244,7 @@ class RunController:
         if not concurrent:
             self.busy = True
             self._interrupted = False
-            self.session.main.agent.signal.clear()
+            self.session.reset_cancel_signal()
             self.ui.push("run_start", ticket)
 
         def run() -> None:
@@ -272,7 +266,7 @@ class RunController:
                         "done",
                         RunFinished(
                             ticket,
-                            interrupted=self._interrupted or self.session.main.agent.signal.is_set(),
+                            interrupted=self._interrupted or self.session.is_aborted(),
                             failed=failed,
                         ),
                     )
@@ -292,11 +286,11 @@ class RunController:
         if action == "exit":
             self.request_close()
         elif action == "concurrent":
-            def invoke():
-                with self.session.ui.command_scope():
-                    cmd.fn(self.session, text.partition(" ")[2])
-
-            self._launch(invoke, concurrent=True, command=cmd.name)
+            self._launch(
+                lambda: self.session.run_concurrent_command(cmd, text.partition(" ")[2]),
+                concurrent=True,
+                command=cmd.name,
+            )
         elif action == "steer":
             self.state.steering.append(text)
         elif action in {"defer_command", "defer_prompt"}:
@@ -342,7 +336,7 @@ class RunController:
                 # Browsing must not strand work that was queued before it opened.
                 text = self.state.deferred.popleft()
                 self._launch(lambda: self.session.prompt(text))
-            elif self.session.wakeups and not self.state.browsing and self.session.main.can_run():
+            elif not self.state.browsing and self.session.has_runnable_wakeups():
                 self._launch(self.session.run_pending)
         return out
 
@@ -388,9 +382,9 @@ class RunController:
                 session.report_error(error, phase="session.shutdown")
             finally:
                 with self._lifecycle_lock:
-                    unsubscribers = self._unsubscribers
-                    self._unsubscribers = []
-                for unsubscribe in unsubscribers:
+                    unsubscribe = self._unsubscribe
+                    self._unsubscribe = None
+                if unsubscribe is not None:
                     unsubscribe()
                 self.ui.push("closed")
 

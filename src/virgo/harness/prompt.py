@@ -12,11 +12,10 @@ from typing import TYPE_CHECKING
 
 from .._gitignore import MAX_GITIGNORE_BYTES, load_ancestor_scopes, matches_scopes
 from ..tools.fs import IGNORE_DIRS
+from .contracts import PromptHost, PromptRuntime
 
 if TYPE_CHECKING:
     from ..agent.types import AgentTool
-    from .runtime import Runtime
-    from .session import AgentSession
 
 
 @dataclass(frozen=True)
@@ -270,9 +269,9 @@ def _first_file(paths: list[Path], *, workspace: Path | None = None, access=None
 
 
 def build_system(
-    session: AgentSession, role: str = "main", extra: str | None = None, cwd: Path | None = None,
+    session: PromptHost, role: str = "main", extra: str | None = None, cwd: Path | None = None,
     tools: list[AgentTool] | None = None, context: RuntimeContext | None = None,
-    runtime: Runtime | None = None,
+    runtime: PromptRuntime | None = None,
 ) -> str:
     """Use the supplied tools and originating Runtime's automatic-context permissions."""
     cwd = Path(cwd or session.cwd)

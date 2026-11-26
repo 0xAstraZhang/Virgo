@@ -13,16 +13,13 @@ import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import yaml
 
 from ..agent.types import AgentTool, ToolResult
 from ..i18n import Translator, available_languages
+from .contracts import CommandHost
 from .preferences import configure_preference, effort_label, effort_levels
-
-if TYPE_CHECKING:
-    from .session import AgentSession
 
 
 @dataclass
@@ -166,7 +163,7 @@ def expand_template(body: str, args: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def configure_language(session: AgentSession, args: str) -> None:
+def configure_language(session: CommandHost, args: str) -> None:
     from ..i18n import available_languages, normalize_language
 
     names = "|".join(pack.name for pack in available_languages())
@@ -193,7 +190,7 @@ def configure_language(session: AgentSession, args: str) -> None:
     session.ui.command_result(session.t("language.changed", language=session.translator.name))
 
 
-def show_status(session: AgentSession, args: str) -> None:
+def show_status(session: CommandHost, args: str) -> None:
     t = session.t
     snapshot = session.status_snapshot()
     runtime = snapshot["runtime"]
@@ -209,7 +206,7 @@ def show_status(session: AgentSession, args: str) -> None:
     session.ui.command_result("\n".join(rows))
 
 
-def register_builtins(session: AgentSession) -> None:
+def register_builtins(session: CommandHost) -> None:
     from ..diagnostics import error_summary
     from .auth_commands import login, logout
     from .shell_commands import configure_shell

@@ -20,10 +20,10 @@ Virgo 在 `src/virgo/` 下按单向依赖分层组织。底层模块不依赖会
 
 通过 `tests/test_architecture_matrix.py`（覆盖顶层与函数内局部导入）及 `tests/harness/test_permission_modes_e2e.py` 的 AST 校验强制执行：
 
-- **严格下三角无环 DAG**：`src/virgo/` 内包级与模块级运行时依赖均零环；低层绝不反向导入高层，且 Layer 0 叶子包不出现任何 `TYPE_CHECKING` 向上导入。
+- **严格下三角无环 DAG**：`src/virgo/` 内包级与模块级导入依赖（同时覆盖顶层、函数局部及 `TYPE_CHECKING` 导入）均零环；低层绝不反向导入高层，Layer 0 叶子包不出现任何 `TYPE_CHECKING` 向上导入，`virgo.harness.contracts` 作为零同级导入的 Layer-3 窄协议叶子，避免 `harness/` 子模块反向导入 `session` 或 `runtime`。
 - **纯策略与核心叶子**：`virgo.execution_policy` 不依赖 `virgo.sandbox`、`virgo.execution` 或 `virgo.harness`（Windows 沙箱能力探测归属 `virgo.execution`）；`virgo.ai` 与 `virgo.agent` 不导入 `execution*`、`process`、`file_access`、`output_store`、`sandbox`、`tools`、`harness`、`plugins`、`extensions` 或 `cli`。
 - **同级模块对角独立**：同级 AI 提供商家族（`anthropic`、OpenAI 系、`faux`）、执行叶子组件（`file_access`、`output_store`、`sandbox`）、内置工具族（`fs`、`shell`/`bash`、`web`、`web_fetch`）以及各插件与扩展之间互不导入。
-- **显式跨边界契约**：插件与扩展仅通过 `ExtensionAPI` 与核心交互（不使用 `api.session` 逃生口或读写私有 `runtime._*`/`session._*` 状态）；`harness` 核心不硬编码可选插件服务或穿透存储/Agent 私有状态；`cli` 仅通过 `AgentSession` 公共门面方法查询与切换状态，不直接调用 `session.bus.emit` 或访问 `session.services["execution"]`。
+- **显式跨边界契约**：插件与扩展仅通过 `ExtensionAPI` 与核心交互（不使用 `api.session` 逃生口或读写私有 `runtime._*`/`session._*` 状态）；`ShellSelection` 仅接收由 `JobManager` 推送的可选 `BackgroundLauncher`，`JobManager` 仅经注入回调解析默认 Shell（零互查 `services`）；`CompactionController` 与 `Runtime` 分别通过 `ExtensionAPI.add_request_fallback(..., matches=...)` 与 `ExtensionAPI.declare_diagnostic_query_tool(...)` 解耦插件错误码与诊断查询工具名；`cli` 仅通过 `AgentSession`/`Runtime` 公共门面（`observe_events`、`attach_ui`/`detach_ui`、`cancel_signal`、`has_runnable_wakeups`、`run_concurrent_command`）交互，不直接接触 `session.bus`、`session.wakeups`、`agent.signal` 或 `session.services["execution"]`。完整的 FR–DP 设计矩阵与有界运行时闭环见[功能需求与公理设计分析](axiomatic-design.md)。
 
 ## 核心工具、内置插件与内置扩展
 
@@ -65,4 +65,4 @@ Codex 账号适配器的请求共享会话 HTTP 连接池。只有在账号、�
 
 在原生 Windows 上，AppContainer 会话租约日志单独保存在 `%LOCALAPPDATA%\Virgo\sandbox-sessions\`（可通过 `VIRGO_WINDOWS_SANDBOX_STATE_DIR` 覆盖）。
 
-另见：[执行接口](execution-interface.md) · [原生执行与性能验收](execution-acceptance.md) · [架构决策索引](../decisions/README.md)
+另见：[功能需求与公理设计分析](axiomatic-design.md) · [执行接口](execution-interface.md) · [原生执行与性能验收](execution-acceptance.md) · [架构决策索引](../decisions/README.md)
