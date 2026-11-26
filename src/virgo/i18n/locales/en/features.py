@@ -124,6 +124,7 @@ MESSAGES = {
     "features.web.call_limit": "Web tools reached plugins.web.maxCalls for this user request.",
     "features.web.operation_limit": "Web {operation} reached {operation}.maxUses for this user request.",
     "features.web.budget_requires_client": "An explicit shared web call budget requires client tools.",
+    "features.web.operation_budget_requires_client": "An explicit {setting} budget is not supported by this hosted web tool and requires client tools.",
     "features.search.max_uses": "search.maxUses must be null or a positive integer.",
     "features.fetch.max_uses": "fetch.maxUses must be null or a positive integer.",
 }

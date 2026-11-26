@@ -84,12 +84,28 @@ class Web:
                 continue
             if caps & chosen:
                 continue
-            if offer.hosted and self.max_calls is not None:
-                # A provider can run an unobservable number of hosted operations.
-                # An explicit shared quota therefore needs client-tool dispatch.
-                for c in caps:
-                    reasons[c] = self.api.t("features.web.budget_requires_client")
-                continue
+            if offer.hosted:
+                if self.max_calls is not None:
+                    # A provider can run an unobservable number of hosted operations.
+                    # An explicit shared quota therefore needs client-tool dispatch.
+                    for c in caps:
+                        reasons[c] = self.api.t("features.web.budget_requires_client")
+                    continue
+                supported_controls = set(offer.controls.values())
+                unmapped = [
+                    c for c in sorted(caps)
+                    if services[c].max_uses is not None and (c, "maxUses") not in supported_controls
+                ]
+                if unmapped:
+                    # Do not silently ignore an explicit per-capability call budget
+                    # when the hosted offer declares no protocol control to enforce it.
+                    reason = self.api.t(
+                        "features.web.operation_budget_requires_client",
+                        setting=", ".join(f"{c}.maxUses" for c in unmapped),
+                    )
+                    for c in caps:
+                        reasons[c] = reason
+                    continue
             if not offer.native and any(services[c].mode == "native" for c in caps):
                 continue
             if any(
