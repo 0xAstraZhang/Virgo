@@ -72,6 +72,25 @@ def test_anthropic_http_errors_are_classified(server, monkeypatch):
 OPENAI_CHUNK = {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "gpt-5"}
 
 
+def test_sdk_request_build_error_does_not_count_a_model_dispatch(server, monkeypatch):
+    from openai import AsyncOpenAI
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    model = ai.resolve_model("openai/gpt-5")
+    model.base_url = server["url"]
+
+    def reject_before_http(self, *args, **kwargs):
+        raise ValueError("fixture request validation error")
+
+    monkeypatch.setattr(AsyncOpenAI, "_build_request", reject_before_http)
+    observed = []
+    msg = ai.stream(model, Context("", [UserMessage("x")]),
+                    StreamOptions(request_observer=observed.append)).result()
+    assert msg.stop_reason == "error"
+    assert not server["requests"]
+    assert observed == []
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
 def test_stream_dropped_mid_response_is_retryable(server, monkeypatch, provider):
     # The Anthropic SDK does not wrap transport errors raised while a response is streamed, so the
