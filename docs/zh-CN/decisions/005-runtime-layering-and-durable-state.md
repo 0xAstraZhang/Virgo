@@ -10,7 +10,7 @@
 
 ## 决策
 
-- **严格下三角分层与同级模块对角独立**：`src/virgo/` 在包级与模块级均保持运行时无环（同时覆盖顶层与函数内局部导入），按严格单向分层组织：Layer 0 纯叶子基础层（`_gitignore`、`_win32`、`i18n`、`diagnostics`、`execution_policy`）→ Layer 1 执行契约/进程原语与核心层（`execution_types`、`process`、`ai`、`agent`）→ Layer 2a 彼此独立的执行叶子组件（`file_access`、`output_store`、`sandbox`）→ Layer 2b 执行装配门面与工具（`execution`、`tools`）→ Layer 3 `harness` → Layer 4 彼此独立的 `plugins`/`extensions` → Layer 5 `cli`。同级 AI 提供商家族、执行叶子组件、内置工具族以及插件/扩展之间互不依赖，并通过 `tests/test_architecture_matrix.py` 在 CI 中以 AST 强制校验分层无环与显式跨边界契约（包括 `ExtensionAPI` 通用请求预处理/回退钩子、`ToolResult.error_kind`、显式 `UI` 确认能力声明及 `AgentSession` 门面）。
+- **严格下三角分层与同级模块对角独立**：`src/virgo/` 在包级与全量模块级导入（同时覆盖顶层、函数局部及 `TYPE_CHECKING` 导入）均保持无环，按严格单向分层组织：Layer 0 纯叶子基础层（`_gitignore`、`_win32`、`i18n`、`diagnostics`、`execution_policy`）→ Layer 1 执行契约/进程原语与核心层（`execution_types`、`process`、`ai`、`agent`）→ Layer 2a 彼此独立的执行叶子组件（`file_access`、`output_store`、`sandbox`）→ Layer 2b 执行装配门面与工具（`execution`、`tools`）→ Layer 3 `harness`（由零同级导入的 `harness/contracts.py` 提供窄宿主协议，并单向装配 `ShellSelection` 与 `JobManager`）→ Layer 4 彼此独立的 `plugins`/`extensions` → Layer 5 `cli`。同级 AI 提供商家族、执行叶子组件、内置工具族以及插件/扩展之间互不依赖，并通过 `tests/test_architecture_matrix.py` 在 CI 中以 AST 强制校验全量导入无环与显式跨边界契约（包括 `ExtensionAPI` 通用请求预处理/回退匹配、`declare_diagnostic_query_tool`、`ToolResult.error_kind`、显式 `UI` 确认能力声明及 `AgentSession` 呈现门面）。静态依赖矩阵与有意保留的有界运行时闭环之间的区分见[功能需求与公理设计分析](../development/axiomatic-design.md)。
 - **三层能力边界**：
   - **核心工具**（`fs`、`shell`、`output`、`request_permissions`）由 `AgentSession` 直接装配。
   - **内置插件**（`virgo.plugins`：`diagnostic_get`、`skills`、`ask_user`、`subagent`、`background`、`web`）经 `setup(api)` 在事务中加载，通过 `plugins.<id>.enabled` 开关，不可按文件名覆盖，也不受 `--no-extensions` 影响。
