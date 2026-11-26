@@ -626,11 +626,7 @@ class AgentSession:
             if self._child_runtimes.get(child_key) is not runtime:
                 return
             self._child_runtimes.pop(child_key)
-            for store in (runtime.store, runtime.accounting_store):
-                if store is not None:
-                    with store._lock:
-                        if runtime.agent.signal in store.failure_signals:
-                            store.failure_signals.remove(runtime.agent.signal)
+            runtime.release_store_handlers()
         try:
             self.bus.emit("runtime_closed", runtime)
         finally:

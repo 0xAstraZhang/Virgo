@@ -31,6 +31,13 @@ class Agent:
         self._listeners.append(fn)
         return lambda: self._listeners.remove(fn)
 
+    def append_message(self, msg) -> None:
+        """Append a message directly to history and emit start/end lifecycle events."""
+        message = _as_message(msg)
+        self._emit(AgentEvent("message_start", self.cfg.name, message=message))
+        self.messages.append(message)
+        self._emit(AgentEvent("message_end", self.cfg.name, message=message))
+
     def _emit(self, ev: AgentEvent) -> None:
         with self._emit_lock:  # tools may emit from worker threads
             for fn in list(self._listeners):

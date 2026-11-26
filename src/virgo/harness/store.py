@@ -11,6 +11,7 @@ grant summary for the native process, or for file tools when no native policy ap
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -18,26 +19,31 @@ import secrets
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
 from send2trash import send2trash
 
-from ..ai.transform import strip_thinking
 from ..ai.types import (
-    AssistantMessage,
     Message,
-    TextContent,
-    ToolResultMessage,
-    Usage,
-    UserMessage,
     message_from_dict,
     message_to_dict,
 )
 from ..tools.fs import file_lock
+from .compaction_records import (
+    SUMMARY_PREFIX,
+    compacted_message,
+    replay_compaction_context,
+    summary_message,
+    validate_compaction_record,
+)
+from .compaction_records import (
+    stored_details as _stored_details,
+)
 
 if os.name == "nt":
     import ctypes
@@ -69,29 +75,6 @@ else:
     import fcntl
 
 _USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
-_GRANT_KEYS = ("read_paths", "write_paths", "network_allowed", "unrestricted", "web_allowed")
-
-SUMMARY_PREFIX = (
-    "<conversation_summary>\nThis checkpoint summarizes only the earlier evicted turns before the retained recent messages. "
-    "Newer retained messages below supersede earlier status claims in this summary. "
-    "Use this as reference material. Continue any unfinished turn without repeating completed steps.\n\n"
-)
-
-
-def summary_message(text: str, *, timestamp: float | None = None) -> UserMessage:
-    return UserMessage(f"{SUMMARY_PREFIX}{text.strip()}\n</conversation_summary>", kind="summary",
-                       timestamp=time.time() if timestamp is None else timestamp)
-
-
-def compacted_message(message: Message) -> Message:
-    """Use the same retained metadata live and on disk. Usage measured the old window."""
-    if isinstance(message, AssistantMessage):
-        return replace(message, usage=Usage())
-    if isinstance(message, ToolResultMessage):
-        details = _stored_details(message.details, transcript=False)
-        if details is not message.details:
-            return replace(message, details=details)
-    return message
 
 
 def _entry_for_disk(entry: dict) -> dict:
@@ -112,23 +95,6 @@ def _entry_for_disk(entry: dict) -> dict:
     if transcript:
         return {**entry, "data": {**entry["data"], "message": message}}
     return {**entry, "message": message}
-
-
-def _stored_details(details, *, transcript: bool):
-    if not isinstance(details, dict) or not isinstance(boundary := details.get("boundary"), dict):
-        return details
-    compact = boundary.copy()
-    for key in ("requested", "runtime_read_dependencies", "ambient_read_access", "unmanaged",
-                "read_deny_paths", "write_deny_paths"):
-        compact.pop(key, None)
-    if transcript:
-        compact.pop("effective", None)
-    elif isinstance(effective := boundary.get("effective"), dict):
-        for source in ("native_process", "file_tools"):
-            if isinstance(policy := effective.get(source), dict):
-                compact["effective"] = {source: {key: policy[key] for key in _GRANT_KEYS if key in policy}}
-                break
-    return {**details, "boundary": compact}
 
 
 def _now() -> str:
@@ -240,23 +206,7 @@ def _validate_record(record: dict, *, header: bool, ids: set[str], absent_parent
     if kind == "message":
         _validate_message(record.get("message"))
     elif kind == "compaction":
-        if "context" in record:
-            raise ValueError("legacy native compaction records are no longer supported; start a new session")
-        mode = record.get("mode", "summary")
-        if mode == "prune":
-            pruned = record.get("pruned")
-            if not isinstance(pruned, dict) or not all(
-                isinstance(k, str) and isinstance(v, str) for k, v in pruned.items()
-            ):
-                raise ValueError("invalid compaction pruned map")
-        elif mode == "summary":
-            if not isinstance(record.get("summary"), str):
-                raise ValueError("missing compaction summary")
-            kept = record.get("kept_ids", [])
-            if not isinstance(kept, list) or not all(isinstance(key, str) for key in kept):
-                raise ValueError("invalid compaction kept_ids")
-        else:
-            raise ValueError(f"unknown compaction mode {mode!r}")
+        validate_compaction_record(record)
     elif kind == "custom" and "data" not in record:
         raise ValueError("missing custom entry data")
     ids.add(record["id"])
@@ -488,6 +438,73 @@ class SessionStore:
             except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
                 return False
 
+    def register_failure_handler(
+        self,
+        *,
+        signal: threading.Event | None = None,
+        listener: Callable[[SessionSaveError], None] | None = None,
+    ) -> Callable[[], None]:
+        """Register a cancellation signal and/or error listener without exposing store locks."""
+        with self._lock:
+            if signal is not None and signal not in self.failure_signals:
+                self.failure_signals.append(signal)
+            if listener is not None and listener not in self.failure_listeners:
+                self.failure_listeners.append(listener)
+            if self.save_error is not None and signal is not None:
+                signal.set()
+
+        def unregister() -> None:
+            with self._lock:
+                if signal is not None and signal in self.failure_signals:
+                    self.failure_signals.remove(signal)
+
+        return unregister
+
+    def detach(self) -> None:
+        """Stop persisting further entries to disk without touching any existing file."""
+        with self._lock:
+            self.path = None
+
+    def branch_snapshot(self) -> list[dict]:
+        """Return a thread-safe deep copy of the active branch."""
+        with self._lock:
+            return copy.deepcopy(self.branch())
+
+    def branch_entries(self, anchor: str | None) -> tuple[str | None, list[dict]]:
+        """Resolve an anchored branch snapshot under the store lock."""
+        with self._lock:
+            current = self.branch()
+            if anchor is None or any(e["id"] == anchor for e in current):
+                return self.leaf, copy.deepcopy(current)
+            path, node = [], anchor
+            while node is not None:
+                entry = self.by_id.get(node)
+                if entry is None:
+                    break
+                path.append(entry)
+                node = entry.get("parent_id")
+            return anchor, copy.deepcopy(list(reversed(path)))
+
+    def append_on_branch(self, anchor: str | None, type: str, **data) -> tuple[str | None, dict]:
+        """Append to an anchored branch even when another branch is active."""
+        try:
+            with self._lock:
+                resolved_anchor, _ = self.branch_entries(anchor)
+                active = self.leaf
+                detached = resolved_anchor != active
+                self.leaf = resolved_anchor
+                try:
+                    if detached:
+                        data["active_leaf"] = active
+                    entry = self._append_locked(type, **data)
+                finally:
+                    new_anchor = self.leaf
+                    if detached:
+                        self.leaf = active
+                return new_anchor, entry
+        finally:
+            self.notify_save_failure()
+
     def trash(self) -> None:
         """Move the saved file to the system trash and stop writing to its path."""
         with self._lock:
@@ -616,43 +633,7 @@ class SessionStore:
 
     def build_context(self) -> tuple[list, list]:
         """Messages to send for the active branch, with their entry ids."""
-        path = self.branch()
-        comp_i = max(
-            (i for i, e in enumerate(path) if e["type"] == "compaction" and e.get("mode", "summary") == "summary"),
-            default=None,
-        )
-        pruned_map: dict[str, str] = {}
-        for e in path:
-            if e["type"] == "compaction" and e.get("mode") == "prune":
-                pruned_map.update(e.get("pruned", {}))
-
-        def _maybe_prune(msg: Message, entry_id: str) -> Message:
-            if isinstance(msg, ToolResultMessage) and entry_id in pruned_map:
-                return compacted_message(replace(msg, content=[TextContent(pruned_map[entry_id])]))
-            return msg
-
-        if comp_i is None:
-            messages, ids = self.build_full_context()
-            if not pruned_map:
-                return messages, ids
-            return [_maybe_prune(m, eid) for m, eid in zip(messages, ids, strict=True)], ids
-
-        comp = path[comp_i]
-        timestamp = comp.get("summary_timestamp", _created_at(comp, 0.0))
-        messages: list = [summary_message(comp["summary"], timestamp=timestamp)]
-        ids: list = [comp["id"]]
-        for i in comp.get("kept_ids", []):
-            e = self.by_id.get(i)
-            if not e or e["type"] != "message":
-                continue
-            for m in strip_thinking([message_from_dict(e["message"])]):
-                messages.append(_maybe_prune(compacted_message(m), i))
-                ids.append(i)
-        for e in path[comp_i + 1 :]:
-            if e["type"] == "message":
-                messages.append(_maybe_prune(message_from_dict(e["message"]), e["id"]))
-                ids.append(e["id"])
-        return messages, ids
+        return replay_compaction_context(self.branch(), self.by_id, created_at=_created_at)
 
     def build_full_context(self) -> tuple[list, list]:
         """Original uncompacted messages on this branch."""
@@ -680,4 +661,4 @@ def text_of_dict(m: dict) -> str:
     return " ".join(b.get("text", "") for b in c or [] if b.get("type") == "text")
 
 
-__all__ = ["SessionStore", "summary_message"]
+__all__ = ["SUMMARY_PREFIX", "SessionStore", "compacted_message", "summary_message"]

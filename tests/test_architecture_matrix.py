@@ -56,7 +56,6 @@ KNOWN_PACKAGE_RUNTIME_SCCS: set[tuple[str, ...]] = {
 }
 
 KNOWN_MODULE_RUNTIME_SCCS: set[tuple[str, ...]] = {
-    ("virgo.harness.compaction", "virgo.harness.runtime"),
     (
         "virgo.plugins.web",
         "virgo.plugins.web.access",
@@ -76,15 +75,9 @@ KNOWN_PRIVATE_INTRUSIONS: set[str] = {
     "plugins/web/__init__.py:runtime._web_backends",
     "plugins/web/__init__.py:runtime._web_models",
     "plugins/web/__init__.py:runtime._web_paths",
-    "harness/origin_context.py:store._lock",
     "harness/runtime.py:services.web",
-    "harness/runtime.py:store._lock",
-    "harness/runtime.py:store.failure_signals",
     "harness/session.py:services.subagents",
-    "harness/session.py:store.failure_signals",
-    "harness/subagents.py:store._lock",
     "harness/extensions.py:sandbox._result",
-    "harness/recovery.py:agent._emit",
     "extensions/todo.py:compaction_internals",
     "cli/tui/app.py:bus.emit",
     "cli/tui/app.py:services.execution",

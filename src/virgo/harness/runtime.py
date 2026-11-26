@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 
-import math
 import random
 import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import asdict
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .. import ai
 from ..agent import Agent, AgentConfig, AgentEvent, AgentTool, ToolCallEvent
+from ..ai.providers._errors import retry_after_seconds
 from ..ai.stream import EventStream, StreamEvent, aborted_event
 from ..ai.types import (
     AssistantMessage,
     Context,
     StreamOptions,
+    TextContent,
     ToolResultMessage,
     message_to_dict,
 )
@@ -28,6 +27,7 @@ from ..diagnostics import capture_error, safe_text
 from ..execution_policy import normalize_approval_policy
 from ..tools.shell import ShellTool
 from . import compaction as compaction_mod
+from .compaction_records import compacted_message, summary_message
 from .diagnostic_view import project_tool_result
 from .origin_context import ExecutionOrigin
 from .prompt import RuntimeContext, build_system
@@ -62,27 +62,6 @@ def _classify_tool_error(res, default_kind: str | None) -> str | None:
     if kind == "blocked" and res.as_text().strip().lower() == "sub-agent was aborted.":
         return None
     return kind
-
-
-def retry_after_seconds(details: dict | None, *, now: float | None = None) -> float | None:
-    context = details.get("context", {}) if isinstance(details, dict) else {}
-    http = context.get("http", {}) if isinstance(context, dict) else {}
-    value = http.get("retry_after") if isinstance(http, dict) else None
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError, OverflowError):
-        if not isinstance(value, str):
-            return None
-        try:
-            date = parsedate_to_datetime(value)
-            if date.tzinfo is None:
-                date = date.replace(tzinfo=UTC)
-            seconds = max(0.0, date.timestamp() - (datetime.now(UTC).timestamp() if now is None else now))
-        except (TypeError, ValueError, OverflowError):
-            return None
-    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 class Runtime:
@@ -179,15 +158,111 @@ class Runtime:
         self.agent = Agent(cfg, messages=list(messages or []), signal=signal)
         self.origin = ExecutionOrigin(self, origin_parent)
         self.agent.subscribe(self._on_event)
+        self._store_unsubs: list = []
+        seen_stores: set[int] = set()
         for bound in (self.store, self.accounting_store):
-            if bound is not None:
-                with bound._lock:
-                    if self.agent.signal not in bound.failure_signals:
-                        bound.failure_signals.append(self.agent.signal)
-                    if session.report_save_error not in bound.failure_listeners:
-                        bound.failure_listeners.append(session.report_save_error)
-                    if bound.save_error is not None:
-                        self.agent.signal.set()
+            if bound is not None and id(bound) not in seen_stores:
+                seen_stores.add(id(bound))
+                self._store_unsubs.append(
+                    bound.register_failure_handler(signal=self.agent.signal, listener=session.report_save_error)
+                )
+
+    def release_store_handlers(self) -> None:
+        for unregister in self._store_unsubs:
+            unregister()
+        self._store_unsubs.clear()
+
+    @property
+    def compaction_epoch(self) -> tuple[object, str | None] | None:
+        """Stable identifier for the active summary checkpoint, or None when uncompacted."""
+        if not self.messages:
+            return None
+        first = self.messages[0]
+        if getattr(first, "kind", None) != "summary":
+            return None
+        return (first, self.ids[0] if self.ids else None)
+
+    def previous_summary_files(self) -> tuple[list[str], list[str]] | None:
+        if self.store is None or not self.ids:
+            return None
+        prev_entry = self.store.by_id.get(self.ids[0], {})
+        details = prev_entry.get("details")
+        if not details:
+            return None
+        return list(details.get("read_files", [])), list(details.get("modified_files", []))
+
+    def on_compaction_before(self) -> None:
+        self.session.bus.emit("before_compact", self)
+
+    def on_compaction_error(self, detail: str) -> None:
+        self.session.ui.print(self.session.t("harness.compact.failed", error=detail), "error")
+
+    def commit_prune(
+        self, updates: list[tuple[int, str]], *, tokens_before: int, reclaimed: int, reason: str,
+    ) -> dict:
+        pruned_by_id: dict[str, str] = {}
+        for i, stub in updates:
+            self.messages[i] = compacted_message(replace(self.messages[i], content=[TextContent(stub)]))
+            entry_id = self.ids[i] if i < len(self.ids) else None
+            if entry_id is not None:
+                pruned_by_id[entry_id] = stub
+        if self.store is not None and pruned_by_id:
+            self.store.append(
+                "compaction",
+                mode="prune",
+                pruned=pruned_by_id,
+                tokens_before=tokens_before,
+                tokens_reclaimed=reclaimed,
+                reason=reason,
+            )
+        self.compacted_at = len(self.messages)
+        return {
+            "mode": "prune",
+            "tokens_before": tokens_before,
+            "tokens_reclaimed": reclaimed,
+            "pruned_count": len(updates),
+        }
+
+    def commit_summary(
+        self,
+        summary: str,
+        timestamp: float,
+        kept_msgs: list,
+        kept_ids: list,
+        *,
+        tokens_before: int,
+        reason: str,
+        strategy: str,
+        read_files: list[str],
+        modified_files: list[str],
+    ) -> dict:
+        entry_id = None
+        if self.store is not None:
+            entry = self.store.append(
+                "compaction",
+                mode="summary",
+                summary=summary,
+                summary_timestamp=timestamp,
+                kept_ids=[k for k in kept_ids if k],
+                tokens_before=tokens_before,
+                reason=reason,
+                strategy=strategy,
+                details={"read_files": read_files, "modified_files": modified_files},
+            )
+            entry_id = entry["id"]
+        self.messages[:] = [summary_message(summary, timestamp=timestamp), *kept_msgs]
+        self.ids[:] = [entry_id, *kept_ids]
+        self.compacted_at = len(self.messages)
+        self.rebuild_system()
+        self.recovery.after_compaction()
+        self.session.bus.emit("compact", self, summary)
+        return {
+            "mode": "summary",
+            "strategy": strategy,
+            "tokens_before": tokens_before,
+            "summary": summary,
+            "kept": len(kept_msgs),
+        }
 
     @property
     def messages(self) -> list:
