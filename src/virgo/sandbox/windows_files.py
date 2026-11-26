@@ -16,16 +16,16 @@ import re
 from ctypes import wintypes as w
 from pathlib import Path
 
-from ._win32 import (
+from .._win32 import (
     BOOL,
     DWORD,
     UINT,
     bind_api,
 )
-from ._win32 import (
+from .._win32 import (
     is_reparse_point as _is_reparse_point,
 )
-from ._win32 import (
+from .._win32 import (
     kernel32 as _kernel32,
 )
 

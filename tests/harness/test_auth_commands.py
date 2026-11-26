@@ -14,7 +14,7 @@ from virgo.ai.auth import authenticated_model
 from virgo.ai.auth_presets import API_PRESETS, AUTH_PRESETS
 from virgo.ai.catalog import CatalogModel
 from virgo.ai.models import BUILTIN_PROVIDERS
-from virgo.execution_policy import default_execution_mode
+from virgo.execution import default_execution_mode
 from virgo.harness.preferences import model_choices
 from virgo.harness.session import AgentSession
 from virgo.harness.ui import UI

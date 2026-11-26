@@ -33,7 +33,8 @@ from ..ai.types import (
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
-from ..execution_policy import is_native_windows, is_windows_sandbox_supported, normalize_approval_policy
+from ..execution import is_windows_sandbox_supported
+from ..execution_policy import is_native_windows, normalize_approval_policy
 from ..i18n import Translator, normalize_language
 from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget

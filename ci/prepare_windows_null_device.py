@@ -249,8 +249,7 @@ def verify_unsupported_fallback() -> None:
         )
         return
 
-    from virgo.execution import ExecutionUnavailable
-    from virgo.execution_policy import default_execution_mode, is_windows_sandbox_supported
+    from virgo.execution import ExecutionUnavailable, default_execution_mode, is_windows_sandbox_supported
     from virgo.harness.session import AgentSession
     from virgo.harness.ui import UI
     from virgo.sandbox.windows_sandbox import precheck_windows_sandbox

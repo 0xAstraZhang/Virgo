@@ -11,7 +11,7 @@ import pytest
 
 from virgo.ai.catalog import CatalogError, CatalogModel
 from virgo.ai.providers import faux
-from virgo.execution_policy import default_execution_mode
+from virgo.execution import default_execution_mode
 from virgo.harness import preferences
 from virgo.harness.preferences import PreferenceChoice, configure_preference, model_choices
 from virgo.harness.settings import Settings

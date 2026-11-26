@@ -24,8 +24,8 @@ from ._gitignore import (
     matches_scopes,
     read_gitignore_rules,
 )
-from .execution import FileAccessDenied
 from .execution_policy import PermissionPolicy, lexical_path
+from .execution_types import FileAccessDenied
 
 MAX_WALK_FILES = 100_000
 

@@ -1018,7 +1018,7 @@ def test_inaccessible_runtime_fails_closed(tmp_path, monkeypatch, make_session):
     assert str(fake_rt) in str(exc_info.value)
 
     # Verify assembled session fails closed on decline and allows explicit one-shot No-Limit (R6).
-    from virgo.execution_policy import is_windows_sandbox_supported
+    from virgo.execution import is_windows_sandbox_supported
     from virgo.sandbox import windows_acl
 
     if (
@@ -1087,8 +1087,7 @@ def test_unelevated_modes_and_pwsh_virtual_drive_cwd(make_session, project):
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows native sandbox test")
 def test_null_device_support_probe_and_unsupported_fallback(project, monkeypatch):
     """Verify live \\Device\\Null AAP support probe and fail-closed fallback when absent."""
-    from virgo.execution import ExecutionUnavailable
-    from virgo.execution_policy import default_execution_mode, is_windows_sandbox_supported
+    from virgo.execution import ExecutionUnavailable, default_execution_mode, is_windows_sandbox_supported
     from virgo.harness.session import AgentSession
     from virgo.sandbox import windows_acl, windows_sandbox
 

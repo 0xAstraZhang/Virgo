@@ -23,6 +23,7 @@ PACKAGE_LAYERS: dict[str, int] = {
     # Layer 0: pure leaf foundations
     "virgo": 0,
     "virgo._gitignore": 0,
+    "virgo._win32": 0,
     "virgo.i18n": 0,
     "virgo.diagnostics": 0,
     "virgo.execution_policy": 0,
@@ -51,27 +52,10 @@ PACKAGE_LAYERS: dict[str, int] = {
 # --- Exact baseline violation sets (shrunk to empty across Phases 1-5) ------
 
 KNOWN_PACKAGE_RUNTIME_SCCS: set[tuple[str, ...]] = {
-    (
-        "virgo.execution",
-        "virgo.execution_policy",
-        "virgo.file_access",
-        "virgo.output_store",
-        "virgo.sandbox",
-        "virgo.tools",
-    ),
     ("virgo.extensions", "virgo.harness"),
 }
 
 KNOWN_MODULE_RUNTIME_SCCS: set[tuple[str, ...]] = {
-    (
-        "virgo.execution",
-        "virgo.file_access",
-        "virgo.output_store",
-        "virgo.sandbox.native",
-        "virgo.sandbox.platform",
-        "virgo.sandbox.windows_sandbox",
-        "virgo.tools.windows_process",
-    ),
     ("virgo.harness.compaction", "virgo.harness.runtime"),
     (
         "virgo.plugins.web",
@@ -79,16 +63,10 @@ KNOWN_MODULE_RUNTIME_SCCS: set[tuple[str, ...]] = {
         "virgo.plugins.web.fetch",
         "virgo.plugins.web.search",
     ),
-    ("virgo.tools.bash", "virgo.tools.shell"),
 }
 
 KNOWN_LAYER_VIOLATIONS: set[tuple[str, str]] = {
-    ("virgo.execution_policy", "virgo.sandbox"),
-    ("virgo.file_access", "virgo.execution"),
     ("virgo.harness", "virgo.extensions"),
-    ("virgo.output_store", "virgo.execution"),
-    ("virgo.sandbox", "virgo.execution"),
-    ("virgo.sandbox", "virgo.tools"),
 }
 
 KNOWN_TC_REVERSE_EDGES: set[tuple[str, str]] = set()

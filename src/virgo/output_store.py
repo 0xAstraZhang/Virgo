@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .execution_types import ExecutionUnavailable, FileAccessDenied
+
 DEFAULT_TTL_SECONDS = 7 * 24 * 3600
 _SAFE_SESSION = re.compile(r"[^A-Za-z0-9._-]")
 _REGISTRY_FILE = "registry.json"
@@ -25,8 +27,6 @@ _REGISTRY_FILE = "registry.json"
 
 def _harden_dir(path: Path) -> None:
     if path.is_symlink():
-        from .execution import ExecutionUnavailable
-
         raise ExecutionUnavailable(
             f"Output directory must not be a symlink: {path}",
             reason="invalid_output_dir",
@@ -216,8 +216,6 @@ class OutputStore:
             raise
 
     def lookup(self, identifier: str) -> OutputRecord:
-        from .execution import FileAccessDenied
-
         with self._lock:
             record = self._records.get(identifier)
             if record is None and self._persist:
@@ -230,8 +228,6 @@ class OutputStore:
     @contextmanager
     def open_read(self, record: OutputRecord):
         """Safely open a session-owned output record for streaming reads."""
-        from .execution import FileAccessDenied
-
         if not isinstance(record, OutputRecord) or self.lookup(record.id) is not record:
             raise FileAccessDenied("Output record does not belong to this session", dimension="output_id")
         try:

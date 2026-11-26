@@ -10,8 +10,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..agent.types import ToolResult
+from ..execution_types import ProcessRequest, cleanup_process
 from ..i18n import Translator
 from .output import MAX_BYTES, CommandOutput, bound, display_output, open_output, read_output
+from .shell_env import shell_environment
 
 DEFAULT_TIMEOUT = 300
 MAX_TIMEOUT = 3600
@@ -30,9 +32,6 @@ BASH_PARAMS = {
 
 
 def spawn(command: str, cwd: Path, stdout=subprocess.PIPE, *, interpreter, execution_context, cancellation=None):
-    from ..execution import ProcessRequest
-    from .shell import shell_environment
-
     if interpreter is None or execution_context is None:
         raise ValueError("Managed execution requires both an explicit interpreter and execution_context")
     env = shell_environment()
@@ -86,8 +85,6 @@ def run_command(
                 time.sleep(0.05)
             proc.wait(timeout=5)
         finally:
-            from ..execution import cleanup_process
-
             try:
                 if proc.poll() is None:
                     kill_tree(proc)

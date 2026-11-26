@@ -42,7 +42,7 @@ def native_session(make_session, platforms):
     if sys.platform == "win32":
         import shutil
 
-        from virgo.execution_policy import is_windows_sandbox_supported
+        from virgo.execution import is_windows_sandbox_supported
 
         if not required and not is_windows_sandbox_supported():
             pytest.skip(

@@ -18,11 +18,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..execution import ExecutionCancelled as SandboxCancelled
-from ..execution import ExecutionFailed as SandboxProcessError
-from ..execution import ExecutionUnavailable as SandboxUnavailable
-from ..execution import HostProcess, environment_overrides
 from ..execution_policy import filter_sandbox_environment
+from ..execution_types import ExecutionCancelled as SandboxCancelled
+from ..execution_types import ExecutionFailed as SandboxProcessError
+from ..execution_types import ExecutionUnavailable as SandboxUnavailable
+from ..execution_types import environment_overrides
+from ..process import HostProcess
 
 _RUNTIME_ROOTS = tuple(dict.fromkeys(Path(value).resolve() for value in (sys.base_prefix, sys.prefix)))
 

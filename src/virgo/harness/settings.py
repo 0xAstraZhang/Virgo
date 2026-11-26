@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..execution_policy import DEFAULT_MODES, default_execution_mode, normalize_approval_policy
+from ..execution import default_execution_mode
+from ..execution_policy import DEFAULT_MODES, normalize_approval_policy
 
 PLUGIN_IDS = (
     "diagnostic_get", "skills", "ask_user", "subagent", "background", "web",
