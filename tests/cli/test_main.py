@@ -225,7 +225,8 @@ def test_print_bare_permissions_retains_detailed_json(project, monkeypatch, caps
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     assert cli.main(["-C", str(project), "--no-session", "-m", "faux/demo", "--permission", "no-limit",
                      "-p", "--format", "json", "/permissions"]) == 0
-    result = json.loads(capsys.readouterr().out)
+    result, telemetry = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert telemetry["type"] == "run_telemetry" and telemetry["model_calls"] == []
     assert result["type"] == "command_result"
     label, raw = result["text"].split("\n", 1)
     assert label == "No-Limit (Host)"
@@ -403,7 +404,8 @@ def test_print_reports_incomplete_response_after_length_continuations(project, m
         assert output.out == ""
     else:
         events = [json.loads(line) for line in output.out.splitlines()]
-        assert events[-1]["type"] == "agent_end"
+        assert events[-2]["type"] == "agent_end"
+        assert events[-1]["type"] == "run_telemetry"
 
 
 @pytest.mark.parametrize(("flag", "fmt"), [("-p", "text"), ("--print", "json")])
@@ -642,7 +644,8 @@ def test_print_resume_reports_recovery_on_stderr(project, monkeypatch, capsys, m
         return
     assert code == 0
     events = [json.loads(line) for line in output.out.splitlines()]
-    assert events[0]["type"] == "agent_start" and events[-1]["type"] == "agent_end"
+    assert events[0]["type"] == "agent_start" and events[-2]["type"] == "agent_end"
+    assert events[-1]["type"] == "run_telemetry"
     if damage == "empty-dir":
         assert output.err == "" and len(list(directory.glob("*.jsonl"))) == 1
     else:
@@ -650,3 +653,17 @@ def test_print_resume_reports_recovery_on_stderr(project, monkeypatch, capsys, m
         assert "line 3" in warning and "83 bytes" in warning and "user" in warning
         assert [msg["content"] for msg in faux.CALLS["test"][0]["messages"]] == ["prior question", "next question"]
         assert cli.SessionStore.load(path).id == "latest" and set(directory.glob("*.jsonl")) == {path, older}
+
+def test_json_telemetry_counts_dispatched_requests_and_local_tools(project, monkeypatch, capsys):
+    cli = import_module("virgo.cli.main")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    faux.script("telemetry", faux.reply(tools=[("glob", {"pattern": "*"})]), faux.reply("done"))
+    assert cli.main(["-p", "--format", "json", "--no-session", "-C", str(project),
+                     "--permission", "no-limit", "-m", "faux/telemetry", "hello"]) == 0
+    record = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert record["type"] == "run_telemetry" and record["complete"] is True
+    assert len(record["model_calls"]) == 2
+    assert len({call["id"] for call in record["model_calls"]}) == 2
+    assert all(call["usage_source"] == "synthetic" for call in record["model_calls"])
+    assert all(call["usage"]["input_tokens"] is None for call in record["model_calls"])
+    assert record["tool_calls"] == record["tool_executions"] == 1

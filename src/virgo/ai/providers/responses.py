@@ -9,6 +9,7 @@ import copy
 import json
 from collections.abc import Iterable
 
+from ..observed_usage import responses_usage
 from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent, aborted_event
 from ..types import (
@@ -344,6 +345,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
             for i, item in enumerate(response.get("output") or []):
                 yield from finish(i, item)
             out.usage = _usage(response.get("usage") or {})
+            out.reported_usage = responses_usage(response.get("usage") or {})
             status = response.get("status") or kind.removeprefix("response.")
             reason = (response.get("incomplete_details") or {}).get("reason")
             if status == "failed":

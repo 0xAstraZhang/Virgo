@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -88,6 +89,66 @@ def test_stream_dropped_mid_response_is_retryable(server, monkeypatch, provider)
     msg = ai.stream(model, Context("", [UserMessage("x")]), StreamOptions()).result()
     assert msg.stop_reason == "error" and msg.error_kind == "retryable" and msg.error_message
     assert msg.text()  # the partial output arrived before the drop
+
+
+@pytest.mark.parametrize("mode", ["drop_after_start", "eof_after_delta", "aborted", "closed_early"])
+def test_anthropic_interrupted_stream_preserves_reported_usage(server, monkeypatch, mode):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    start_event = {
+        **ANTHROPIC_EVENTS[0],
+        "message": {
+            **ANTHROPIC_EVENTS[0]["message"],
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 1,
+                "cache_read_input_tokens": 100,
+                "cache_creation_input_tokens": 5,
+            },
+        },
+    }
+    events_wire = [start_event, *ANTHROPIC_EVENTS[1:]]
+    if mode == "drop_after_start":
+        server["drop"] = True
+        server["body"] = sse(events_wire[:7], named=True)
+    elif mode == "eof_after_delta":
+        server["body"] = sse(events_wire[:-1], named=True)
+    else:
+        server["body"] = sse(events_wire, named=True)
+
+    model = ai.resolve_model("anthropic/claude-opus-5-5")
+    model.base_url = server["url"]
+    observed = []
+    signal = threading.Event()
+    opts = StreamOptions(signal=signal, request_observer=observed.append)
+
+    if mode in ("drop_after_start", "eof_after_delta"):
+        msg = ai.stream(model, Context("", [UserMessage("x")]), opts).result()
+        assert msg.stop_reason == "error" and msg.error_kind == "retryable"
+    elif mode == "aborted":
+        with ai.stream(model, Context("", [UserMessage("x")]), opts) as active:
+            for event in active:
+                if event.type == "text_delta":
+                    signal.set()
+            msg = active.result()
+        assert msg.stop_reason == "aborted"
+    else:
+        with ai.stream(model, Context("", [UserMessage("x")]), opts) as active:
+            for event in active:
+                if event.type == "text_delta":
+                    break
+
+    assert [e["phase"] for e in observed] == ["start", "end"]
+    end = observed[1]
+    expected_stop = {"drop_after_start": "error", "eof_after_delta": "error",
+                     "aborted": "aborted", "closed_early": "incomplete"}[mode]
+    assert end["stop_reason"] == expected_stop
+    assert end["usage"] == {
+        "input_tokens": 117,
+        "cached_input_tokens": 100,
+        "cache_write_tokens": 5,
+        "output_tokens": 40 if mode == "eof_after_delta" else None,
+        "reasoning_tokens": None,
+    }
 
 
 @pytest.mark.parametrize("arguments", ["null", '"src"', "[1, 2]"])

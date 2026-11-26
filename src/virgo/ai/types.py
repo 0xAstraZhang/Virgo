@@ -250,3 +250,5 @@ class StreamOptions:
     prompt_cache_key: str | None = None
     io_bridge: Any = field(default=None, repr=False, compare=False)
     before_dispatch: Callable[[Model, StreamOptions], None] | None = field(default=None, repr=False, compare=False)
+    request_observer: Callable[[dict], None] | None = field(default=None, repr=False, compare=False)
+    on_dispatch: Callable[[], None] | None = field(default=None, repr=False, compare=False)

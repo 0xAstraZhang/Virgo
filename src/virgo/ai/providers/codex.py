@@ -85,7 +85,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
             headers.setdefault("thread-id", opts.prompt_cache_key)
         events = json_events(
             _endpoint(model), headers, params if params is not None else build_params(model, ctx, opts), opts.signal,
-            io_bridge=opts.io_bridge, codex_session=opts.prompt_cache_key or "",
+            io_bridge=opts.io_bridge, codex_session=opts.prompt_cache_key or "", on_dispatch=opts.on_dispatch,
         )
         for event in responses.parse_events(
             _normalize_events(events), model, out, opts,

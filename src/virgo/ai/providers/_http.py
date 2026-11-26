@@ -357,7 +357,10 @@ def sdk_stream(out, opts, get_client, create, parse, on_error):
     async def open_stream(request, resources):
         request.client = get_client(request.bridge)
         request.check_signal()
-        stream = await resources.enter_async_context(await create(request.client))
+        pending = create(request.client)
+        if opts.on_dispatch is not None:
+            opts.on_dispatch()
+        stream = await resources.enter_async_context(await pending)
         request.response = stream.response
         return stream
 
@@ -518,7 +521,7 @@ class _JsonEvents:
 
 
 def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=None,
-                codex_session: str | None = None) -> _JsonEvents:
+                codex_session: str | None = None, on_dispatch=None) -> _JsonEvents:
     """Keep the TLS read and response close on the same I/O task, including early SSE termination."""
     async def open_stream(request, resources):
         request.check_signal()
@@ -528,6 +531,8 @@ def json_events(url: str, headers: dict, body: dict, signal=None, *, io_bridge=N
         if route is not None:
             session = codex_session or outgoing.headers.get("thread-id") or outgoing.headers.get("session-id")
             route.apply(outgoing, session)
+        if on_dispatch is not None:
+            on_dispatch()
         response = await client.send(outgoing, stream=True, follow_redirects=False)
         resources.push_async_callback(response.aclose)
         request.response = response

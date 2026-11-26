@@ -83,6 +83,7 @@ class AgentSession:
         home: str | Path | None = None,
         refresh_models: bool = True,
         shell_catalog: tuple[Shell, ...] | None = None,
+        run_telemetry=None,
     ):
         self.session_options = {
             "model": model,
@@ -96,6 +97,7 @@ class AgentSession:
         self.paths = Paths(Path(cwd), Path(home) if home else None)
         self.cwd = self.paths.cwd
         self.ui = ui or UI()
+        self.run_telemetry = run_telemetry
         self.diagnostics = DiagnosticLog(self.paths.user / "logs")
         self._diagnostic_lock = threading.RLock()
         self._notified_errors: set[str] = set()
@@ -451,7 +453,10 @@ class AgentSession:
             "model": model.spec, "api": model.api, "model_call_id": uuid.uuid4().hex, "attempt": 1,
         }
         try:
-            message = ai.complete(model, system, prompt, max_tokens=max_tokens, effort=effort, signal=signal)
+            observation = ({"request_observer": self.run_telemetry.observer(purpose, agent)}
+                           if self.run_telemetry is not None else {})
+            message = ai.complete(model, system, prompt, max_tokens=max_tokens, effort=effort, signal=signal,
+                                  **observation)
         except Exception as error:
             self.report_error(error, phase="model.auxiliary", store=store, context=diagnostic_context)
             raise
