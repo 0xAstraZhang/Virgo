@@ -105,6 +105,7 @@ MESSAGES = {
     "features.web.call_limit": "本次用户请求的联网工具调用已达到 plugins.web.maxCalls 上限。",
     "features.web.operation_limit": "本次用户请求的联网 {operation} 已达到 {operation}.maxUses 上限。",
     "features.web.budget_requires_client": "显式的共享联网调用预算需要使用客户端工具。",
+    "features.web.operation_budget_requires_client": "该托管网页工具不支持显式的 {setting} 配额，需要使用客户端工具。",
     "features.search.max_uses": "search.maxUses 必须为 null 或正整数。",
     "features.fetch.max_uses": "fetch.maxUses 必须为 null 或正整数。",
 }

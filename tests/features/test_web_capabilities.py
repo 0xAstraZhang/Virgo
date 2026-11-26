@@ -157,3 +157,71 @@ def test_web_guidance_injected_for_client_and_hosted_tools_and_omitted_when_off(
     s_off = make_session(settings={"search": {"mode": "off"}, "fetch": {"mode": "off"}})
     ctx_off = context(s_off, Model("deepseek", "deepseek-flash", "openai", "https://api.deepseek.com"))
     assert GUIDANCE not in ctx_off.system
+
+
+@pytest.mark.parametrize("model", [
+    Model("openai", "gpt-6-luna", "openai"),
+    Model("openai-codex", "gpt-6.1-terra", "openai-codex"),
+    Model("xai", "grok-4.3", "openai-responses", "https://api.x.ai/v1"),
+])
+@pytest.mark.parametrize("settings,expected_setting", [
+    ({"search": {"maxUses": 2}}, "search.maxUses"),
+    ({"fetch": {"maxUses": 1}}, "fetch.maxUses"),
+])
+def test_unmapped_explicit_max_uses_falls_back_to_client_tools(make_session, model, settings, expected_setting):
+    s = make_session(settings=settings)
+    ctx = context(s, model)
+    assert ctx.web_tools == []
+    assert {"web_search", "web_fetch"} <= {t.name for t in ctx.tools}
+    assert expected_setting in s.main._web_paths["search"]
+    assert expected_setting in s.main._web_paths["fetch"]
+
+
+def test_unmapped_max_uses_only_rejects_hosted_offers_covering_that_capability(make_session):
+    # gpt-4o hosted web_search only covers search, not fetch, so fetch.maxUses leaves it hosted.
+    model = Model("openai", "gpt-4o", "openai")
+    ctx_fetch_cap = context(make_session(settings={"fetch": {"maxUses": 1}}), model)
+    assert ctx_fetch_cap.web_tools == [{"type": "web_search"}]
+    names = {t.name for t in ctx_fetch_cap.tools}
+    assert "web_fetch" in names and "web_search" not in names
+
+    ctx_search_cap = context(make_session(settings={"search": {"maxUses": 2}}), model)
+    assert ctx_search_cap.web_tools == []
+    assert {"web_search", "web_fetch"} <= {t.name for t in ctx_search_cap.tools}
+
+
+@pytest.mark.parametrize("capability,settings", [
+    ("search", {"search": {"mode": "native", "maxUses": 2}}),
+    ("fetch", {"fetch": {"mode": "native", "maxUses": 1}}),
+])
+def test_unmapped_explicit_max_uses_fails_closed_in_native_mode(make_session, monkeypatch, capability, settings):
+    s = make_session(settings=settings)
+    s.main.model = Model("openai", "gpt-6-luna", "openai")
+    dispatched = install_responses(monkeypatch)
+    result = s.main.call_model([], s.main.agent.signal).result()
+    assert not dispatched
+    assert result.stop_reason == "error"
+    assert f"Native web {capability}" in result.error_message
+    assert f"{capability}.maxUses" in result.error_message
+
+
+def test_mapped_explicit_max_uses_stays_hosted_on_anthropic(make_session):
+    s = make_session(settings={"search": {"maxUses": 2}, "fetch": {"maxUses": 1}})
+    ctx = context(s, Model("anthropic", "claude-sonnet-4-6", "anthropic"))
+    by_name = {d["name"]: d for d in ctx.web_tools}
+    assert set(by_name) == {"web_search", "web_fetch"}
+    assert by_name["web_search"]["max_uses"] == 2
+    assert by_name["web_fetch"]["max_uses"] == 1
+    assert not {"web_search", "web_fetch"} & {t.name for t in ctx.tools}
+
+
+def test_runtime_max_uses_toggle_switches_between_hosted_and_client(make_session):
+    s = make_session()
+    model = Model("openai-codex", "gpt-6.1-terra", "openai-codex")
+    assert context(s, model).web_tools == [{"type": "web_search"}]
+    s.settings.set("search.maxUses", 1)
+    ctx_capped = s.main.request_context(s.main.messages)
+    assert ctx_capped.web_tools == []
+    assert {"web_search", "web_fetch"} <= {t.name for t in ctx_capped.tools}
+    s.settings.set("search.maxUses", None)
+    assert s.main.request_context(s.main.messages).web_tools == [{"type": "web_search"}]
