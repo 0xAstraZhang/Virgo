@@ -13,7 +13,6 @@ from ..tools.fs import EDIT, GLOB, GREP, PRESENT_FILE, READ, WRITE, make_file_to
 from ..tools.output import make_read_output_tool
 from .high_risk import detect_high_risk_command
 from .resource_approvals import HostExecutionProvider
-from .ui import confirm_callable
 
 _BACKEND_UNAVAILABLE_REASONS = frozenset({
     "backend_unavailable",
@@ -62,7 +61,7 @@ class ModeExecutionProvider(HostExecutionProvider):
             try:
                 self.resource_tool = install_resource_tool(api, provider)
             except BaseException:
-                api._rollback()
+                api.rollback()
                 raise
             self.sandbox = provider
         return self.sandbox
@@ -91,7 +90,7 @@ class ModeExecutionProvider(HostExecutionProvider):
         return self.load_sandbox().context_for_mode(runtime, mode, revision)
 
     def capture_runtime(self, runtime):
-        with self.session._lock:
+        with self.session.state_lock:
             if runtime.parent is not None:
                 context = getattr(runtime, "execution_context", None) or runtime.parent.execution_context
                 snapshot = getattr(context, "permission_snapshot", None)
@@ -112,7 +111,7 @@ class ModeExecutionProvider(HostExecutionProvider):
         return base if base.provider == "host" else self.sandbox.for_context(event)
 
     def _approval_allowed(self, base, signal) -> bool:
-        caller = confirm_callable(self.session.ui, prefer_persistent=False)
+        caller = self.session.ui.confirmation_handler(prefer_persistent=False)
         return self._confirmation_blocker(base, signal, caller) is None
 
     def _check_high_risk(self, event, base, *, confirm: bool):
@@ -147,9 +146,9 @@ class ModeExecutionProvider(HostExecutionProvider):
                 },
             })
 
-        caller = confirm_callable(self.session.ui, prefer_persistent=False)
+        caller = self.session.ui.confirmation_handler(prefer_persistent=False)
         runtime = self.session.runtime_for_context(event)
-        with self.session._lock:
+        with self.session.state_lock:
             if blocker := self._confirmation_blocker(base, event.signal, caller):
                 return deny(blocker)
             if runtime is None or base is not runtime.execution_context:
@@ -164,7 +163,7 @@ class ModeExecutionProvider(HostExecutionProvider):
             "Approve executing this command once?"
         )
         answer = caller(question, event.agent)
-        with self.session._lock:
+        with self.session.state_lock:
             if expired := self._confirmation_expiry(runtime, base, event.signal, revision):
                 return deny(expired)
         if answer == "n":
@@ -202,7 +201,7 @@ class ModeExecutionProvider(HostExecutionProvider):
             f"Run this single command with No-Limit (Host) authority? "
             f"(Session remains in {mode_name}; switch permanently with /permissions no-limit.)"
         )
-        if confirm_callable(self.session.ui, prefer_persistent=False)(question, ctx.agent) != "y":
+        if self.session.ui.confirmation_handler(prefer_persistent=False)(question, ctx.agent) != "y":
             return None
         return HostContext(
             base.workspace,
@@ -241,7 +240,7 @@ class ModeExecutionProvider(HostExecutionProvider):
         self.executor.close()
 
     def select_mode(self, identifier):
-        with self.session._lock:
+        with self.session.state_lock:
             self.session.assert_state_change_allowed()
             if identifier not in self.modes:
                 raise ValueError("Choose read-only, workspace-edit or no-limit; use /permissions list")
@@ -265,7 +264,7 @@ class ModeExecutionProvider(HostExecutionProvider):
     def permission_summary_rows(self) -> list[str]:
         session = self.session
         t = session.t
-        with session._lock:
+        with session.state_lock:
             runtime = session.main
             caller = ToolContext("/permissions", runtime.cwd, Event(), runtime.name, origin=runtime.origin)
             context = self.for_context(caller)
@@ -288,7 +287,7 @@ class ModeExecutionProvider(HostExecutionProvider):
             return rows
 
     def status(self, session, args):
-        with session._lock:
+        with session.state_lock:
             context = session.main.execution_context
             current = self.mode_for(session.main)
             facts = {**context.describe(), "current_mode": current.name, "next_mode": self.selected_mode.name,
@@ -320,7 +319,7 @@ class ModeExecutionProvider(HostExecutionProvider):
 def install_execution(session):
     provider = ModeExecutionProvider(session)
     session.services["execution"] = provider
-    session._permission_boundary = session.bus.boundary(100)
+    session.set_permission_boundary(session.bus.boundary(100))
     # Registered before JobManager so LIFO shutdown drains background jobs first,
     # then tears down session-scoped Windows AppContainer profiles and ACLs.
     session.register_cleanup("core.execution", provider.close)

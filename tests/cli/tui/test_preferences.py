@@ -55,7 +55,7 @@ def test_picker_escape_does_not_cancel_background_startup_refresh(make_session, 
             await wait_for(pilot, lambda: not app.controller.busy, timeout=1)
             assert not app.query_one(PreferencePicker).display
             assert app.editor.display and app.active_input is None
-            assert not app.session._catalog_refresh_done.is_set()
+            assert not app.session.models.refresh_done.is_set()
             app.session.shutdown()
 
     asyncio.run(scenario())
@@ -143,7 +143,7 @@ def test_provider_group_combines_api_and_account_models_and_back_keeps_selection
             "accountId": "test-account",
         })
         session = make_session(ui=ui, settings={"providers": {"openai": {"models": {"configured-chat": {}}}}})
-        assert await asyncio.to_thread(session._catalog_refresh_done.wait, 3)
+        assert await asyncio.to_thread(session.models.refresh_done.wait, 3)
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             app.controller.submit("/model")

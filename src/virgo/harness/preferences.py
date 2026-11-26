@@ -8,7 +8,6 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -17,70 +16,26 @@ from ..ai.auth_presets import API_PRESETS, AUTH_PRESETS
 from ..ai.catalog import CatalogCancelled, CatalogError, fetch_model_catalog
 from ..ai.models import BUILTIN_PROVIDERS, base_url
 from ..ai.types import Model
+from .ui import (
+    EFFORT_LEVELS as EFFORT_LEVELS,
+)
+from .ui import (
+    ModelChoice,
+    PreferenceChoice,
+    PreferenceRequest,
+)
+from .ui import (
+    effort_levels as effort_levels,
+)
 
 if TYPE_CHECKING:
     from .session import AgentSession
-
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-
-
-def effort_levels(model: Model) -> tuple[str, ...]:
-    if model.supported_reasoning_levels is None and model.default_reasoning_level:
-        return tuple(dict.fromkeys((*EFFORT_LEVELS, model.default_reasoning_level)))
-    if not model.reasoning or model.supported_reasoning_levels is None:
-        return EFFORT_LEVELS
-    return model.supported_reasoning_levels
 
 
 def effort_label(model: Model, requested: str | None, t, *, show_requested: bool = True) -> str:
     effective = resolved_effort(model, requested).effective
     label = effective or t("harness.effort.default" if model.reasoning else "ui.modes.off")
     return f"{requested}→{label}" if show_requested and requested and requested != label else label
-
-
-@dataclass(frozen=True)
-class ModelChoice:
-    spec: str
-    label: str
-    description: str
-    released_at: float | None = None
-    effort_levels: tuple[str, ...] = EFFORT_LEVELS
-    preferred_effort: str | None = "high"
-    reasoning: bool = False
-
-    @classmethod
-    def from_model(cls, model: Model, description: str, requested: str | None, released_at: float | None = None) -> ModelChoice:
-        levels = effort_levels(model)
-        effective = resolved_effort(model, requested).effective
-        candidates = (effective, requested, model.automatic_effort, "high")
-        preferred = next((level for level in candidates if level in levels), levels[0] if levels else requested)
-        return cls(model.spec, model.id, description, released_at, levels, preferred, model.reasoning)
-
-
-@dataclass(frozen=True)
-class PreferenceRequest:
-    kind: str
-    models: tuple[ModelChoice, ...]
-    model: str
-    effort: str | None
-
-    def offers(self, choice: PreferenceChoice) -> bool:
-        model = next((item for item in self.models if item.spec == choice.model), None)
-        if model is None or (self.kind == "effort" and choice.model != self.model):
-            return False
-        if self.kind == "model" and choice.effort is None:
-            return True
-        if not model.effort_levels:
-            # Selecting the model alone must preserve the saved preference.
-            return self.kind == "model" and choice.effort == model.preferred_effort
-        return choice.effort in model.effort_levels
-
-
-@dataclass(frozen=True)
-class PreferenceChoice:
-    model: str
-    effort: str | None
-    persist: bool
 
 
 def _catalog_connections(session: AgentSession, providers: set[str]) -> Iterator[Model]:
@@ -144,29 +99,29 @@ def start_model_refresh(session: AgentSession) -> None:
     """One bounded, background lookup per connected provider at process startup."""
     connections = _connected_remote_models(session)
     if not connections:
-        session._catalog_refresh_done.set()
+        session.models.refresh_done.set()
         return
     slots = threading.Semaphore(4)
     owner = session.store
+    stop_event = session.models.stop_event
 
     def refresh(connection):
         with slots:
-            if session._catalog_stop.is_set():
+            if stop_event.is_set():
                 return
             try:
-                with session._lock:
-                    revision = session._catalog_revisions.get(connection.provider, 0)
-                models = fetch_model_catalog(connection, session._catalog_stop)
+                revision = session.models.catalog_revision(connection.provider)
+                models = fetch_model_catalog(connection, stop_event)
                 _publish_catalog(session, connection, models, owner, revision=revision)
             except CatalogCancelled:
                 pass
             except CatalogError as error:
-                if not session._catalog_stop.is_set():
+                if not stop_event.is_set():
                     session.report_error(error, phase="catalog.refresh", store=owner,
                                          context={"provider": connection.provider, "api": connection.api}, notify=False)
                     session.ui.print(session.t("harness.models.keep", provider=provider_name(connection.provider), error=error), "warn")
             except Exception as error:
-                if not session._catalog_stop.is_set():
+                if not stop_event.is_set():
                     session.report_error(error, phase="catalog.refresh", store=owner,
                                          context={"provider": connection.provider, "api": connection.api}, notify=False)
                     session.ui.print(session.t("harness.models.refresh_failed", provider=provider_name(connection.provider)), "warn")
@@ -179,27 +134,17 @@ def start_model_refresh(session: AgentSession) -> None:
             for worker in workers:
                 worker.join()
         finally:
-            session._catalog_refresh_done.set()
+            session.models.refresh_done.set()
 
     threading.Thread(target=run, daemon=True, name="virgo-startup-catalog").start()
 
 
 def _publish_catalog(session: AgentSession, connection: Model, models: list, owner, *, revision: int | None = None) -> int | None:
     """Publish one connection's directory snapshot after the endpoint still matches."""
-    with session._lock:
-        if session._catalog_stop.is_set():
-            return None
-        # A login on the same endpoint may have already published the new account's models.
-        if revision is not None and session._catalog_revisions.get(connection.provider, 0) != revision:
-            return None
-        # A settings/login change during the request must not publish into a different endpoint.
-        current = session.resolve(f"{connection.provider}/_catalog")
-        if current.api != connection.api or base_url(current) != base_url(connection):
-            return None
-        session.remember_model_metadata(connection, models, diagnostic_store=owner)
-        if not models:
-            session.ui.print(session.t("harness.models.empty_live", provider=provider_name(connection.provider)), "warn")
-    return len(models)
+    count = session.publish_model_catalog(connection, models, owner, revision=revision)
+    if count == 0:
+        session.ui.print(session.t("harness.models.empty_live", provider=provider_name(connection.provider)), "warn")
+    return count
 
 
 def refresh_provider_catalog(session: AgentSession, provider: str) -> int | None:
@@ -215,7 +160,7 @@ def refresh_provider_catalog(session: AgentSession, provider: str) -> int | None
     except CatalogCancelled:
         return None
     except Exception as error:
-        if not session._catalog_stop.is_set():
+        if not session.models.stop_event.is_set():
             if not isinstance(error, CatalogError):
                 error = CatalogError("Could not read the model directory. Check the connection and login, then retry /model.")
             session.report_error(error, phase="catalog.login", store=session.store,
@@ -315,20 +260,21 @@ def configure_preference(session: AgentSession, kind: str) -> None:
     if kind not in ("model", "effort"):
         raise ValueError(f"unknown preference kind: {kind}")
     # A missing provider can publish during model_choices, so check cache coverage first.
-    refreshing = kind == "model" and not session._catalog_refresh_done.is_set()
+    refresh_done = session.models.refresh_done
+    refreshing = kind == "model" and not refresh_done.is_set()
     uncached = refreshing and _has_uncached_remote_provider(session)
     models = model_choices(session) if kind == "model" else (
         ModelChoice.from_model(session.model, session.model.provider, session.effort),
     )
     if refreshing and (not models or uncached):
         deadline = time.monotonic() + 5
-        while not session._catalog_refresh_done.is_set():
+        while not refresh_done.is_set():
             if session.main.agent.signal.is_set():
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            session._catalog_refresh_done.wait(min(0.05, remaining))
+            refresh_done.wait(min(0.05, remaining))
         if session.main.agent.signal.is_set():
             return
         models = model_choices(session)

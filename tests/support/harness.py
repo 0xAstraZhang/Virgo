@@ -19,6 +19,8 @@ from virgo.harness.ui import UI
 class RecordingUI(UI):
     """Collects output; answers permission questions from a list (default: deny)."""
 
+    supports_confirm = True
+
     def __init__(self, answers=None):
         self.lines: list[str] = []
         self.events = []

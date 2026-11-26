@@ -15,8 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...agent.types import AgentEvent
-from ...harness.preferences import PreferenceChoice, PreferenceRequest
-from ...harness.ui import TIMED_OUT, UI
+from ...harness.ui import TIMED_OUT, UI, PreferenceChoice, PreferenceRequest
 from ..i18n import tr
 
 
@@ -63,6 +62,8 @@ class _Waiting:
 class FullscreenUI(UI):
     interactive = True
     supports_preferences = True
+    supports_confirm = True
+    supports_confirm_once = True
 
     def __init__(self) -> None:
         self._queue: queue.SimpleQueue[Update] = queue.SimpleQueue()
@@ -283,6 +284,8 @@ class StagedFullscreenUI(UI):
 
     interactive = True
     supports_preferences = True
+    supports_confirm = True
+    supports_confirm_once = True
 
     def __init__(self, bridge: FullscreenUI) -> None:
         self._bridge = bridge

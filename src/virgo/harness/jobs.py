@@ -87,7 +87,7 @@ class JobManager:
         self.session.bus.emit("background_capability_changed", enabled)
 
     def current_store(self):
-        with self.session._lock:
+        with self.session.state_lock:
             return self.session.store
 
     def get(self, job_id: str) -> Job | None:
@@ -257,7 +257,7 @@ class JobManager:
         shell = shell or self.session.services["shell"].current
         if shell is None:
             raise ValueError(self.session.t("features.jobs.no_shell"))
-        with self.session._lock:
+        with self.session.state_lock:
             owner = store if store is not None else self.current_store()
             runtime = self.session.runtime_for_store(owner)
             if execution_context is None:

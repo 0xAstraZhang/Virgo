@@ -44,7 +44,7 @@ def provider_catalogs(monkeypatch):
 def make_session(make_session):
     def ready(*args, **kwargs):
         session = make_session(*args, **kwargs)
-        assert session._catalog_refresh_done.wait(3)
+        assert session.models.refresh_done.wait(3)
         return session
     return ready
 
@@ -234,7 +234,7 @@ def test_model_picker_during_two_provider_refresh(make_session, monkeypatch, bot
     connection = session.resolve("deepseek/_catalog")
     if both_cached:
         session.remember_model_metadata(connection, [CatalogModel("cached")])
-    refresh = session._catalog_refresh_done
+    refresh = session.models.refresh_done
     refresh.clear()
 
     def wait(seconds):
@@ -259,7 +259,7 @@ def test_empty_picker_waits_in_bounded_slices_then_reads_catalog(make_session, m
     session.set_model("deepseek-chat")
     session.small_model = session.model
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    refresh = session._catalog_refresh_done
+    refresh = session.models.refresh_done
     refresh.clear()
     elapsed = 0.0
     waits = []
@@ -283,7 +283,7 @@ def test_empty_picker_waits_in_bounded_slices_then_reads_catalog(make_session, m
     else:
         assert elapsed == pytest.approx(5.0)
         assert not ui.requests and "/login" in ui.lines[-1]
-        assert not session._catalog_stop.is_set()
+        assert not session.models.stop_event.is_set()
 
 
 @pytest.mark.parametrize("kind", ["model", "effort"])

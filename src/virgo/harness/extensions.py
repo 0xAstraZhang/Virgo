@@ -280,12 +280,15 @@ class ExtensionAPI:
         self._session.register_cleanup(self.name, callback)
 
     def current_runtime(self):
-        with self._session._lock:
+        with self._session.state_lock:
             return self._session.main
 
     def current_store(self):
-        with self._session._lock:
+        with self._session.state_lock:
             return self._session.store
+
+    def subagent_store_for(self, store=None):
+        return self._session.subagent_store_for(store)
 
     def runtime_for_context(self, context):
         return self._session.runtime_for_context(context)
@@ -333,7 +336,7 @@ class ExtensionAPI:
                diagnostics=()) -> None:
         self.session.notify(text, mode=mode, source=source or self.name, store=store, diagnostics=diagnostics)
 
-    def _rollback(self):
+    def rollback(self):
         self._session.cleanup_plugins(owner=self.name)
         for undo in reversed(self._undos):
             undo()
@@ -351,16 +354,15 @@ BUILTIN_PLUGINS = PLUGIN_IDS
 def _setup(session: AgentSession, name: str, setup: Callable[[ExtensionAPI], None], *, context=None) -> None:
     api = ExtensionAPI(session, name)
     services = dict(session.services)
-    tools = dict(session._tool_groups)
+    tools = session.checkpoint_tools()
     try:
         setup(api)
         session.loaded_plugins.append(name)
     except Exception as error:
-        api._rollback()
+        api.rollback()
         # A capability may ask a Core adapter to rebuild its owned tools (shell
         # background mode). Restore that adapter's registration too on failure.
-        session._tool_groups = tools
-        session._tool_version += 1
+        session.restore_tools(tools)
         session.services.clear()
         session.services.update(services)
         session.report_error(error, phase="extension.load", code="PLUGIN_DEGRADED",

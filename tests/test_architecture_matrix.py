@@ -59,11 +59,7 @@ KNOWN_LAYER_VIOLATIONS: set[tuple[str, str]] = set()
 
 KNOWN_TC_REVERSE_EDGES: set[tuple[str, str]] = set()
 
-KNOWN_PRIVATE_INTRUSIONS: set[str] = {
-    "cli/tui/app.py:bus.emit",
-    "cli/tui/app.py:services.execution",
-    "cli/repl.py:services.execution",
-}
+KNOWN_PRIVATE_INTRUSIONS: set[str] = set()
 
 
 def _collect_modules() -> dict[str, Path]:
@@ -335,13 +331,15 @@ def test_no_implicit_cross_boundary_intrusions() -> None:
         src = path.read_text(encoding="utf-8")
         tree = ast.parse(src, filename=str(path))
 
-        # 1. Plugins/extensions must not write/read private runtime._* or session._* attrs
-        #    or reach directly into virgo.ai.providers.*.
+        # 1. Plugins/extensions must not write/read private runtime._* or session._* attrs,
+        #    use the api.session escape hatch, or reach directly into virgo.ai.providers.*.
         if rel.startswith(("plugins/", "extensions/")):
             for node in ast.walk(tree):
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
                     if node.value.id in {"runtime", "rt", "session"} and node.attr.startswith("_"):
                         found.add(f"{rel}:{node.value.id}.{node.attr}")
+                    if node.value.id == "api" and node.attr == "session":
+                        found.add(f"{rel}:api.session")
                 if isinstance(node, ast.ImportFrom) and node.module and "ai.providers" in node.module:
                     found.add(f"{rel}:{node.module.split('ai.', 1)[-1]}")
                 if isinstance(node, ast.ImportFrom) and node.level > 0 and node.module and "providers.web" in node.module:
@@ -359,21 +357,36 @@ def test_no_implicit_cross_boundary_intrusions() -> None:
             if '"harness.agent.' in src:
                 found.add(f"{rel}:harness_i18n_key")
 
-        # 4. Harness core must not hardcode optional plugin services or poke private internals of stores/sandbox/agent.
+        # 4. Harness core must not hardcode optional plugin services or poke private internals of stores/sandbox/agent/session.
         if rel.startswith("harness/"):
             if 'services.get("web")' in src or 'services["web"]' in src:
                 found.add(f"{rel}:services.web")
             if 'services.get("subagents")' in src or 'services["subagents"]' in src:
                 found.add(f"{rel}:services.subagents")
-            if "bound._lock" in src or "store._lock" in src:
-                if rel != "harness/session.py":  # session trash locks multiple stores atomically
-                    found.add(f"{rel}:store._lock")
+            if ("bound._lock" in src or "store._lock" in src) and rel != "harness/store.py":
+                found.add(f"{rel}:store._lock")
             if "failure_signals" in src and rel != "harness/store.py":
                 found.add(f"{rel}:store.failure_signals")
             if "sandbox, \"_result\"" in src or "sandbox._result" in src:
                 found.add(f"{rel}:sandbox._result")
             if "agent._emit" in src:
                 found.add(f"{rel}:agent._emit")
+            if rel != "harness/session.py":
+                for attr in (
+                    "session._lock",
+                    "session._tool_groups",
+                    "session._tool_version",
+                    "session._permission_boundary",
+                    "session._catalog_refresh_done",
+                    "session._catalog_stop",
+                    "session._catalog_revisions",
+                ):
+                    if attr in src:
+                        found.add(f"{rel}:{attr}")
+            if rel == "harness/ui.py":
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ImportFrom) and node.level == 1:
+                        found.add(f"{rel}:sibling_import.{node.module}")
 
         # 5. CLI must not directly emit on session.bus or reach into session.services["execution"].
         if rel.startswith("cli/"):

@@ -99,7 +99,7 @@ class RunController:
             else:
                 candidate = AgentSession(
                     target.cwd, ui=StagedFullscreenUI(self.ui), session=path,
-                    **{**previous.session_options, "trust_project_extensions": False},
+                    **previous.clone_options(target.cwd),
                 )
                 with self._lifecycle_lock:
                     closing = self.closing

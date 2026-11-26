@@ -16,20 +16,17 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import ExitStack
-from dataclasses import replace
 from pathlib import Path
 from stat import S_ISREG
-from urllib.parse import urlsplit
 
 from .. import ai
 from ..agent import AgentTool, Block, ToolCallEvent, ToolContext, ToolResult
 from ..ai.auth import AuthStore
-from ..ai.model_metadata import cache_path, clean_metadata, read_catalog, write_metadata
 from ..ai.models import base_url
 from ..ai.providers._http import AsyncSDKBridge
 from ..ai.types import (
     TextContent,
+    Usage,
     UserMessage,
 )
 from ..diagnostics import capture_error, emergency_write, error_summary, safe_text
@@ -39,6 +36,7 @@ from ..i18n import Translator, normalize_language
 from ..output_store import OutputStore
 from ..tools.output import MAX_BYTES, budget
 from ..tools.shell import Shell
+from . import preferences
 from .commands import Commands, expand_template, load_templates, parse_frontmatter, register_builtins
 from .diagnostics import DiagnosticLog
 from .execution import install_execution
@@ -50,6 +48,11 @@ from .extensions import (
     load_extensions,
 )
 from .jobs import JobManager
+from .model_registry import (
+    ModelRegistry,
+    small_model_effort_fallback_reason_for,
+    small_model_effort_for,
+)
 from .origin_context import ExecutionOrigin, source_for
 from .resource_rules import ResourceRules
 from .runtime import Runtime
@@ -59,6 +62,7 @@ from .shell_commands import ShellSelection
 from .store import SessionSaveError, SessionStore
 from .subagents import SubagentStore
 from .telemetry import record_call
+from .tool_registry import ToolRegistry
 from .ui import UI
 
 _DEFAULT_EFFORT = object()
@@ -120,13 +124,12 @@ class AgentSession:
         self._output_stores: dict[str, OutputStore] = {}
         self._subagent_stores: dict[str, SubagentStore] = {}
         self._pending_child_work: dict[str, tuple[Runtime, int]] = {}
-        self._tool_groups: dict[tuple[str, str], tuple[tuple[AgentTool, tuple], ...]] = {}
-        self._tool_version = 0
+        self._lock = threading.RLock()
+        self._tools = ToolRegistry(self._lock)
         self._plugin_cleanups: list[tuple[str, object]] = []
         self.loaded_plugins: list[str] = []
         self._child_runtimes: dict[tuple[str, str], Runtime] = {}
         self._notification_depth = 0
-        self._lock = threading.RLock()
         self.approval_revision = 0
         self.approval_policy = approval_policy or self.settings.get("permissions.approval", "ask")
         self.effort_override: str | None = self.settings.get("effort")
@@ -135,13 +138,13 @@ class AgentSession:
         self.busy = False
         self.command_exit_code = 0
         self.wakeups: deque = deque()
-        self.discovered_models: dict[str, dict] = {}
-        self._metadata_paths: dict[str, Path] = {}
-        self._model_catalogs: dict[Path, list] = {}
-        self._catalog_revisions: dict[str, int] = {}
-        self._catalog_stop = threading.Event()
-        self._catalog_refresh_done = threading.Event()
-        self._metadata_pending = False
+        self.models = ModelRegistry(
+            lock=self._lock,
+            user_dir=self.paths.user,
+            get_auth_path=lambda: self.auth.path,
+            settings=self.settings,
+            on_save_error=self._on_catalog_save_error,
+        )
         self.model = self.resolve(model or self.settings.get("model"))
         self.small_model = self._small_model(self.model)
 
@@ -195,11 +198,9 @@ class AgentSession:
             self.ui.print(warning, "warn")
         self._warn_retired_data()
         if refresh_models:
-            from .preferences import start_model_refresh
-
-            start_model_refresh(self)
+            preferences.start_model_refresh(self)
         else:
-            self._catalog_refresh_done.set()
+            self.models.refresh_done.set()
 
     # -- diagnostics -----------------------------------------------------------
     def _warn_windows_sandbox(self) -> None:
@@ -330,6 +331,23 @@ class AgentSession:
 
     # -- setup helpers ---------------------------------------------------------
     @property
+    def state_lock(self) -> threading.RLock:
+        """Reentrant lock synchronizing core harness state transitions."""
+        return self._lock
+
+    @property
+    def discovered_models(self) -> dict[str, dict]:
+        return self.models.discovered_models
+
+    @discovered_models.setter
+    def discovered_models(self, value: dict[str, dict]) -> None:
+        self.models.discovered_models = value
+
+    def _on_catalog_save_error(self, error: OSError, path: Path, diagnostic_store) -> None:
+        self.report_error(error, phase="catalog.save", store=diagnostic_store, context={"path": str(path)})
+        self.ui.print(self.t("harness.models.save_failed"), "warn")
+
+    @property
     def approval_policy(self) -> str:
         return self._approval_policy
 
@@ -341,92 +359,44 @@ class AgentSession:
             self.approval_revision += 1
 
     def resolve(self, spec: str) -> ai.Model:
-        with self._lock:
-            return self._resolve(spec)
-
-    def _resolve(self, spec: str) -> ai.Model:
-        providers = self.settings.get("providers", {})
-        candidate = ai.resolve_model(spec, providers)
-        path = cache_path(self.paths.user, candidate)
-        if self._metadata_paths.get(candidate.provider) != path:
-            self._replace_metadata(candidate.provider, {item.id: item.metadata for item in self.cached_model_catalog(candidate)})
-            self._metadata_paths[candidate.provider] = path
-        if metadata := self.discovered_models.get(candidate.spec):
-            provider, model_id = candidate.provider, candidate.id
-            config = providers.get(provider, {})
-            models = config.get("models") or {}
-            names = {
-                "context_window": "contextWindow", "max_tokens": "maxTokens", "reasoning": "reasoning", "vision": "vision",
-                "supported_reasoning_levels": "supportedReasoningLevels",
-                "default_reasoning_level": "defaultReasoningLevel",
-            }
-            live = {names[key]: value for key, value in metadata.items() if key in names}
-            providers = {**providers, provider: {**config, "models": {**models, model_id: {**live, **models.get(model_id, {})}}}}
-        m = ai.resolve_model(spec, providers)
-        m.auth_path = str(self.auth.path)
-        if m.api == "anthropic":
-            for k in ("fallbacks", "thinkingDisplay", "thinkingBinding"):
-                m.options.setdefault(k, self.settings.get(f"anthropic.{k}"))
-        return m
-
-    def _replace_metadata(self, provider: str, models: dict) -> None:
-        self.discovered_models = {
-            spec: meta for spec, meta in self.discovered_models.items() if not spec.startswith(provider + "/")
-        }
-        self.discovered_models.update({f"{provider}/{key}": clean_metadata(value) for key, value in models.items()})
+        return self.models.resolve(spec)
 
     def cached_model_catalog(self, connection: ai.Model) -> list:
-        with self._lock:
-            path = cache_path(self.paths.user, connection)
-            if path not in self._model_catalogs:
-                self._model_catalogs[path] = read_catalog(path)
-            return list(self._model_catalogs[path])
+        return self.models.cached_catalog(connection)
 
     def remember_model_metadata(self, connection: ai.Model, models: list, *, diagnostic_store=None) -> None:
         with self._lock:
-            path = cache_path(self.paths.user, connection)
-            self._model_catalogs[path] = list(models)
-            provider = connection.provider
-            self._catalog_revisions[provider] = self._catalog_revisions.get(provider, 0) + 1
-            self._replace_metadata(provider, {item.id: item.metadata for item in models})
-            self._metadata_paths[provider] = path
-            try:
-                write_metadata(path, models)
-            except OSError as error:
-                self.report_error(error, phase="catalog.save", store=diagnostic_store, context={"path": str(path)})
-                self.ui.print(self.t("harness.models.save_failed"), "warn")
-            self._metadata_pending = True
+            self.models.remember_metadata(connection, models, diagnostic_store=diagnostic_store)
             if not self.busy:
                 self._apply_model_metadata()
 
+    def publish_model_catalog(
+        self, connection: ai.Model, models: list, owner, *, revision: int | None = None
+    ) -> int | None:
+        """Publish one provider catalog atomically if stop/revision/endpoint still match."""
+        with self._lock:
+            if self.models.stop_event.is_set():
+                return None
+            # A login on the same endpoint may have already published the new account's models.
+            if revision is not None and self.models.catalog_revision(connection.provider) != revision:
+                return None
+            # A settings/login change during the request must not publish into a different endpoint.
+            current = self.resolve(f"{connection.provider}/_catalog")
+            if current.api != connection.api or base_url(current) != base_url(connection):
+                return None
+            self.remember_model_metadata(connection, models, diagnostic_store=owner)
+            return len(models)
+
     def _apply_model_metadata(self) -> None:
-        if not self._metadata_pending:
+        updated = self.models.apply_pending(self.model, self.small_model)
+        if updated is None:
             return
-
-        def refreshed(current):
-            resolved = self.resolve(current.spec)
-            # A directory refresh owns capacity/capability metadata, not the
-            # runtime's transport, credentials or explicit provider options.
-            model = replace(
-                current,
-                context_window=resolved.context_window,
-                max_tokens=resolved.max_tokens,
-                reasoning=resolved.reasoning,
-                vision=resolved.vision,
-                supported_reasoning_levels=resolved.supported_reasoning_levels,
-                default_reasoning_level=resolved.default_reasoning_level,
-                automatic_effort=resolved.automatic_effort,
-            )
-            return current if model == current else model
-
-        shared_model = self.small_model is self.model
-        model = refreshed(self.model)
+        model, small = updated
         # An unrelated catalog refresh must not invalidate prepared request
         # bindings by replacing an otherwise unchanged runtime model object.
         if model is not self.model:
             self.model = self.main.model = model
-        self.small_model = self.model if shared_model else refreshed(self.small_model)
-        self._metadata_pending = False
+        self.small_model = small
 
     def effort_for(self, model: ai.Model) -> str | None:
         return self.effort_override if self.effort_override is not None else model.automatic_effort
@@ -440,43 +410,15 @@ class AgentSession:
         self.effort_override = level
 
     def _small_model(self, model: ai.Model) -> ai.Model:
-        host = urlsplit(base_url(model)).hostname
-        if model.api == "anthropic" and (
-            model.provider == "anthropic" or host == "api.anthropic.com"
-        ):
-            return self.resolve(f"{model.provider}/claude-haiku-5-5")
-        is_openai = model.provider in {"openai", "openai-codex"} or model.api == "openai-codex"
-        if model.api in {"openai", "openai-responses", "openai-codex"} and (
-            is_openai or host == "api.openai.com"
-        ):
-            return self.resolve(f"{model.provider}/gpt-6-luna")
-        return model
+        return self.models.small_model_for(model)
 
     @property
     def small_model_effort(self) -> str | None:
-        model = self.small_model
-        if not model.reasoning:
-            return None
-        if "low" in (model.supported_reasoning_levels or ()):
-            return "low"
-        default = model.default_reasoning_level
-        if model.supported_reasoning_levels is None or default in model.supported_reasoning_levels:
-            return default
-        return None
+        return small_model_effort_for(self.small_model)
 
     @property
     def small_model_effort_fallback_reason(self) -> str | None:
-        model = self.small_model
-        if not model.reasoning:
-            return "model does not support reasoning controls"
-        selected = self.small_model_effort
-        if selected == "low":
-            return None
-        if selected is not None:
-            return "low is unavailable; using the declared model default"
-        if model.supported_reasoning_levels is None:
-            return "reasoning capabilities are unknown; using the server default"
-        return "low is unavailable and no valid model default is declared; using the server default"
+        return small_model_effort_fallback_reason_for(self.small_model)
 
     def complete(self, purpose: str, system: str, prompt: str, *, model=None,
                  effort=_DEFAULT_EFFORT, max_tokens=None, signal=None, agent="main", tool_call_id=None,
@@ -702,12 +644,7 @@ class AgentSession:
             # A conversation may have been reopened more than once. Stop all
             # retained stores from recreating it, including late extension writes.
             try:
-                with ExitStack() as locks:
-                    for store in stores:
-                        locks.enter_context(store._lock)
-                    stores[0].trash()
-                    for store in stores[1:]:
-                        store.path = None
+                SessionStore.trash_all(stores)
             except BaseException:
                 if current:
                     # The prepared replacement was never activated. Do not
@@ -787,60 +724,82 @@ class AgentSession:
             # failure must not be reported as a failed save or undo the choice.
             self.report_error(error, phase="ui.language_changed")
 
+    # -- presentation / permission facade --------------------------------------
+    def set_permission_boundary(self, boundary: tuple[int, int]) -> None:
+        self._permission_boundary = boundary
+
+    def effective_permission_mode(self, runtime: Runtime | None = None) -> str:
+        return self.services["execution"].effective_mode(runtime or self.main)
+
+    def active_permission_mode(self, runtime: Runtime | None = None):
+        target = runtime or self.main
+        snapshot = target.permission_snapshot
+        if snapshot is not None:
+            return snapshot.mode
+        return self.services["execution"].mode_for(target)
+
+    @property
+    def selected_permission_mode(self):
+        return self.services["execution"].selected_mode
+
+    def select_permission_mode(self, identifier: str) -> None:
+        self.services["execution"].select_mode(identifier)
+
+    def cycle_permission_mode(self) -> None:
+        manager = self.services["execution"]
+        modes = list(manager.modes)
+        next_mode = modes[(modes.index(manager.selected_mode_id) + 1) % len(modes)]
+        manager.select_mode(next_mode)
+
+    def has_pending_work(self) -> bool:
+        """Return whether any registered background or plugin work is currently pending."""
+        return any(self.bus.emit("pending_work", self))
+
+    def clone_options(self, target_cwd: Path | None = None) -> dict:
+        """Build AgentSession kwargs for a new pane or workspace, clearing project trust on cwd change."""
+        options = dict(self.session_options)
+        if target_cwd is not None and Path(target_cwd).resolve() != self.cwd:
+            options["trust_project_extensions"] = False
+        return options
+
+    def status_snapshot(self) -> dict:
+        with self._lock:
+            runtime = self.main
+            provider = self.services["execution"]
+            return {
+                "runtime": runtime,
+                "session_id": self.store.id,
+                "usage": Usage(**self.store.total_usage()),
+                "context_tokens": self.context_tokens(),
+                "permission_rows": provider.permission_summary_rows(),
+            }
+
     # -- tools -------------------------------------------------------------------
     def register_tool(self, tool: AgentTool, roles: tuple = ("main",), *, owner: str = "host") -> None:
         """Register once; all replacements must use an explicitly owned namespace."""
-        with self._lock:
-            namespace = f"tool:{tool.name}"
-            if (owner, namespace) in self._tool_groups:
-                raise ValueError(f"Tool {tool.name!r} is already registered by {owner}")
-            self.replace_tools(namespace, [(tool, roles)], owner=owner)
+        self._tools.register(tool, roles, owner=owner)
 
     def replace_tools(self, namespace: str, tools, *, owner: str = "host") -> None:
         """Validate and publish one complete namespace without partial mutations."""
-        if not owner or not namespace:
-            raise ValueError("Tool registrations require an owner and namespace")
-        entries = tuple((tool, tuple(roles)) for tool, roles in tools)
-        if any(not isinstance(tool, AgentTool) or not tool.name or not roles
-               or any(not isinstance(role, str) or not role for role in roles) for tool, roles in entries):
-            raise ValueError("Tool registrations require AgentTool objects and nonempty role names")
-        key = (owner, namespace)
-        with self._lock:
-            occupied = {}
-            for group, values in self._tool_groups.items():
-                if group == key:
-                    continue
-                for tool, roles in values:
-                    for role in roles:
-                        occupied[tool.name, role] = group[0]
-            for tool, roles in entries:
-                for role in roles:
-                    if (tool.name, role) in occupied:
-                        raise ValueError(f"Tool {tool.name!r} for {role} is already registered by {occupied[tool.name, role]}")
-                    occupied[tool.name, role] = owner
-            groups = dict(self._tool_groups)
-            if entries:
-                groups[key] = entries
-            else:
-                groups.pop(key, None)
-            self._tool_groups = groups
-            self._tool_version += 1
+        self._tools.replace(namespace, tools, owner=owner)
 
     def remove_owned_tools(self, owner: str) -> None:
-        with self._lock:
-            self._tool_groups = {key: values for key, values in self._tool_groups.items() if key[0] != owner}
-            self._tool_version += 1
+        self._tools.remove_owner(owner)
+
+    def checkpoint_tools(self):
+        return self._tools.checkpoint()
+
+    def restore_tools(self, checkpoint) -> None:
+        self._tools.restore(checkpoint)
 
     def tool_snapshot(self, role: str) -> tuple[int, list[AgentTool]]:
-        with self._lock:
-            return self._tool_version, [tool for values in self._tool_groups.values()
-                                        for tool, roles in values if role in roles]
+        return self._tools.snapshot(role)
 
     def tools_for(self, role: str) -> list[AgentTool]:
-        return self.tool_snapshot(role)[1]
+        return self._tools.tools_for(role)
 
     def tool(self, name: str, role: str = "main") -> AgentTool | None:
-        return next((t for t in self.tools_for(role) if t.name == name), None)
+        return self._tools.tool(name, role)
 
     def _persistence_block(self, ev):
         runtime = ev.origin.runtime if ev.origin is not None else self.main
@@ -1188,8 +1147,7 @@ class AgentSession:
                 return
             if self.run_pending():
                 continue
-            busy = [b for b in self.bus.emit("pending_work", self) if b]
-            if not busy and not self.wakeups:
+            if not self.has_pending_work() and not self.wakeups:
                 return
             time.sleep(0.1)
 
@@ -1207,7 +1165,7 @@ class AgentSession:
             if self._shutdown_started:
                 return
             self._shutdown_started = True
-            self._catalog_stop.set()
+            self.models.stop_event.set()
             self.wakeups.clear()
         self.abort()
         for runtime in tuple(self._child_runtimes.values()):

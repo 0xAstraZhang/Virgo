@@ -19,8 +19,8 @@ import secrets
 import threading
 import time
 import uuid
-from collections.abc import Callable
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -518,6 +518,18 @@ class SessionStore:
                 _register_workspace(self.path.parent, self.cwd)
                 send2trash(str(self.path))
             self.path = None
+
+    @classmethod
+    def trash_all(cls, stores: Sequence[SessionStore]) -> None:
+        """Atomically lock all live store handles for a path, trash once, and detach aliases."""
+        if not stores:
+            return
+        with ExitStack() as locks:
+            for store in stores:
+                locks.enter_context(store._lock)
+            stores[0].trash()
+            for store in stores[1:]:
+                store.path = None
 
     # -- writing --------------------------------------------------------------
     def _write(self, obj: dict) -> None:

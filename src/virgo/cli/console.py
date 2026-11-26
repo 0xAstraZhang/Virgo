@@ -260,6 +260,8 @@ def _brief(args: dict | None) -> str:
 
 class TerminalUI(UI):
     interactive = True
+    supports_confirm = True
+    supports_confirm_once = True
 
     def __init__(self, broker: ConsoleBroker, show_thinking: bool = True):
         self.broker = broker
