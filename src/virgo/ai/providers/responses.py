@@ -9,8 +9,8 @@ import copy
 import json
 from collections.abc import Iterable
 
-from ..search import is_search_unsupported
 from ..observed_usage import responses_usage
+from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent, aborted_event
 from ..types import (
     AssistantMessage,

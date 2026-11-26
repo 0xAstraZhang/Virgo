@@ -1,7 +1,6 @@
 """Provider-reported counts, kept separate from conversation token estimates."""
 from __future__ import annotations
 
-
 TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens", "reasoning_tokens")
 
 

@@ -15,8 +15,8 @@ import os
 import re
 import threading
 
-from ..search import is_search_unsupported, is_web_unsupported
 from ..observed_usage import anthropic_usage
+from ..search import is_search_unsupported, is_web_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import (
     AssistantMessage,
