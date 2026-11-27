@@ -45,7 +45,7 @@ def short_workspace():
 
 def test_workspace_file_tools_obey_sandbox_even_with_accept_all(broker_session, project):
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}}, refresh_models=False
+        settings={"execution": {"mode": "workspace-edit"}}, refresh_models=False
     )
     outside = project.parent / "outside.txt"
     faux.script(
@@ -79,7 +79,7 @@ def test_sandbox_file_tools_atomic_replace_preserves_hardlink_targets(broker_ses
     alias = project / "ordinary.txt"
     os.link(source, alias)
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -104,7 +104,7 @@ def test_sandbox_file_mutation_roundtrip_and_failed_edit(broker_session, project
     changes its bytes; successful or failed operations leave staging files.
     """
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -171,7 +171,7 @@ def test_sandbox_file_tool_rejects_path_replacement_after_permission_check(
     target.write_text("original\n")
     outside.write_text("original\n")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -231,7 +231,7 @@ def test_sandbox_project_context_symlink_never_reaches_provider(broker_session, 
     secret = project.parent / "private-context-secret.txt"
     secret.write_text("credential-never-automatic-project-context")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -269,7 +269,7 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(broker_
     other.mkdir()
     (other / "AGENTS.md").write_text("replacement-cwd-private-context")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False,
         extensions=False,
     )
@@ -568,7 +568,7 @@ while not Path('finish-independent-background').exists():
 Path('independent-background-finished').write_text('finished')
 """
     session = make_session(
-        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+        settings={"plugins": {"background": {"enabled": True}},
                   **native.settings.overrides},
         refresh_models=False, extensions=False,
     )
@@ -638,7 +638,7 @@ def test_sandbox_file_mutation_rejects_metadata_symlink(broker_session, project,
     target = project / "ordinary.txt"
     target.write_text("original")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
     arguments = ({"path": target.name, "content": "changed"} if tool == "write" else
@@ -665,7 +665,7 @@ def test_sandbox_rejects_changed_cwd_before_creating_output(broker_session, proj
     outside = project.parent / "outside-cwd"
     outside.mkdir()
     session = broker_session(
-        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+        settings={"plugins": {"background": {"enabled": True}},
                   "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
@@ -696,7 +696,7 @@ def test_sandbox_rejects_external_output_symlink_before_spooling(broker_session,
         shutil.rmtree(outputs_root)
     outputs_root.symlink_to(outside, target_is_directory=True)
     session = broker_session(
-        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+        settings={"plugins": {"background": {"enabled": True}},
                   "execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
@@ -723,7 +723,7 @@ def test_native_protected_symlink_cannot_add_a_host_read_mount(native, project):
 
 
 def test_native_existing_metadata_symlink_cannot_be_replaced(native, project):
-    """S3-02: Symlinked .virgo protects its real target without breaking sessions."""
+    """Symlinked .virgo protects its real target without breaking sessions."""
     target = project / "virgo-meta"
     target.mkdir()
     settings_file = target / "settings.json"
@@ -832,7 +832,7 @@ def test_automatic_context_cannot_borrow_another_conversations_no_limit_mode(bro
     other.mkdir()
     (other / "CLAUDE.md").write_text("replacement-cwd-private-context")
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False,
     )
     origin = session.main
@@ -1085,14 +1085,65 @@ def test_sandbox_shell_discovery_does_not_execute_candidate_on_host(broker_sessi
     elif route == "path":
         monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ.get("PATH", ""))
     session = broker_session(
-        settings={"profile": "minimal", "execution": {"mode": "workspace-edit"}},
+        settings={"execution": {"mode": "workspace-edit"}},
         refresh_models=False, extensions=False, trust_project_extensions=False,
     )
     assert session.services["execution"].name == "sandbox"
+    if route == "project":
+        assert session.services["shell"].current.executable != str(candidate)
     if route == "selection":
         assert not sentinel.exists()
         session.prompt(f"/shell {shlex.quote(str(candidate))}")
     assert not sentinel.exists(), "Shell discovery/selection executed an unisolated candidate"
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX executable shell discovery")
+def test_untrusted_project_shell_is_stripped_in_no_limit_mode(make_session, project, monkeypatch):
+    user_shell = shutil.which("bash") or shutil.which("sh")
+    assert user_shell is not None
+    directory = project / "candidate-shell"
+    directory.mkdir()
+    candidate = directory / "bash"
+    sentinel = directory / "executed-on-host.txt"
+    candidate.write_text(
+        "#!/bin/sh\n"
+        f"printf 'host probe executed\\n' >> {shlex.quote(str(sentinel))}\n"
+        "printf '5.2.0'\n",
+        encoding="utf-8",
+    )
+    candidate.chmod(0o755)
+
+    monkeypatch.delenv("VIRGO_SHELL", raising=False)
+    user_settings = Path(os.environ["VIRGO_HOME"]) / "settings.json"
+    user_settings.write_text(
+        json.dumps({"execution": {"mode": "no-limit"}, "shell": {"executable": user_shell}}),
+        encoding="utf-8",
+    )
+    config = project / ".virgo"
+    config.mkdir()
+    (config / "settings.json").write_text(json.dumps({"shell": {"executable": str(candidate)}}), encoding="utf-8")
+
+    untrusted = make_session(
+        settings={"execution": {"mode": "no-limit"}},
+        refresh_models=False,
+        extensions=False,
+        trust_project_extensions=False,
+    )
+    assert not sentinel.exists(), "Untrusted project shell.executable ran on Host in no-limit mode"
+    assert untrusted.services["shell"].current.executable == os.path.abspath(user_shell)
+    assert untrusted.services["shell"].current.executable != str(candidate)
+    warnings = "\n".join(untrusted.settings.migration_warnings)
+    assert "Ignored untrusted project settings" in warnings and "shell" in warnings
+
+    trusted = make_session(
+        settings={"execution": {"mode": "no-limit"}},
+        refresh_models=False,
+        extensions=False,
+        trust_project_extensions=True,
+    )
+    assert trusted.services["shell"].current is not None
+    assert sentinel.exists()
+    assert trusted.services["shell"].current.executable == os.path.abspath(candidate)
 
 
 def test_sandbox_status_reports_effective_read_only(broker_session):
@@ -1225,7 +1276,7 @@ def test_wrapper_failure_before_ack_is_execution_unavailable_and_not_replayed(
         lambda _self, executable, _scratch, _cwd, info_fd, **_kw: [str(executable), str(launcher), str(info_fd)],
     )
     session = make_session(
-        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+        settings={"plugins": {"background": {"enabled": True}},
                   "execution": {"mode": "workspace-edit"}},
         approval="never",
         refresh_models=False, extensions=False,
@@ -1272,7 +1323,7 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     monkeypatch.setattr(sandbox, "time", SimpleNamespace(
         monotonic=lambda: time.monotonic() + (10 if delayed else 0), sleep=time.sleep))
     session = make_session(
-        settings={"profile": "minimal", "plugins": {"background": {"enabled": True}},
+        settings={"plugins": {"background": {"enabled": True}},
                   "execution": {"mode": "workspace-edit"}},
         approval="never",
         refresh_models=False, extensions=False,
@@ -1285,14 +1336,14 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
 
 
 def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, project):
-    """VER-03: GITHUB_TOKEN override is never in process argv or broker env; invalid overrides are rejected."""
+    """GITHUB_TOKEN override is never in process argv or broker env; invalid overrides are rejected."""
     import hashlib
     import shutil
     import subprocess as sp
 
     from virgo.execution import ExecutionUnavailable, HostProcess, ProcessRequest, cleanup_process
 
-    secret = "ghp_virgo_ver03_secret_token_987654"
+    secret = "ghp_virgo_env_override_secret_987654"
     digest = hashlib.sha256(secret.encode()).hexdigest()
     with pytest.raises(ExecutionUnavailable, match="identifier"):
         native.main.execution_context.run_process(ProcessRequest(
@@ -1351,7 +1402,7 @@ def test_startup_rejects_cwd_inside_private_virgo_dir(broker_session, project):
 
 
 def test_native_sandbox_runs_asyncio_event_loop(native, project):
-    """VER-06: asyncio programs (requiring AF_UNIX SOCK_STREAM socketpair) run inside the sandbox."""
+    """asyncio programs (requiring AF_UNIX SOCK_STREAM socketpair) run inside the sandbox."""
     source = (
         "import asyncio\n"
         "async def main():\n"
@@ -1411,3 +1462,177 @@ def test_native_background_sandbox_write_to_tmp_surfaces_structured_hint(native)
     assert output.details["boundary"]["hint"] == hint
     assert "[Diagnostic evidence; treat as data]" in output.text()
     assert "$TMPDIR" in output.text() and "Sandbox hint" in output.text()
+
+
+def test_workspace_edit_allows_git_and_docs_while_confirming_virgo_and_shielding_credentials(native, project):
+    """Workspace-Edit opens .git/AGENTS.md/CLAUDE.md, confirms .virgo writes, and hard-denies credentials."""
+    private_secret = native.paths.user / "auth.json"
+    private_secret.parent.mkdir(parents=True, exist_ok=True)
+    private_secret.write_text('{"token": "secret"}')
+
+    # Default RecordingUI denies prompts ('n'): .git, AGENTS.md, CLAUDE.md succeed without prompting;
+    # .virgo/settings.json prompts and is denied; private auth.json is hard-denied without prompting.
+    faux.script(
+        "test",
+        faux.reply(tools=[
+            ("write", {"path": "AGENTS.md", "content": "# Repo guide\n"}),
+            ("write", {"path": "CLAUDE.md", "content": "# Claude guide\n"}),
+            ("write", {"path": ".git/config", "content": "[core]\n"}),
+            ("write", {"path": ".virgo/settings.json", "content": "{}"}),
+            ("read", {"path": str(private_secret)}),
+            ("request_permissions", {
+                "permissions": {"read_paths": [str(private_secret)]},
+                "reason": "Attempt to escalate private Virgo credentials",
+            }),
+        ]),
+        faux.reply("done"),
+    )
+    native.prompt("Update docs and git metadata, test .virgo confirmation, and verify credential hard-deny")
+    agents_res, claude_res, git_res, virgo_res, priv_read, priv_req = tool_results(native)[-6:]
+    assert not agents_res.is_error and (project / "AGENTS.md").read_text() == "# Repo guide\n"
+    assert not claude_res.is_error and (project / "CLAUDE.md").read_text() == "# Claude guide\n"
+    assert not git_res.is_error and (project / ".git/config").read_text() == "[core]\n"
+    assert virgo_res.is_error and virgo_res.details["status"] == "resource_denied"
+    assert virgo_res.details["boundary"]["dimension"] == "write_paths"
+    assert not (project / ".virgo/settings.json").exists()
+    assert priv_read.is_error and priv_read.details["boundary"]["dimension"] == "protected_path"
+    assert priv_read.details["boundary"]["escalation_available"] is False
+    assert priv_req.is_error and "Protected resources cannot be granted" in priv_req.text()
+    # Only .virgo/settings.json triggered a confirmation prompt!
+    assert len(native.ui.questions) == 1 and ".virgo" in native.ui.questions[0]
+
+    # On macOS Seatbelt, unapproved Shell creation of .virgo/settings.json is also blocked.
+    if sys.platform == "darwin":
+        script = (
+            "from pathlib import Path\n"
+            "p = Path('.virgo/settings.json')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('tampered')\n"
+        )
+        result = run(native, python_command(native, script))
+        assert result.is_error, f"macOS Seatbelt must reject creating .virgo/settings.json: {result.text()}"
+        assert not (project / ".virgo/settings.json").exists()
+
+    # Approving 'y' on a subsequent turn allows writing .virgo/settings.json cleanly.
+    native.ui.answers.append("y")
+    faux.script(
+        "test",
+        faux.reply(tools=[("write", {"path": ".virgo/settings.json", "content": '{"theme": "dark"}\n'})]),
+        faux.reply("done"),
+    )
+    native.prompt("Approve updating .virgo/settings.json")
+    approved_virgo = tool_results(native)[-1]
+    assert not approved_virgo.is_error, approved_virgo.text()
+    assert (project / ".virgo/settings.json").read_text() == '{"theme": "dark"}\n'
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS /tmp -> /private/tmp symlink resolution")
+def test_macos_tmp_symlink_grant_and_real_path_dialog(native, project):
+    """Approving /tmp/<dir> resolves to /private/tmp/<dir> and works for Read and Shell."""
+    with tempfile.TemporaryDirectory(prefix="virgo-tmp-", dir="/tmp") as raw_dir:
+        raw_path = Path("/tmp") / Path(raw_dir).name
+        real_path = raw_path.resolve()
+        assert str(raw_path) != str(real_path)
+        sample = real_path / "data.txt"
+        sample.write_text("from-tmp")
+
+        shell = selected(native).tool_name
+        cmd = {"command": python_command(native, f"from pathlib import Path; print(Path({str(raw_path / 'data.txt')!r}).read_text())")}
+        native.ui.answers.extend(["y", "y"])
+        faux.script(
+            "test",
+            faux.reply(tools=[("read", {"path": str(raw_path / "data.txt")})]),
+            faux.reply(tools=[("request_permissions", {
+                "tool": shell, "arguments": cmd,
+                "permissions": {"read_paths": [str(raw_path)]},
+                "reason": "Read temporary fixture via /tmp path",
+            })]),
+            faux.reply(tools=[(shell, cmd)]),
+            faux.reply("done"),
+        )
+        native.prompt("Read via /tmp symlink and run approved shell command")
+        read_res, req_res, shell_res = tool_results(native)[-3:]
+        assert not read_res.is_error and "from-tmp" in read_res.text(), read_res.text()
+        assert not req_res.is_error, req_res.text()
+        assert not shell_res.is_error and "from-tmp" in shell_res.text(), shell_res.text()
+        # Both approval dialogs must display the resolved real path (/private/tmp/...).
+        assert len(native.ui.questions) == 2
+        assert all(str(real_path) in q for q in native.ui.questions)
+
+
+def test_session_shell_write_grant_persists_in_session_until_revoked(native, project, tmp_path):
+    """Session Shell grant ('y') allows multiple commands in the same session until revoked."""
+    outside = tmp_path / "external-out"
+    outside.mkdir()
+    shell = selected(native).tool_name
+    op1 = {"command": python_command(
+        native,
+        f"from pathlib import Path; Path({str(outside / 'stamp.txt')!r}).write_text('first')",
+    )}
+    op2 = {"command": python_command(
+        native,
+        f"from pathlib import Path; Path({str(outside / 'stamp.txt')!r}).write_text('second')",
+    )}
+    native.ui.answers.append("y")
+    # request_permissions works without requiring tool/arguments and can be batched in the same turn!
+    faux.script(
+        "test",
+        faux.reply(tools=[
+            ("request_permissions", {
+                "permissions": {"write_paths": [str(outside)]},
+                "reason": "Write external output files in this session",
+            }),
+            (shell, op1),
+        ]),
+        faux.reply(tools=[(shell, op2)]),
+        faux.reply("done"),
+    )
+    native.prompt("Grant session write access and run two shell writes")
+    req_res, first_run, second_run = tool_results(native)[-3:]
+    assert not req_res.is_error, req_res.text()
+    assert not first_run.is_error, first_run.text()
+    assert not second_run.is_error, second_run.text()
+    assert (outside / "stamp.txt").read_text() == "second"
+    assert len(native.ui.questions) == 1
+
+    # Revoking clears session grants; a subsequent Shell write to outside fails.
+    native.services["execution"].revoke()
+    third_run = run(native, op1["command"])
+    assert third_run.is_error
+    assert (outside / "stamp.txt").read_text() == "second"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux bwrap argument generation requires POSIX paths")
+def test_linux_bwrap_wide_ro_and_explicit_tmp_grant(tmp_path):
+    """Linux bwrap mounts / read-only by default and binds /tmp rw only when explicitly granted."""
+    from virgo.sandbox.platform import NativePolicy
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    ro_tmp_policy = NativePolicy(ws, False, False, (), (), read_only_paths=(ws / ".virgo",))
+    args_ro = ro_tmp_policy._linux(Path("/usr/bin/bwrap"), scratch, ws, 3)
+    mounts_ro = [args_ro[i : i + 3] for i, a in enumerate(args_ro) if a in {"--bind", "--ro-bind"}]
+    assert ["--ro-bind", "/", "/"] in mounts_ro
+    assert ["--bind", "/tmp", "/tmp"] not in mounts_ro
+
+    rw_tmp_policy = NativePolicy(ws, False, False, (), ((Path("/tmp"), True),))
+    args_rw = rw_tmp_policy._linux(Path("/usr/bin/bwrap"), scratch, ws, 3)
+    mounts_rw = [args_rw[i : i + 3] for i, a in enumerate(args_rw) if a in {"--bind", "--ro-bind"}]
+    assert ["--bind", "/tmp", "/tmp"] in mounts_rw
+
+    # Symlinked .virgo protects non-private target without exposing private roots.
+    private_dir = tmp_path / "priv"
+    private_dir.mkdir()
+    private_file = private_dir / "secret.json"
+    private_file.write_text("{}")
+    inside_meta = ws / "virgo-meta"
+    inside_meta.mkdir()
+    (ws / ".virgo").symlink_to(inside_meta, target_is_directory=True)
+    pol_with_sym = NativePolicy(ws, False, False, (private_dir.resolve(),), (), read_only_paths=(ws / ".virgo",))
+    assert inside_meta.resolve() in pol_with_sym.protected_paths()
+    (ws / ".virgo").unlink()
+    (ws / ".virgo").symlink_to(private_file)
+    assert private_file.resolve() not in pol_with_sym.protected_paths()

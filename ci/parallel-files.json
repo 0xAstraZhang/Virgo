@@ -53,7 +53,7 @@
       "tests/features/test_todo.py": 9,
       "tests/features/test_fetch.py": 9,
       "tests/cli/tui/test_command_completion.py": 8,
-      "tests/harness/test_safety_v2.py": 8
+      "tests/harness/test_guardrails.py": 8
     }
   }
 }

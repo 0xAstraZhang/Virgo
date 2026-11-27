@@ -242,26 +242,22 @@ def test_length_stop_continues_with_a_prompt_for_the_visible_output(text, key):
     assert second[-1]["kind"] == "continue" and second[-1]["content"] == agent.cfg.t(key)
 
 
-def compact_before_continuations(agent, style):
+def compact_before_continuations(agent):
     call_model = agent.cfg.call_model
 
     def call(messages, signal):
         if isinstance(messages[-1], UserMessage) and messages[-1].kind == "continue":
-            if style == "summary":
-                messages[:] = [UserMessage("Earlier progress", kind="summary"), messages[-1]]
-            else:
-                messages[:] = [AssistantMessage(stop_reason="compaction")]
+            messages[:] = [UserMessage("Earlier progress", kind="summary"), messages[-1]]
         return call_model(messages, signal)
 
     agent.cfg.call_model = call
 
 
-@pytest.mark.parametrize("style", ["summary", "native"])
 @pytest.mark.parametrize("continuations", [1, 2])
-def test_length_continuation_survives_compaction(style, continuations):
+def test_length_continuation_survives_compaction(continuations):
     parts = ["first ", "second "][:continuations]
     agent, _ = make_agent([], *(faux.reply(part, stop_reason="length") for part in parts), faux.reply("end"))
-    compact_before_continuations(agent, style)
+    compact_before_continuations(agent)
     answers = []
 
     def record_answer(event):
@@ -293,7 +289,7 @@ def test_compacted_length_continuation_discards_fragments_on_interruption(reason
     else:
         responses = [faux.reply("terminal", stop_reason=reason)]
     agent, _ = make_agent([echo_tool()], faux.reply("old answer", stop_reason="length"), *responses)
-    compact_before_continuations(agent, "native")
+    compact_before_continuations(agent)
     agent.prompt("go")
     if reason == "tool_use":
         assert isinstance(agent.messages[-2], ToolResultMessage) and not agent.messages[-2].is_error

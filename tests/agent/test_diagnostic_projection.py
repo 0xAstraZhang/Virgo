@@ -103,7 +103,7 @@ def test_execution_facts_distinguish_failure_boundaries(stage):
         calls.append("executed")
         return "created"
 
-    tool = AgentTool("work", "", {"type": "object"}, run, read_only=True)
+    tool = AgentTool("work", "", {"type": "object"}, run, side_effect="read")
     config = {}
     if stage == "prepare":
         tool.prepare_arguments = fail
@@ -149,7 +149,7 @@ def test_hooks_cannot_erase_or_override_execution_and_adapter_facts():
             "boundary": {"payload_started": False},
         })
 
-    agent, _ = make_agent([AgentTool("remote", "", {"type": "object"}, run, read_only=True)],
+    agent, _ = make_agent([AgentTool("remote", "", {"type": "object"}, run, side_effect="read")],
                           faux.reply(tools=[("remote", {})]), faux.reply("done"),
                           after_tool_call=recover, project_tool_result=project_tool_result)
     agent.prompt("go")

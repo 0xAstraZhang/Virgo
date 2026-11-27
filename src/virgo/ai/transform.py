@@ -15,7 +15,6 @@ from .types import (
     ThinkingContent,
     ToolCall,
     ToolResultMessage,
-    UserMessage,
 )
 
 _ID_RE = re.compile(r"[^a-zA-Z0-9_-]")
@@ -64,7 +63,7 @@ def normalize(messages: list, model: Model) -> list:
         if isinstance(m, AssistantMessage):
             close_open()
             if m.native_started and m.stop_reason in {"error", "aborted"}:
-                from .search import add_source_links
+                from .web import add_source_links
 
                 m = copy.deepcopy(m)
                 add_source_links(m)
@@ -173,7 +172,3 @@ def strip_thinking(messages: list) -> list:
         else:
             out.append(m)
     return out
-
-
-def is_user_like(m) -> bool:
-    return isinstance(m, (UserMessage, ToolResultMessage))

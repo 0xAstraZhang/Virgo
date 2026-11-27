@@ -82,7 +82,7 @@ class Fetch(WebAccess):
 
 
 def setup(api):
-    from .fetch_commands import configure_fetch
+    from .commands import configure_fetch
 
     fetch = Fetch(api)
     api.services["fetch"] = fetch

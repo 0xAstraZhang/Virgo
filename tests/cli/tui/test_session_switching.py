@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 
 import pytest
+from textual.widgets import OptionList
 
 from virgo.ai.providers import faux
 from virgo.ai.types import UserMessage
 from virgo.cli.tui import controller as controller_module
+from virgo.cli.tui.app import VirgoApp
 from virgo.cli.tui.bridge import FullscreenUI
 from virgo.cli.tui.controller import RunController
+from virgo.cli.tui.sessions import SessionPicker
 from virgo.harness.settings import Paths
 from virgo.harness.store import SessionStore
 
 from tests.support.harness import wait_until
 from tests.support.persistence import diagnostic_records
-from tests.support.tui import pump
+from tests.support.tui import pump, wait_for
 
 
 def saved_session(cwd):
@@ -292,3 +296,46 @@ def test_cross_workspace_tail_warning_survives_history_reset(make_session, tmp_p
     finally:
         controller.request_close()
         assert controller.wait_closed()
+
+
+def test_tui_busy_cross_workspace(make_session, tmp_path):
+    """Busy TUI blocks session switching; switching workspaces resets trust and keeps extensions unloaded."""
+    other = tmp_path / "other"
+    other.mkdir()
+    saved = make_session(cwd=other, persist=True, trust_project_extensions=False, refresh_models=False)
+    saved.prompt("saved conversation in B")
+    path = saved.store.path
+    saved.shutdown()
+    ext = other / ".virgo" / "extensions"
+    ext.mkdir(parents=True)
+    marker = other / "executed.txt"
+    (ext / "probe.py").write_text(f'from pathlib import Path\nPath({str(marker)!r}).write_text("executed")\n')
+    ui = FullscreenUI()
+    session = make_session(
+        faux.reply("slow response", delay=20),
+        ui=ui,
+        persist=True,
+        trust_project_extensions=True,
+        refresh_models=False,
+    )
+
+    async def scenario():
+        app = VirgoApp(session, ui, initial="long request in A")
+        async with app.run_test(size=(100, 30)) as pilot:
+            await wait_for(pilot, lambda: session.main.agent.running)
+            assert not app.can_change_session()
+            await pilot.press("ctrl+r")
+            await wait_for(pilot, lambda: isinstance(app.screen, SessionPicker))
+            choices = app.screen.query_one(OptionList)
+            choices.highlighted = next(
+                i for i, option in enumerate(choices.options) if option.id == str(path)
+            )
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: app.session.cwd == other)
+            assert not marker.exists()
+            assert not app.session.trust_project_extensions
+            assert session.main.agent.running
+            for pane in app._panes:
+                pane.controller.request_close()
+
+    asyncio.run(scenario())

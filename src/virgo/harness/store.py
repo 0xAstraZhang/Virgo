@@ -35,10 +35,7 @@ from ..ai.types import (
 )
 from ..tools.fs import file_lock
 from .compaction_records import (
-    SUMMARY_PREFIX,
-    compacted_message,
     replay_compaction_context,
-    summary_message,
     validate_compaction_record,
 )
 from .compaction_records import (
@@ -673,4 +670,4 @@ def text_of_dict(m: dict) -> str:
     return " ".join(b.get("text", "") for b in c or [] if b.get("type") == "text")
 
 
-__all__ = ["SUMMARY_PREFIX", "SessionStore", "compacted_message", "summary_message"]
+__all__ = ["SessionStore"]

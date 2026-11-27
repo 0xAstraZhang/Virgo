@@ -80,7 +80,7 @@ def tool_outputs(request, api):
 
 def configure(session, api, url, execute):
     tool = AgentTool("probe_backend", "Check the test backend.", {"type": "object", "properties": {}},
-                     execute, read_only=True)
+                     execute, side_effect="read")
     session.register_tool(tool)
     session.main.tools[:] = [tool, session.tool("diagnostic_get")]
     assert all(session.main.tools)

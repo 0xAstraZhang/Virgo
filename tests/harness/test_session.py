@@ -413,7 +413,7 @@ def test_user_extension_registers_tool_and_hook(make_session, project):
         textwrap.dedent("""
         from virgo.agent import AgentTool, ToolResult
         def setup(api):
-            api.register_tool(AgentTool("hello", "say hi", {"type": "object"}, lambda a, c: "hi from ext", read_only=True))
+            api.register_tool(AgentTool("hello", "say hi", {"type": "object"}, lambda a, c: "hi from ext", side_effect="read"))
             api.on("input", lambda text, s: text.replace("SECRET", "[redacted]"))
     """)
     )
@@ -660,3 +660,23 @@ def test_concurrent_appends_share_one_boundary(project):
     records = [tuple(e["data"]) for e in entries if e["type"] == "custom"]
     assert sorted(records) == [(w, t, i) for w in ("child", "parent") for t in range(2) for i in range(12)]
     assert set(path.parent.iterdir()) == {path, path.parent / ".workspace.json"}
+
+
+def test_legacy_grants_db_purged_on_startup(make_session, project):
+    """Legacy resource-grants.sqlite3 is removed on startup without migration."""
+    from virgo.harness.resource_rules import LEGACY_GRANTS_FILENAME
+
+    user_dir = project.parent / "home"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    legacy = user_dir / LEGACY_GRANTS_FILENAME
+    legacy.write_bytes(b"legacy sqlite data")
+    (user_dir / f"{LEGACY_GRANTS_FILENAME}-wal").write_bytes(b"wal")
+
+    ui = RecordingUI()
+    session = make_session(ui=ui, extensions=False, refresh_models=False)
+    try:
+        assert not legacy.exists()
+        assert not (user_dir / f"{LEGACY_GRANTS_FILENAME}-wal").exists()
+        assert any("resource-grants.sqlite3" in line for line in ui.lines)
+    finally:
+        session.shutdown()

@@ -7,8 +7,6 @@ from ..tools.shell import Shell, default_shell, discover_shells, make_shell_tool
 from .contracts import BackgroundLauncher
 from .extensions import ROLES_ALL
 
-USAGE = 'Usage: /shell [name|absolute path|auto] (quote paths containing spaces)'
-
 
 class ShellSelection:
     def __init__(

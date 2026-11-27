@@ -22,8 +22,7 @@ REMOVED_FEATURES = frozenset({
     "schedule", "workflow", "team", "tasks", "memory", "goal", "plan", "code_review", "workMode", "profile",
 })
 RETIRED_PLUGINS = frozenset({"plan", "code_review"})
-_FEATURE_ALIASES = {"diagnostics": "diagnostic_get"}
-UNTRUSTED_PROJECT_KEYS = ("hooks", "mcpServers", "providers", "extensions")
+UNTRUSTED_PROJECT_KEYS = ("hooks", "mcpServers", "providers", "extensions", "shell", "search", "fetch")
 
 DEFAULTS: dict[str, Any] = {
     "language": "en",
@@ -43,6 +42,7 @@ DEFAULTS: dict[str, Any] = {
     "fetch": {"mode": "auto", "backend": "http", "timeout": 20, "maxBytes": 2097152, "maxUses": None, "maxContentTokens": 8000},
     "search": {"mode": "auto", "backend": "duckduckgo", "timeout": 15, "maxUses": None},
     "subagents": {"maxTurns": 20, "maxTotalTurns": 40, "effort": None},
+    "tui": {"sessionGrouping": "workspace"},
 }
 
 
@@ -108,7 +108,7 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _reject_retired_execution(layer: dict) -> None:
-    """Fail loudly on retired execution/sandbox/permission keys (S7-02, no silent migration)."""
+    """Fail loudly on retired execution/sandbox/permission keys (no silent migration)."""
     if "sandbox" in layer:
         raise ValueError(
             "Legacy 'sandbox' settings are retired. Configure execution.mode "
@@ -130,47 +130,25 @@ def _reject_retired_execution(layer: dict) -> None:
 
 
 def _normalize_layer(layer: dict, notices: list[str]) -> dict:
-    """Validate and translate non-execution settings for one configuration source."""
+    """Validate and normalize non-execution settings for one configuration source."""
     if not isinstance(layer, dict):
         raise ValueError("settings must be a JSON object")
     out = copy.deepcopy(layer)
     _reject_retired_execution(out)
     if isinstance(out.get("plugins"), dict) and "auto_review" in out["plugins"]:
         raise ValueError("plugins.auto_review is retired; remove it and select permissions.approval=ask or never")
-    legacy = out.pop("features", {})
-    if not isinstance(legacy, dict):
-        raise ValueError("features must be an object of boolean flags")
-    translated: dict[str, dict] = {}
-    for name, enabled in legacy.items():
-        if name in {"permission", "auto_review"}:
-            raise ValueError(f"features.{name} is retired; use permissions.approval=ask or never")
-        if not isinstance(enabled, bool):
-            raise ValueError(f"features.{name} must be a boolean")
-        if name in REMOVED_FEATURES:
-            notices.append(f"features.{name} is retired and ignored; existing data is preserved.")
-            continue
-        if name in {"search", "fetch"}:
-            web = translated.setdefault("web", {})
-            web[f"{name}Enabled"] = enabled
-            if enabled:
-                web["enabled"] = True
-            notices.append(f"features.{name} is deprecated; use plugins.web.{name}Enabled instead.")
-            continue
-        canonical = _FEATURE_ALIASES.get(name, name)
-        if canonical not in PLUGIN_IDS:
-            raise ValueError(f"Unknown legacy feature {name!r}; known plugins: {', '.join(PLUGIN_IDS)}")
-        translated.setdefault(canonical, {})["enabled"] = enabled
-        notices.append(f"features.{name} is deprecated; use plugins.{canonical}.enabled instead.")
-    web = translated.get("web", {})
-    if web.get("searchEnabled") is False and web.get("fetchEnabled") is False:
-        web["enabled"] = False
-    plugins = out.get("plugins", {})
-    if not isinstance(plugins, dict):
-        raise ValueError("plugins must be an object keyed by plugin ID")
-    out["plugins"] = deep_merge(translated, plugins)
-    for name in sorted(RETIRED_PLUGINS.intersection(out["plugins"])):
-        out["plugins"].pop(name)
-        notices.append(f"plugins.{name} is retired and ignored; existing data is preserved.")
+    if "features" in out:
+        raise ValueError(
+            "Legacy 'features' settings are retired. Configure 'plugins.<id>.enabled' "
+            "(or 'plugins.web.searchEnabled'/'fetchEnabled') instead."
+        )
+    if "plugins" in out:
+        plugins = out["plugins"]
+        if not isinstance(plugins, dict):
+            raise ValueError("plugins must be an object keyed by plugin ID")
+        for name in sorted(RETIRED_PLUGINS.intersection(plugins)):
+            plugins.pop(name)
+            notices.append(f"plugins.{name} is retired and ignored; existing data is preserved.")
     for name in sorted(REMOVED_FEATURES.intersection(out)):
         out.pop(name)
         notices.append(f"The retired {name} configuration is ignored; existing data is preserved.")
@@ -252,6 +230,11 @@ def _validate(data: dict) -> None:
     effort = subagents.get("effort")
     if effort is not None and (not isinstance(effort, str) or not effort.strip()):
         raise ValueError("subagents.effort must be null or a reasoning level")
+    tui = data.get("tui", {})
+    if not isinstance(tui, dict):
+        raise ValueError("tui must be an object")
+    if tui.get("sessionGrouping") not in {"workspace", "none"}:
+        raise ValueError("tui.sessionGrouping must be 'workspace' or 'none'")
 
 
 def _trusted_projects(user: dict) -> set[Path]:
@@ -301,9 +284,10 @@ class Settings:
             if project.get(key):
                 raise ValueError(f"Project {key} configuration is not permitted; execution authority belongs in user settings or startup overrides")
             project.pop(key, None)
-        # S1-02 (R5): Strip untrusted project hooks, mcpServers, providers, and
-        # extensions BEFORE merging onto user settings so an untrusted repo
-        # cannot wipe user hooks/MCP or redirect providers.baseUrl.
+        # R5: Strip untrusted project hooks, mcpServers, providers, extensions,
+        # shell, search, and fetch BEFORE merging onto user settings so an
+        # untrusted repo cannot wipe user config, hijack shell.executable or
+        # providers.baseUrl, exfiltrate env vars via apiKeyEnv, or override web caps.
         if project and not project_trusted:
             stripped = [key for key in UNTRUSTED_PROJECT_KEYS if key in project]
             for key in stripped:
@@ -364,7 +348,7 @@ class Settings:
 
     def set(self, dotted: str, value: Any) -> None:
         parts = dotted.split(".")
-        checked = parts[0] in {"permissions", "execution", "sandbox", "extensions", "subagents"}
+        checked = parts[0] in {"permissions", "execution", "sandbox", "extensions", "subagents", "tui"}
         data = copy.deepcopy(self.data) if checked else self.data
         cur = data
         for part in parts[:-1]:

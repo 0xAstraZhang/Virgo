@@ -4,17 +4,10 @@ from __future__ import annotations
 
 import copy
 
-from ...ai.web import deepseek_endpoint as deepseek_endpoint
-from ...ai.web import endpoint as endpoint
 from ...harness.extensions import ROLES_ALL
 from ...tools.web import make_web_search
 from .access import WebAccess
 from .service import web_service
-
-DEEPSEEK_SETUP = (
-    "DeepSeek search requires an official API key. Use /login api deepseek with https://api.deepseek.com "
-    "or set DEEPSEEK_API_KEY (search.apiKeyEnv can select a separate search key)."
-)
 
 
 class Search(WebAccess):
@@ -80,7 +73,7 @@ class Search(WebAccess):
 
 
 def setup(api) -> None:
-    from .search_commands import configure_search
+    from .commands import configure_search
 
     search = Search(api)
     api.services["search"] = search

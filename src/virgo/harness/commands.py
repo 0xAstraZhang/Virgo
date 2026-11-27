@@ -19,7 +19,8 @@ import yaml
 from ..agent.types import AgentTool, ToolResult
 from ..i18n import Translator, available_languages
 from .contracts import CommandHost
-from .preferences import configure_preference, effort_label, effort_levels
+from .preferences import configure_preference, effort_label
+from .ui import effort_levels
 
 
 @dataclass
@@ -164,7 +165,7 @@ def expand_template(body: str, args: str) -> str:
 
 
 def configure_language(session: CommandHost, args: str) -> None:
-    from ..i18n import available_languages, normalize_language
+    from ..i18n import normalize_language
 
     names = "|".join(pack.name for pack in available_languages())
     usage = session.t("language.usage", languages=names)

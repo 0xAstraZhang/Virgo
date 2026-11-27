@@ -12,7 +12,6 @@ from virgo.agent.types import AgentTool, ToolCallEvent, ToolResult
 from virgo.ai.providers import openai
 from virgo.ai.providers._http import ProviderError
 from virgo.ai.providers.web import native_tool
-from virgo.ai.search import add_source_links, is_search_unsupported
 from virgo.ai.transform import normalize
 from virgo.ai.types import (
     AssistantMessage,
@@ -28,6 +27,7 @@ from virgo.ai.types import (
     message_from_dict,
     message_to_dict,
 )
+from virgo.ai.web import add_source_links, is_web_unsupported
 from virgo.harness.session import Runtime
 
 from tests.support.harness import install_responses, response_stream
@@ -272,7 +272,7 @@ def test_extension_owned_search_tool_is_not_replaced_by_hosted_search(make_sessi
     (None, None, "web_search timeout", False),
 ])
 def test_only_explicit_search_capability_rejections_trigger_fallback(status, body, text, expected):
-    assert is_search_unsupported(ProviderError(text, status_code=status, body=body)) is expected
+    assert is_web_unsupported(ProviderError(text, status_code=status, body=body), "search") is expected
 
 
 def test_citations_survive_persistence_and_provider_switch_without_native_payloads():

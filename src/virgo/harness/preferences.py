@@ -17,15 +17,9 @@ from ..ai.models import BUILTIN_PROVIDERS, base_url
 from ..ai.types import Model
 from .contracts import PreferenceHost
 from .ui import (
-    EFFORT_LEVELS as EFFORT_LEVELS,
-)
-from .ui import (
     ModelChoice,
     PreferenceChoice,
     PreferenceRequest,
-)
-from .ui import (
-    effort_levels as effort_levels,
 )
 
 

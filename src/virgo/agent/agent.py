@@ -118,9 +118,6 @@ class Agent:
             with self._lock:
                 self.running = False
 
-    def continue_(self) -> None:
-        self.prompt([])
-
     def abort(self) -> None:
         self.signal.set()
 

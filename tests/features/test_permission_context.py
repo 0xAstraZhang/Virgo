@@ -150,7 +150,7 @@ def test_loop_passes_bound_source_to_tool_execution(make_session):
     seen = []
     session.main.tools.append(AgentTool("capture_source", "Inspect context", {"type": "object", "properties": {}},
                                        lambda _args, ctx: (seen.append(ctx.origin) or ToolResult.text("ok")),
-                                       read_only=True))
+                                       side_effect="read"))
     source = session.main.origin
     session.prompt("Inspect this task.")
     assert seen == [source]

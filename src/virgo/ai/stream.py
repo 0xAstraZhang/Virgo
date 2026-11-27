@@ -14,26 +14,6 @@ from dataclasses import dataclass
 from ..diagnostics import capture_error, safe_text
 from .types import AssistantMessage
 
-EVENT_TYPES = (
-    "start",
-    "text_start",
-    "text_delta",
-    "text_end",
-    "thinking_start",
-    "thinking_delta",
-    "thinking_end",
-    "toolcall_start",
-    "toolcall_delta",
-    "toolcall_end",
-    # Provider-hosted tools remain RawContent and never enter the local tool loop.
-    "native_tool_start",
-    "native_tool_delta",
-    "native_tool_end",
-    "retry",  # harness-level: the attempt failed and is being retried; discard partial output
-    "done",
-    "error",
-)
-
 
 @dataclass
 class StreamEvent:

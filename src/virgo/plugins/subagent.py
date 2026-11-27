@@ -12,8 +12,8 @@ from ..agent.types import AgentTool, ToolContext, ToolResult
 from ..ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from ..diagnostics import safe_text
 from ..harness.extensions import ExtensionAPI
-from ..harness.preferences import effort_levels
 from ..harness.subagents import SubagentBusyError, SubagentHandle, SubagentLookupError
+from ..harness.ui import effort_levels
 
 
 class Subagents:

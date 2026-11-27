@@ -16,7 +16,6 @@ import re
 import threading
 
 from ..observed_usage import anthropic_usage
-from ..search import is_search_unsupported, is_web_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import (
     AssistantMessage,
@@ -33,7 +32,7 @@ from ..types import (
     UserMessage,
 )
 from ..validate import parse_tool_arguments
-from ..web import declarations
+from ..web import declarations, is_web_unsupported
 from ._errors import attach_error
 from ._http import ProviderError, sdk_stream
 
@@ -381,7 +380,7 @@ def _events(items, out: AssistantMessage):
 def _stream_error(e, request, model, ctx, out):
     kind, text = classify_error(e)
     web_decls = declarations(ctx)
-    if any(d.get("name") == "web_search" for d in web_decls) and is_search_unsupported(e):
+    if any(d.get("name") == "web_search" for d in web_decls) and is_web_unsupported(e, "search"):
         kind = "search_unsupported"
     if any(d.get("name") == "web_fetch" for d in web_decls) and is_web_unsupported(e, "fetch"):
         kind = "fetch_unsupported"

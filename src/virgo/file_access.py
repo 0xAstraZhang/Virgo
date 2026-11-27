@@ -134,7 +134,7 @@ def open_mutation(path: Path, policy: PermissionPolicy, *, create: bool,
     target = path if path.parent == path or not path.name else path.parent.resolve() / path.name
     check_write(target, policy)
 
-    # Reject target symlinks for restricted policies (S3-01).
+    # Reject target symlinks for restricted policies.
     if not policy.unrestricted:
         try:
             linfo = os.lstat(target)

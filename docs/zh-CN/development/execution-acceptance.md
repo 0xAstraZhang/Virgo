@@ -17,8 +17,8 @@ VIRGO_REQUIRE_SANDBOX_TESTS=1 uv run --no-sync pytest -q \
 uv run --no-sync python ci/check_native_report.py native-sandbox.xml
 
 uv run --no-sync pytest -q \
-  tests/harness/test_policy_v2.py \
-  tests/harness/test_safety_v2.py \
+  tests/harness/test_policy_boundaries.py \
+  tests/harness/test_guardrails.py \
   tests/harness/test_output_store.py
 ```
 
@@ -38,8 +38,8 @@ uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=
 uv run --no-sync python ci/check_native_report.py windows-sandbox.xml
 
 uv run --no-sync pytest -q `
-  tests/harness/test_policy_v2.py `
-  tests/harness/test_safety_v2.py `
+  tests/harness/test_policy_boundaries.py `
+  tests/harness/test_guardrails.py `
   tests/harness/test_output_store.py
 ```
 

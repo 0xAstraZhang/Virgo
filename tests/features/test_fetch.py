@@ -186,24 +186,19 @@ def test_redirect_to_hostname_with_private_dns_answer_stops_at_first_request(mak
     assert "10.0.0.5" not in result.text()
 
 
-def test_network_permission_blocks_before_network(broker_session, monkeypatch, http):
-    s = broker_session(preset="read-only")
-    result, _ = fetch(s, monkeypatch)
-    assert not result.is_error and len(http["requests"]) == 1
-    assert not s.ui.questions and not s.main.permission_snapshot.mode.network
-
-
-def test_directional_web_grant_adds_only_egress_for_the_approved_fetch(broker_session, http):
-    """An ordinary web read now needs zero grants and leaves Shell network disabled."""
+def test_read_only_web_fetch_needs_no_grant_and_keeps_shell_network_off(broker_session, http):
+    """An ordinary web read needs zero grants and leaves Shell network disabled."""
     from virgo.ai.providers import faux
 
     args = {"url": "https://example.com/article"}
     session = broker_session(faux.reply(tools=[("web_fetch", args)]), faux.reply(tools=[("web_fetch", args)]),
                              faux.reply("done"), preset="read-only")
     session.prompt("Read the selected article twice")
-    assert all(not result.is_error for result in tool_results(session))
+    results = tool_results(session)
+    assert len(results) == 2 and all(not result.is_error for result in results)
     assert len(http["requests"]) == 2
     assert not session.store.custom("permission_request") and not session.ui.questions
+    assert not session.main.permission_snapshot.mode.network
     assert not session.main.execution_context.resources.network
 
 

@@ -399,39 +399,6 @@ def sdk_stream(out, opts, get_client, create, parse, on_error):
     return EventStream(events(), out)
 
 
-def run_cancellable(call, signal=None):
-    """Wait for a bounded synchronous request without holding up cancellation.
-
-    The caller owns the request timeout. An already dispatched request can still
-    finish on the server, but its result is never applied after cancellation.
-    """
-    if cancelled(signal):
-        raise ProviderError("Aborted by user.", "aborted")
-    if signal is None:
-        return call()
-    result: queue.Queue = queue.Queue(maxsize=1)
-
-    def run():
-        try:
-            result.put((True, call()))
-        except Exception as error:
-            result.put((False, error))
-
-    threading.Thread(target=run, name="virgo-provider-request", daemon=True).start()
-    while True:
-        if cancelled(signal):
-            raise ProviderError("Aborted by user.", "aborted")
-        try:
-            ok, value = result.get(timeout=0.05)
-        except queue.Empty:
-            continue
-        if cancelled(signal):
-            raise ProviderError("Aborted by user.", "aborted")
-        if not ok:
-            raise value
-        return value
-
-
 def classify_error(error: Exception, token: str = "") -> tuple[str, str]:
     text = str(error)
     if token:

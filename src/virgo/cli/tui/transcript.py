@@ -775,7 +775,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
                     self.vertical_scrollbar.position = y
         return arrangement
 
-    async def _assistant(self, agent: str | None = None) -> AssistantView:
+    async def _assistant(self) -> AssistantView:
         if self._run is None:
             self._run = AssistantView(agent=self.target_agent, show_thinking=self.show_thinking)
             self._run.translator = translator_for(self)
@@ -809,7 +809,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
 
     async def _append(self, row: EventView) -> EventView:
         row.translator = translator_for(self)
-        card = await self._assistant(row.agent)
+        card = await self._assistant()
         await card.append_event(row)
         return row
 
@@ -884,7 +884,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         return row
 
     async def _start_message(self, agent: str) -> AssistantView:
-        card = await self._assistant(agent)
+        card = await self._assistant()
         card.clear_event_activity(agent)
         self._streaming.pop(agent, None)
         if agent == self.target_agent:
@@ -899,7 +899,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
         return card
 
     async def _snapshot(self, agent: str, message: AssistantMessage, *, final=False) -> None:
-        card = await self._assistant(agent)
+        card = await self._assistant()
         if agent not in self._message_open:
             await self._start_message(agent)
         blocks = self._blocks[agent]
@@ -1049,7 +1049,7 @@ class Transcript(VerticalScroll, inherit_bindings=False):
             self.finish_activity()
             self._running = True
         elif ev.type == "turn_start":
-            await self._assistant(ev.agent)
+            await self._assistant()
         elif ev.type == "message_start" and isinstance(message, AssistantMessage):
             await self._start_message(ev.agent)
             await self._snapshot(ev.agent, message)

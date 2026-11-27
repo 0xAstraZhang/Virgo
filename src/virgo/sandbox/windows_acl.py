@@ -77,7 +77,6 @@ ALL_APPLICATION_PACKAGES_SID = "S-1-15-2-1"
 AAP_SID_BYTES = struct.pack("<BB6sII", 1, 2, b"\x00\x00\x00\x00\x00\x0f", 2, 1)
 # S-1-1-0 (Everyone / World)
 WORLD_SID_BYTES = struct.pack("<BB6sI", 1, 1, b"\x00\x00\x00\x00\x00\x01", 0)
-_AAP_SID_BYTES = AAP_SID_BYTES
 
 SE_FILE_OBJECT = 1
 DACL_SECURITY_INFORMATION = 0x00000004
@@ -88,7 +87,6 @@ SE_DACL_PROTECTED = 0x1000
 
 # ACE types
 ACCESS_ALLOWED_ACE_TYPE = 0
-ACCESS_DENIED_ACE_TYPE = 1
 _DENY_ACE_TYPES = frozenset({1, 6, 10, 12})
 _STANDARD_ACE_TYPES = frozenset({0, 1, 2, 3, 9, 10, 13, 14})
 _OBJECT_ACE_TYPES = frozenset({5, 6, 7, 8, 11, 12, 15, 16})
@@ -96,7 +94,6 @@ _OBJECT_ACE_TYPES = frozenset({5, 6, 7, 8, 11, 12, 15, 16})
 # ACE flags
 OBJECT_INHERIT_ACE = 0x01
 CONTAINER_INHERIT_ACE = 0x02
-NO_PROPAGATE_INHERIT_ACE = 0x04
 INHERIT_ONLY_ACE = 0x08
 INHERITED_ACE = 0x10
 
@@ -720,7 +717,7 @@ def has_aap_read_access(path: str | Path, *, require_execute: bool = True) -> bo
             continue
         if ace[1] & INHERIT_ONLY_ACE:
             continue
-        if _ace_sid_bytes(ace) != _AAP_SID_BYTES:
+        if _ace_sid_bytes(ace) != AAP_SID_BYTES:
             continue
         mask = _ace_mask(ace)
         if mask & GENERIC_ALL:

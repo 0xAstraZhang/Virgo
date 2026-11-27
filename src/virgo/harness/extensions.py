@@ -144,8 +144,9 @@ class EventBus:
 class ExtensionAPI:
     """Owned registration and runtime services for trusted in-process plugins.
 
-    ``session`` is a limited compatibility escape hatch for official plugins.
-    New extensions use this facade. Python extensions are trusted code, not a security sandbox.
+    ``session`` is retained only as a compatibility escape hatch for trusted third-party
+    extensions; built-in plugins and extensions use this facade. Python extensions are
+    trusted code, not a security sandbox.
     """
 
     def __init__(self, session: ExtensionHost, name: str):
@@ -367,8 +368,6 @@ class ExtensionAPI:
 # loading
 # ---------------------------------------------------------------------------
 
-BUILTIN_PLUGINS = PLUGIN_IDS
-
 
 def _setup(session: ExtensionHost, name: str, setup: Callable[[ExtensionAPI], None], *, context=None) -> None:
     api = ExtensionAPI(session, name)
@@ -390,7 +389,7 @@ def _setup(session: ExtensionHost, name: str, setup: Callable[[ExtensionAPI], No
 
 
 def load_builtin_features(session: ExtensionHost) -> None:
-    for name in BUILTIN_PLUGINS:
+    for name in PLUGIN_IDS:
         if not session.settings.plugin_enabled(name):
             continue
         # The import is inside the transaction: disabled plugins are never imported.

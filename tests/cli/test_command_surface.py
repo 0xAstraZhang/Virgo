@@ -12,7 +12,7 @@ def test_canonical_cli_flags_and_deprecated_aliases():
     assert args.permission == "read-only"
     assert args.approval == "never"
 
-    # S7-01: Retired flags --mode, --execution, and --sandbox are removed.
+    # Retired flags --mode, --execution, and --sandbox are removed.
     for retired in (["--mode", "read-only"], ["--execution", "host"], ["--sandbox", "disabled"]):
         with pytest.raises(SystemExit) as exc:
             parser.parse_args([*retired, "-p", "x"])

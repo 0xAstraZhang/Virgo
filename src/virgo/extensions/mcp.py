@@ -294,7 +294,7 @@ def _resolve_host_argv(
     platform_nt: bool = os.name == "nt",
     which=shutil.which,
 ) -> tuple[str, ...]:
-    """Resolve Host command argv, supporting PATH lookup and .cmd/.bat on native Windows (S4-08)."""
+    """Resolve Host command argv, supporting PATH lookup and .cmd/.bat on native Windows."""
     if not platform_nt:
         return (command, *args)
     path_value = next((v for k, v in env.items() if k.upper() == "PATH"), None)
@@ -702,7 +702,7 @@ class _Connection:
                     )
             if self._closed or self._cancelled():
                 raise MCPCallCancelled(f"{self.name}: connection cancelled during initialization")
-            # S4-05: Never accept a server that errored or exited even if tools were already listed.
+            # Never accept a server that errored or exited even if tools were already listed.
             if not self.ready:
                 cause = self.error or MCPConnectionError("MCP server exited during initialization")
                 self.close()
@@ -827,7 +827,7 @@ class _Connection:
                             self.retired = True
                         raise error from None
                 except Exception as error:
-                    # S4-03: Only transport failures poison & close the connection;
+                    # Only transport failures poison & close the connection;
                     # normal JSON-RPC errors (e.g. -32602 Invalid Params) leave the server reusable.
                     if self._is_transport_failure(error):
                         transport_failed = True
@@ -1023,7 +1023,7 @@ class _Manager:
         servers.update(self._read_servers_file(self.api.paths.user / "settings.json", from_settings=True))
         if not same_directory(self.api.paths.project, self.api.paths.user):
             project_mcp = self.api.paths.project / "mcp.json"
-            # S4-02 (R5): Project-level .virgo/mcp.json and settings.json require explicit project trust.
+            # R5: Project-level .virgo/mcp.json and settings.json require explicit project trust.
             if self._project_trusted():
                 servers.update(self._read_servers_file(project_mcp))
                 servers.update(
@@ -1314,7 +1314,7 @@ class _Manager:
                 break
 
     def reconnect(self, *, signal=None) -> bool:
-        # S4-04: Never hold self._lock across _connect_all(), retire(), or close().
+        # Never hold self._lock across _connect_all(), retire(), or close().
         self._cancel_startup()
         config = self.load_config()
         pending, failures = self._prepare(config, signal)
@@ -1402,7 +1402,7 @@ class _Manager:
         return rows
 
     def status_tool(self, args: dict, ctx) -> ToolResult:
-        # S4-07: Works safely even when ctx.origin is None.
+        # Works safely even when ctx.origin is None.
         rows = self.status()
         server = args.get("server")
         if server:
@@ -1437,7 +1437,7 @@ class _Manager:
             self.api.ui.print(f"  {row['server']}: {state}")
 
     def close(self) -> None:
-        # S4-04: Snapshot and clear under lock, then close outside lock.
+        # Snapshot and clear under lock, then close outside lock.
         with self._lock:
             self._closed = True
             self._generation += 1

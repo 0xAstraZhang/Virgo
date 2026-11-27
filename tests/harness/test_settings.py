@@ -86,11 +86,10 @@ def test_save_user_failed_validation_keeps_keys_on_disk_and_in_session(project):
 
 @pytest.mark.parametrize(
     "configured",
-    [pytest.param(None, id="None-auto-review"), pytest.param("default", id="default-auto-review"),
-     pytest.param("accept-edits", id="accept-edits-auto-review"), pytest.param("yolo", id="yolo-accept-all")],
+    [pytest.param(None, id="none"), "default", "accept-edits", "yolo"],
 )
 def test_permission_defaults_and_saved_mode_migration(project, configured):
-    """Retain historical case identities while retiring silent mode aliases."""
+    """Default execution mode uses ask approval, and retired permissions.mode values fail loudly."""
     if configured is not None:
         with pytest.raises(ValueError, match="(?i)retired|execution\\.mode"):
             AgentSession(project, model="faux/test", session=None, refresh_models=False, extensions=False,
@@ -109,7 +108,7 @@ def test_permission_defaults_and_saved_mode_migration(project, configured):
 
 
 def test_legacy_permission_keys_read_through_the_canonical_spelling(project, tmp_path, monkeypatch):
-    """S7-02: Retired permissions.mode/modes keys fail clearly instead of silently migrating."""
+    """Retired permissions.mode/modes keys fail clearly instead of silently migrating."""
     user = tmp_path / "legacy-user"
     user.mkdir()
     (user / "settings.json").write_text(json.dumps({
@@ -227,7 +226,7 @@ def test_explicit_sandbox_override_keeps_its_boundary_with_a_saved_mode(project,
     ({"sandbox": {"mode": "workspace-write"}}, "read-only"),
 ])
 def test_native_settings_migrate_from_the_effective_main_policy(project, config, explicit):
-    """S7-02: Legacy sandbox/permissions.preset configs fail loudly instead of silently migrating."""
+    """Legacy sandbox/permissions.preset configs fail loudly instead of silently migrating."""
     paths = Paths(project)
     (paths.user / "settings.json").write_text(json.dumps(config))
     overrides = {"execution": {"mode": explicit}} if explicit else None
@@ -282,3 +281,70 @@ def test_extensions_disabled_validation_and_normalization(project):
     ):
         with pytest.raises(ValueError):
             Settings.load(Paths(project), invalid)
+
+
+def test_tui_session_grouping_defaults_validation_and_sibling_preservation(project):
+    paths = Paths(project)
+    default_settings = Settings.load(paths)
+    assert default_settings.get("tui.sessionGrouping") == "workspace"
+
+    for grouping in ("workspace", "none"):
+        loaded = Settings.load(paths, {"tui": {"sessionGrouping": grouping, "other": "keep"}})
+        assert loaded.get("tui.sessionGrouping") == grouping
+        assert loaded.get("tui.other") == "keep"
+
+    loaded.save_user({"tui": {"sessionGrouping": "workspace", "other": "keep"}})
+    saved = json.loads((paths.user / "settings.json").read_text())
+    assert saved["tui"] == {"sessionGrouping": "workspace", "other": "keep"}
+
+    loaded.set("tui.sessionGrouping", "none")
+    assert loaded.get("tui.sessionGrouping") == "none"
+    assert loaded.get("tui.other") == "keep"
+
+    with pytest.raises(ValueError, match="tui\\.sessionGrouping"):
+        loaded.set("tui.sessionGrouping", "invalid")
+    assert loaded.get("tui.sessionGrouping") == "none"
+
+    with pytest.raises(ValueError, match="tui must be an object"):
+        loaded.set("tui", "bad")
+    assert loaded.get("tui.sessionGrouping") == "none"
+
+    for invalid in (
+        {"tui": "bad"},
+        {"tui": {"sessionGrouping": None}},
+        {"tui": {"sessionGrouping": "invalid"}},
+    ):
+        with pytest.raises(ValueError):
+            Settings.load(paths, invalid)
+
+
+@pytest.mark.parametrize("legacy_features", [
+    {"ask_user": False},
+    {"diagnostics": False},
+    {"fetch": False},
+    {"permission": "ask"},
+    {"auto_review": True},
+    {"mcp": True},
+])
+def test_legacy_features_settings_are_retired_with_error(project, legacy_features):
+    with pytest.raises(ValueError, match="Legacy 'features' settings are retired"):
+        Settings.load(Paths(project), {"features": legacy_features})
+
+
+@pytest.mark.parametrize("retired_config", [
+    {"sandbox": {"mode": "disabled"}},
+    {"sandbox": {"mode": "read-only"}},
+    {"sandbox": {"mode": "workspace-write"}},
+    {"execution": {"provider": "sandbox"}},
+    {"execution": {"provider": "host"}},
+    {"permissions": {"preset": "workspace-edit"}},
+    {"permissions": {"presets": {"custom": {}}}},
+    {"permissions": {"mode": "workspace-edit"}},
+    {"permissions": {"modes": {"custom": {}}}},
+    {"permissions": {"allow": ["bash"]}},
+    {"permissions": {"deny": ["bash"]}},
+    {"permissions": {"readOnlyCommands": ["ls"]}},
+])
+def test_retired_execution_and_permission_settings_rejected(project, retired_config):
+    with pytest.raises(ValueError, match="execution\\.mode"):
+        Settings.load(Paths(project), retired_config)

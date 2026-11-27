@@ -286,3 +286,21 @@ def test_environment_hides_enclosed_private_virgo_dir_on_posix(make_session, tmp
         assert "notes.txt" in env
     finally:
         session.shutdown()
+
+
+def test_invalid_utf8_prompts_and_system_md_warn_without_crashing(make_session, project):
+    """Invalid UTF-8 in .virgo/prompts/*.md or SYSTEM.md warns and skips cleanly."""
+    prompts = project / ".virgo" / "prompts"
+    prompts.mkdir(parents=True)
+    (prompts / "broken.md").write_bytes(b"\xff\xfe invalid utf8")
+    (prompts / "good.md").write_text("Valid prompt body", encoding="utf-8")
+    (project / ".virgo" / "SYSTEM.md").write_bytes(b"\x80\x81 bad system")
+
+    ui = RecordingUI()
+    session = make_session(ui=ui, extensions=False, refresh_models=False)
+    try:
+        assert "good" in session.templates
+        assert "broken" not in session.templates
+        assert any("invalid UTF-8" in line for line in ui.lines)
+    finally:
+        session.shutdown()
