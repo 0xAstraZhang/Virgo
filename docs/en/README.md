@@ -19,7 +19,7 @@ User-facing behavior, platform setup, and built-in extensions:
 System layout, internal contracts, and verification:
 
 - [Architecture overview](development/architecture.md) — Package dependency layers, Core tools vs built-in plugins vs built-in extensions, and durable local state stores.
-- [Functional requirements & Axiomatic Design](development/axiomatic-design.md) — FR0–FR9 overview, constraints, static DSM scope, and the coupled macro relationship table.
+- [Functional requirements & Axiomatic Design](development/axiomatic-design.md) — Overall goal, functional domains, constraints, static DSM scope, and sparse leaf FR–DP impact analysis.
 - [Leaf functional requirements](development/functional-requirements.md) — Observable outcomes, adjustable design mechanisms, and acceptance boundaries.
 - [Functional acceptance](development/functional-acceptance.md) — Requirement-to-test mapping, controlled functional effects, and limits of the evidence.
 - [Execution interface](development/execution-interface.md) — Core `PermissionPolicy`, `SandboxExecutor`, `ProcessRequest`, native backend compilation, Broker file tools, `OutputStore`, and Host MCP contracts.
