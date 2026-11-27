@@ -12,6 +12,7 @@ import pytest
 from virgo.agent import AgentTool, ToolResult
 from virgo.ai.providers import faux
 from virgo.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+from virgo.extensions.todo import snapshot
 from virgo.harness.extensions import ExtensionAPI
 
 from tests.support.harness import calls, tool_results
@@ -82,7 +83,15 @@ def test_parallel_todos_have_no_size_cap_or_stop_continuation(make_session):
     [item("bad step", step="Step1")],
     [item("bad step", step="StepA\n")],
 ])
-def test_invalid_todos_leave_previous_state_intact(make_session, invalid):
+def test_invalid_todo_snapshots_are_rejected(invalid):
+    with pytest.raises(ValueError):
+        snapshot({"todos": invalid})
+
+
+def test_invalid_todos_leave_previous_state_intact(make_session):
+    # Whitespace passes the tool schema, so this exercises rejection by the
+    # checklist itself and proves partial replacements never reach the journal.
+    invalid = [item("new"), item("  ")]
     original = {"todos": [item("keep")], "explanation": "original reason"}
     session = make_session(
         faux.reply(tools=[("todo_write", original)]),

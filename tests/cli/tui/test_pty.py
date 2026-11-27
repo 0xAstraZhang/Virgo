@@ -282,9 +282,10 @@ Agent.prompt, AgentSession.steer = hold_handback, observe_steer
 """
 
 
+# Keep every SDK on the real terminal; Esc and Ctrl+C share the controller's abort path.
 @pytest.mark.parametrize(("provider", "key", "submit_while_cancelling"), [
-    *[pytest.param(p, key, False, id=f"{p}-{name}") for p in PROVIDERS
-      for name, key in (("esc", b"\x1b"), ("ctrl-c", b"\x03"))],
+    *[pytest.param(p, b"\x1b", False, id=f"{p}-esc") for p in PROVIDERS],
+    pytest.param("openai", b"\x03", False, id="openai-ctrl-c"),
     pytest.param("openai", b"\x03", True, id="queued-while-cancelling"),
 ])
 def test_fullscreen_pty_cancel_stalled_sdk_stream(project, tmp_path, monkeypatch, provider, key, submit_while_cancelling):

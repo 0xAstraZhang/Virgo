@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from virgo.ai.types import Model
+from virgo.harness.model_registry import small_model_effort_fallback_reason_for, small_model_effort_for
 from virgo.harness.preferences import PreferenceChoice
 from virgo.harness.session import AgentSession
 
@@ -97,13 +99,11 @@ def test_compatible_provider_uses_low_for_auxiliary_requests(make_session, spec,
     (True, None, None, None),
     (True, None, "low", "low"),
 ])
-def test_low_default_respects_declared_capabilities(make_session, reasoning, levels, default, expected):
-    session = make_session()
-    session.small_model.reasoning = reasoning
-    session.small_model.supported_reasoning_levels = levels
-    session.small_model.default_reasoning_level = default
-    assert session.small_model_effort == expected
-    assert bool(session.small_model_effort_fallback_reason) == (expected != "low")
+def test_low_default_respects_declared_capabilities(reasoning, levels, default, expected):
+    model = Model("faux", "test", "faux", reasoning=reasoning,
+                  supported_reasoning_levels=levels, default_reasoning_level=default)
+    assert small_model_effort_for(model) == expected
+    assert bool(small_model_effort_fallback_reason_for(model)) == (expected != "low")
 
 
 @pytest.mark.parametrize("default", ["max", None])

@@ -1,13 +1,16 @@
-"""Fetch tools run through Session permissions, tools, model continuation and storage."""
+"""Fetch tool boundaries and Session permissions, model continuation and storage."""
 
 import json
+import threading
 from unittest.mock import Mock
 
 import httpx
 import pytest
 
+from virgo.agent import ToolContext
 from virgo.ai import web
 from virgo.ai.types import AssistantMessage, Model, TextContent, ToolCall
+from virgo.i18n import Translator
 from virgo.tools import web_fetch
 
 from tests.support.harness import install_responses, tool_results
@@ -38,6 +41,17 @@ def http(monkeypatch):
     monkeypatch.setattr(web_fetch, "_addresses", lambda host, port, ctx, deadline: ["93.184.216.34"])
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     return state
+
+
+@pytest.fixture
+def fetch_tool(project):
+    tool = web_fetch.make_web_fetch({}, resolve_backend=lambda _: "http", resolve_api_key=lambda _: None)
+
+    def execute(url="https://example.com/article", *, language="en"):
+        context = ToolContext("fetch", project, threading.Event(), translator=Translator(language))
+        return tool.execute({"url": url}, context)
+
+    return execute
 
 
 def fetch(s, monkeypatch, url="https://example.com/article"):
@@ -130,18 +144,18 @@ def test_deepseek_explicit_builtin_does_not_fallback_to_http(make_session, monke
     ("application/json", '{"papers": [{"id": "2611.31105"}]}'),
     ("application/ld+json", '{"@type": "ScholarlyArticle"}'),
 ])
-def test_http_fetch_accepts_structured_text_types(make_session, monkeypatch, http, media_type, body):
+def test_http_fetch_accepts_structured_text_types(fetch_tool, http, media_type, body):
     http.update(body=body, headers={"content-type": f"{media_type}; charset=utf-8"})
-    result, _ = fetch(make_session(), monkeypatch, "https://export.arxiv.org/api/query?search_query=all:kv")
-    assert not result.is_error, result.text()
-    data = json.loads(result.text())
+    result = fetch_tool("https://export.arxiv.org/api/query?search_query=all:kv")
+    assert not result.is_error, result.as_text()
+    data = json.loads(result.as_text())
     assert data["backend"] == "http"
     assert data["content"] == body
 
 
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "https://user:password@example.com", "https://127.0.0.1/", "https://[::1]/", "https://169.254.169.254/", "https://example.com/" + "a" * 8192])
-def test_unsafe_urls_never_connect(make_session, monkeypatch, http, url):
-    result, _ = fetch(make_session(), monkeypatch, url)
+def test_unsafe_urls_never_connect(fetch_tool, http, url):
+    result = fetch_tool(url)
     assert result.is_error
     assert not http["requests"]
 
@@ -152,27 +166,25 @@ def test_unsafe_urls_never_connect(make_session, monkeypatch, http, url):
     "http://[::1]/", "http://198.18.2.29/", "http://localhost/admin",
     "http://app.localhost/", "http://app.localhost./",
 ])
-def test_private_ip_or_localhost_rejected_before_dns(make_session, monkeypatch, http, language, url):
+def test_private_ip_or_localhost_rejected_before_dns(fetch_tool, monkeypatch, http, language, url):
     resolve = Mock(return_value=[])
     monkeypatch.setattr(web_fetch, "_addresses", resolve)
-    session = make_session(settings={"language": language})
-    result, _ = fetch(session, monkeypatch, url)
+    result = fetch_tool(url, language=language)
     resolve.assert_not_called()
     assert not http["requests"]
-    assert result.is_error and result.text() == session.t("tools.fetch.public_only")
+    assert result.is_error and result.as_text() == Translator(language)("tools.fetch.public_only")
 
 
 @pytest.mark.parametrize(("language", "description"), [("en", "non-public address"), ("zh-CN", "非公网地址")])
 @pytest.mark.parametrize("addresses", [["198.18.2.29"], ["10.0.0.5"], ["93.184.216.34", "127.0.0.1"]])
-def test_private_dns_answer_never_connects(make_session, monkeypatch, http, language, description, addresses):
+def test_private_dns_answer_never_connects(fetch_tool, monkeypatch, http, language, description, addresses):
     monkeypatch.setattr(web_fetch, "_addresses", lambda *args: addresses)
-    session = make_session(settings={"language": language})
-    result, _ = fetch(session, monkeypatch)
+    result = fetch_tool(language=language)
     assert result.is_error and not http["requests"]
-    message = result.text()
+    message = result.as_text()
     assert all(address not in message for address in addresses)
     assert description in message and "DNS" in message and "/fetch deepseek" in message
-    assert message == session.t("tools.fetch.dns_nonpublic")
+    assert message == Translator(language)("tools.fetch.dns_nonpublic")
 
 
 def test_redirect_to_hostname_with_private_dns_answer_stops_at_first_request(make_session, monkeypatch, http):

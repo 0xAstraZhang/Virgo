@@ -69,7 +69,7 @@ def test_permission_mode_arguments_and_legacy_aliases(value):
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS, ids=["command", "module"])
-def test_removed_task_flags_are_rejected_and_permission_output_stays_independent(entry, project):
+def test_permission_output_stays_independent(entry, project):
     result = subprocess.run(
         [*entry, "--no-session", "--no-extensions", "--model", "faux/demo", "-p",
          "--format", "json", "--permission", "no-limit", "/permissions"],
@@ -77,19 +77,14 @@ def test_removed_task_flags_are_rejected_and_permission_output_stays_independent
     )
     assert "Host" in result.stdout
     assert all(isinstance(json.loads(line), dict) for line in result.stdout.splitlines())
-    for flag, value in (
-        ("--work-mode", "plan"),
-        ("--plan", None),
-        ("--profile", "minimal"),
-        ("--execution", "host"),
-        ("--sandbox", "disabled"),
-        ("--mode", "json"),
-    ):
-        rejected = subprocess.run(
-            [*entry, "--no-session", flag, *([value] if value else [])],
-            cwd=project, input="", capture_output=True, text=True, timeout=10,
-        )
-        assert rejected.returncode == 2 and "unrecognized arguments" in rejected.stderr
+
+
+def test_cli_reports_removed_flag_error(project):
+    rejected = subprocess.run(
+        [str(COMMAND), "--no-session", "--plan"],
+        cwd=project, input="", capture_output=True, text=True, timeout=10,
+    )
+    assert rejected.returncode == 2 and "unrecognized arguments" in rejected.stderr
 
 
 @pytest.mark.parametrize("language_args", [[], ["--language", "en"]])

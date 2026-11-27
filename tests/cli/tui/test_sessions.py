@@ -183,8 +183,11 @@ def test_browser_remains_usable_when_view_preference_cannot_be_saved(make_sessio
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("entry", ["/sessions", "ctrl+r"])
-@pytest.mark.parametrize("work", ["agent", "command", "helper", "queued"])
+# Both entry points call action_sessions; exercise each work state once and the slash route once.
+@pytest.mark.parametrize("entry,work", [
+    *(pytest.param("ctrl+r", work, id=f"{work}-ctrl+r") for work in ("agent", "command", "helper", "queued")),
+    pytest.param("/sessions", "agent", id="agent-/sessions"),
+])
 def test_browser_opens_immediately_while_work_continues(make_session, entry, work):
     async def scenario():
         entered, release = threading.Event(), threading.Event()
