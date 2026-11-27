@@ -32,6 +32,17 @@ from .controller import RunController
 from .conversation import ConversationState
 from .dialogs import ApprovalPicker, SessionPicker
 from .editor import ChatEditor, InputHistory
+from .path_completion import (
+    Mention,
+    PathCompletion,
+    SearchScope,
+    display_path,
+    matching_paths,
+    mention_at,
+    quote_path,
+    scan_paths,
+    search_scope,
+)
 from .preferences import PreferencePicker
 from .selection import SelectionCopyMixin
 from .subagents import SubagentPicker, SubagentTraceScreen
@@ -92,7 +103,7 @@ def short_number(value: int) -> str:
 def shortcut_hints(text: str) -> Text:
     hint = Text(text)
     for key in re.finditer(
-        r"(?<!\S)(?:Ctrl\+O/T|Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter|Esc|Backspace|↑↓|←→|/exit|/help|/|s)(?=\s|$)", text
+        r"(?<!\S)(?:Ctrl\+O/T|Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter/Tab|Enter|Esc|Backspace|↑↓|←→|/exit|/help|/|s)(?=\s|$)", text
     ):
         hint.stylize("bold", key.start(), key.end())
     return hint
@@ -553,6 +564,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             target.display = True
             self.update_status()
             self.focus_composer()
+            self.sync_completions()
             return
         if path == "new":
             if self.controller.new_session(initial=initial):
@@ -867,6 +879,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         elif self.input_request is not None and self.input_request.preferences is None:
             key = "ui.hints.select" if self.input_request.options is not None else "ui.hints.confirm"
             hints = shortcut_hints(tr(self, key))
+        elif self.state.path_completion is not None and not self.has_modal:
+            hints = shortcut_hints(tr(self, "ui.hints.paths"))
         elif (self.controller.busy and not self.has_modal
               and self.active_confirmation is None and self.active_input is None):
             hints = shortcut_hints(tr(self, "ui.hints.busy"))
@@ -972,6 +986,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.resize_editor()
         self.sync_completions()
 
+    @on(TextArea.SelectionChanged, "#editor")
+    def editor_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        if event.text_area is self._pane.query_one_optional(ChatEditor):
+            self.sync_completions()
+
     def on_resize(self) -> None:
         if self.is_mounted:
             self.call_after_refresh(self.resize_editor)
@@ -985,23 +1004,42 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         )
         self._pane.query_one("#completions").styles.max_height = max(3, min(6, self.size.height // 4))
 
+    def _reset_path_completion(self) -> None:
+        if completion := self.state.path_completion:
+            completion.cancel.set()
+        self.state.path_completion = None
+
     def hide_completions(self) -> None:
+        self._reset_path_completion()
         self.state.completion_names = []
         self._pane.query_one("#completions").display = False
 
     def sync_completions(self) -> None:
-        # TextArea.Changed is queued; a quick Enter/Tab/arrow can arrive first.
-        if self.state.completion_query != self.editor.text:
+        # TextArea.Changed and SelectionChanged are queued; keys can arrive first.
+        text = self.editor.text
+        cursor = (self.editor.cursor_location, self.editor.selection.is_empty)
+        if self.state.completion_query != text or ("@" in text and self.state.completion_cursor != cursor):
             self.update_completions()
 
     def update_completions(self) -> None:
-        if self.active_input is not None or self.active_confirmation is not None:
+        if self.active_input is not None or self.active_confirmation is not None or self.has_modal:
             return
         text = self.editor.text
         self.state.completion_query = text
+        self.state.completion_cursor = (self.editor.cursor_location, self.editor.selection.is_empty)
         if text != self.completion_suppressed:
             self.completion_suppressed = None
-        if not text.startswith("/") or any(c.isspace() for c in text) or text == self.completion_suppressed:
+        if text == self.completion_suppressed:
+            self.hide_completions()
+            return
+        if self.editor.selection.is_empty and "@" in text:
+            row, column = self.editor.cursor_location
+            mention = mention_at(self.editor.document.get_line(row), row, column)
+            if mention is not None:
+                self._update_path_completions(mention)
+                return
+        self._reset_path_completion()
+        if not text.startswith("/") or any(c.isspace() for c in text):
             self.hide_completions()
             return
         commands = {f"/{c.name}": c.description for c in self.session.commands.all()}
@@ -1018,11 +1056,121 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         options.styles.max_height = max(3, min(6, self.size.height // 4))
         options.highlighted = 0 if names else None
 
+    def _update_path_completions(self, mention: Mention) -> None:
+        completion = self.state.path_completion
+        if completion is None or (completion.mention.row, completion.mention.start) != (mention.row, mention.start):
+            self._reset_path_completion()
+            completion = PathCompletion(mention)
+            self.state.path_completion = completion
+        completion.mention = mention
+        options = self._pane.query_one("#completions", ChoiceList)
+        options.clear_options()
+        completion.choices = []
+        self.state.completion_names = []
+        try:
+            scope, query = search_scope(self.session.cwd, mention.query)
+        except (ValueError, OSError):
+            scope, query = None, ""
+        completion.scope = scope
+        if scope is None:
+            hint = "ui.paths.unavailable"
+        elif scope not in completion.cache:
+            hint = "ui.paths.loading"
+            if scope not in completion.pending:
+                completion.pending.add(scope)
+                self.run_worker(self._scan_path_candidates(self._pane, completion, scope), group="path-completion")
+        else:
+            result = completion.cache[scope]
+            completion.choices = matching_paths(result, scope, query)
+            hint = "ui.paths.no_matches" if result.available else "ui.paths.unavailable"
+        if completion.choices:
+            for index, choice in enumerate(completion.choices):
+                label = display_path(choice.path, self.session.cwd, choice.is_dir)
+                self.state.completion_names.append(label)
+                if scope is not None and not scope.recursive:
+                    label = "./" if choice.path == scope.directory else choice.path.name + ("/" if choice.is_dir else "")
+                if choice.is_dir and (scope is None or choice.path != scope.directory):
+                    label += "  ›"
+                options.add_option(Option(Text(label), id=str(index)))
+            restore = completion.restore
+            options.highlighted = next(
+                (i for i, choice in enumerate(completion.choices) if choice.path == restore), 0
+            )
+            completion.restore = None
+            options.scroll_to_highlight()
+        else:
+            options.add_option(Option(Text(tr(self, hint), style="dim"), disabled=True))
+        options.display = True
+        options.styles.max_height = max(3, min(6, self.size.height // 4))
+        self.update_status()
+
+    async def _scan_path_candidates(self, pane: ConversationPane, completion: PathCompletion, scope: SearchScope):
+        session = pane.controller.session
+        result = await asyncio.to_thread(scan_paths, scope, session.cwd, session.paths.user, completion.cancel)
+        if pane.state.path_completion is not completion:
+            return
+        completion.pending.discard(scope)
+        completion.cache[scope] = result
+        if completion.scope == scope:
+            if self._pane is pane:
+                self.update_completions()
+            else:
+                pane.state.completion_query = None
+
+    def _replace_mention(self, mention: Mention, value: str, *, navigate: bool = False) -> None:
+        line = self.editor.document.get_line(mention.row)
+        replacement = ("@" if navigate else "") + quote_path(value)
+        if not navigate and (mention.end == len(line) or not line[mention.end].isspace()):
+            replacement += " "
+        self.editor.replace(
+            replacement, (mention.row, mention.start), (mention.row, mention.end),
+            maintain_selection_offset=False,
+        )
+        column = mention.start + len(replacement) - int(navigate and replacement.endswith('"'))
+        self.editor.move_cursor((mention.row, column))
+
+    def navigate_path_completion(self, direction: int) -> bool:
+        self.sync_completions()
+        completion = self.state.path_completion
+        if completion is None or self.active_input is not None or self.active_confirmation is not None:
+            return False
+        scope = completion.scope
+        if scope is None:
+            return True
+        if direction < 0:
+            directory = scope.directory.parent
+            if directory == scope.directory:
+                return True
+            completion.restore = scope.directory
+        else:
+            options = self._pane.query_one("#completions", OptionList)
+            if options.highlighted is None or not completion.choices:
+                return True
+            choice = completion.choices[options.highlighted]
+            if not choice.is_dir or choice.path == scope.directory:
+                return True
+            directory = choice.path
+            completion.restore = None
+        self._replace_mention(completion.mention, display_path(directory, self.session.cwd, True), navigate=True)
+        self.sync_completions()
+        return True
+
     def accept_completion(self) -> bool:
         self.sync_completions()
-        if not self.completion_names or not self._pane.query_one("#completions").display:
+        if self.active_input is not None or self.active_confirmation is not None:
             return False
         options = self._pane.query_one("#completions", OptionList)
+        if completion := self.state.path_completion:
+            if completion.choices and options.highlighted is not None:
+                choice = completion.choices[options.highlighted]
+                self._replace_mention(completion.mention, display_path(choice.path, self.session.cwd, choice.is_dir))
+                self.hide_completions()
+                self.editor.focus()
+            # Never accidentally submit a message while a path search is loading
+            # or has no matches. Escape dismisses the picker.
+            return True
+        if not self.completion_names or not options.display:
+            return False
         index = options.highlighted or 0
         self.editor.load_text(self.completion_names[index] + " ")
         self.editor.move_cursor(self.editor.document.end)
@@ -1032,9 +1180,13 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def move_completion(self, direction: int) -> bool:
         self.sync_completions()
-        if not self.completion_names or self.active_input is not None:
+        if self.active_input is not None or self.active_confirmation is not None:
+            return False
+        if not self.completion_names and self.state.path_completion is None:
             return False
         options = self._pane.query_one("#completions", ChoiceList)
+        if self.state.path_completion is not None and not self.completion_names:
+            return True
         return options.move_selection(direction)
 
     @on(OptionList.OptionSelected, "#completions")
@@ -1051,7 +1203,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             self.finish_confirmation("n")
         elif self.active_input is not None:
             self.finish_input(None)
-        elif self.completion_names:
+        elif self.completion_names or self.state.path_completion is not None:
             self.completion_suppressed = self.editor.text
             self.hide_completions()
         elif self.controller.busy:

@@ -14,23 +14,9 @@ from pathlib import Path
 
 from ..agent.types import AgentTool, ToolContext, ToolResult, image_result
 from ..execution import FileAccessDenied, HostContext
-from ..file_access import MAX_WALK_FILES, resolve_read_path, resolve_write_path
+from ..file_access import IGNORE_DIRS, MAX_WALK_FILES, resolve_read_path, resolve_write_path
 from .output import MAX_BYTES, MAX_LINES
 
-IGNORE_DIRS = {
-    ".git",
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".idea",
-    "dist",
-    "build",
-}
 BOM = "\ufeff"
 MAX_EDIT_BYTES = 20 * 1024 * 1024
 IMAGE_TYPES = {
