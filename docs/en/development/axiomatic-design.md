@@ -14,30 +14,24 @@ An FR states **what result is required**; a DP identifies **how that result is p
 
 The conceptual design relation is $\{FR\}=[A]\{DP\}$. A nonzero $A_{ij}$ means that varying $DP_j$, within a specified range and operating scenario, affects the required outcome of $FR_i$. A module import, callback, or request/response exchange is evidence to investigate; it is not automatically such a functional effect.
 
-## System constraints
+## Product constraints and design invariants
 
 - **C1 — Guardrail threat model:** Bound occasional mistakes by a well-aligned model; malicious-code containment, deliberate evasion, and prompt-injection attack chains are outside this boundary ([ADR 001](../decisions/001-guardrail-threat-model.md)).
 - **C2 — Latency and scaling budgets:** Cold start plus first Shell command `<= 5s`, repeated short Shell command `<= 2s` with `O(1)` scaling, and Broker `read` `<= 250ms` with `O(1)` scaling on Tier 1 hosts; unconfigured optional SDKs add no cold-start import cost. These are acceptance targets, not consequences of a dependency check ([execution acceptance](execution-acceptance.md)).
 - **C3 — Platforms:** Linux, macOS, unelevated supported Windows 11, and Windows + WSL2 with Python 3.11+; native guarantees require validation on the corresponding host ([ADR 003](../decisions/003-native-sandbox-backends.md)).
-- **C4 — Explicit execution failure:** An unavailable native boundary fails closed. An interactive one-shot No-Limit choice does not change the session mode. A payload that may have started is never automatically replayed ([ADR 002](../decisions/002-execution-boundaries-and-broker-tools.md)).
-- **C5 — Failure domains:** Plugin loading, diagnostic reporting, and presentation failures must preserve the original operation outcome and session state. Failure of the authoritative session store intentionally stops further work; it is not treated as an optional logging failure ([ADR 005](../decisions/005-runtime-layering-and-durable-state.md)).
-- **C6 — Prompt-cache prefix stability:** Ordinary turns append history; system instructions and retained sections stay frozen between compaction boundaries ([ADR 006](../decisions/006-three-layer-provider-agnostic-compaction.md)).
+- **C4 — Configured work limits:** Model requests and assistant turns must respect configured caps, including shared model-call and Web-call limits where applicable. The configured cap is a constraint; the counting, scope and admission mechanisms are DPs. Independent unlimited auxiliary budgets would change the resource contract.
 
-## Level-1 requirement groups
+- **I1 — Execution correctness invariant:** An unavailable native boundary fails closed. An interactive one-shot No-Limit choice does not change the session mode. A payload that may have started is never automatically replayed ([ADR 002](../decisions/002-execution-boundaries-and-broker-tools.md)).
+- **I2 — Failure-domain invariant:** Plugin loading, diagnostic reporting, and presentation failures must preserve the original operation outcome and session state. Failure of the authoritative session store intentionally stops further work; it is not treated as an optional logging failure ([ADR 005](../decisions/005-runtime-layering-and-durable-state.md)).
+- **I3 — Internal constraint of the current cache design:** Ordinary turns append history; system instructions and retained sections stay frozen between compaction boundaries ([ADR 006](../decisions/006-three-layer-provider-agnostic-compaction.md)).
 
-These groups retain the FR1–FR9 numbering used by the macro matrix. They are navigation groups, not a claim that each group is a single independently adjustable function. The leaf catalog separates state recovery from compression, evidence storage from delivery, extension registration from feature behavior, and presentation from decision input.
+I1 and I2 are required correctness contracts; their implementations may vary without relaxing those contracts. I3 is conditional on the chosen cache strategy: the product goals are latency, cost and context continuity, not a particular prefix format. Do not treat an internal design constraint as an immutable customer need.
 
-| Group | Required outcome | Principal implementation group |
-| --- | --- | --- |
-| **FR1** | Obtain usable, normalized model interaction using the chosen model and account | **DP1:** `ai/*`, `harness/model_registry` |
-| **FR2** | Admit operations according to authorization, resource boundaries, and project trust | **DP2:** `execution_policy`, execution/sandbox components, settings and approvals |
-| **FR3** | Read and modify files, run commands, and retrieve bounded results | **DP3:** file/Shell tools, process supervision, `OutputStore` |
-| **FR4** | Advance multi-step tasks and honor user steering, cancellation, and budgets | **DP4:** `agent/*`, `Runtime`, retry and request-budget policy |
-| **FR5** | Preserve recoverable state, correct ownership, usable request context, and accounting | **DP5:** session/origin stores, prompt assembly, compaction, telemetry |
-| **FR6** | Preserve, query, and deliver relevant failure evidence without replacing the original outcome | **DP6:** capture/redaction, diagnostic storage, scoped access and delivery |
-| **FR7** | Delegate, inspect, cancel, and collect child or background work | **DP7:** child runtimes, `SubagentStore`, `JobManager` |
-| **FR8** | Add configured capabilities and use skills, external services, checklists, web access, and clarification | **DP8:** extension registration and the individual feature implementations |
-| **FR9** | Enter work, make decisions, and inspect progress through terminal or programmatic interfaces | **DP9:** presentation adapters, input/command contracts, localization |
+## Functional decomposition
+
+The top-level goal FR0 is realized by the selected model/tool-loop runtime DP0. Its [leaf catalog](functional-requirements.md) organizes 43 observable outcomes into eight functional domains: A user interaction, B model interaction, C operations and information acquisition, D authorization and trust control, E task orchestration and control, F conversation and context management, G observability and diagnostics, and H extensibility.
+
+This is a functional catalog with a top-level design choice, not a claim that the eight headings are independent intermediate FR–DP pairs. Strict further axiomatic decomposition would require an explicit DP at each parent and a justified derivation of its children (zigzagging between the functional and design domains). Do not infer such a hierarchy from the package tree. Model/tool orchestration describes protocol behavior rather than arbitrary end-to-end task success; the latter is evaluated at FR0. Capability installation is separate from the outcomes of installed features. The leaf catalog is the authority for IDs, required outcomes, principal mechanisms and acceptance boundaries.
 
 ## Two different matrices
 
@@ -47,25 +41,36 @@ These groups retain the FR1–FR9 numbering used by the macro matrix. They are n
 
 This scope excludes dynamic loading such as `importlib.import_module`, callbacks, shared mutable state, and competition for request budgets. For example, [`harness/extensions.py`](../../../src/virgo/harness/extensions.py) dynamically loads configured plugins. The DSM gate is an implementation-structure check; it neither covers every runtime dependency nor proves FR independence.
 
-### Macro relationship table
+### Sparse leaf FR–DP impact matrix
 
-The table below records the nine implementation groups' declared relationships. It is a **candidate functional-impact model**, not a measured sensitivity matrix: some entries describe interactions whose functional effect still needs a scenario and acceptance criterion. `X` marks the principal implementation; `x` and `⊗` mark relationships below and above the diagonal. `·` means no relationship is marked here, **not a behaviorally established zero**. The [acceptance evidence register](functional-acceptance.md) distinguishes supported effects, bounded invariance, and unverified claims.
+Use the 43 leaf IDs from the catalog as row and column labels. Each matching FR–DP pair is marked `X` (principal design relationship, not a measured derivative); the following table is the sparse representation of investigated off-diagonal entries. It records observable outcomes asserted by existing tests, not proof of a numerical sensitivity matrix or a claim that a particular revision has passed. A change of setting, replacement within a contract, or injected failure is bounded to its stated scenario. This also distinguishes changes in an allowed outcome (such as stopping at a resource cap) from violations of the required protocol.
 
-| FR \ DP | DP1 | DP2 | DP3 | DP4 | DP5 | DP6 | DP7 | DP8 | DP9 |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **FR1** Model interaction | X | ⊗ | · | ⊗ | · | · | · | · | · |
-| **FR2** Authorization and trust | · | X | ⊗ | · | ⊗ | · | · | ⊗ | ⊗ |
-| **FR3** Files and commands | · | x | X | · | · | · | · | · | · |
-| **FR4** Task progression | x | x | x | X | ⊗ | ⊗ | · | ⊗ | · |
-| **FR5** State and context | x | x | x | x | X | ⊗ | · | ⊗ | · |
-| **FR6** Failure evidence | x | x | x | x | x | X | · | · | · |
-| **FR7** Delegation and jobs | x | x | x | x | x | x | X | · | · |
-| **FR8** Added capabilities | x | x | x | x | x | · | x | X | ⊗ |
-| **FR9** User interaction | x | x | x | x | x | x | x | x | X |
+- `N`: evidence-supported nonzero effect required by an existing constraint or functional contract.
+- `U`: evidence-supported nonzero, unnecessary effect that violates or needlessly constrains another requirement. None is established by the controlled checks in this table.
+- `0*`: bounded invariance for the stated substitution or fault; not a universal zero.
+- `?`: unknown. Every off-diagonal entry not listed is unknown; a possible mechanism or mere data/control interaction is not proof of an effect.
 
-Treating every marked relationship as nonzero gives **54 entries: 9 diagonal, 33 below, and 12 above**. This table is not lower-triangular, and reordering cannot make it triangular: every row has at least two marked entries, whereas the first row of a lower-triangular matrix can contain at most one. With each FR–DP pair as a node and each off-diagonal $A_{ij}$ as an edge $j\rightarrow i$, all nine nodes form one strongly connected component.
+See [functional acceptance](functional-acceptance.md) for the test scenarios and limits of their assertions.
 
-If all those entries are accepted as functional effects, the resulting design is **coupled**, not decoupled. Calling an interaction bounded does not make its matrix entry zero. Grouping a coupled component into a larger diagonal block also does not establish independence inside the block. Conversely, this coarse table alone does not prove that every leaf function is coupled: refine the FRs and allowed DP variations before drawing that conclusion.
+| Affected FR | Varied DP | Entry | Bounded variation / result | Existing test |
+| --- | --- | :---: | --- | --- |
+| FR-E.1 | DP-E.4 | N | At the low compaction threshold, varying the call cap changes whether the next ordinary request is dispatched. | `test_auto_compaction_and_task_share_request_budget` |
+| FR-E.1 | DP-F.4 | N | With a fixed cap of two, varying the compaction trigger changes whether the task or summary consumes the remaining call. | `test_auto_compaction_and_task_share_request_budget` |
+| FR-F.4 | DP-E.4 | N | With a summary due, varying the cap changes whether a summary checkpoint is produced. | `test_auto_compaction_and_task_share_request_budget` |
+| FR-E.1 | DP-F.1 | N | Injected authoritative history write failure blocks further requests while preserving unsaved history (fault scenario). | `test_failed_save_stops_requests_and_keeps_history` |
+| FR-F.3 | DP-D.1 | N | Changing the mode and restoring it changes the write boundary in the same request context. | `test_permission_switch_updates_requests_and_restores_the_original_prefix` |
+| FR-H.1 | DP-D.6 | N | The same project extension executes only with the explicit external trust choice. | `test_project_extensions_require_trust_outside_the_project` |
+| FR-D.3 | DP-A.4 | 0* | Fix the request, workspace, policy and y/n answers; replace the recording input adapter with TerminalUI. | `test_direct_file_approval_persists_in_session_and_preserves_the_mode` |
+| FR-G.5 | DP-H.1 | 0* | Rename the registered and declared diagnostic query tool; the new reference is followed successfully. | `test_renamed_query_reference_can_be_followed_by_the_model` |
+| FR-G.6 | DP-H.1 | 0* | Rename the declared query tool; pending and checkpoint references use the new name. | `test_pending_evidence_uses_the_declared_query_name`; `test_compaction_checkpoint_uses_the_declared_query_name` |
+| FR-G.4 | DP-H.1 | 0* | Disable the lookup plugin; the diagnostic log remains available. | `test_model_diagnostics_feature_can_be_disabled_without_disabling_logs` |
+| FR-G.4 | DP-A.1 | 0* | Inject failure in UI printing of a diagnostic; the persisted original error remains identifiable and deduplicated. | `test_failing_ui_does_not_destroy_original_error_or_recurse` |
+
+For reordering, orient a nonzero off-diagonal entry from the matched DP node to the affected FR node. Both `N` and `U` count as edges; do not discard required effects to obtain a diagonal. The six supported nonzero entries above form the edges E.4 → E.1, F.4 → E.1, E.4 → F.4, F.1 → E.1, D.1 → F.3, and D.6 → H.1. All other entries are omitted from this **known-edge graph**, not assumed zero in the full matrix.
+
+The known graph has no directed cycle (all strongly connected components are singletons). With the matched diagonal fixed, one valid simultaneous FR/DP ordering is all leaf IDs in catalog order except E.1, F.3, F.4 and H.1, followed by F.3, F.4, H.1, and E.1. The known nonzero support is then lower-triangular, not diagonal. This does not establish that the real 43×43 matrix is triangular: unknown entries may add cycles, and the principal mechanisms may share design choices. Bounded invariance does not fill unknown cells with zeros. Nor does an intentional change in an allowed outcome imply a violation of the corresponding FR.
+
+Coarse domain aggregation would merge distinct mechanisms and can produce apparent reciprocal dependencies, for example task progression and compaction under a shared budget. It is not a substitute for leaf-level variation, so no domain-level functional matrix is assigned. Preserve required shared budgets, explicit authorization, origin binding and fail-closed authoritative persistence. Investigate unknown or unnecessary effects using concrete acceptance boundaries before changing implementation; do not create abstractions, independent budgets or additional stores merely to remove entries.
 
 ## Independence and information axioms
 

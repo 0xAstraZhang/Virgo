@@ -19,7 +19,7 @@
 系统分层、内部契约与验收验证：
 
 - [架构概览](development/architecture.md) — 包依赖分层、核心工具 / 内置插件 / 内置扩展的边界，以及本地持久化存储布局。
-- [功能需求与公理设计分析](development/axiomatic-design.md) — FR0–FR9 概览、系统约束、静态 DSM 范围，以及宏观关系表的耦合性质。
+- [功能需求与公理设计分析](development/axiomatic-design.md) — 总体目标、功能域、约束、静态 DSM 范围及稀疏叶级 FR–DP 影响分析。
 - [叶级功能需求](development/functional-requirements.md) — 可观察结果、可调整设计机制与验收边界。
 - [功能验收](development/functional-acceptance.md) — 需求到测试的映射、受控功能影响及证据边界。
 - [执行接口](development/execution-interface.md) — 核心 `PermissionPolicy`、`SandboxExecutor`、`ProcessRequest`、原生后端编译、Broker 文件工具、`OutputStore` 与 Host MCP 契约。
