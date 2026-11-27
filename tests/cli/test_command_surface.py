@@ -6,17 +6,22 @@ import pytest
 from virgo.cli.main import build_parser
 
 
-def test_canonical_cli_flags_and_deprecated_aliases():
+def test_canonical_cli_flags():
     parser = build_parser("en")
     args = parser.parse_args(["--permission", "read-only", "--approval", "never", "-p", "x"])
     assert args.permission == "read-only"
     assert args.approval == "never"
 
-    # Retired flags --mode, --execution, and --sandbox are removed.
-    for retired in (["--mode", "read-only"], ["--execution", "host"], ["--sandbox", "disabled"]):
-        with pytest.raises(SystemExit) as exc:
-            parser.parse_args([*retired, "-p", "x"])
-        assert exc.value.code == 2
+
+@pytest.mark.parametrize("retired", [
+    ["--work-mode", "plan"], ["--plan"], ["--profile", "minimal"],
+    ["--execution", "host"], ["--sandbox", "disabled"], ["--mode", "json"],
+], ids=["work-mode", "plan", "profile", "execution", "sandbox", "mode"])
+def test_removed_cli_flags_are_rejected(retired, capsys):
+    with pytest.raises(SystemExit) as exc:
+        build_parser("en").parse_args([*retired, "-p", "x"])
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 def test_permissions_owns_presets_and_approval(broker_session):
