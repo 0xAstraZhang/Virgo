@@ -41,15 +41,19 @@ trap 'rm -f "$junit_xml"' EXIT
 echo "==> Installing locked dev dependencies"
 uv sync --locked --dev
 
-echo "==> Running required Linux native sandbox & policy acceptance suites"
-VIRGO_REQUIRE_SANDBOX_TESTS=1 uv run --no-sync pytest -q \
+echo "==> Running required Linux native sandbox acceptance"
+VIRGO_REQUIRE_SANDBOX_TESTS=1 uv run --no-sync pytest -q -m native \
   --junitxml="$junit_xml" \
+  tests/harness/test_sandbox_e2e.py
+
+uv run --no-sync python ci/check_native_report.py "$junit_xml"
+
+echo "==> Running broker and policy acceptance"
+uv run --no-sync pytest -q -m 'not native' \
   tests/harness/test_sandbox_e2e.py \
   tests/harness/test_policy_boundaries.py \
   tests/harness/test_guardrails.py \
   tests/harness/test_output_store.py
-
-uv run --no-sync python ci/check_native_report.py "$junit_xml"
 
 echo "==> Running realistic-scale cold-start and Read budget check in Workspace-Edit"
 uv run --no-sync python ci/measure_permission_modes.py \

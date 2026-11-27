@@ -65,7 +65,7 @@ def discover_test_files(project: Path) -> list[str]:
     return sorted(found)
 
 
-def load_schedule() -> tuple[set[str], dict[str, float]]:
+def load_schedule(suite: str) -> tuple[set[str], dict[str, float]]:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     serial_list = manifest.get("serial", [])
     if len(serial_list) != len(set(serial_list)):
@@ -73,6 +73,8 @@ def load_schedule() -> tuple[set[str], dict[str, float]]:
     weights_by_platform = manifest.get("weights", {})
     weights: dict[str, float] = {k: float(v) for k, v in weights_by_platform.get("default", {}).items()}
     weights.update({k: float(v) for k, v in weights_by_platform.get(sys.platform, {}).items()})
+    if suite == "common":
+        weights.update({k: float(v) for k, v in manifest.get("common_weights", {}).items()})
     return set(serial_list), weights
 
 
@@ -128,7 +130,11 @@ def run(args):
                 "-v", "-ra", "--tb=long", "--color=no", "--durations=30",
                 "-o", "junit_family=legacy", f"--junitxml={xml}", *selection,
             ]
+            if args.suite != "all":
+                command.extend(["-m", "native" if args.suite == "native" else "not native"])
             with _pytest_environment() as env:
+                if args.suite == "native":
+                    env["VIRGO_REQUIRE_SANDBOX_TESTS"] = "1"
                 with subprocess.Popen(
                     command, cwd=project, env=env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -142,9 +148,9 @@ def run(args):
                             print(formatted, end="", flush=True)
                     return process.wait(), xml
 
-        discovered = discover_test_files(project) if args.execution == "parallel" else []
+        discovered = (args.tests or discover_test_files(project)) if args.execution == "parallel" else []
         if args.execution == "parallel" and len(discovered) > 1 and workers > 1:
-            serial_set, weights = load_schedule()
+            serial_set, weights = load_schedule(args.suite)
             parallel_files = [p for p in discovered if p not in serial_set]
             serial_files = [p for p in discovered if p in serial_set]
             results: list[tuple[int, Path]] = []
@@ -159,7 +165,7 @@ def run(args):
             if serial_files:
                 results.append(run_shard("serial", serial_files))
         else:
-            results = [run_shard("serial", [])]
+            results = [run_shard("serial", args.tests)]
 
     root = ET.Element("testsuites")
     codes: list[int] = []
@@ -185,7 +191,7 @@ def run(args):
         exit_code = 0 if list(root.iter("testcase")) else 5
 
     report = {
-        "platform": args.platform, "sha": args.sha,
+        "platform": args.platform, "sha": args.sha, "suite": args.suite,
         "python": sys.version, "system": platform.platform(),
         "exit_code": exit_code, "duration": round(time.monotonic() - started, 2),
         "complete": exit_code in {0, 1}, "counts": {}, "tests": {},
@@ -219,6 +225,8 @@ def run(args):
     if not report["complete"]:
         report["problems"].append(f"pytest did not complete normally (exit {exit_code})")
     report["counts"] = dict(counts)
+    if args.suite == "native" and (counts.get("passed", 0) == 0 or any(counts.get(status) for status in ("failed", "error", "skipped"))):
+        report["problems"].append("Native acceptance requires executed cases with zero failures, errors and skips")
     write_json(output / "results.json", report)
     (output / "failures.md").write_text("\n".join(failures), encoding="utf-8")
     return exit_code if exit_code else int(bool(report["problems"]))

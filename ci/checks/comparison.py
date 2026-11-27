@@ -88,6 +88,35 @@ def main():
         target_path.write_text(json.dumps(target))
         summarize(0, "--target", str(target_path))
 
+        # Native jobs are independent required reports, not optional extras to a
+        # passing common suite. The gate rejects missing, skipped, wrong-SHA, or
+        # ordinary reports presented as native acceptance.
+        native_dir = root / "reports" / "native"
+        native_dir.mkdir()
+        native_path = native_dir / "results.json"
+        common = {**valid, "suite": "common"}
+        native = {**valid, "platform": "native-local", "suite": "native"}
+        report_path.write_text(json.dumps(common))
+        native_options = ("--target", str(target_path), "--native-platforms", "native-local",
+                          "--native-result", "success")
+        native_path.write_text(json.dumps(native))
+        summarize(0, *native_options)
+        for bad_native in (
+            {**native, "suite": "common"},
+            {**native, "sha": "other-commit"},
+            {**native, "counts": {"skipped": 1},
+             "tests": {"test_cases::test_ok": {"status": "skipped"}}},
+            {**native, "counts": {}, "tests": {}},
+        ):
+            native_path.write_text(json.dumps(bad_native))
+            summarize(1, *native_options)
+        native_path.unlink()
+        summarize(1, *native_options)
+        native_path.write_text(json.dumps(native))
+        report_path.write_text(json.dumps(valid))
+        summarize(1, *native_options)
+        native_path.unlink()
+
         # A partial rerun replaces only the retried platform, including a later failure
         # or an incomplete upload. Summary-only retries re-use the same selection.
         attempts = root / "attempts"
@@ -148,7 +177,7 @@ def main():
             summarize(1, "--target", str(target_path))
         target_path.unlink()
         summarize(1, "--target", str(target_path))
-        for job in ("resolve", "checks", "test"):
+        for job in ("resolve", "checks", "test", "native"):
             for status in ("failure", "cancelled", "skipped"):
                 summarize(1, f"--{job}-result", status)
 
@@ -161,7 +190,8 @@ def main():
         report_path.unlink()
         # Works even when the reports directory was never created (download skipped).
         summarize(0, "--target", str(target_path), "--resolve-result", "success",
-                  "--checks-result", "success", "--test-result", "skipped",
+                  "--checks-result", "success", "--test-result", "skipped", "--native-result", "skipped",
+                  "--native-platforms", "native-local",
                   reports_dir=root / "missing-reports")
         summary = json.loads((root / "summary.json").read_text())
         assert summary["skipped"] and not summary["needs_attention"]

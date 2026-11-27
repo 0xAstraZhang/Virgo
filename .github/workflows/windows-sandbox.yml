@@ -2,7 +2,6 @@ name: Windows sandbox boundaries
 on:
   push:
     branches: [main]
-  pull_request:
     paths:
       - 'src/virgo/**'
       - 'tests/conftest.py'
@@ -11,9 +10,12 @@ on:
       - 'ci/check_native_report.py'
       - 'ci/prepare_windows_null_device.py'
       - 'ci/run_as_standard_user.py'
+      - 'ci/compare_tests.py'
+      - 'ci/pipeline/**'
       - '.github/workflows/windows-sandbox.yml'
       - 'pyproject.toml'
       - 'uv.lock'
+  pull_request:
   schedule:
     - cron: '0 4 * * *'
   workflow_dispatch:
@@ -23,7 +25,32 @@ concurrency:
   group: windows-sandbox-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
+  classify:
+    name: Classify Windows acceptance changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_tests: ${{ steps.changes.outputs.run_tests || steps.manual.outputs.run_tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify the immutable pull request or push
+        id: changes
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          python3 ci/compare_tests.py resolve
+          python3 ci/compare_tests.py classify --target target.json --windows-sandbox
+      - name: Require full scheduled or manual acceptance
+        id: manual
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: echo "run_tests=true" >> "$GITHUB_OUTPUT"
+
   native:
+    needs: [classify]
+    if: needs.classify.outputs.run_tests == 'true'
     name: Windows native isolation / windows-2022
     runs-on: windows-2022
     timeout-minutes: 20
@@ -56,7 +83,7 @@ jobs:
       - name: Align Windows Server runner null device with Win11 Feature 60692039
         run: uv run --no-sync python ci/prepare_windows_null_device.py
       - name: Exercise actual Windows security boundaries
-        run: uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
+        run: uv run --no-sync pytest -q -m native tests/harness/test_windows_sandbox_e2e.py --junitxml=windows-sandbox.xml
       - name: Reject empty, failed or skipped native reports
         if: ${{ !cancelled() }}
         run: uv run --no-sync python ci/check_native_report.py windows-sandbox.xml
@@ -69,6 +96,8 @@ jobs:
           retention-days: 14
 
   standard-user:
+    needs: [classify]
+    if: needs.classify.outputs.run_tests == 'true'
     name: Windows native isolation / standard-user (windows-2025)
     runs-on: windows-2025
     timeout-minutes: 25
@@ -146,7 +175,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $uv run --no-sync python ci/run_as_standard_user.py --assert-standard-user
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $uv run --no-sync pytest -q tests/harness/test_windows_sandbox_e2e.py --junitxml=C:\virgo-std-work\windows-sandbox-stduser.xml
+          & $uv run --no-sync pytest -q -m native tests/harness/test_windows_sandbox_e2e.py --junitxml=C:\virgo-std-work\windows-sandbox-stduser.xml
           exit $LASTEXITCODE
           '@ | Set-Content -LiteralPath $runnerScript -Encoding utf8
 
@@ -175,3 +204,26 @@ jobs:
         run: |
           net user virgo_std /delete 2>$null | Out-Null
           Remove-Item -LiteralPath 'C:\virgo-std-work' -Recurse -Force -ErrorAction SilentlyContinue
+
+  summary:
+    name: Enforce Windows sandbox acceptance
+    needs: [classify, native, standard-user]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CLASSIFY_RESULT: ${{ needs.classify.result }}
+      RUN_TESTS: ${{ needs.classify.outputs.run_tests }}
+      NATIVE_RESULT: ${{ needs.native.result }}
+      STANDARD_RESULT: ${{ needs.standard-user.result }}
+    steps:
+      - name: Require both account and host variants, or an intentional path-based skip
+        run: |
+          test "$CLASSIFY_RESULT" = success
+          case "$RUN_TESTS" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          test "$NATIVE_RESULT" = "$expected"
+          test "$STANDARD_RESULT" = "$expected"
