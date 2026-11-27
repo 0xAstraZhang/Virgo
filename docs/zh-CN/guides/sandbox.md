@@ -38,6 +38,6 @@ Linux、macOS、已更新的新版 Windows 11 与 Windows + WSL2 均为**一级�
 
 - **文件工具**由 Broker 直接按 `PermissionPolicy` 执行（不启动独立的 OS 沙箱辅助进程），保证冷启动在 5 秒内、单次 `read` 开销不随工作区规模增长。
 - **命令输出**通过管道写入 Broker 管理的会话级持久 `OutputStore`（位于 `<VIRGO_HOME>/outputs/session-<id>`），恢复历史会话后仍可通过 `read_output` 读取，随会话删除或 7 天 TTL 清理；未截断的前台命令不残留文件。
-- **用户可信集成**（Python 扩展、命令 hooks、stdio MCP 服务器）以 **Host** 权限运行；信任边界在安装或显式信任项目（`extensions.trustedProjects` / `--trust-project-extensions`）。对于 URL 类型的 MCP 服务器，Host 客户端连接到配置的端点，工具由服务端执行。不可信项目中的 `hooks`、`mcpServers`、`.virgo/mcp.json`、`providers` 与 `extensions` 会在合并到用户配置前被剥离。
+- **用户可信集成**（Python 扩展、命令 hooks、stdio MCP 服务器）以 **Host** 权限运行；信任边界在安装或显式信任项目（`extensions.trustedProjects` / `--trust-project-extensions`）。对于 URL 类型的 MCP 服务器，Host 客户端连接到配置的端点，工具由服务端执行。Virgo 在合并不可信项目的配置前会剥离 `hooks`、`mcpServers`、`providers`、`extensions`、`shell`、`search` 和 `fetch`。扩展和 MCP 加载器也会跳过该项目的 `.virgo/extensions/` 和 `.virgo/mcp.json`。个人 Shell、网页工具后端和 API 密钥设置可写在 `~/.virgo/settings.json`。
 
 另见：[权限模式与审批](permissions.md) · [原生 Windows 沙箱](windows-sandbox.md) · [WSL2 使用指南](wsl2.md) · [原生执行与性能验收](../development/execution-acceptance.md) · [决策 001](../decisions/001-guardrail-threat-model.md)

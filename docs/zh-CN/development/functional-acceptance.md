@@ -33,6 +33,7 @@
 | FR-C.6, FR-C.7 | [test_fetch.py](../../../tests/features/test_fetch.py)：`test_shared_web_budget_spans_search_and_fetch_and_resets_on_user_request` | 共享 Web 调用上限及重置行为 |
 | FR-C.7 | [test_fetch.py](../../../tests/features/test_fetch.py)：`test_fetch_result_reaches_model_and_persisted_history` | 内容获取与持久化 |
 | FR-D.1, FR-D.2, FR-D.3, FR-D.4, FR-D.5, FR-D.6 | [权限模式](../../../tests/harness/test_permission_modes_e2e.py)：`test_changed_arguments_cannot_consume_another_path_permission`、`test_deny_and_noninteractive_policy_prevent_escalation`；[插件边界](../../../tests/harness/test_core_plugins_e2e.py)：`test_project_extensions_require_trust_outside_the_project` | Broker 准入、确认与项目信任；原生保证需单独主机套件 |
+| FR-D.6 | [Shell 信任](../../../tests/harness/test_sandbox_e2e.py)：`test_untrusted_project_shell_is_stripped_in_no_limit_mode`；[网页工具信任](../../../tests/harness/test_guardrails.py)：`test_untrusted_project_cannot_hijack_web_api_key_env_or_backend` | 项目信任保护所选 Shell 可执行文件、网页工具后端和 API 密钥来源 |
 | FR-D.4 | [test_guardrails.py](../../../tests/harness/test_guardrails.py)：`test_high_risk_approved_once_executes_and_second_call_prompts_again` | 单次高危操作确认及分派前拒绝 |
 | FR-D.5 | [test_guardrails.py](../../../tests/harness/test_guardrails.py)：`test_sandbox_unavailable_offers_one_shot_no_limit_and_preserves_session_mode`、`test_execution_failed_never_offers_no_limit_fallback` | 显式单次回退、会话模式不变及执行失败后禁止回退；不证明原生隔离 |
 | FR-E.1 | [test_loop.py](../../../tests/agent/test_loop.py)：`test_parallel_results_are_emitted_as_completed_but_history_keeps_call_order` | 调度与逻辑结果顺序 |

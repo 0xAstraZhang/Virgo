@@ -8,12 +8,25 @@
 
 ### Linux 与 macOS
 
-在真实的 Linux 或 macOS 主机上运行强制原生沙箱套件并校验其 JUnit 报告（与 `.github/workflows/native-sandbox.yml` 一致），再单独运行跨平台策略套件：
+在真实的 Linux 主机上运行原生套件，与 `.github/workflows/native-sandbox.yml` 一致。
 
 ```sh
 VIRGO_REQUIRE_SANDBOX_TESTS=1 uv run --no-sync pytest -q \
   tests/harness/test_sandbox_e2e.py \
   --junitxml=native-sandbox.xml
+```
+
+在 macOS 上同时运行 Seatbelt 的 `/tmp` 符号链接授权用例。
+
+```sh
+VIRGO_REQUIRE_SANDBOX_TESTS=1 uv run --no-sync pytest -q \
+  tests/harness/test_sandbox_e2e.py tests/harness/test_macos_sandbox_e2e.py \
+  --junitxml=native-sandbox.xml
+```
+
+在任一平台上，校验 JUnit 报告，然后单独运行策略套件。
+
+```sh
 uv run --no-sync python ci/check_native_report.py native-sandbox.xml
 
 uv run --no-sync pytest -q \

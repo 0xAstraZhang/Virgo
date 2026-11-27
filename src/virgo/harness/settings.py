@@ -233,7 +233,8 @@ def _validate(data: dict) -> None:
     tui = data.get("tui", {})
     if not isinstance(tui, dict):
         raise ValueError("tui must be an object")
-    if tui.get("sessionGrouping") not in {"workspace", "none"}:
+    grouping = tui.get("sessionGrouping")
+    if not isinstance(grouping, str) or grouping not in {"workspace", "none"}:
         raise ValueError("tui.sessionGrouping must be 'workspace' or 'none'")
 
 

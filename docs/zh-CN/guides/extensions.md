@@ -33,8 +33,20 @@ Virgo 在会话启动时通过统一的 `setup(api)` 接口加载 Python 扩展�
 - **单次会话禁用全部扩展**：启动时传入 `--no-extensions`（同时跳过内置、用户及项目 Python 扩展；
   官方插件仍由 `plugins.<id>.enabled` 控制）。
 - **项目信任边界**：项目级 `.virgo/extensions/`、`.virgo/mcp.json`、`mcpServers` 与
-  `extensions` 配置在显式信任项目前（用户级 `extensions.trustedProjects` 或
-  `--trust-project-extensions`）都会被忽略。
+  `extensions` 配置需要通过用户级 `extensions.trustedProjects` 或
+  `--trust-project-extensions` 显式信任。项目的提供商、Shell 与网页工具设置也遵循同一信任边界。
+  详见[执行边界与沙箱](sandbox.md)。
+
+## 迁移旧版设置和扩展
+
+从 `settings.json` 中移除 `features`，空的 `features` 对象也要删除。仍受支持的开关迁移到
+`plugins.<id>.enabled`。`features.diagnostics` 改用 `plugins.diagnostic_get.enabled`，旧的搜索
+和网页读取开关改用 `plugins.web.searchEnabled` 和 `plugins.web.fetchEnabled`。启用任一网页工具时，
+也要保持 `plugins.web.enabled` 启用。禁用 `todo` 或 `mcp` 等内置扩展时，使用 `extensions.disabled`。
+
+在 Python 扩展中，构造只读工具时传入 `side_effect="read"`，构造会修改状态的工具时传入
+`side_effect="write"`。`AgentTool` 的 `read_only` 构造参数已移除，检查工具时仍可读取
+`read_only` 属性。
 
 ## Todos（`todo`）
 

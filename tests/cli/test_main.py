@@ -115,6 +115,19 @@ def test_cli_applies_execution_override_before_validating_user_preset(project, m
     assert '"provider": "sandbox"' in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("grouping", [[], {}], ids=["array", "object"])
+def test_cli_reports_invalid_tui_session_grouping(project, monkeypatch, capsys, grouping):
+    cli = import_module("virgo.cli.main")
+    settings = Path(os.environ["VIRGO_HOME"]) / "settings.json"
+    settings.write_text(json.dumps({"tui": {"sessionGrouping": grouping}}), encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+
+    code = cli.main(["-C", str(project), "--no-session", "-m", "faux/demo", "-p", "/permissions show"])
+
+    assert code == 2
+    assert "tui.sessionGrouping must be 'workspace' or 'none'" in capsys.readouterr().err
+
+
 def test_localized_help_works_before_migrating_execution_settings(project, capsys):
     cli = import_module("virgo.cli.main")
     (Path(os.environ["VIRGO_HOME"]) / "settings.json").write_text(
