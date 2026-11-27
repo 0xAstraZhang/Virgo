@@ -14,6 +14,8 @@ from virgo.ai.auth import AuthStore
 from virgo.ai.catalog_versions import CodexCatalogVersion
 from virgo.ai.models import resolve_model
 
+from tests.support.http import bypass_proxies
+
 
 @pytest.fixture(autouse=True)
 def codex_version_sources(monkeypatch):
@@ -23,6 +25,7 @@ def codex_version_sources(monkeypatch):
 
 @pytest.fixture
 def transport(monkeypatch):
+    bypass_proxies(monkeypatch)
     original = httpx.Client
     requests = []
 

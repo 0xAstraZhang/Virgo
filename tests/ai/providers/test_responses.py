@@ -311,15 +311,16 @@ def test_responses_sse_error_classification_and_nested_unwrap(event, expected_ki
     assert out.error_message == expected_message
 
 
-def test_responses_reuses_connection_across_chunked_sse_tail_delay():
+def test_responses_reuses_connection_across_chunked_sse_tail_delay(monkeypatch):
     import time
     from contextlib import closing
     from http.server import BaseHTTPRequestHandler
 
     from virgo.ai.providers._http import AsyncSDKBridge
 
-    from tests.support.http import serve
+    from tests.support.http import bypass_proxies, serve
 
+    bypass_proxies(monkeypatch)
     peers = []
 
     class Handler(BaseHTTPRequestHandler):

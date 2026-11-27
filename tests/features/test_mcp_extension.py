@@ -12,7 +12,7 @@ import textwrap
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -31,6 +31,7 @@ from virgo.tools.output import MAX_BYTES, MAX_LINES
 
 from tests.support import SUPPORT
 from tests.support.harness import RecordingUI, calls, tool_results, wait_until
+from tests.support.http import LoopbackHTTPServer, bypass_proxies
 from tests.support.terminal import PtyClient
 
 SERVER = SUPPORT / "mcp_echo_server.py"
@@ -984,7 +985,7 @@ def test_mcp_colliding_server_names_are_order_independent_across_startup_and_rec
     assert after_map == before_map
 
 
-class _MCPPeer(ThreadingHTTPServer):
+class _MCPPeer(LoopbackHTTPServer):
     """Wire peer with observable requests, TCP connections and controllable failure modes."""
 
     def __init__(self):
@@ -1000,6 +1001,16 @@ class _MCPPeer(ThreadingHTTPServer):
 
     def config(self, transport):
         return {"url": f"{self.url}/{transport}", "type": transport, "timeout": 4, "callTimeout": 6}
+
+
+def test_mcp_peer_binds_without_name_resolution(monkeypatch):
+    def unavailable(*args):
+        raise OSError("reverse DNS unavailable")
+
+    monkeypatch.setattr("socket.getfqdn", unavailable)
+    with _MCPPeer() as peer:
+        assert peer.server_address == ("127.0.0.1", peer.server_port)
+        assert peer.server_port > 0
 
 
 class _MCPHandler(BaseHTTPRequestHandler):
@@ -1125,7 +1136,8 @@ class _MCPHandler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def mcp_peer():
+def mcp_peer(monkeypatch):
+    bypass_proxies(monkeypatch)
     with _MCPPeer() as peer:
         thread = threading.Thread(target=peer.serve_forever, kwargs={"poll_interval": 0.02})
         thread.start()

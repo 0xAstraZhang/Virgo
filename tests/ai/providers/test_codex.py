@@ -19,7 +19,7 @@ from virgo.ai.transform import normalize
 from virgo.ai.types import Context, Model, StreamOptions, ToolSpec, UserMessage
 
 from tests.support.harness import RecordingUI
-from tests.support.http import serve, sse
+from tests.support.http import bypass_proxies, serve, sse
 
 
 @pytest.fixture
@@ -226,6 +226,7 @@ def test_sse_parser_does_not_echo_bad_response_data():
 
 
 def test_codex_reuses_connection_and_closes_client_on_bridge_shutdown(monkeypatch):
+    bypass_proxies(monkeypatch)
     peers = []
     clients = []
     init = httpx.AsyncClient.__init__
@@ -259,7 +260,8 @@ def test_codex_reuses_connection_and_closes_client_on_bridge_shutdown(monkeypatc
     assert clients[0].is_closed
 
 
-def test_codex_reuses_connection_across_chunked_sse_tail_delay():
+def test_codex_reuses_connection_across_chunked_sse_tail_delay(monkeypatch):
+    bypass_proxies(monkeypatch)
     peers = []
 
     class Handler(BaseHTTPRequestHandler):
