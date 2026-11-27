@@ -1,4 +1,4 @@
-"""Process/log acceptance tests written before the runtime implementation.
+"""Process and output-spooling acceptance tests.
 
 Failures to cover: output retained in RAM or missing before exit; huge single lines;
 invalid/split UTF-8; missing final bytes; cancellation/timeout output loss; failed log

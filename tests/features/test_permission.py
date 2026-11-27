@@ -30,8 +30,7 @@ def test_public_modes_and_legacy_config_aliases():
             normalize_approval_policy(retired)
 
 
-def test_auto_review_executes_internal_changes_without_asking(broker_session, project):
-    # Retain workspace mutation coverage while retiring the model reviewer.
+def test_workspace_writes_execute_without_asking(broker_session, project):
     ui = RecordingUI()
     session = broker_session(
         faux.reply(tools=[("write", {"path": "a.txt", "content": "1"}), ("write", {"path": "b.txt", "content": "2"})]),

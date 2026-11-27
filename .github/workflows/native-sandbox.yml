@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/virgo/**'
+      - 'tests/conftest.py'
       - 'tests/support/**'
       - 'ci/check_native_report.py'
       - 'tests/harness/test_sandbox_e2e.py'

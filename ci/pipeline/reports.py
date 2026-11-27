@@ -1,4 +1,4 @@
-"""Report integrity and test-name normalization (no SHA-bound retirement files)."""
+"""Report integrity and test-name normalization."""
 
 from __future__ import annotations
 

@@ -68,7 +68,7 @@ def issue_operation(session, name, arguments, *, expected=None):
     boundary = details.get("boundary") or {}
     if result.is_error:
         prelaunch = (boundary.get("payload_started") is False
-                     or details.get("status") == "sandbox_unavailable"
+                     or details.get("status") == "execution_unavailable"
                      or (details.get("execution") or {}).get("started") is False)
         raise MeasurementFailure(result.text(), before_launch=prelaunch)
     if expected is not None and (details.get("exit_code") != 0 or expected not in result.text().splitlines()):
