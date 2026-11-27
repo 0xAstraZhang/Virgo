@@ -159,9 +159,17 @@ def test_scrollbar_does_not_recopy_old_selection_but_new_selection_copies_again(
         async with app.run_test(size=(80, 24)) as pilot:
             transcript = app.query_one(Transcript)
             await transcript.add_notice("\n".join(f"line {i}" for i in range(100)))
-            transcript.action_scroll_home()
-            await pilot.pause()
             row = transcript.query_one(".notice")
+
+            async def show_first_line():
+                transcript.action_scroll_home()
+                # Home is deferred to a refresh; an idle pause alone does not
+                # guarantee the row's click target has reached the viewport.
+                await wait_for(pilot, lambda: (
+                    transcript.scroll_y == transcript.scroll_target_y == 0
+                    and row.region.width > 0
+                    and row.region.y == transcript.scrollable_content_region.y
+                ))
 
             async def select():
                 if gesture == "drag":
@@ -170,6 +178,7 @@ def test_scrollbar_does_not_recopy_old_selection_but_new_selection_copies_again(
                 else:
                     await pilot.double_click(row, offset=(3, 0))
 
+            await show_first_line()
             await select()
             selected_text = app.screen.get_selected_text()
             assert selected_text and selected_text.startswith("line 0")
@@ -181,8 +190,7 @@ def test_scrollbar_does_not_recopy_old_selection_but_new_selection_copies_again(
             assert copied == [selected_text]
             await pilot.click(scrollbar, offset=(0, 6))
             assert copied == [selected_text]
-            transcript.action_scroll_home()
-            await pilot.pause()
+            await show_first_line()
             await select()
             assert copied == [selected_text, selected_text]
 
