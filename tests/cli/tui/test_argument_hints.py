@@ -190,12 +190,12 @@ def test_hint_undo_redo_and_soft_wrap(make_session):
 
 @pytest.mark.pty
 def test_real_terminal_argument_hint(project, tmp_path):
-    from tests.support.terminal import HAS_PTY, PtyClient, plain
+    from tests.support.terminal import ENTER_SCREEN, HAS_PTY, PtyClient, plain
 
     if not HAS_PTY:
         pytest.skip('requires POSIX PTY')
     with PtyClient(project, tmp_path / 'hint-home') as terminal:
-        terminal.wait_for(lambda data: 'type / for commands' in plain(data))
+        terminal.wait_for(lambda data: ENTER_SCREEN in data and b'No-Limit' in data)
         terminal.send(b'/model ')
         terminal.wait_for(lambda data: '[provider/id]' in plain(data))
         terminal.resize(24, 24)

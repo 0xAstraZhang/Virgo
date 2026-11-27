@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from .activity import RunActivity
     from .bridge import Confirmation, InputRequest
     from .editor import InputHistory
+    from .path_completion import PathCompletion
 
 
 @dataclass
@@ -41,6 +42,8 @@ class ConversationState:
     input_request: InputRequest | None = None
     completion_names: list[str] = field(default_factory=list)
     completion_query: str | None = None
+    completion_cursor: tuple[tuple[int, int], bool] | None = None
+    path_completion: PathCompletion | None = None
     completion_suppressed: str | None = None
     last_interrupt: float = 0.0
     browsing: bool = False

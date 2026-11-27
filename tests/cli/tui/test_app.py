@@ -128,7 +128,7 @@ def test_backslash_continuation_requires_end_of_line_and_empty_selection(make_se
 
 
 @pytest.mark.parametrize("language,placeholder", [
-    ("en", "Ask anything, or type / for commands"), ("zh-CN", "输入消息，或输入 / 查看命令"),
+    ("en", "Ask anything · / commands · @ paths"), ("zh-CN", "输入消息 · / 命令 · @ 路径"),
 ])
 def test_empty_editor_placeholder_preserves_cursor_text_and_history(make_session, language, placeholder):
     async def scenario():

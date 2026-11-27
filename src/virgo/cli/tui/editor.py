@@ -123,6 +123,8 @@ class ChatEditor(TextArea):
         Binding("tab", "complete", show=False, priority=True),
         Binding("up", "cursor_up", show=False, priority=True),
         Binding("down", "cursor_down", show=False, priority=True),
+        Binding("left", "cursor_left", show=False, priority=True),
+        Binding("right", "cursor_right", show=False, priority=True),
         Binding("ctrl+p", "history(-1)", show=False),
         Binding("ctrl+n", "history(1)", show=False),
     ]
@@ -156,6 +158,8 @@ class ChatEditor(TextArea):
 
     def action_submit(self) -> None:
         self.app.sync_completions()
+        if self.app.state.path_completion is not None and self.app.accept_completion():
+            return
         names = self.app.completion_names
         if names:
             choices = self.parent.query_one("#completions", ChoiceList)
@@ -212,6 +216,16 @@ class ChatEditor(TextArea):
             self.action_history(1)
         else:
             super().action_cursor_down(select)
+
+    def action_cursor_left(self, select: bool = False) -> None:
+        if not select and self.app.navigate_path_completion(-1):
+            return
+        super().action_cursor_left(select)
+
+    def action_cursor_right(self, select: bool = False) -> None:
+        if not select and self.app.navigate_path_completion(1):
+            return
+        super().action_cursor_right(select)
 
     @property
     def gutter_width(self) -> int:

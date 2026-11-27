@@ -28,6 +28,20 @@ from .execution_policy import PermissionPolicy, lexical_path
 from .execution_types import FileAccessDenied
 
 MAX_WALK_FILES = 100_000
+IGNORE_DIRS = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".idea",
+    "dist",
+    "build",
+}
 
 
 def same_directory(left: Path, right: Path) -> bool:
@@ -225,8 +239,12 @@ def open_mutation(path: Path, policy: PermissionPolicy, *, create: bool,
 
 def walk_files(path: Path, policy: PermissionPolicy, ignore: set[str], *,
                max_depth: int | None = None, max_files: int = MAX_WALK_FILES,
-               respect_gitignore: bool = False, gitignore_root: Path | None = None):
-    """Yield (Path, stat_result | None) under ``path`` within read policy and file budget."""
+               respect_gitignore: bool = False, gitignore_root: Path | None = None,
+               include_directories: bool = False):
+    """Yield (Path, stat_result | None) within read policy and entry budget.
+
+    Directory candidates are opt-in; existing Broker callers receive only files.
+    """
     root_path = path.resolve()
     check_read(root_path, policy)
     base_scopes = []
@@ -266,14 +284,29 @@ def walk_files(path: Path, policy: PermissionPolicy, ignore: set[str], *,
                 try:
                     if child.is_symlink():
                         continue
+                    # Directory discovery must not follow junctions or other
+                    # aliases out of the explicit search root.
+                    if include_directories and child.resolve() != child:
+                        continue
                     if policy.denied(child, "read") or not policy.allows(child, "read"):
                         continue
-                except OSError:
+                except (OSError, RuntimeError):
                     continue
             if respect_gitignore and scopes and matches_scopes(child, True, scopes):
                 continue
             kept.append(name)
         dirnames[:] = kept
+        if include_directories:
+            for name in kept:
+                if yielded >= max_files:
+                    return
+                directory = current / name
+                try:
+                    info = directory.lstat()
+                except OSError:
+                    continue
+                yielded += 1
+                yield directory, info
         if max_depth is not None:
             depth = len(current.relative_to(root_path).parts)
             if depth >= max_depth - 1:
