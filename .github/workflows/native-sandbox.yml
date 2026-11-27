@@ -18,6 +18,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native:
+    name: native (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
