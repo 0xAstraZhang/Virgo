@@ -187,7 +187,7 @@ class ChatEditor(TextArea):
             self.app.copy_to_clipboard(self.selected_text)
 
     def action_complete(self) -> None:
-        if not self.app.accept_completion():
+        if not self.app.accept_completion(navigate_directories=True):
             self.screen.focus_next()
 
     def action_history(self, direction: int) -> None:

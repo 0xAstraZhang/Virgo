@@ -95,8 +95,41 @@ def test_directory_navigation_empty_directory_and_parent_restore(make_session, p
             app.editor.move_cursor(app.editor.document.end)
             await wait_for(pilot, lambda: app.completion_names == ["empty/"])
             await pilot.press("tab")
+            assert app.editor.text == "@empty/"
+            assert options.display
+            assert not app.session.main.messages
+            await pilot.press("enter")
             assert app.editor.text == "empty/ "
             assert not options.display
+
+    asyncio.run(scenario())
+
+
+def test_tab_opens_directories_and_inserts_files(make_session, project):
+    (project / "src").mkdir()
+    (project / "src" / "nested").mkdir()
+    (project / "src" / "nested" / "target.py").touch()
+
+    async def scenario():
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("@")
+            await wait_for(pilot, lambda: app.completion_names == ["./", "src/"])
+            options = app.query_one("#completions", OptionList)
+            await pilot.press("tab")
+            assert app.editor.text == "@"
+            assert options.display
+            await pilot.press("down", "tab")
+            await wait_for(pilot, lambda: app.editor.text == "@src/"
+                           and app.completion_names == ["src/", "src/nested/"])
+            await pilot.press("down", "tab")
+            await wait_for(pilot, lambda: app.editor.text == "@src/nested/"
+                           and app.completion_names == ["src/nested/", "src/nested/target.py"])
+            await pilot.press("down", "tab")
+            assert app.editor.text == "src/nested/target.py "
+            assert not options.display
+            assert not app.session.main.messages
 
     asyncio.run(scenario())
 
