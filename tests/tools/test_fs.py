@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -114,6 +116,32 @@ def test_file_tools_keep_private_storage_hidden_and_full_scope_writes_explicit(p
 def test_write_creates_parents(project):
     r = WRITE.execute({"path": "a/b/c.txt", "content": "hi"}, ctx(project))
     assert not r.is_error and (project / "a/b/c.txt").read_text() == "hi"
+
+
+def test_write_new_file_mode_follows_workspace_visibility(project):
+    if os.name == "nt":
+        pytest.skip("POSIX file modes are not available on Windows")
+    public = project / "public"
+    public.mkdir()
+    public.chmod(0o755)
+    assert not WRITE.execute({"path": "public/new.txt", "content": "hi"}, ctx(project)).is_error
+    assert stat.S_IMODE((public / "new.txt").stat().st_mode) == 0o644
+
+    private = project / "private"
+    private.mkdir()
+    private.chmod(0o700)
+    assert not WRITE.execute({"path": "private/new.txt", "content": "hi"}, ctx(project)).is_error
+    assert stat.S_IMODE((private / "new.txt").stat().st_mode) == 0o600
+
+
+def test_write_preserves_existing_file_mode(project):
+    if os.name == "nt":
+        pytest.skip("POSIX file modes are not available on Windows")
+    target = project / "script.sh"
+    target.write_text("#!/bin/sh\n")
+    target.chmod(0o755)
+    assert not WRITE.execute({"path": "script.sh", "content": "echo ok\n"}, ctx(project)).is_error
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
 
 
 def test_edit_unique_multi_and_errors(project):
