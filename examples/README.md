@@ -28,7 +28,7 @@ cp examples/project/.virgo/prompts/inspect.md /path/to/project/.virgo/prompts/in
 
 Copy the code-review skill as well if you want the review template's named skill available. Restart Virgo after adding extensions, templates, or skills.
 
-After reviewing the Python guard, project `providers`, or `.virgo/mcp.json`, enable them by adding the project directory to user-level `extensions.trustedProjects` or passing `--trust-project-extensions`; untrusted projects cannot enable extensions, MCP servers, hooks, or custom providers.
+After reviewing the Python guard, project `shell`/`providers`/`search`/`fetch` settings, or `.virgo/mcp.json`, enable them by adding the project directory to user-level `extensions.trustedProjects` or passing `--trust-project-extensions`; untrusted projects cannot enable extensions, MCP servers, hooks, custom providers, or project shell and web settings.
 
 The settings example's `language` pins that project's language; use `zh-CN` for Chinese or omit the field to follow the user default. The optional `local` provider needs a real server, its installed model ID and context window, and project trust (`extensions.trustedProjects` or `--trust-project-extensions`). It does not change the selected model until you choose it.
 

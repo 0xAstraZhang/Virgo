@@ -40,8 +40,8 @@ Virgo 在会话启动时通过统一的 `setup(api)` 接口加载 Python 扩展�
 ## 迁移旧版设置和扩展
 
 从 `settings.json` 中移除 `features`，空的 `features` 对象也要删除。仍受支持的开关迁移到
-`plugins.<id>.enabled`。`features.diagnostics` 改用 `plugins.diagnostic_get.enabled`，旧的搜索
-和网页读取开关改用 `plugins.web.searchEnabled` 和 `plugins.web.fetchEnabled`。启用任一网页工具时，
+`plugins.<id>.enabled`。`features.diagnostics` 改用 `plugins.diagnostic_get.enabled`，`features.search`
+和 `features.fetch` 分别改用 `plugins.web.searchEnabled` 和 `plugins.web.fetchEnabled`。启用任一网页工具时，
 也要保持 `plugins.web.enabled` 启用。禁用 `todo` 或 `mcp` 等内置扩展时，使用 `extensions.disabled`。
 
 在 Python 扩展中，构造只读工具时传入 `side_effect="read"`，构造会修改状态的工具时传入
