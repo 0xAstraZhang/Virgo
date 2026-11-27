@@ -20,12 +20,12 @@ import pytest
 
 from virgo.agent import AgentTool
 from virgo.ai.providers import faux
-from virgo.ai.types import TextContent, ToolResultMessage
+from virgo.ai.types import AssistantMessage, TextContent, ToolResultMessage
 from virgo.harness.extensions import ExtensionAPI
 from virgo.harness.session import AgentSession
 from virgo.harness.store import SessionStore
 
-from tests.support.harness import RecordingUI, calls, tool_results
+from tests.support.harness import RecordingUI, calls, install_responses, tool_results
 
 
 def test_permission_rechecks_hook_rewritten_arguments(broker_session, project):
@@ -135,6 +135,40 @@ def test_children_share_budget_permission_ceiling_and_cancellation(broker_sessio
     assert sibling.agent.signal.is_set()
     api.release_runtime(child)
     api.release_runtime(sibling)
+
+
+@pytest.mark.parametrize("native_started", [True, False])
+def test_request_fallback_cannot_replay_started_hosted_work(make_session, monkeypatch, native_started):
+    session = make_session(persist=True, refresh_models=False, settings={"compaction": {"enabled": False}})
+    failed = AssistantMessage(
+        content=[TextContent("Partial result")], stop_reason="error",
+        error_kind="retryable", error_message="disconnected", native_started=native_started,
+    )
+    seen = install_responses(monkeypatch, failed, AssistantMessage(content=[TextContent("Recovered")]))
+    fallback_calls = []
+
+    def fallback(_runtime, _model, _context, failure):
+        fallback_calls.append(failure.native_started)
+        return "fixture-fallback"
+
+    ExtensionAPI(session, "fixture").add_request_fallback("replay", fallback, order=0)
+    session.prompt("Inspect the result")
+
+    recorded = [item for item in session.store.custom("model_call") if item["purpose"] == "fixture-fallback"]
+    result = session.main.messages[-1]
+    if native_started:
+        assert len(seen) == 1
+        assert fallback_calls == []
+        assert recorded == []
+        assert result.stop_reason == "error"
+        assert result.native_started and result.text() == "Partial result"
+        assert result.error_message == "disconnected"
+        assert session.main.diagnostic_access.get(result.error_details["error_id"]) is not None
+    else:
+        assert len(seen) == 2
+        assert fallback_calls == [False]
+        assert len(recorded) == 1 and recorded[0]["stop_reason"] == "error"
+        assert result.stop_reason == "stop" and result.text() == "Recovered"
 
 
 def test_retired_data_stays_untouched_and_history_remains_readable(make_session, project):

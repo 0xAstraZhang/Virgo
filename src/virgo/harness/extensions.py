@@ -269,6 +269,7 @@ class ExtensionAPI:
     ) -> None:
         """fn(Runtime, Model, Context, AssistantMessage) -> purpose | None on failed model requests.
 
+        Runtime does not invoke fallback handlers after provider-hosted work has started.
         Optional ``matches(Context, AssistantMessage) -> bool`` identifies request-extension errors
         for read-only fallback decisions (such as in-context compaction) without mutating state.
         """

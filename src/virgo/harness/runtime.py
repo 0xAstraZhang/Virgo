@@ -633,6 +633,11 @@ class Runtime:
                 "model": request_model.spec, "api": failed.api or request_model.api,
                 "max_retries": max_retries, "duration": round(duration, 6),
             })
+            if failed.native_started:
+                # Hosted work may already have been billed. Preserve its evidence
+                # and let the user resume rather than silently replaying the turn.
+                yield StreamEvent("error", failed)
+                return
             fallback_purpose = None
             if request_fallbacks < 2 and not signal.is_set():
                 for _order, _name, handler, _matches in sorted(s.request_fallbacks, key=lambda item: item[0]):
@@ -645,11 +650,6 @@ class Runtime:
                             started=self._call_started, duration=duration, effort=opts.effort, agent=self.name)
                 yield StreamEvent("retry", failed)
                 continue
-            if failed.native_started:
-                # Hosted work may already have been billed. Preserve its evidence
-                # and let the user resume rather than silently replaying the turn.
-                yield StreamEvent("error", failed)
-                return
             if (failed.error_kind == "overflow" and not overflow_summarized and self.compaction
                     and not signal.is_set()):
                 yield StreamEvent("retry", failed)
