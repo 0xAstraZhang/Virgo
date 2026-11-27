@@ -103,7 +103,7 @@ def short_number(value: int) -> str:
 def shortcut_hints(text: str) -> Text:
     hint = Text(text)
     for key in re.finditer(
-        r"(?<!\S)(?:Ctrl\+O/T|Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter/Tab|Enter|Esc|Backspace|↑↓|←→|/exit|/help|/|s)(?=\s|$)", text
+        r"(?<!\S)(?:Ctrl\+O/T|Ctrl\+[A-Z]|Shift\+(?:Enter|Tab)|Enter/Tab|Enter|Tab|Esc|Backspace|↑↓|←→|/exit|/help|/|s)(?=\s|$)", text
     ):
         hint.stylize("bold", key.start(), key.end())
     return hint
@@ -1165,7 +1165,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.sync_completions()
         return True
 
-    def accept_completion(self) -> bool:
+    def accept_completion(self, *, navigate_directories: bool = False) -> bool:
         self.sync_completions()
         if self.active_input is not None or self.active_confirmation is not None:
             return False
@@ -1173,6 +1173,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         if completion := self.state.path_completion:
             if completion.choices and options.highlighted is not None:
                 choice = completion.choices[options.highlighted]
+                if navigate_directories and choice.is_dir:
+                    return self.navigate_path_completion(1)
                 self._replace_mention(completion.mention, display_path(choice.path, self.session.cwd, choice.is_dir))
                 self.hide_completions()
                 self.editor.focus()
