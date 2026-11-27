@@ -28,13 +28,13 @@ except ImportError:  # Windows: importing this module stays safe; the marked tes
 
 HAS_PTY = pty is not None
 
-ANSI = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]")
+_ANSI = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]")
 ENTER_SCREEN = b"\x1b[?1049h"
-LEAVE_SCREEN = b"\x1b[?1049l"
+_LEAVE_SCREEN = b"\x1b[?1049l"
 
 
 def plain(data: bytes) -> str:
-    return ANSI.sub(b"", data).decode("utf-8", errors="replace")
+    return _ANSI.sub(b"", data).decode("utf-8", errors="replace")
 
 
 class PtyClient:
@@ -130,7 +130,7 @@ class PtyClient:
         return self.process.returncode
 
     def assert_restored(self) -> None:
-        assert LEAVE_SCREEN in self.output
+        assert _LEAVE_SCREEN in self.output
         assert b"\x1b[?2004l" in self.output  # Bracketed paste disabled.
         assert b"\x1b[?25h" in self.output  # Cursor visible again.
         assert termios.tcgetattr(self.slave) == self.before

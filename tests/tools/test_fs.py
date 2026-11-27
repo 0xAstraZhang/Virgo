@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from virgo.agent.types import ToolContext
 from virgo.tools import EDIT, GLOB, GREP, READ, WRITE
-from virgo.tools.fs import _prepare_edit, make_file_tool
+from virgo.tools.fs import _prepare_edit, glob_match, make_file_tool
 from virgo.tools.output import MAX_LINES
 
 from tests.support.execution import file_policy
@@ -323,3 +324,21 @@ def test_gitignore_rule_edge_cases():
     assert matches_scopes(base / "x.o", False, scopes)
     assert matches_scopes(base / "x.a", False, scopes)
     assert not matches_scopes(base / "z.o", False, scopes)
+
+
+def test_glob_match_no_exponential_backtracking_and_walk_limit(tmp_path):
+    """Consecutive ** segments finish instantly and walk_files enforces max_files."""
+    from virgo.execution_policy import HOST_MODE
+    from virgo.file_access import walk_files
+
+    deep_path = "/".join(["a"] * 25) + "/x.txt"
+    evil_pattern = "/".join(["**"] * 20) + "/y.txt"
+    started = time.monotonic()
+    assert glob_match(deep_path, evil_pattern) is False
+    assert time.monotonic() - started < 0.2
+    assert glob_match("a/b/c/test.py", "**/**/**/*.py") is True
+
+    for i in range(15):
+        (tmp_path / f"f{i}.txt").write_text("x")
+    found = list(walk_files(tmp_path, HOST_MODE.policy, set(), max_files=5))
+    assert len(found) == 5

@@ -1,4 +1,4 @@
-"""MCP is a built-in Host extension on the official SDK with lazy SDK loading (S4-01..S4-08, VER-09)."""
+"""MCP is a built-in Host extension on the official SDK with lazy SDK loading."""
 
 from __future__ import annotations
 
@@ -299,7 +299,7 @@ def test_mcp_builtin_disable_override_and_untrusted_project_isolation(make_sessi
     # Retired plugin/feature toggles fail clearly instead of silently migrating.
     with pytest.raises(ValueError, match="Unknown plugin 'mcp'"):
         make_session(settings={"plugins": {"mcp": {"enabled": True}}})
-    with pytest.raises(ValueError, match="Unknown legacy feature 'mcp'"):
+    with pytest.raises(ValueError, match="Legacy 'features' settings are retired"):
         make_session(settings={"features": {"mcp": True}})
 
     # Untrusted project cannot disable built-in mcp via .virgo/settings.json.
@@ -334,7 +334,7 @@ def test_mcp_builtin_disable_override_and_untrusted_project_isolation(make_sessi
 
 
 def test_mcp_untrusted_project_config_is_ignored_with_warning(make_session, project):
-    """S4-02 (R5): Project-level .virgo/mcp.json requires explicit project trust."""
+    """Project-level .virgo/mcp.json requires explicit project trust (R5)."""
     configure(project / ".virgo" / "mcp.json")
     ui = RecordingUI()
     session = make_session(ui=ui, trust_project_extensions=False)
@@ -436,7 +436,7 @@ def test_mcp_extension_skips_unsupported_schemas(make_session, project, tmp_path
 
 
 def test_mcp_extension_reports_terminated_connections_and_reaps_threads(make_session, project, tmp_path):
-    """S4-05: A server that exits spontaneously transitions to unavailable and reaps its loop/stderr threads."""
+    """A server that exits spontaneously transitions to unavailable and reaps its loop/stderr threads."""
     server = tmp_path / "exit_server.py"
     server.write_text(
         textwrap.dedent(
@@ -485,8 +485,8 @@ def test_mcp_extension_ignores_malformed_config(make_session, project):
     assert session.tool("mcp_status") is None
 
 
-def test_ver09_jsonrpc_error_keeps_connection_healthy_and_shared_across_subagents(make_session, project, tmp_path):
-    """VER-09 (S4-01, S4-03): -32602 keeps connection healthy; two subagents reuse one shared Host server PID."""
+def test_mcp_jsonrpc_error_keeps_connection_healthy_and_shared_across_subagents(make_session, project, tmp_path):
+    """JSON-RPC -32602 keeps connection healthy; two subagents reuse one shared Host server PID."""
     server = tmp_path / "rpc_pid_server.py"
     server.write_text(
         textwrap.dedent(
@@ -542,7 +542,7 @@ def test_ver09_jsonrpc_error_keeps_connection_healthy_and_shared_across_subagent
     first_pid = ping.execute({"fail": False}, ctx).as_text()
     assert first_pid.isdigit()
 
-    # 3. Two distinct subagents reuse the EXACT SAME shared Host MCP server process (S4-01).
+    # 3. Two distinct subagents reuse the EXACT SAME shared Host MCP server process.
     child1 = session.create_runtime("sub1", "subagent", parent=session.main)
     child2 = session.create_runtime("sub2", "subagent", parent=session.main)
     try:
@@ -556,8 +556,8 @@ def test_ver09_jsonrpc_error_keeps_connection_healthy_and_shared_across_subagent
         session.release_runtime(child2)
 
 
-def test_ver09_connect_cancellation_interrupts_hanging_server_without_deadlock(tmp_path):
-    """VER-09 (S4-04): Esc/cancellation interrupts a hanging MCP handshake promptly."""
+def test_mcp_connect_cancellation_interrupts_hanging_server_without_deadlock(tmp_path):
+    """Esc/cancellation interrupts a hanging MCP handshake promptly."""
     mcp_mod = mcp_ext
     from virgo.execution import HostContext
 
@@ -584,8 +584,8 @@ def test_ver09_connect_cancellation_interrupts_hanging_server_without_deadlock(t
     assert conn.closed
 
 
-def test_s405_s406_crashed_server_rejected_and_stderr_redacted_with_boundary(tmp_path):
-    """S4-05 & S4-06: Crashed server is rejected by connect() with redacted stderr and boundary metadata."""
+def test_mcp_crashed_server_rejected_and_stderr_redacted_with_boundary(tmp_path):
+    """Crashed server is rejected by connect() with redacted stderr and boundary metadata."""
     mcp_mod = mcp_ext
     from virgo.execution import HostContext
 
@@ -612,8 +612,8 @@ def test_s405_s406_crashed_server_rejected_and_stderr_redacted_with_boundary(tmp
     assert err.boundary is not None and err.boundary["provider"] == "host"
 
 
-def test_s402_always_allow_bound_to_server_config_fingerprint(broker_session, tmp_path):
-    """S4-02: 'Always allow' persists for identical server config fingerprint and invalidates when config changes."""
+def test_mcp_always_allow_bound_to_server_config_fingerprint(broker_session, tmp_path):
+    """'Always allow' persists for identical server config fingerprint and invalidates when config changes."""
     cfg_path = Path(os.environ["VIRGO_HOME"]) / "mcp.json"
     configure(cfg_path, args=[str(SERVER)], env={"SERVER_TAG": "v1"})
     ui = RecordingUI(["a", "n"])
@@ -643,8 +643,8 @@ def test_s402_always_allow_bound_to_server_config_fingerprint(broker_session, tm
     assert len(ui.questions) == 2
 
 
-def test_s407_config_validation_rejects_empty_and_non_string_fields(monkeypatch):
-    """S4-07: Strict validation rejects empty expanded commands and non-string args/env values."""
+def test_mcp_config_validation_rejects_empty_and_non_string_fields(monkeypatch):
+    """Strict validation rejects empty expanded commands and non-string args/env values."""
     mcp_mod = mcp_ext
     monkeypatch.delenv("VIRGO_UNSET_MCP_CMD", raising=False)
     for bad in (
@@ -662,8 +662,8 @@ def test_s407_config_validation_rejects_empty_and_non_string_fields(monkeypatch)
             mcp_mod._validate_config(bad)
 
 
-def test_ver09_s408_windows_host_path_and_cmd_bat_resolution():
-    """VER-09 (S4-08): Native Windows Host MCP resolves commands via PATH and wraps .cmd/.bat with cmd.exe."""
+def test_mcp_windows_host_path_and_cmd_bat_resolution():
+    """Native Windows Host MCP resolves commands via PATH and wraps .cmd/.bat with cmd.exe."""
     mcp_mod = mcp_ext
 
     def fake_which(cmd, path=None):

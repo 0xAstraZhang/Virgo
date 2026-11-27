@@ -1,4 +1,4 @@
-"""Tests for session-persisted Broker OutputStore, piped shell capture, and read_output (S3-09 / VER-08)."""
+"""Tests for session-persisted Broker OutputStore, piped shell capture, and read_output."""
 from __future__ import annotations
 
 import os
@@ -47,8 +47,21 @@ def test_budget_includes_localized_notice_and_id(tmp_path, original, keep, langu
                         total=len(original.splitlines()), path=path.stem)
 
 
-def test_ver08_read_output_survives_session_resume(make_session, project):
-    """VER-08: Output spilled in a persisted session remains readable after session resume."""
+def test_budget_reports_truncation_only_when_text_is_cut(tmp_path):
+    exact = "".join(f"{i}\n" for i in range(MAX_LINES))
+    assert budget(exact, tmp_path, "t") == exact
+    assert not (tmp_path / ".virgo").exists()
+    longer = "".join(f"{i}\n" for i in range(MAX_LINES + 5))
+    for keep, where in (("head", "first"), ("tail", "last")):
+        preview = budget(longer, tmp_path, "t", keep=keep)
+        body, notice = preview.rsplit("\n\n", 1)
+        assert longer.startswith(body) if keep == "head" else longer.endswith(body)
+        assert len(preview.splitlines()) <= MAX_LINES
+        assert f"showing the {where} {len(body.splitlines())} of {MAX_LINES + 5} lines" in notice
+
+
+def test_read_output_survives_session_resume(make_session, project):
+    """Output spilled in a persisted session remains readable after session resume."""
     payload = "line-content-" + ("你好世界🚀" * 10000)
     first = make_session(session="new", extensions=False, refresh_models=False)
     try:
@@ -87,8 +100,8 @@ def test_ver08_read_output_survives_session_resume(make_session, project):
         resumed.shutdown()
 
 
-def test_s309_untruncated_command_leaves_no_log_files(make_session, project):
-    """S3-09: Normal un-truncated foreground commands must not leave leftover .log files."""
+def test_untruncated_command_leaves_no_log_files(make_session, project):
+    """Normal un-truncated foreground commands must not leave leftover .log files."""
     session = make_session(
         session="new", settings={"execution": {"mode": "no-limit"}},
         extensions=False, refresh_models=False,
@@ -104,8 +117,8 @@ def test_s309_untruncated_command_leaves_no_log_files(make_session, project):
         session.shutdown()
 
 
-def test_s309_truncated_command_persists_record_and_trash_cleans_up(make_session, project, trash):
-    """S3-09: Truncated command persists an output_id; trashing the session deletes its outputs."""
+def test_truncated_command_persists_record_and_trash_cleans_up(make_session, project, trash):
+    """Truncated command persists an output_id; trashing the session deletes its outputs."""
     session = make_session(
         session="new", settings={"execution": {"mode": "no-limit"}},
         extensions=False, refresh_models=False,
@@ -135,8 +148,8 @@ def test_s309_truncated_command_persists_record_and_trash_cleans_up(make_session
         session.shutdown()
 
 
-def test_s309_utf8_pagination_and_ttl_and_cross_session_isolation(tmp_path):
-    """S3-09: UTF-8 boundary alignment, TTL pruning, and cross-session output isolation."""
+def test_utf8_pagination_and_ttl_and_cross_session_isolation(tmp_path):
+    """UTF-8 boundary alignment, TTL pruning, and cross-session output isolation."""
     outputs_root = tmp_path / "outputs"
     store_a = OutputStore(outputs_root / "session-a")
     store_b = OutputStore(outputs_root / "session-b")
@@ -272,7 +285,7 @@ def test_read_output_tail_bytes_aligns_utf8_and_validates_conflicts(make_session
         session.shutdown()
 
 
-def test_p0_tool_descriptions_and_params_localize_to_chinese(broker_session):
+def test_tool_descriptions_and_params_localize_to_chinese(broker_session):
     session = broker_session(preset="read-only")
     en, zh = Translator("en"), Translator("zh-CN")
     for name in ("read", "glob", "grep", "read_output"):

@@ -1,4 +1,4 @@
-"""High-risk shell command detection (R2 / S5-01).
+"""High-risk shell command detection (R2).
 
 Guards against high-cost or irreversible mistakes (force pushes, protected-branch
 pushes, deployments, remote/database deletion, curl|sh, recursive deletion outside

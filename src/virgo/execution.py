@@ -284,7 +284,6 @@ __all__ = [
     "ProcessRequest",
     "SandboxContext",
     "SandboxExecutor",
-    "_merge_environment",
     "cleanup_process",
     "default_execution_mode",
     "environment_overrides",

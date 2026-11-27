@@ -19,18 +19,14 @@ def test_project_cannot_turn_user_deny_into_accept_all(project):
     (project / ".virgo").mkdir()
     (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"mode": "accept-all"}}))
     with pytest.raises(ValueError, match=r"permissions\.mode|Project permissions"):
-        AgentSession(project, model="faux/test", ui=RecordingUI(),
-                     settings={"profile": "minimal", "sandbox": {"mode": "disabled"}},
-                     extensions=False, refresh_models=False)
+        AgentSession(project, model="faux/test", ui=RecordingUI(), extensions=False, refresh_models=False)
 
 
 def test_project_cannot_mark_a_mutating_command_read_only(project):
     (project / ".virgo").mkdir()
     (project / ".virgo/settings.json").write_text(json.dumps({"permissions": {"readOnlyCommands": ["touch"]}}))
     with pytest.raises(ValueError, match="Project permissions"):
-        AgentSession(project, model="faux/test", ui=RecordingUI(),
-                     settings={"profile": "minimal", "workMode": "plan", "sandbox": {"mode": "disabled"}},
-                     extensions=False, refresh_models=False)
+        AgentSession(project, model="faux/test", ui=RecordingUI(), extensions=False, refresh_models=False)
 
 
 @pytest.mark.parametrize("project_denies", [[], ["write(repo.txt)"]])

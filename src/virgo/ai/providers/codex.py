@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent
 from ..types import AssistantMessage, Context, Model, StreamOptions
-from ..web import declarations
+from ..web import declarations, is_web_unsupported
 from . import responses
 from ._errors import attach_error
 from ._http import ProviderError, cancelled, classify_error, json_events
@@ -102,7 +101,7 @@ def _events(model: Model, ctx: Context, opts: StreamOptions, out: AssistantMessa
         if events is not None:
             events.close()
         kind, message = classify_error(error, token)
-        if ctx.web_tools and params is None and is_search_unsupported(error):
+        if ctx.web_tools and params is None and is_web_unsupported(error, "search"):
             kind = "search_unsupported"
         out.stop_reason = "aborted" if kind == "aborted" or cancelled(opts.signal) else "error"
         out.error_kind = kind

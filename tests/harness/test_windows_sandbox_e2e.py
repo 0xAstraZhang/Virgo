@@ -647,7 +647,7 @@ print(json.dumps(out))
 
 
 def test_existing_metadata_and_runtime_acls_cannot_be_replaced(native, project):
-    """VER-01 protected .virgo & runtime roots stay read-only while .git/AGENTS.md and host atomic saves work."""
+    """Protected .virgo & runtime roots stay read-only while .git/AGENTS.md and host atomic saves work."""
     paths = [project / ".virgo/protected.txt"]
     (project / ".git").mkdir(exist_ok=True)
     (project / ".git/config").write_text("git-ok")

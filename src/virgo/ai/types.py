@@ -94,9 +94,6 @@ class Usage:
         return self.input_total + self.output
 
 
-StopReason = Literal["stop", "length", "tool_use", "pause_turn", "refusal", "error", "aborted"]
-
-
 @dataclass
 class UserMessage:
     content: str | list
@@ -170,12 +167,6 @@ def message_from_dict(d: dict) -> Message:
     if role == "toolResult":
         return ToolResultMessage(**d)
     raise ValueError(f"unknown message role: {role!r}")
-
-
-def text_of(content: str | list) -> str:
-    if isinstance(content, str):
-        return content
-    return "\n".join(b.text for b in content if isinstance(b, TextContent))
 
 
 # ---------------------------------------------------------------------------

@@ -841,9 +841,6 @@ class AgentSession:
     def selected_permission_mode(self):
         return self.services["execution"].selected_mode
 
-    def select_permission_mode(self, identifier: str) -> None:
-        self.services["execution"].select_mode(identifier)
-
     def cycle_permission_mode(self) -> None:
         manager = self.services["execution"]
         modes = list(manager.modes)

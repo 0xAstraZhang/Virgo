@@ -54,7 +54,7 @@ def test_activity_label_refresh_does_not_relayout(make_session, monkeypatch):
         app = VirgoApp(session, ui)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause(0.1)
-            card = await app.transcript._assistant("main")
+            card = await app.transcript._assistant()
             updates = []
             original = Static.update
             monkeypatch.setattr(Static, "update", lambda self, content="", *, layout=True: (

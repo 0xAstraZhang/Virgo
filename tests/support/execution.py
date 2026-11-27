@@ -4,8 +4,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from virgo.execution import SandboxContext
-from virgo.execution_policy import ExecutionMode, PathRule, PermissionPolicy, parse_network
-from virgo.sandbox import _default_deny_rules
+from virgo.execution_policy import (
+    ExecutionMode,
+    PathRule,
+    PermissionPolicy,
+    default_deny_rules,
+    parse_network,
+)
 
 
 def file_policy(workspace, *, read_paths=None, write_paths=(), network_allowed=False, private_paths=()):
@@ -16,7 +21,7 @@ def file_policy(workspace, *, read_paths=None, write_paths=(), network_allowed=F
     rules = (
         *(PathRule(p, "read", "allow") for p in reads),
         *(PathRule(p, "write", "allow") for p in writes),
-        *_default_deny_rules(workspace, privates),
+        *default_deny_rules(workspace, privates),
     )
     mode = ExecutionMode("test", "Test", PermissionPolicy(rules, parse_network(network_allowed)))
     return SandboxContext(workspace, mode, privates, SimpleNamespace(backend="not-launched"))

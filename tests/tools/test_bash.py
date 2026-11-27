@@ -296,8 +296,8 @@ def test_sandbox_failure_hint_explains_tmp_and_write_boundary_denials():
     assert "/tmp" not in win_rw_hint
 
 
-_CASE53A_COMMAND = 'ps -p 21839 -o pid=,stat=,command=; status=$?; echo "ps status=$status"; wc -l < ledger.log'
-_CASE53A_DENIAL = "/bin/bash: /bin/ps: Operation not permitted"
+_NATIVE_DENIAL_COMMAND = 'ps -p 21839 -o pid=,stat=,command=; status=$?; echo "ps status=$status"; wc -l < ledger.log'
+_NATIVE_DENIAL_OUTPUT = "/bin/bash: /bin/ps: Operation not permitted"
 
 
 @pytest.fixture
@@ -312,22 +312,22 @@ def workspace_boundary():
     }
 
 
-def test_case53a_shell_result_preserves_native_denial(project, monkeypatch, workspace_boundary):
+def test_shell_result_preserves_native_denial(project, monkeypatch, workspace_boundary):
     def recorded_run(command, *args, **kwargs):
-        assert command == _CASE53A_COMMAND
-        return CommandOutput(_CASE53A_DENIAL, boundary=workspace_boundary), 1, "ok"
+        assert command == _NATIVE_DENIAL_COMMAND
+        return CommandOutput(_NATIVE_DENIAL_OUTPUT, boundary=workspace_boundary), 1, "ok"
 
     monkeypatch.setattr("virgo.tools.bash.run_command", recorded_run)
-    result = make_shell_tool(Shell("bash", "/bin/bash", "3.2")).execute({"command": _CASE53A_COMMAND}, ctx(project))
+    result = make_shell_tool(Shell("bash", "/bin/bash", "3.2")).execute({"command": _NATIVE_DENIAL_COMMAND}, ctx(project))
 
     assert result.is_error
     assert result.details["exit_code"] == 1
     assert result.details["boundary"] == workspace_boundary
-    assert result.as_text() == Translator()("tools.output.exit", text=_CASE53A_DENIAL, code=1)
+    assert result.as_text() == Translator()("tools.output.exit", text=_NATIVE_DENIAL_OUTPUT, code=1)
 
 
 @pytest.mark.parametrize(("command", "diagnostic"), [
-    pytest.param(_CASE53A_COMMAND, _CASE53A_DENIAL, id="case53a"),
+    pytest.param(_NATIVE_DENIAL_COMMAND, _NATIVE_DENIAL_OUTPUT, id="compound-ps-denial"),
     pytest.param("pgrep workers", "pgrep: Operation not permitted", id="pgrep"),
     pytest.param("sysctl -a", "sysctl: EPERM", id="sysctl"),
     pytest.param("cat /root/secret", "cat: /root/secret: Permission denied", id="cat"),
@@ -336,8 +336,8 @@ def test_case53a_shell_result_preserves_native_denial(project, monkeypatch, work
     pytest.param(shlex.join(["python", "-c", "open('/tmp/in').read()"]), "PermissionError: [Errno 13] Permission denied: '/tmp/in'",
                  id="python-read"),
     pytest.param("Get-Content secret", "System.UnauthorizedAccessException: Access is denied.", id="powershell-read"),
-    pytest.param("echo ok > ok.txt; /bin/ps -p 1", _CASE53A_DENIAL, id="write-then-ps"),
-    pytest.param("echo ok > /tmp/ok.txt; ps -p 1", _CASE53A_DENIAL, id="tmp-write-then-ps"),
+    pytest.param("echo ok > ok.txt; /bin/ps -p 1", _NATIVE_DENIAL_OUTPUT, id="write-then-ps"),
+    pytest.param("echo ok > /tmp/ok.txt; ps -p 1", _NATIVE_DENIAL_OUTPUT, id="tmp-write-then-ps"),
     pytest.param("touch ok.txt && cat /root/secret", "cat: /root/secret: Permission denied", id="write-then-read"),
     pytest.param("touch same && cat same", "cat: same: Permission denied", id="same-target-read"),
     pytest.param("cat /root/secret > out", "cat: /root/secret: Permission denied", id="redirect-but-read-failed"),
@@ -415,7 +415,7 @@ def test_sandbox_hint_requires_write_evidence(command, diagnostic, workspace_bou
     (r"C:\Tools\curl.EXE -o /tmp/feed url", r"C:\Tools\curl.EXE: (56) Failure writing output to destination", "tmp"),
     ("/usr/bin/touch /tmp/out", "/usr/bin/touch: /tmp/out: Operation not permitted", "tmp"),
     ("sh script.sh", "/usr/bin/touch.exe: /tmp/out: Operation not permitted", "tmp"),
-    ("echo hi > /tmp/out.txt; ps -p 1", "bash: /tmp/out.txt: Operation not permitted\n" + _CASE53A_DENIAL, "tmp"),
+    ("echo hi > /tmp/out.txt; ps -p 1", "bash: /tmp/out.txt: Operation not permitted\n" + _NATIVE_DENIAL_OUTPUT, "tmp"),
     ("touch /tmp/out; touch /etc/out", "touch: /tmp/out: Permission denied\ntouch: /etc/out: Permission denied", "write"),
     ("wget -O /tmp/feed url", "/tmp/feed: Permission denied", "tmp"),
     ("git init /tmp/repo", "/tmp/repo: Permission denied", "tmp"),

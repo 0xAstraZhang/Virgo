@@ -830,9 +830,9 @@ def test_compaction_distinguishes_other_failures(make_session, monkeypatch, stop
 
 
 @pytest.mark.parametrize("before,main_input,after,at_reserve", [
-    pytest.param(57_196, 59_956, 65_474, True, id="OC-F1"),
-    pytest.param(63_763, 63_569, 63_923, True, id="OC-F2"),
-    pytest.param(60_665, 61_273, 63_439, True, id="OC-F3"),
+    pytest.param(57_196, 59_956, 65_474, True, id="overflow-boundary-1"),
+    pytest.param(63_763, 63_569, 63_923, True, id="overflow-boundary-2"),
+    pytest.param(60_665, 61_273, 63_439, True, id="overflow-boundary-3"),
     pytest.param(57_196, 59_956, 61_439, False, id="one-before-reserve"),
     pytest.param(57_196, 59_956, 61_440, True, id="at-reserve"),
 ])

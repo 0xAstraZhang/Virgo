@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S6-04 / VER-12: WSL2 (Ubuntu) acceptance script for Tier 1 Windows support.
+# WSL2 (Ubuntu) acceptance script for Tier 1 Windows support.
 # Run inside a WSL2 Linux filesystem checkout (e.g. ~/src/Virgo, NOT /mnt/c/...).
 set -euo pipefail
 
@@ -41,17 +41,17 @@ trap 'rm -f "$junit_xml"' EXIT
 echo "==> Installing locked dev dependencies"
 uv sync --locked --dev
 
-echo "==> Running required Linux native sandbox & policy acceptance suites (VER-01, VER-06, VER-12)"
+echo "==> Running required Linux native sandbox & policy acceptance suites"
 VIRGO_REQUIRE_SANDBOX_TESTS=1 uv run --no-sync pytest -q \
   --junitxml="$junit_xml" \
   tests/harness/test_sandbox_e2e.py \
-  tests/harness/test_policy_v2.py \
-  tests/harness/test_safety_v2.py \
+  tests/harness/test_policy_boundaries.py \
+  tests/harness/test_guardrails.py \
   tests/harness/test_output_store.py
 
 uv run --no-sync python ci/check_native_report.py "$junit_xml"
 
-echo "==> Running realistic-scale cold-start and Read budget check in Workspace-Edit (VER-11 / S5-04)"
+echo "==> Running realistic-scale cold-start and Read budget check in Workspace-Edit"
 uv run --no-sync python ci/measure_permission_modes.py \
   --mode workspace-edit --samples 2 --repeat 2 --read-repeats 10 \
   --realistic-files 1000 --check-budgets

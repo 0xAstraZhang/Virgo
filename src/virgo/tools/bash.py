@@ -12,7 +12,7 @@ from pathlib import Path
 from ..agent.types import ToolResult
 from ..execution_types import ProcessRequest, cleanup_process
 from ..i18n import Translator
-from .output import MAX_BYTES, CommandOutput, bound, display_output, open_output, read_output
+from .output import MAX_BYTES, CommandOutput, display_output, open_output, read_output
 from .shell_env import shell_environment
 
 DEFAULT_TIMEOUT = 300
@@ -100,7 +100,7 @@ def run_command(
             "cleanup": "process_group_best_effort" if os.name != "nt" else "job_object",
         }
     captured = read_output(record, execution_context=execution_context)
-    # S3-09: Normal un-truncated foreground commands must not leak spool files on disk.
+    # Normal un-truncated foreground commands must not leak spool files on disk.
     needs_record = captured.truncated or len(captured.text.rstrip().encode("utf-8", errors="replace")) > MAX_BYTES - 256
     if not needs_record:
         record.unlink(missing_ok=True)
@@ -109,7 +109,7 @@ def run_command(
 
 
 def format_output(
-    output: CommandOutput | str,
+    output: CommandOutput,
     code: int | None,
     status: str,
     cwd: Path,
@@ -119,9 +119,6 @@ def format_output(
     t=None,
 ) -> ToolResult:
     t = t or Translator()
-    if isinstance(output, str):
-        # Compatibility for extensions that format a pre-existing in-memory result.
-        output = bound(output, cwd, prefix, keep="tail")
     text = display_output(output, reserved_bytes=256, t=t)
     details = {
         "exit_code": code,

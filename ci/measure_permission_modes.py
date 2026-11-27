@@ -304,7 +304,7 @@ def evaluate_scale_budgets(
     max_read_ms: float = DEFAULT_MAX_READ_MS,
     max_repeat_cmd_ms: float = DEFAULT_MAX_REPEAT_CMD_MS,
 ) -> dict:
-    """Enforce S5-04 performance budgets on Tier 1 platforms (cold start, first/repeat Shell, O(1) Read)."""
+    """Enforce performance budgets on Tier 1 platforms (cold start, first/repeat Shell, O(1) Read)."""
     violations: list[str] = []
     if not small_samples or not all(s.get("success") for s in small_samples):
         violations.append("Small-workspace samples did not all succeed")

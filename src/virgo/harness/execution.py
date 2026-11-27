@@ -115,7 +115,7 @@ class ModeExecutionProvider(HostExecutionProvider):
         return self._confirmation_blocker(base, signal, caller) is None
 
     def _check_high_risk(self, event, base, *, confirm: bool):
-        """Enforce high-risk shell command confirmation across all modes (S5-01)."""
+        """Enforce high-risk shell command confirmation across all modes."""
         if event.tool is None or event.tool.execution_scope != "process":
             return None
         # In No-Limit mode, high-risk confirmation is disabled by default unless opted in.
@@ -183,7 +183,7 @@ class ModeExecutionProvider(HostExecutionProvider):
         return any(token in text for token in ("backend", "sandbox-exec", "bubblewrap", "libseccomp"))
 
     def confirm_no_limit_once(self, ctx, args, error):
-        """Offer an explicit one-shot No-Limit (Host) fallback when the sandbox backend is unavailable (S5-02)."""
+        """Offer an explicit one-shot No-Limit (Host) fallback when the sandbox backend is unavailable."""
         if not self._is_backend_unavailable(error):
             return None
         runtime = self.session.runtime_for_context(ctx)

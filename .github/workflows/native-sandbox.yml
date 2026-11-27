@@ -7,6 +7,7 @@ on:
       - 'tests/support/**'
       - 'ci/check_native_report.py'
       - 'tests/harness/test_sandbox_e2e.py'
+      - 'tests/harness/test_macos_sandbox_e2e.py'
       - '.github/workflows/native-sandbox.yml'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -17,10 +18,15 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native:
+    name: native (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            suites: tests/harness/test_sandbox_e2e.py
+          - os: macos-latest
+            suites: tests/harness/test_sandbox_e2e.py tests/harness/test_macos_sandbox_e2e.py
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
@@ -53,7 +59,7 @@ jobs:
           fi
       - run: uv sync --locked --dev
       - name: Exercise real native boundaries without capability skips
-        run: uv run --no-sync pytest -q tests/harness/test_sandbox_e2e.py --junitxml=native-sandbox.xml
+        run: uv run --no-sync pytest -q ${{ matrix.suites }} --junitxml=native-sandbox.xml
       - name: Reject empty, failed or skipped native reports
         if: ${{ !cancelled() }}
         run: uv run --no-sync python ci/check_native_report.py native-sandbox.xml

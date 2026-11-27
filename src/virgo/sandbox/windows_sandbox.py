@@ -74,7 +74,6 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
 _ERROR_FILE_NOT_FOUND = 2
 _ERROR_ACCESS_DENIED = 5
-_ERROR_INVALID_PARAMETER = 87
 
 DDD_REMOVE_DEFINITION = 0x00000002
 DDD_EXACT_MATCH_ON_REMOVE = 0x00000004
@@ -1454,7 +1453,6 @@ class _CommandEnvelope:
         self,
         session: WindowsSandboxSession,
         policy,
-        argv: Sequence[str],
         cwd: Path,
         env: dict[str, str],
         cancellation,
@@ -1724,7 +1722,6 @@ def spawn(
         envelope = _CommandEnvelope(
             session,
             policy,
-            argv,
             validated_cwd,
             env,
             cancellation,

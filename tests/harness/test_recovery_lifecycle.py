@@ -163,7 +163,7 @@ def test_reported_fault_does_not_start_an_extra_model_turn(make_session):
 
 def test_model_diagnostics_feature_can_be_disabled_without_disabling_logs(make_session):
     session = make_session(faux.reply(tools=[("fixture_failure", {})]), faux.reply("stopped"),
-                           refresh_models=False, settings={"features": {"diagnostics": False}})
+                           refresh_models=False, settings={"plugins": {"diagnostic_get": {"enabled": False}}})
     install_failure(session)
     session.prompt("inspect")
     assert session.tool("diagnostic_get") is None

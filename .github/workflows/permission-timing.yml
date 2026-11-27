@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # S5-04: Performance budgets apply across all Tier 1 platforms (Linux, macOS, Windows).
+        # Performance budgets apply across all Tier 1 platforms (Linux, macOS, Windows).
         os: [ubuntu-latest, macos-latest, windows-latest]
     env:
       PYTHONUTF8: '1'

@@ -96,7 +96,7 @@ def stream(model: Model, context: Context, options: StreamOptions | None = None)
         return EventStream(iter([StreamEvent("error", msg)]), msg)
 
     def events():
-        from .search import add_source_links
+        from .web import add_source_links
 
         terminal = last = None
         try:

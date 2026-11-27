@@ -10,7 +10,6 @@ import json
 from collections.abc import Iterable
 
 from ..observed_usage import responses_usage
-from ..search import is_search_unsupported
 from ..stream import EventStream, StreamEvent, aborted_event
 from ..types import (
     AssistantMessage,
@@ -27,7 +26,7 @@ from ..types import (
     UserMessage,
 )
 from ..validate import parse_tool_arguments
-from ..web import declarations
+from ..web import declarations, is_web_unsupported
 from ._errors import attach_error
 from ._http import ProviderError, sdk_stream
 from .openai import _client, classify_error
@@ -221,7 +220,7 @@ def parse_events(events: Iterable, model: Model, out: AssistantMessage, opts: St
         out.error_kind = "retryable" if retryable else "fatal"
         if web_search and code in ("invalid_request_error", "unsupported_tool", "unsupported_value", "unknown_tool"):
             exception = ProviderError(out.error_message, body=payload)
-            if is_search_unsupported(exception):
+            if is_web_unsupported(exception, "search"):
                 out.error_kind = "search_unsupported"
         attach_error(
             out, ProviderError(out.error_message, out.error_kind, body=payload), model,
@@ -394,7 +393,7 @@ def stream(model: Model, ctx: Context, opts: StreamOptions) -> EventStream:
 
     def on_error(exc, request):
         out.error_kind, out.error_message = classify_error(exc)
-        if ctx.web_tools and is_search_unsupported(exc):
+        if ctx.web_tools and is_web_unsupported(exc, "search"):
             out.error_kind = "search_unsupported"
         out.stop_reason = "error"
         attach_error(out, exc, model, token=getattr(request.client, "api_key", ""), response=request.response)

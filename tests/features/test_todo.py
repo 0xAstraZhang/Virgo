@@ -175,7 +175,7 @@ def test_todo_extension_loading_and_permissions(make_session, broker_session, pr
     # Retired plugin/feature toggles fail clearly instead of silently migrating.
     with pytest.raises(ValueError, match="Unknown plugin 'todo'"):
         make_session(settings={"plugins": {"todo": {"enabled": True}}})
-    with pytest.raises(ValueError, match="Unknown legacy feature 'todo'"):
+    with pytest.raises(ValueError, match="Legacy 'features' settings are retired"):
         make_session(settings={"features": {"todo": True}})
 
     # Untrusted project cannot override or disable built-in todo.

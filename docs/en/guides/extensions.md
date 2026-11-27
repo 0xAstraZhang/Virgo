@@ -36,9 +36,24 @@ Extensions resolve by filename stem with precedence:
   built-in, user, and project Python extensions; official plugins remain
   controlled by `plugins.<id>.enabled`).
 - **Project trust**: project-level `.virgo/extensions/`, `.virgo/mcp.json`,
-  `mcpServers`, and `extensions` settings are ignored until you trust the
-  project via user-level `extensions.trustedProjects` or
-  `--trust-project-extensions`.
+  `mcpServers`, and `extensions` settings require trust via user-level
+  `extensions.trustedProjects` or `--trust-project-extensions`. The same trust
+  choice applies to project providers, Shell and web settings. See [Execution
+  boundaries and sandbox](sandbox.md).
+
+## Upgrading legacy settings and extensions
+
+Remove `features` from `settings.json`, including an empty `features` object.
+Move supported flags to `plugins.<id>.enabled`. Replace `features.diagnostics`
+with `plugins.diagnostic_get.enabled`. Replace `features.search` and `features.fetch`
+with `plugins.web.searchEnabled` and `plugins.web.fetchEnabled`, respectively.
+Keep `plugins.web.enabled` enabled if you use either capability. Use
+`extensions.disabled` to disable built-in extensions such as `todo` and `mcp`.
+
+Pass `side_effect="read"` to `AgentTool` for read-only tools and
+`side_effect="write"` for mutating tools. The `read_only` constructor argument
+has been removed. The `read_only` property is still available when inspecting a
+tool.
 
 ## Todos (`todo`)
 

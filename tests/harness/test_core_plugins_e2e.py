@@ -193,7 +193,7 @@ def test_explicit_plugin_overrides_and_layering(make_session, project):
     home = project.parent / "home"
     (home / "settings.json").write_text(json.dumps({"plugins": {"ask_user": {"enabled": False}}}))
     (project / ".virgo").mkdir()
-    (project / ".virgo" / "settings.json").write_text(json.dumps({"features": {"ask_user": True}}))
+    (project / ".virgo" / "settings.json").write_text(json.dumps({"plugins": {"ask_user": {"enabled": True}}}))
     session = make_session()
     assert session.tool("ask_user") is not None
     disabled = make_session(settings={"plugins": {"ask_user": {"enabled": False},

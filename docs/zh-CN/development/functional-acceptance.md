@@ -27,14 +27,15 @@
 | FR-B.2、FR-B.3 | [偏好设置](../../../tests/harness/test_preferences.py)：`test_remote_custom_provider_cannot_borrow_openai_credentials`、`test_effort_choice_only_changes_effort` | 凭据身份边界与模型/强度选择行为 |
 | FR-C.1 | [test_fs.py](../../../tests/tools/test_fs.py)：`test_file_tools_enforce_read_scope`、`test_glob_and_grep` | 实际读取/检索与显式作用域失败 |
 | FR-C.2 | [test_fs.py](../../../tests/tools/test_fs.py)：`test_edit_unique_multi_and_errors` | 目标编辑与歧义匹配失败 |
-| FR-C.3、FR-C.4 | [输出存储](../../../tests/harness/test_output_store.py)：`test_ver08_read_output_survives_session_resume`、`test_read_output_search_tail_and_line_paging`；[执行验收](execution-acceptance.md) | 可恢复有界输出；命令生命周期由适用执行套件验证 |
+| FR-C.3、FR-C.4 | [输出存储](../../../tests/harness/test_output_store.py)：`test_read_output_survives_session_resume`、`test_read_output_search_tail_and_line_paging`；[执行验收](execution-acceptance.md) | 可恢复有界输出；命令生命周期由适用执行套件验证 |
 | FR-C.6 | [test_search.py](../../../tests/features/test_search.py)：`test_modes_offer_exactly_one_search_path`、`test_started_native_search_is_not_replayed_or_downgraded` | 搜索能力选择及已启动工作的重放限制 |
 | FR-C.6, FR-C.7 | [test_web_capabilities.py](../../../tests/features/test_web_capabilities.py)：`test_combination_fallback_is_cached_and_no_duplicate_tools`、`test_native_fetch_started_disables_model_retry` | 组合能力回退及托管工作重放限制 |
 | FR-C.6, FR-C.7 | [test_fetch.py](../../../tests/features/test_fetch.py)：`test_shared_web_budget_spans_search_and_fetch_and_resets_on_user_request` | 共享 Web 调用上限及重置行为 |
 | FR-C.7 | [test_fetch.py](../../../tests/features/test_fetch.py)：`test_fetch_result_reaches_model_and_persisted_history` | 内容获取与持久化 |
 | FR-D.1, FR-D.2, FR-D.3, FR-D.4, FR-D.5, FR-D.6 | [权限模式](../../../tests/harness/test_permission_modes_e2e.py)：`test_changed_arguments_cannot_consume_another_path_permission`、`test_deny_and_noninteractive_policy_prevent_escalation`；[插件边界](../../../tests/harness/test_core_plugins_e2e.py)：`test_project_extensions_require_trust_outside_the_project` | Broker 准入、确认与项目信任；原生保证需单独主机套件 |
-| FR-D.4 | [test_safety_v2.py](../../../tests/harness/test_safety_v2.py)：`test_ver10_high_risk_approved_once_executes_and_second_call_prompts_again` | 单次高危操作确认及分派前拒绝 |
-| FR-D.5 | [test_safety_v2.py](../../../tests/harness/test_safety_v2.py)：`test_s502_sandbox_unavailable_offers_one_shot_no_limit_and_preserves_session_mode`、`test_s502_execution_failed_never_offers_no_limit_fallback` | 显式单次回退、会话模式不变及执行失败后禁止回退；不证明原生隔离 |
+| FR-D.6 | [Shell 信任](../../../tests/harness/test_sandbox_e2e.py)：`test_untrusted_project_shell_is_stripped_in_no_limit_mode`；[网页工具信任](../../../tests/harness/test_guardrails.py)：`test_untrusted_project_cannot_hijack_web_api_key_env_or_backend` | 项目信任保护所选 Shell 可执行文件、网页工具后端和 API 密钥来源 |
+| FR-D.4 | [test_guardrails.py](../../../tests/harness/test_guardrails.py)：`test_high_risk_approved_once_executes_and_second_call_prompts_again` | 单次高危操作确认及分派前拒绝 |
+| FR-D.5 | [test_guardrails.py](../../../tests/harness/test_guardrails.py)：`test_sandbox_unavailable_offers_one_shot_no_limit_and_preserves_session_mode`、`test_execution_failed_never_offers_no_limit_fallback` | 显式单次回退、会话模式不变及执行失败后禁止回退；不证明原生隔离 |
 | FR-E.1 | [test_loop.py](../../../tests/agent/test_loop.py)：`test_parallel_results_are_emitted_as_completed_but_history_keeps_call_order` | 调度与逻辑结果顺序 |
 | FR-E.2 | [test_loop.py](../../../tests/agent/test_loop.py)：`test_steering_is_delivered_before_next_model_call`、`test_follow_up_and_stop_hook_continue` | 请求边界上的转向及跟进 |
 | FR-E.3 | [test_loop.py](../../../tests/agent/test_loop.py)：`test_abort_stops_streaming`、`test_parallel_interrupt_signals_workers_cancels_queue_and_joins` | 流及排队/活动并发调用的取消 |

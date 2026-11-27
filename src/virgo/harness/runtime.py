@@ -275,8 +275,6 @@ class Runtime:
         self._model = model
 
     def rebuild_system(self) -> None:
-        from dataclasses import replace
-
         self.construction_context = replace(self.construction_context, execution_context=self.execution_context)
         self.system = build_system(self.session, self.role, self.system_extra, self.cwd,
                                    tools=self.tools, context=self.construction_context, runtime=self)

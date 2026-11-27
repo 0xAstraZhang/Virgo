@@ -19,9 +19,6 @@ LETTERS = "ABCD"
 MAX_OPTIONS = 3
 DEFAULT_UNATTENDED_TIMEOUT = 300.0
 
-NO_USER = "The question was not answered: this session is not interactive."
-DECLINED = "The user dismissed the question without answering."
-
 DESCRIPTION = (
     "Ask one question and wait for the user. Offer up to 3 options (the first is shown as recommended), "
     "or omit options for free text. A custom-answer choice is always available. "

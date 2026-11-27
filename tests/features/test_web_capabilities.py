@@ -44,13 +44,14 @@ def test_unknown_vendor_adapts_without_planner_changes(make_session, monkeypatch
     {"search": {"mode": "off"}},
     {"fetch": {"mode": "off"}},
     {"fetch": {"mode": "builtin", "backend": "http"}},
-    {"features": {"fetch": False}},
+    {"plugins": {"web": {"fetchEnabled": False}}},
 ])
 def test_bundled_offer_is_removed_when_any_capability_conflicts(make_session, settings):
     ctx = context(make_session(settings=settings), Model("openai", "gpt-6-luna", "openai"))
     assert ctx.web_tools == []
     assert ("web_fetch" in {t.name for t in ctx.tools}) is not (
-        settings.get("fetch", {}).get("mode") == "off" or settings.get("features", {}).get("fetch") is False
+        settings.get("fetch", {}).get("mode") == "off"
+        or settings.get("plugins", {}).get("web", {}).get("fetchEnabled") is False
     )
 
 

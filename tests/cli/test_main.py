@@ -56,14 +56,7 @@ def test_windows_home_workspace_selection(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "value",
-    [
-        pytest.param("auto-review", id="auto-review-auto-review"),
-        pytest.param("accept-all", id="accept-all-accept-all"),
-        pytest.param("plan", id="plan-plan"),
-        pytest.param("default", id="default-auto-review"),
-        pytest.param("accept-edits", id="accept-edits-auto-review"),
-        pytest.param("yolo", id="yolo-accept-all"),
-    ],
+    ["auto-review", "accept-all", "plan", "default", "accept-edits", "yolo"],
 )
 def test_permission_mode_arguments_and_legacy_aliases(value):
     cli = import_module("virgo.cli.main")
@@ -108,7 +101,7 @@ def test_cli_applies_execution_override_before_validating_user_preset(project, m
     if sys.platform == "win32":
         monkeypatch.setattr("virgo.sandbox.windows_sandbox.precheck_windows_sandbox", lambda: None)
     monkeypatch.setattr(sys, "stdin", io.StringIO())
-    # S7-02: Retired permissions.preset fails clearly with exit code 2 instead of silent migration.
+    # Retired permissions.preset fails clearly with exit code 2 instead of silent migration.
     (home / "settings.json").write_text(json.dumps({"language": "zh-CN", "permissions": {"preset": "workspace-edit"}}))
     rejected = cli.main(["-C", str(project), "--permission", "workspace-edit", "--no-session", "-m", "faux/demo",
                          *language_args, "-p", "/permissions show"])
@@ -120,6 +113,19 @@ def test_cli_applies_execution_override_before_validating_user_preset(project, m
                        *language_args, "-p", "/permissions show"])
     assert result == 0
     assert '"provider": "sandbox"' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("grouping", [[], {}], ids=["array", "object"])
+def test_cli_reports_invalid_tui_session_grouping(project, monkeypatch, capsys, grouping):
+    cli = import_module("virgo.cli.main")
+    settings = Path(os.environ["VIRGO_HOME"]) / "settings.json"
+    settings.write_text(json.dumps({"tui": {"sessionGrouping": grouping}}), encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+
+    code = cli.main(["-C", str(project), "--no-session", "-m", "faux/demo", "-p", "/permissions show"])
+
+    assert code == 2
+    assert "tui.sessionGrouping must be 'workspace' or 'none'" in capsys.readouterr().err
 
 
 def test_localized_help_works_before_migrating_execution_settings(project, capsys):

@@ -149,7 +149,7 @@ def test_project_override_is_explained_when_saving_user_default(make_session, pr
     assert session.services["search"].selection == "auto"
     assert "saved as user default" in session.ui.text
     assert "project/runtime settings take precedence on restart" in session.ui.text
-    assert Settings.load(session.paths).get("search.mode") == "builtin"
+    assert Settings.load(session.paths, trust_project_extensions=True).get("search.mode") == "builtin"
 
 
 def test_initially_disabled_search_can_be_enabled_immediately(make_session):

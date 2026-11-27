@@ -15,8 +15,7 @@ from virgo.ai.types import AssistantMessage, TextContent, UserMessage
     pytest.param(("high", "max"), "high", "high", id="model-default"),
     pytest.param(None, None, None, id="server-default"),
 ])
-@pytest.mark.parametrize("consumer", ["compaction"])
-def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consumer, levels, default, expected):
+def test_small_model_consumers_use_model_effort(make_session, monkeypatch, levels, default, expected):
     session = make_session(settings={"compaction": {"keepRecentTokens": 1}})
     session.effort = "max"
     session.small_model = session.resolve("faux/small")
@@ -31,22 +30,21 @@ def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consu
         return stream(model, context, options)
 
     monkeypatch.setattr(ai, "stream", record_stream)
-    if consumer == "compaction":
-        session.main.messages.extend([
-            UserMessage("Earlier request"),
-            AssistantMessage([TextContent("Earlier work. " * 1000)]),
-            UserMessage("Current request"),
-            AssistantMessage([TextContent("Current work. " * 100)]),
-        ])
-        faux.script("small", faux.reply("## Goal\nFinish the current request."))
-        assert session.main.compact(reason="overflow") is not None
-        assert session.main.messages[0].kind == "summary"
+    session.main.messages.extend([
+        UserMessage("Earlier request"),
+        AssistantMessage([TextContent("Earlier work. " * 1000)]),
+        UserMessage("Current request"),
+        AssistantMessage([TextContent("Current work. " * 100)]),
+    ])
+    faux.script("small", faux.reply("## Goal\nFinish the current request."))
+    assert session.main.compact(reason="overflow") is not None
+    assert session.main.messages[0].kind == "summary"
 
     assert requests == [("faux/small", expected, [])]
     assert session.effort == "max"
     records = session.store.custom("model_call")
     assert len(records) == 1
-    assert records[0]["purpose"] == consumer
+    assert records[0]["purpose"] == "compaction"
     assert records[0]["model"] == "faux/small"
     assert records[0]["effort"] == expected
     assert records[0]["usage"]["input"] > 0
@@ -59,8 +57,8 @@ def test_small_model_consumers_use_model_effort(make_session, monkeypatch, consu
     pytest.param(None, 32_768, None, id="no-limit-requested"),
 ])
 def test_one_shot_completions_reserve_reasoning_headroom(monkeypatch, limit, model_max, expected):
-    # Providers count reasoning against the output limit: a 512-token verdict budget was spent
-    # entirely on thinking, so the permission reviewer never produced a decision.
+    # Providers count reasoning against the output limit: reserve headroom so a small
+    # max_tokens budget is not spent entirely on hidden thinking.
     faux.script("small", faux.reply("ok"))
     model = ai.resolve_model("faux/small")
     model.max_tokens = model_max

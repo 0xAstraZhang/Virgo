@@ -77,15 +77,11 @@ class AgentTool:
         sequential: bool = False,
         prepare_arguments: Callable[[dict], dict] | None = None,
         *,
-        read_only: bool | None = None,
         execution_scope: str = "external",
         i18n_key: str = "",
         i18n_values: dict | Callable[[Translator], dict] | None = None,
         config_fingerprint: str | None = None,
     ):
-        if read_only is not None:
-            # Compatibility for extensions written before the 0.3 rename.
-            side_effect = "read" if read_only else "write"
         if side_effect not in {"read", "write"}:
             raise ValueError("AgentTool.side_effect must be 'read' or 'write'")
         if execution_scope not in EXECUTION_SCOPES:

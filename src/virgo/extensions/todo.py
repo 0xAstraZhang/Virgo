@@ -21,9 +21,8 @@ STATUSES = ("pending", "in_progress", "completed")
 STEP = r"Step[A-Z]+"
 
 
-def snapshot(args, *, legacy=False):
+def snapshot(args):
     """Validate an entire replacement before publishing any state."""
-    del legacy  # Retained for compatibility; step is now optional everywhere.
     if not isinstance(args, dict) or not isinstance(args.get("todos"), list):
         raise ValueError("todos must be an array")
     out = {"todos": []}
@@ -51,7 +50,7 @@ def snapshot(args, *, legacy=False):
 def saved_snapshot(message):
     if isinstance(message, ToolResultMessage) and message.tool_name == "todo_write" and not message.is_error:
         try:
-            return snapshot(message.details, legacy=True)
+            return snapshot(message.details)
         except ValueError:
             pass  # Malformed historical results are not successful state updates.
     return None
@@ -155,7 +154,7 @@ def setup(api):
                 for call in message.tool_calls():
                     if call.id == call_id and call.name == "todo_write":
                         try:
-                            visible_call = snapshot(call.arguments, legacy=True) == value
+                            visible_call = snapshot(call.arguments) == value
                         except ValueError:
                             visible_call = False
             elif (visible_call and isinstance(message, ToolResultMessage)

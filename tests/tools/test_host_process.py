@@ -96,7 +96,8 @@ def test_host_command_observes_committed_file_without_native_backend(tmp_path, m
 
 
 def test_native_policy_rejects_empty_argv_and_host_overrides_case_colliding_env(tmp_path):
-    from virgo.execution import ExecutionUnavailable, _merge_environment, environment_overrides
+    from virgo.execution import ExecutionUnavailable, environment_overrides
+    from virgo.execution_types import _merge_environment
     from virgo.sandbox.platform import NativePolicy
 
     policy = NativePolicy(tmp_path, True, False, (), ())
