@@ -31,6 +31,8 @@ from tests.support.harness import tool_results, wait_until
 from tests.support.sandbox import native_session, python_command, run
 from tests.support.shell import selected
 
+pytestmark = pytest.mark.native
+
 _BACKGROUND_CLEANUP_TIMEOUT = 30
 
 

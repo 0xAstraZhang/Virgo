@@ -3,6 +3,11 @@
     "tests/harness/test_diagnostic_history.py",
     "tests/cli/tui/test_selection.py"
   ],
+  "common_weights": {
+    "tests/harness/test_sandbox_e2e.py": 2.5,
+    "tests/harness/test_macos_sandbox_e2e.py": 0,
+    "tests/harness/test_windows_sandbox_e2e.py": 0
+  },
   "weights": {
     "default": {
       "tests/cli/tui/test_sessions.py": 45,

@@ -25,6 +25,8 @@ def _attempt_reports(args, problems):
 
 
 def summarize(args):
+    native_platforms = set(args.native_platforms)
+    args.platforms = [*args.platforms, *args.native_platforms]
     reports, problems, target = {}, [], None
     report_problems = {operating_system: [] for operating_system in args.platforms}
     skipped = False
@@ -46,9 +48,11 @@ def summarize(args):
             skipped = False
             problems.append(f"Cannot read target: {error}")
 
-    for job in ("resolve", "checks", "test"):
+    if native_platforms and args.native_result is None:
+        problems.append("Missing native job result")
+    for job in ("resolve", "checks", "test", "native"):
         status = getattr(args, f"{job}_result")
-        expected = "skipped" if job == "test" and skipped else "success"
+        expected = "skipped" if job in {"test", "native"} and skipped else "success"
         if status is not None and status != expected:
             problems.append(f"{job} job: {status} (expected {expected})")
 
@@ -68,6 +72,11 @@ def summarize(args):
                 raise ValueError(f"Unexpected run report: {operating_system}")
             if operating_system in reports:
                 raise ValueError(f"Duplicate run report: {operating_system}")
+            if operating_system in native_platforms:
+                if data.get("suite") != "native" or data["counts"] != {"passed": len(data["tests"])}:
+                    raise ValueError("Native acceptance requires a native suite with zero failures, errors and skips")
+            elif native_platforms and data.get("suite") != "common":
+                raise ValueError("Common jobs must exclude the separately required native suite")
             reports[operating_system] = data
         except (OSError, ValueError, TypeError) as error:
             problems.append(f"{path.relative_to(args.reports)}: {error}")

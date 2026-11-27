@@ -1,17 +1,6 @@
 name: Native sandbox boundaries
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'src/virgo/**'
-      - 'tests/conftest.py'
-      - 'tests/support/**'
-      - 'ci/check_native_report.py'
-      - 'tests/harness/test_sandbox_e2e.py'
-      - 'tests/harness/test_macos_sandbox_e2e.py'
-      - '.github/workflows/native-sandbox.yml'
-      - 'pyproject.toml'
-      - 'uv.lock'
 permissions:
   contents: read
 concurrency:
@@ -60,7 +49,7 @@ jobs:
           fi
       - run: uv sync --locked --dev
       - name: Exercise real native boundaries without capability skips
-        run: uv run --no-sync pytest -q ${{ matrix.suites }} --junitxml=native-sandbox.xml
+        run: uv run --no-sync pytest -q -m native ${{ matrix.suites }} --junitxml=native-sandbox.xml
       - name: Reject empty, failed or skipped native reports
         if: ${{ !cancelled() }}
         run: uv run --no-sync python ci/check_native_report.py native-sandbox.xml

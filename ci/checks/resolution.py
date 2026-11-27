@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import yaml
 
 RUNNER = Path(__file__).resolve().parents[1] / "compare_tests.py"
 
@@ -130,19 +133,35 @@ def main():
 
         base = commit("README.md", "initial")
         docs = commit("docs/nested/guide.md", "documentation")
+        examples = commit("examples/README.md", "example documentation")
+        translated_examples = commit("examples/README.zh-CN.md", "translated example documentation")
         code = commit("src/code.py", "print('hello')")
         (repo / "src/code.py").rename(repo / "docs/code.md")
         renamed = commit("README.md", "rename code into docs")
         config = commit("AGENTS.md", "runtime configuration")
         odd_name = commit("docs/two\nlines.md", "documentation") if os.name != "nt" else config
+        ui_test = commit("tests/cli/tui/test_app.py", "def test_ui(): pass")
+        fetch_test = commit("tests/features/test_fetch.py", "def test_fetch(): pass")
+        runtime = commit("src/virgo/process.py", "runtime code")
+        support = commit("tests/support/sandbox.py", "shared test support")
+        windows_test = commit("tests/harness/test_windows_sandbox_e2e.py", "Windows native cases")
+        classifier = commit("ci/pipeline/targets.py", "classification code")
 
-        def classify(before, after, expected, event="pull_request"):
+        workflow = RUNNER.parents[1] / ".github/workflows/windows-sandbox.yml"
+        windows_workflow = yaml.safe_load(workflow.read_text())
+        changes = next(step for step in windows_workflow["jobs"]["classify"]["steps"] if step.get("id") == "changes")
+        # Use the workflow's actual classify arguments so accidentally dropping
+        # its Windows scope cannot silently make test-only PRs expensive again.
+        windows_options = shlex.split(changes["run"].splitlines()[-1])[3:]
+
+        def classify(before, after, expected, event="pull_request", *, windows=False):
             target = {"base_sha": before, "head_sha": after, "event": event}
             target_file = root / "target.json"
             target_file.write_text(json.dumps(target))
             outputs = root / "outputs"
             outputs.unlink(missing_ok=True)
-            result = subprocess.run([sys.executable, str(RUNNER), "classify", "--target", str(target_file),
+            result = subprocess.run([sys.executable, str(RUNNER), "classify", *(windows_options if windows else []),
+                                     "--target", str(target_file),
                                      "--project", str(repo)], env={**os.environ, "GITHUB_OUTPUT": str(outputs)},
                                     capture_output=True, text=True)
             assert result.returncode == 0, result.stderr
@@ -154,6 +173,9 @@ def main():
         classify(base, docs, False)
         classify(base, docs, False, "push")
         classify(base, docs, True, "workflow_dispatch")
+        classify(docs, examples, False)
+        classify(examples, translated_examples, False, "push")
+        classify(docs, translated_examples, True, "workflow_dispatch")
         classify(docs, code, True)
         classify(code, renamed, True)
         classify(renamed, config, True)
@@ -162,6 +184,36 @@ def main():
         classify(docs, docs, True)  # Empty change lists conservatively run tests.
         if os.name != "nt":
             classify(config, odd_name, False)
+        classify(odd_name, ui_test, False, windows=True)
+        classify(ui_test, fetch_test, False, windows=True)
+        classify(fetch_test, runtime, True, windows=True)
+        classify(runtime, support, True, windows=True)
+        classify(support, windows_test, True, windows=True)
+        classify(windows_test, classifier, True, windows=True)
+        classify(docs, translated_examples, False, windows=True)
+        classify(odd_name, ui_test, True, "workflow_dispatch", windows=True)
+        classify("f" * 40, ui_test, True, windows=True)
+        classify(ui_test, ui_test, True, windows=True)
+
+        # Execute the actual Windows summary step: intentional skips must succeed, but
+        # a missing, skipped, failed, or cancelled required variant must not.
+        gate = windows_workflow["jobs"]["summary"]["steps"][0]["run"]
+        for classified, run_tests, native, standard, expected in (
+            ("success", "true", "success", "success", 0),
+            ("success", "false", "skipped", "skipped", 0),
+            ("failure", "false", "skipped", "skipped", 1),
+            ("success", "true", "skipped", "success", 1),
+            ("success", "true", "success", "failure", 1),
+            ("success", "true", "cancelled", "success", 1),
+            ("success", "false", "success", "skipped", 1),
+            ("success", "", "skipped", "skipped", 1),
+        ):
+            status = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", gate],
+                env={**os.environ, "CLASSIFY_RESULT": classified, "RUN_TESTS": run_tests,
+                     "NATIVE_RESULT": native, "STANDARD_RESULT": standard},
+            ).returncode
+            assert status == expected, (classified, run_tests, native, standard, status)
     print("Revision resolution CLI end-to-end checks passed")
 
 

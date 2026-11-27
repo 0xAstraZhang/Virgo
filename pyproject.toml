@@ -34,6 +34,7 @@ dev = [
 testpaths = ["tests"]
 addopts = ["--strict-markers"]
 markers = [
+    "native: requires a real platform sandbox; CI runs it separately with zero skips",
     "pty: drives a real process through a POSIX pseudo terminal (slow; skipped where unavailable)",
 ]
 

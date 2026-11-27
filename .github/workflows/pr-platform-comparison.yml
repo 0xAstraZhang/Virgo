@@ -162,7 +162,7 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: candidate
         run: uv run --no-sync python ../ci-config/ci/prepare_windows_null_device.py
-      - name: Run complete pytest suite
+      - name: Run common pytest suite
         id: suite
         # Only test failures are deferred; the final job validates reports AND job results.
         continue-on-error: true
@@ -173,7 +173,7 @@ jobs:
         run: |
           uv run --no-sync python ../ci-config/ci/compare_tests.py run \
             --project . --output ../result \
-            --platform '${{ matrix.os }}' --sha "$TEST_SHA"
+            --platform '${{ matrix.os }}' --sha "$TEST_SHA" --suite common
       - name: Build and smoke test installed distribution
         if: runner.os == 'Linux'
         working-directory: candidate
@@ -200,9 +200,96 @@ jobs:
         shell: bash
         run: exit 1
 
+  native:
+    needs: [resolve]
+    if: needs.resolve.outputs.run_tests == 'true'
+    name: native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 10 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suites: tests/harness/test_sandbox_e2e.py
+          - os: macos-latest
+            suites: tests/harness/test_sandbox_e2e.py tests/harness/test_macos_sandbox_e2e.py
+          - os: windows-latest
+            suites: tests/harness/test_windows_sandbox_e2e.py
+    env:
+      VIRGO_REQUIRE_SANDBOX_TESTS: '1'
+    steps:
+      - name: Check out CI tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ci-config
+          sparse-checkout: ci
+          persist-credentials: false
+      - name: Check out tested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.head_repository }}
+          ref: ${{ needs.resolve.outputs.head_sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.13'
+          working-directory: candidate
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Install Linux sandbox requirements
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if ! command -v bwrap >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends bubblewrap
+          fi
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Install locked project dependencies
+        working-directory: candidate
+        run: uv sync --locked --dev
+      - name: Align Windows Server runner null device with Win11 Feature 60692039
+        if: runner.os == 'Windows'
+        working-directory: candidate
+        run: uv run --no-sync python ../ci-config/ci/prepare_windows_null_device.py
+      - name: Run required native sandbox suite
+        id: suite
+        continue-on-error: true
+        working-directory: candidate
+        env:
+          TEST_SHA: ${{ needs.resolve.outputs.head_sha }}
+        shell: bash
+        run: |
+          uv run --no-sync python ../ci-config/ci/compare_tests.py run \
+            --project . --output ../result --execution serial --suite native \
+            --platform 'native-${{ matrix.os }}' --sha "$TEST_SHA" ${{ matrix.suites }}
+      - name: Reject empty, failed or skipped native reports
+        if: ${{ !cancelled() }}
+        working-directory: candidate
+        run: uv run --no-sync python ../ci-config/ci/check_native_report.py ../result/junit.xml
+      - name: Preserve raw and normalized native results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results-native-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: result/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Mark failed native jobs for retry
+        if: ${{ !cancelled() && steps.suite.outcome == 'failure' }}
+        shell: bash
+        run: exit 1
+
   summary:
     name: Summarize and enforce results
-    needs: [resolve, checks, test]
+    needs: [resolve, checks, test, native]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -231,10 +318,12 @@ jobs:
         run: >-
           python3 ci/compare_tests.py summarize
           --reports reports --target target.json --output summary
+          --native-platforms native-ubuntu-latest native-windows-latest native-macos-latest
           --run-attempt "$GITHUB_RUN_ATTEMPT"
           --resolve-result '${{ needs.resolve.result }}'
           --checks-result '${{ needs.checks.result }}'
           --test-result '${{ steps.reports.outcome == 'failure' && 'failure' || needs.test.result }}'
+          --native-result '${{ needs.native.result }}'
       - name: Preserve summary
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

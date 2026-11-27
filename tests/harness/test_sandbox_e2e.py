@@ -32,6 +32,7 @@ def native(make_session):
     return native_session(make_session, {"linux", "darwin"})
 
 
+@pytest.mark.native
 def test_native_generic_process_stdio(native, project):
     native_cases.generic_process_stdio(native, project)
 
@@ -289,6 +290,7 @@ def test_sandbox_child_context_uses_origin_workspace_not_replacement_cwd(broker_
         api.release_runtime(child)
 
 
+@pytest.mark.native
 def test_native_workspace_write_and_indirect_escape(native, project):
     native_cases.workspace_write_and_indirect_escape(native, project)
     # The direct payload is not enough: a child process must not gain an
@@ -310,30 +312,37 @@ def test_native_workspace_write_and_indirect_escape(native, project):
         assert result.details["boundary"]["payload_started"] is True
 
 
+@pytest.mark.native
 def test_native_live_workspace_reader_observes_edit(native, project):
     native_cases.live_workspace_reader_observes_edit(native, project)
 
 
+@pytest.mark.native
 def test_posix_readonly_shell_grant_writes_one_existing_file(native, project):
     native_cases.readonly_shell_grant_writes_one_existing_file(native, project)
 
 
+@pytest.mark.native
 def test_native_readonly_including_child_shell(native, project):
     native_cases.readonly_including_child_shell(native, project)
 
 
+@pytest.mark.native
 def test_native_partial_execution_preserves_denied_file(native, project):
     native_cases.partial_execution_preserves_denied_file(native, project)
 
 
+@pytest.mark.native
 def test_native_network_and_environment_isolation(native, project, monkeypatch):
     native_cases.network_and_environment_isolation(native, project, monkeypatch)
 
 
+@pytest.mark.native
 def test_native_failure_and_timeout_are_not_reclassified(native):
     native_cases.failure_and_timeout_are_not_reclassified(native)
 
 
+@pytest.mark.native
 def test_native_existing_metadata_is_readonly(native, project):
     """Unapproved .virgo stays read-only in Shell while .git and AGENTS.md are open for normal workflow."""
     (project / ".virgo").mkdir()
@@ -350,6 +359,7 @@ def test_native_existing_metadata_is_readonly(native, project):
         assert not ok_res.is_error and (project / name).read_text() == "updated"
 
 
+@pytest.mark.native
 @pytest.mark.parametrize("location", ["outside", "metadata"])
 def test_native_cannot_create_hardlink_from_readonly_source(native, project, location):
     """A clean launch cannot mutate a read-only runtime or .virgo file through hardlink creation."""
@@ -366,6 +376,7 @@ def test_native_cannot_create_hardlink_from_readonly_source(native, project, loc
         assert result.is_error and not (project / "new-alias.txt").exists(), result.text()
 
 
+@pytest.mark.native
 @pytest.mark.parametrize("finish", ["exit", "timeout", "cancel"])
 def test_native_descendant_process_group_is_reaped_with_command(native, project, finish):
     """Command completion must reap same-process-group descendants and release scratch.
@@ -471,6 +482,7 @@ def test_native_descendant_process_group_is_reaped_with_command(native, project,
         assert not linux_late.exists(), "Linux PID namespace failed to reap a detached child"
 
 
+@pytest.mark.native
 def test_native_posix_spawn_preserves_common_use_and_reaps_child(native, project):
     """Ordinary posix_spawn must work and same-group spawned children must be reaped.
 
@@ -545,6 +557,7 @@ while not Path('spawn-detached-ready').exists():
         assert not detached_late.exists(), "A detached posix_spawn child retained workspace access on Linux"
 
 
+@pytest.mark.native
 def test_native_command_cleanup_preserves_independent_background_job(native, make_session, project):
     """Completion and cancellation must clean only their own command envelope.
 
@@ -708,6 +721,7 @@ def test_sandbox_rejects_external_output_symlink_before_spooling(broker_session,
         assert not session.services["jobs"].jobs
 
 
+@pytest.mark.native
 def test_native_protected_symlink_cannot_add_a_host_read_mount(native, project):
     """A workspace or .virgo symlink pointing into private credential storage remains unreadable."""
     secret = native.paths.user / "outside-sandbox-secret.txt"
@@ -722,6 +736,7 @@ def test_native_protected_symlink_cannot_add_a_host_read_mount(native, project):
     assert secret.read_text() == "credential-that-must-stay-outside"
 
 
+@pytest.mark.native
 def test_native_existing_metadata_symlink_cannot_be_replaced(native, project):
     """Symlinked .virgo protects its real target without breaking sessions."""
     target = project / "virgo-meta"
@@ -865,6 +880,7 @@ def test_automatic_context_cannot_borrow_another_conversations_no_limit_mode(bro
             api.release_runtime(child)
 
 
+@pytest.mark.native
 def test_native_background_and_child_preserve_workspace(native, project):
     result = run(native, python_command(native, "from pathlib import Path; Path('background.txt').write_text('yes')"), background=True)
     assert not result.is_error, result.text()
@@ -883,6 +899,7 @@ def test_native_background_and_child_preserve_workspace(native, project):
         api.release_runtime(child)
 
 
+@pytest.mark.native
 @pytest.mark.parametrize('mode,relative', [('read-only', 'ordinary.txt'), ('workspace-write', '.virgo/config')])
 def test_native_readonly_hardlinks_remain_usable(native, project, mode, relative):
     source = project.parent / 'readonly-shared.txt'
@@ -897,6 +914,7 @@ def test_native_readonly_hardlinks_remain_usable(native, project, mode, relative
     assert result.is_error and source.read_text() == 'original'
 
 
+@pytest.mark.native
 def test_native_network_permission_supports_system_name_resolution(native):
     import os
     import socket
@@ -910,6 +928,7 @@ def test_native_network_permission_supports_system_name_resolution(native):
     assert not result.is_error and 'connected' in result.text(), result.text()
 
 
+@pytest.mark.native
 @pytest.mark.parametrize('read_only', [False, True])
 @pytest.mark.parametrize('network_allowed', [False, True])
 def test_native_independent_permission_combinations(native, project, short_workspace, read_only, network_allowed):
@@ -989,6 +1008,7 @@ print('independent dimensions checked')
         assert path.read_text() == ("changed" if allowed else original_text), path
 
 
+@pytest.mark.native
 def test_native_workspace_local_virtualenv_runs_and_protects_virgo(native, project):
     """A workspace-local .venv runs cleanly, allows package/venv writes in Workspace-Edit, and protects .virgo."""
     import subprocess
@@ -1206,6 +1226,7 @@ def test_linux_bwrap_envelope_mounts_resolv_target_and_masks_private_paths(proje
             assert args[idx + 2] in valid_perms_targets, f"bwrap rejects --perms before {args[idx + 2]}"
 
 
+@pytest.mark.native
 def test_native_environment_denylist_strips_secrets_and_reuses_session_cache(native, project, monkeypatch):
     """Credential/injection env vars are stripped while proxy/toolchain vars and session cache persist."""
     stripped = [
@@ -1335,6 +1356,7 @@ def test_missing_exec_acknowledgement_does_not_claim_no_effects(make_session, pr
     assert result.details["boundary"]["side_effects"] == "possible"
 
 
+@pytest.mark.native
 def test_macos_env_override_not_exposed_in_ps_and_option_name_rejected(native, project):
     """GITHUB_TOKEN override is never in process argv or broker env; invalid overrides are rejected."""
     import hashlib
@@ -1401,6 +1423,7 @@ def test_startup_rejects_cwd_inside_private_virgo_dir(broker_session, project):
         broker_session(cwd=nested, preset="workspace-edit", extensions=False, refresh_models=False)
 
 
+@pytest.mark.native
 def test_native_sandbox_runs_asyncio_event_loop(native, project):
     """asyncio programs (requiring AF_UNIX SOCK_STREAM socketpair) run inside the sandbox."""
     source = (
@@ -1414,6 +1437,7 @@ def test_native_sandbox_runs_asyncio_event_loop(native, project):
     assert not result.is_error and "asyncio-ok" in result.text(), result.text()
 
 
+@pytest.mark.native
 def test_native_sandbox_write_to_tmp_reports_actionable_hint(native):
     """Writing to host /tmp in a POSIX sandbox fails with an actionable hint pointing to $TMPDIR."""
     probe = f"/tmp/virgo-hint-probe-{os.getpid()}"
@@ -1428,6 +1452,7 @@ def test_native_sandbox_write_to_tmp_reports_actionable_hint(native):
     assert not Path(probe).exists()
 
 
+@pytest.mark.native
 def test_native_sandbox_readonly_write_reports_actionable_hint(native, project):
     """Writing in read-only sandbox mode fails with an actionable read-only hint."""
     native.services["execution"].select_mode("read-only")
@@ -1442,6 +1467,7 @@ def test_native_sandbox_readonly_write_reports_actionable_hint(native, project):
     assert not (project / "blocked.txt").exists()
 
 
+@pytest.mark.native
 def test_native_background_sandbox_write_to_tmp_surfaces_structured_hint(native):
     """Background sandboxed write denial attaches structured hint to job boundary, notification, and job_output."""
     probe = f"/tmp/virgo-bg-hint-probe-{os.getpid()}"
@@ -1464,6 +1490,7 @@ def test_native_background_sandbox_write_to_tmp_surfaces_structured_hint(native)
     assert "$TMPDIR" in output.text() and "Sandbox hint" in output.text()
 
 
+@pytest.mark.native
 def test_workspace_edit_allows_git_and_docs_while_confirming_virgo_and_shielding_credentials(native, project):
     """Workspace-Edit opens .git/AGENTS.md/CLAUDE.md, confirms .virgo writes, and hard-denies credentials."""
     private_secret = native.paths.user / "auth.json"
@@ -1526,6 +1553,7 @@ def test_workspace_edit_allows_git_and_docs_while_confirming_virgo_and_shielding
     assert (project / ".virgo/settings.json").read_text() == '{"theme": "dark"}\n'
 
 
+@pytest.mark.native
 def test_session_shell_write_grant_persists_in_session_until_revoked(native, project, tmp_path):
     """Session Shell grant ('y') allows multiple commands in the same session until revoked."""
     outside = tmp_path / "external-out"

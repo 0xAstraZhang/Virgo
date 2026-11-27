@@ -5,11 +5,15 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from virgo.ai.providers import faux
 
 from tests.support.harness import tool_results
 from tests.support.sandbox import native_session, python_command
 from tests.support.shell import selected
+
+pytestmark = pytest.mark.native
 
 
 def test_macos_tmp_symlink_grant_and_real_path_dialog(make_session):

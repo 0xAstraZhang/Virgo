@@ -6,9 +6,20 @@ import json
 import os
 import re
 import subprocess
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from .io import outputs, read_json, write_json
+
+# Keep aligned with the Windows workflow's main-push filter. PRs use this
+# decision inside the workflow so unrelated changes still complete its gate.
+WINDOWS_SANDBOX_PATHS = (
+    "src/virgo/**", "tests/conftest.py", "tests/support/**",
+    "tests/harness/test_windows_sandbox_e2e.py", "ci/check_native_report.py",
+    "ci/prepare_windows_null_device.py", "ci/run_as_standard_user.py",
+    "ci/compare_tests.py", "ci/pipeline/**", ".github/workflows/windows-sandbox.yml",
+    "pyproject.toml", "uv.lock",
+)
 
 
 def resolve():
@@ -85,11 +96,16 @@ def classify(args):
             ], capture_output=True, check=True, timeout=30)
             paths = result.stdout.decode("utf-8").rstrip("\0").split("\0") if result.stdout else []
             if paths:
-                run_tests = not all(
-                    path in {"README.md", "README.zh-CN.md"} or (path.startswith("docs/") and path.endswith(".md"))
-                    for path in paths
-                )
-                reason = "Code or configuration changed" if run_tests else "Only documentation changed"
+                if args.windows_sandbox:
+                    run_tests = any(fnmatchcase(path, pattern) for path in paths for pattern in WINDOWS_SANDBOX_PATHS)
+                    reason = "Windows sandbox execution paths changed" if run_tests else "No Windows sandbox execution paths changed"
+                else:
+                    run_tests = not all(
+                        path in {"README.md", "README.zh-CN.md", "examples/README.md", "examples/README.zh-CN.md"}
+                        or (path.startswith("docs/") and path.endswith(".md"))
+                        for path in paths
+                    )
+                    reason = "Code or configuration changed" if run_tests else "Only documentation changed"
         except (OSError, UnicodeError, subprocess.SubprocessError):
             pass
     target.update(run_tests=run_tests, skip_reason=reason)
