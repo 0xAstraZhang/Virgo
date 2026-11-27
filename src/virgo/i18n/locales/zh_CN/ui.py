@@ -88,6 +88,7 @@ MESSAGES = {
     "ui.editor.arguments": "[参数]",
     "ui.editor.placeholder": "输入消息 · / 命令 · @ 路径",
     "ui.hints.paths": "↑↓ 选择 · ←→ 导航 · Enter/Tab 确认 · Esc 关闭",
+    "ui.hints.paths_limited": "搜索范围已达上限 · 指定目录缩小范围 · Enter/Tab 确认 · Esc 关闭",
     "ui.paths.loading": "正在搜索路径…",
     "ui.paths.no_matches": "没有匹配的路径",
     "ui.paths.unavailable": "目录不可用",

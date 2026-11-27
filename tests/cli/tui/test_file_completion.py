@@ -14,6 +14,7 @@ from virgo.cli.tui.path_completion import (
     display_path,
     matching_paths,
     mention_at,
+    quote_path,
     scan_paths,
     search_scope,
 )
@@ -136,7 +137,8 @@ def test_external_path_and_no_matches_do_not_submit(make_session, project, tmp_p
             expected = [external.as_posix() + "/", (external / "target.txt").as_posix()]
             await wait_for(pilot, lambda: app.completion_names == expected)
             await pilot.press("down", "right", "tab")
-            assert app.editor.text == (external / "target.txt").as_posix() + " "
+            path = (external / "target.txt").as_posix()
+            assert app.editor.text == quote_path(path, force=path.startswith("/")) + " "
             app.editor.load_text("@no-such-file")
             app.editor.move_cursor(app.editor.document.end)
             await wait_for(pilot, lambda: app.state.path_completion is not None
@@ -148,5 +150,25 @@ def test_external_path_and_no_matches_do_not_submit(make_session, project, tmp_p
             assert not app.query_one("#completions", OptionList).display
             await pilot.press("left")
             assert app.editor.cursor_location == (0, len("@no-such-file") - 1)
+
+    asyncio.run(scenario())
+
+
+def test_reopening_picker_refreshes_files(make_session, project):
+    old = project / "old.txt"
+    old.touch()
+
+    async def scenario():
+        ui = FullscreenUI()
+        app = VirgoApp(make_session(ui=ui), ui)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("@")
+            await wait_for(pilot, lambda: "old.txt" in app.completion_names)
+            await pilot.press("escape", "backspace")
+            old.unlink()
+            (project / "new.txt").touch()
+            await pilot.press("@")
+            await wait_for(pilot, lambda: "new.txt" in app.completion_names)
+            assert "old.txt" not in app.completion_names
 
     asyncio.run(scenario())

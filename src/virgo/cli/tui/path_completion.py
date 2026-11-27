@@ -47,9 +47,9 @@ def mention_at(line: str, row: int, column: int) -> Mention | None:
     return None
 
 
-def quote_path(path: str) -> str:
+def quote_path(path: str, *, force: bool = False) -> str:
     """Keep a path with whitespace or quotes unambiguous in a chat message."""
-    if any(c.isspace() or c in '"\\' or ord(c) < 32 for c in path):
+    if force or path.startswith("@") or any(c.isspace() or c in '"\\' or ord(c) < 32 for c in path):
         return json.dumps(path, ensure_ascii=False)
     return path
 
@@ -114,6 +114,7 @@ def scan_paths(scope: SearchScope, cwd: Path, user_dir: Path, cancel: Event) -> 
         with os.scandir(root):
             pass
         entries = []
+        scanned = 0
         for path, info in walk_files(
             root, policy, IGNORE_DIRS if in_workspace else set(),
             max_depth=None if scope.recursive else 1,
@@ -122,11 +123,12 @@ def scan_paths(scope: SearchScope, cwd: Path, user_dir: Path, cancel: Event) -> 
         ):
             if cancel.is_set():
                 return ScanResult()
+            scanned += 1
             if info is None or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 continue
             visible = scope.directory / path.relative_to(root)
             entries.append(PathChoice(visible, stat.S_ISDIR(info.st_mode)))
-        return ScanResult(tuple(entries), limited=len(entries) >= MAX_WALK_FILES)
+        return ScanResult(tuple(entries), limited=scanned >= MAX_WALK_FILES)
     except (OSError, ValueError, RuntimeError):
         return ScanResult(available=False)
 

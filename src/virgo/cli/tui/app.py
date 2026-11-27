@@ -879,8 +879,9 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         elif self.input_request is not None and self.input_request.preferences is None:
             key = "ui.hints.select" if self.input_request.options is not None else "ui.hints.confirm"
             hints = shortcut_hints(tr(self, key))
-        elif self.state.path_completion is not None and not self.has_modal:
-            hints = shortcut_hints(tr(self, "ui.hints.paths"))
+        elif (completion := self.state.path_completion) is not None and not self.has_modal:
+            result = completion.cache.get(completion.scope)
+            hints = shortcut_hints(tr(self, "ui.hints.paths_limited" if result and result.limited else "ui.hints.paths"))
         elif (self.controller.busy and not self.has_modal
               and self.active_confirmation is None and self.active_input is None):
             hints = shortcut_hints(tr(self, "ui.hints.busy"))
@@ -1010,9 +1011,12 @@ class VirgoApp(SelectionCopyMixin, App[int]):
         self.state.path_completion = None
 
     def hide_completions(self) -> None:
+        had_path_completion = self.state.path_completion is not None
         self._reset_path_completion()
         self.state.completion_names = []
         self._pane.query_one("#completions").display = False
+        if had_path_completion and self.is_running:
+            self.update_status()
 
     def sync_completions(self) -> None:
         # TextArea.Changed and SelectionChanged are queued; keys can arrive first.
@@ -1084,6 +1088,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             completion.choices = matching_paths(result, scope, query)
             hint = "ui.paths.no_matches" if result.available else "ui.paths.unavailable"
         if completion.choices:
+            rows = []
             for index, choice in enumerate(completion.choices):
                 label = display_path(choice.path, self.session.cwd, choice.is_dir)
                 self.state.completion_names.append(label)
@@ -1091,7 +1096,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
                     label = "./" if choice.path == scope.directory else choice.path.name + ("/" if choice.is_dir else "")
                 if choice.is_dir and (scope is None or choice.path != scope.directory):
                     label += "  ›"
-                options.add_option(Option(Text(label), id=str(index)))
+                rows.append(Option(Text(label), id=str(index)))
+            options.add_options(rows)
             restore = completion.restore
             options.highlighted = next(
                 (i for i, choice in enumerate(completion.choices) if choice.path == restore), 0
@@ -1099,7 +1105,7 @@ class VirgoApp(SelectionCopyMixin, App[int]):
             completion.restore = None
             options.scroll_to_highlight()
         else:
-            options.add_option(Option(Text(tr(self, hint), style="dim"), disabled=True))
+            options.add_options([Option(Text(tr(self, hint), style="dim"), disabled=True)])
         options.display = True
         options.styles.max_height = max(3, min(6, self.size.height // 4))
         self.update_status()
@@ -1119,7 +1125,11 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def _replace_mention(self, mention: Mention, value: str, *, navigate: bool = False) -> None:
         line = self.editor.document.get_line(mention.row)
-        replacement = ("@" if navigate else "") + quote_path(value)
+        # An absolute POSIX path at the beginning of a message must not
+        # become a slash command when it is subsequently submitted.
+        prefix = self.editor.get_text_range((0, 0), (mention.row, mention.start))
+        force_quote = not navigate and value.startswith("/") and not prefix.strip()
+        replacement = ("@" if navigate else "") + quote_path(value, force=force_quote)
         if not navigate and (mention.end == len(line) or not line[mention.end].isspace()):
             replacement += " "
         self.editor.replace(
@@ -1286,6 +1296,8 @@ class VirgoApp(SelectionCopyMixin, App[int]):
 
     def request_close(self) -> None:
         for pane in self._panes:
+            if completion := pane.state.path_completion:
+                completion.cancel.set()
             pane.controller.request_close()
 
     def wait_closed(self, timeout: float = 5) -> bool:

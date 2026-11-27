@@ -284,9 +284,13 @@ def walk_files(path: Path, policy: PermissionPolicy, ignore: set[str], *,
                 try:
                     if child.is_symlink():
                         continue
+                    # Directory discovery must not follow junctions or other
+                    # aliases out of the explicit search root.
+                    if include_directories and child.resolve() != child:
+                        continue
                     if policy.denied(child, "read") or not policy.allows(child, "read"):
                         continue
-                except OSError:
+                except (OSError, RuntimeError):
                     continue
             if respect_gitignore and scopes and matches_scopes(child, True, scopes):
                 continue

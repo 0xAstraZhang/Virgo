@@ -89,6 +89,7 @@ MESSAGES = {
     "ui.editor.arguments": "[arguments]",
     "ui.editor.placeholder": "Ask anything · / commands · @ paths",
     "ui.hints.paths": "↑↓ select · ←→ navigate · Enter/Tab confirm · Esc close",
+    "ui.hints.paths_limited": "Search limited · type a directory to narrow · Enter/Tab confirm · Esc close",
     "ui.paths.loading": "Searching paths…",
     "ui.paths.no_matches": "No matching paths",
     "ui.paths.unavailable": "Directory unavailable",
