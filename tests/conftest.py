@@ -59,7 +59,7 @@ def pixel_png(project) -> str:
 
 @pytest.fixture
 def python_command(tmp_path):
-    """Quote for an explicit selected shell, or the native shell used by hooks/legacy Bash."""
+    """Quote for an explicit selected shell, or the host native shell."""
     directory = tmp_path / "python commands"
     directory.mkdir()
     count = 0
