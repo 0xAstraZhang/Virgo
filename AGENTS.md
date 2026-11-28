@@ -3,6 +3,7 @@
 - Install locked dependencies: `uv sync --locked --dev`.
 - Lint changed Python files with `uv run --no-sync ruff check <paths>`.
 - Run affected existing tests with `uv run --no-sync pytest -q <paths>`. Prefer assembled-session or real-process acceptance for execution changes.
+- Run comparative live model evaluations with `openai-codex/gpt-6.2-sol` at `xhigh` in both arms, including compaction and fallback model calls. Freeze both revisions, the fixtures and the acceptance criteria, and verify the model and effort at the provider boundary.
 - Native acceptance must run on real Linux, macOS, WSL2, and native Windows hosts with `VIRGO_REQUIRE_SANDBOX_TESTS=1`; see [execution-acceptance.md](docs/en/development/execution-acceptance.md). A skipped suite or a policy-generation check does not establish isolation.
 - Preserve startup acknowledgement, cancellation, process-tree cleanup, and fail-closed behavior when changing execution. Never replay a possibly started payload automatically.
 - When retiring tests during a breaking refactor, explicitly list every deleted test and its replacement coverage in the commit message and PR description.
