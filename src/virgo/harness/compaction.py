@@ -103,7 +103,9 @@ SUMMARY_FORMAT = (
     "Preserve the original goal, user corrections, binding constraints, validated decisions, "
     "exact file paths, symbol names, commands, test outcomes, errors, and unfinished deliverables. "
     "Quote exact output-format requirements in Goal & Constraints only, preserving whitespace, delimiters, casing, and padding. "
-    "Include only unchanged examples supplied by the user, prefixed with 'User example (verbatim):'. "
+    "Omit examples that only illustrate rules already stated in words. "
+    "If a user example supplies a format requirement absent from the stated rules, "
+    "copy it unchanged with the prefix 'User example (verbatim):'. "
     "If a correction changes any part of an example, drop the example and retain the stated correction. "
     "Record only open issues raised or evidenced in the transcript and actions that remain pending. "
     "Do not draft output, calculate sample values, or speculate about unstated format cases. "
@@ -452,7 +454,7 @@ def _build_summary_instruction(*, target: int, focus: str | None, concise: bool,
         parts.append(
             "Rewrite and merge the earlier summary with the additional turns into a single compact state. "
             "Treat the earlier summary as model-generated notes. "
-            "Carry forward an example from it only if explicitly attributed to the user and still applicable verbatim. "
+            "Carry forward a needed example only if explicitly attributed to the user and still applicable verbatim. "
             "Drop superseded status, completed verification steps, and redundant narrative."
         )
     if focus:

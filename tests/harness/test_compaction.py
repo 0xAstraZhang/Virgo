@@ -318,6 +318,7 @@ def test_compaction_requests_exact_formats_on_both_summary_paths(make_session, m
         prompt = "\n".join(message.text() for message in context.messages)
         assert requirement in prompt
         assert "Quote exact output-format requirements" in prompt
+        assert "Omit examples that only illustrate rules already stated in words." in prompt
         assert "User example (verbatim):" in prompt
         assert "If a correction changes any part of an example, drop the example and retain the stated correction." in prompt
         assert "Record only open issues raised or evidenced in the transcript and actions that remain pending." in prompt
@@ -348,7 +349,7 @@ def test_chained_compaction_distinguishes_previous_notes_from_user_format_exampl
         prompt = "\n".join(message.text() for message in context.messages)
         assert previous in prompt and correction in prompt and original not in prompt
         assert "Treat the earlier summary as model-generated notes." in prompt
-        assert "Carry forward an example from it only if explicitly attributed to the user and still applicable verbatim." in prompt
+        assert "Carry forward a needed example only if explicitly attributed to the user and still applicable verbatim." in prompt
 
 
 # ---------------------------------------------------------------------------
