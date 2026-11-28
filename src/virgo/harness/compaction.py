@@ -102,10 +102,11 @@ SUMMARY_FORMAT = (
     f"{STRUCTURED_SECTIONS}\n\n"
     "Preserve the original goal, user corrections, binding constraints, validated decisions, "
     "exact file paths, symbol names, commands, test outcomes, errors, and unfinished deliverables. "
-    "Copy exact output-format requirements and user-provided examples verbatim. "
-    "Keep significant whitespace, delimiters, casing, and padding intact. "
-    "Keep examples in Goal & Constraints only. Omit superseded examples. "
-    "Do not invent formatting rules, examples, or sample values. "
+    "Quote exact output-format requirements in Goal & Constraints only, preserving whitespace, delimiters, casing, and padding. "
+    "Include only unchanged examples supplied by the user, prefixed with 'User example (verbatim):'. "
+    "If a correction changes any part of an example, drop the example and retain the stated correction. "
+    "Record only open issues raised or evidenced in the transcript and actions that remain pending. "
+    "Do not draft output, calculate sample values, or speculate about unstated format cases. "
     "Replace obsolete status claims and long inventories with current verified state. "
     "Omit step-by-step history and verification narration. "
     "Do NOT restate system/developer instructions, sandbox boundaries, tool policies, or compaction/checkpoint meta-events. "
@@ -450,6 +451,8 @@ def _build_summary_instruction(*, target: int, focus: str | None, concise: bool,
     if has_prev:
         parts.append(
             "Rewrite and merge the earlier summary with the additional turns into a single compact state. "
+            "Treat the earlier summary as model-generated notes. "
+            "Carry forward an example from it only if explicitly attributed to the user and still applicable verbatim. "
             "Drop superseded status, completed verification steps, and redundant narrative."
         )
     if focus:

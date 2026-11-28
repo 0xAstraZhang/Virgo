@@ -317,9 +317,38 @@ def test_compaction_requests_exact_formats_on_both_summary_paths(make_session, m
     for _, context in requests:
         prompt = "\n".join(message.text() for message in context.messages)
         assert requirement in prompt
-        assert "Copy exact output-format requirements and user-provided examples verbatim." in prompt
-        assert "Keep examples in Goal & Constraints only. Omit superseded examples." in prompt
-        assert "Do not invent formatting rules, examples, or sample values." in prompt
+        assert "Quote exact output-format requirements" in prompt
+        assert "User example (verbatim):" in prompt
+        assert "If a correction changes any part of an example, drop the example and retain the stated correction." in prompt
+        assert "Record only open issues raised or evidenced in the transcript and actions that remain pending." in prompt
+        assert "Do not draft output, calculate sample values, or speculate about unstated format cases." in prompt
+
+
+def test_chained_compaction_distinguishes_previous_notes_from_user_format_examples(make_session, monkeypatch):
+    original = "Use prefix `TA=`. User example for input 7 is `TA=0007`."
+    previous = "## Goal & Constraints\nUser example (verbatim): User example for input 7 is `TA=0007`."
+    correction = "Change the prefix to `ta=` and retain the other requirements."
+    session = make_session(
+        faux.reply("Acknowledged."), faux.reply("Waiting."), faux.reply(previous), faux.reply("Acknowledged."),
+        settings={"compaction": {"keepRecentTokens": 0}},
+    )
+    session.prompt(original)
+    session.prompt("Wait for dispatch.")
+    assert session.compact() is not None
+    session.prompt(correction)
+    requests = install_responses(
+        monkeypatch,
+        AssistantMessage(stop_reason="error", error_kind="overflow", error_message="too long"),
+        AssistantMessage([TextContent(correction)]),
+    )
+    result = session.compact()
+    assert result is not None and result["strategy"] == "serialized"
+    assert len(requests) == 2
+    for _, context in requests:
+        prompt = "\n".join(message.text() for message in context.messages)
+        assert previous in prompt and correction in prompt and original not in prompt
+        assert "Treat the earlier summary as model-generated notes." in prompt
+        assert "Carry forward an example from it only if explicitly attributed to the user and still applicable verbatim." in prompt
 
 
 # ---------------------------------------------------------------------------
