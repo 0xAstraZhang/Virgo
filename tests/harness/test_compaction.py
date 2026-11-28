@@ -23,6 +23,7 @@ from virgo.ai.types import (
 )
 from virgo.harness.compaction import (
     PRUNE_PREFIX,
+    _message_tokens,
     _select_user_notes,
     estimate_tokens,
     find_cut,
@@ -762,16 +763,16 @@ def summary_calls(session):
 
 
 @pytest.mark.parametrize("window,normal,recovery,reasoning,model_max", [
-    pytest.param(65_536, 2048, 1024, True, 32_768, id="64k-reasoning"),
-    pytest.param(65_536, 2048, 1024, False, 32_768, id="64k-plain"),
-    pytest.param(1_000_000, 8000, 1024, True, 10_000, id="1m-model-cap"),
-    pytest.param(256_000, 8000, 1024, False, 32_768, id="target-cap"),
-    pytest.param(32_800, 1025, 1024, True, 32_768, id="above-recovery-cap"),
-    pytest.param(32_768, 1024, 512, True, 32_768, id="at-recovery-cap"),
-    pytest.param(16_384, 512, 256, True, 32_768, id="16k"),
-    pytest.param(4096, 256, 256, False, 32_768, id="target-floor"),
-    pytest.param(0, 8000, 1024, True, 32_768, id="unknown"),
-    pytest.param(-1, 8000, 1024, False, 32_768, id="negative"),
+    pytest.param(65_536, 1573, 1024, True, 32_768, id="64k-reasoning"),
+    pytest.param(65_536, 1573, 1024, False, 32_768, id="64k-plain"),
+    pytest.param(1_000_000, 1573, 1024, True, 6_000, id="1m-model-cap"),
+    pytest.param(256_000, 1573, 1024, False, 32_768, id="target-cap"),
+    pytest.param(32_800, 755, 1024, True, 32_768, id="above-recovery-cap"),
+    pytest.param(32_768, 754, 512, True, 32_768, id="at-recovery-cap"),
+    pytest.param(16_384, 344, 256, True, 32_768, id="16k"),
+    pytest.param(4096, 140, 256, False, 32_768, id="target-floor"),
+    pytest.param(0, 1573, 1024, True, 32_768, id="unknown"),
+    pytest.param(-1, 1573, 1024, False, 32_768, id="negative"),
 ])
 def test_prose_and_completion_budgets(make_session, monkeypatch, window, normal, recovery, reasoning, model_max):
     session = make_session(faux.reply("Earlier work"))
@@ -1050,7 +1051,7 @@ def test_successful_length_recovery_keeps_one_reactive_overflow_guard(make_sessi
     assert recovery["max_tokens"] < ordinary["max_tokens"]
 
 
-@pytest.mark.parametrize(("input_tokens", "target"), [(1500, 375), (80_000, 8000)])
+@pytest.mark.parametrize(("input_tokens", "target"), [(1500, 375), (80_000, 1573)])
 def test_summary_budget_tracks_evicted_input(make_session, monkeypatch, input_tokens, target):
     session = make_session(faux.reply("acknowledged"), settings={"compaction": {"keepRecentTokens": 0}})
     session.prompt("x" * (input_tokens * 4))
@@ -1064,6 +1065,37 @@ def test_summary_budget_tracks_evicted_input(make_session, monkeypatch, input_to
     assert "Omit step-by-step history and verification narration." in prompt
     assert "Do NOT restate system/developer instructions, sandbox boundaries" in prompt
     assert "only when explicitly reported by a tool output marker" in prompt
+
+
+@pytest.mark.parametrize("rewrite_fits", [True, False])
+def test_checkpoint_budget_counts_entire_replay_and_never_commits_overlarge_draft(make_session, monkeypatch, rewrite_fits):
+    session = make_session(persist=True, settings={"compaction": {"keepRecentTokens": 0}})
+    brief = "Release `AB-97`; do not change the region ordering."
+    faux.push("test", scripted(faux.reply("Historical work " * 1400)), scripted(faux.reply("Ready")))
+    session.prompt(brief)
+    session.prompt("Continue after the handoff.")
+    read = {f"src/read-{i:03d}.py" for i in range(180)}
+    modified = {f"src/edit-{i:03d}.py" for i in range(180)}
+    monkeypatch.setattr("virgo.harness.compaction._files", lambda _: (read, modified))
+    oversized = "long unsimplified record " * 340
+    reduced = "Release `AB-97`; pending: final receipt acceptance."
+    seen = install_responses(monkeypatch, *(AssistantMessage([TextContent(text)]) for text in (oversized, reduced if rewrite_fits else oversized)))
+    before = session.store.build_context()
+    result = session.main.compact(reason="auto", model=replace(session.model, context_window=65536))
+    assert len(seen) == 2
+    assert "<draft_checkpoint>" in seen[1][1].messages[0].text()
+    if not rewrite_fits:
+        assert result is None and session.store.last_compaction() is None
+        assert before == (session.main.messages, session.main.ids)
+        return
+    checkpoint = session.store.last_compaction()
+    assert checkpoint["details"]["modified_files"] == sorted(modified)
+    assert checkpoint["details"]["user_notes"] == [brief]
+    replayed = session.main.messages[0]
+    assert _message_tokens(replayed) <= 2048
+    assert reduced in replayed.text() and brief in replayed.text()
+    assert "src/edit-000.py" in replayed.text() and "src/read-179.py" not in replayed.text()
+    assert SessionStore.load(session.store.path).build_context() == (session.main.messages, session.main.ids)
 
 
 @pytest.mark.parametrize("scenario", ["sufficient", "insufficient", "prune-only"])
