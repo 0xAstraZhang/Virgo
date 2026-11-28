@@ -345,14 +345,8 @@ def build_system(
     entries = _workspace_entries(cwd, workspace, access)
     if entries:
         env_lines.append(f"Top-level entries: {entries}")
-    system = platform.system()
-    env_lines.append(f"Platform: {system} {platform.release()}")
-    if system == "Darwin" and shell:
-        env_lines.append(
-            "On macOS, system utilities use BSD options. Prefer portable flags. "
-            "Use od or Python to inspect whitespace and line endings. The system cat does not support -A."
-        )
     env_lines.extend([
+        f"Platform: {platform.system()} {platform.release()}",
         shell_info,
         f"Date: {time.strftime('%Y-%m-%d')}",
     ])

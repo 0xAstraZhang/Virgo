@@ -217,17 +217,6 @@ def test_environment_includes_git_branch_and_bounded_top_level_entries(broker_se
     assert "scratch.tmp" not in env
 
 
-@pytest.mark.parametrize("host_platform", ["Darwin", "Linux", "Windows"])
-def test_environment_adds_shell_compatibility_hint_on_macos(make_session, monkeypatch, host_platform):
-    session = make_session()
-    monkeypatch.setattr("virgo.harness.prompt.platform.system", lambda: host_platform)
-    session.main.rebuild_system()
-    request = session.main.request_context([])
-    env = request.system.partition("<environment>")[2].partition("</environment>")[0]
-    assert env.count("The system cat does not support -A.") == (host_platform == "Darwin")
-    assert all("The system cat does not support -A." not in tool.description for tool in request.tools)
-
-
 def test_environment_git_detached_head_and_sandboxed_external_worktree_fail_closed(broker_session, project, tmp_path):
     # Detached HEAD inside workspace is reported concisely.
     git_dir = project / ".git"
