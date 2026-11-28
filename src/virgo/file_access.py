@@ -220,11 +220,23 @@ def open_mutation(path: Path, policy: PermissionPolicy, *, create: bool,
             with os.fdopen(fd_tmp, "wb") as handle:
                 handle.write(data)
                 handle.flush()
-            if existing_mode is not None:
+            if existing_mode is None:
+                # mkstemp creates 0600 to protect the temporary file. A newly
+                # created workspace file should instead have the visibility of
+                # its workspace: mirror the parent directory's read/write bits
+                # (0755 -> 0644, 0700 -> 0600) while keeping the owner able to
+                # read and write it and avoiding a world-writable result.
                 try:
-                    os.chmod(tmp_path, existing_mode)
+                    parent_mode = stat.S_IMODE(os.stat(destination.parent).st_mode)
                 except OSError:
-                    pass
+                    parent_mode = 0o755
+                file_mode = ((0o666 & parent_mode) | 0o600) & ~0o002
+            else:
+                file_mode = existing_mode
+            try:
+                os.chmod(tmp_path, file_mode)
+            except OSError:
+                pass
             os.replace(tmp_path, destination)
             tmp_path = None
         finally:
