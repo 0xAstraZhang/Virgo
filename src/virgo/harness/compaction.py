@@ -669,7 +669,7 @@ def summarize_context(
     kept_msgs, kept_ids = _retained_tail(rt, cut)
     user_notes: list[str] = []
     if (
-        reason != "overflow" and not concise and 0 < tokens_before < window
+        reason != "overflow" and not concise and window > 0
         and (evicted_tokens >= _MIN_LONG_PREFIX_TOKENS or prior_notes)
     ):
         limit = min(_MAX_USER_NOTE_TOKENS, window // 16, max(evicted_tokens // 2, _text_tokens(render_user_notes(prior_notes))))

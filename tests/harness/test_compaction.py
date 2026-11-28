@@ -200,6 +200,49 @@ def test_long_compaction_preserves_user_evidence_through_another_checkpoint_and_
     assert SessionStore.load(session.store.path).build_context() == (session.main.messages, session.main.ids)
 
 
+@pytest.mark.parametrize("second_checkpoint_input", [95_999, 96_000, 98_477])
+def test_auto_compaction_replays_user_evidence_at_window_boundary(make_session, second_checkpoint_input):
+    session = make_session(persist=True, settings={
+        "providers": {"faux": {"models": {"test": {"contextWindow": 96_000}}}},
+    })
+    original = "Use the exact source reference GREEN-17 until dispatch."
+    correction = "Use separator :: instead of / and keep the reference unchanged."
+    generic_summary = "Intake complete. Delivery pending."
+
+    def prompt_at(input_tokens):
+        added_tokens = input_tokens - session.main.context_tokens()
+        assert added_tokens > 20_000
+        prefix = "Review this neutral handoff and wait:"
+        faux.push("test", faux.reply(generic_summary), faux.reply("Acknowledged."))
+        session.prompt(prefix + "Z" * (4 * added_tokens - len(prefix)))
+
+    faux.push("test", faux.reply("Acknowledged."), faux.reply("Acknowledged."))
+    session.prompt(original)
+    session.prompt("Archived intake status. " * 5500)
+    assert session.store.last_compaction() is None
+
+    prompt_at(90_000)
+    first = session.store.last_compaction()
+    assert first["reason"] == "auto"
+    assert first["tokens_before"] == 90_000
+    assert first["details"]["user_notes"] == [original]
+
+    faux.push("test", faux.reply("Acknowledged."))
+    session.prompt(correction)
+    prompt_at(second_checkpoint_input)
+    second = session.store.last_compaction()
+    assert second["id"] != first["id"]
+    assert second["reason"] == "auto"
+    assert second["tokens_before"] == second_checkpoint_input
+
+    messages, ids = SessionStore.load(session.store.path).build_context()
+    assert ids[0] == second["id"]
+    assert messages[0].kind == "summary"
+    assert original in messages[0].text()
+    assert correction in messages[0].text()
+    assert _message_tokens(messages[0]) <= 2048
+
+
 def test_auto_compaction_triggers_before_model_call(make_session):
     s = make_session(settings={"compaction": {"keepRecentTokens": 50}})
     faux.push("test", scripted(faux.reply("x " * 1500)))
