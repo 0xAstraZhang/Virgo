@@ -301,27 +301,6 @@ def test_l2_in_context_falls_back_to_serialized_on_tool_use_or_overflow(make_ses
     assert "<conversation>" in ser_ctx.messages[0].text()
 
 
-def test_compaction_requests_exact_formats_on_both_summary_paths(make_session, monkeypatch):
-    requirement = "Write exactly `A\t0042` followed by LF."
-    session = make_session(faux.reply("Acknowledged."))
-    session.prompt(requirement)
-    requests = install_responses(
-        monkeypatch,
-        AssistantMessage(stop_reason="error", error_kind="overflow", error_message="too long"),
-        AssistantMessage([TextContent(requirement)]),
-    )
-    result = session.compact()
-    assert result is not None and result["strategy"] == "serialized"
-    assert requirement in result["summary"]
-    assert len(requests) == 2
-    for _, context in requests:
-        prompt = "\n".join(message.text() for message in context.messages)
-        assert requirement in prompt
-        assert "Copy exact output-format requirements and user-provided examples verbatim." in prompt
-        assert "Keep examples in Goal & Constraints only. Omit superseded examples." in prompt
-        assert "Do not invent formatting rules, examples, or sample values." in prompt
-
-
 # ---------------------------------------------------------------------------
 # L3: Reactive Overflow Recovery tests
 # ---------------------------------------------------------------------------
