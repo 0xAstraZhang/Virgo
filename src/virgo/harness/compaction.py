@@ -38,7 +38,7 @@ from ..ai.types import (
     ToolSpec,
     UserMessage,
 )
-from .compaction_records import compacted_message
+from .compaction_records import compacted_message, render_user_notes
 from .telemetry import record_call
 
 
@@ -64,6 +64,7 @@ class CompactionHost(Protocol):
     def matches_request_fallback(self, context: Any, failed: Any) -> bool: ...
     def record_model_error(self, message: Any, *, purpose: str = "agent", notify: bool = False, context: dict | None = None) -> dict | None: ...
     def previous_summary_files(self) -> tuple[list[str], list[str]] | None: ...
+    def previous_summary_user_notes(self) -> list[str]: ...
     def on_compaction_before(self) -> None: ...
     def on_compaction_error(self, detail: str) -> None: ...
     def commit_prune(self, updates: list[tuple[int, str]], *, tokens_before: int, reclaimed: int, reason: str) -> dict: ...
@@ -79,6 +80,7 @@ class CompactionHost(Protocol):
         strategy: str,
         read_files: list[str],
         modified_files: list[str],
+        user_notes: list[str],
     ) -> dict: ...
 
 SUMMARY_SYSTEM = (
@@ -122,6 +124,9 @@ IN_CONTEXT_INSTRUCTION = (
 
 SUMMARY_TOKENS = 8000
 RECOVERY_TOKENS = 1024
+_MIN_LONG_PREFIX_TOKENS = 1024
+_MAX_USER_NOTE_TOKENS = 4096
+_MAX_USER_NOTES = 24
 RECOVERY_FOCUS = (
     "Keep only the current goal, binding constraints, "
     "essential findings and immediate next steps."
@@ -252,6 +257,26 @@ def serialize(messages: list) -> str:
         tail = MAX_INPUT_CHARS - head - len(marker)
         text = text[:head] + marker + text[-tail:]
     return text
+
+
+def _select_user_notes(previous: list[str], evicted: list, kept: list, *, limit: int) -> list[str]:
+    """Keep the original request (if it fits) and recent exact user corrections in order."""
+    retained = {id(m) for m in kept}
+    candidates = [*previous, *(m.content for m in evicted if (
+        isinstance(m, UserMessage) and m.kind is None and isinstance(m.content, str)
+        and m.content.strip() and id(m) not in retained
+    ))]
+    if not candidates or limit <= 0:
+        return []
+    oldest, *rest = candidates
+    begin = [oldest] if _text_tokens(render_user_notes([oldest])) <= limit else []
+    recent: list[str] = []
+    for note in reversed(rest):
+        if len(begin) + len(recent) >= _MAX_USER_NOTES:
+            break
+        if _text_tokens(render_user_notes([*begin, note, *reversed(recent)])) <= limit:
+            recent.append(note)
+    return [*begin, *reversed(recent)]
 
 
 def _files(messages: list) -> tuple[set, set]:
@@ -608,8 +633,10 @@ def summarize_context(
 
     read, modified = _files(to_summarize)
     prev_text: str | None = None
+    prior_notes = rt.previous_summary_user_notes() if prev else []
     if prev:
-        raw_prev = prev.text().split("\n\n", 1)[-1].removesuffix("</conversation_summary>")
+        previous = prev.text().removesuffix(render_user_notes(prior_notes))
+        raw_prev = previous.split("\n\n", 1)[-1].removesuffix("</conversation_summary>")
         prev_files = rt.previous_summary_files()
         if prev_files is not None:
             read.update(prev_files[0])
@@ -660,6 +687,13 @@ def summarize_context(
         summary += "\n\n<modified-files>\n" + "\n".join(sorted(modified)) + "\n</modified-files>"
 
     kept_msgs, kept_ids = _retained_tail(rt, cut)
+    user_notes: list[str] = []
+    if (
+        reason != "overflow" and not concise and 0 < tokens_before < window
+        and (evicted_tokens >= _MIN_LONG_PREFIX_TOKENS or prior_notes)
+    ):
+        limit = min(_MAX_USER_NOTE_TOKENS, window // 16, max(evicted_tokens // 2, _text_tokens(render_user_notes(prior_notes))))
+        user_notes = _select_user_notes(prior_notes, to_summarize, kept_msgs, limit=limit)
     return rt.commit_summary(
         summary,
         msg.timestamp,
@@ -670,6 +704,7 @@ def summarize_context(
         strategy=strategy,
         read_files=sorted(read),
         modified_files=sorted(modified),
+        user_notes=user_notes,
     )
 
 

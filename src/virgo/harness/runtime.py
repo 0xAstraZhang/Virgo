@@ -26,7 +26,7 @@ from ..diagnostics import capture_error, safe_text
 from ..execution_policy import normalize_approval_policy
 from ..tools.shell import ShellTool
 from . import compaction as compaction_mod
-from .compaction_records import compacted_message, summary_message
+from .compaction_records import compacted_message, summary_message, summary_user_notes
 from .contracts import RuntimeHost
 from .diagnostic_view import project_tool_result
 from .origin_context import ExecutionOrigin
@@ -188,6 +188,11 @@ class Runtime:
             return None
         return list(details.get("read_files", [])), list(details.get("modified_files", []))
 
+    def previous_summary_user_notes(self) -> list[str]:
+        if self.store is None or not self.ids:
+            return []
+        return summary_user_notes(self.store.by_id.get(self.ids[0], {}))
+
     def on_compaction_before(self) -> None:
         self.session.bus.emit("before_compact", self)
 
@@ -232,6 +237,7 @@ class Runtime:
         strategy: str,
         read_files: list[str],
         modified_files: list[str],
+        user_notes: list[str],
     ) -> dict:
         entry_id = None
         if self.store is not None:
@@ -244,10 +250,11 @@ class Runtime:
                 tokens_before=tokens_before,
                 reason=reason,
                 strategy=strategy,
-                details={"read_files": read_files, "modified_files": modified_files},
+                details={"read_files": read_files, "modified_files": modified_files,
+                         **({"user_notes": user_notes} if user_notes else {})},
             )
             entry_id = entry["id"]
-        self.messages[:] = [summary_message(summary, timestamp=timestamp), *kept_msgs]
+        self.messages[:] = [summary_message(summary, timestamp=timestamp, user_notes=user_notes), *kept_msgs]
         self.ids[:] = [entry_id, *kept_ids]
         self.compacted_at = len(self.messages)
         self.rebuild_system()
