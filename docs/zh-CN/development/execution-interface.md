@@ -15,6 +15,8 @@
   - **原生 Windows（标准 AppContainer `windows-appcontainer`）**：支持 NTFS 与 ReFS Dev Drive、会话级单 SID 与单次 OS 传播的 `SetNamedSecurityInfoW` 可继承 ACE、自动为 `.venv` 底层 Python 与用户自有 `PATH` 工具链授予只读 ACE、对未获批 `.virgo` 调用 `protect_readonly_path()`、在祖先目录缺少 `S-1-15-2-1` 时映射会话内 `DefineDosDeviceW` 虚拟盘符、预写 JSON 崩溃恢复日志，以及直接 `CreateProcessW` + `WindowsProcess` 关闭即终止的 Job Object 托管。
 - 启动确认、取消、进程树清理与禁止自动重放诊断均由这些后端实现负责。不可用的原生边界绝不会静默回退到 Host（交互式 Shell 会话可在载荷启动前向用户请求一次性的显式 No-Limit 回退）。载荷释放后的任何失败（`ExecutionFailed`）绝不会触发自动重放。
 
+- 在 macOS 上有可用 Shell 时，面向模型的环境提示会说明系统命令使用 BSD 参数，并建议用 `od` 或 Python 检查空白和换行。
+
 ## Broker 文件工具、OutputStore 与 Host MCP
 
 - **文件工具**（`virgo.tools.fs` + `virgo.file_access`）直接在 Broker 进程内按 `PermissionPolicy` 强制执行权限校验，配合末级组件 `O_NOFOLLOW` 与临时文件原子 `os.replace`，不引入独立的 OS 沙箱辅助进程（见[决策 002](../decisions/002-execution-boundaries-and-broker-tools.md)）。`read` 为文本行附加从 1 开始的 `<行号>|` 前缀；`glob` 与 `grep` 默认通过受策略约束的纯 Python 匹配器遵守 `.gitignore`（可用 `include_ignored=true` 关闭），`grep` 支持 `content`/`files`/`count` 模式及 `fixed_strings` 字面量搜索。
