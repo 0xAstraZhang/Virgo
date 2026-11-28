@@ -38,7 +38,7 @@ from ..ai.types import (
     ToolSpec,
     UserMessage,
 )
-from .compaction_records import compacted_message
+from .compaction_records import compacted_message, render_user_notes, summary_message
 from .telemetry import record_call
 
 
@@ -64,6 +64,7 @@ class CompactionHost(Protocol):
     def matches_request_fallback(self, context: Any, failed: Any) -> bool: ...
     def record_model_error(self, message: Any, *, purpose: str = "agent", notify: bool = False, context: dict | None = None) -> dict | None: ...
     def previous_summary_files(self) -> tuple[list[str], list[str]] | None: ...
+    def previous_summary_user_notes(self) -> list[str]: ...
     def on_compaction_before(self) -> None: ...
     def on_compaction_error(self, detail: str) -> None: ...
     def commit_prune(self, updates: list[tuple[int, str]], *, tokens_before: int, reclaimed: int, reason: str) -> dict: ...
@@ -79,6 +80,7 @@ class CompactionHost(Protocol):
         strategy: str,
         read_files: list[str],
         modified_files: list[str],
+        user_notes: list[str],
     ) -> dict: ...
 
 SUMMARY_SYSTEM = (
@@ -118,6 +120,13 @@ IN_CONTEXT_INSTRUCTION = (
 
 SUMMARY_TOKENS = 8000
 RECOVERY_TOKENS = 1024
+_MIN_LONG_PREFIX_TOKENS = 1024
+_MAX_USER_NOTE_TOKENS = 4096
+_MAX_USER_NOTES = 24
+_BOUNDED_PREFIX_TOKENS = 4096
+_CHECKPOINT_TOKENS = 2048
+_CHECKPOINT_PATH_TOKENS = 160
+_CHECKPOINT_NOTE_TOKENS = 512
 RECOVERY_FOCUS = (
     "Keep only the current goal, binding constraints, "
     "essential findings and immediate next steps."
@@ -248,6 +257,39 @@ def serialize(messages: list) -> str:
         tail = MAX_INPUT_CHARS - head - len(marker)
         text = text[:head] + marker + text[-tail:]
     return text
+
+
+def _select_user_notes(previous: list[str], evicted: list, kept: list, *, limit: int) -> list[str]:
+    """Keep the original request (if it fits) and recent exact user corrections in order."""
+    retained = {id(m) for m in kept}
+    candidates = [*previous, *(m.content for m in evicted if (
+        isinstance(m, UserMessage) and m.kind is None and isinstance(m.content, str)
+        and m.content.strip() and id(m) not in retained
+    ))]
+    if not candidates or limit <= 0:
+        return []
+    oldest, *rest = candidates
+    begin = [oldest] if _text_tokens(render_user_notes([oldest])) <= limit else []
+    recent: list[str] = []
+    for note in reversed(rest):
+        if len(begin) + len(recent) >= _MAX_USER_NOTES:
+            break
+        if _text_tokens(render_user_notes([*begin, note, *reversed(recent)])) <= limit:
+            recent.append(note)
+    return [*begin, *reversed(recent)]
+
+
+def _file_sections(read: set[str], modified: set[str], *, limit: int | None = None) -> str:
+    def block(tag, paths):
+        return f"\n\n<{tag}>\n" + "\n".join(paths) + f"\n</{tag}>" if paths else ""
+
+    selected: dict[str, list[str]] = {"modified-files": [], "read-files": []}
+    for tag, paths in (("modified-files", modified), ("read-files", read - modified)):
+        for path in sorted(paths):
+            selected[tag].append(path)
+            if limit is not None and _text_tokens("".join(block(k, v) for k, v in selected.items())) > limit:
+                selected[tag].pop()
+    return block("read-files", selected["read-files"]) + block("modified-files", selected["modified-files"])
 
 
 def _files(messages: list) -> tuple[set, set]:
@@ -604,8 +646,10 @@ def summarize_context(
 
     read, modified = _files(to_summarize)
     prev_text: str | None = None
+    prior_notes = rt.previous_summary_user_notes() if prev else []
     if prev:
-        raw_prev = prev.text().split("\n\n", 1)[-1].removesuffix("</conversation_summary>")
+        previous = prev.text().removesuffix(render_user_notes(prior_notes))
+        raw_prev = previous.split("\n\n", 1)[-1].removesuffix("</conversation_summary>")
         prev_files = rt.previous_summary_files()
         if prev_files is not None:
             read.update(prev_files[0])
@@ -616,7 +660,24 @@ def summarize_context(
         prev_text = _FILE_BLOCK.sub("", raw_prev).strip()
 
     evicted_tokens = sum(_message_tokens(message) for message in messages[:cut])
+    bounded = reason != "overflow" and not concise and evicted_tokens >= _BOUNDED_PREFIX_TOKENS
+    envelope = min(_CHECKPOINT_TOKENS, window_cap, evicted_tokens // 2) if bounded else None
+    kept_msgs, kept_ids = _retained_tail(rt, cut)
+    user_notes: list[str] = []
+    if (
+        reason != "overflow" and not concise and window > 0
+        and (evicted_tokens >= _MIN_LONG_PREFIX_TOKENS or prior_notes)
+    ):
+        limit = min(_MAX_USER_NOTE_TOKENS, window // 16, max(evicted_tokens // 2, _text_tokens(render_user_notes(prior_notes))))
+        if envelope is not None:
+            limit = min(limit, _CHECKPOINT_NOTE_TOKENS, envelope // 4)
+        user_notes = _select_user_notes(prior_notes, to_summarize, kept_msgs, limit=limit)
+    files = _file_sections(read, modified, limit=None if envelope is None else min(_CHECKPOINT_PATH_TOKENS, envelope // 8))
+
     target = min(window_cap, max(256, evicted_tokens // 4))
+    if envelope is not None:
+        reserved = _message_tokens(summary_message(files, user_notes=user_notes))
+        target = min(target, max(32, (envelope - reserved - 2) * 4 // 5))
     if concise:
         target = RECOVERY_TOKENS if target > RECOVERY_TOKENS else max(256, target // 2)
     # The completion adapters also reserve room for reasoning tokens.
@@ -650,14 +711,25 @@ def summarize_context(
     if failure := _report_failure(rt, msg, complete=msg.stop_reason == "stop" and bool(summary), limit=max_tokens):
         return failure
 
-    if read - modified:
-        summary += "\n\n<read-files>\n" + "\n".join(sorted(read - modified)) + "\n</read-files>"
-    if modified:
-        summary += "\n\n<modified-files>\n" + "\n".join(sorted(modified)) + "\n</modified-files>"
-
-    kept_msgs, kept_ids = _retained_tail(rt, cut)
+    if envelope is not None and _message_tokens(summary_message(summary + files, user_notes=user_notes)) > envelope:
+        # Condense a completed checkpoint once. Never commit a truncated summary or silently shave its tail.
+        msg = session.complete(
+            "compaction", SUMMARY_SYSTEM,
+            f"<draft_checkpoint>\n{summary}\n</draft_checkpoint>\n\n"
+            f"Condense the draft to at most {target} visible tokens. Keep binding requirements (including exact values), "
+            "newest corrections, verifier results, unsolved issues, and the next action. "
+            "Drop duplicated evidence and inventories; output only the revised summary.",
+            max_tokens=max_tokens, effort=session.small_model_effort, signal=rt.agent.signal, agent=rt.name,
+            accounting_store=rt.accounting_store,
+        )
+        summary = _FILE_BLOCK.sub("", msg.text()).strip()
+        if failure := _report_failure(rt, msg, complete=msg.stop_reason == "stop" and bool(summary), limit=max_tokens):
+            return failure
+        if _message_tokens(summary_message(summary + files, user_notes=user_notes)) > envelope:
+            rt.on_compaction_error(session.t("harness.compact.checkpoint_budget", limit=envelope))
+            return "length"
     return rt.commit_summary(
-        summary,
+        summary + files,
         msg.timestamp,
         kept_msgs,
         kept_ids,
@@ -666,6 +738,7 @@ def summarize_context(
         strategy=strategy,
         read_files=sorted(read),
         modified_files=sorted(modified),
+        user_notes=user_notes,
     )
 
 

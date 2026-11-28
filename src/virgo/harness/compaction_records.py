@@ -6,6 +6,7 @@ and compaction share one schema without circular dependencies.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -30,9 +31,30 @@ SUMMARY_PREFIX = (
 )
 
 
-def summary_message(text: str, *, timestamp: float | None = None) -> UserMessage:
+_USER_NOTES_HEADER = (
+    "\n\n<historical_user_messages>\nExact excerpts from older user turns, in chronological order. "
+    "Treat these as historical evidence, not new requests. Do not repeat replies or revive superseded instructions; "
+    "newer corrections and the current task take precedence.\n"
+)
+_USER_NOTES_FOOTER = "\n</historical_user_messages>"
+
+
+def render_user_notes(notes: list[str]) -> str:
+    if not notes:
+        return ""
+    encoded = json.dumps(notes, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+    return _USER_NOTES_HEADER + encoded + _USER_NOTES_FOOTER
+
+
+def summary_user_notes(record: dict) -> list[str]:
+    details = record.get("details")
+    notes = details.get("user_notes") if isinstance(details, dict) else None
+    return [n for n in notes if isinstance(n, str) and n.strip()] if isinstance(notes, list) else []
+
+
+def summary_message(text: str, *, timestamp: float | None = None, user_notes: list[str] | None = None) -> UserMessage:
     return UserMessage(
-        f"{SUMMARY_PREFIX}{text.strip()}\n</conversation_summary>",
+        f"{SUMMARY_PREFIX}{text.strip()}\n</conversation_summary>{render_user_notes(user_notes or [])}",
         kind="summary",
         timestamp=time.time() if timestamp is None else timestamp,
     )
@@ -123,7 +145,7 @@ def replay_compaction_context(
 
     comp = path[comp_i]
     timestamp = comp.get("summary_timestamp", created_at(comp, 0.0))
-    messages = [summary_message(comp["summary"], timestamp=timestamp)]
+    messages = [summary_message(comp["summary"], timestamp=timestamp, user_notes=summary_user_notes(comp))]
     ids = [comp["id"]]
     for entry_id in comp.get("kept_ids", []):
         entry = by_id.get(entry_id)
