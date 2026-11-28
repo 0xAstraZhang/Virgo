@@ -318,6 +318,7 @@ def test_compaction_requests_exact_formats_on_both_summary_paths(make_session, m
         prompt = "\n".join(message.text() for message in context.messages)
         assert requirement in prompt
         assert "Copy exact output-format requirements and user-provided examples verbatim." in prompt
+        assert "Keep examples in Goal & Constraints only. Omit superseded examples." in prompt
         assert "Do not invent formatting rules, examples, or sample values." in prompt
 
 

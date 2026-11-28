@@ -104,6 +104,7 @@ SUMMARY_FORMAT = (
     "exact file paths, symbol names, commands, test outcomes, errors, and unfinished deliverables. "
     "Copy exact output-format requirements and user-provided examples verbatim. "
     "Keep significant whitespace, delimiters, casing, and padding intact. "
+    "Keep examples in Goal & Constraints only. Omit superseded examples. "
     "Do not invent formatting rules, examples, or sample values. "
     "Replace obsolete status claims and long inventories with current verified state. "
     "Omit step-by-step history and verification narration. "
